@@ -3598,6 +3598,48 @@
                 "maxItems": 50,
                 "description": "The visible links of an identity type (a link type joining one object type that declares a same_record binding), a person's reviewed same_record_as included; a lead or contradicted one is a candidate, not a verified identity. Every other link, a cross-type same_record key included, is counted in linked_counts."
               },
+              "twins": {
+                "type": "array",
+                "maxItems": 20,
+                "description": "Its copies in other systems, named, with tier (a lead: a likely match).",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "object_id",
+                    "object_type",
+                    "display",
+                    "link_type",
+                    "tier"
+                  ],
+                  "properties": {
+                    "object_id": {
+                      "$ref": "#/$defs/object_id"
+                    },
+                    "object_type": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+                    },
+                    "display": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/untrusted_text"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "link_type": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+                    },
+                    "tier": {
+                      "$ref": "#/$defs/tier"
+                    }
+                  }
+                }
+              },
               "linked_beyond": {
                 "type": "array",
                 "maxItems": 40,
@@ -7795,6 +7837,10 @@
                       "additionalProperties": {
                         "type": "integer"
                       }
+                    },
+                    "via_twin": {
+                      "type": "boolean",
+                      "description": "This hop reached its records through the same_record_as twins of the records walked (their copies in another system), because the direct hop reached nothing; tiers says how firm the twin links are, and a lead twin is a likely match, never a confirmed one."
                     }
                   }
                 }
@@ -7845,6 +7891,10 @@
                             "additionalProperties": {
                               "type": "integer"
                             }
+                          },
+                          "via_twin": {
+                            "type": "boolean",
+                            "description": "This hop reached its records through the same_record_as twins of the records walked (their copies in another system), because the direct hop reached nothing; tiers says how firm the twin links are, and a lead twin is a likely match, never a confirmed one."
                           }
                         }
                       }

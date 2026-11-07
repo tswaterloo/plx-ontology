@@ -917,6 +917,29 @@ class ObjectTests(ContractMixin, unittest.TestCase):
         self.assertNotIn("citations", reason[1])
         self.assertNotIn("row.total_amount", json.dumps(sales))
 
+    def test_object_names_its_twins_with_their_tier_to_the_readers_who_see_them(self):
+        """11-07 dev 0047: a name check read the billed record, whose name lacked the word
+        asked about, and missed its copy in another system that held it over a lead link.
+        plx.object lists each identity twin with its type, display and tier (a lead stays
+        a lead); a twin under a marking the reader does not hold is never named."""
+        store = build()
+        lead = "SalesOrder:fm.order_entry:9002"
+        store.obj(lead, "api:public.order_entry", FM_H, "fm_bronze", markings='["finance"]')
+        store.link("lnk-same-2", "SalesOrder.same_record_as", SO, lead, "lead",
+                   "same_record", [SO_V2, FM_H])
+        t = tools(store)
+        twins = self.ok(t, "plx.object", {"object_id": SO})["twins"]
+        self.assertEqual([(w["object_id"], w["object_type"], w["link_type"], w["tier"])
+                          for w in twins],
+                         [(FM, "SalesOrder", "SalesOrder.same_record_as", "verified"),
+                          (lead, "SalesOrder", "SalesOrder.same_record_as", "lead")])
+        self.assertTrue(all("display" in w for w in twins))
+        seen = self.ok(t, "plx.object", {"object_id": SO}, SALES)
+        self.assertNotIn(lead, json.dumps(seen))
+        self.assertEqual([w["object_id"] for w in seen.get("twins", [])], [FM])
+        alone = self.ok(tools(build(skip={FM})), "plx.object", {"object_id": SO})
+        self.assertNotIn("twins", alone)
+
     def test_dropped_bc_versions_surface_a_gap_not_fewer_versions_silently(self):
         store = build()
         binding = SO.split(":")[1]

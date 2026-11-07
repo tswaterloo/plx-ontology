@@ -496,8 +496,111 @@ class Query(unittest.TestCase):
         self.assertEqual(tool.call({"from": {}}, "actor")["error"]["code"], "invalid_input")
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TwinExpansion(unittest.TestCase):
+    """A walk whose filter empties what it reached tries those records' twins in another
+    system (``<Type>.same_record_as``, lead links included and said as leads), as the
+    reader; a type with no identity link, or two trimmed answers it cannot mark as
+    trimmed, reach nothing more (fail closed)."""
+
+    class Links:
+        link_types = {"SalesInvoice.billed_to": {"from": "SalesInvoice", "to": "Customer"},
+                      "Customer.same_record_as": {"from": "Customer", "to": "Customer"}}
+
+    WHERE = [{"property": "name", "op": "contains", "value": "Alliance"}]
+
+    def script(self, reverse_twin=None, trimmed=False, reverse_lost=None):
+        calls = []
+
+        def call(name, arguments, actor):
+            calls.append((name, dict(arguments), actor))
+            if name == "plx.aggregate":
+                return {"groups": [{"key": {}, "value": "1", "inputs": 1, "markings": []}]}
+            hop = arguments["path"][0]
+            gaps = [{"state": "unknown", "reason": "withheld_by_permission",
+                     "subject": "x"}] if trimmed else []
+            if hop["link_type"] == "SalesInvoice.billed_to":
+                hit = "filters" not in arguments
+                return {"set": "Customer:sage:1" if hit else None,
+                        "hops": [{**hop, "count": int(hit)}]}
+            if hop["direction"] == "forward":
+                return {"set": "Customer:fm:78", "gaps": gaps,
+                        "hops": [{**hop, "count": 1, "tiers": {"lead": 1}}]}
+            twin = reverse_twin
+            if reverse_lost:
+                gaps = [{"state": "unknown", "reason": reverse_lost, "subject": "twin"}]
+            return {"set": twin, "gaps": gaps,
+                    "hops": [{**hop, "count": 1 if twin else 0, "tiers": {"lead": 1}}]}
+        return calls, call
+
+    def ask(self, call, links=None, withheld_set=None):
+        backend = oq.TableBackend(call, lambda actor, ids: "set:union0001", links or self.Links(),
+                                  members=lambda actor, handle: [handle])
+        backend.withheld_set = withheld_set
+        return oq.QueryTool(backend).call({
+            "from": {"object_id": "SalesInvoice:sage:9"},
+            "traverse": [{"link_type": "SalesInvoice.billed_to", "direction": "forward"}],
+            "where": self.WHERE, "measures": [{"op": "count"}]}, "reader")
+
+    def test_a_filter_emptied_hop_reaches_the_lead_twin_said_as_a_likely_match(self):
+        from ontology.json_contract import validate
+        calls, call = self.script()
+        out = self.ask(call)
+        self.assertEqual(out["set"], "Customer:fm:78")
+        self.assertEqual(out["hops"][-1], {"link_type": "Customer.same_record_as",
+                                           "direction": "forward", "count": 1,
+                                           "tiers": {"lead": 1}, "via_twin": True})
+        twin_calls = [a for n, a, _ in calls
+                      if n == "plx.around" and "same_record_as" in a["path"][0]["link_type"]]
+        self.assertEqual({a["tier_floor"] for a in twin_calls}, {"lead"})
+        self.assertTrue(all(a["filters"] == self.WHERE for a in twin_calls))
+        self.assertEqual({actor for _, _, actor in calls}, {"reader"})
+        said = next(g for g in out["gaps"] if g["reason"] == "via_twin")
+        self.assertIn("likely match", said["detail"])
+        self.assertEqual(validate(out, oq._CONTRACT["output"], root=oq._CONTRACTS), [])
+
+    def test_no_identity_link_or_an_unmarkable_trimmed_union_reaches_nothing_more(self):
+        class NoTwin:
+            link_types = {"SalesInvoice.billed_to": {"from": "SalesInvoice",
+                                                     "to": "Customer"}}
+        calls, call = self.script()
+        out = self.ask(call, NoTwin())
+        self.assertIsNone(out["set"])
+        self.assertIn("nothing_reached", {g["reason"] for g in out["gaps"]})
+        self.assertFalse(any("same_record_as" in str(a) for _, a, _ in calls))
+        # both twin directions answered trimmed: joined only as a trimmed set
+        calls, call = self.script(reverse_twin="Customer:bc:4", trimmed=True)
+        self.assertIsNone(self.ask(call)["set"])
+        marked = []
+        calls, call = self.script(reverse_twin="Customer:bc:4", trimmed=True)
+        out = self.ask(call, withheld_set=lambda actor, ids: marked.append(ids) or "set:held0001")
+        self.assertEqual(out["set"], "set:held0001")
+        self.assertEqual(marked, [["Customer:fm:78", "Customer:bc:4"]])
+
+    def test_a_twin_direction_trimmed_to_nothing_marks_the_other_side_trimmed(self):
+        """The reverse twin answers no set, only the reader's grants withheld it: the
+        forward twin's set is used only marked as trimmed, the withheld gap is carried,
+        and the hop's superseded dead ends are not said beside what the twin reached;
+        with no way to mark it, nothing is reached (fail closed)."""
+        for reason in ("marking_withheld", "withheld_by_permission",
+                       "policy_changed_since_handle"):
+            with self.subTest(reason=reason):
+                marked = []
+                calls, call = self.script(reverse_lost=reason)
+                out = self.ask(call, withheld_set=lambda actor, ids: marked.append(ids)
+                               or "set:held0002")
+                self.assertEqual(out["set"], "set:held0002")
+                self.assertEqual(marked, [["Customer:fm:78"]])
+                reasons = [g["reason"] for g in out["gaps"]]
+                self.assertIn(reason, reasons)
+                self.assertIn("via_twin", reasons)
+                self.assertFalse({"no_match", "nothing_reached"} & set(reasons), reasons)
+                calls, call = self.script(reverse_lost=reason)
+                self.assertIsNone(self.ask(call)["set"])
+        # an untrimmed empty reverse direction leaves the forward handle as it is
+        calls, call = self.script()
+        self.assertEqual(self.ask(call, withheld_set=lambda actor, ids: "set:held0003")["set"],
+                         "Customer:fm:78")
+
 
 
 class OnePartNeverRefusesTheRead(unittest.TestCase):
@@ -650,3 +753,7 @@ class IdentifierRoute(unittest.TestCase):
         self.assertEqual(len(cut["searched"]["queries"]), oq.IDENTIFIER_QUERIES)
         finds = [a["query"] for n, a in calls if n == "plx.find"]
         self.assertEqual(sorted(cut["searched"]["queries"]), sorted(finds))
+
+
+if __name__ == "__main__":
+    unittest.main()

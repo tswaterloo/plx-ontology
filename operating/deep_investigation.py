@@ -117,6 +117,11 @@ CONTINUE_KEY = "continue"
 MAX_CONTINUES = 2
 CONTINUE_SECONDS = 25     # research seconds left for a continuation to be worth it
 CONTINUE_STEPS = 4        # tool calls left for one
+# session seconds left for the mail and next-route send-backs (``Budget.required_parts``):
+# a search and a resubmission take about a minute on a loaded host
+REQUIRED_PARTS_SECONDS = 60
+MAX_SCOPE_ROOTS = 5       # named records a type-wide query is sent to start from
+SCOPE_REFUSAL = "scope_from_named"
 MAX_OPEN_SHOWN = 8
 # A decision that passed claims but whose reply drops sentences of the submitted text (a
 # number, date or name no passed claim states: ``answer_gate.final_reply``) goes back once
@@ -223,6 +228,12 @@ RECORDS_FIRST = (
     "(plx.query from codes with per_code and rows answers a sheet's item codes at "
     "once: each code's records walked, what they reach listed with cited values and a "
     "date, its last, lowest and highest; page with code_offset). "
+    "A question that names correspondence (an email, message, thread, reply, who said or "
+    "wrote, whether anyone contacted a party) or asks why or what holds something up asks "
+    "what people wrote: after the first record read, search mail for it (plx.documents "
+    "sources [\"graph_mail\"], one call per party it names, by participant when you have "
+    "the party's record, and by the subject's words), read the messages that match, and "
+    "never answer that part from the records alone. "
     "(e) Do not stop early: before you submit, check each part of the question; while one "
     "is unsettled and the budget note shows time left, take the next link or record that "
     "could settle it. A partial answer is for what no record or document you can open "
@@ -264,7 +275,16 @@ DECOMPOSE = (
     "are two, however alike their names: a count over copies shows no value (cross_system_twins), so count one system's records; an "
     "entity's records walked one by one (by_record) are the same thing seen in each "
     "system, never added together: give the figure of the system the question names, "
-    "else each system's figure with its system (\"22 in the Portal, 5 in FileMaker\"). Absence is a finding "
+    "else each system's figure with its system (\"22 in the Portal, 5 in FileMaker\"). Before you walk, restate the "
+    "start record and each hop's link type from the question: a set the question scopes "
+    "by a record (a task's bucket, an order's customer, a file's members) is reached from "
+    "that record along its link, never every record of the type with that word in its "
+    "name. When a walk reaches nothing, take the next route before you state an absence: "
+    "the other routes the result names (other_routes; a sibling link to the same type, "
+    "an item rather than a product), the records' copies in another system (twin_route: "
+    "their identity link with tier_floor \"lead\"; plx.query does this itself and marks "
+    "the hop via_twin, and what a lead twin reaches is said as a likely match), then a "
+    "text or mail search for the start's identifier. Absence is a finding "
     "only when the data shows it: a complete query over the right records that returned "
     "zero or nothing reached, said with what was queried; a refusal, a time-out or an "
     "error proves nothing: correct the call (its hint names valid properties, links or "
@@ -611,6 +631,32 @@ TEXT_SEARCH_TOOLS = frozenset({"plx.documents"})
 RECORDS_FIRST_REFUSAL = "records_first"
 
 
+# Correspondence or a reason a question asks about (what people wrote): wording of the
+# language, never of a case; a mail search is then part of the research (``Budget``).
+CORRESPONDENCE = re.compile(
+    r"\b(?:e-?mail(?:s|ed|ing)?|mailed|thread|correspondence|wrote|written to|"
+    r"repl(?:y|ied|ies)|respond(?:ed)?|who said|said (?:that|we|they)|messag(?:e|es|ed)|"
+    r"contacted|reached out|why|holding (?:\w+ )?up|held up|reason)\b", re.I)
+# Gap reasons of a walk that reached nothing (plx.query, plx.around).
+DEAD_END = re.compile(r'"reason":\s*"(?:nothing_reached|twin_route|other_routes)"')
+
+
+def searches_mail(name: Any, arguments: Any) -> bool:
+    """Whether a call searches or reads mail: plx.documents over mail (no sources named,
+    or graph_mail among them), or plx.read of a mail handle."""
+    if not isinstance(arguments, Mapping):
+        return False
+    if name == "plx.documents":
+        sources = arguments.get("sources")
+        return not sources or (isinstance(sources, list) and "graph_mail" in sources)
+    if name == "plx.read":
+        return str(arguments.get("citation") or "").startswith("graph-mail://")
+    if name in ("plx.around", "plx.query"):
+        # a walk to the messages that mention a record
+        return '"Email.' in json.dumps(arguments, default=str)
+    return False
+
+
 class Budget:
     """One session's step and time budget, as the tool gate decides it. ``deadline``:
     the wall-clock second research ends (None: no time limit); ``max_steps``: tool calls
@@ -619,7 +665,9 @@ class Budget:
 
     def __init__(self, deadline: float | None = None, max_steps: int | None = None,
                  ends_at: float | None = None, repair_reads: int = REPAIR_READS,
-                 grace_calls: int = GRACE_CALLS, records_first: bool = False) -> None:
+                 grace_calls: int = GRACE_CALLS, records_first: bool = False,
+                 question: str | None = None,
+                 roots: Sequence[Mapping[str, Any]] = ()) -> None:
         self.deadline, self.max_steps = deadline, max_steps
         self.ends_at = ends_at if ends_at is not None else deadline
         self.repair_reads, self.grace_calls = repair_reads, grace_calls
@@ -635,6 +683,17 @@ class Budget:
         # the question named records: a text search waits for the first record read
         self.records_first = records_first
         self.waited = 0         # text searches asked to wait for a record read
+        # the question (``after_answer``: correspondence it names is searched in mail)
+        self.question = question if isinstance(question, str) else ""
+        self.mail_searched = False   # a mail search or message read was forwarded
+        # the step of the last walk that reached nothing (``observe``): a decision with no
+        # call forwarded after it tried no other route
+        self.dead_end_step: int | None = None
+        # the records the question names, as the Ask resolved them (object_id, object_type,
+        # same_as, mention): a set of another type is walked from them (``scope_from_named``)
+        self.roots = [dict(root) for root in roots if isinstance(root, Mapping)
+                      and isinstance(root.get("object_id"), str)][:MAX_SCOPE_ROOTS]
+        self.scoped = False   # a type-wide query was sent to start from the named records
 
     @property
     def active(self) -> bool:
@@ -675,10 +734,15 @@ class Budget:
                                 "first, then search text for what the records leave "
                                 "open.")}
         if why is None:
+            scoped = self.scope_from_named(name, arguments, now)
+            if scoped is not None:
+                return scoped
             self.steps += 1
             self.timeout_open = False   # research went on after any stopped call
             if name in RECORD_TOOLS:
                 self.records_read += 1
+            if searches_mail(name, arguments):
+                self.mail_searched = True
             return None
         if why == "time" and not self.submissions and self.grace < self.grace_calls \
                 and name in GRACE_TOOLS and self._grace_fits(now):
@@ -740,6 +804,82 @@ class Budget:
             out["next"] = "submit your answer to the answer gate now"
         return out
 
+    def scope_from_named(self, name: Any, arguments: Any, now: float
+                         ) -> dict[str, Any] | None:
+        """A query over every record of a type (``from`` an object_type, its where alone)
+        when the question names records of another type the query never mentions: sent
+        back once, as the walk from the named records to that type with the same filters
+        (11-07 dev 0093: every bucket named "Product" counted, not the named task's own).
+        The same call again is served (the question may mean every record of the type);
+        never while under ``REQUIRED_PARTS_SECONDS`` of the session is left. None: forward."""
+        if self.scoped or name != "plx.query" or not self.roots \
+                or not isinstance(arguments, Mapping):
+            return None
+        start = arguments.get("from")
+        if not isinstance(start, Mapping) or set(start) - {"object_type", "where"} \
+                or not isinstance(start.get("object_type"), str):
+            return None
+        end = self.ends_at if self.ends_at is not None else self.deadline
+        if end is not None and end - now < REQUIRED_PARTS_SECONDS:
+            return None
+        kind = start["object_type"]
+        said = json.dumps(arguments, default=str).casefold()
+        named = []
+        for root in self.roots:
+            ids = [root["object_id"], *(i for i in root.get("same_as") or ()
+                                        if isinstance(i, str))]
+            words = ids + [w for w in (root.get("mention"),) if isinstance(w, str) and w]
+            if any(word.casefold() in said for word in words):
+                return None   # the query is scoped by a named record already
+            if root.get("object_type") != kind and not any(
+                    i.split(":", 1)[0] == kind for i in ids):
+                named.append(root)
+        if not named:
+            return None
+        self.scoped = True
+        hop: dict[str, Any] = {"to": kind}
+        if start.get("where"):
+            hop["where"] = start["where"]
+        walk = {"from": {"object_ids": [root["object_id"] for root in named]},
+                "traverse": [hop]}
+        names = ", ".join(f"{root.get('mention') or root['object_id']} "
+                          f"({root.get('object_type') or 'record'})" for root in named)
+        return {"ok": False, "error": SCOPE_REFUSAL,
+                "message": (f"The question names {names}. A set of {kind} the question "
+                            "scopes by a named record is the one reached from it along its "
+                            "link, not every record of the type: walk from it first, "
+                            f"plx.query {json.dumps(walk, default=str)}. If the question "
+                            f"means every {kind} with no tie to the named record, send this "
+                            "call again unchanged and it is served."),
+                "scoped_walk": walk}
+
+    def observe(self, result: Any) -> None:
+        """A served call's result: a walk that reached nothing (``DEAD_END`` among its
+        gaps) is remembered, so a decision made with no call after it is sent back once
+        (``after_answer``)."""
+        try:
+            text = result if isinstance(result, str) else json.dumps(result, default=str)
+        except (TypeError, ValueError):
+            return
+        if DEAD_END.search(text):
+            self.dead_end_step = self.steps
+
+    def required_parts(self) -> list[str]:
+        """Parts any decision leaves open while research may go on: correspondence the
+        question names that no mail search read (``CORRESPONDENCE``), and a walk that
+        reached nothing with no call after it (no other route tried)."""
+        parts: list[str] = []
+        if CORRESPONDENCE.search(self.question) and not self.mail_searched:
+            parts.append("the question asks what people wrote, and no mail was searched: "
+                         "search mail (plx.documents sources [\"graph_mail\"], one call per "
+                         "party and subject it names) and read the messages that match")
+        if self.dead_end_step is not None and self.dead_end_step >= self.steps:
+            parts.append("a walk reached nothing and no other route was tried: take the "
+                         "next route (the other routes or twin_route it names, the "
+                         "records' copies in another system with tier_floor lead, a text "
+                         "or mail search for the start) before stating an absence")
+        return parts
+
     def after_answer(self, result: Any, now: float) -> dict[str, Any] | None:
         """The note an answer-gate decision carries when the session should go on: the
         decision passed claims (``answered``) but leaves parts of the question open
@@ -765,6 +905,14 @@ class Budget:
         parts = (open_parts(decision) or (
             ["the whole question: nothing is established yet"] if nothing else [])) \
             if research else []
+        session_end = self.ends_at if self.ends_at is not None else self.deadline
+        if research and self.continues == 0 and session_end is not None \
+                and session_end - now >= REQUIRED_PARTS_SECONDS:
+            # once: a route not tried and a mail search not made are open whatever the
+            # decision lists (11-07: absences stated after one empty walk, correspondence
+            # answered from the records alone), only while the session has the time for
+            # them: a send-back never costs the answer (11-07 q42: no answer at the limit)
+            parts = list(dict.fromkeys(parts + self.required_parts()))
         if parts and self.sent_open is not None and not settled(self.sent_open, parts):
             # The research the last send-back asked for settled none of its open parts:
             # another round costs a minute for what the last one did not find, so this

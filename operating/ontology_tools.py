@@ -267,6 +267,7 @@ MAX_IDENTITY = 50  # plx.object identity links; a cut says so (identity_truncate
 # many records, at most this many entries.
 BEYOND_CHILDREN = 60
 MAX_BEYOND = 40
+MAX_TWINS = 20   # plx.object twins: identity links' other ends, each with its name
 # plx.schema: items of each list one page holds at most (the output contract's maxItems).
 _SCHEMA_PAGE_CAPS = {"object_types": 200, "link_types": 400, "event_types": 200,
                      "action_types": 100, "processes": 50}
@@ -5404,6 +5405,9 @@ class OntologyTools:
             "linked_counts": linked_counts[:100], "gaps": gaps[:50]}
         if beyond:
             result["linked_beyond"] = beyond[:MAX_BEYOND]
+        twins = self._twins_named(scope, object_id, identity)
+        if twins:
+            result["twins"] = twins
         if withheld_props:
             result["withheld"] = {"properties": len(withheld_props), "objects": None,
                                   "reason": "marking"}
@@ -5461,6 +5465,30 @@ class OntologyTools:
             raise ToolError("result_too_large", "the object does not fit one response",
                             "request fewer properties")
         return best
+
+    def _twins_named(self, scope: _Scope, object_id: str, identity: Sequence[Mapping]
+                     ) -> list[dict[str, Any]]:
+        """The record's copies in other systems as a name check reads them (11-07 dev
+        0047: the billed customer's name lacked the word asked about, its Portal copy's
+        held it, over a lead link): each identity edge's other end with its display
+        name, link type and tier (a lead stays a lead), strongest tier first. Only the
+        edges ``_links`` already kept for this reader (both ends visible, marking held),
+        so a twin the reader may not see is never named."""
+        others: dict[str, Mapping] = {}
+        for edge in identity:   # strongest first (``_links``)
+            other = edge.get("to") if edge.get("from") == object_id else edge.get("from")
+            if isinstance(other, str) and other != object_id and other not in others:
+                others[other] = edge
+        if not others:
+            return []
+        ids = list(others)[:MAX_TWINS]
+        visible = self._visible_versions(scope, ids)
+        ids = [oid for oid in ids if oid in visible]
+        objects = self.store.objects(ids) if ids else {}
+        displays = self._displays(scope, ids)
+        return [{"object_id": oid, "object_type": objects[oid]["object_type"],
+                 "display": displays.get(oid), "link_type": others[oid]["link_type"],
+                 "tier": others[oid]["tier"]} for oid in ids if oid in objects]
 
     def _links(self, scope: _Scope, object_id: str, detailed: bool
                ) -> tuple[list[dict], list[dict], list[tuple[str, Mapping]], list[dict]]:

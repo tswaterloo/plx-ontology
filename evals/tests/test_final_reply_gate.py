@@ -147,6 +147,41 @@ class FinalReplyGateTests(unittest.TestCase):
         self.assertEqual(text, final)
         self.assertFalse(report["rewritten"])
 
+    def test_a_count_the_question_asks_for_leads_a_reply_that_never_states_it(self):
+        """11-07 dev 0066: the gate passed a count, the reply named only the record. A
+        question asking for a figure gets the passed count's line first; a reply stating
+        it, or a question asking for none, leaves as written."""
+        event = _submit("answered", passed=[("Pet Alliance", MAP, "row.company_name")])
+        event["result"]["claims"].append({
+            "id": "m2", "check": {"status": "passed", "failures": []},
+            "citations": [_wrap(MAP)], "text": _wrap("Count: 2"),
+            "phrase": _wrap("2"),
+            "value_claims": [{"op": "count", "value": 2, "of": [{"citation": MAP}]}]})
+        answer = _answer("The customer is Pet Alliance.",
+                         [_value("customer", "Pet Alliance", MAP, "row.company_name")])
+        asked = "How many customers on the order were deleted in August?"
+        text, parsed, error, _report = _gated(answer, [event], asked,
+                                              prose="The customer is Pet Alliance.")
+        self.assertIsNone(error)
+        self.assertTrue(sc._JSON_FENCE.sub(" ", text).strip().startswith(
+            "Count: 2"), text)
+        self.assertTrue(parsed["text"].startswith("Count: 2"), parsed["text"])
+        # 11-07 dev 0093: a final message that is the answer block alone (no prose
+        # around it) showed the count lines and nothing else; the count leads the
+        # answer's own sentences, which stay.
+        from operator_api.agent_ask import reply_prose
+        text, parsed, error, _report = _gated(answer, [event], asked, prose="")
+        self.assertIsNone(error)
+        self.assertEqual(reply_prose(text, parsed),
+                         "Count: 2\nThe customer is Pet Alliance.")
+        stated = answer_gate.final_reply("2 customers match, Pet Alliance among them.",
+                                         event["result"]["claims"], question=asked,
+                                         figures=event["result"]["claims"])
+        self.assertEqual((stated["figures_added"], stated["modified"]), (0, False))
+        final = fx.final_text(answer)
+        self.assertEqual(runner.gate_final_reply(
+            final, [event], "Who is the customer on the order?")[0], final)
+
     def test_an_unresolved_conflict_gap_makes_an_answerable_reply_partial(self):
         """RRO-01: the agent reported the conflict as a gap yet labelled its answer
         answerable, and the gate (which never sees a gap) agreed. An unknown

@@ -741,6 +741,33 @@ class AroundTests(unittest.TestCase):
                 self.assertEqual(answer, serial[name])
 
 
+class TwinRouteTests(unittest.TestCase):
+    """A walk that reaches nothing names the next route when the type it ends on declares
+    an identity link (``twin_route``: read from the schema alone, nothing about any
+    record); without one it names none."""
+
+    def test_an_emptied_walk_names_the_identity_link_only_when_declared(self):
+        import copy
+        domain = copy.deepcopy(DOMAIN)
+        twin = _link("Order.same_record_as", "Order", "Order", "1:1")
+        for binding in twin["bindings"]:
+            binding["kind"] = "same_record"
+        twin["bindings"] = twin["bindings"] or [{"kind": "same_record"}]
+        domain["link_types"].append(twin)
+        emptied = dict(PARTY_ORDERS, filters=[{"property": "number", "op": "eq",
+                                               "value": "ORD-404"}])
+        t, _ = tools(schema=ot.SchemaView.from_documents([domain]))
+        out = ok(self, "plx.around", t.call("plx.around", emptied, FULL))
+        self.assertEqual(out["hops"][0]["count"], 4)
+        self.assertEqual(ids(out), [])
+        hint = [g for g in out["gaps"] if g["reason"] == "twin_route"]
+        self.assertEqual([g["subject"] for g in hint], ["Order.same_record_as"])
+        self.assertIn("likely match", hint[0]["detail"])
+        plain, _ = tools()
+        out = ok(self, "plx.around", plain.call("plx.around", emptied, FULL))
+        self.assertNotIn("twin_route", [g["reason"] for g in out["gaps"]])
+
+
 class SliceTests(unittest.TestCase):
     def test_every_gated_handle_of_a_slice_is_named(self):
         # The whole-table slice read calls the item-gate parser only on rows whose text

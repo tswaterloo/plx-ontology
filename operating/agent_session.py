@@ -469,6 +469,9 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     gate, refused = _gate_results(events)
     passed = answer_gate.passed_cells(gate)
     claims = list(gate.get("claims") or []) if passed else []
+    # the gate's own passed claims: a count or total among them leads a reply that asks
+    # for one and never states it (``answer_gate.unstated_figures``)
+    figure_claims = list(claims)
     report: dict[str, Any] = {"format": FINAL_REPLY_FORMAT, "gate": (gate or {}).get("outcome"),
                               "rewritten": False, "withheld": [],
                               "refused_by_gate": len(refused), "sentences": 0,
@@ -477,6 +480,25 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     # A name a tool returned verbatim (a record number, a customer or file name) is a
     # name in the reply, never a figure (``answer_gate.returned_names``).
     names = answer_gate.returned_names(events, skip_tools=(ANSWER_GATE_TOOL,))
+
+    def lead_figures(*replies: dict[str, Any]) -> None:
+        # The count or total the question asks for leads the reply when none of its texts
+        # states it (11-07 dev 0066), ahead of every sentence kept, never in their place
+        # (11-07 dev 0093: a reply of the counts alone when they went into the empty text
+        # around the answer block). Each text that may be shown gets them: a reader sees
+        # the prose around the block or, with none, the answer's own text, never both
+        # (``reply_prose``), so this never repeats them; when every one is empty, the
+        # first does.
+        figures = answer_gate.unstated_figures(
+            "\n".join(str(reply["text"]) for reply in replies), figure_claims, question)
+        if not figures:
+            return
+        report["figures_added"] = len(figures)
+        filled = [reply for reply in replies if str(reply["text"]).strip()] or replies[:1]
+        for reply in filled:
+            reply["text"] = "\n".join(figures + ([str(reply["text"]).strip()]
+                                                 if str(reply["text"]).strip() else []))
+            reply["modified"] = True
 
     def screen(text: Any, withheld: Sequence[str] = ()) -> dict[str, Any]:
         reply = answer_gate.final_reply(text, claims, unsupported=refused, question=question,
@@ -503,6 +525,7 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
                      and candidate[key].strip()][:MAX_NOTES]
     if answer is None:
         reply = screen(final_text)
+        lead_figures(reply)
         if reply["modified"]:
             report.update(rewritten=True, answer_error=error)
         return reply["text"], report
@@ -588,6 +611,7 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     text = screen(answer.get("text") or "", report["withheld"])
     fence = _JSON_FENCE
     outside = screen(fence.sub(" ", final_text))
+    lead_figures(text, outside)
     stated = (gate or {}).get("answerability")
     stated = stated.get("state") if isinstance(stated, Mapping) else None
     # A decision that passed nothing says only that (``blocked``): the reply's own
@@ -1058,6 +1082,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             result = handle_aliases.shorten_result(aliases, result)
             message = {**message, "result": result}
         if budget is not None and "id" in message and key in noted:
+            with lock:
+                budget.observe(result)   # a walk that reached nothing (``after_answer``)
             if _timed_out(result):
                 # the host stopped the call at its limit (``call_limits``)
                 with lock:
@@ -2380,7 +2406,8 @@ class ClaudeCodeAgent:
                 budget = deep.Budget(started + research if self.budget_seconds is not None
                                      else None, self.max_steps,
                                      ends if self.budget_seconds is not None else None,
-                                     records_first=self.records_named)
+                                     records_first=self.records_named,
+                                     question=self.asked, roots=self.known_roots)
             deadline = None if self.budget_seconds is None else started + calls_end
             # Every call's end is read from a file (``call_limits.DEADLINE_FILE_ENV``), so
             # it moves with the session's clock when the task waits for its first reads.

@@ -288,6 +288,72 @@ class OpenPartsContinue(Temp):
         # the same number of parts, reworded: nothing settled, the decision ends it
         self.assertIsNone(reworded.after_answer(decision("a again", "b"), now))
 
+    def test_unsearched_correspondence_and_an_untried_route_go_back_once(self):
+        """11-07 q15/q01: a question naming correspondence answered with no mail search;
+        dev 0047: an absence stated right after a walk reached nothing. Each goes back
+        once with research time left; a mail search, or a call after the dead end,
+        settles it; a question naming no correspondence is not sent back for mail."""
+        done = {"structuredContent": {"outcome": "answered", "claims": [{"text": "c"}],
+                                      "answerability": {"state": "answerable"}}}
+        now = time.time()
+        asked = "Did anybody reply to the complaint email in September?"
+        budget = deep.Budget(deadline=now + 100, max_steps=30, question=asked)
+        budget.decide("plx.find", {"query": "complaint"}, now)
+        budget.observe({"structuredContent": {"gaps": [
+            {"state": "unknown", "reason": "nothing_reached", "subject": "traverse"}]}})
+        note = budget.after_answer(done, now)
+        self.assertEqual(len(note["open"]), 2, note["open"])
+        self.assertIn("no mail was searched", note["open"][0])
+        self.assertIn("no other route was tried", note["open"][1])
+        self.assertIsNone(budget.after_answer(done, now))   # once per session
+        # 11-07 q42: under a minute of the session left, neither goes back (the answer
+        # in hand is kept), though research time remains for an open-parts one
+        late = deep.Budget(deadline=now + 50, max_steps=30, question=asked,
+                           ends_at=now + deep.REQUIRED_PARTS_SECONDS - 1)
+        late.observe('{"reason": "nothing_reached"}')
+        self.assertIsNone(late.after_answer(done, now))
+        searched = deep.Budget(deadline=now + 100, max_steps=30, question=asked)
+        searched.observe('{"reason": "nothing_reached"}')
+        searched.decide("plx.documents", {"query": "complaint", "sources": ["graph_mail"]},
+                        now)
+        self.assertIsNone(searched.after_answer(done, now))
+        other = deep.Budget(deadline=now + 100, max_steps=30,
+                            question="How many open orders does the customer have?")
+        other.decide("plx.documents", {"query": "x", "sources": ["sharepoint"]}, now)
+        self.assertIsNone(other.after_answer(done, now))
+        self.assertFalse(deep.searches_mail("plx.documents", {"sources": ["sharepoint"]}))
+        self.assertTrue(deep.searches_mail("plx.read", {"citation": "graph-mail://m/1"}))
+
+    def test_a_type_wide_query_starts_from_the_record_the_question_names(self):
+        """11-07 dev 0093: the question named a task and asked about buckets; the agent
+        counted every bucket with the word in its name. A query over a whole type of
+        another kind that never mentions the named record goes back once, as the walk
+        from it with the same filters; the same call again is served; a query scoped by
+        the record, a question naming none, or under a minute left is served at once."""
+        now = time.time()
+        task = {"object_id": "MCTask:mc.tasks:T-1", "object_type": "MCTask",
+                "mention": "T-1", "same_as": []}
+        wide = {"from": {"object_type": "MCBucket", "where": [
+            {"property": "name", "op": "contains", "value": "Product"}]}}
+        budget = deep.Budget(deadline=now + 100, max_steps=30, roots=[task])
+        sent = budget.decide("plx.query", wide, now)
+        self.assertEqual(sent["error"], deep.SCOPE_REFUSAL)
+        self.assertEqual(sent["scoped_walk"], {
+            "from": {"object_ids": ["MCTask:mc.tasks:T-1"]},
+            "traverse": [{"to": "MCBucket", "where": wide["from"]["where"]}]})
+        self.assertEqual(budget.steps, 0)
+        self.assertIsNone(budget.decide("plx.query", wide, now))   # asked again: served
+        for roots, call, left in (
+                ([task], {"from": {"object_type": "MCBucket", "where": [
+                    {"property": "task", "op": "eq", "value": "T-1"}]}}, 100),
+                ([task], {"from": {"object_ids": ["MCTask:mc.tasks:T-1"]},
+                          "traverse": [{"to": "MCBucket"}]}, 100),
+                ([task], {"from": {"object_type": "MCTask"}}, 100),
+                ([], wide, 100),
+                ([task], wide, deep.REQUIRED_PARTS_SECONDS - 1)):
+            served = deep.Budget(deadline=now + left, max_steps=30, roots=roots)
+            self.assertIsNone(served.decide("plx.query", call, now), (roots, call, left))
+
     def test_a_decision_that_establishes_nothing_goes_back_while_time_is_left(self):
         abstained = {"structuredContent": {"outcome": "abstained", "reason": "no_cited_claims",
                                            "claims": []}}

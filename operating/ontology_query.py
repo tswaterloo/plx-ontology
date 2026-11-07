@@ -107,6 +107,8 @@ class TableBackend:
                  members: Callable[[Any, str], Sequence[str] | None] | None = None
                  ) -> None:
         self.call, self.new_set, self.schema = call, new_set, schema
+        # a set marked as trimmed by this reader's grants (``SetRegistry.new(withheld=)``)
+        self.withheld_set: Callable[[Any, list[str]], str] | None = None
         # the records a set handle holds (the host's set registry), for the type a walk
         # starts from
         self.members = members
@@ -225,6 +227,25 @@ IDENTIFIER_PROPS = 12
 IDENTIFIER_QUERIES = 8
 FIRM_REASONS = frozenset({"exact_identifier", "alias_match"})
 FIRM_TIERS = frozenset({"verified", "reviewed"})
+# A hop reaching nothing is tried again through twins (``QueryTool._via_twin``): lead
+# identity links included, so a copy joined only by a lead is offered, said as a lead.
+TWIN_TIER_FLOOR = "lead"
+WEAK_TWIN_TIERS = frozenset({"lead", "contradicted"})
+# gaps saying a plx.around answer was trimmed by the reader's grants
+# A hop's dead-end gaps a twin route then reached past: the reply would say both
+DEAD_ENDS = frozenset({"no_match", "twin_route", "other_routes", "nothing_selected",
+                       "nothing_reached"})
+
+
+def _superseded(gaps: list, since: int) -> list:
+    """``gaps`` without the dead ends a hop said from ``since`` on, once a twin route
+    reached what that hop could not; every other gap (a trim among them) stays."""
+    return gaps[:since] + [g for g in gaps[since:] if not isinstance(g, Mapping)
+                           or g.get("reason") not in DEAD_ENDS]
+
+
+TRIMMED_REASONS = frozenset({"withheld_by_permission", "marking_withheld",
+                             "policy_changed_since_handle"})
 IDENTIFIER_GAPS = frozenset({"no_identifier_match", "identifier_leads",
                              "identifier_search_cut"})
 
@@ -394,6 +415,7 @@ class QueryTool:
             filters = filters or None
             goal = hop.get("to") or (self._named_type(here, hop.get("link"))
                                      if hop.get("link") else None)
+            before, before_type, said = current, here, len(gaps)
             if goal is not None:
                 walked = self._route(call, current, here, goal, filters, arguments, common,
                                      index, actor)
@@ -403,7 +425,14 @@ class QueryTool:
                 meta = walked["meta"] or meta
                 current, here = walked["set"], goal
                 if not current:
-                    break
+                    twin = self._via_twin(call, before, before_type, hop, goal, filters,
+                                          arguments, common, index, actor)
+                    if twin is None:
+                        break
+                    current = twin["set"]
+                    hops_out += twin["hops"]
+                    gaps = _superseded(gaps, said) + twin["gaps"]
+                    meta = twin["meta"] or meta
                 continue
             got = self._around(call, current, self._directed(here, hop), filters, arguments,
                                common, listed=arguments.get("rows") is not None
@@ -421,6 +450,14 @@ class QueryTool:
             reached = self.backend.link_end(last.get("link_type"), last.get("direction"))
             current = got.get("set")
             if not current or not last.get("count", 1):
+                twin = self._via_twin(call, before, before_type, hop, reached, filters,
+                                      arguments, common, index, actor)
+                if twin is not None:
+                    current, here = twin["set"], reached
+                    hops_out += twin["hops"]
+                    gaps = _superseded(gaps, said) + twin["gaps"]
+                    meta = twin["meta"] or meta
+                    continue
                 hint = self._other_routes(here, reached, last.get("link_type"))
                 if hint is not None:
                     gaps.append(hint)
@@ -450,6 +487,141 @@ class QueryTool:
             r.pop("meta", None)
         result["gaps"], result["meta"] = gaps, meta
         return result
+
+    def _twins(self, call, current: Any, kind: str | None, filters: list[Any] | None,
+               common: Mapping[str, Any], actor: Any) -> dict[str, Any] | None:
+        """The same_record_as twins of ``current`` (records of ``kind``) a reader may see,
+        lead links included (``TWIN_TIER_FLOOR``), ``filters`` on them: {set, hop, gaps,
+        meta}; None when ``kind`` declares no identity link or no twin is reached."""
+        link = self.backend.identity_link(kind) if kind else None
+        if link is None or not current:
+            return None
+        ids: list[str] = []
+        tiers: dict[str, int] = {}
+        meta, gaps, handles, trimmed, marked = None, [], [], False, False
+        for direction in ("forward", "reverse"):
+            args: dict[str, Any] = {"from": current, "limit": 50, "tier_floor": TWIN_TIER_FLOOR,
+                                    "path": [{"link_type": link, "direction": direction}],
+                                    **common}
+            if filters:
+                args["filters"] = filters
+            got = call("plx.around", args)
+            if got.get("error"):
+                continue
+            hop = (got.get("hops") or [{}])[-1]
+            if not got.get("set") or not hop.get("count"):
+                # a direction the reader's grants trimmed to nothing still trims the
+                # twins: its permission gaps stay, and the other direction's set is
+                # marked as trimmed below
+                lost = [g for g in got.get("gaps") or () if isinstance(g, Mapping)
+                        and g.get("reason") in TRIMMED_REASONS]
+                gaps += lost
+                trimmed = trimmed or bool(lost)
+                continue
+            meta = got.get("meta") or meta
+            gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)
+                     and g.get("reason") not in ("nothing_selected", "no_match",
+                                                 "twin_route")]
+            for tier, n in (hop.get("tiers") or {}).items():
+                if isinstance(n, int):
+                    tiers[tier] = tiers.get(tier, 0) + n
+            made = got["set"]
+            own = any(isinstance(g, Mapping) and g.get("reason") in TRIMMED_REASONS
+                      for g in got.get("gaps") or ())
+            marked, trimmed = own, trimmed or own
+            handles.append(made)
+            members = [made] if not str(made).startswith("set:") else list(
+                self.backend.members(actor, made) or ()) \
+                if self.backend.members is not None else []
+            ids += [m for m in members if m not in ids]
+        if len(handles) == 1 and (marked or not trimmed):
+            made = handles[0]   # its own handle: a trimmed answer's set stays marked
+        elif not ids:
+            made = None
+        elif trimmed:
+            # answers that any trim touched, joined or alone, stay marked as trimmed, or
+            # are not used at all
+            made = self.backend.withheld_set(actor, ids) \
+                if self.backend.withheld_set is not None else None
+        else:
+            made = self._set_of(ids, actor)
+        if not made:
+            return None
+        return {"set": made, "gaps": gaps, "meta": meta,
+                "hop": {"link_type": link, "direction": "forward", "count": len(ids),
+                        "tiers": tiers, "via_twin": True}}
+
+    def _via_twin(self, call, before: Any, before_type: str | None,
+                  hop: Mapping[str, Any], goal: str | None, filters: list[Any] | None,
+                  arguments: Mapping[str, Any], common: Mapping[str, Any], index: int,
+                  actor: Any) -> dict[str, Any] | None:
+        """A hop that reached nothing, tried again through twins (one record held in
+        several systems, ``<Type>.same_record_as``): (1) when its filters emptied what it
+        reached, those records' twins that the filters keep (a billed Sage customer's
+        Portal copy carries the name asked about); (2) else the start records' twins,
+        walked on the same hop. A twin reached only over a lead link is said as a likely
+        match (``via_twin`` gap), never as the same record. {set, hops, gaps, meta}, or
+        None when no twin reaches anything (the hop's own gaps stand)."""
+        if filters and goal is not None and self.backend.identity_link(goal):
+            plain = self._step(call, before, before_type, hop, goal, None, arguments,
+                               common, index, actor)
+            if plain is not None and plain["set"]:
+                twin = self._twins(call, plain["set"], goal, filters, common, actor)
+                if twin is not None:
+                    return self._twin_found(plain["hops"] + [twin["hop"]], twin,
+                                            plain["meta"])
+        start = self._twins(call, before, before_type, None, common, actor)
+        if start is None:
+            return None
+        again = self._step(call, start["set"], before_type, hop, goal, filters, arguments,
+                           common, index, actor)
+        if again is None or not again["set"]:
+            return None
+        return self._twin_found([start["hop"]] + again["hops"],
+                                {**start, "set": again["set"],
+                                 "gaps": start["gaps"] + again["gaps"]}, again["meta"])
+
+    def _step(self, call, current: Any, here: str | None, hop: Mapping[str, Any],
+              goal: str | None, filters: list[Any] | None, arguments: Mapping[str, Any],
+              common: Mapping[str, Any], index: int, actor: Any
+              ) -> dict[str, Any] | None:
+        """One hop of the walk again (a route to a type, or one link), its hops counted:
+        {set, hops, gaps, meta}; None when it is refused."""
+        if hop.get("to") or (hop.get("link") and self._named_type(here, hop.get("link"))):
+            try:
+                walked = self._route(call, current, here, goal, filters, arguments, common,
+                                     index, actor)
+            except _Refused:
+                return None
+            return {"set": walked["set"], "hops": walked["hops"], "gaps": walked["gaps"],
+                    "meta": walked["meta"]}
+        got = self._around(call, current, self._directed(here, hop), filters, arguments,
+                           common)
+        if got.get("error"):
+            return None
+        last = (got.get("hops") or [{}])[-1]
+        return {"set": got.get("set") if last.get("count", 1) else None,
+                "hops": [{k: item[k] for k in ("link_type", "direction", "count", "tiers")
+                          if k in item} for item in got.get("hops") or ()],
+                "gaps": [g for g in got.get("gaps") or () if isinstance(g, Mapping)],
+                "meta": got.get("meta")}
+
+    @staticmethod
+    def _twin_found(hops: list[dict[str, Any]], twin: Mapping[str, Any], meta: Any
+                    ) -> dict[str, Any]:
+        """What a walk through twins reached, its tiers said (``via_twin``)."""
+        tiers = twin["hop"].get("tiers") or {}
+        weak = sorted(t for t in tiers if t in WEAK_TWIN_TIERS)
+        detail = ("reached through the records' copies in another system (same_record_as, "
+                  "tiers " + ", ".join(f"{t} {n}" for t, n in sorted(tiers.items())) + ")")
+        if weak:
+            detail += ("; a twin joined only by a " + "/".join(weak) + " link is a likely "
+                       "match, not a confirmed one: say what it reached as a likely match "
+                       "(claims with lead true)")
+        return {"set": twin["set"], "hops": hops, "meta": twin.get("meta") or meta,
+                "gaps": list(twin.get("gaps") or ()) + [{
+                    "state": "unknown", "reason": "via_twin",
+                    "subject": str(twin["hop"]["link_type"])[:700], "detail": detail[:600]}]}
 
     def _around(self, call, current: Any, hop: Mapping[str, Any],
                 filters: list[Any] | None, arguments: Mapping[str, Any],
@@ -1337,6 +1509,9 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
                            rows if hasattr(base, "_visible_versions") else None,
                            select if hasattr(base, "_filter_objects") else None,
                            members if hasattr(base, "resolve_set") else None)
+    if hasattr(getattr(base, "sets", None), "new"):
+        backend.withheld_set = lambda actor, ids: base.sets.new(actor, list(ids),
+                                                                withheld=True)
     tool = QueryTool(backend)
     if TOOL_NAME in table:
         raise ValueError(f"tool already registered: {TOOL_NAME}")

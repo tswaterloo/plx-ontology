@@ -1055,6 +1055,29 @@ class TraverseTools:
                             "tier_floor")
         return rows
 
+    def _twin_route(self, hops: Sequence[tuple], empty_at: int | None, filtered: bool
+                    ) -> dict | None:
+        """The next route of a walk that reached nothing (``twin_route`` gap, read from the
+        schema only, nothing about any record): the identity link of the type whose records
+        the filters emptied (their copies in another system may hold the value asked
+        about), else of the type the empty hop started from (its copies may carry the
+        link); None when that type declares none."""
+        if self.schema is None:
+            return None
+        kind = hops[-1][3] if filtered and empty_at is None else \
+            hops[empty_at if empty_at is not None else -1][2]
+        links = getattr(self.schema, "link_types", None) or {}
+        found = sorted(link_id for link_id, spec in links.items()
+                       if spec.get("from") == kind and identity_link_type(spec))
+        if not found:
+            return None
+        return _gap("unknown", "twin_route", found[0],
+                    f"nothing was reached; the {kind} records' copies in other systems "
+                    f"({found[0]}, walked both directions with tier_floor lead) may hold "
+                    "what this hop asked for: plx.query walks through them when a hop "
+                    "reaches nothing; what a lead twin reaches is a likely match, said as "
+                    "a lead")
+
     def _around(self, arguments: Mapping[str, Any], actor: Actor, gate: str) -> dict[str, Any]:
         lap = self._laps("around")
         fingerprint = _fingerprint(arguments, actor)
@@ -1182,6 +1205,11 @@ class TraverseTools:
             gaps.append(_gap("unknown", "no_match", f"{hops[-1][3]} where "
                              + ", ".join(f"{f['property']} {f['op']}" for f in filters),
                              "no reached object passes the filters this reader can evaluate"))
+        if not ranked and frontiers and frontiers[0] \
+                and not any(g["state"] == "absent_in_source" for g in gaps):
+            twin = self._twin_route(hops, empty_at, bool(filters and frontier))
+            if twin is not None:
+                gaps.append(twin)
         # Nothing readable was reached, but some of the path may be hidden from this
         # reader: the answer is no count of zero. Something readable was reached: it is
         # what this reader may see, never the whole (or exact) total.

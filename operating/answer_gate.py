@@ -1871,7 +1871,8 @@ def refused_said(unsupported: Sequence[Any]) -> list[str]:
 def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] = (),
                 unknowns: Sequence[Any] = (), question: Any = "",
                 refused: Sequence[str] = (), withheld: Sequence[str] = (),
-                names: Collection[str] = ()) -> dict[str, Any]:
+                names: Collection[str] = (), figures: Sequence[Any] | None = None
+                ) -> dict[str, Any]:
     """The final reply as it may leave every answer path (the Ask, an MCP session's
     answer mode, the real-agent eval): only what the gate passed (``claims``, the passed
     claims of ``gate_answer``), never a refused claim in other words.
@@ -1883,7 +1884,11 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     written, without a unit or currency beside a passed value that the gate did not check
     for it (``_unchecked_units_dropped``). A reply whose surviving text
     states no passed claim gets the claims' lines; one with nothing surviving is the claims'
-    lines alone. Then the withheld list: each name in ``withheld`` (values the caller held
+    lines alone. A question asking for a figure (``ASKS_FIGURE``) whose kept text states
+    none of the passed figure claims the caller gives (``figures``: a count or total the
+    gate checked; none by default) gets their lines first, ahead of that text, never in
+    its place: an empty text gets none (``unstated_figures``; ``figures_added`` counts
+    them, apart from ``modified``). Then the withheld list: each name in ``withheld`` (values the caller held
     back, ``WITHHELD_WHY``) and ``WITHHELD_STATEMENTS`` when a sentence was dropped. The
     ``unknowns`` are screened the same way, each one whole. ``{"text", "unknowns",
     "modified", "replaced", "sentences", "removed_sentences", "removed_unknowns",
@@ -1931,7 +1936,11 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     states = body and (any(_states_value(body, value) for value in backed)
                        or any(_states_value(body, value, percent=True) for value in percents))
     replaced = bool(removed) and not body
-    out_lines = [body] if body else []
+    # The figure the question asks for (a count or total a tool computed and the gate
+    # passed) leads the reply when the text never states it (11-07 dev 0066: a passed
+    # count, a reply naming only the record).
+    figures = unstated_figures(body, figures, question) if figures and body else []
+    out_lines = figures + ([body] if body else [])
     if (removed or withheld) and lines and not states:
         out_lines += lines
     out_lines += [f"Withheld: {name} ({WITHHELD_WHY})" for name in withheld]
@@ -1946,11 +1955,48 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
         else:
             dropped += 1
     modified = bool(removed or withheld or dropped or dropped_units)
-    return {"text": "\n".join(out_lines) if modified else text,
+    return {"text": "\n".join(out_lines) if modified or figures else text,
+            "figures_added": len(figures),
             "unknowns": shown_unknowns, "modified": modified, "replaced": replaced,
             "sentences": sentences, "removed_sentences": removed,
             "removed_unknowns": dropped, "unbacked": found[:MAX_SHOWN_UNBACKED],
             "dropped": gone}
+
+
+# A question asking for a computed figure: how many, how much, a count, number or total,
+# or a comparison of numbers. Wording of the language, never of a case.
+ASKS_FIGURE = re.compile(r"\bhow (?:many|much)\b|\bnumber of\b|\bcount(?:s|ed)?\b|"
+                         r"\btotals?\b|\bcompare\b", re.I)
+FIGURE_OPS = frozenset({"count", "sum", "difference", "ratio"})
+
+
+def unstated_figures(body: str, claims: Sequence[Any], question: Any) -> list[str]:
+    """The lines of the passed figure claims (a ``count``/``sum``/``difference``/``ratio``
+    the gate checked over its cited inputs) when ``question`` asks for a figure
+    (``ASKS_FIGURE``) and ``body`` states none of them: the answer the question asked
+    for is never left out of the reply. [] when the question asks none, no figure
+    passed, or the body states one."""
+    if not isinstance(question, str) or not ASKS_FIGURE.search(question):
+        return []
+    lines: list[str] = []
+    stated = False
+    for claim in claims:
+        if not isinstance(claim, Mapping) or (claim.get("check") or {}).get(
+                "status", "passed") != "passed":
+            continue
+        figures = [vc for vc in claim.get("value_claims") or ()
+                   if isinstance(vc, Mapping) and plain(vc.get("op")) in FIGURE_OPS]
+        if not figures:
+            continue
+        line = plain(claim.get("text"))
+        phrase = plain(claim.get("phrase"))
+        if body and any(_states_value(body, plain(vc.get("value"))) for vc in figures
+                        if isinstance(plain(vc.get("value")), (str, int))) or (
+                body and isinstance(phrase, str) and phrase and _states_value(body, phrase)):
+            stated = True
+        elif isinstance(line, str) and line.strip():
+            lines.append(line.strip())
+    return [] if stated else list(dict.fromkeys(lines))
 
 
 def _text_values(claims: Sequence[Any]) -> list[dict[str, Any]]:
