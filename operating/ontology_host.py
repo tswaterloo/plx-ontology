@@ -608,6 +608,42 @@ def _layer_pool() -> Any:
         return _LAYER_POOL
 
 
+# Seconds of a plx.find's limit left below which its delta layers are not asked: the
+# served answer returns with the overlay-unmerged gap instead of a timeout with nothing.
+OVERLAY_MARGIN_SECONDS = 6.0
+_OWNED_TYPES: dict[int, tuple[frozenset[str], frozenset[str]]] = {}
+_OWNED_TYPES_LOCK = threading.Lock()
+
+
+def _owned_types(owned: frozenset[str]) -> frozenset[str]:
+    """The object types of a layer's owned ids (kept per owned set: a layer's ownership is
+    fixed while it is open)."""
+    with _OWNED_TYPES_LOCK:
+        kept = _OWNED_TYPES.get(id(owned))
+        if kept is not None and kept[0] is owned:
+            return kept[1]
+    types = frozenset(str(oid).split(":", 1)[0] for oid in owned)
+    with _OWNED_TYPES_LOCK:
+        if len(_OWNED_TYPES) > 4096:
+            _OWNED_TYPES.clear()
+        _OWNED_TYPES[id(owned)] = (owned, types)
+    return types
+
+
+def _layers_for(layers: Sequence[Any], arguments: Mapping[str, Any]) -> list[Any]:
+    """The layers a ``plx.find`` must ask. A filter listing of one object type (no query
+    text: its candidates are records of that type only) cannot be changed by a layer that
+    owns no record of the type: the merge drops only owned ids and adds only served ones
+    (``delta_overlay.merge_find``), so such a layer is not asked (measured 11-07: a
+    Shipment date-filter find re-ran its scan in every one of 50+ layers). Any other
+    find asks every layer."""
+    object_type = arguments.get("object_type")
+    if not isinstance(object_type, str) or not object_type or arguments.get("query") \
+            or not arguments.get("filters"):
+        return list(layers)
+    return [layer for layer in layers if object_type in _owned_types(layer.owned)]
+
+
 def _each_layer(layers: Sequence[Any], read: Callable[[Any], Any]) -> list[Any]:
     """``read(layer)`` of every layer, in the layers' order, read side by side: the
     calling thread reads too, taking the next unread layer, so a busy (or nested) pool
@@ -1163,9 +1199,20 @@ class CaseHostTools:
             # card): the layers are not asked (measured 2026-11-06: one find of a
             # question's names resolved them once per layer, 5 times over)
             return result
+        from . import call_limits
+        left = call_limits.seconds_left()
+        if left is not None and left < OVERLAY_MARGIN_SECONDS:
+            # Too little of the call's time is left to ask the layers: the served answer
+            # is returned saying it reads the served generation only, never nothing at the
+            # limit (a filter listing's scan already used the call's time to its margin).
+            partial = delta_overlay.with_unmerged_gap(result)
+            if partial is not None and base_tools._checked(name, partial) is partial:
+                return partial
+            return result
+        layers = _layers_for(overlay.layers, arguments)
         try:
-            answers = list(zip(_each_layer(overlay.layers, lambda layer: layer.tools.call(
-                name, arguments, actor)), (layer.serves for layer in overlay.layers)))
+            answers = list(zip(_each_layer(layers, lambda layer: layer.tools.call(
+                name, arguments, actor)), (layer.serves for layer in layers)))
             merged = delta_overlay.merge_find(result, answers, overlay.owned, arguments)
         except Exception:  # noqa: BLE001 - the served answer stands
             merged = None

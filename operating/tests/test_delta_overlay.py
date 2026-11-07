@@ -206,6 +206,61 @@ class DeltaOverlayTests(unittest.TestCase):
             self.assertEqual(len(ran), 1)
             self.assertEqual(len(resolved), 1)
 
+    def _asked(self, name, arguments, *, layers_for=None, left=None):
+        """(the answer, the number of stores whose plx.find ran) of one call."""
+        from operating import call_limits, ontology_host, ontology_tools
+        ran, real_find = [], ontology_tools.OntologyTools._find
+
+        def finding(tools, arguments, actor):
+            ran.append(id(tools))
+            return real_find(tools, arguments, actor)
+        patches = [mock.patch.object(ontology_tools.OntologyTools, "_find", finding)]
+        if layers_for is not None:
+            patches.append(mock.patch.object(ontology_host, "_layers_for", layers_for))
+        if left is not None:
+            patches.append(mock.patch.object(call_limits, "seconds_left", lambda: left))
+        for patch in patches:
+            patch.start()
+        try:
+            return self.call(name, arguments), len(set(ran))
+        finally:
+            for patch in reversed(patches):
+                patch.stop()
+
+    def test_a_filter_listing_asks_only_the_layers_owning_its_type_with_the_same_answer(self):
+        """A layer owning no record of a filter listing's type cannot change it: it is not
+        asked, and the answer is the one every layer gives; a query find asks them all."""
+        self.point(DIGEST, layers=[self.newer, self.delta])
+        every = lambda layers, arguments: list(layers)  # noqa: E731
+        for arguments, stores in (
+                ({"object_type": "SalesOrder",
+                  "filters": [{"property": "customer_po", "op": "present"}]}, 2),
+                ({"object_type": "PurchaseOrder",
+                  "filters": [{"property": "po_number", "op": "eq", "value": "PO100012"}]}, 3),
+                ({"query": "PO100012"}, 3)):
+            got, asked = self._asked("plx.find", arguments)
+            whole, _ = self._asked("plx.find", arguments, layers_for=every)
+            self.assertEqual(asked, stores, arguments)
+            # the same answer (a set handle is minted per call)
+            self.assertEqual({k: v for k, v in got.items() if k != "set"},
+                             {k: v for k, v in whole.items() if k != "set"}, arguments)
+        self.assertIn(fx.PO, self.ids(self._asked("plx.find", {
+            "object_type": "PurchaseOrder",
+            "filters": [{"property": "po_number", "op": "eq", "value": "PO100012"}]})[0]))
+
+    def test_a_find_short_of_time_returns_the_served_answer_with_a_gap_not_nothing(self):
+        """With too little of the call's limit left to ask the layers, the served answer
+        comes back saying it reads the served generation only, never a timeout."""
+        arguments = {"object_type": "PurchaseOrder",
+                     "filters": [{"property": "po_number", "op": "eq", "value": "PO100012"}]}
+        got, asked = self._asked("plx.find", arguments, left=2.5)
+        self.assertEqual(asked, 1)
+        self.assertNotIn("error", got)
+        self.assertTrue(self.ids(got))
+        self.assertIn(delta_overlay._UNMERGED_GAP["reason"],
+                      [g.get("reason") for g in got["gaps"]])
+        self.assertFalse(got["completeness"]["complete"])
+
     def test_a_changed_object_is_read_from_the_delta_only(self):
         opened = self.call("plx.object", {"object_id": fx.PO})
         self.assertIn(PO_H2, json.dumps(opened))
