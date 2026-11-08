@@ -15,6 +15,7 @@ import contextlib
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -1987,3 +1988,169 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PostgresKeptFactsTests(KeptFactsTests):
+    """A Postgres store has no file: its facts are kept under its database and the data
+    version Postgres holds, so a later process over unchanged data skips the scan, and a
+    load or delta layer (a new data version) is read again."""
+
+    def setUp(self):
+        super().setUp()
+        import psycopg
+        from operating.pg import ontology_load
+        from operating.pg.migrate import MIGRATIONS_DIR
+        from operating.tests import pg_testdb
+        name, self.dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, name)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for migration in sorted(MIGRATIONS_DIR.glob("00*.sql")):
+                if migration.name >= "0006":
+                    pg.execute(migration.read_text(encoding="utf-8"))
+        ontology_load.load(str(self.path), self.dsn, workers=1, log=io.StringIO())
+        facts = tempfile.TemporaryDirectory()
+        self.addCleanup(facts.cleanup)
+        self.enterContext(mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": facts.name}))
+        self.facts_dir = Path(facts.name)
+        tt._LOADED.clear()
+        self.addCleanup(tt._LOADED.clear)
+
+    def opened(self):
+        from operating.pg.ontology_reader import PgStoreReader
+        reader = PgStoreReader.open(self.dsn, only=True)
+        self.addCleanup(reader.conn.close)
+        base = ot.OntologyTools(reader, POLICY, item_gate=item_gate, schema=SCHEMA,
+                                grammar=None, contracts=CONTRACTS, clock=lambda: NOW,
+                                monotonic=Clock().monotonic)
+        return tt.TraverseTools(base)
+
+    def test_a_later_process_reads_the_kept_facts_and_answers_alike(self):
+        first, scans = self.primed()
+        self.assertTrue(scans)
+        kept = [p for p in self.facts_dir.iterdir() if p.name.startswith(tt.FACTS_PREFIX)]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].stat().st_mode & 0o777, 0o600)
+        tt._LOADED.clear()   # a later process
+        later, scans = self.primed()
+        self.assertEqual(scans, [])
+        self.assertEqual(later.store.facts[1], first.store.facts[1])
+        self.assertEqual([self.unhandled(a) for a in self.answers(later)],
+                         [self.unhandled(a) for a in self.answers(first)])
+        # a new data version (a delta layer applied): the kept facts are not read
+        import psycopg
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("UPDATE ontology.load_state SET updated_at = updated_at "
+                       "+ interval '1 second' WHERE name = 'generation'")
+        tt._LOADED.clear()
+        _moved, scans = self.primed()
+        self.assertTrue(scans)
+
+    test_kept_facts_of_another_shape_or_store_state_are_never_read = None
+    test_facts_read_by_worker_processes_equal_prime_and_are_kept_alike = None
+    test_a_table_never_scans_for_facts_on_the_request_path = None
+
+    def test_a_layer_landing_during_the_background_wait_never_serves_the_older_facts(self):
+        """A request waits on the background read of version V1's facts while a delta
+        layer lands (V2): V1's kept facts are never stamped as V2's; the current
+        version's facts are read again (here: none kept, so the fact is read directly)."""
+        import psycopg
+        primed, _ = self.primed()          # V1's facts kept
+        host = self.opened()
+        host._families = ("api", "mail")
+        v1 = tt._store_identity(host.store.conn)
+        self.assertIsNotNone(tt._read_facts(*v1))
+        conn = host.store.conn
+        host.store.facts = ((conn.execute("PRAGMA data_version").fetchone()[0],
+                             conn.total_changes), {})
+        dsn = self.dsn
+
+        class LayerLandsMeanwhile:
+            def wait(self, _timeout):
+                with psycopg.connect(dsn, autocommit=True) as pg:
+                    pg.execute("UPDATE ontology.load_state SET updated_at = updated_at "
+                               "+ interval '1 second' WHERE name = 'generation'")
+                return True
+
+        read_again = threading.Event()
+        read_again.set()                   # V2's background read keeps nothing
+        host._pending = (v1, host._families, LayerLandsMeanwhile())
+        with mock.patch.object(tt, "_background_prime", return_value=read_again):
+            got = host._store_cached("audience_keys", lambda: ("READ-FOR-V2",))
+        v2 = conn.execute("PRAGMA data_version").fetchone()[0]
+        self.assertNotEqual(str(v2), v1[1]["data_version"])
+        self.assertEqual(got, ("READ-FOR-V2",))
+        self.assertEqual(host.store.facts[0][0], v2)
+        self.assertNotIn("audiences", host.store.facts[1])
+        self.assertIsNone(host._pending)
+        # a later call over V2 keeps the fact it read, and never V1's file
+        self.assertEqual(host._store_cached("audience_keys", lambda: ("AGAIN",)),
+                         ("READ-FOR-V2",))
+        self.assertNotEqual(primed.store.facts[1].get("audience_keys"), ("READ-FOR-V2",))
+
+    def test_after_a_layer_hop_checks_read_the_kept_slices_never_the_store_per_type(self):
+        """A delta layer moves the data version under an open host: its hop checks
+        (``_slices_of``) serve the slices of the new version's kept facts, kept by one
+        process of the host, instead of each host scanning every type's rows again at
+        once; with none kept for the new version they read the store, never the older
+        version's slices (a layer's new marking would read as absent, not hidden)."""
+        import psycopg
+        first, _ = self.primed()                       # V1's facts kept
+        answers = [self.unhandled(a) for a in self.answers(first)]
+        host = self.opened()
+        host._families = ("api", "mail")
+        self.assertEqual([self.unhandled(a) for a in self.answers(host)], answers)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:   # a layer lands: V2
+            pg.execute("UPDATE ontology.load_state SET updated_at = updated_at "
+                       "+ interval '1 second' WHERE name = 'generation'")
+        tt._LOADED.clear()
+        none_kept = threading.Event()
+        none_kept.set()                                # V2's background read keeps nothing
+        statements = []
+        host.store.conn.set_trace_callback(statements.append)
+        with mock.patch.object(tt, "_background_prime", return_value=none_kept):
+            stale = host._slices_of("object", {"Order"})
+        host.store.conn.set_trace_callback(None)
+        self.assertIn("Order", stale)
+        self.assertTrue([s for s in statements if " object_versions " in f" {s} "])
+        host.store.facts, host._pending = None, None
+        other, _ = self.primed()                       # one process keeps V2's facts
+        statements.clear()
+        host.store.conn.set_trace_callback(statements.append)
+        got = [self.unhandled(a) for a in self.answers(host)]
+        host.store.conn.set_trace_callback(None)
+        self.assertEqual(got, answers)
+        self.assertEqual([s for s in statements if any(
+            f" {table} " in f" {s} ".replace("\n", " ") for table in self.SCANNED)
+            and "GROUP BY 1, 2, 3" in s], [])
+        for kind, names in (("object", {"Order", "Shipment", "Party"}),
+                            ("link", {"Order.placed_by", "Shipment.ships_order"})):
+            whole = other.store.facts[1][("slices", kind)]
+            self.assertEqual(host._slices_of(kind, names),
+                             {n: whole[n] for n in names if n in whole})
+            self.assertEqual(host._slices_of(kind, names),
+                             {n: v for name in sorted(names)
+                              for n, v in host._read_slices(kind, name).items()})
+
+    def test_a_table_on_postgres_reads_its_facts_off_the_request_path_and_keeps_them(self):
+        first, _ = self.primed()
+        answers = [self.unhandled(a) for a in self.answers(first)]
+        for kept in self.facts_dir.iterdir():
+            if kept.name.startswith(tt.FACTS_PREFIX):
+                kept.unlink()
+        tt._LOADED.clear()
+        tt._BACKGROUND.clear()
+        lazy = self.opened()
+        self.assertFalse(lazy.prime_lazily(cell_families=("api", "mail")))
+        self.assertEqual([self.unhandled(a) for a in self.answers(lazy)], answers)
+        lazy._pending = None
+        tt._BACKGROUND_LOCK.acquire()
+        done = list(tt._BACKGROUND.values())
+        tt._BACKGROUND_LOCK.release()
+        self.assertTrue(done and all(event.wait(60) for event in done))
+        tt._LOADED.clear()
+        later, scans = self.primed()
+        self.assertEqual(scans, [])
+        # the facts ``prime`` reads (the answers above also keep each slice they read)
+        primed = tt._fact_keys(("api", "mail"))
+        self.assertEqual({k: later.store.facts[1][k] for k in primed},
+                         {k: first.store.facts[1][k] for k in primed})

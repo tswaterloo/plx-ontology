@@ -121,7 +121,7 @@ def _calls(pick: dict[str, Any], hops: dict[str, list[dict[str, str]]]) -> dict[
 
 
 def _worker(args: tuple) -> dict[str, Any]:
-    config_path, state_dir, picks, tools, restricted = args
+    config_path, state_dir, picks, tools, restricted, pg_mode = args
     from ontology.types import Actor
     from operating.host import Host, HostConfig
 
@@ -145,7 +145,7 @@ def _worker(args: tuple) -> dict[str, Any]:
     stacks = {}
     for store in ("sqlite", "pg"):
         if store == "pg":
-            os.environ["PLX_ONTOLOGY_PG"] = "1"
+            os.environ["PLX_ONTOLOGY_PG"] = pg_mode
         else:
             os.environ.pop("PLX_ONTOLOGY_PG", None)
         for who, actor in readers.items():
@@ -165,6 +165,10 @@ def _worker(args: tuple) -> dict[str, Any]:
                 answers, seconds = {}, {}
                 for store in ("sqlite", "pg"):
                     _, caller, actor = stacks[(store, who)]
+                    if store == "pg":   # the mode is read per call (``pg_only``)
+                        os.environ["PLX_ONTOLOGY_PG"] = pg_mode
+                    else:
+                        os.environ.pop("PLX_ONTOLOGY_PG", None)
                     started = time.monotonic()
                     try:
                         answers[store] = _clean(caller.call(name, dict(arguments), actor))
@@ -231,6 +235,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--restricted", default=None,
                         help="a principal granted some sources and no marking")
     parser.add_argument("--out", default=None)
+    parser.add_argument("--pg-mode", choices=("1", "only"), default="1",
+                        help="PLX_ONTOLOGY_PG on the Postgres side: 1 (word index from the "
+                             "SQLite generation) or only (Postgres the only store)")
     parser.add_argument("--batch", type=int, default=100,
                         help="objects per worker task (the report is written after each)")
     args = parser.parse_args(argv)
@@ -253,7 +260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     with futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
         jobs = {pool.submit(_worker, (args.config, args.state_dir, chunk, set(args.tools),
-                                      args.restricted)): len(chunk) for chunk in chunks}
+                                      args.restricted, args.pg_mode)): len(chunk) for chunk in chunks}
         for job in futures.as_completed(jobs):
             parts.append(job.result())
             done += jobs[job]

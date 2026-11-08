@@ -16,9 +16,9 @@ import unittest
 
 from operating.tests import pg_testdb
 
-MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
-              for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
-                           "0008_ontology_read.sql", "0009_schema_migrations.sql")]
+# every ontology migration from 0006 on (the load writes the word index tables of 0010)
+MIGRATIONS = sorted(p for p in (Path(__file__).resolve().parents[1] / "pg" / "migrations")
+                    .glob("*.sql") if p.name >= "0006")
 
 
 def _new_schema():

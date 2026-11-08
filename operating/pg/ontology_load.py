@@ -8,8 +8,11 @@ keeps serving.
 Every table a read tool uses is loaded: objects, removals, versions, the values (their
 sources, fields, kinds and one row per value: a packed record unpacked), links (packed:
 skeletons and slot texts), identifiers, events and their objects, and the document text
-index (fields and zlib chunks). Each table is read from the generation (read-only) in
-rowid ranges by ``--workers`` processes, each COPYing its range over its own connection.
+index (fields and zlib chunks), and the values' word index (migration 0010,
+``value_words``: the generation's packed sources and a GIN index over the value cells;
+``chunk_words``: each text chunk's words, cut by SQLite's FTS5 tokenizer, ``docs/pg-cutover.md``). Each
+table is read from the generation (read-only) in rowid ranges by ``--workers`` processes,
+each COPYing its range over its own connection.
 
 Resumable per table and per range: a range's rows and its ``ontology.load_ranges`` row
 commit in one transaction, so a load stopped anywhere (killed, the disk floor) is run
@@ -166,11 +169,32 @@ TABLES: dict[str, Table] = {t.name: t for t in (
           "SELECT src, field, layout, value, currency, currency_citation FROM value_cells",
           ("src", "field", "kind", "value", "value_num", "currency", "currency_citation"),
           every=1_000_000, shape=_cells),
+    # The values' word index (migration 0010, ``WORD_INDEX``): no rows of its own.
+    Table("value_words", "value_cells", "", (), whole=True),
+    # The document words (migration 0010): each chunk's words by FTS5's own tokenizer.
+    Table("chunk_words", "text_chunks", "SELECT chunk_id, body FROM text_chunks",
+          ("chunk_id", "words"), every=250_000),
 )}
 ORDER = tuple(TABLES)
 # Tables a load may leave for later: the document text chunks (about 20 GB on gen 11),
-# read from the SQLite generation meanwhile, as the word index is.
-DEFERRABLE = ("text_chunks",)
+# read from the SQLite generation meanwhile, as the document words always are; and the
+# values' word index (hours to build: word search reads the SQLite generation meanwhile).
+DEFERRABLE = ("text_chunks", "value_words", "chunk_words")
+# Tables a whole ontology is read and takes delta layers without: until the word index is
+# built, word search reads the SQLite generation (``ontology_reader``; with no SQLite
+# generation served, a word query raises: ``ontology_reader.pg_only``).
+OPTIONAL = ("value_words", "chunk_words")
+# The word index's steps: what Postgres-only serving needs beside the tables.
+WORDS = ("value_words", "chunk_words")
+# The value words: a GIN index of ``ontology.sq_words`` over the value cells (migration
+# 0010's ``value_words``), built as the ``value_words`` step (Postgres 17 builds it on one
+# core: ~15 s per 600k cells measured under load). Its function is always ``ontology``'s,
+# so the index moves with its table when a generation loaded beside is swapped in.
+WORD_INDEX = ("CREATE INDEX IF NOT EXISTS value_cells_words ON {schema}.value_cells "
+              "USING gin (ontology.sq_words(value)) WHERE value_num IS NULL "
+              "AND value IS NOT NULL")
+# The statistics target of the words (``ANALYZE`` keeps ten times as many frequent words).
+WORD_STATISTICS = 1000
 # Sequences a delta draws new row numbers from: past every loaded one.
 SEQUENCES = {"objects": ("objects_row_no", "row_no"),
              "link_rows": ("link_rows_row_no", "row_no"),
@@ -333,7 +357,11 @@ def _load_range(path: str, dsn: str, name: str, low: int | None, high: int | Non
         try:
             with cur.copy(f"COPY {SCHEMA}.{name} ({', '.join(table.columns)}) "
                           "FROM STDIN") as copy:
-                for row in conn.execute(sql, args):
+                rows: Any = conn.execute(sql, args)
+                if name == "chunk_words":   # the words of a batch of chunks at a time
+                    from operating.pg.words import chunk_word_rows
+                    rows = chunk_word_rows(rows)
+                for row in rows:
                     for out in (table.shape(context, row) if table.shape else (row,)):
                         if any(isinstance(v, str) and "\x00" in v for v in out):
                             out = tuple(_clean(v) for v in out)
@@ -422,6 +450,49 @@ def _settings(cur: Any) -> None:
         cur.execute(f"SET {key} = '{value}'")
 
 
+def _word_index(path: str, dsn: str, started: float) -> dict[str, Any]:
+    """The ``value_words`` step: the generation's packed sources (``packed_sources``: a
+    source holding a packed record, whose values SQLite never word-indexes) and the value
+    cells' word index, built when missing (a value_cells load rebuilds it with the table's
+    other indexes). Once per generation (``table:value_words``)."""
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as pg, pg.cursor() as cur:
+        done = _state(cur, "table:value_words")
+        cur.execute("SELECT 1 FROM pg_indexes WHERE schemaname = %s "
+                    "AND indexname = 'value_cells_words'", (SCHEMA,))
+        held = cur.fetchone() is not None
+        if done is not None and held:
+            return {**done, "skipped": "loaded"}
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            packed = [row[0] for row in conn.execute(
+                "SELECT DISTINCT src FROM value_cells WHERE field IS NULL")]
+            top = conn.execute("SELECT coalesce(max(src), 0) FROM value_sources").fetchone()[0]
+        finally:
+            conn.close()
+        with pg.transaction():
+            # the generation's; a delta's (numbered past them) are its own
+            cur.execute(f"DELETE FROM {SCHEMA}.packed_sources WHERE src <= %s", (top,))
+            with cur.copy(f"COPY {SCHEMA}.packed_sources (src) FROM STDIN") as copy:
+                for src in packed:
+                    copy.write_row((src,))
+        if not held:
+            _settings(cur)
+            cur.execute(WORD_INDEX.format(schema=SCHEMA))
+        cur.execute(f"ANALYZE {SCHEMA}.packed_sources")
+        # the words' statistics (the planner's and the readers' estimate of a word's
+        # matches, ``ontology_reader.WordWindows``): kept for 10,000 frequent words
+        cur.execute(f"ALTER INDEX {SCHEMA}.value_cells_words ALTER COLUMN 1 "
+                    f"SET STATISTICS {WORD_STATISTICS}")
+        cur.execute(f"ANALYZE {SCHEMA}.value_cells")
+        cur.execute("SELECT pg_relation_size(%s::regclass)", (f"{SCHEMA}.value_cells_words",))
+        out = {"rows": len(packed), "index_seconds": round(time.monotonic() - started, 1),
+               "bytes": int(cur.fetchone()[0])}
+        _put(cur, "table:value_words", out)
+    return out
+
+
 def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: int = 4,
          replace: bool = False, log: Any = sys.stderr, min_free: int = 0,
          deferred: Sequence[str] = (), state_dir: str | Path | None = None,
@@ -464,8 +535,12 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
         # after this, the missing table records refuse every layer until the load is whole)
         cur.execute("SELECT pg_advisory_lock(hashtext('ontology_delta'))")
         if replace:
-            for name in tables:
-                cur.execute(f"TRUNCATE {SCHEMA}.{name}")
+            # a deferred table is emptied too: rows of another generation (the document
+            # words of chunk ids the new one numbers again) are never read as this one's
+            for name in [*tables, *(t for t in ORDER if t in deferred)]:
+                # value_words is a view: its rows are the packed sources
+                cur.execute(f"TRUNCATE {SCHEMA}.packed_sources" if name == "value_words"
+                            else f"TRUNCATE {SCHEMA}.{name}")
                 cur.execute(f"DELETE FROM {SCHEMA}.load_ranges WHERE table_name = %s", (name,))
                 cur.execute(f"DELETE FROM {SCHEMA}.load_state WHERE name = %s",
                             (f"table:{name}",))
@@ -485,6 +560,10 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
     for name in tables:
         table = TABLES[name]
         started = time.monotonic()
+        if name == "value_words":
+            report[name] = _word_index(path, dsn, started)
+            print(f"ontology_load {name} {json.dumps(report[name])}", file=log, flush=True)
+            continue
         with psycopg.connect(dsn, autocommit=True) as pg, pg.cursor() as cur:
             done = _state(cur, f"table:{name}")
             if done is not None:
@@ -535,6 +614,9 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
                 cur.execute(statement)
             # built: the kept definitions (schema-qualified) are no longer needed
             cur.execute(f"DELETE FROM {SCHEMA}.load_state WHERE name = %s", (f"indexes:{name}",))
+            if name == "chunk_words":
+                cur.execute(f"ALTER TABLE {SCHEMA}.chunk_words ALTER COLUMN words "
+                            f"SET STATISTICS {WORD_STATISTICS}")
             cur.execute(f"ANALYZE {SCHEMA}.{name}")
             if name in SEQUENCES:
                 sequence, column = SEQUENCES[name]

@@ -258,6 +258,12 @@ def scan_threads(environ: Mapping[str, str] | None = None) -> int:
 
 def _connect(path: Path) -> sqlite3.Connection:
     from operating.pg import ontology_reader
+    if ontology_reader.pg_only():
+        # Postgres is the only store: read it whole or not at all (an error, never an
+        # empty run over a store being loaded)
+        problem = ontology_reader.whole()
+        if problem is not None:
+            raise ostore.StoreError("store_not_whole", problem)
     if ontology_reader.serves(path):
         # PLX_ONTOLOGY_PG: the Postgres ontology (current to the last delta layer), the
         # detectors' SQL run as written (operating/pg/sqlite_compat.py)
@@ -306,7 +312,8 @@ class _Store:
     def __init__(self, path: Path, *, threads: int | None = None,
                  scope: Iterable[str] | None = None,
                  audience_keys: Iterable[str] | None = None) -> None:
-        if not Path(path).is_file():
+        from operating.pg import ontology_reader
+        if not Path(path).is_file() and not ontology_reader.pg_only():
             raise ostore.StoreError("store_missing")
         self.path = Path(path)
         # an incremental pass (``operating.proactive_incremental``): the records it may read
@@ -425,6 +432,13 @@ class _Store:
             conn.close()
 
     def meta(self, key: str) -> str | None:
+        if key == "content_digest" and not isinstance(self.conn, sqlite3.Connection):
+            # Postgres: the data it holds now (``ontology_reader.change_stamp``), so a run
+            # over data a delta layer or migration changed since is told apart
+            from operating.pg import ontology_reader
+            stamp = ontology_reader.change_stamp()
+            if stamp is not None:
+                return stamp
         row = self.conn.execute("SELECT value FROM store_meta WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
 
@@ -601,9 +615,12 @@ class _Store:
                 try:
                     if self.interrupt is not None:
                         conn.set_progress_handler(self.interrupt, 10000)
+                    # a generation replaced under the run (Postgres is never replaced: a
+                    # delta layer changes it in place, as the run's own reads see)
                     held = conn.execute("SELECT value FROM store_meta WHERE key = "
                                         "'content_digest'").fetchone()
-                    if (held[0] if held else None) != self.digest:
+                    if isinstance(conn, sqlite3.Connection) and \
+                            (held[0] if held else None) != self.digest:
                         raise ostore.StoreError("store_replaced")
                     return [shape(r) for r in conn.execute(ranged, {**params, "lo": lo,
                                                                     "hi": lo + step})]
@@ -3925,8 +3942,7 @@ def rules_behind(store_path: Any, inbox: Any = None) -> set[str]:
     if not path.is_file():
         return set(DETECTORS)
     with closing(_attach(path, store)) as conn:
-        served = conn.execute(
-            "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+        served = _served_digest(conn, store)
         older: set[str] = set()
         _current, behind = _current_since(conn, served[0] if served else None, older)
     return (set(behind) | older) & set(DETECTORS)
@@ -3942,8 +3958,7 @@ def served_behind(store_path: Any, inbox: Any = None) -> bool:
     with closing(_attach(path, store)) as conn:
         last = conn.execute("SELECT store_digest FROM main.runs ORDER BY run_id DESC "
                             "LIMIT 1").fetchone()
-        served = conn.execute(
-            "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+        served = _served_digest(conn, store)
         older: set[str] = set()
         _current_since(conn, served[0] if served else None, older)
     # or a rule's findings are of older code than the engine deployed
@@ -4031,6 +4046,23 @@ def _visible(conn: sqlite3.Connection, rows: Sequence[sqlite3.Row], params: Mapp
     return out
 
 
+def _served_digest(conn: sqlite3.Connection, store: Any) -> tuple[str] | None:
+    """The data an inbox's runs are compared with, read as the engine stamps a run
+    (``_Store.meta``): a host reading Postgres (``ontology_reader.serves``) compares with
+    Postgres's change stamp, else with the served generation's digest (``(digest,)``, None
+    when it has none). Without it a mode-1 host (``PLX_ONTOLOGY_PG=1``) compared a Postgres
+    run with the SQLite generation's digest and held every gap back as of older data.
+    Postgres unreadable: the generation's digest, so a Postgres run's gaps stay held back."""
+    from operating.pg import ontology_reader
+    if ontology_reader.serves(store):
+        stamp = ontology_reader.change_stamp()
+        if stamp is not None:
+            return (stamp,)
+    row = conn.execute(
+        "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+    return (row[0],) if row else None
+
+
 def _attach(path: Path, store: Path, *, write: bool = False) -> sqlite3.Connection:
     mode = "rw" if write else "ro"
     conn = sqlite3.connect(f"file:{path}?mode={mode}", uri=True, isolation_level=None,
@@ -4042,9 +4074,13 @@ def _attach(path: Path, store: Path, *, write: bool = False) -> sqlite3.Connecti
         row = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
         if row is None or row[0] != INBOX_SCHEMA:
             raise ValueError("gap_inbox_schema_mismatch")
-        if not Path(store).is_file():
+        from operating.pg import ontology_reader
+        if ontology_reader.pg_only():
+            _attach_postgres(conn)
+        elif not Path(store).is_file():
             raise ostore.StoreError("store_missing")
-        conn.execute("ATTACH DATABASE ? AS st", (f"file:{store}?mode=ro",))
+        else:
+            conn.execute("ATTACH DATABASE ? AS st", (f"file:{store}?mode=ro",))
         row = conn.execute("SELECT value FROM st.store_meta WHERE key = 'format'").fetchone()
         if row is None or row[0] != ostore.FORMAT:
             raise ostore.StoreError("store_format_mismatch")
@@ -4052,6 +4088,63 @@ def _attach(path: Path, store: Path, *, write: bool = False) -> sqlite3.Connecti
         conn.close()
         raise
     return conn
+
+
+def _attach_postgres(conn: sqlite3.Connection) -> None:
+    """``st`` for an inbox when Postgres is the only store (``ontology_reader.pg_only``):
+    the rows of the store the inbox's reads join, copied from Postgres into memory, so its
+    permission SQL (``_OBJECT_VISIBLE``, ``_reader_view``) runs as written: ``store_meta``
+    (format, content digest; ``audience_keys``: every audience key the ontology's objects
+    hold now), and the objects the inbox names (gaps, citations, unjudged records) with
+    their current versions' markings. Postgres not whole: ``StoreError``, never an inbox
+    read over a partial store."""
+    from operating.pg import ontology_reader
+    problem = ontology_reader.whole()
+    if problem is not None:
+        raise ostore.StoreError("store_not_whole", problem)
+    named: set[str] = set()
+    for table in ("gaps", "gap_cites", "unjudged_causes"):
+        try:
+            named.update(r[0] for r in conn.execute(
+                f"SELECT DISTINCT object_id FROM {table} WHERE object_id IS NOT NULL"))
+        except sqlite3.OperationalError:   # an inbox written before the table
+            continue
+    import psycopg
+    with psycopg.connect(ontology_reader.dsn(), connect_timeout=5) as pg:
+        meta = dict(pg.execute("SELECT key, value FROM ontology.store_meta WHERE key IN "
+                               "('format', 'content_digest')").fetchall())
+        # the data Postgres holds now, changed by every delta layer and migration (a
+        # generation's digest no longer changes): what the inbox's runs are compared with
+        stamp = ontology_reader.change_stamp()
+        if stamp is not None:
+            meta["content_digest"] = stamp
+        # the distinct keys by their index, one probe per key
+        keys = [r[0] for r in pg.execute(
+            "WITH RECURSIVE k (key) AS (SELECT min(audience_key) FROM ontology.objects "
+            "UNION ALL SELECT (SELECT min(audience_key) FROM ontology.objects "
+            "WHERE audience_key > k.key) FROM k WHERE k.key IS NOT NULL) "
+            "SELECT key FROM k WHERE key IS NOT NULL ORDER BY key")]
+        ids = sorted(named)
+        objects = pg.execute("SELECT object_id, audience_key FROM ontology.objects "
+                             "WHERE object_id = ANY(%s)", (ids,)).fetchall()
+        versions = pg.execute("SELECT object_id, superseded_at, markings FROM "
+                              "ontology.object_versions WHERE object_id = ANY(%s) "
+                              "AND superseded_at IS NULL", (ids,)).fetchall()
+    query_only = conn.execute("PRAGMA query_only").fetchone()[0]
+    conn.execute("PRAGMA query_only = OFF")   # the copy in memory only; restored below
+    conn.execute("ATTACH DATABASE ':memory:' AS st")
+    conn.execute("CREATE TABLE st.store_meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("CREATE TABLE st.objects (object_id TEXT PRIMARY KEY, audience_key TEXT)")
+    conn.execute("CREATE TABLE st.object_versions (object_id TEXT, superseded_at TEXT, "
+                 "markings TEXT)")
+    conn.execute("CREATE INDEX st.object_versions_by_object ON object_versions (object_id)")
+    conn.executemany("INSERT INTO st.store_meta VALUES (?, ?)",
+                     [*meta.items(), ("audience_keys", json.dumps(keys))])
+    conn.executemany("INSERT INTO st.objects VALUES (?, ?)", objects)
+    conn.executemany("INSERT INTO st.object_versions VALUES (?, ?, ?)",
+                     [(o, None if at is None else str(at), m) for o, at, m in versions])
+    if query_only:
+        conn.execute("PRAGMA query_only = ON")
 
 
 def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
@@ -4129,8 +4222,7 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
         allowed = set(json.loads(marks))
         readable = set(json.loads(aud))   # the audiences this reader may read
         last = conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
-        digest = conn.execute(
-            "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+        digest = _served_digest(conn, store)
         older: set[str] = set()
         current, behind = _current_since(conn, digest[0] if digest else None, older)
         scanned = conn.execute(
@@ -4344,8 +4436,7 @@ def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
     with closing(_attach(path, Path(store))) as conn:
         aud, marks = _reader_view(conn, may_read, held)
         params = {"aud": aud, "marks": marks, "kinds": json.dumps(list(kinds))}
-        served = conn.execute(
-            "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+        served = _served_digest(conn, store)
         current, _ = _current_since(conn, served[0] if served else None)
         # a gap of older data than the store served is shown to no one (``read_inbox``):
         # it is not counted as one hidden from this reader either

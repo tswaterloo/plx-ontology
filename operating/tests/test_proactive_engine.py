@@ -2117,11 +2117,11 @@ class PostgresStoreTest(Engine):
         name, dsn = pg_testdb.create_db()
         self.addCleanup(pg_testdb.drop_db, name)
         import psycopg
-        here = Path(__file__).resolve().parents[1] / "pg" / "migrations"
-        with psycopg.connect(dsn, autocommit=True) as pg:
-            for migration in ("0006_ontology.sql", "0007_ontology_compact.sql",
-                              "0008_ontology_read.sql"):
-                pg.execute((here / migration).read_text(encoding="utf-8"))
+        from operating.pg.migrate import MIGRATIONS_DIR
+        with psycopg.connect(dsn, autocommit=True) as pg:   # every ontology migration: the
+            for migration in sorted(MIGRATIONS_DIR.glob("00*.sql")):   # load fills the word tables
+                if migration.name >= "0006":
+                    pg.execute(migration.read_text(encoding="utf-8"))
         world.build(self.store)
         ontology_load.load(self.store, dsn, workers=1, replace=True, log=io.StringIO())
         return dsn
@@ -2163,6 +2163,7 @@ class PostgresStoreTest(Engine):
             return opened[-1]
         # rowid ranges side by side even on a small store: the ranged reads run too
         with mock.patch.object(pe, "_connect", connect), \
+                mock.patch.dict(os.environ, {"PLX_PG_DSN": dsn}), \
                 mock.patch.object(pe, "PARALLEL_LINK_ROWS", 1):
             summary = pe.run(self.store, self.inbox, AS_OF, coverage=ids["coverage"],
                              qc_link_types=(QC_LINK,), people=people(), threads=2,
@@ -2171,8 +2172,15 @@ class PostgresStoreTest(Engine):
         self.assertEqual({d: s for d, s in summary["detectors"].items() if s == "failed"},
                          {}, summary["detector_reasons"])
         self.assertEqual(summary["detectors"], lite["detectors"])
-        self.assertEqual(sorted((g["kind"], g["object_id"]) for g in self.read()["gaps"]),
-                         expected)
+        # read as the host serving it reads (mode 1 and Postgres alone): the gaps of a run
+        # over Postgres are current, none held back as of older data (in mode 1 they were all
+        # held back: the inbox compared the run's Postgres stamp with the SQLite digest)
+        for mode in ("1", "only"):
+            with mock.patch.dict(os.environ, {"PLX_ONTOLOGY_PG": mode, "PLX_PG_DSN": dsn}):
+                got = self.read()
+            self.assertEqual(got["refreshing"], [], mode)
+            self.assertEqual(sorted((g["kind"], g["object_id"]) for g in got["gaps"]),
+                             expected, mode)
         self.assertIn(("conflicting_quantity", min(ids["conflict_a"], ids["conflict_b"])),
                       expected)
 

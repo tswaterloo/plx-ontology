@@ -177,58 +177,6 @@ What it decides
   the gap ``unreadable`` citing the row, never that task's value. A field no cell
   addresses is never read from a table, and a row still unreadable (a single-spaced OCR
   row) leaves its row label seen (``label_seen_unread``).
-* **Placed values**: a field no labelled read, checkbox, table cell or keyed box states,
-  whose label the document writes as a cell of its own ('Invoice Number', 'P.O. NUMBER',
-  'TOTAL AMOUNT*'; dots, a trailing ':', '#' or '*' and 'number'/'#'/'nbr' for 'no'
-  folded), takes the value the page prints beside it or below it (:func:`_placed_reads`).
-  A text-layer PDF page is placed by its layout view (``integrations.document_understanding
-  .pdf_layout_pages``: pypdf's layout-mode text, each glyph at its column, made only from
-  the bytes and only for its first ``MAX_LAYOUT_PAGES`` pages; pypdf's plain reading, the
-  pinned text, joins cells in content-stream order) and each value is cited where the
-  pinned page text holds the same literal (the occurrence nearest the label; a literal the
-  pinned text does not hold is no read; OCR's rule and box marks at a cell's edge are
-  not part of it), so every citation still resolves against the
-  pinned text; an OCR page is placed on its pinned text (OCR keeps a scan's columns); a
-  pypdf page without its bytes (an original the capture dropped) is placed on its pinned
-  text without columns: only a label alone on its line over a line of one cell. In
-  precedence order: ``beside`` (the next cell of the label's line, across a column gap;
-  a text field's at most ``MAX_PLACED_GAP`` columns away), ``single_spaced`` (the rest of
-  the label's cell: 'Total amount 750.00'; never a text field's but an identifier's) and
-  ``below`` (the one cell on the next line with text, one blank line passed, overlapping
-  the label's columns and no other cell of its line: a header row 'Order No.  PO Number'
-  over its values). A line of two or more labels whose other cells hold no digit, or of
-  one label among three or more short digit-free cells, is a
-  header row (no value beside its labels, and no money or quantity below them: under it
-  stands a line item, never a total); a line-items header is never placed from. A cell
-  that is any class's label, title, column or stop label, ends in ':', is a few words
-  naming a number ('Cust No. - PO No.') or is another label's read ('Comments: NONE') is
-  no value, nor is a digit-free cell every word of which is any class's label word
-  ('Number', 'Ship Via', 'Produit') or a digit-free text holding another field's label as
-  whole words ('ORIGINATING CARRIER' beside 'ORIGIN'), nor a cell on a line that runs on
-  in prose (a word ending a sentence of printed terms). The class's own title used as a
-  label ('INVOICE' over its number) is weak evidence: its value has no fewer digits than
-  letters ('Acme-1' is no invoice number). A money label written with '#'
-  ('HST#123456789') names a registration number, never an amount: no read. A value must parse in its field's kind; a field naming a number
-  (an identifier field, or one whose label ends in 'no'/'number': 'NUMERO DE FACTURE' is
-  no invoice number) takes one token holding a digit, of three letters or digits at
-  least, not ending in '.' and not shaped as a date ('17.' in a clause is no PO); a text
-  field's holds a letter and no prose (a sentence). A text value on an OCR page must read
-  as print does: on a word-box page not mostly below the handwriting bound, and shaped as
-  words (every word of four letters or more capitalised, no run of five consonants);
-  else it is the gap ``unreadable`` citing it ('xelmnartuve', 'qosmna TUIRE'), never a
-  value. The reads of the first precedence that agree are the value, its citations
-  each read's (``placed`` names how); reads that disagree, or parse as nothing, fall to
-  the next precedence, else the field stays ``label_seen_unread``. A read whose number or
-  date is there but whose currency, decimal separator or day/month order is not stated is
-  that gap, citing the number. A ``block`` field (a party) takes the lines below its
-  first line in the same column too (at most ``MAX_BLOCK_LINES``, ending at a label, a
-  labelled line 'Contact: ...' or another column), joined by ', ', each line cited.
-* **Written currency**: a document that declares no currency but writes exactly one of the
-  profile file's ``document_codes`` (in capitals, or a sign form of one: 'Price (USD)',
-  'US$'; a token of its own, never 'EUR-PALLET') reads an amount with an ambiguous sign
-  or none in that currency, with
-  ``currency_basis`` ``document`` and the places it writes it as ``currency_citations``;
-  writing two is no currency.
 * **Labels**: one label-to-field map per class (each label and row label, folded) serves
   the labelled reads, the table rows and the seen labels.
 * **Gaps**: an unstated, unreadable or ambiguous field is a gap with a reason and the
@@ -368,7 +316,7 @@ from integrations.captured_text import (OCR_DEFERRED, OCR_UNAVAILABLE, TEXT_OCR,
                                         read_blob, read_text, text_status_kind)
 from ontology import identifiers, mentions
 from ontology.store_ddl import MARKINGS
-from ontology.units import (CURRENCY_SIGN_FORMS, TAX_BASES, UOM_CANONICAL, currency_reading,
+from ontology.units import (TAX_BASES, UOM_CANONICAL, currency_reading,
                             currency_token_pattern, unit_token)
 
 FORMAT = "plx-document-fields/v1"
@@ -477,7 +425,7 @@ _PROFILE_KEYS = {"id", "object_type", "noun", "description", "titles", "title_al
 _FIELD_KEYS = {"name", "kind", "labels", "vocabulary", "keyed", "default_unit", "per_unit",
                "tax_basis", "identifier_kind", "quantity_role", "count", "description",
                "property", "marking", "refers_to", "refers_to_property", "cell",
-               "unseparated", "block"}
+               "unseparated"}
 _RULE_KEYS = {"field", "property", "event", "path", "key_path", "key_property", "propose"}
 _COLUMN_KEYS = {"name", "kind", "labels", "vocabulary", "unit_from", "per_unit_of"}
 _COLUMN_KINDS = ("text", "quantity", "money", "date", "code")
@@ -1900,473 +1848,6 @@ def _seen_labels(profile_id: str, pages: list[tuple[int | None, str]], cite: Any
     return out
 
 
-# --------------------------------------------------------------------------- placed values
-
-# The words a label may end in that name its number: 'Invoice #', 'PO No.', 'P.O. Number'
-# and 'Invoice Nbr' are one label, 'invoice no' / 'po no'.
-_NUMBER_WORDS = {"no": "no", "number": "no", "num": "no", "nbr": "no", "nº": "no", "n°": "no",
-                 "#": "no"}
-_WORDS = re.compile(r"\S+")
-# Why a placed value is still a reading limit, not a misplaced cell: its number or date is
-# there, only its currency, decimal separator or day/month order is not stated.
-_PLACED_GAPS = frozenset({"currency_unknown", "currency_conflict", "decimal_separator_ambiguous",
-                          "date_ambiguous", "split_at_gap"})
-PLACED_HOW = ("beside", "single_spaced", "below")   # in precedence order
-MAX_PLACED_GAP = 30          # columns between a text field's label and its value beside it
-MAX_BLOCK_LINES = 4          # lines of a ``block`` field's value below its first line
-# An identifier as a placed value: one token holding a digit ('PO10000001', '99-001'),
-# never one shaped as a date.
-_PLACED_IDENTIFIER = re.compile(r"[#:]?[ \t]*([A-Za-z0-9][\w/.-]{1,39})")
-_DATE_SHAPED = re.compile(r"\d{1,4}[./-]\d{1,2}[./-]\d{1,4}")
-@functools.lru_cache(maxsize=1)
-def _label_vocabulary() -> frozenset[str]:
-    """Every word (folded as :func:`_label_words` folds it) of every label, title, column,
-    row label and stop label of the profile file."""
-    every = profiles()
-    texts = [*every["stop_labels"]["labels"], *every["currencies"]["declaration_labels"]]
-    for profile in every["profiles"]:
-        texts += profile["titles"]
-        for spec in profile["fields"]:
-            texts += spec["labels"]
-            texts += [row for row in (spec.get("cell") or {}).get("rows", ())]
-            texts += [column for column in (spec.get("cell") or {}).get("columns", ())]
-        for column in (profile.get("line_items") or {}).get("columns", ()):
-            texts += column["labels"]
-    return frozenset(word for text in texts for word in _label_words(text))
-
-
-@functools.lru_cache(maxsize=64)
-def _field_label_words(profile_id: str, name: str) -> tuple[tuple[str, ...], ...]:
-    return tuple(_label_words(label) for spec in _profile(profile_id)["fields"]
-                 if spec["name"] != name for label in spec["labels"])
-
-
-def _names_other_field(spec: Mapping[str, Any], text: str) -> bool:
-    """Whether a text holds, as whole words, a label of another field of the class that
-    declares ``spec`` ('ORIGINATING CARRIER' under 'ORIGIN': the carrier's column head)."""
-    owner = next((p["id"] for p in profiles()["profiles"] if spec in p["fields"]), None)
-    if owner is None:
-        return False
-    words = _label_words(re.sub(r"[^\w#&.:*\s]", " ", text))
-    for label in _field_label_words(owner, spec["name"]):
-        n = len(label)
-        if n and any(words[i:i + n] == label for i in range(len(words) - n + 1)):
-            return True
-    return False
-
-
-def _label_like(text: str) -> bool:
-    """Whether a cell holds no digit and every word of it is a label's ('Number', 'Ship
-    Via', 'Lot No / Expiry'): a column head, never a value."""
-    if re.search(r"\d", text):
-        return False
-    words = [w for w in _label_words(re.sub(r"[^\w#&.:*\s]", " ", text)) if w not in ("&",)]
-    return bool(words) and all(word in _label_vocabulary() for word in words)
-
-
-# An OCR text value shaped as words: every word of four letters or more starts with a
-# capital (a name, an address: 'NovaStar LLC, 12 Example Drive') and none runs five
-# consonants; OCR of print reads so, garbled OCR ('xelmnartuve', 'qosmna TUIRE',
-# 'ubertoaKelle', 'mabe lun') does not.
-_CONSONANT_RUN = re.compile(r"[b-df-hj-np-tv-xz]{5}", re.IGNORECASE)
-
-
-def _ocr_shaped(text: str) -> bool:
-    words = re.findall(r"[^\W\d_]+", text)
-    if not words or not re.match(r"\W*[^\W_]", text) or text.lstrip(" ,.-")[:1].islower():
-        return False
-    return not any((len(w) >= 4 and w[0].islower()) or _CONSONANT_RUN.search(w)
-                   for w in words)
-
-
-# What OCR and ruled forms leave at a cell's edges: spaces, rules, box and arrow marks.
-_EDGE_MARKS = " \t|_<>[]{}"
-
-
-# A labelled line ('Contact: Pat', 'Tel: ...'): it ends a block value above it.
-_LABELLED_LINE = re.compile(r"[ \t]*[^\W\d_][^\W\d_ .#/-]*(?:[ .#/-]+[^\W\d_]+){0,3}[ \t]*[.#]?:")
-# Prose: five words in a row, or a sentence's end after three, where a value is expected.
-_PROSE_VALUE = re.compile(r"(?:\b[a-z]+\b[ ,]+){4}\b[a-z]+\b|"
-                          r"^(?:\S+\s+){3,}[a-z]+\.$")
-
-
-def _label_words(text: str) -> tuple[str, ...]:
-    """A label's words folded for placement: case, dots and a trailing ':', '#' or '*'
-    dropped, and '#', 'number', 'nbr' read as 'no' ('PO #' and 'P.O. Number' are 'po no')."""
-    out: list[str] = []
-    for word in text.split():
-        hashed = word.rstrip(":*").endswith("#") and len(word.rstrip(":*")) > 1
-        folded = word.casefold().replace(".", "").strip(":#*")
-        if folded:
-            out.append(_NUMBER_WORDS.get(folded, folded))
-        if hashed or folded == "" and "#" in word:
-            out.append("no")
-    return tuple(out)
-
-
-@functools.lru_cache(maxsize=16)
-def _placement(profile_id: str) -> tuple[Mapping[tuple[str, ...], str], int,
-                                         frozenset[tuple[str, ...]]]:
-    """(label words -> field, for the class's fields a value is placed for: neither a
-    checkbox nor keyed; the most words of one; every label any class may write, a title,
-    a line-item column, a stop label or a currency declaration: a cell that is one is no
-    value). Folded labels two fields share name neither."""
-    fields: dict[tuple[str, ...], str] = {}
-    clash: set[tuple[str, ...]] = set()
-    for spec in _profile(profile_id)["fields"]:
-        if spec["kind"] == "checkbox" or "keyed" in spec:
-            continue
-        for label in spec["labels"]:
-            key = _label_words(label)
-            if fields.setdefault(key, spec["name"]) != spec["name"]:
-                clash.add(key)
-    for key in clash:
-        fields.pop(key, None)
-    known = set(fields) | clash
-    every = profiles()
-    for profile in every["profiles"]:
-        known.update(_label_words(title) for title in profile["titles"])
-        known.update(_label_words(label) for spec in profile["fields"]
-                     for label in spec["labels"])
-        known.update(_label_words(label) for column in
-                     (profile.get("line_items") or {}).get("columns", ())
-                     for label in column["labels"])
-    known.update(_label_words(label) for label in every["stop_labels"]["labels"])
-    known.update(_label_words(label) for label in every["currencies"]["declaration_labels"])
-    known.discard(())
-    return fields, max((len(key) for key in fields), default=0), frozenset(known)
-
-
-def _cell_label(cell: str, fields: Mapping[tuple[str, ...], str], longest: int
-                ) -> tuple[str, int] | None:
-    """(field, where the rest of the cell starts) when the cell starts with one of
-    ``fields``' labels, the longest first and ending at a word end ('Invoice Date 1/24'
-    is the date's, never 'Invoice'), else None."""
-    tokens: list[tuple[str, int, int]] = []   # (folded word, its word's index, its end)
-    for index, m in enumerate(_WORDS.finditer(cell)):
-        for word in _label_words(m.group()):
-            tokens.append((word, index, m.end()))
-        if len(tokens) > longest + 1:
-            break
-    for n in range(min(longest, len(tokens)), 0, -1):
-        if n < len(tokens) and tokens[n][1] == tokens[n - 1][1]:
-            continue   # 'PO#4500': the label ends inside a word
-        name = fields.get(tuple(word for word, _, _ in tokens[:n]))
-        if name is not None:
-            return name, tokens[n - 1][2]
-    return None
-
-
-def _locate(pinned: str, literal: str, near: int) -> tuple[int, int] | None:
-    """The span of ``literal`` in the pinned page text (its words, any whitespace between
-    them, not inside a longer word), the occurrence nearest ``near``; None when the pinned
-    text does not hold it."""
-    words = literal.split()
-    if not words:
-        return None
-    pattern = (r"(?<!\w)" if words[0][0].isalnum() else "") + \
-        r"\s+".join(map(re.escape, words)) + (r"(?!\w)" if words[-1][-1].isalnum() else "")
-    found = [m.span() for m in re.finditer(pattern, pinned)]
-    return min(found, key=lambda span: abs(span[0] - near)) if found else None
-
-
-class _View(NamedTuple):
-    """One page as the placement reads it: ``text`` (the pinned page text, or a layout view
-    of it), whether its columns are the page's (``geometric``: OCR text and layout views
-    keep them; pypdf's plain reading does not) and ``pinned`` (the page's pinned text when
-    ``text`` is a layout view, its values then cited where the pinned text holds them)."""
-    page: int | None
-    text: str
-    geometric: bool
-    pinned: str | None
-
-
-def _placed_reads(profile_id: str, views: list[_View], cite: Any
-                  ) -> dict[str, list[tuple[int, str, list[dict], str, str]]]:
-    """Field -> (precedence, raw value, citations, next cell, how) of every value placed
-    beside or below one of the class's labels (module docstring, *Placed values*)."""
-    fields, longest, known = _placement(profile_id)
-    blocks = {spec["name"] for spec in _profile(profile_id)["fields"] if spec.get("block")}
-    titles = {_label_words(title) for title in _profile(profile_id)["titles"]}
-    kinds = {spec["name"]: spec["kind"] for spec in _profile(profile_id)["fields"]}
-    out: dict[str, list[tuple[int, str, list[dict], str, str]]] = {}
-    if not fields:
-        return out
-
-    def is_label(text: str) -> bool:
-        # A declared label, any words ending in ':' ('BILL FREIGHT TO:'), a few words
-        # naming a number ('Cust No. - PO No.', 'Ref #', 'Number') or words every one of
-        # which is a label's (a column head 'Ship Via', 'Lot Number'): never a value.
-        words = _label_words(text)
-        return words in known or text.rstrip().endswith(":") or _label_like(text) or (
-            0 < len(words) <= 6 and words[-1] == "no" and not re.search(r"\d", text))
-
-    for view in views:
-        lines = view.text.split("\n")
-        starts, at = [], 0
-        for line in lines:
-            starts.append(at)
-            at += len(line) + 1
-        cells = [_cells(line) or [] for line in lines]
-
-        def place(number: int, a: int, b: int, label_at: int
-                  ) -> tuple[str, dict] | None:
-            # The cited value of the cell at columns a-b of line ``number``, without the
-            # rule and box marks OCR leaves at its edges ('2031-01-08 >', '[TOTAL').
-            raw = lines[number][a:b].strip(_EDGE_MARKS)
-            if not raw:
-                return None
-            if view.pinned is None:
-                lead = lines[number][a:b].index(raw)
-                start = starts[number] + a + lead
-                return raw, cite(view.page, view.text, start, start + len(raw))
-            span = _locate(view.pinned, raw, label_at)
-            if span is None:
-                return None
-            return (re.sub(r"\s+", " ", view.pinned[span[0]:span[1]]),
-                    cite(view.page, view.pinned, *span))
-
-        def label_at(text: str) -> int:
-            if view.pinned is None:
-                return 0
-            span = _locate(view.pinned, text, 0)
-            return 0 if span is None else span[0]
-
-        def below(number: int, a: int, b: int, skip: int) -> tuple[int, int, int] | None:
-            # The one cell under columns a-b on the next line with text (``skip`` blank
-            # lines passed at most), overlapping no other cell of line ``number``.
-            j = number + 1
-            while j < len(lines) and not lines[j].strip() and j - number <= skip:
-                j += 1
-            if j >= len(lines) or not lines[j].strip():
-                return None
-            if not view.geometric:
-                return (j, *cells[j][0]) if len(cells[j]) == 1 and len(cells[number]) == 1 \
-                    else None
-            under = [(c, d) for c, d in cells[j] if c < b and d > a]
-            if len(under) != 1:
-                return None
-            c, d = under[0]
-            if [(x, y) for x, y in cells[number] if x < d and y > c] != [(a, b)]:
-                return None
-            if prose(j):
-                return None   # a word at the end of running text is in no form cell
-            return j, c, d
-
-        def prose(number: int) -> bool:
-            # A line holding a sentence of prose (terms printed beside a form's cells).
-            return any(_PROSE_VALUE.search(lines[number][x:y]) for x, y in cells[number])
-
-        def block(name: str, number: int, a: int, b: int, value: str, citation: dict
-                  ) -> tuple[str, list[dict]]:
-            # A ``block`` field's value goes on below its first line, in its column: its
-            # lines joined by ', ', each cited.
-            if name not in blocks or not view.geometric:
-                return value, [citation]
-            parts, citations = [value], [citation]
-            for _ in range(MAX_BLOCK_LINES):
-                if number + 1 >= len(lines):
-                    break
-                under = [(c, d) for c, d in cells[number + 1] if c < b and d > a]
-                if len(under) != 1 or abs(under[0][0] - a) > 2 or prose(number + 1) or \
-                        is_label(text := lines[number + 1][under[0][0]:under[0][1]]) or \
-                        _LABELLED_LINE.match(text):
-                    break   # its column ends, or a labelled line ('Contact: ...') starts
-                number, (a, b) = number + 1, under[0]
-                more = place(number, a, b, citation["start"])
-                if more is None:
-                    break
-                parts.append(more[0])
-                citations.append(more[1])
-            return ", ".join(parts), citations
-
-        for number, line in enumerate(lines):
-            spans = cells[number]
-            if not spans:
-                continue
-            texts = [line[a:b] for a, b in spans]
-            # A header row: two or more labels, and no other cell holding a digit (a value
-            # beside one of them: 'BILL TO   INVOICE NO.   99-001' is no header).
-            labels = sum(1 for text in texts if is_label(text))
-            if any(not is_label(text) and re.search(r"\d", text) for text in texts):
-                labels = min(labels, 1)
-            elif labels == 1 and len(texts) >= 3 and all(
-                    len(text.split()) <= 3 for text in texts):
-                labels = 2   # 'TRAILER  ORIGIN  ORIGINATING CARRIER': column heads alike
-            table = _header(profile_id, [_label_key(text) for text in texts]) \
-                if len(spans) > 1 else None
-            if table is not None and table.items is not None:
-                continue   # a line-items header: its rows are items, never a field
-            for index, ((a, b), text) in enumerate(zip(spans, texts)):
-                found = _cell_label(text, fields, longest)
-                if found is None:
-                    continue
-                name, rest_at = found
-                # The class's own title used as a label ('INVOICE' over its number) is
-                # weak evidence: its value must be mostly digits (:func:`_placed_value`).
-                titled = "_title" if _label_words(text[:rest_at]) in titles else ""
-                rest = text[rest_at:].strip(" \t:#*-")
-                if rest:   # 'Total amount 750.00': a value one space after its label
-                    if is_label(rest):
-                        continue
-                    got = place(number, a + len(text) - len(text[rest_at:].lstrip(" \t:#*-")),
-                                b, label_at(text))
-                    if got is not None:
-                        out.setdefault(name, []).append((1, got[0], [got[1]], "",
-                                                         "single_spaced" + titled))
-                    continue
-                if labels < 2 and index + 1 < len(spans):   # the next cell of its line
-                    c, d = spans[index + 1]
-                    nxt = texts[index + 1]
-                    if not is_label(nxt) and _cell_label(nxt, fields, longest) is None \
-                            and not _LABELLED_LINE.match(nxt):
-                        got = place(number, c, d, label_at(text))
-                        if got is not None:
-                            past = texts[index + 2] if index + 2 < len(spans) else ""
-                            if past and (is_label(past) or
-                                         _cell_label(past, fields, longest) is not None):
-                                past = ""
-                            value, citations = block(name, number, c, d, *got)
-                            out.setdefault(name, []).append(
-                                (0, value, citations, past, ("beside" if c - b <=
-                                 MAX_PLACED_GAP or not view.geometric else "beside_far")
-                                 + titled))
-                        continue
-                if labels >= 2 and kinds[name] in ("money", "quantity"):
-                    continue   # under a header row stands a line item, never a total
-                under = below(number, a, b, 1 if view.geometric else 0)
-                if under is None:
-                    continue
-                j, c, d = under
-                value_text = lines[j][c:d]
-                if is_label(value_text) or _cell_label(value_text, fields, longest) or \
-                        _LABELLED_LINE.match(value_text):
-                    continue   # a label, or another label's read ('Comments: NONE')
-                got = place(j, c, d, label_at(text))
-                if got is not None:
-                    value, citations = block(name, j, c, d, *got)
-                    out.setdefault(name, []).append((2, value, citations, "",
-                                                     "below" + titled))
-    return out
-
-
-def _placed_value(spec: Mapping[str, Any], reads: list[tuple[int, str, list[dict], str, str]],
-                  convention: str | None, declared: tuple[str, ...],
-                  plausible: Callable[[str, list[dict], bool], bool] =
-                  lambda raw, cited, words: True
-                  ) -> tuple[list[tuple[dict[str, Any] | None, str | None, dict]],
-                             list[dict[str, Any]], str] | None:
-    """The reads of one field a placement gives (:func:`_placed_reads`): those of the first
-    precedence whose values parse in the field's kind and agree (a read whose number or
-    date is there but whose currency, separator or order is not stated is that gap), with
-    the readings a currency conflict lists and how it was placed; None when no precedence
-    gives one value (a misplaced cell parses as nothing or disagrees). A field naming a
-    number (an identifier field, or one whose label ends in 'no'/'number') takes one token
-    holding a digit; a text value OCR read implausibly (``plausible``: its words read
-    below the handwriting bound, or not shaped as words) is the gap ``unreadable`` citing
-    it, never a value."""
-    identifier = spec["kind"] == "text" and (
-        "identifier_kind" in spec or "refers_to" in spec or "refers_to_property" in spec or
-        any(_label_words(label)[-1:] == ("no",) for label in spec["labels"]))
-    for tier in sorted({read[0] for read in reads}):
-        values, gaps, stated, how = [], [], [], None
-        for _, raw, citations, past, placed in (r for r in reads if r[0] == tier):
-            if placed.endswith("_title") and \
-                    len(re.findall(r"\d", raw)) < len(re.findall(r"[^\W\d_]", raw)):
-                continue   # under a bare title, a name ('Acme-1') is no number
-            placed = placed.removesuffix("_title")
-            if spec["kind"] == "text":
-                if placed == "beside_far" and not identifier:
-                    continue
-                if _label_like(raw) or (not re.search(r"\d", raw) and
-                                        _names_other_field(spec, raw)):
-                    continue   # a column head ('Number', 'ORIGINATING CARRIER')
-                if identifier:
-                    m = _PLACED_IDENTIFIER.fullmatch(raw)
-                    if m is None or not re.search(r"\d", m[1]) or _DATE_SHAPED.fullmatch(m[1]) \
-                            or m[1].endswith(".") or len(re.findall(r"[^\W_]", m[1])) < 3:
-                        continue   # a clause or list number ('17.', '3') names nothing
-                    raw = m[1]
-                elif not re.search(r"[^\W\d_]", raw) or placed == "single_spaced" or \
-                        _PROSE_VALUE.search(raw):
-                    continue   # a sentence of prose under a label is no party or term
-                if not plausible(raw, citations, not identifier):
-                    gaps.append((None, "unreadable", citations[0]))
-                    how = how or placed.replace("beside_far", "beside")
-                    continue
-            parsed, problem, readings = _parse(spec, raw, convention, declared, cell=True,
-                                               past=past)
-            if parsed is not None:
-                values += [(parsed, None, citation) for citation in citations]
-            elif problem in _PLACED_GAPS:
-                gaps.append((None, problem, citations[0]))
-                stated += readings
-            else:
-                continue
-            how = how or placed.replace("beside_far", "beside")
-        distinct = {json.dumps(p, sort_keys=True) for p, _, _ in values}
-        if len(distinct) == 1:
-            return values, [], how or "beside"
-        if not values and len({problem for _, problem, _ in gaps}) == 1:
-            return gaps[:1], stated, how or "beside"
-    return None
-
-
-@functools.lru_cache(maxsize=1)
-def _written_pattern() -> re.Pattern[str]:
-    codes = profiles()["currencies"]["document_codes"]
-    forms = [form for form, code in CURRENCY_SIGN_FORMS.items() if code in codes]
-    # A token of its own: never joined to a word by a hyphen ('EUR-PALLET', 'PALLET-EUR').
-    return re.compile(r"(?<![A-Za-z$])(?<![A-Za-z]-)(" + "|".join(
-        re.escape(word) for word in sorted([*forms, *codes], key=len, reverse=True)) +
-        r")(?![A-Za-z])(?!-[A-Za-z])")
-
-
-def _written_currency(pages: list[tuple[int | None, str]], cite: Any
-                      ) -> tuple[str, list[dict]] | None:
-    """(code, citations) of the one currency a document with no currency declaration
-    writes anywhere in its text, as one of the profile file's ``document_codes`` in
-    capitals or a sign form of one, a token of its own ('Price (USD)', 'US$ 1,250'; never
-    'EUR-PALLET'); None when it writes none
-    or several: an ambiguous '$' amount then stays ``currency_unknown``."""
-    found: dict[str, list[dict]] = {}
-    for page, text in pages:
-        for m in _written_pattern().finditer(text):
-            code = CURRENCY_SIGN_FORMS.get(m[1], m[1])
-            found.setdefault(code, []).append(cite(page, text, *m.span(1)))
-    if len(found) != 1:
-        return None
-    (code, citations), = found.items()
-    return code, citations[:MAX_SEEN_CITATIONS]
-
-
-def _views(read: CapturedText, pages: list[tuple[int | None, str]], ocr: frozenset[int],
-           layout: Callable[[], Mapping[int, str]] | None) -> list[_View]:
-    """The pages a placement reads (:class:`_View`): an OCR page as pinned (its columns are
-    the scan's), a pypdf page by its layout view when one is made (else as pinned, without
-    columns); other readings place nothing."""
-    if read.method not in ("pypdf-text", "captured_ocr_text") and not ocr:
-        return []
-    views = {}
-    if layout is not None and read.method == "pypdf-text" and \
-            any(page not in ocr for page, _ in pages if page is not None):
-        try:
-            views = dict(layout())
-        except NotRemembered:
-            raise   # the bytes the key holds went away: read again later, never without
-        except Exception:  # noqa: BLE001 - no view: the pinned text alone
-            views = {}
-    out = []
-    for page, text in pages:
-        if page in ocr:
-            out.append(_View(page, text, True, None))
-        elif page in views:
-            out.append(_View(page, views[page], True, text))
-        elif read.method == "pypdf-text":
-            out.append(_View(page, text, False, None))
-    return out
-
-
 def extract_fields(content: bytes, mime_type: str, *, filename: str = "",
                    l1_handle: str | None = None, local_pdf_ocr: bool = False,
                    text: str | None = None, issued: str | None = None) -> dict[str, Any]:
@@ -2377,8 +1858,7 @@ def extract_fields(content: bytes, mime_type: str, *, filename: str = "",
     Deterministic for the same bytes, text, MIME type, provenance, profile file and
     extractor; raises ``ValidationError`` only for bytes over the extractor's bounds."""
     return _fields(read_text(content, mime_type, filename=filename, text=text,
-                             local_pdf_ocr=local_pdf_ocr), l1_handle, issued,
-                   layout=_layout_of(content))
+                             local_pdf_ocr=local_pdf_ocr), l1_handle, issued)
 
 
 # A cue running on into a sentence: two lowercase words follow it ("packing slip showing
@@ -2636,30 +2116,19 @@ def _own_issued(profile: Mapping[str, Any], head: str,
     return any(issuers) if issuers else own.search(letterhead) is not None
 
 
-def _layout_of(content: bytes | None) -> Callable[[], Mapping[int, str]] | None:
-    """The layout views of a PDF's text-layer pages (``du.pdf_layout_pages``), made only
-    when a placement asks; None without the bytes (an original the capture dropped keeps
-    its pinned text only: its values are placed on that text)."""
-    if not isinstance(content, bytes):
-        return None
-    return lambda: du.pdf_layout_pages(content, range(1, du.MAX_LAYOUT_PAGES + 1))
-
-
-def _fields(read: CapturedText, l1_handle: str | None, issued: str | None = None, *,
-            layout: Callable[[], Mapping[int, str]] | None = None) -> dict[str, Any]:
+def _fields(read: CapturedText, l1_handle: str | None, issued: str | None = None
+            ) -> dict[str, Any]:
     """:func:`extract_fields` of one reading of a document
     (``integrations.captured_text``) whose file has the provenance signal ``issued``; an
-    ambiguous numeric date is read in the document's own date order (:func:`date_order`);
-    ``layout``: the layout views of its PDF's text-layer pages (:func:`_layout_of`)."""
+    ambiguous numeric date is read in the document's own date order (:func:`date_order`)."""
     token = _DATE_ORDER.set(date_order("\n".join(t for _, t in read.pages)))
     try:
-        return _fields_read(read, l1_handle, issued, layout)
+        return _fields_read(read, l1_handle, issued)
     finally:
         _DATE_ORDER.reset(token)
 
 
-def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None = None,
-                 layout_views: Callable[[], Mapping[int, str]] | None = None
+def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None = None
                  ) -> dict[str, Any]:
     digest, text_digest = read.source_sha256, read.text_sha256
     status, method, mime, ocr = read.status, read.method, read.mime_type, read.ocr_pages
@@ -2724,10 +2193,6 @@ def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None =
     declarations = [read[:3] for read in _labelled_values(_declaration_pattern(), pages, cite)]
     declared = tuple(sorted({code for _, value, _ in declarations
                              if (code := currency_reading(value)[0]) is not None}))
-    written = None if declared else _written_currency(pages, cite)
-    if written is not None:   # no declaration: the one currency the document writes
-        declared = (written[0],)
-        declarations += [("", written[0], citation) for citation in written[1]]
     pattern, owner = _label_pattern(profile_id)
     specs = {spec["name"]: spec for spec in profile["fields"]}
     seen: dict[str, list[tuple[dict[str, Any] | None, str | None, dict]]] = {}
@@ -2778,9 +2243,6 @@ def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None =
         if "keyed" in spec:
             raws.setdefault(name, []).append((raw, citation, False))
             continue
-        if spec["kind"] == "money" and not cell and texts.get(citation["page"], "")[
-                :citation["start"]].rstrip().endswith("#"):
-            continue   # 'HST#123456789': a money label with '#' names a number, no amount
         parsed, problem, stated = (None, problem, []) if raw is None or problem else \
             _parse(spec, raw, convention, declared, cell=cell, past=past)
         if parsed is not None and "alternates" in parsed:   # each cited by its own span
@@ -2791,41 +2253,11 @@ def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None =
                      "text": raw[r["span"][0]:r["span"][1]]}]
                     if citation["text"] == raw else [citation]}
                 for r in parsed["alternates"]]
-        seen.setdefault(spec["name"], []).append((parsed, problem, citation))
-        readings.setdefault(spec["name"], []).extend(stated)
-    # A field no labelled read states, whose value stands beside or below its label: placed
-    # by the page's columns (module docstring, *Placed values*).
-    placed_how: dict[str, str] = {}
-    unplaced = [spec for spec in profile["fields"] if spec["kind"] != "checkbox"
-                and "keyed" not in spec and not seen.get(spec["name"])]
-    if unplaced and (views := _views(read, pages, ocr, layout_views)):
-        placed = _placed_reads(profile_id, views, cite)
-        def plausible(raw: str, citations: list[dict], words: bool) -> bool:
-            # OCR text a reader can trust: on a word-box page not read mostly below the
-            # handwriting bound, and (``words``: a name or a term, not an identifier)
-            # shaped as words.
-            if not any(c["page"] in ocr for c in citations):
-                return True
-            if words and not _ocr_shaped(raw):
-                return False
-            for c in citations:
-                spans = low.get(c["page"], ())
-                weak = sum(max(0, min(b, c["end"]) - max(a, c["start"])) for a, b in spans)
-                if spans and weak * 2 > c["end"] - c["start"]:
-                    return False
-            return True
-        for spec in unplaced:
-            found = _placed_value(spec, placed.get(spec["name"], []), convention, declared,
-                                  plausible)
-            if found is not None:
-                seen[spec["name"]], stated, placed_how[spec["name"]] = found
-                readings.setdefault(spec["name"], []).extend(stated)
-    for parsed, _, _ in (read for reads in seen.values() for read in reads):
         if parsed is not None and parsed.get("currency_basis") == "declared":
             parsed["currency_citations"] = [c for _, value, c in declarations
                                             if value.strip().upper() == parsed["currency"]]
-            if written is not None:   # written once in the text, never declared
-                parsed["currency_basis"] = "document"
+        seen.setdefault(spec["name"], []).append((parsed, problem, citation))
+        readings.setdefault(spec["name"], []).extend(stated)
     named = _seen_labels(profile_id, pages, cite)
 
     def unread(name: str) -> tuple[str, list[dict], dict[str, str]]:
@@ -2879,8 +2311,6 @@ def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None =
         if reason == "not_stated":
             reason, citations, why = unread(name)
         label = {"read_by": read_by(citations)} if citations else {}
-        if name in placed_how:
-            label["placed"] = placed_how[name]
         if value is not None:
             result["fields"][name] = {"kind": spec["kind"], **value, **label,
                                       "citations": citations}
@@ -3195,16 +2625,13 @@ def kept_fields(path: str | Path, code: str) -> Iterator[KeptFields]:
         kept.close(prune=ended)
 
 
-def _fields_of(key: tuple[str, str, str, str | None, str | None, bool, bool],
+def _fields_of(key: tuple[str, str, str, str | None, str | None, bool],
                read: Callable[[], CapturedText | None],
-               present: Callable[[], bool] | None = None,
-               layout: Callable[[], Mapping[int, str]] | None = None
-               ) -> dict[str, Any] | None:
+               present: Callable[[], bool] | None = None) -> dict[str, Any] | None:
     """The fields of one reading of a document (``read``: ``captured_text`` of a
     captured version's pinned bytes or the capture's OCR text of a scan, or a container
     member's reading), parsed once per ``key`` (bytes, MIME type, name, OCR text, the
-    file's provenance signal, scans deferred, whether its bytes are held: a layout view
-    is made of them only, ``layout``) and shared by every binding that reads the relation in a
+    file's provenance signal) and shared by every binding that reads the relation in a
     build (callers copy before changing it); None when the bytes (or the pinned OCR
     text) are missing or unreadable as a document. Neither missing bytes nor a read or
     parse that raised is remembered (a later capture may hold them, a later read may
@@ -3213,24 +2640,8 @@ def _fields_of(key: tuple[str, str, str, str | None, str | None, bool, bool],
         reading = read()
         if reading is None:
             raise NotRemembered(key[0])
-        return _fields(reading, None, key[4], layout=layout)
+        return _fields(reading, None, key[4])
     return _FIELDS.read(key, parse, present)
-
-
-def _bytes_held(blobs: str | Path, digest: str) -> bool:
-    """The original's bytes are on disk (stored or compressed, not its dropped form)."""
-    from integrations.captured_text import COMPRESSED_SUFFIX, blob_path
-
-    return any(blob_path(blobs, digest, suffix).exists() for suffix in ("", COMPRESSED_SUFFIX))
-
-
-def _held_layout(blobs: str | Path, digest: str) -> Mapping[int, str]:
-    """The layout views of bytes the key says are held; their going away since is a
-    missing read (not remembered), never fields read without them under that key."""
-    content = read_blob(blobs, digest)
-    if content is None:
-        raise NotRemembered(digest)
-    return du.pdf_layout_pages(content, range(1, du.MAX_LAYOUT_PAGES + 1))
 
 
 def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
@@ -3255,15 +2666,11 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
     reading = captured_text(blobs, row) if read else None
     # Fields kept between builds are served only while what they were read from is on
     # disk (as a kept reading is): a file gone reads as gone.
-    # Whether the bytes are on disk is part of what the fields are read from (a layout
-    # view is made of them only): a result never depends on when it was parsed.
-    held = _bytes_held(blobs, digest)
-    found = _fields_of((digest, mime, name, ocr_digest(row), issued,
-                        row.get("text_status") == OCR_DEFERRED, held),
-                       (lambda: reading) if read else (lambda: captured_text(blobs, row)),
-                       lambda: _bytes_kept(blobs, digest, ocr_digest(row)),
-                       (lambda: _held_layout(blobs, digest)) if held else None)
-    yield None, found, reading, issued
+    yield None, _fields_of((digest, mime, name, ocr_digest(row), issued,
+                            row.get("text_status") == OCR_DEFERRED),
+                           (lambda: reading) if read else
+                           (lambda: captured_text(blobs, row)),
+                           lambda: _bytes_kept(blobs, digest, ocr_digest(row))), reading, issued
     members = container_members(blobs, row)
     for member in () if members is None else members.members:
         # A message forwarded as an attachment is the inner message's: its sender is not
@@ -3272,7 +2679,7 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
             _kind("", part) == "message" for part in member.path.split("!/")[:-1])
         inner = None if issued == "own_mailbox_send" and forwarded else issued
         yield member, _fields_of((member.sha256, member.mime_type, member.name, None, inner,
-                                  False, False),
+                                  False),
                                  lambda m=member: m.reading,
                                  lambda: _bytes_kept(blobs, digest, None)), \
             member.reading if read else None, inner

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import io
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -17,7 +18,8 @@ from operating.tests import pg_testdb
 
 MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
               for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
-                           "0008_ontology_read.sql", "0009_schema_migrations.sql")]
+                           "0008_ontology_read.sql", "0009_schema_migrations.sql",
+                           "0010_ontology_words.sql", "0011_ontology_word_order.sql")]
 
 
 class ReloadRoomTests(unittest.TestCase):
@@ -116,6 +118,31 @@ class DeltaToPostgresTests(unittest.TestCase):
                 for part in [*_BY_OBJECT, "object_values"]:
                     self.assertEqual(_sqlite_rows(conn, part, oid), _pg_rows(cur, part, oid),
                                      f"{part}:{oid}")
+        # the owned objects' words are the full build's: a word of a replaced value is
+        # gone, a new one found (every term either generation indexes, every value row)
+        from operating.pg.ontology_reader import VALUE_WORD_JOIN
+        from operating.pg.sqlite_compat import PgCompatConnection
+        words = PgCompatConnection(self.dsn)
+        self.addCleanup(words.close)
+        words.words = True
+        conn.execute("CREATE VIRTUAL TABLE temp.v_new USING fts5vocab(main, value_text, row)")
+        terms = {r[0] for r in conn.execute("SELECT term FROM temp.v_new")}
+        with sqlite3.connect(f"file:{base}?mode=ro", uri=True) as old:
+            old.execute("CREATE VIRTUAL TABLE temp.v_old USING fts5vocab(main, value_text, row)")
+            terms |= {r[0] for r in old.execute("SELECT term FROM temp.v_old")}
+        sql = ("SELECT v.object_id, v.property, v.field_path, v.value FROM {} "
+               "WHERE value_text MATCH :q AND v.object_id IN (SELECT value FROM json_each(:o))")
+        mine = json.dumps(owned)
+        found = 0
+        for term in sorted(terms):
+            query = {"q": f'"{term}"', "o": mine}
+            expected = sorted(tuple(r) for r in conn.execute(sql.format(
+                "value_text f JOIN object_values_numbered v ON v.row_no = f.rowid"), query))
+            self.assertEqual(sorted(tuple(r) for r in words.execute(
+                sql.format(VALUE_WORD_JOIN), query)), expected, term)
+            found += bool(expected)
+        self.assertGreater(found, 2)
+
         again = ontology_delta.apply_layer(report["store"], self.dsn)
         self.assertEqual((again["applied"], again["reason"]), (False, "already_applied"))
         # a load in progress (a table not recorded loaded) takes no layer
@@ -130,7 +157,6 @@ class DeltaToPostgresTests(unittest.TestCase):
 
         # follow: what a state directory serves; the layer above is applied once, and a
         # served generation Postgres does not hold is reported, never half applied
-        import json
         state = Path(tempfile.mkdtemp())
         self.addCleanup(__import__("shutil").rmtree, state, True)
         (state / "projection" / "generations" / "00000001").mkdir(parents=True)
@@ -154,6 +180,270 @@ class DeltaToPostgresTests(unittest.TestCase):
         out = ontology_delta.follow(state, self.dsn, log=io.StringIO())
         self.assertEqual(out["state"], "waiting_for_readers")
 
+
+    def assert_cover(self, kept, read, families):
+        """``kept`` holds every fact a full read finds (a slice never narrower, so no
+        absence is claimed that a full read would withhold)."""
+        from operating import ontology_tools_traverse as tt
+        self.assertEqual(set(kept), set(read))
+        self.assertLessEqual(set(read["audience_keys"]), set(kept["audience_keys"]))
+        for name, keys in read["audiences"].items():
+            self.assertLessEqual(set(keys), set(kept["audiences"][name]))
+        for part, held in zip(read["event_types"], kept["event_types"]):
+            for name, kinds in part.items():
+                self.assertLessEqual(kinds, held[name])
+        for kind in tt._SLICE_ROWS:
+            for name, (marks, handles) in read[("slices", kind)].items():
+                held_marks, held_handles = kept[("slices", kind)][name]
+                for mark, until in marks.items():
+                    self.assertGreaterEqual(held_marks[mark], until)
+                if held_handles is not None:
+                    self.assertIsNotNone(handles)
+                    for handle, until in handles.items():
+                        self.assertGreaterEqual(held_handles[handle], until)
+        for family in families:
+            span, held = read[("cell_span", family)], kept[("cell_span", family)]
+            if span is not None:
+                self.assertTrue(held[0] <= span[0] and span[1] <= held[1], family)
+
+    def test_an_applied_layer_keeps_the_traverse_facts_of_the_version_it_made(self):
+        """The follower keeps the facts of every data version (``prime_pg_facts`` after a
+        load, ``fold_layer_facts`` per layer): a host opening after a layer loads them at
+        once, never reading them on a request, and they cover every fact a full read
+        finds (a slice never narrower, so no absence is claimed that a full read would
+        withhold); a layer applied while something else changed keeps nothing."""
+        from unittest import mock
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1, T2
+        from operating import ontology_tools as ot, ontology_tools_evidence as ev
+        from operating import ontology_tools_traverse as tt
+        from operating.pg import ontology_delta, ontology_load
+        from operating.pg.ontology_reader import PgStoreReader
+        import psycopg
+
+        facts_dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, facts_dir, True)
+        self.enterContext(mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": facts_dir}))
+        tt._LOADED.clear()
+        self.addCleanup(tt._LOADED.clear)
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+        self.assertTrue(tt.prime_pg_facts(self.dsn))          # the follower, after a load
+        fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        fixture.capture(T2)
+        layer = fixture.cycle(base)["store"]
+        applied = ontology_delta.apply_layer(layer, self.dsn)
+        self.assertTrue(applied["applied"] and applied["facts_kept"], applied)
+
+        def opened():
+            reader = PgStoreReader.open(self.dsn, only=False)
+            self.addCleanup(reader.close)
+            return tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy("plx", {})))
+
+        families = ev.STORE_DOCUMENT_FAMILIES
+        tt._LOADED.clear()   # a later process
+        later = opened()
+        self.assertTrue(later.prime_lazily(families))         # loaded at once, no scan
+        kept = dict(later.store.facts[1])
+        full = opened()
+        with full.store.lock:
+            full._audience_keys(), full._audiences(), full._event_type_maps()
+            for kind in tt._SLICE_ROWS:
+                full._slices(kind)
+            for family in families:
+                full.cell_span(family)
+        read = full.store.facts[1]
+        self.assert_cover(kept, read, families)
+        # something else changed after the version a fold reads from: nothing is folded
+        with psycopg.connect(self.dsn) as pg:
+            before = pg.execute("SELECT ontology.sq_data_version()").fetchone()[0]
+            pg.execute("UPDATE ontology.load_state SET updated_at = now() "
+                       "WHERE name = 'generation'")
+        self.assertFalse(tt.fold_layer_facts(self.dsn, layer, [], before - 1,
+                                             (f"delta:{Path(layer).name}", "delta_layers")))
+
+    def test_a_host_folds_the_layers_since_the_kept_version_instead_of_reading_it_whole(self):
+        """A layer applied without its facts kept (a follower that did not fold): the
+        host's background read folds the facts kept for the version before it over the
+        layer file, never scanning the store, and they cover a full read; a load_state
+        change that is no layer's, or a layer file no longer there, folds nothing."""
+        from unittest import mock
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1, T2
+        from operating import ontology_tools as ot, ontology_tools_evidence as ev
+        from operating import ontology_tools_traverse as tt
+        from operating.pg import ontology_delta, ontology_load
+        from operating.pg.ontology_reader import PgStoreReader
+        import psycopg
+
+        facts_dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, facts_dir, True)
+        self.enterContext(mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": facts_dir}))
+        tt._LOADED.clear()
+        self.addCleanup(tt._LOADED.clear)
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+        self.assertTrue(tt.prime_pg_facts(self.dsn))
+        fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        fixture.capture(T2)
+        layer = Path(fixture.cycle(base)["store"])
+        with mock.patch.object(tt, "fold_layer_facts", return_value=False):
+            applied = ontology_delta.apply_layer(layer, self.dsn)
+        self.assertTrue(applied["applied"] and not applied["facts_kept"], applied)
+
+        def opened():
+            reader = PgStoreReader.open(self.dsn, only=False)
+            self.addCleanup(reader.close)
+            return tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy("plx", {})))
+
+        families = ev.STORE_DOCUMENT_FAMILIES
+        tt._LOADED.clear()
+        self.assertFalse(opened()._kept_facts(*tt._store_identity(opened().store.conn),
+                                              families))   # nothing kept for this version
+        # the layer's file gone: nothing folded
+        self.assertFalse(tt.catch_up_pg_facts(self.dsn, tempfile.mkdtemp()))
+        host = opened()
+        with mock.patch.object(tt.TraverseTools, "prime",
+                               side_effect=AssertionError("read the store whole")):
+            host._pg_prime_reader(families, layer.parent)
+        tt._LOADED.clear()
+        later = opened()
+        self.assertTrue(later.prime_lazily(families))   # loaded at once, no scan
+        full = opened()
+        with full.store.lock:
+            full._audience_keys(), full._audiences(), full._event_type_maps()
+            for kind in tt._SLICE_ROWS:
+                full._slices(kind)
+            for family in families:
+                full.cell_span(family)
+        self.assert_cover(dict(later.store.facts[1]), full.store.facts[1], families)
+        # a change that is no layer's since the kept version: nothing folded
+        marker, now = tt._store_identity(later.store.conn)
+        tt._save_facts(marker, {**now, "data_version": str(int(now["data_version"]) - 1)},
+                       later.store.facts[1])
+        with psycopg.connect(self.dsn) as pg:
+            pg.execute("UPDATE ontology.load_state SET updated_at = now() "
+                       "WHERE name = 'generation'")
+        self.assertFalse(tt.catch_up_pg_facts(self.dsn, layer.parent))
+
+    def test_the_link_slice_read_natively_equals_the_composed_read_and_a_prime_is_loud(self):
+        """Real ontology 2026-11-07: the link slice composed 25M packed evidence texts
+        (minutes), and a prime over which a delta layer landed kept only its last facts
+        and returned False in silence. The native read gives the composed read's slice on
+        every evidence shape (plain, packed, a gated skeleton literal, an odd slot text,
+        an object skeleton, a literal percent, a backslash, a surplus slot); a prime over
+        a moving data version keeps nothing and says why, and reads again when allowed."""
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1
+        from operating import ontology_tools as ot, ontology_tools_traverse as tt
+        from operating.pg import ontology_load
+        from operating.pg.ontology_reader import PgStoreReader
+        import psycopg
+
+        facts_dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, facts_dir, True)
+        self.enterContext(mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": facts_dir}))
+        tt._LOADED.clear()
+        self.addCleanup(tt._LOADED.clear)
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+        texts = {9001: "graph-mail://m/1", 9002: "api://public.x/1", 9003: 'graph-mail://q"x',
+                 9004: "sharepoint://s/2", 9005: "teams-chat://c/3"}
+        skeletons = {9101: '["%s","%s"]', 9102: '["sharepoint://lit/9","%s"]',
+                     9103: '{"a":"%s"}', 9104: '["100%% api://p","%s"]',
+                     9105: '["x\\u0041","%s"]', 9106: '["%s"]'}
+        rows = [  # (id, type, evidence_id, ek, slots, evidence_handles, superseded_at)
+            ("L1", "A.b", 9101, 2, [9001, 9002], None, None),
+            ("L2", "A.b", 9102, 1, [9004], None, "2026-01-02T00:00:00Z"),
+            ("L3", "A.b", 9101, 2, [9003, 9004], None, None),   # an odd slot text
+            ("L4", "C.d", 9103, 1, [9005], None, None),         # not an array
+            ("L5", "C.d", 9104, 1, [9001], None, "2025-05-05"),
+            ("L6", "C.d", 9105, 1, [9004], None, None),
+            ("L7", "C.d", 9106, 2, [9002, 9005], None, None),   # a surplus slot
+            ("L8", "E.f", None, 0, [], '["graph-mail://p/7"]', "not a time"),
+            ("L9", "E.f", 9101, 3, [9004, 9005, 9001], None, None),  # the reason's slot
+        ]
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for tid, text in texts.items():
+                pg.execute("INSERT INTO ontology.link_texts VALUES (%s, %s)", (tid, text))
+            for kid, text in skeletons.items():
+                pg.execute("INSERT INTO ontology.link_skeletons VALUES (%s, %s)", (kid, text))
+            for lid, ltype, evidence, ek, slots, plain, until in rows:
+                pg.execute(
+                    "INSERT INTO ontology.link_rows (link_id, link_type, from_object, "
+                    "to_object, tier, binding_kind, why_not, markings, recorded_at, reason, "
+                    "evidence_id, ek, slots, evidence_handles, superseded_at) VALUES "
+                    "(%s, %s, 'a', 'b', 'T1', 'key', '', %s, '2026-01-01', 'r', %s, %s, %s, "
+                    "%s, %s)", (lid, ltype, f'["m{lid[-1]}"]', evidence,
+                                ek if lid != "L9" else 2, slots, plain, until))
+
+        def slice_of(native):
+            reader = PgStoreReader.open(self.dsn, only=False)
+            self.addCleanup(reader.close)
+            if not native:
+                reader.slice_rows = lambda kind, schemes: None
+            else:
+                self.assertIsNotNone(reader.slice_rows("link", sorted(tt.GATED_SCHEMES)))
+            tools = tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy("plx", {})))
+            with reader.lock:
+                return tools._slices("link")
+
+        composed = slice_of(False)
+        self.assertEqual(slice_of(True), composed)
+        self.assertEqual(set(composed["A.b"][1]), {"graph-mail://m/1", "sharepoint://s/2",
+                                                   "sharepoint://lit/9"})
+        # an object skeleton and a surplus slot give nothing; an escaped literal (read
+        # as before) gives its slot
+        self.assertEqual(set(composed["C.d"][1]), {"graph-mail://m/1", "sharepoint://s/2"})
+
+        # a writer moves the data version while the facts are read: they are read over
+        # one snapshot and kept, in one attempt, under the version they were read at
+        # (never under the version the writer made); that one is then read anew
+        read = tt._fact_value
+        moved = []
+
+        def moving(tools, key):
+            if not moved:
+                moved.append(key)
+                with psycopg.connect(self.dsn, autocommit=True) as pg:
+                    pg.execute("UPDATE ontology.load_state SET updated_at = now() + "
+                               "interval '1 second' WHERE name = 'generation'")
+            return read(tools, key)
+
+        with psycopg.connect(self.dsn) as pg:
+            before = pg.execute("SELECT ontology.sq_data_version()").fetchone()[0]
+        with mock.patch.object(tt, "_fact_value", moving):
+            self.assertTrue(tt.prime_pg_facts(self.dsn, text_store=base, attempts=1))
+        self.assertTrue(moved)
+        marker = [str(Path(facts_dir) / p) for p in os.listdir(facts_dir)
+                  if p.startswith("pg-") and not p.endswith(".lock")][0]
+        self.assertEqual(tt._kept_identity(marker)["data_version"], str(before))
+        with psycopg.connect(self.dsn) as pg:
+            self.assertGreater(pg.execute("SELECT ontology.sq_data_version()").fetchone()[0],
+                               before)
+        self.assertFalse(tt.catch_up_pg_facts(self.dsn, facts_dir))   # no layer's change
+        self.assertTrue(tt.prime_pg_facts(self.dsn, text_store=base, attempts=1))
+        tt._LOADED.clear()
+        later = PgStoreReader.open(self.dsn, only=False, text_store=base)
+        self.addCleanup(later.close)
+        tools = tt.TraverseTools(ot.OntologyTools(later, ot.ReadPolicy("plx", {})))
+        self.assertTrue(tools.prime_lazily(__import__(
+            "operating.ontology_tools_evidence", fromlist=["x"]).STORE_DOCUMENT_FAMILIES))
 
     def test_over_a_postgres_base_each_cycle_brings_only_its_changes_and_nothing_folds(self):
         """``PLX_DELTA_BASE_PG``: the closure reads Postgres, each cycle's layer is applied

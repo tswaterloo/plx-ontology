@@ -633,6 +633,28 @@ class FindTests(ContractMixin, unittest.TestCase):
         self.assertTrue(named(whole, {"PurchaseOrder": ()}, stale=True))
         self.assertFalse(named(whole, {"PurchaseOrder": ()}))
 
+    def test_unparsed_carriers_over_many_bindings_are_probed_alike(self):
+        """The readable checks of many bindings run in batches (one statement for up to
+        400): a readable binding among hundreds that are not is named once, to a reader of
+        it only, wherever in the batches it falls."""
+        whole = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales"}})
+        other = ot.ReadPolicy(tenant="plx", audiences={"bc:*": {"sales"}})
+        for count in (1, 10, 899):
+            store = build()
+            where = [f"PurchaseOrder.po_number@portal.none_{n:04d}" for n in range(count)]
+            where.insert(count // 2, "PurchaseOrder.po_number@portal.app_purchase_order")
+            store.conn.execute("INSERT INTO store_meta VALUES ('build_report', ?)", (
+                json.dumps({"gaps": [{"code": "parse_not_identifier", "where": w,
+                                      "count": 1, "samples": []} for w in where]}),))
+            store.conn.commit()
+            for policy, expected in ((whole, 1), (other, 0)):
+                result = self.ok(tools(store, policy=policy), "plx.find",
+                                 {"query": "PO 99999"}, SALES)
+                self.assertEqual(sum("PurchaseOrder.po_number" in g["detail"]
+                                     for g in result["gaps"]
+                                     if g["reason"] == "identifier_unparsed"),
+                                 expected, (count, policy))
+
     def test_a_kind_narrowed_away_without_a_type_never_proves_absence(self):
         """Review f732d09 M1: PO1000999 also reads as a Petra PO; narrowing to BC
         document numbers without object_type leaves PurchaseOrder.po_number unsearched,

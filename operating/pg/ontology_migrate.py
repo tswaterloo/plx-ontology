@@ -164,8 +164,10 @@ def _whole(cur: Any) -> str | None:
     return (row[0] or {}).get("content_digest") if needed <= done else None
 
 
-_TABLES = ("value_cells", "value_sources", "identifiers", "object_versions",
-           "object_removals", "objects")
+# the affected bindings' rows a migration deletes (a value source's packed record mark
+# with it: the layer's sources record their own, migration 0010's word index reads them)
+_TABLES = ("value_cells", "packed_sources", "value_sources", "identifiers",
+           "object_versions", "object_removals", "objects")
 
 
 def apply_migration(layer: str | Path | None, dsn: str, *,
@@ -284,11 +286,88 @@ def _apply_steps(cur: Any, layer: Path, record: Mapping[str, Any],
     finally:
         conn.close()
     out["copied.link_rows"] = copied["copied.link_rows"]
+    if record.get("values"):
+        _apply_step_values(cur, layer, record["values"], out)
     out["seconds"] = round(time.monotonic() - t, 3)
     out["reproject"] = reproject(cur, _newer(cur, record["scope"], record["delta_mark"]),
                                  "steps:" + record["id"])
     cur.execute("INSERT INTO ontology.store_meta (key, value) VALUES ('steps_digest', %s) "
                 "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (record["to"],))
+
+
+def _apply_step_values(cur: Any, layer: Path, owned: Sequence[Mapping[str, Any]],
+                       out: dict[str, Any]) -> None:
+    """The values the re-run steps own (``step_migrate.Spec.values``): the served ones
+    (parser ``post_project`` of the binding on the type's objects, found from the type's
+    versions by an id range) deleted, the layer's copied in onto the served versions they
+    name. A layer value whose version Postgres does not hold refuses the migration (rolled
+    back): a value is never attached to another version."""
+    from ontology import store_ddl
+    from ontology.step_migrate import VALUE_PARSER
+    from operating.pg.ontology_delta import _copy, _match
+    from operating.pg.ontology_load import NUMERIC, _number
+
+    deleted = 0
+    cur.execute("CREATE TEMP TABLE step_srcs (src bigint PRIMARY KEY) ON COMMIT DROP")
+    for o in owned:
+        cur.execute(
+            "INSERT INTO step_srcs SELECT DISTINCT s.src FROM ontology.object_versions v "
+            "JOIN ontology.value_sources s ON s.ver = v.ver JOIN ontology.value_cells c "
+            "ON c.src = s.src JOIN ontology.value_kinds k ON k.kind = c.kind WHERE "
+            "v.object_id COLLATE \"C\" >= %s AND v.object_id COLLATE \"C\" < %s AND "
+            "s.binding_id = %s AND k.parser = %s ON CONFLICT DO NOTHING",
+            (o["prefix"], o["end"], o["binding"], VALUE_PARSER))
+        cur.execute(
+            "DELETE FROM ontology.value_cells c USING ontology.value_kinds k WHERE "
+            "k.kind = c.kind AND k.parser = %s AND c.src IN (SELECT src FROM step_srcs)",
+            (VALUE_PARSER,))
+        deleted += cur.rowcount
+    cur.execute("DELETE FROM ontology.value_sources s WHERE s.src IN (SELECT src FROM "
+                "step_srcs) AND NOT EXISTS (SELECT 1 FROM ontology.value_cells c WHERE "
+                "c.src = s.src)")
+    out["deleted.values"] = deleted
+    conn = sqlite3.connect(f"file:{layer}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(f"SELECT {', '.join(store_ddl.VALUE_COLUMNS)} FROM object_values "
+                            "ORDER BY object_id, l1_handle, binding_id, property").fetchall()
+    finally:
+        conn.close()
+    col = {c: i for i, c in enumerate(store_ddl.VALUE_COLUMNS)}
+    versions: dict[tuple[str, str], tuple[int, str, str]] = {}
+    for r in rows:
+        key = (r[col["object_id"]], r[col["l1_handle"]])
+        if key in versions:
+            continue
+        cur.execute("SELECT ver, digest, lineage FROM ontology.object_versions WHERE "
+                    "object_id = %s AND l1_handle = %s", key)
+        found = cur.fetchall()
+        if len(found) != 1:
+            raise Refused("step_value_version_not_served")
+        versions[key] = found[0]
+    sources, fields, kinds = [], [], []
+    for n, r in enumerate(rows):
+        ver, digest, lineage = versions[(r[col["object_id"]], r[col["l1_handle"]])]
+        # digest / lineage stored only where they are not the version's (migration 0007)
+        sources.append((n, ver, r[col["binding_id"]],
+                        None if r[col["digest"]] == digest else r[col["digest"]],
+                        None if r[col["lineage"]] == lineage else r[col["lineage"]],
+                        r[col["recorded_at"]], r[col["superseded_at"]]))
+        fields.append((n, *(r[col[c]] for c in store_ddl.FIELD_COLUMNS)))
+        kinds.append((n, *(r[col[c]] if c != "markings" else (r[col[c]] or "[]")
+                           for c in store_ddl.KIND_COLUMNS)))
+    src = _match(cur, "value_sources", "src", "value_sources_src",
+                 ("ver", "binding_id", "digest", "lineage", "recorded_at", "superseded_at"),
+                 sources)
+    field = _match(cur, "value_fields", "field", "value_fields_field",
+                   store_ddl.FIELD_COLUMNS, fields)
+    kind = _match(cur, "value_kinds", "kind", "value_kinds_kind", store_ddl.KIND_COLUMNS,
+                  kinds)
+    out["copied.values"] = _copy(
+        cur, "value_cells", ("src", "field", "kind", "value", "value_num", "currency",
+                             "currency_citation"),
+        ((src[n], field[n], kind[n], r[col["value"]],
+          _number(r[col["value"]]) if r[col["value_type"]] in NUMERIC else None,
+          r[col["currency"]], r[col["currency_citation"]]) for n, r in enumerate(rows)))
 
 
 def _apply_units(cur: Any, layer: Path, record: Mapping[str, Any],

@@ -796,7 +796,9 @@ class CaseHostTools:
         not once per message; every audience, owner ACL and message decision is still
         made per item."""
         swapped = False
-        if self._depth == 0 and self._reader is not None and self.store_path is not None:
+        if self._depth == 0 and getattr(self._reader, "only", False):
+            self._check_postgres()
+        elif self._depth == 0 and self._reader is not None and self.store_path is not None:
             now = _file_identity(self.store_path)
             if now is not None and (now != self._store_identity or self._store_moved()):
                 self.close()
@@ -820,11 +822,37 @@ class CaseHostTools:
         finally:
             self._depth -= 1
 
+    def _check_postgres(self) -> None:
+        """At each request when Postgres is the only store (``PLX_ONTOLOGY_PG=only``):
+        refuse it unless Postgres holds the ontology whole (``PostgresNotWhole``: the
+        call fails, never an answer over a store being loaded), and when the ontology
+        changed since the last request (a delta layer, a migration) take its audience
+        keys again, so the policy is decided over every unit it holds (one decided over
+        fewer keys only denies more)."""
+        reader = self._reader
+        from operating.pg.ontology_reader import PostgresNotWhole
+        try:
+            reader.check_whole()
+            stamp = reader.state_stamp()
+        except (PostgresNotWhole, sqlite3.Error):
+            self.close()
+            raise
+        if stamp != self._store_identity:
+            self._store_identity = stamp
+            from .ontology_tools_traverse import kept_audience_keys
+            kept_audience_keys(reader)   # the version's kept facts: no object scan
+            with reader.lock:
+                keys = reader.audience_keys()
+            self._base_reader_keys = list(keys)
+            self._reader_keys = list(keys)
+
     def _store_moved(self) -> bool:
         """Whether the store this host reads should change between SQLite and Postgres
         (``PLX_ONTOLOGY_PG``: Postgres took the served generation in, by a load or a swap,
         or no longer holds it): checked at most every ``PG_CHECK_SECONDS``."""
         from operating.pg import ontology_reader
+        if ontology_reader.pg_only() or getattr(self._reader, "only", False):
+            return False   # Postgres alone: no generation to move to (``_check_postgres``)
         if not ontology_reader.enabled() and not hasattr(self._reader, "text_reader"):
             return False
         now = time.monotonic()
@@ -889,14 +917,27 @@ class CaseHostTools:
             from ontology.resolve import ReviewedAliases, SourceResolver
             self._temp = tempfile.TemporaryDirectory(prefix="plx-case-find-")
             work = Path(self._temp.name)
+            from operating.pg import ontology_reader
+            only = ontology_reader.pg_only()
             store = self.store_path
-            if store is None:
+            if only:
+                pass   # Postgres is the only store: no SQLite file is read
+            elif store is None:
                 store = work / "projection.sqlite"
                 build_store(store, self.schema, {}, normalizer=identifiers.normalize)
             else:   # before opening: a swap in between is seen by the next request
                 self._store_identity = _file_identity(store)
-            from operating.pg import ontology_reader
-            if self.store_path is not None and ontology_reader.serves(store):
+            if only:
+                # PLX_ONTOLOGY_PG=only: Postgres is the source of truth (values, links,
+                # documents and the word index); not whole: PostgresNotWhole, no tools
+                try:
+                    reader = self._reader = ontology_reader.PgStoreReader.open(only=True)
+                except BaseException:
+                    self._temp.cleanup()
+                    self._temp = None
+                    raise
+                self._store_identity = reader.state_stamp()
+            elif self.store_path is not None and ontology_reader.serves(store):
                 # PLX_ONTOLOGY_PG: the Postgres ontology, current to the last delta
                 # layer (no overlay); the served generation keeps the word index
                 reader = self._reader = ontology_reader.PgStoreReader.open(text_store=store)
@@ -942,7 +983,7 @@ class CaseHostTools:
                 freshness_clock=self.freshness_clock)
             # The empty placeholder store is not a projection: filter/listing finds
             # on it report projection_not_built and complete=false.
-            self._tools.projection_built = self.store_path is not None
+            self._tools.projection_built = self.store_path is not None or only
         return self._tools
 
     def policy_now(self, actor: Any) -> ReadPolicy:
@@ -1439,7 +1480,8 @@ class CaseHostTools:
         (``TraverseTools.prime``). A host calls this when it starts serving; a request
         that finds a newer generation does it again before its call (``request``
         dropped the table). Never raises for an unreadable store."""
-        if self.store_path is None:
+        from operating.pg import ontology_reader
+        if self.store_path is None and not ontology_reader.pg_only():
             return
         with self.request():
             self._open_table()

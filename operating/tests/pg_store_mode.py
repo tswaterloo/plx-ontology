@@ -16,6 +16,7 @@ from __future__ import annotations
 import atexit
 import io
 import os
+import re
 import tempfile
 from pathlib import Path
 import sqlite3
@@ -26,8 +27,10 @@ from operating.tests import pg_testdb
 
 MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
               for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
-                           "0008_ontology_read.sql", "0009_schema_migrations.sql")]
+                           "0008_ontology_read.sql", "0009_schema_migrations.sql",
+                           "0010_ontology_words.sql", "0011_ontology_word_order.sql")]
 _STATE: dict = {}
+_WRITE = re.compile(r"\s*(INSERT|UPDATE|DELETE|REPLACE)\b", re.I)
 _Following = None
 
 
@@ -102,6 +105,10 @@ def install() -> None:
             self._source_path, self._source = path, source
 
         def execute(self, sql, parameters=()):  # noqa: ANN001
+            if _WRITE.match(sql):
+                # a test's own row written through the reader's connection: into its
+                # SQLite store, which the next read loads again (Postgres is read only)
+                return self._source.execute(sql, parameters)
             try:
                 _load(self._source_path, self._source)
             except sqlite3.ProgrammingError:   # the test closed its store
@@ -131,12 +138,44 @@ def install() -> None:
     ot.StoreReader.__init__ = init
 
 
+# Tests of the SQLite store's own mechanics, which a Postgres store has no part of: a query
+# plan or a word-index narrowing step of SQLite's (Postgres reads the same rows by its own
+# plan, which the read's answer, not its steps, is compared on) and the facts kept beside a
+# store file (a Postgres store has no file; each process reads its facts once, in the
+# background). Skipped here with their reason; they run on SQLite in the plain suites.
+SQLITE_MECHANICS = {
+    "ReviewL81Tests.test_text_passes_narrowed_by_layout_return_what_the_word_scan_returns":
+        "spies on SQLite's layout narrowing step",
+    "DocumentsTests.test_a_hits_text_is_read_by_its_versions_citation_never_by_scanning_"
+    "every_chunk": "asserts SQLite's query plan",
+    "KeptFactsTests.": "facts kept beside a SQLite store file",
+}
+
+
+def _skip_sqlite_mechanics(suite: unittest.TestSuite) -> unittest.TestSuite:
+    out = unittest.TestSuite()
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            out.addTest(_skip_sqlite_mechanics(test))
+            continue
+        name = ".".join(test.id().split(".")[-2:])
+        reason = next((why for key, why in SQLITE_MECHANICS.items()
+                       if name == key or (key.endswith(".") and name.startswith(key))), None)
+        if reason is not None:
+            _STATE["skipped"] = _STATE.get("skipped", 0) + 1
+            setattr(test, test._testMethodName,
+                    unittest.skip(f"SQLite store mechanics: {reason}")(lambda: None))
+        out.addTest(test)
+    return out
+
+
 def main(argv: list[str]) -> int:
     install()
-    suite = unittest.defaultTestLoader.loadTestsFromNames(argv)
+    suite = _skip_sqlite_mechanics(unittest.defaultTestLoader.loadTestsFromNames(argv))
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     print(f"pg_store_mode: {_STATE.get('readers', 0)} readers on Postgres, "
-          f"{_STATE.get('loads', 0)} store loads", file=sys.stderr)
+          f"{_STATE.get('loads', 0)} store loads, {_STATE.get('skipped', 0)} SQLite-mechanics "
+          "tests skipped", file=sys.stderr)
     return 0 if result.wasSuccessful() else 1
 
 

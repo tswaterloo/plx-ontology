@@ -640,8 +640,8 @@ class Worker:
                 self.running += 1
                 try:
                     with self.scope():
-                        future.set_result(_bounded_job(future, job, self._workspace(
-                            reader.session)))
+                        future.set_result(_profiled(job, self._workspace(
+                            reader.session), future))
                 except BaseException as error:  # noqa: BLE001 - handed to the route
                     future.set_exception(error)
                 finally:
@@ -715,6 +715,7 @@ def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
             logging.getLogger("operator_api.warm").info(
                 "warm %s read in %.1f s (%.0f s after start)", name,
                 time.monotonic() - began, time.monotonic() - STARTED)
+    run.plx_name = "warm " + name   # type: ignore[attr-defined]
     return run
 
 
@@ -726,8 +727,56 @@ def submit(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reader
         return future
     with _SEQ_LOCK:
         seq = next(_SEQ)
+    future.plx_queued = time.monotonic()   # type: ignore[attr-defined]
     jobs.put((priority, seq, (future, reader, job)))
     return future
+
+
+# ``PLX_STAGE_TIMING=1``: every read job's queue wait and run time is logged
+# (``operator_api.stages``); ``PLX_STAGE_PROFILE=<dir>``: a job that runs longer than
+# ``PLX_STAGE_PROFILE_SECONDS`` (default 5) leaves its cProfile there. Off by default.
+STAGE_LOG = logging.getLogger("operator_api.stages")
+
+
+def stage_timing() -> bool:
+    return os.environ.get("PLX_STAGE_TIMING") == "1"
+
+
+def _job_name(job: Callable[[Any], Any]) -> str:
+    return getattr(job, "plx_name", None) or getattr(job, "__qualname__", "job")
+
+
+def _profiled(job: Callable[[Any], Any], view: Any, future: Future) -> Any:
+    """``job(view)``, profiled into ``PLX_STAGE_PROFILE`` when that is set and the job
+    runs past ``PLX_STAGE_PROFILE_SECONDS``; its queue wait and run time logged when
+    ``PLX_STAGE_TIMING`` is set."""
+    folder = os.environ.get("PLX_STAGE_PROFILE")
+    timed = stage_timing()
+    if not folder and not timed:
+        return _bounded_job(future, job, view)
+    began = time.monotonic()
+    profile = None
+    if folder:
+        import cProfile
+        profile = cProfile.Profile()
+        try:
+            profile.enable()
+        except ValueError:   # another thread's job holds the one profiler
+            profile = None
+    try:
+        return _bounded_job(future, job, view)
+    finally:
+        ran = time.monotonic() - began
+        if profile is not None:
+            profile.disable()
+            if ran >= float(os.environ.get("PLX_STAGE_PROFILE_SECONDS") or 5):
+                Path(folder).mkdir(parents=True, exist_ok=True)
+                name = "%d-%s-%.0fs.prof" % (int(time.time() * 1000), re.sub(
+                    r"[^A-Za-z0-9_.]+", "_", _job_name(job))[:60], ran)
+                profile.dump_stats(str(Path(folder) / name))
+        if timed:
+            STAGE_LOG.info("job %s waited %.2f s, ran %.2f s", _job_name(job),
+                           began - getattr(future, "plx_queued", began), ran)
 
 
 class _Watched:
@@ -1190,7 +1239,11 @@ class WorkspaceBackend(ActionsMixin):
 
     def warm_store(self) -> None:
         """The served generation's reader-independent facts (its audience keys and BC
-        units), read once now so no reader's first request pays for them."""
+        units), read once now so no reader's first request pays for them. Postgres the
+        only store: each host's reader reads its own (``CaseHostTools._check_postgres``)."""
+        from operating.pg import ontology_reader
+        if ontology_reader.pg_only():
+            return
         if self.store_path is None or not self.store_path.is_file():
             return
         from operating.ontology_host import _file_identity, served_bc_units
@@ -1270,7 +1323,12 @@ class WorkspaceBackend(ActionsMixin):
     # ---- freshness ----------------------------------------------------------------------
 
     def _store_built_at(self) -> Optional[str]:
-        """The served projection's build time (``store_meta.built_at``), or None."""
+        """The served projection's build time (``store_meta.built_at``), or None (Postgres
+        the only store: the build time of the generation it was loaded from)."""
+        from operating.pg import ontology_reader
+        if ontology_reader.pg_only():
+            meta = ontology_reader.store_meta(("built_at",)) or {}
+            return meta.get("built_at") if isinstance(meta.get("built_at"), str) else None
         path = self.store_path or (self.state_dir / "projection" / "ontology.sqlite"
                                    if self.state_dir else None)
         if path is None or not path.is_file():
@@ -1288,7 +1346,16 @@ class WorkspaceBackend(ActionsMixin):
 
     def _store_freshness(self) -> Optional[list[dict[str, Any]]]:
         """The served projection's per-source freshness entries (``store_meta``), None
-        when there is no store or it cannot be read."""
+        when there is no store or it cannot be read. Postgres the only store: its own
+        ``store_meta``, which every applied delta layer keeps current (no overlay)."""
+        from operating.pg import ontology_reader
+        if ontology_reader.pg_only():
+            meta = ontology_reader.store_meta(("freshness",))
+            try:
+                raw = json.loads(meta["freshness"]) if meta and "freshness" in meta else None
+            except (ValueError, TypeError):
+                return None
+            return _freshness_entries(raw)
         path = self.store_path or (self.state_dir / "projection" / "ontology.sqlite"
                                    if self.state_dir else None)
         if path is None or not path.is_file():
@@ -3206,6 +3273,12 @@ class WorkspaceBackend(ActionsMixin):
         ``quick``: a first read without the checks (``ObjectPage.complete`` false), unless
         the full page is already kept; its sections start at once on the section pool,
         beside the quick read, so they are kept (or in progress) when the app asks."""
+        began = time.monotonic()
+
+        def stage(name: str) -> None:
+            if stage_timing():
+                STAGE_LOG.info("object page %s at %.2f s", name, time.monotonic() - began)
+
         def read() -> m.ObjectPage:
             if quick:
                 self._sections_ahead(reader, object_type, object_id)
@@ -3218,21 +3291,26 @@ class WorkspaceBackend(ActionsMixin):
                 first = self.reads.run(reader, lambda view: object_page(
                     self, view, object_type, object_id, quick=True),
                     timeout=PAGE_TIMEOUT_SECONDS)
+                stage("quick read")
                 if not first.complete:
                     waits = self._sections_on_pool(reader, object_type, object_id,
                                                    POOL_SECTIONS)
                     self.reads.run(reader, lambda view: page_sections(
                         self, view, object_type, object_id, PLAN_SECTIONS),
                         timeout=PAGE_TIMEOUT_SECONDS)
+                    stage("plan sections")
                     waits()
+                    stage("pool sections")
             page = self.reads.run(reader, lambda view: object_page(self, view, object_type,
                                                                    object_id, quick=quick),
                                   timeout=PAGE_TIMEOUT_SECONDS)
+            stage("full read")
             # On the quick read too: the app shows the quick read with its sections merged,
             # never a full page, so the customers sharing the name come with the first read.
             if page.customer is not None:
                 page = page.model_copy(update={"customer": page.customer.model_copy(
                     update={"same_name": self.same_name(reader, page)})})
+                stage("same name")
             return page
 
         # a page not read in time (a delta layer landed, nothing kept yet) serves this

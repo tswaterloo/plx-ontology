@@ -152,6 +152,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 import datetime as dt
 from functools import cached_property, lru_cache
+import copy
 import hashlib
 import json
 import os
@@ -646,7 +647,11 @@ class TraverseTools:
                     self._slices(kind)
                 for family in cell_families:
                     self.cell_span(family)
-                if kept is not None:
+                # only facts read whole over one store state: a store that moved part
+                # way (a Postgres layer applied meanwhile) restarted them, and keeping
+                # what was left kept a file no reader could use
+                if kept is not None and set(_fact_keys(cell_families)) <= set(
+                        self.store.facts[1]):
                     _save_facts(*kept, self.store.facts[1])
         except sqlite3.Error:
             self.store.facts = None
@@ -660,6 +665,7 @@ class TraverseTools:
         that read (``_store_cached``, at most ``BACKGROUND_WAIT_SECONDS``) instead of
         scanning the store itself. A store under ``LAZY_MIN_BYTES`` is primed at once
         (``prime``). True when the facts were loaded now."""
+        self._families = tuple(cell_families)
         try:
             with self.store.lock:
                 if self.store.format_problem() is not None:
@@ -669,6 +675,17 @@ class TraverseTools:
                     return False   # a store that keeps no facts: each read as before
                 if self._kept_facts(*kept, cell_families):
                     return True
+                if getattr(self.store.conn, "_pg", None) is not None:
+                    # Postgres: no file for worker processes to read; the facts are read
+                    # by a thread on a reader of its own and kept (a whole-store scan
+                    # per fact: on the request path each one held a call for minutes)
+                    layers = _delta_folder(self.store)
+                    self._pending = (kept, tuple(cell_families),
+                                     _background_prime(kept, cell_families,
+                                                       read=lambda families: (
+                                                           self._pg_prime_reader(
+                                                               families, layers))))
+                    return False
             if os.path.getsize(kept[0]) < LAZY_MIN_BYTES:   # a small store: read them now
                 self.prime(cell_families)
                 return True
@@ -677,19 +694,60 @@ class TraverseTools:
         self._pending = (kept, tuple(cell_families), _background_prime(kept, cell_families))
         return False
 
+    def _pg_prime_reader(self, cell_families: Sequence[str],
+                         layers: Path | None = None) -> None:
+        """The facts of the database's data version kept: by one process of the host at a
+        time (a lock beside the marker file; the others then find them kept), folded from
+        an earlier version's facts over the delta layers applied since
+        (``catch_up_pg_facts``, seconds a layer) when it can, else read in full by
+        ``prime`` on a Postgres reader of its own (this one's lock stays free for the
+        calls meanwhile)."""
+        from operating.pg.ontology_reader import PgStoreReader
+        text = getattr(self.store, "text_reader", None)
+        try:   # the host's word index generation, as ``prime_pg_facts`` is given it
+            text_store = next((row[2] for row in text.conn.execute("PRAGMA database_list")
+                               if row[1] == "main"), None) if text is not None else None
+        except sqlite3.Error:
+            text_store = None
+        reader = PgStoreReader.open(self.store.conn.dsn,
+                                    only=bool(getattr(self.store, "only", False)),
+                                    text_store=text_store or None,
+                                    statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS)
+        try:
+            kept = _store_identity(reader.conn)
+            with _facts_lock(kept[0] if kept is not None else None):
+                kept = _store_identity(reader.conn)
+                if kept is not None and _read_facts(*kept) is not None:
+                    return   # another process kept them meanwhile
+                if layers is not None and catch_up_pg_facts(reader.conn.dsn, layers):
+                    return
+                base = copy.copy(self.base)
+                base.store = reader
+                with _one_snapshot(reader.conn):
+                    TraverseTools(base).prime(cell_families)
+        finally:
+            reader.close()
+
     def _kept_facts(self, store: str, identity: Mapping[str, Any],
                     cell_families: Sequence[str]) -> bool:
         """Fill the store's facts from the file kept beside it: only when it was read
         from this very file (``_store_identity``) by this fact code and holds every fact
         ``prime`` reads; anything else (absent, foreign, corrupt) loads nothing."""
+        conn = self.store.conn
+        stamp = (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
+        if getattr(conn, "_pg", None) is not None \
+                and str(identity.get("data_version")) != str(stamp[0]):
+            # Postgres moved on since ``identity`` was read (a delta layer landed while a
+            # request waited on the background read): that version's facts are never
+            # stamped as the current one's, or a layer's new marking or gated handle
+            # could read as absent instead of hidden
+            return False
         facts = _load_facts(store, identity)
         wanted = {"audience_keys", "audiences", "event_types",
                   *(("slices", kind) for kind in _SLICE_ROWS),
                   *(("cell_span", family) for family in cell_families)}
         if facts is None or not wanted <= set(facts):
             return False
-        conn = self.store.conn
-        stamp = (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
         self.store.facts = (stamp, facts)
         self.store.remember_audience_keys(facts["audience_keys"])
         return True
@@ -701,11 +759,34 @@ class TraverseTools:
         that hold for every reader are kept (each call applies its reader's grants to
         them), and only those whose read scans a whole table: no index leads with an
         audience key or a link type, so reading them per call grew with the store."""
+        facts = self._current_facts(key)
+        if key not in facts:
+            tick = time.perf_counter()
+            facts[key] = read()
+            _metered("store", ".".join(key) if isinstance(key, tuple) else key,
+                     time.perf_counter() - tick)
+        return facts[key]
+
+    def _current_facts(self, key: Any) -> dict[Any, Any]:
+        """The facts kept for the store state this reader sees now (``_store_cached``),
+        reading none itself: on Postgres, after a delta layer moved the data version, the
+        new version's facts once one process of the host has folded them from the
+        version before over the layers since or read them (``prime_lazily``,
+        single-flight across processes) and this one waited for them, when ``key`` is
+        not already among them. Never an earlier version's facts: they decide what a
+        reader may not see and what is absent, and a layer's new marking, audience or
+        gated handle would read as absent instead of hidden."""
         conn = self.store.conn
         stamp = (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
         facts = self.store.facts
         if facts is None or facts[0] != stamp:
             facts = self.store.facts = (stamp, {})
+            families = getattr(self, "_families", None)
+            if families is not None and getattr(conn, "_pg", None) is not None:
+                # Postgres moved on (a delta layer): the new version's kept facts (the
+                # follower keeps them, ``fold_layer_facts``), else read in the background
+                self.prime_lazily(families)
+                facts = self.store.facts
         pending = getattr(self, "_pending", None)
         if key not in facts[1] and pending is not None:
             # facts being read in the background (``prime_lazily``): wait for them
@@ -714,12 +795,23 @@ class TraverseTools:
             self._pending = None
             if self._kept_facts(path, identity, families):
                 facts = self.store.facts
-        if key not in facts[1]:
-            tick = time.perf_counter()
-            facts[1][key] = read()
-            _metered("store", ".".join(key) if isinstance(key, tuple) else key,
-                     time.perf_counter() - tick)
-        return facts[1][key]
+            elif getattr(conn, "_pg", None) is not None:
+                # a layer landed during the wait: the current version's facts when kept
+                # (the follower folds them), else read for it in the background and
+                # waited on once more; this key is read directly when that misses too
+                self.prime_lazily(families)
+                again = getattr(self, "_pending", None)
+                if again is not None:
+                    (path, identity), families, done = again
+                    done.wait(BACKGROUND_WAIT_SECONDS)
+                    self._pending = None
+                    self._kept_facts(path, identity, families)
+                current = (conn.execute("PRAGMA data_version").fetchone()[0],
+                           conn.total_changes)
+                if self.store.facts is None or self.store.facts[0] != current:
+                    self.store.facts = (current, {})
+                facts = self.store.facts
+        return facts[1]
 
     @staticmethod
     def _laps(tool: str) -> Callable[[str], None]:
@@ -1473,6 +1565,9 @@ class TraverseTools:
             held = cache.get(key)
         if held is not None and held[0] > now:
             return held[1]
+        # what the gate reads of each handle read ahead in batches (decides nothing: every
+        # handle is still gated one by one below), instead of one read per handle
+        self.base.prefetch_items(scope.actor, sorted(handles))
         failed = conn.execute(f"SELECT 1 FROM json_each(?) WHERE NOT {scope.gate}(value) "
                               "LIMIT 1", (listed,)).fetchone() is not None
         with lock:
@@ -1511,9 +1606,18 @@ class TraverseTools:
         state (``_store_cached``): no facts are kept beside a file there and every delta
         layer is a new store state, so the whole-table read (minutes over its 25M links,
         each composing its evidence text) ran again in every process after every layer;
-        a type's own rows are the same rows ``_slices`` aggregates for it."""
+        a type's own rows are the same rows ``_slices`` aggregates for it.
+
+        The whole slice is served when the facts of the store state are kept
+        (``_current_facts``: one process of the host folds them per data version, the
+        others wait for the kept file): read per type in every process, a big type's
+        versions (a minute's scan) ran again in every host after every layer, all at
+        once."""
         if not getattr(self.store.conn, "postgres", False):
             return self._slices(kind)
+        whole = self._current_facts(("slices", kind)).get(("slices", kind))
+        if whole is not None:
+            return {name: whole[name] for name in set(names) if name in whole}
         out = {}
         for name in sorted(set(names)):
             found = self._store_cached(("slice_of", kind, name),
@@ -1550,11 +1654,16 @@ class TraverseTools:
         lets them be checked. One read of the table per store state, for every reader."""
         def read() -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
             out: dict[str, tuple[dict[str, str], dict[str, str] | None]] = {}
-            for name, markings, gated, until in self.store.conn.execute(
+            # Postgres reads the link slice without composing every evidence text
+            native = getattr(self.store, "slice_rows", None)
+            rows = native(kind, sorted(GATED_SCHEMES)) if native is not None else None
+            if rows is None:
+                rows = self.store.conn.execute(
                     f"SELECT name, markings, {_GATED_SQL}, MAX(CASE WHEN "
                     f"superseded_at IS NULL OR plx_l9_time(superseded_at) IS NULL THEN "
                     f"'{_OPEN}' ELSE plx_l9_time(superseded_at) END) "
-                    f"FROM ({_SLICE_ROWS[kind]}) GROUP BY 1, 2, 3"):
+                    f"FROM ({_SLICE_ROWS[kind]}) GROUP BY 1, 2, 3")
+            for name, markings, gated, until in rows:
                 kept_marks, kept_handles = out.setdefault(name, ({}, {}))
                 kept_marks[markings] = max(until, kept_marks.get(markings, until))
                 for handle in json.loads(gated) if gated else ():
@@ -1573,9 +1682,11 @@ class TraverseTools:
         the same rows of that family: no cell of it lies outside its span. One read per
         store state, for every reader."""
         def read() -> tuple[int, int] | None:
-            row = self.store.word_conn.execute(   # the word index's own rowids
-                _CELL_SPAN_SQL, {"family": family, "low": family + ":",
-                                 "high": family + chr(ord(":") + 1)}).fetchone()
+            # the word index's own rowids (Postgres: its word rows', ``PgStoreReader``)
+            sql = getattr(self.store, "cell_span_sql", None) or _CELL_SPAN_SQL
+            row = self.store.word_conn.execute(
+                sql, {"family": family, "low": family + ":",
+                      "high": family + chr(ord(":") + 1)}).fetchone()
             return None if row is None or row[0] is None else (int(row[0]), int(row[1]))
 
         return self._store_cached(("cell_span", family), read)
@@ -2378,7 +2489,12 @@ def _store_identity(conn: sqlite3.Connection) -> tuple[str, dict[str, Any]] | No
     SQLite header's change counter, and the fact code's digest). None for an in-memory
     or temporary store, a store with frames in its write-ahead log (its file is not yet
     all of it) or anything unreadable: such a store keeps no facts. The identity names no
-    path: a hard link to the same file (a run's pin of a generation) is the same store."""
+    path: a hard link to the same file (a run's pin of a generation) is the same store.
+
+    A Postgres store (``sqlite_compat``: no file) is named by its database and keeps its
+    facts under ``_pg_store_identity``'s data version instead."""
+    if getattr(conn, "_pg", None) is not None:
+        return _pg_store_identity(conn)
     try:
         path = next((row[2] for row in conn.execute("PRAGMA database_list")
                      if row[1] == "main"), "")
@@ -2400,6 +2516,47 @@ def _store_identity(conn: sqlite3.Connection) -> tuple[str, dict[str, Any]] | No
                   "change_counter": int.from_bytes(header[24:28], "big"), "code": code}
 
 
+def _pg_store_identity(conn: Any) -> tuple[str, dict[str, Any]] | None:
+    """A Postgres store's place and identity for its kept facts: a marker file per
+    database (cluster system identifier and database name) in ``PLX_PG_FACTS_DIR`` (default
+    ``~/.cache/plx/pg-facts``; the delta follower and every API host must share one, set
+    alike in their environments, or the follower's folded facts are never found), and the
+    data version Postgres holds now
+    (``ontology.sq_data_version``: every load and delta layer moves it), so facts read
+    before a change are never read after it. None when any of it cannot be read."""
+    try:
+        with conn._lock, conn._pg.cursor() as cur:
+            return _pg_identity(cur)
+    except Exception:  # noqa: BLE001 - no facts kept, the store is read as before
+        return None
+
+
+_PG_IDENTITY_SQL = (
+    "SELECT (SELECT system_identifier FROM pg_control_system()), current_database(), "
+    "ontology.sq_data_version(), (SELECT value ->> 'content_digest' FROM ontology.load_state "
+    "WHERE name = 'generation')")
+
+
+def _pg_identity(cur: Any, version: Any = None) -> tuple[str, dict[str, Any]] | None:
+    """``_pg_store_identity`` read on a psycopg cursor; ``version``: that data version in
+    place of the one Postgres holds now (the facts a layer was applied over)."""
+    code = _facts_code_digest()
+    if code is None:
+        return None
+    cur.execute(_PG_IDENTITY_SQL)
+    system, database, now, digest = cur.fetchone()
+    name = hashlib.sha256(f"{system}/{database}".encode()).hexdigest()[:24]
+    folder = Path(os.environ.get("PLX_PG_FACTS_DIR")
+                  or Path.home() / ".cache" / "plx" / "pg-facts")
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    marker = folder / f"pg-{name}"
+    if not marker.exists():
+        marker.touch(mode=0o600)
+    return str(marker), {"postgres": name,
+                         "data_version": str(now if version is None else version),
+                         "generation": digest, "code": code}
+
+
 @lru_cache(maxsize=1)
 def _facts_code_digest() -> str | None:
     """A digest of what decides the kept facts: their SQL, the gated schemes and caps, and
@@ -2408,6 +2565,12 @@ def _facts_code_digest() -> str | None:
     import inspect
     parts = [FACTS_FORMAT, json.dumps(_SLICE_ROWS, sort_keys=True), _GATED_SQL, _CELL_SPAN_SQL,
              _OPEN, str(HOP_SCAN_CAP), json.dumps(sorted(GATED_SCHEMES))]
+    try:
+        from operating.pg import ontology_reader as pg_reader
+        parts += [pg_reader.LINK_SLICE_SQL, pg_reader.LINK_ODD_SQL, pg_reader.LINK_ODD_ROWS_SQL,
+                  inspect.getsource(pg_reader.PgStoreReader.slice_rows)]
+    except ImportError:   # no psycopg: no Postgres reader to read the link slice
+        pass
     try:
         parts += [inspect.getsource(item) for item in (
             _store_time, _parse_time, _gated, _gated_text, _json_list, _grouped,
@@ -2795,7 +2958,8 @@ _BACKGROUND: dict[str, threading.Event] = {}
 _BACKGROUND_LOCK = threading.Lock()
 
 
-def _background_prime(kept: tuple[str, Mapping[str, Any]], cell_families: Sequence[str]
+def _background_prime(kept: tuple[str, Mapping[str, Any]], cell_families: Sequence[str],
+                      read: Callable[[Sequence[str]], None] | None = None
                       ) -> threading.Event:
     """The event set once the facts of the store file ``kept`` names (path, identity) are
     read and kept by a background thread (started once per file per process): each fact
@@ -2815,13 +2979,399 @@ def _background_prime(kept: tuple[str, Mapping[str, Any]], cell_families: Sequen
 
     def run() -> None:
         try:
-            prime_store_facts(path, cell_families, workers=workers)
+            if read is not None:
+                read(cell_families)
+            else:
+                prime_store_facts(path, cell_families, workers=workers)
         except Exception:  # noqa: BLE001 - a failed read leaves each call to read its own
             pass
         finally:
             done.set()
     threading.Thread(target=run, name="plx-store-facts", daemon=True).start()
     return done
+
+
+# ---------------------------------------------------------------- Postgres kept facts
+# A fact read on Postgres is one statement over a whole table (the link slice reads 25M
+# links through their text function): past a reader's statement limit, which ended it on
+# the real ontology, so a prime never kept them. Off the request path it gets an hour.
+FACTS_STATEMENT_TIMEOUT_MS = 3_600_000
+# Postgres keeps no file to keep facts beside, and every delta layer moves its data version
+# (``_pg_store_identity``): read again in full, the facts are a scan of every object,
+# version, link and event (minutes on 15M objects). The delta follower keeps them instead:
+# a layer's facts are folded into the facts of the version it was applied over
+# (``fold_layer_facts``), and a version with none kept (a load, a migration, a fold that
+# could not tell what else changed) is read in full by the follower (``prime_pg_facts``),
+# never by a request.
+
+
+def _merged_facts(old: Mapping[Any, Any], new: Mapping[Any, Any]) -> dict[Any, Any] | None:
+    """``old`` widened by ``new`` (a layer's facts): every audience key, type, marking,
+    gated handle and value-cell span of either, each end the later one. A row a layer
+    replaced keeps what it gave: the facts only ever hold more than the rows (a slice
+    trimmed, an absence not claimed, a span searched wider), never less. None when
+    ``new`` lacks a fact ``old`` holds."""
+    out: dict[Any, Any] = {}
+    for key, value in old.items():
+        if key not in new:
+            return None
+        more = new[key]
+        if key == "audience_keys":
+            out[key] = tuple(sorted(set(value) | set(more)))
+        elif key == "audiences":
+            out[key] = {name: tuple(sorted(set(value.get(name, ())) | set(more.get(name, ()))))
+                        for name in sorted(set(value) | set(more))}
+        elif key == "event_types":
+            out[key] = tuple({name: set(part.get(name, ())) | set(extra.get(name, ()))
+                              for name in set(part) | set(extra)}
+                             for part, extra in zip(value, more))
+        elif isinstance(key, tuple) and key[0] == "slices":
+            merged: dict[str, Any] = {}
+            for name in set(value) | set(more):
+                marks_a, handles_a = value.get(name, ({}, {}))
+                marks_b, handles_b = more.get(name, ({}, {}))
+                marks = {m: max(u, marks_b.get(m, u)) for m, u in marks_a.items()}
+                marks.update({m: u for m, u in marks_b.items() if m not in marks})
+                if handles_a is None or handles_b is None:
+                    handles = None
+                else:
+                    handles = {h: max(u, handles_b.get(h, u)) for h, u in handles_a.items()}
+                    handles.update({h: u for h, u in handles_b.items() if h not in handles})
+                    if sum(u == _OPEN for u in handles.values()) > HOP_SCAN_CAP:
+                        handles = None
+                merged[name] = (marks, handles)
+            out[key] = merged
+        elif isinstance(key, tuple) and key[0] == "cell_span":
+            spans = [span for span in (value, more) if span is not None]
+            out[key] = None if not spans else (min(int(a) for a, _ in spans),
+                                               max(int(b) for _, b in spans))
+        else:
+            return None
+    return out
+
+
+def _layer_facts(layer: str | Path, families: Sequence[str],
+                 spans: Mapping[str, tuple[int, int] | None]) -> dict[Any, Any]:
+    """The facts ``prime`` reads, over the rows of the delta layer store ``layer`` (its
+    owned objects, their versions, links and events); an event's object a layer does not
+    own is typed by its id's type part. ``spans``: each family's value-cell span over the
+    layer's rows as Postgres numbered them."""
+    from operating import ontology_tools
+    store = ontology_tools.StoreReader.open(layer)
+    try:
+        tools = TraverseTools(ontology_tools.OntologyTools(
+            store, ontology_tools.ReadPolicy("facts", {})))
+        with store.lock:
+            tools._audience_keys()
+            tools._audiences()
+            by_object, by_event = tools._event_type_maps()
+            for object_id, event_type in store.conn.execute(
+                    "SELECT DISTINCT eo.object_id, e.event_type FROM events e "
+                    "JOIN event_objects eo ON eo.event_id = e.event_id "
+                    "WHERE eo.object_id NOT IN (SELECT object_id FROM objects)"):
+                object_type = str(object_id).split(":", 1)[0]
+                by_object.setdefault(object_type, set()).add(event_type)
+                by_event.setdefault(event_type, set()).add(object_type)
+            for kind in _SLICE_ROWS:
+                tools._slices(kind)
+            facts = dict(store.facts[1])
+    finally:
+        store.conn.close()
+    for family in families:
+        facts[("cell_span", family)] = spans.get(family)
+    return facts
+
+
+def fold_layer_facts(dsn: str, layer: str | Path, owned: Sequence[str], before: Any,
+                     ours: Sequence[str]) -> bool:
+    """After the delta layer ``layer`` was applied (``operating.pg.ontology_delta``) over
+    data version ``before``: keep the facts of the version it made, the facts kept for
+    ``before`` widened by the layer's (``_merged_facts``). Only when nothing but the
+    apply's own ``load_state`` rows (``ours``) changed since ``before``: a load, a
+    migration or another layer in between leaves the version for ``prime_pg_facts``.
+    ``owned``: the objects the layer replaced (their value-cell spans are read here). False
+    when nothing was kept."""
+    import psycopg
+    try:
+        with psycopg.connect(dsn, connect_timeout=10) as pg, pg.cursor() as cur:
+            cur.execute("SET LOCAL jit = off")
+            cur.execute("SELECT ontology.sq_data_version(), (SELECT count(*) FROM "
+                        "ontology.load_state WHERE (extract(epoch FROM updated_at) * 1000)"
+                        "::bigint > %s AND NOT name = ANY(%s))", (int(before), list(ours)))
+            now, others = cur.fetchone()
+            if others or int(now) <= int(before):
+                return False
+            old_kept = _pg_identity(cur, version=before)
+            new_kept = _pg_identity(cur, version=now)
+            if old_kept is None or new_kept is None:
+                return False
+            old = _load_facts(*old_kept)
+            if not old:
+                return False
+            families = _span_families(old)
+            spans = _layer_spans(cur, families, owned)
+        merged = _merged_facts(old, _layer_facts(layer, families, spans))
+        if merged is None:
+            return False
+        _save_facts(*new_kept, merged)
+        return True
+    except Exception:  # noqa: BLE001 - nothing kept: the follower reads the version whole
+        return False
+
+
+def _span_families(facts: Mapping[Any, Any]) -> list[str]:
+    return [key[1] for key in facts if isinstance(key, tuple) and key[0] == "cell_span"]
+
+
+def _layer_spans(cur: Any, families: Sequence[str],
+                 owned: Sequence[str]) -> dict[str, tuple[int, int] | None]:
+    """Each family's value-cell span over the ``owned`` objects as Postgres numbered
+    them; none read without a word index in Postgres (a host's spans are then of its
+    SQLite generation's word index, which no layer changes: they are kept as they are)."""
+    spans: dict[str, tuple[int, int] | None] = {}
+    from operating.pg.ontology_reader import _WORDS_SQL
+    cur.execute(_WORDS_SQL)
+    for family in families if cur.fetchone()[0] else ():
+        from operating.pg.ontology_reader import CELL_SPAN_SQL
+        sql = CELL_SPAN_SQL.replace("objects o", "ontology.objects o", 1) \
+            .replace("object_versions v", "ontology.object_versions v", 1) \
+            .replace("value_sources s", "ontology.value_sources s", 1).replace("v.rowid", "v.ver") \
+            .replace(":low", "%(low)s").replace(":high", "%(high)s") \
+            .replace(":family", "%(family)s").replace(
+                "WHERE (", "WHERE o.object_id = ANY(%(owned)s) AND ((", 1) + ")"
+        cur.execute(sql, {"family": family, "low": family + ":",
+                          "high": family + chr(ord(":") + 1), "owned": list(owned)})
+        row = cur.fetchone()
+        spans[family] = None if row is None or row[0] is None \
+            else (int(row[0]), int(row[1]))
+    return spans
+
+
+def _layer_owned(cur: Any, layer: Path) -> list[str]:
+    """The objects the applied layer replaced: as its apply logged them
+    (``ontology.applied_owned``), else every object the layer file holds (what an apply
+    replaces)."""
+    cur.execute("SELECT to_regclass('ontology.applied_owned') IS NOT NULL")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT object_id FROM ontology.applied_owned WHERE layer = %s",
+                    (layer.name,))
+        owned = [row[0] for row in cur.fetchall()]
+        if owned:
+            return owned
+    db = sqlite3.connect(f"file:{layer}?mode=ro", uri=True)
+    try:
+        return [row[0] for row in db.execute("SELECT object_id FROM objects")]
+    finally:
+        db.close()
+
+
+def _kept_identity(marker: str) -> dict[str, Any] | None:
+    """The identity the facts kept beside ``marker`` were read under, whatever version."""
+    try:
+        path = facts_path(marker)
+        if path.stat().st_size > FACTS_MAX_BYTES:
+            return None
+        with open(path, "rb") as handle:   # the identity leads the sorted keys' text
+            kept = json.loads(handle.read())
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    store = kept.get("store") if isinstance(kept, dict) \
+        and kept.get("format") == FACTS_FORMAT else None
+    return dict(store) if isinstance(store, dict) else None
+
+
+def catch_up_pg_facts(dsn: str, layers: str | Path) -> bool:
+    """Keep the facts of the data version Postgres holds now, folded from the facts kept
+    for an earlier version of the same database, generation and fact code over the
+    delta layers applied since (``_merged_facts`` of each layer's ``_layer_facts``, in
+    the order they were applied): when every ``load_state`` row changed since that
+    version is a layer's own and each of those layers' files is still in ``layers``
+    (the delta folder), and the version did not move meanwhile. A host whose follower
+    kept no facts for the version it serves (a request after a layer, before or without
+    the follower's ``fold_layer_facts``) reads a few layer files instead of every
+    object, version, link and event. False when nothing was kept."""
+    import psycopg
+    folder = Path(layers)
+    try:
+        with psycopg.connect(dsn, connect_timeout=10) as pg, pg.cursor() as cur:
+            cur.execute("SET LOCAL jit = off")
+            now_kept = _pg_identity(cur)
+            if now_kept is None:
+                return False
+            marker, identity = now_kept
+            earlier = _kept_identity(marker)
+            if earlier is None or {k: v for k, v in earlier.items() if k != "data_version"} \
+                    != {k: v for k, v in identity.items() if k != "data_version"}:
+                return False
+            before, now = int(earlier["data_version"]), int(identity["data_version"])
+            if before >= now:
+                return False
+            old = _load_facts(marker, earlier)
+            if not old:
+                return False
+            cur.execute("SELECT name FROM ontology.load_state WHERE (extract(epoch FROM "
+                        "updated_at) * 1000)::bigint > %s ORDER BY updated_at, name",
+                        (before,))
+            names = [row[0] for row in cur.fetchall()]
+            applied = [name.split(":", 1)[1] for name in names if name.startswith("delta:")]
+            if not applied or any(name != "delta_layers" and not name.startswith("delta:")
+                                  for name in names):
+                return False   # a load or a migration since: read in full
+            paths = [folder / name for name in applied]
+            if any(Path(name).name != name or not path.is_file()
+                   for name, path in zip(applied, paths)):
+                return False
+            families = _span_families(old)
+            merged: dict[Any, Any] | None = old
+            for path in paths:
+                spans = _layer_spans(cur, families, _layer_owned(cur, path))
+                merged = _merged_facts(merged, _layer_facts(path, families, spans))
+                if merged is None:
+                    return False
+            cur.execute("SELECT ontology.sq_data_version()")
+            if int(cur.fetchone()[0]) != now:
+                return False   # moved meanwhile: the next request folds again
+        _save_facts(marker, identity, merged)
+        return True
+    except Exception:  # noqa: BLE001 - nothing kept: the version is read in full
+        return False
+
+
+def _delta_folder(store: Any) -> Path | None:
+    """The delta folder of the generation a Postgres reader keeps its word index in
+    (``delta_overlay.pointer_path``); None without one."""
+    text = getattr(store, "text_reader", None)
+    try:
+        path = next((row[2] for row in text.conn.execute("PRAGMA database_list")
+                     if row[1] == "main"), "") if text is not None else ""
+    except sqlite3.Error:
+        return None
+    if not path:
+        return None
+    from operating.delta_overlay import pointer_path
+    folder = pointer_path(path).parent
+    return folder if folder.is_dir() else None
+
+
+@contextmanager
+def _one_snapshot(conn: Any) -> Iterator[None]:
+    """Every statement on the Postgres connection ``conn`` reads one snapshot (a repeatable
+    read transaction): the facts and the data version they are kept under are of one
+    version, however many layers are applied meanwhile (a whole read takes longer than
+    the follower's cycle, so read statement by statement it never kept a version). A
+    SQLite connection reads as before."""
+    pg = getattr(conn, "_pg", None)
+    if pg is None:
+        yield
+        return
+    with conn._lock:
+        pg.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+    try:
+        yield
+    finally:
+        with conn._lock:
+            pg.execute("COMMIT")   # nothing written but the session's own temp rows
+
+
+@contextmanager
+def _facts_lock(marker: str | None) -> Iterator[None]:
+    """One process at a time reads or folds a database's facts (an exclusive lock on a
+    file beside its marker); none without a marker."""
+    if marker is None:
+        yield
+        return
+    import fcntl
+    fd = os.open(f"{marker}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+class FactsNotKept(RuntimeError):
+    """``prime_pg_facts`` kept no facts; the message says why (never silently: a host
+    without them reads every fact on its first request)."""
+
+
+# How many times ``prime_pg_facts`` reads the facts again when the data version moved
+# while it read them (another writer: a migration, a second follower).
+PG_PRIME_ATTEMPTS = 3
+
+
+def _fact_value(tools: "TraverseTools", key: Any) -> Any:
+    """The fact ``key`` (``_fact_keys``) as ``prime`` reads it."""
+    if key == "audience_keys":
+        return tools._audience_keys()
+    if key == "audiences":
+        return tools._audiences()
+    if key == "event_types":
+        return tools._event_type_maps()
+    if key[0] == "slices":
+        return tools._slices(key[1])
+    return tools.cell_span(key[1])
+
+
+def prime_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
+                   text_store: str | Path | None = None,
+                   attempts: int = PG_PRIME_ATTEMPTS, log: Any = None) -> bool:
+    """Keep the facts of the data version the Postgres ontology at ``dsn`` holds now, read
+    in full when none are kept for it: the delta follower's, after each cycle, so a host
+    never reads them on a request. ``text_store``: the served SQLite generation, whose word
+    index a host reads (and so its value-cell spans) until Postgres has its own.
+
+    Every fact is read over one data version: when the version moved during the read (a
+    writer meanwhile), they are read again, ``attempts`` times at most. True when they
+    are kept (or already were); raises :class:`FactsNotKept` with the reason otherwise
+    (no word index, a failed read, a version that kept moving, a file that would not
+    keep): never False in silence. ``log``: a stream each attempt is reported on."""
+    from operating import ontology_tools, ontology_tools_evidence
+    from operating.pg.ontology_reader import PgStoreReader
+    families = tuple(ontology_tools_evidence.STORE_DOCUMENT_FAMILIES
+                     if cell_families is None else cell_families)
+    reason = "no attempt"
+    for attempt in range(1, max(1, attempts) + 1):
+        reader = PgStoreReader.open(dsn, only=False, text_store=text_store,
+                                    statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS)
+        started = time.monotonic()
+        try:
+            if not reader.words_loaded() and reader.text_reader is None:
+                raise FactsNotKept("no word index: Postgres has none built and no SQLite "
+                                   "generation was given (text_store)")
+            tools = TraverseTools(ontology_tools.OntologyTools(
+                reader, ontology_tools.ReadPolicy("facts", {})))
+            with reader.lock, _one_snapshot(reader.conn):
+                before = _store_identity(reader.conn)
+                if before is None:
+                    raise FactsNotKept("the store's identity (data version) cannot be read")
+                if tools._kept_facts(*before, families):
+                    return True
+                try:
+                    facts = {key: _fact_value(tools, key) for key in _fact_keys(families)}
+                except Exception as exc:  # noqa: BLE001 - reported with its kind
+                    raise FactsNotKept(f"a fact read failed: {type(exc).__name__}: "
+                                       f"{str(exc)[:300]}") from exc
+                after = _store_identity(reader.conn)
+            if after != before:
+                reason = (f"the data version moved while the facts were read "
+                          f"({before[1].get('data_version')} -> "
+                          f"{(after or (None, {}))[1].get('data_version')})")
+                if log is not None:
+                    print(f"prime_pg_facts: attempt {attempt}: {reason}; "
+                          f"{time.monotonic() - started:.0f}s", file=log, flush=True)
+                continue
+            _save_facts(*before, facts)
+            _LOADED.clear()
+            if _load_facts(*before) is None:
+                raise FactsNotKept(f"the facts were read but could not be kept beside "
+                                   f"{before[0]} (unwritable, or over {FACTS_MAX_BYTES} bytes)")
+            if log is not None:
+                print(f"prime_pg_facts: kept version {before[1].get('data_version')} in "
+                      f"{time.monotonic() - started:.0f}s", file=log, flush=True)
+            return True
+        finally:
+            reader.close()
+    raise FactsNotKept(f"{reason}, {attempts} attempts")
 
 
 def share_facts(store: str | Path, other: str | Path) -> bool:

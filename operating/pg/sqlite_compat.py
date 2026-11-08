@@ -41,7 +41,10 @@ STATEMENT_TIMEOUT_MS = 120_000
 ROWID = {"objects": "row_no", "link_rows": "row_no",
          "object_versions": "ver", "value_sources": "src", "text_fields": "field_id",
          "text_chunks": "chunk_id", "link_texts": "id", "link_skeletons": "id",
-         "value_fields": "field", "value_kinds": "kind"}
+         "value_fields": "field", "value_kinds": "kind",
+         "value_text": "row_no", "chunk_text": "chunk_id"}
+# The word index's FTS5 tables and their Postgres tables (migration 0010).
+WORD_TABLES = {"value_text": "value_words", "chunk_text": "chunk_words"}
 # Columns compared with a json_each list of numbers (the list read as bigint).
 INT_COLUMNS = frozenset({"rowid", "ver", "src", "field_id", "chunk_id", "layout", "field",
                          "kind", "id", "pos", "row_no", "ek"})
@@ -69,7 +72,8 @@ _TOKEN = re.compile(r"""
 
 
 class Untranslatable(sqlite3.OperationalError):
-    """SQL the compatibility layer does not run on Postgres (FTS5 MATCH, PRAGMA writes)."""
+    """SQL the compatibility layer does not run on Postgres (FTS5 MATCH while the word
+    tables are not loaded, PRAGMA writes)."""
 
 
 def _tokens(sql: str) -> list[tuple[str, str]]:
@@ -130,17 +134,75 @@ def _aliases(tokens: list[tuple[str, str]]) -> dict[str, str]:
                 j = _next(tokens, j + 1)
             if j < len(tokens) and tokens[j][0] == "word" and tokens[j][1].upper() not in (
                     "ON", "WHERE", "JOIN", "LEFT", "CROSS", "INNER", "GROUP", "ORDER", "LIMIT",
-                    "USING", "INDEXED", "NOT", "UNION", "SET"):
+                    "USING", "INDEXED", "NOT", "UNION", "SET", "MATCH"):
                 out[tokens[j][1]] = table
     return out
 
 
+def _word_fence(tokens: list[tuple[str, str]], aliases: Mapping[str, str], table: str,
+                left: int, operand: int) -> int | None:
+    """The token naming the word table ``table`` in the FROM clause, when its MATCH can be
+    read first as a subquery (``translate``): a named parameter, the table named once
+    besides the MATCH's left side, under an alias of its own."""
+    if not tokens[operand][1].startswith(":"):
+        return None   # a positional parameter would move
+    named = [i for i, (kind, text) in enumerate(tokens)
+             if kind == "word" and text.lower() == table and i != left]
+    if len(named) != 1 or not any(a != table and t == table for a, t in aliases.items()):
+        return None
+    return named[0]
+
+
+def _matches(tokens: list[tuple[str, str]], aliases: Mapping[str, str]
+             ) -> dict[int, tuple[int, int, str]]:
+    """Each FTS5 ``<table or alias> MATCH <operand>`` over the word index: the MATCH
+    token's index -> (left operand's index, operand's last index, the Postgres name of
+    the word table's row: its alias, else the table)."""
+    out: dict[int, tuple[int, int, str]] = {}
+    for i, (kind, text) in enumerate(tokens):
+        if kind != "word" or text.upper() != "MATCH":
+            continue
+        left = _prev(tokens, i - 1)
+        name = tokens[left][1] if left >= 0 else ""
+        table = aliases.get(name)
+        if table not in WORD_TABLES:
+            raise Untranslatable(f"full-text MATCH on {name or 'nothing'}")
+        named = [a for a, t in aliases.items() if t == table and a != table]
+        qualifier = name if name != table else (named[0] if len(named) == 1
+                                               else WORD_TABLES[table])
+        operand = _next(tokens, i + 1)
+        if operand >= len(tokens) or tokens[operand][0] != "param":
+            raise Untranslatable("full-text MATCH of no parameter")
+        out[i] = (left, operand, qualifier)
+    return out
+
+
+@functools.lru_cache(maxsize=4096)
+def match_parameters(sql: str) -> tuple[str | int, ...]:
+    """The parameters of ``sql`` that are FTS5 queries (a ``MATCH`` operand): a name, or
+    a ``?``'s position; their values are turned into ``tsquery`` text (``words.tsquery``)."""
+    tokens = _tokens(sql)
+    out: list[str | int] = []
+    positions = {i: n for n, i in enumerate(k for k, t in enumerate(tokens)
+                                             if t[0] == "param" and t[1] == "?")}
+    for _left, operand, _qualifier in _matches(tokens, _aliases(tokens)).values():
+        text = tokens[operand][1]
+        out.append(positions[operand] if text == "?" else text[1:])
+    return tuple(out)
+
+
 @functools.lru_cache(maxsize=4096)
 def translate(sql: str, functions: tuple[str, ...] = (),
-              gated_schemes: tuple[str, ...] = ()) -> str:
+              gated_schemes: tuple[str, ...] = (), words: Any = (),
+              arrays: bool = False) -> str:
     """SQLite SQL -> Postgres SQL for psycopg (``%s`` / ``%(name)s`` parameters).
     ``functions``: names registered in Python (``sq_call``); ``gated_schemes``: the
-    schemes ``plx_l9_gated`` keeps."""
+    schemes ``plx_l9_gated`` keeps; ``words``: the FTS5 tables whose word index is
+    loaded (``True``: both), so such a table reads it (``value_text`` as ``value_words``,
+    ``chunk_text`` as ``chunk_words``,
+    ``X MATCH :q`` as ``X.words @@ CAST(:q AS tsquery)``, the parameter
+    turned into tsquery text by the connection: ``match_parameters``); without them a
+    word-index query raises ``Untranslatable``."""
     stripped = sql.strip().rstrip(";").strip()
     head = stripped[:20].upper()
     if head.startswith("PRAGMA"):
@@ -156,6 +218,29 @@ def translate(sql: str, functions: tuple[str, ...] = (),
     suffix: dict[int, str] = {}   # token index -> text appended after it
     replace: dict[int, str] = {}  # token index -> text written instead of it
     replace.update(_case_booleans(tokens))
+    if arrays:
+        replace.update(_json_lists(tokens))
+    loaded = frozenset(WORD_TABLES) if words is True else frozenset(words or ())
+    fenced: list[str] = []   # the word tables read first (``_word_fence``), as CTEs
+    for at, (left, operand, qualifier) in _matches(tokens, aliases).items():
+        table = aliases.get(tokens[left][1])
+        if table not in loaded:
+            raise Untranslatable("full-text MATCH: the word index is not on Postgres")
+        fence = _word_fence(tokens, aliases, table, left, operand)
+        if fence is not None:
+            # the word rows first, from their GIN index, once (a materialized CTE): with
+            # the match a join filter the planner read every row of the joined tables and
+            # cut the words of each (12 s a page on 1.3 M value cells), and a subquery it
+            # read again per outer row (100 s for a common word over 144 k chunks)
+            name = f"sq_words_{len(fenced)}"
+            fenced.append(f"{name} AS MATERIALIZED (SELECT * FROM {WORD_TABLES[table]} "
+                          f"WHERE words @@ CAST(%({tokens[operand][1][1:]})s AS tsquery))")
+            replace[fence] = name
+            replace[left], replace[at], replace[operand] = "TRUE", "", ""
+            continue
+        replace[left] = f"{qualifier}.words"
+        replace[at] = "@@ CAST("
+        suffix[operand] = " AS tsquery)"
     skip_until = -1
     i = 0
     while i < len(tokens):
@@ -166,6 +251,10 @@ def translate(sql: str, functions: tuple[str, ...] = (),
         upper = text.upper()
         if i in replace:
             out.append(replace[i])
+        elif kind == "word" and text.lower() in WORD_TABLES and text.lower() not in loaded:
+            raise Untranslatable("the word index is not on Postgres")
+        elif kind == "word" and text.lower() in WORD_TABLES:
+            out.append(WORD_TABLES[text.lower()])
         elif kind == "param":
             out.append("%s" if text == "?" else f"%({text[1:]})s")
         elif kind == "op" and text == "*" and _star(tokens, i, aliases):
@@ -188,8 +277,6 @@ def translate(sql: str, functions: tuple[str, ...] = (),
             j = _next(tokens, i + 1)
             call = j < len(tokens) and tokens[j][1] == "("
             name = text.lower()
-            if upper == "MATCH":
-                raise Untranslatable("full-text MATCH")
             if call and name in lowered:
                 out.append(f"ontology.sq_call('{name}', (")
                 replace[_close(tokens, j)] = ")::text)"
@@ -242,10 +329,11 @@ def translate(sql: str, functions: tuple[str, ...] = (),
                 spans = _args(tokens, j, close)
                 out.append("string_agg((")
                 inner = translate("".join(t for _, t in tokens[spans[0][0]:spans[0][1]]),
-                                  functions, gated_schemes)
+                                  functions, gated_schemes, words, arrays)
                 out.append(inner + ")::text, ")
                 out.append(translate("".join(t for _, t in tokens[spans[1][0]:spans[1][1]]),
-                                     functions, gated_schemes) if len(spans) > 1 else "','")
+                                     functions, gated_schemes, words, arrays)
+                           if len(spans) > 1 else "','")
                 out.append(")")
                 skip_until = close
             elif call and name in ("max", "min"):
@@ -323,7 +411,13 @@ def translate(sql: str, functions: tuple[str, ...] = (),
         if i in suffix:
             out.append(suffix[i])
         i += 1
-    return "".join(out)
+    text = "".join(out)
+    if fenced:
+        head = re.match(r"(?is)^\s*WITH(\s+RECURSIVE)?\s+", text)
+        ctes = ", ".join(fenced)
+        text = (text[:head.end()] + ctes + ", " + text[head.end():] if head
+                else "WITH " + ctes + " " + text)
+    return text
 
 
 # Tables with a row number column SQLite keeps as rowid: what ``*`` reads in SQLite.
@@ -391,6 +485,44 @@ def _unwrap(tokens: list[tuple[str, str]], a: int, b: int) -> tuple[int, int]:
         a, b = seen[0] + 1, seen[-1]
         seen = seen[1:-1]
     return a, b
+
+
+def _json_lists(tokens: list[tuple[str, str]]) -> dict[int, str]:
+    """``x [NOT] IN (SELECT value FROM json_each(:list))`` as ``x = ANY(...)`` (``<> ALL``) of
+    the list as an array (``ontology.sq_json_array``, migration 0011; of numbers for a
+    numbered column, as ``json_each`` reads it): the token replacements that write it."""
+    out: dict[int, str] = {}
+    shape = ["(", "select", "value", "from", "json_each", "(", None, ")", ")"]
+    for i, (kind, text) in enumerate(tokens):
+        if kind != "word" or text.upper() != "IN":
+            continue
+        at, seen = i, []
+        for want in shape:
+            at = _next(tokens, at + 1)
+            if at >= len(tokens):
+                break
+            got_kind, got = tokens[at]
+            if want is None:
+                if got_kind != "param":
+                    break
+            elif got.lower() != want:
+                break
+            seen.append(at)
+        if len(seen) != len(shape):
+            continue
+        param = tokens[seen[6]][1]
+        bound = "%s" if param == "?" else f"%({param[1:]})s"
+        before = _prev(tokens, i - 1)
+        negated = before >= 0 and tokens[before][1].upper() == "NOT"
+        column = _prev(tokens, before - 1) if negated else before
+        name = tokens[column][1].split(".")[-1].lower() if column >= 0 else ""
+        function = "sq_json_array_int" if name in INT_COLUMNS else "sq_json_array"
+        if negated:
+            out[before] = ""
+        out[i] = f"{'<> ALL' if negated else '= ANY'}(ontology.{function}({bound}))"
+        for k in range(i + 1, seen[-1] + 1):
+            out[k] = ""
+    return out
 
 
 def _case_booleans(tokens: list[tuple[str, str]]) -> dict[int, str]:
@@ -577,16 +709,33 @@ class PgCompatConnection:
         self._pg = psycopg.connect(dsn, autocommit=True, cursor_factory=psycopg.ClientCursor)
         self._lock = threading.RLock()
         self._functions: dict[str, Callable[[Any], Any]] = {}
+        # statements whose parameters bind client side (``_run``)
+        self._client_only: set[str] = set()
         self._trace: Callable[[str], Any] | None = None
         # A SQLite connection whose statements read with this one's functions (the word
         # index's, ``PgStoreReader.word_conn``): every registered function is registered
         # there too.
         self.mirror: sqlite3.Connection | None = None
+        # The FTS5 tables whose word index is loaded (``PgStoreReader`` sets it): their
+        # queries run here only then, else they raise (``translate``).
+        self.words: tuple[str, ...] = ()
         self.row_factory: Any = sqlite3.Row
         with self._pg.cursor() as cur:
             cur.execute("SET search_path = ontology, public")
             cur.execute("SET TimeZone = 'UTC'")
             cur.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
+            # no JIT: these are short indexed reads, and a plan with a scan kind turned
+            # off (the word windows) carries a cost far past ``jit_above_cost``, so
+            # each one compiled for ~0.3 s before running for milliseconds
+            cur.execute("SET jit = off")
+            # each execution planned for its own parameters: a prepared statement keeps
+            # its parse, but the generic plan Postgres picks after five runs cannot see
+            # how many ids a JSON list holds, and read a find's candidate versions,
+            # chunks and values 2-3x slower (p95 of a find 0.99 s against 0.47 s)
+            cur.execute("SET plan_cache_mode = force_custom_plan")
+            # JSON lists read as arrays once migration 0011 made their functions
+            cur.execute("SELECT to_regproc('ontology.sq_json_array_int') IS NOT NULL")
+            self.arrays = bool(cur.fetchone()[0])
             cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_calls (fn text, arg text, "
                         "result boolean, PRIMARY KEY (fn, arg))")
             cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_pending (fn text, arg text, "
@@ -602,21 +751,27 @@ class PgCompatConnection:
             if self._trace is not None:
                 self._trace(sql)
             names = tuple(sorted(self._functions))
-            try:
-                text = translate(sql, names, self._gated)
-            except Untranslatable:
-                raise
+            text = translate(sql, names, self._gated, self.words, self.arrays)
             params = self._params(parameters)
+            if self.words and "MATCH" in sql.upper():
+                params = self._word_queries(sql, params)
             gated = "ontology.sq_call(" in text
+            # a word query read from its GIN index first (``translate``): the planner's
+            # estimates of the joins after it are far off (a page of a common document
+            # word: 120 s in its order, 0.7 s in the written one)
+            fenced = text.startswith("WITH sq_words_")
             try:
                 if "AS u(value)" in text:
                     params = self._lists(text, params)
                 for _ in range(MAX_ROUNDS):
-                    with self._pg.cursor() as cur:
-                        cur.execute(text, params)
-                        rows = cur.fetchall() if cur.description else []
-                        columns = tuple(d.name for d in cur.description or ())
-                        count = cur.rowcount
+                    with self._cursor(text) as cur:
+                        if fenced:   # joined from the word rows, in the written order
+                            cur.execute("SET join_collapse_limit = 1")
+                        try:
+                            rows, columns, count = self._run(cur, text, params)
+                        finally:
+                            if fenced:
+                                cur.execute("RESET join_collapse_limit")
                     if not gated or not self._answer():
                         break
                 else:
@@ -629,6 +784,42 @@ class PgCompatConnection:
                 ) from exc
             plain = self.row_factory is None
             return Cursor(columns, [tuple(_value(v) for v in r) for r in rows], count, plain)
+
+    def _cursor(self, text: str) -> Any:
+        """A server-side cursor (the statement prepared once, its plan reused) unless the
+        statement was seen to need client-side binding (``_run``)."""
+        import psycopg
+        if text in self._client_only:
+            return psycopg.ClientCursor(self._pg)
+        return psycopg.Cursor(self._pg)
+
+    def _run(self, cur: Any, text: str, params: Any) -> tuple[list, tuple, int]:
+        """(rows, column names, row count) of ``text`` with ``params``: prepared on the
+        server (each statement planned once per connection, not on every call: 10-40 ms
+        of a 60 ms read), else, when a parameter's type is not inferred from its place as a
+        literal's would be (``? IS NULL``, an integer beside a text), bound client side as
+        before; that statement is bound so from then on."""
+        import psycopg
+
+        def read(c: Any) -> tuple[list, tuple, int]:
+            return (c.fetchall() if c.description else [],
+                    tuple(d.name for d in c.description or ()), c.rowcount)
+        if isinstance(cur, psycopg.ClientCursor) or not params:
+            cur.execute(text, params)
+            return read(cur)
+        try:
+            cur.execute(text, params, prepare=True)
+            return read(cur)
+        except (psycopg.errors.IndeterminateDatatype, psycopg.errors.UndefinedFunction,
+                psycopg.errors.DatatypeMismatch, psycopg.errors.AmbiguousFunction,
+                psycopg.errors.InvalidTextRepresentation, psycopg.errors.AmbiguousParameter,
+                psycopg.errors.InvalidParameterValue, psycopg.errors.CannotCoerce):
+            if len(self._client_only) > 4096:
+                self._client_only.clear()
+            self._client_only.add(text)
+        with psycopg.ClientCursor(self._pg) as client:
+            client.execute(text, params)
+            return read(client)
 
     def executemany(self, sql: str, seq: Any) -> Cursor:
         last = Cursor((), [], 0, True)
@@ -679,6 +870,27 @@ class PgCompatConnection:
         pass
 
     # -- internals -----------------------------------------------------------------
+    @staticmethod
+    def _word_queries(sql: str, params: Any) -> Any:
+        """``params`` with each FTS5 query (``match_parameters``) as tsquery text; a query
+        FTS5 would refuse raises as it does (``sqlite3.OperationalError``)."""
+        from operating.pg.words import tsquery
+
+        names = match_parameters(sql)
+        if not names:
+            return params
+        if isinstance(params, dict):
+            out = dict(params)
+            for name in names:
+                if name not in out:
+                    raise sqlite3.ProgrammingError(f"no value for parameter {name}")
+                out[name] = tsquery(out[name])
+            return out
+        values = list(params)
+        for index in names:
+            values[index] = tsquery(values[index])
+        return tuple(values)
+
     @staticmethod
     def _params(parameters: Any) -> Any:
         if isinstance(parameters, Mapping):
@@ -744,4 +956,5 @@ class PgCompatConnection:
         return len(pending)
 
 
-__all__ = ["MAX_ROUNDS", "PgCompatConnection", "Row", "Untranslatable", "translate"]
+__all__ = ["MAX_ROUNDS", "PgCompatConnection", "Row", "Untranslatable", "match_parameters",
+           "translate"]

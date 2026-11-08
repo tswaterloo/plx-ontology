@@ -6888,54 +6888,6 @@
           ]
         }
       ]
-    },
-    {
-      "id": "FreightBill.for_sales_invoice",
-      "from": "FreightBill",
-      "to": "SalesInvoice",
-      "name": "for_sales_invoice",
-      "reverse_name": "freight_bills",
-      "cardinality": "N:M",
-      "description": "A freight bill names this SalesInvoice: an identifier the one identifier grammar reads in its text (a sales invoice number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
-      "bindings": [
-        {
-          "kind": "mention",
-          "tier_ceiling": "lead",
-          "evidence": [
-            {
-              "kind": "workbench_code",
-              "path": "ontology/document_fields.py"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "FreightBill.same_record_as",
-      "from": "FreightBill",
-      "to": "FreightBill",
-      "name": "same_record_as",
-      "reverse_name": "same_record_as",
-      "cardinality": "1:1",
-      "description": "One freight bill read from mail and filed in SharePoint: the tracking number names one bill on each side. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
-      "bindings": [
-        {
-          "kind": "mention",
-          "tier_ceiling": "corroborated",
-          "from_binding": "graph_mail.freight_bills",
-          "to_binding": "sharepoint.freight_bills",
-          "key": {
-            "from": "tracking_number"
-          },
-          "evidence": [
-            {
-              "kind": "workbench_code",
-              "path": "ontology/key_links.py",
-              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
-            }
-          ]
-        }
-      ]
     }
   ],
   "event_types": [

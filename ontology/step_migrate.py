@@ -254,7 +254,15 @@ class Spec:
     links it reads (run again after them); ``amends``: the steps whose links it ends (run
     again after them, its own readers not). ``documents``: it reads captured documents
     (then only of the sources holding its ``from_types``). ``supported`` False: it writes
-    something else than links (values, the text index): no step migration (refused).
+    something else than links or owned values (the text index): no step migration
+    (refused).
+
+    ``values``: the ``post_project`` values it writes, as (object type, binding) pairs: it
+    owns every value of parser ``post_project`` of that binding on that type's objects
+    (the ``confirmations`` step's confirmed document kinds). The step build drops the
+    served ones before the steps run, the layer holds the re-derived ones (with their
+    objects' own and version rows, which the apply never copies) and the apply replaces
+    the served ones by them (``ontology_migrate._apply_step_values``).
 
     ``inputs``: the object types whose rows (objects, versions, values, identifiers and
     the links touching them) the step reads, under a schema; None: every type. A unit
@@ -275,6 +283,7 @@ class Spec:
     amends: tuple[str, ...] = ()
     documents: bool = False
     supported: bool = True
+    values: tuple[tuple[str, str], ...] = ()
     inputs: Callable[[Any], set[str] | None] = _every_type
     from_inputs: Callable[[Any], set[str]] = lambda schema: set()
     properties: Callable[[], Iterable[str]] = lambda: ()
@@ -290,7 +299,9 @@ class Spec:
 
 
 STEPS: dict[str, Spec] = {
-    "confirmations": Spec((), ("operating/kind_confirmation.py",), supported=False,
+    # kind_confirmation.PROJECTED_TYPE / PROJECTED_BINDING (a test holds them equal)
+    "confirmations": Spec((), ("operating/kind_confirmation.py",),
+                          values=(("SharePointFile", "sharepoint.drive_items"),),
                           inputs=_confirmation_inputs),
     "document_fields": Spec(("docfield:",), ("ontology/document_fields.py",
                                              "ontology/schema/document_fields.json"),
@@ -590,6 +601,26 @@ def _owned(name: str, scope: Any, specs: Mapping[str, Spec]) -> list[dict[str, A
             for p in specs[name].prefixes]
 
 
+def _owned_values(run: Iterable[str], specs: Mapping[str, Spec]) -> list[dict[str, Any]]:
+    """The values the steps ``run`` own (:attr:`Spec.values`), each with its id range."""
+    return [{"step": name, "type": t, "binding": b, "prefix": f"{t}:", "end": prefix_end(f"{t}:")}
+            for name in sorted(run) for t, b in specs[name].values]
+
+
+VALUE_PARSER = "post_project"   # ontology.project.POST_PROJECT
+
+
+def owned_values_where(owned: Sequence[Mapping[str, Any]]) -> tuple[str, list[Any]]:
+    """A SQL condition (``?`` parameters) on ``object_values`` rows holding the values
+    ``owned`` (:func:`_owned_values`): parser ``post_project``, the binding, the type's id
+    range."""
+    if not owned:
+        return "FALSE", []
+    where = " OR ".join("(binding_id = ? AND object_id >= ? AND object_id < ?)" for _ in owned)
+    return (f"parser = ? AND ({where})",
+            [VALUE_PARSER, *[x for o in owned for x in (o["binding"], o["prefix"], o["end"])]])
+
+
 def _is_owned(link_id: str, from_object: str, owned: Sequence[Mapping[str, Any]]) -> bool:
     for o in owned:
         if link_id.startswith(o["prefix"]) and (
@@ -731,9 +762,14 @@ _HELD_INDEXES = {"held_values": (("property",), ("object_id",)),
                                 ("link_type",))}
 
 
-def _held_tables(conn: sqlite3.Connection) -> None:
+def _held_tables(conn: sqlite3.Connection, indexes: bool = True) -> None:
     for _view, table, cols, _key in HELD:
         conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({', '.join(cols)})")
+    if indexes:
+        _held_indexes(conn)
+
+
+def _held_indexes(conn: sqlite3.Connection) -> None:
     for table, indexes in _HELD_INDEXES.items():
         for cols in indexes:
             conn.execute(f"CREATE INDEX IF NOT EXISTS {table}_by_{'_'.join(cols)} ON "
@@ -745,7 +781,7 @@ def _copy_held_keys(cur: Any, conn: sqlite3.Connection, drop_types: Sequence[str
     """Copy into ``conn`` the keys of the served values, identifiers and links of the
     objects outside the temporary ``inp`` (the declared types' objects), leaving out
     what the unit migration deletes."""
-    _held_tables(conn)
+    _held_tables(conn, indexes=False)   # indexed once filled: far fewer page writes
     cur.execute("CREATE TEMP TABLE outp (object_id text PRIMARY KEY)")
     cur.execute(
         "INSERT INTO outp SELECT o.object_id FROM ontology.objects o WHERE NOT EXISTS "
@@ -776,6 +812,7 @@ def _copy_held_keys(cur: Any, conn: sqlite3.Connection, drop_types: Sequence[str
             for batch in _rows(named, sql, params):
                 conn.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(cols))})",
                                  [tuple(r[c] for c in cols) for r in batch])
+    _held_indexes(conn)
 
 
 class UndeclaredRead(RuntimeError):
@@ -817,6 +854,13 @@ def guard_inputs(conn: sqlite3.Connection, types: Sequence[str] | None,
                      (prefix, prefix_end(prefix)))
     conn.execute("PRAGMA legacy_alter_table = ON")   # other tables keep naming ``objects``
     conn.execute("ALTER TABLE objects RENAME TO objects_held")
+    # a read by type or by binding reaches only that type's rows (exactly answered, as
+    # the held keys are): one of a declared type passes, one of another trips; without
+    # these a filter on them scans every object and trips at the first undeclared one
+    conn.execute("CREATE INDEX IF NOT EXISTS objects_held_by_type ON "
+                 "objects_held(object_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS objects_held_by_binding ON "
+                 "objects_held(binding_id)")
     conn.execute("ALTER TABLE identifiers RENAME TO identifiers_declared")
     conn.execute("PRAGMA legacy_alter_table = OFF")
     conn.execute(f"CREATE VIEW objects AS SELECT * FROM objects_held WHERE object_type IN "
@@ -892,6 +936,8 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
         raise ValueError("unit_layer_of_another_plan")
     inputs = declared_inputs(run, (new,), specs)
     owned = [o for name in sorted(run) for o in _owned(name, run[name], specs)]
+    values_owned = _owned_values(run, specs)
+    values_where, values_params = owned_values_where(values_owned)
     order = sorted(steps)
     first = min(run) if run else None
     started = time.monotonic()
@@ -930,7 +976,15 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
         if pending:
             builder.add("links", pending)
             pending.clear()
+        # the served values of the re-run steps go: each derives them again (a step
+        # writing values runs first in name order, so no step before it saw them)
+        values_dropped = 0
+        if values_owned:
+            values_dropped = conn.execute("SELECT count(*) FROM object_values WHERE "
+                                          + values_where, values_params).fetchone()[0]
+            conn.execute("DELETE FROM object_values WHERE " + values_where, values_params)
         report["input"] = {"links_shown": shown, "links_rederived": dropped,
+                           "values_rederived": values_dropped,
                            "links_held": sum(len(v) for v in held.values()),
                            "types": inputs,
                            "seconds": round(time.monotonic() - started, 3)}
@@ -982,6 +1036,23 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
                 row = dict(zip(store_ddl.LINK_COLUMNS, r))
                 if o["from"] is None or row["from_object"].startswith(tuple(o["from"])):
                     result_rows.append(row)
+        # the re-derived values, with their objects' own and version rows (the layer's
+        # value rows name their version; the apply copies only the values)
+        value_rows: list[dict[str, Any]] = []
+        value_objects: list[dict[str, Any]] = []
+        value_versions: list[dict[str, Any]] = []
+        if values_owned:
+            value_rows = [dict(zip(store_ddl.VALUE_COLUMNS, r)) for r in conn.execute(
+                f"SELECT {', '.join(store_ddl.VALUE_COLUMNS)} FROM object_values WHERE "
+                + values_where + " ORDER BY object_id, l1_handle, binding_id, property",
+                values_params)]
+            ids = json.dumps(sorted({r["object_id"] for r in value_rows}))
+            for table, sink in (("objects", value_objects),
+                                ("object_versions", value_versions)):
+                cols = builder._INSERT[table]
+                sink += [dict(zip(cols, r)) for r in conn.execute(
+                    f"SELECT {', '.join(cols)} FROM {table} WHERE object_id IN "
+                    "(SELECT value FROM json_each(?)) ORDER BY rowid", (ids,))]
     finally:
         builder.abort()
         for suffix in ("", "-wal", "-shm", "-journal"):
@@ -991,20 +1062,27 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
         open_generation(layer)
         for i in range(0, len(result_rows), 20_000):
             layer.add("links", result_rows[i:i + 20_000])
+        for table, rows in (("objects", value_objects), ("object_versions", value_versions),
+                            ("object_values", value_rows)):
+            for i in range(0, len(rows), 20_000):
+                layer.add(table, rows[i:i + 20_000])
         layer.set_meta("format", FORMAT)
         layer.set_meta("steps_digest", the_plan["steps_to"])
         scope = sorted({f"{r[e].split(':', 1)[0]}:" for r in result_rows
                         for e in ("from_object", "to_object")}
-                       | {p for o in owned if o["from"] for p in o["from"]})
+                       | {p for o in owned if o["from"] for p in o["from"]}
+                       | {o["prefix"] for o in values_owned})
         c = layer.connection
         from ontology.schema_migrate import content_digest
-        content = content_digest(c, ("link_rows",))
+        content = content_digest(c, ("link_rows", "objects", "object_versions",
+                                     "value_sources", "value_cells"))
         sequence = int(time.time() * 1000) if sequence is None else int(sequence)
         unit_id = unit["id"] if unit is not None else None
         record = {"id": f"{_sha([the_plan['id'], unit_id, content, sequence])[:16]}-{sequence}",
                   "plan": the_plan["id"], "unit": unit_id, "content": content,
                   "sequence": sequence, "from": the_plan["steps_from"],
-                  "to": the_plan["steps_to"], "owned": owned, "scope": scope,
+                  "to": the_plan["steps_to"], "owned": owned, "values": values_owned,
+                  "scope": scope,
                   "steps": sorted(run), "inputs": inputs, "delta_mark": int(delta_mark),
                   "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         report["id"] = record["id"]
@@ -1016,7 +1094,7 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
         layer.abort()
         raise
     path.replace(out)
-    report.update(links=len(result_rows), scope=scope,
+    report.update(links=len(result_rows), values=len(value_rows), scope=scope,
                   seconds=round(time.monotonic() - started, 3), store=str(out))
     return report
 

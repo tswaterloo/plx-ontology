@@ -249,11 +249,17 @@ def diff(served: Any, new: Any, *, force: Any = (), present: Any = None,
             rows = the_plan.rows.get(unit)
             if rows is None:
                 continue
-            if rows[0] == "binding":
+            # by the unit's kind of rows (``project_incremental.plan``): a gaps-only
+            # link unit (a link binding no projector unit writes) holds no rows; a kind
+            # this diff does not know is refused, never guessed
+            if rows[0] in ("binding", "shard"):
                 touched.add(the_plan.bindings[rows[1]][0])
-            elif rows[2] in the_plan.bindings and rows[3] in the_plan.bindings:
-                touched_links.add((the_plan.bindings[rows[2]][0],
-                                   the_plan.bindings[rows[3]][0]))
+            elif rows[0] == "links":
+                if rows[2] in the_plan.bindings and rows[3] in the_plan.bindings:
+                    touched_links.add((the_plan.bindings[rows[2]][0],
+                                       the_plan.bindings[rows[3]][0]))
+            elif rows[0] != "gaps":
+                out["refused"].append(f"unit_rows_unknown:{unit}:{rows[0]}")
     out["touched_types"] = sorted(touched)
     out["touched_links"] = sorted([list(e) for e in touched_links])
     present = step_migrate.present_steps() if present is None else present

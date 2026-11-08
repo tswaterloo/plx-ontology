@@ -17,13 +17,17 @@ from pathlib import Path
 from typing import Any
 
 NEXT = "ontology_next"
-MIGRATIONS = ("0006_ontology.sql", "0007_ontology_compact.sql", "0008_ontology_read.sql")
+MIGRATIONS = ("0006_ontology.sql", "0007_ontology_compact.sql", "0008_ontology_read.sql",
+              "0010_ontology_words.sql", "0011_ontology_word_order.sql")
 # Data and state tables a generation consists of (sequences move with them).
 TABLES = ("objects", "object_removals", "object_versions", "value_fields", "value_kinds",
           "value_sources", "value_cells", "identifiers", "events", "event_objects",
           "link_texts", "link_skeletons", "link_rows", "text_fields", "text_chunks",
-          "store_meta", "load_state", "load_ranges")
-VIEWS = ("object_values_typed", "object_values", "links")   # in dependency order
+          "packed_sources", "chunk_words", "store_meta", "load_state", "load_ranges")
+# in dependency order; the values' word index moves with value_cells (its function is
+# ``ontology.sq_words``, never the next schema's)
+VIEWS = ("object_values_typed", "object_values", "links", "value_field_order", "value_words",
+         "object_values_numbered")
 
 
 def prepare_next(dsn: str, digest: str | None = None) -> bool:

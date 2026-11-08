@@ -359,6 +359,58 @@ def _pointer(store: Path) -> tuple[str | None, list[str]]:
     return digest, layers
 
 
+# Postgres as the only store (``PLX_ONTOLOGY_PG=only``): the changes are the object
+# versions Postgres numbered past the last ones looked at (each delta layer and migration
+# numbers its versions from a sequence), one batch per run named ``postgres:LOW-HIGH``;
+# a batch of more objects than this (a migration re-marking a type) is noted, not queued.
+PG_BATCH_OBJECTS = 100_000
+
+
+def _postgres_changes(ws: sqlite3.Connection, now_text: str
+                      ) -> tuple[str, list[str], Any, Any] | None:
+    """(the Postgres generation's digest as the layers' base, the batch of versions not
+    looked at yet as one layer, how a layer is opened, its changed objects) when Postgres
+    is the only store; None otherwise. The first look starts from the versions there are
+    (what came before is the generation's)."""
+    from operating.pg import ontology_reader
+    if not ontology_reader.pg_only():
+        return None
+    import psycopg
+    from operating.pg.sqlite_compat import PgCompatConnection
+    target = ontology_reader.dsn()
+    with psycopg.connect(target, connect_timeout=5) as pg:
+        generation, top = pg.execute(
+            "SELECT (SELECT value FROM ontology.store_meta WHERE key = 'content_digest'), "
+            "(SELECT coalesce(max(ver), 0) FROM ontology.object_versions)").fetchone()
+    digest = f"postgres:{generation}"
+    marks = [int(r[0].rsplit("-", 1)[1]) for r in ws.execute(
+        "SELECT store FROM layers WHERE base_digest = ? AND store LIKE 'postgres:%'",
+        (digest,))]
+    if not marks:
+        ws.execute("INSERT OR REPLACE INTO layers VALUES (?, ?, ?)",
+                   (f"postgres:{top}-{top}", digest, now_text))
+        ws.execute("INSERT OR REPLACE INTO learned VALUES (?, ?, ?)",
+                   (f"postgres:{top}-{top}", digest, now_text))
+        return digest, [], None, None
+    low = max(marks)
+    layers = [f"postgres:{low}-{top}"] if top > low else []
+
+    def open_layer(_layer: str) -> Any:
+        return closing(PgCompatConnection(target))
+
+    def owned(conn: Any, layer: str) -> list[str]:
+        lo, hi = (int(x) for x in layer.split(":", 1)[1].split("-"))
+        ids = [r[0] for r in conn.execute(
+            "SELECT DISTINCT object_id FROM object_versions WHERE ver > ? AND ver <= ? "
+            "LIMIT ?", (lo, hi, PG_BATCH_OBJECTS + 1))]
+        return [] if len(ids) > PG_BATCH_OBJECTS else ids
+    return digest, layers, open_layer, owned
+
+
+def _layer_owned(conn: sqlite3.Connection, _layer: str) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT object_id FROM delta_owned")]
+
+
 _CURRENT = ("SELECT o.object_id, o.object_type, o.audience_key, v.l1_handle, v.digest, "
             "v.recorded_at, v.markings FROM objects o JOIN object_versions v ON "
             "v.object_id = o.object_id AND v.superseded_at IS NULL WHERE o.object_id IN "
@@ -519,7 +571,11 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
     except Exception:  # noqa: BLE001 - a guard that cannot say: no colleague is known
         internal = frozenset()
     counts: Counter = Counter()
-    digest, layers = _pointer(store)
+    postgres = _postgres_changes(ws, _iso(now))
+    if postgres is not None:
+        digest, layers, open_layer, owned_of = postgres
+    else:
+        (digest, layers), open_layer, owned_of = _pointer(store), _ro, _layer_owned
     fresh = [layer for layer in layers if not ws.execute(
         "SELECT 1 FROM layers WHERE store = ? AND base_digest = ?",
         (layer, digest)).fetchone()]
@@ -531,8 +587,8 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
     since = _iso(now - dt.timedelta(hours=window_hours))
     newest: dict[str, tuple[str, sqlite3.Row]] = {}
     for layer in fresh:   # newest first: an object is the newest layer's that owns it
-        with closing(_ro(layer)) as conn:
-            owned = [r[0] for r in conn.execute("SELECT object_id FROM delta_owned")]
+        with open_layer(layer) as conn:
+            owned = owned_of(conn, layer)
             for part in _chunks(owned):
                 for row in conn.execute(_CURRENT, (json.dumps(list(part)),)):
                     newest.setdefault(row["object_id"], (layer, row))
@@ -546,8 +602,8 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
     teach: dict[str, dict[str, list[Any]]] = {}
     if guard is not None and internal:
         for layer in unlearned:
-            with closing(_ro(layer)) as conn:
-                owned = [r[0] for r in conn.execute("SELECT object_id FROM delta_owned")]
+            with open_layer(layer) as conn:
+                owned = owned_of(conn, layer)
                 mine = [row["object_id"] for part in _chunks(owned)
                         for row in conn.execute(_CURRENT, (json.dumps(list(part)),))
                         if is_message(row["l1_handle"]) and "#" not in row["l1_handle"]
@@ -558,7 +614,14 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
         "SELECT object_id, digest, props FROM seen WHERE object_id IN (SELECT value FROM "
         "json_each(?))", (json.dumps(list(part)),))}
     served: dict[str, str] = {}
-    with closing(_ro(store)) as base:
+    # the served generation's digests and values (Postgres alone: its generation's file
+    # when it is still there, else nothing is known before the first look)
+    with (closing(_ro(store)) if postgres is None or Path(store).is_file()
+          else closing(sqlite3.connect(":memory:"))) as base:
+        if postgres is not None and not Path(store).is_file():
+            base.execute("CREATE TABLE object_versions (object_id, digest, superseded_at)")
+            base.execute("CREATE TABLE object_values (object_id, property, value_type, value, "
+                         "superseded_at)")
         for part in _chunks([o for o in newest if o not in held]):
             for row in base.execute(
                     "SELECT object_id, digest FROM object_versions WHERE object_id IN "
@@ -593,7 +656,7 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
                 ws, teach, internal, now=now_text, salt=salt,
                 sender_excluded=lambda a: sender_excluded(guard, a))
         for layer, ids in wanted.items():
-            with closing(_ro(layer)) as conn:
+            with open_layer(layer) as conn:
                 values = _values(conn, ids)
                 linked = _linked(conn, [o for o in ids if is_message(newest[o][1]["l1_handle"])])
             for oid in ids:
@@ -649,6 +712,10 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
         for layer in fresh:
             ws.execute("INSERT OR REPLACE INTO layers VALUES (?, ?, ?)",
                        (layer, digest, now_text))
+        if postgres is not None and fresh:   # one mark per Postgres: the newest batch
+            for table in ("layers", "learned"):
+                ws.execute(f"DELETE FROM {table} WHERE base_digest = ? AND store LIKE "
+                           "'postgres:%' AND store <> ?", (digest, fresh[0]))
         if guard is not None and internal:
             for layer in unlearned:
                 ws.execute("INSERT OR REPLACE INTO learned VALUES (?, ?, ?)",

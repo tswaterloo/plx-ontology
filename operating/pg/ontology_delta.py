@@ -9,11 +9,12 @@ generation's (the objects of the records changed since it was built, and the ser
 that gained a link to them, each projected with every record its derivation reads). Here
 each owned object's rows are replaced in ``ontology.*`` in one transaction: its object,
 versions, removals, value sources and values, identifiers, document text fields and
-chunks, the events naming it and every link with an end at it are deleted and the layer's
+chunks (and their words), the events naming it and every link with an end at it are deleted and the layer's
 rows copied in, in the compact layout of ``operating.pg.ontology_load`` (migration 0007):
 a layer's versions, value sources, text fields and chunks take new row numbers from the
 ontology's sequences, its value fields and kinds are matched to the ontology's by content
-(a new one is added), its packed values are unpacked and its links' texts stored plain.
+(a new one is added), its packed values are unpacked (their sources recorded in
+``packed_sources``: never word-indexed, migration 0010) and its links' texts stored plain.
 Layers are applied oldest first, so an object owned by several ends with the newest
 layer's rows.
 
@@ -52,8 +53,12 @@ _DELETE = (
     ("link_rows", f"from_object IN {_OWNED_PG}"),
     ("link_rows", f"to_object IN {_OWNED_PG}"),
     ("value_cells", f"src IN (SELECT src FROM ontology.value_sources WHERE ver IN {_VERS_PG})"),
+    ("packed_sources", f"src IN (SELECT src FROM ontology.value_sources WHERE ver IN "
+                       f"{_VERS_PG})"),
     ("value_sources", f"ver IN {_VERS_PG}"),
     ("identifiers", f"object_id IN {_OWNED_PG}"),
+    ("chunk_words", f"chunk_id IN (SELECT chunk_id FROM ontology.text_chunks WHERE "
+                    f"field_id IN {_FIELDS_PG})"),
     ("text_chunks", f"field_id IN {_FIELDS_PG}"),
     ("text_fields", f"object_id IN {_OWNED_PG}"),
     ("object_versions", f"object_id IN {_OWNED_PG}"),
@@ -141,13 +146,15 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
             loaded = (row[0] or {}).get("content_digest") if row else None
             if loaded != digest:
                 return {**report, "applied": False, "reason": "other_generation"}
-            from operating.pg.ontology_load import ORDER
+            from operating.pg.ontology_load import OPTIONAL, ORDER
             cur.execute("SELECT substr(name, 7) FROM ontology.load_state "
                         "WHERE name LIKE 'table:%%'")
             done = {r[0] for r in cur.fetchall()}
-            needed = set(ORDER) - set((row[0] or {}).get("deferred") or ())
+            needed = set(ORDER) - set(OPTIONAL) - set((row[0] or {}).get("deferred") or ())
             if not needed <= done:
                 return {**report, "applied": False, "reason": "generation_loading"}
+            cur.execute("SELECT ontology.sq_data_version()")
+            before = cur.fetchone()[0]   # the version this layer's kept facts fold over
             cur.execute("SELECT 1 FROM ontology.load_state WHERE name = %s",
                         (f"delta:{layer.name}",))
             if cur.fetchone() is not None:
@@ -200,6 +207,11 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
                         "('delta_layers', %s) ON CONFLICT (name) DO UPDATE SET value = "
                         "ontology.load_state.value || excluded.value, updated_at = now()",
                         (json.dumps([layer.name]),))
+        # committed: the traverse facts of the version it made, folded from the layer
+        # (``fold_layer_facts``), so no host reads them in full on a request
+        from operating import ontology_tools_traverse
+        report["facts_kept"] = ontology_tools_traverse.fold_layer_facts(
+            dsn, layer, owned, before, (f"delta:{layer.name}", "delta_layers"))
         return {**report, "applied": True}
     finally:
         conn.close()
@@ -329,6 +341,10 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
                        _number(value) if k in numeric else None, currency, cite)
     report["copied.value_cells"] = _copy(cur, "value_cells", TABLES["value_cells"].columns,
                                          values())
+    # its packed records' sources: their values are not word-indexed (migration 0010)
+    report["copied.packed_sources"] = _copy(
+        cur, "packed_sources", ("src",),
+        sorted({(src[cell[0]],) for cell in cells if cell[1] is None}))
 
     links = conn.execute(
         f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links" if every_link else
@@ -354,7 +370,33 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
     report["copied.text_chunks"] = _copy(
         cur, "text_chunks", TABLES["text_chunks"].columns,
         ((n, field_id[c[0]], c[1], c[2]) for n, c in zip(numbers, chunks)))
+    # their words (migration 0010: FTS5's own tokenizer, as the layer's ``chunk_text``)
+    from operating.pg.words import chunk_word_rows
+    report["copied.chunk_words"] = _copy(
+        cur, "chunk_words", ("chunk_id", "words"),
+        chunk_word_rows((n, c[2]) for n, c in zip(numbers, chunks)))
     return report
+
+
+def _keep_facts(dsn: str, report: dict[str, Any], text_store: Path | None = None,
+                log: Any = None) -> bool:
+    """The traverse facts of the version Postgres holds now kept (read in full here when no
+    layer's fold kept them: after a load, a migration), never on a host's request. When
+    none could be kept the reason is in ``report["facts_error"]`` and on ``log``: a
+    host then reads them on its first request, minutes, so it is never silent."""
+    try:
+        from operating import ontology_tools_traverse
+        kept = ontology_tools_traverse.prime_pg_facts(
+            dsn, text_store=text_store if text_store and text_store.is_file() else None,
+            log=log)
+        report.pop("facts_error", None)
+    except Exception as exc:  # noqa: BLE001 - reported: the cycle itself is done
+        kept = False
+        report["facts_error"] = f"{type(exc).__name__}: {str(exc)[:400]}"
+        print(f"delta follower: traverse facts not kept: {report['facts_error']}",
+              file=log or sys.stderr, flush=True)
+    report["facts_kept"] = kept
+    return kept
 
 
 def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None
@@ -442,7 +484,7 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
         digest = conn.execute("SELECT value FROM store_meta WHERE key = 'content_digest'"
                               ).fetchone()[0]
     deferred = tuple(t for t in os.environ.get("PLX_ONTOLOGY_DEFER", "").split(",") if t)
-    needed = set(ontology_load.ORDER) - set(deferred)
+    needed = set(ontology_load.ORDER) - set(ontology_load.OPTIONAL) - set(deferred)
     with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg:
         row = pg.execute("SELECT value->>'content_digest' FROM ontology.load_state "
                          "WHERE name = 'generation'").fetchone()
@@ -505,11 +547,13 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
     try:
         body = json.loads(pointer.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        _keep_facts(dsn, report, projection / "ontology.sqlite", log)
         return {**report, "state": "no_delta"}
     if body.get("base_digest") != digest:
         return {**report, "state": "delta_of_another_generation"}
     stores = [item["store"] for item in body.get("layers") or []]   # newest first
     report["layers"] = apply_listed(stores, dsn, log=log)
+    _keep_facts(dsn, report, projection / "ontology.sqlite", log)
     report["state"] = "stalled" if report["layers"].get("stalled") else "current"
     return report
 

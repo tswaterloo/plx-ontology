@@ -200,7 +200,7 @@ READ_AHEAD_FAMILIES = frozenset({"mail", "sharepoint"})
 # A text search lists the matching chunks of its sources' chunk runs (``_matched_chunks``)
 # only when they hold at most this share of all chunks: else most matches are theirs.
 CHUNK_NARROW_SHARE = 0.5
-# A word scan reads its index match's rowids this many at a time (``_matched_rows``).
+# A word scan reads its index match's rowids this many at a time (``StoreReader.word_rows``).
 CHUNK_BATCH = 4 * (DOC_SCAN_CAP + 1)
 TWIN_ROOTS = 50            # identifier records whose firm twins a documents call reads
 FIRM_TIERS = ("verified", "reviewed", "corroborated")   # a link that firmly joins records
@@ -2197,7 +2197,7 @@ class EvidenceTools:
             try:
                 rows = self.store.word_conn.execute(
                     f"""SELECT v.object_id, v.property, v.value
-                        FROM value_text f JOIN object_values_numbered v ON v.row_no = f.rowid
+                        FROM {self.store.value_word_join}
                         JOIN objects o ON o.object_id = v.object_id
                         WHERE value_text MATCH :words AND ({narrowed}) AND {held}
                         AND {visible} LIMIT :cap""", params).fetchall()
@@ -2567,7 +2567,8 @@ class EvidenceTools:
             # The families' audiences only: another family's chunk never takes a slot of
             # the cap nor pays for the item gate.
             with self._matched_chunks(words, families) as matched:
-                rows = self._capped_scan(scope, matched, scan, ahead, params)
+                rows = self._capped_scan(scope, matched, scan, ahead, params,
+                                         conn=self.store.chunk_conn)
         except sqlite3.OperationalError:
             return set(), True   # an index this store lacks, or a query it cannot read
         cut = len(rows) > DOC_SCAN_CAP
@@ -2582,31 +2583,9 @@ class EvidenceTools:
                     row["field_path"])
         return out, cut
 
-    @contextlib.contextmanager
-    def _matched_rows(self, sql: str, params: Mapping[str, Any],
-                      keep: Callable[[int], bool] | None = None) -> Iterator[Iterator[int]]:
-        """The rowids the word index's match ``sql`` returns, ascending, read lazily in
-        pages as they are taken (a common word on a big store is read only as far as the
-        capped scan goes), and only those ``keep`` admits; the statement is closed after.
-        ``sqlite3.OperationalError``: a match the index cannot read."""
-        cursor = self.store.word_conn.execute(sql, params)
-
-        def ids() -> Iterator[int]:
-            while True:
-                page = cursor.fetchmany(CHUNK_BATCH)
-                if not page:
-                    return
-                for (rowid,) in page:
-                    if keep is None or keep(rowid):
-                        yield rowid
-        try:
-            yield ids()
-        finally:
-            cursor.close()
-
     def _matched_chunks(self, words: str, families: Sequence[str]
                         ) -> contextlib.AbstractContextManager[Iterator[int]]:
-        """The ids, ascending, of the chunks matching ``words`` (``_matched_rows``): those
+        """The ids, ascending, of the chunks matching ``words`` (``StoreReader.word_rows``): those
         in the chunk runs of ``families`` (``chunk_families``) when the store's runs are
         known and these families hold at most ``CHUNK_NARROW_SHARE`` of the chunks
         (``_chunk_runs``), else every match (the scan's audience term drops another
@@ -2619,12 +2598,10 @@ class EvidenceTools:
             def keep(chunk: int) -> bool:
                 at = bisect.bisect_right(lows, chunk) - 1
                 return at >= 0 and chunk <= highs[at]
-        return self._matched_rows(
-            "SELECT rowid FROM chunk_text WHERE chunk_text MATCH :words ORDER BY rowid",
-            {"words": words}, keep)
+        return self.store.word_rows("chunk_text", words, keep=keep)
 
     def _capped_scan(self, scope: Any, matched: Iterator[int], scan: str, ahead: str,
-                     params: Mapping[str, Any]) -> list[Any]:
+                     params: Mapping[str, Any], *, conn: Any = None) -> list[Any]:
         """The rows of ``scan`` (its candidates the ids ``:ids``, in their ascending order,
         ``LIMIT :cap``) over the word index's matches ``matched``, up to
         ``DOC_SCAN_CAP + 1`` rows: the rows one scan joining the index's match would
@@ -2639,8 +2616,8 @@ class EvidenceTools:
             if not ids:
                 break
             sliced = {**params, "ids": json.dumps(ids), "cap": want}
-            self._read_ahead(scope, ahead, sliced)
-            rows += self.store.word_conn.execute(scan, sliced).fetchall()
+            self._read_ahead(scope, ahead, sliced, conn=conn)
+            rows += (conn or self.store.word_conn).execute(scan, sliced).fetchall()
         return rows
 
     def _chunk_runs(self, families: Sequence[str]) -> tuple[list[int], list[int]] | None:
@@ -2663,7 +2640,8 @@ class EvidenceTools:
             return None
         return [lo for lo, _hi in mine], [hi for _lo, hi in mine]
 
-    def _read_ahead(self, scope: Any, sql: str, params: Mapping[str, Any]) -> None:
+    def _read_ahead(self, scope: Any, sql: str, params: Mapping[str, Any], *,
+                    conn: Any = None) -> None:
         """Before a slice of a word scan whose rows each ask the item gate
         (``_capped_scan``): the version handles of the slice's candidate rows (``sql``:
         the scan's own candidates, ``:ids``, in its order, with no permission term),
@@ -2676,7 +2654,7 @@ class EvidenceTools:
                 or not searched & READ_AHEAD_FAMILIES:
             return   # no gate reading ahead, or no source whose files it reads ahead
         try:
-            handles = [row[0] for row in self.store.word_conn.execute(sql, params)]
+            handles = [row[0] for row in (conn or self.store.word_conn).execute(sql, params)]
         except sqlite3.Error:
             return
         self.base.prefetch_items(scope.actor, handles)
@@ -2797,24 +2775,23 @@ class EvidenceTools:
                 f"f.rowid BETWEEN :lo{i} AND :hi{i}" for i in range(len(spans))) + ")"
             for i, (low, high) in enumerate(spans or ()):
                 params[f"lo{i}"], params[f"hi{i}"] = low, high
-            # The index's match is read once, in rowid order (``_matched_rows``); the scan
+            # The index's match is read once, in rowid order (``StoreReader.word_rows``); the scan
             # reads those rows a slice at a time (``_capped_scan``), never the match again.
-            ahead = """SELECT v.l1_handle FROM object_values_numbered v
+            numbered, by_number = self.store.numbered_values
+            ahead = f"""SELECT v.l1_handle FROM {numbered}
                 JOIN objects o ON o.object_id = v.object_id
-                WHERE v.row_no IN (SELECT value FROM json_each(:ids))
+                WHERE {by_number}
                 AND v.value_type IN ('text', 'identifier') AND v.value LIKE :pattern
                 ESCAPE '\\' AND o.audience_key IN (SELECT value FROM json_each(:aud))
                 ORDER BY v.row_no"""
             scan = f"""SELECT v.object_id, v.value, v.l1_handle, v.field_path, o.audience_key
-                FROM object_values_numbered v JOIN objects o ON o.object_id = v.object_id
-                WHERE v.row_no IN (SELECT value FROM json_each(:ids))
+                FROM {numbered} JOIN objects o ON o.object_id = v.object_id
+                WHERE {by_number}
                 AND v.value_type IN ('text', 'identifier') AND v.value LIKE :pattern
                 ESCAPE '\\' AND {visible}
                 ORDER BY v.row_no LIMIT :cap"""
             try:
-                with self._matched_rows(f"""SELECT f.rowid FROM value_text f
-                        WHERE value_text MATCH :words{narrowed} ORDER BY f.rowid""",
-                                        params) as matched:
+                with self.store.word_rows("value_text", params["words"], spans) as matched:
                     rows = self._capped_scan(scope, matched, scan, ahead, params)
             except sqlite3.OperationalError:
                 rows = None   # a store without the value word index: the scan below

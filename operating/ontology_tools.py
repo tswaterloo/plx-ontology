@@ -827,6 +827,51 @@ class StoreReader:
         self._meta: tuple[tuple[int, int], dict[str, str]] | None = None
         self._text_schemes: tuple[tuple[int, int], dict[str, bool]] | None = None
 
+    # How a word match (``value_text f``) joins its value row (``object_values_numbered
+    # v``); on Postgres, by the cell's key (``PgStoreReader``).
+    value_word_join = "value_text f JOIN object_values_numbered v ON v.row_no = f.rowid"
+
+    # The value rows of the word-row numbers ``:ids`` (``word_rows``): the ``FROM`` text
+    # naming them ``v``, and the condition that picks them.
+    numbered_values = ("object_values_numbered v",
+                       "v.row_no IN (SELECT value FROM json_each(:ids))")
+    # A word match's rows are read this many at a time (``word_rows``).
+    WORD_ROWS_BATCH = 2000
+
+    @contextmanager
+    def word_rows(self, table: str, words: str,
+                  spans: Sequence[tuple[int, int]] | None = None, *,
+                  keep: Callable[[int], bool] | None = None) -> Iterator[Iterator[int]]:
+        """The row numbers of ``table``'s word index (``value_text``: value rows,
+        ``chunk_text``: chunk ids) matching the FTS5 query ``words``, ascending, within
+        ``spans`` (inclusive row number ranges) when given, and only those ``keep``
+        admits; read lazily as they are taken (a common word is read only as far as the
+        caller goes). ``sqlite3.OperationalError``: a match the index cannot read."""
+        conn = self.chunk_conn if table == "chunk_text" else self.word_conn
+        narrowed = "" if spans is None else " AND (" + " OR ".join(
+            f"rowid BETWEEN {int(low)} AND {int(high)}" for low, high in spans) + ")"
+        cursor = conn.execute(f"SELECT rowid FROM {table} WHERE {table} MATCH :words"
+                              f"{narrowed} ORDER BY rowid", {"words": words})
+
+        def ids() -> Iterator[int]:
+            while True:
+                page = cursor.fetchmany(self.WORD_ROWS_BATCH)
+                if not page:
+                    return
+                for (rowid,) in page:
+                    if keep is None or keep(rowid):
+                        yield rowid
+        try:
+            yield ids()
+        finally:
+            cursor.close()
+
+    @property
+    def chunk_conn(self) -> sqlite3.Connection:
+        """The connection document words (``chunk_text``) are read on: this store's
+        (``PgStoreReader``: the SQLite generation's)."""
+        return self.word_conn
+
     @property
     def word_conn(self) -> sqlite3.Connection:
         """The connection the word index (``value_text``, ``chunk_text``) is read on: this
@@ -2797,7 +2842,7 @@ class OntologyTools:
                 name, _, binding = str(gap.get("where", "")).partition("@")
                 if binding:
                     failed.setdefault(name, set()).add(binding)
-        out = []
+        wanted: list[tuple[str, str, str]] = []   # (Type.property, type, binding)
         for name, bindings in sorted(failed.items()):
             tid, _, prop_name = name.partition(".")
             if object_type is not None and tid != object_type:
@@ -2808,10 +2853,46 @@ class OntologyTools:
             if prop is None or not prop.get("identifier_kind") or not scope.holds(
                     set(spec.get("markings", ())) | set(prop.get("markings", ()))):
                 continue
-            if any(self._binding_readable(scope, tid, binding)
-                   for binding in sorted(bindings)):
-                out.append(name)
-        return out
+            wanted += [(name, tid, binding) for binding in sorted(bindings)]
+        if not wanted:
+            return []
+        readable = self._bindings_readable(scope, [(tid, binding)
+                                                   for _name, tid, binding in wanted])
+        return sorted({name for name, tid, binding in wanted if (tid, binding) in readable})
+
+    def _bindings_readable(self, scope: _Scope,
+                           pairs: Sequence[tuple[str, str]]) -> set[tuple[str, str]]:
+        """Each ``(type, binding)`` of ``pairs`` that ``_binding_readable`` holds, with
+        the same kept facts and kept answers; the answers not kept yet are probed in one
+        statement (a statement per binding was a round trip each on Postgres)."""
+        audiences = frozenset(scope.audience_keys)
+        typed = self._store_fact("audiences")
+        candidates = [(tid, binding) for tid, binding in dict.fromkeys(pairs)
+                      if not isinstance(typed, Mapping)
+                      or audiences.intersection(typed.get(tid, ()))]
+        if not candidates:
+            return set()
+        stamp = self._store_stamp()
+        with _STORE_KEPT_LOCK:
+            kept = getattr(self.store, "_kept_answers", None)
+            held = set(kept[1]) if stamp is not None and kept is not None \
+                and kept[0] == stamp else set()
+        misses = [pair for pair in candidates
+                  if ("binding_readable", *pair, audiences) not in held]
+        found: set[tuple[str, str]] = set()
+        params = scope.params()
+        for start in range(0, len(misses), 400):   # under SQLite's 500 compound terms
+            probes = []
+            for at, (tid, binding) in enumerate(misses[start:start + 400], start):
+                params[f"tid{at}"], params[f"bid{at}"] = tid, binding
+                probes.append(f"SELECT {at} AS at WHERE EXISTS (SELECT 1 FROM objects WHERE "
+                              f"object_type = :tid{at} AND binding_id = :bid{at} AND "
+                              "audience_key IN (SELECT value FROM json_each(:aud)))")
+            found.update(misses[int(row[0])] for row in self.store.conn.execute(
+                " UNION ALL ".join(probes), params).fetchall())
+        return {pair for pair in candidates
+                if self._store_kept(("binding_readable", *pair, audiences),
+                                    lambda pair=pair: pair in found)}
 
     def _binding_readable(self, scope: _Scope, tid: str, binding: str) -> bool:
         """Whether some object of ``tid`` from ``binding`` carries an audience key of

@@ -13,7 +13,8 @@ from operating.tests import pg_testdb
 
 MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
               for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
-                           "0008_ontology_read.sql", "0009_schema_migrations.sql")]
+                           "0008_ontology_read.sql", "0009_schema_migrations.sql",
+                           "0010_ontology_words.sql", "0011_ontology_word_order.sql")]
 VERSIONS = [("A:b:1", "graph-mail://box/1@x", "d", "portal", "[]", "2026-01-01T00:00:00Z", None),
             ("A:b:2", "graph-mail://box/2@x", "d", "portal", '["restricted"]',
              "2026-01-01T00:00:00Z", None),
@@ -162,3 +163,19 @@ class CompatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JsonListTests(unittest.TestCase):
+    """``x [NOT] IN (SELECT value FROM json_each(:list))`` read as an array test."""
+
+    def test_lists_become_arrays(self):
+        from operating.pg.sqlite_compat import translate
+        sql = ("SELECT 1 FROM objects o WHERE o.audience_key IN (SELECT value FROM "
+               "json_each(:aud)) AND v.ver NOT IN (SELECT value FROM json_each(?)) "
+               "AND x IN (SELECT value FROM json_each(:a), y)")
+        out = translate(sql, arrays=True)
+        self.assertIn("o.audience_key = ANY(ontology.sq_json_array(%(aud)s))", out)
+        self.assertIn("v.ver  <> ALL(ontology.sq_json_array_int(%s))", out)
+        self.assertIn("IN (SELECT value FROM ontology.sq_json_each(%(a)s), y)", out)
+        self.assertNotIn("sq_json_array", translate(sql))
+
