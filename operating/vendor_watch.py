@@ -53,9 +53,27 @@ DEFAULT_SECONDS = 5400
 # tool-call rules (but the vendor-terms check, run incrementally below) and the customer PO
 # scan of the Portal mirror
 CALLING_PASS = frozenset({"orders_at_risk", "card_rules", "negative_margin",
-                          "order_without_customer_po"})
+                          "margin_erosion", "order_without_customer_po"})
 DEFAULT_BOUND = 400
-REFRESH_MODES = ("new", "always", "never", "calling")
+# the rules ``--refresh whole`` runs (``plx-proactive-whole.timer``, every 4 hours): the
+# store-only rules the incremental pass leaves to a full pass (they read every record of
+# their types), so their alerts are at most 4 hours old, not a day
+WHOLE_PASS = frozenset({"stock_out_risk", "overdue_receivable", "unit_cost_jump",
+                        "customer_demand_drop", "promise_date_slip", "supplier_reliability",
+                        "shipped_not_invoiced", "duplicate_customer_order",
+                        "recurring_component_damage", "customer_chase", "quality_holds",
+                        "customer_payment_behaviour", "early_pay_discounts",
+                        "duplicate_payables", "price_consistency",
+                        "mc_task_overdue", "mc_task_stuck",
+                        "mc_approval_pending", "planner_task_overdue",
+                        "aged_balance_worsening", "production_late",
+                        "assembly_damage_spike", "teams_unanswered_ask",
+                        "commitments", "needs_reply", "slow_moving_stock", "expiring_lot_stock",
+                        "assembly_component_shortfall", "certificate_expiry",
+                        "freight_cost_anomaly", "stale_quote",
+                        "duplicate_parties",
+                        "key_fields_missing", "twin_disagreement", "stale_captures"})
+REFRESH_MODES = ("new", "always", "never", "calling", "whole")
 
 
 def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
@@ -94,8 +112,8 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
     # every core the host can spare reads as the same principal, offline (``proactive_pool``)
     pool = proactive_pool.from_host_config(config, state_dir, store, environ)
     try:
-        behind = mode in ("new", "calling") and pe.served_behind(store)
-        if mode == "always" or behind or mode == "calling":
+        behind = mode in ("new", "calling", "whole") and pe.served_behind(store)
+        if mode == "always" or behind or mode in ("calling", "whole"):
             # a generation was served since the last full run (the build's own run did not
             # run, failed or is still to come): the whole engine runs over it now, in this
             # fresh process, so Home and the briefing never list older data's findings
@@ -107,7 +125,8 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             # leaves to this one (the tool-call rules and the Portal mirror's customer PO
             # scan); the store-only rules follow every delta cycle there
             # (``operating.proactive_incremental``)
-            only = sorted(CALLING_PASS) if mode == "calling" and not behind else None
+            only = (sorted(CALLING_PASS) if mode == "calling" and not behind
+                    else sorted(WHOLE_PASS) if mode == "whole" and not behind else None)
             try:
                 ran = pe.refresh(runtime, actor, audience, store, day, captures=state_dir,
                                  scan_coverage="portal" in config.sources,

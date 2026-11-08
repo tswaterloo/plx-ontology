@@ -18,7 +18,8 @@ from __future__ import annotations
 import functools
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+import re
+from typing import Any, Mapping, Optional, Sequence
 
 MAX_MENTIONS = 6     # identifiers of one question looked up first
 MAX_ROOTS = 4        # records read in the follow-up round
@@ -42,13 +43,30 @@ def process_root_types() -> frozenset[str]:
     return frozenset(out)
 
 
-def first_reads(question: str) -> list[tuple[str, dict[str, Any]]]:
+def mention_key(text: Any) -> str:
+    """One mention's form for telling whether it was looked up already: its letters and
+    digits, upper case ("PO#90412", "po 90412" and "PO90412" are one)."""
+    return re.sub(r"[^0-9A-Z]", "", str(text or "").upper())
+
+
+def first_reads(question: str, looked: Optional[Mapping[str, Any]] = None
+                ) -> list[tuple[str, dict[str, Any]]]:
     """The records ``question`` names, looked up as the reader: each identifier the
     grammar reads (typed when its label says the type) and the question's names and
-    codes resolved; [] for an empty question."""
+    codes resolved; [] for an empty question.
+
+    ``looked``: what the Ask already looked up as this reader for this question before
+    the session (``objective_runner.find_roots``): ``mentions`` (each identifier it
+    looked up, whatever it found) and ``entities`` (True: the resolver ran on the
+    question). Those lookups are not made again: measured on the 2026-11-07 graded runs,
+    44 of 114 sessions repeated them first (12-14 s median each) and 3 of the 89 repeats
+    found a record the Ask had not. An identifier only this grammar reads is still
+    looked up."""
     from . import query_understanding as qu
     if not isinstance(question, str) or not question.strip():
         return []
+    done = {mention_key(m) for m in (looked or {}).get("mentions") or ()
+            if isinstance(m, str)} - {""}
     out: list[tuple[str, dict[str, Any]]] = []
     try:
         leads = qu.identifier_leads(question)
@@ -62,11 +80,14 @@ def first_reads(question: str) -> list[tuple[str, dict[str, Any]]]:
         seen.add(key)
         if len(seen) > MAX_MENTIONS:
             break
+        if {mention_key(form) for form in (lead.text, *(lead.forms or ()))} & done:
+            continue   # the Ask looked it up already
         find: dict[str, Any] = {"query": lead.text[:200], "limit": 10}
         if lead.types and len(lead.types) == 1:
             find["object_type"] = lead.types[0]
         out.append(("plx.find", find))
-    out.append(("plx.find", {"mode": "entities", "text": question[:2000]}))
+    if not (looked or {}).get("entities"):
+        out.append(("plx.find", {"mode": "entities", "text": question[:2000]}))
     return out
 
 

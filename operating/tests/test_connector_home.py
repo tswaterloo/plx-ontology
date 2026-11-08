@@ -447,6 +447,24 @@ class HomeModeTest(Base):
             self.assertLessEqual(len(definitions.get(agent).tools), 24)
 
 
+class HomeLimitsTest(unittest.TestCase):
+    def test_the_home_limits_hold_every_registered_rule_and_kind(self):
+        """The contract's home enums are the registered rules and kinds, and its list
+        limits hold all of them: a new detector never makes a full home invalid."""
+        from operating.ontology_tools import load_contracts
+
+        home = load_contracts()["tools"]["plx.find"]["output"]["oneOf"][0]["properties"][
+            "home"]["properties"]
+        rules, kinds = set(pe.DETECTORS), set(mcp_server.HOME_KINDS)
+        self.assertEqual(set(home["kinds"]["items"]["enum"]), kinds)
+        self.assertEqual(set(home["gaps"]["items"]["properties"]["kind"]["enum"]), kinds)
+        self.assertEqual(set(home["not_run"]["items"]["enum"]), rules)
+        self.assertEqual(set(home["rules"]["items"]["properties"]["rule"]["enum"]), rules)
+        self.assertGreaterEqual(home["kinds"]["maxItems"], len(kinds))
+        self.assertGreaterEqual(home["not_run"]["maxItems"], len(rules))
+        self.assertGreaterEqual(home["rules"]["maxItems"], len(rules))
+
+
 class PrimerTest(Base):
     def test_initialize_carries_the_business_primer_and_keeps_the_security_text(self):
         _, init = self.server()

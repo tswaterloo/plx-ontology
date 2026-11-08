@@ -353,7 +353,8 @@ STEPS: dict[str, Spec] = {
                        writes=_from_type_links("MCTask"),
                        inputs=_fixed("MCTask", "Customer", "Supplier", "Product")),
     # the text index's inputs are the apply's: a unit migration re-marks the text fields
-    # of the objects it rewrites and refuses what it cannot (ontology_migrate._text_index)
+    # of the objects it rewrites and refuses what it cannot (ontology_migrate._text_index);
+    # a change of its code is refused unless it only marks (MARKS_ONLY: re-marked in place)
     "text_index": Spec((), ("ontology/text_index.py", "ontology/text_parallel.py"),
                        supported=False, inputs=_fixed()),
     "trace_postings": Spec(("postdoc:",), ("ontology/posting_links.py",),
@@ -374,6 +375,23 @@ STEPS: dict[str, Spec] = {
     "your_reference": Spec(("yrf-po-",), ("ontology/identity_scoring.py",),
                            reads=("twins",), inputs=_twin_inputs),
 }
+
+
+# Code changes of an unsupported step that change only the markings its rows carry, as
+# (from, to) pairs of its code digest (:func:`code_digests`), each pinned by reading the
+# change: a step migration across one re-marks the step's served rows in place (no text is
+# read again, no row written but its markings) instead of being refused. Any other change
+# of such a step's code is refused as before (an unpinned pair).
+# text_index, 7aba9f1245: the text fields of a personal financial or HR-confidential
+# document (``text_index._sensitive``: a pay stub, an offer or termination letter, a payroll
+# or HR confidentiality label) carry ``finance`` and ``pii`` too (:func:`text_marks`).
+MARKS_ONLY: dict[str, frozenset[tuple[str, str]]] = {
+    "text_index": frozenset({
+        ("becab53876388be8bf17db03631e2af2ecbd9c89eeb814e3b715dc6c0d6c403f",
+         "134dfec62ca16d17b649eed64dabcd8b1ad3db3c740c9fd1037831b5f99e801b")}),
+}
+SENSITIVE_MARKS = ("finance", "pii")
+TEXT_MARKS = "text_marks"   # the layer's table: the version handles whose fields are marked
 
 
 def step_inputs(schemas: Sequence[Any], touched: Iterable[str], present: Iterable[str],
@@ -471,9 +489,13 @@ def _written(schema: Any, spec: Spec) -> dict[str, Any]:
 def plan_steps(served: Any, new: Any, old_code: Mapping[str, str],
                new_code: Mapping[str, str], present: Iterable[str],
                specs: Mapping[str, Spec] = STEPS,
-               inputs: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+               inputs: Mapping[str, Mapping[str, Any]] | None = None,
+               marks_only: Mapping[str, Iterable[tuple[str, str]]] = MARKS_ONLY
+               ) -> dict[str, Any]:
     """The steps to run again (module docstring): ``{"run": {step: from_types | None},
-    "refused": [...], "why": {step: reason}}``. ``present``: the step names this tree's
+    "refused": [...], "why": {step: reason}}``, and ``"remark": [...]`` when an
+    unsupported step runs again only for a code change ``marks_only`` pins (its rows are
+    re-marked in place, :data:`MARKS_ONLY`). ``present``: the step names this tree's
     build runs. ``inputs``: the steps whose declared inputs the unit migration touches
     (``schema_migrate.diff``'s ``steps_required``: :func:`step_inputs`)."""
     present = set(present)
@@ -523,10 +545,19 @@ def plan_steps(served: Any, new: Any, old_code: Mapping[str, str],
                 run[name] = None
                 why[name] = ("reads:" + ",".join(hit)) if hit else "amends:" + ",".join(amended)
                 grew = True
+    remark: list[str] = []
     for name in sorted(run):
-        if not specs[name].supported:
+        if specs[name].supported:
+            continue
+        if why.get(name) == "code" and (old_code.get(name), new_code.get(name)) in \
+                set(marks_only.get(name, ())):
+            remark.append(name)
+        else:
             refused.append(f"step_unsupported:{name}")
-    return {"run": {k: run[k] for k in sorted(run)}, "why": why, "refused": refused}
+    out = {"run": {k: run[k] for k in sorted(run)}, "why": why, "refused": refused}
+    if remark:
+        out["remark"] = remark
+    return out
 
 
 def _document_field_units(new: Any) -> list[str]:
@@ -903,6 +934,51 @@ def _sources_of(new: Any, sources: Mapping[str, Any], from_types: Sequence[str] 
     return {k: v for k, v in sources.items() if k in wanted}
 
 
+def text_marks(projector: Any) -> tuple[set[str], dict[str, Any]]:
+    """The version handles (document citations) whose text fields this code's text index
+    marks ``finance`` and ``pii`` (``ontology.text_index._sensitive``), judged on every
+    capture source's documents as the index reads them (``source_document_groups``,
+    through the build's kept readings: no file is read again), and the counts. Fail
+    closed: a group that cannot be read raises (its documents' fields cannot be known
+    unmarked), as does a document the judge cannot read."""
+    from ontology.mentions import source_document_groups
+    from ontology.text_index import _sensitive
+    marked: set[str] = set()
+    counts = {"documents": 0, "documents_marked": 0, "groups": 0}
+    failed = 0
+    for _group, load in source_document_groups(projector):
+        counts["groups"] += 1
+        try:
+            documents, _remembered = load()
+        except (sqlite3.Error, MemoryError, KeyboardInterrupt):
+            raise
+        except Exception:  # noqa: BLE001 - counted, then refused below
+            failed += 1
+            continue
+        for document in documents:
+            counts["documents"] += 1
+            if _sensitive(document):
+                marked.add(document.citation)
+    if failed:
+        raise ValueError(f"text_marks_groups_unread:{failed}")
+    counts["documents_marked"] = len(marked)
+    return marked, counts
+
+
+def _text_marks_scope(dsn: str, handles: Sequence[str]) -> list[str]:
+    """The object id prefixes (``<Type>:``) of the served objects holding a text field of
+    one of ``handles`` (the step migration's scope: a delta layer replacing one since the
+    snapshot is queued to be projected again)."""
+    if not handles:
+        return []
+    import psycopg
+    with psycopg.connect(dsn) as pg:
+        rows = pg.execute("SELECT DISTINCT split_part(object_id, ':', 1) FROM "
+                          "ontology.text_fields WHERE version_handle = ANY(%s)",
+                          (sorted(handles),)).fetchall()
+    return sorted(f"{r[0]}:" for r in rows)
+
+
 def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any], dsn: str,
                 out: str | Path, *, sources: Mapping[str, Any] | None = None,
                 unit_layer: str | Path | None = None, normalizer: Any = None,
@@ -919,6 +995,8 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
     from ontology import store_ddl
 
     run = dict(the_plan["steps"]["run"])
+    remarks = set(the_plan["steps"].get("remark") or ())   # re-marked in place
+    marked: set[str] = set()
     if the_plan["steps"]["refused"]:
         raise ValueError("step_migration_refused:" + ",".join(the_plan["steps"]["refused"]))
     missing = sorted(set(run) - set(steps))
@@ -999,8 +1077,15 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
                 spec = specs[name]
                 srcs = _sources_of(new, sources, run[name]) if spec.documents else sources
                 projector = _projector(new, srcs, normalizer)
+                if name in remarks:   # what it marks, never its rows written again
+                    def call(_builder: Any, projector: Any) -> dict[str, Any]:
+                        found, counts = text_marks(projector)
+                        marked.update(found)
+                        return counts
+                else:
+                    call = steps[name]
                 try:
-                    result = steps[name](builder, projector)
+                    result = call(builder, projector)
                 except sqlite3.OperationalError as exc:
                     if UNDECLARED in str(exc):   # fail closed: its inputs are wrong
                         raise UndeclaredRead(f"step_read_undeclared_type:{name}") from exc
@@ -1068,14 +1153,20 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
                 layer.add(table, rows[i:i + 20_000])
         layer.set_meta("format", FORMAT)
         layer.set_meta("steps_digest", the_plan["steps_to"])
+        c = layer.connection
+        if remarks:
+            c.execute(f"CREATE TABLE {TEXT_MARKS} (version_handle TEXT PRIMARY KEY)")
+            c.executemany(f"INSERT INTO {TEXT_MARKS} VALUES (?)",
+                          [(h,) for h in sorted(marked)])
         scope = sorted({f"{r[e].split(':', 1)[0]}:" for r in result_rows
                         for e in ("from_object", "to_object")}
                        | {p for o in owned if o["from"] for p in o["from"]}
-                       | {o["prefix"] for o in values_owned})
-        c = layer.connection
+                       | {o["prefix"] for o in values_owned}
+                       | set(_text_marks_scope(dsn, sorted(marked)) if remarks else ()))
         from ontology.schema_migrate import content_digest
         content = content_digest(c, ("link_rows", "objects", "object_versions",
-                                     "value_sources", "value_cells"))
+                                     "value_sources", "value_cells")
+                                 + ((TEXT_MARKS,) if remarks else ()))
         sequence = int(time.time() * 1000) if sequence is None else int(sequence)
         unit_id = unit["id"] if unit is not None else None
         record = {"id": f"{_sha([the_plan['id'], unit_id, content, sequence])[:16]}-{sequence}",
@@ -1085,6 +1176,9 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
                   "scope": scope,
                   "steps": sorted(run), "inputs": inputs, "delta_mark": int(delta_mark),
                   "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        if remarks:   # the apply adds ``marks`` to the text fields of these documents
+            record["text_marks"] = {"steps": sorted(remarks), "marks": list(SENSITIVE_MARKS),
+                                    "documents": len(marked)}
         report["id"] = record["id"]
         c.execute(f"CREATE TABLE {TABLE} (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         c.executemany(f"INSERT INTO {TABLE} VALUES (?, ?)",
@@ -1094,6 +1188,8 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
         layer.abort()
         raise
     path.replace(out)
+    if remarks:
+        report["text_marks"] = len(marked)
     report.update(links=len(result_rows), values=len(value_rows), scope=scope,
                   seconds=round(time.monotonic() - started, 3), store=str(out))
     return report

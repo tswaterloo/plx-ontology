@@ -192,5 +192,153 @@ class StepMigrationTests(unittest.TestCase):
                          "other_steps")
 
 
+
+def _marked(document):
+    """A made-up rule standing in for the text index's sensitive judge: the packing slip
+    (``DeltaDocumentTests``), not the other file."""
+    return "01SLIP" in document.citation
+
+
+class TextMarksStepMigrationTests(unittest.TestCase):
+    """A text index code change that only marks (``step_migrate.MARKS_ONLY``, the
+    payroll marking of 7aba9f1245) applied in place: the served text fields of the
+    documents the new code marks get ``finance`` and ``pii``, every field then equals a
+    full build's with the new code, no chunk changes, and the served step code switches so
+    the deploy check can pass."""
+
+    def setUp(self):
+        import psycopg
+        from operating import build_steps
+        self.name, self.dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, self.name)
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            for migration in MIGRATIONS:
+                pg.execute(migration.read_text(encoding="utf-8"))
+        from ontology.tests.test_delta import DeltaDocumentTests
+        self.fixture = DeltaDocumentTests(
+            "test_a_file_without_time_is_pending_and_its_record_follows_a_layer_later")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.original = build_steps.post_project
+
+    def full(self, name):
+        return self.fixture.full(name)
+
+    def specs(self):
+        from ontology.step_migrate import STEPS
+        return dict(STEPS)
+
+    def text_plan(self, steps_from, marks_only):
+        from ontology.step_migrate import plan_steps
+        names = set(self.original(self.fixture.state, "plx"))
+        old = {n: "same" for n in STEPS_NAMES()}
+        new = {**old, "text_index": "marks"}
+        steps = plan_steps(self.fixture.schema, self.fixture.schema, old, new, names,
+                           inputs=None, marks_only=marks_only)
+        return {"id": "text-marks", "steps": steps, "steps_from": steps_from,
+                "steps_to": "steps:text-marks"}
+
+    @staticmethod
+    def fields(dsn=None, path=None):
+        sql = ("SELECT object_id, version_handle, citation, field_path, document_kind, "
+               "sender_class, markings, text_digest FROM {}text_fields")
+        if path is not None:
+            with sqlite3.connect(path) as conn:
+                return sorted(conn.execute(sql.format("")).fetchall())
+        import psycopg
+        with psycopg.connect(dsn) as pg:
+            return sorted(tuple(r) for r in pg.execute(sql.format("ontology.")).fetchall())
+
+    def chunks(self):
+        import psycopg
+        with psycopg.connect(self.dsn) as pg:
+            return sorted(tuple(r) for r in pg.execute(
+                "SELECT f.citation, f.field_path, f.object_id, c.start, md5(c.body) FROM "
+                "ontology.text_chunks c JOIN ontology.text_fields f ON f.field_id = "
+                "c.field_id").fetchall())
+
+    def test_an_unpinned_text_index_change_is_still_refused(self):
+        plan = self.text_plan("steps:x", {})
+        self.assertEqual(plan["steps"]["refused"], ["step_unsupported:text_index"])
+        self.assertNotIn("remark", plan["steps"])
+        pinned = self.text_plan("steps:x", {"text_index": {("same", "marks")}})
+        self.assertEqual((pinned["steps"]["refused"], pinned["steps"]["remark"]),
+                         ([], ["text_index"]))
+        # a pin for another change of the same step is no pin for this one
+        other = self.text_plan("steps:x", {"text_index": {("same", "other")}})
+        self.assertEqual(other["steps"]["refused"], ["step_unsupported:text_index"])
+
+    def test_the_pin_is_the_payroll_marking_change(self):
+        from ontology.step_migrate import MARKS_ONLY, code_digests
+        self.assertIn((code_digests("7aba9f1245^")["text_index"],
+                       code_digests("7aba9f1245")["text_index"]), MARKS_ONLY["text_index"])
+
+    def test_a_marks_only_change_re_marks_the_served_fields_in_place(self):
+        from ontology import text_index
+        from ontology.step_migrate import build_layer, steps_digest
+        from ontology.tests.test_projection import T1
+        from operating import build_steps
+        from operating.pg import ontology_load, ontology_migrate
+        from operating.pg.ontology_migrate import delta_mark
+        import psycopg
+
+        self.fixture.capture(T1)
+        with mock.patch.object(text_index, "_sensitive", lambda document: False):
+            base = self.full("old.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+        with mock.patch.object(text_index, "_sensitive", _marked):
+            full = self.full("new.sqlite")
+        want = self.fields(path=str(full))
+        served = self.fields(self.dsn)
+        self.assertEqual(len(served), len(want))
+        marked = {"01SLIP" in r[1] for r in want if '"finance"' in r[6] and '"pii"' in r[6]}
+        self.assertEqual(marked, {True})   # the slip's fields, never the other file's
+        self.assertNotEqual(served, want)
+        chunks = self.chunks()
+        self.assertTrue(chunks)
+
+        plan = self.text_plan(steps_digest(), {"text_index": {("same", "marks")}})
+        self.assertEqual(plan["steps"]["run"], {"text_index": None})
+        steps = build_steps.post_project(self.fixture.state, "plx",
+                                         scratch=self.fixture.root / "steps")
+        steps["text_index"] = lambda *a: self.fail("the text is never indexed again")
+        out = self.fixture.root / "text-marks.sqlite"
+        from ontology.project import SharePointCaptures
+        from ontology.tests.test_projection import normalizer
+        with mock.patch.object(text_index, "_sensitive", _marked), \
+                SharePointCaptures(self.fixture.state) as files:
+            built = build_layer(plan, self.fixture.schema, steps, self.dsn, out,
+                                sources={"sharepoint": files}, normalizer=normalizer,
+                                delta_mark=delta_mark(self.dsn), specs=self.specs())
+        self.assertGreater(built["text_marks"], 0)
+        self.assertEqual(built["links"], 0)
+        applied = ontology_migrate.apply_migration(None, self.dsn, steps=out)
+        self.assertTrue(applied["applied"], applied)
+        self.assertGreater(applied["steps"]["remarked.text_fields"], 0)
+        self.assertEqual(self.fields(self.dsn), want)    # as a full build with the new code
+        self.assertEqual(self.chunks(), chunks)           # no text read or written again
+        with psycopg.connect(self.dsn) as pg:
+            self.assertEqual(pg.execute("SELECT value FROM ontology.store_meta WHERE key = "
+                                        "'steps_digest'").fetchone()[0], "steps:text-marks")
+        again = ontology_migrate.apply_migration(None, self.dsn, steps=out)
+        self.assertEqual((again["applied"], again["reason"]), (False, "already_applied"))
+
+    def test_a_document_group_that_cannot_be_read_refuses_the_layer(self):
+        from types import SimpleNamespace
+        from ontology.step_migrate import text_marks
+
+        def broken():
+            raise OSError("unreadable capture")
+        source = SimpleNamespace(document_groups=lambda: iter([("g", broken)]))
+        with self.assertRaisesRegex(ValueError, "text_marks_groups_unread:1"):
+            text_marks(SimpleNamespace(sources={"s": source}))
+
+
+
+def STEPS_NAMES():   # noqa: N802 - every step this tree declares
+    from ontology.step_migrate import STEPS
+    return set(STEPS)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,7 @@ import argparse
 import contextvars
 import hashlib
 from concurrent.futures import Future, TimeoutError as FutureTimeout
+import functools
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -63,6 +64,8 @@ from . import models as m
 from . import presentation
 from . import proposals
 from .actions import ActionsMixin
+from .briefs import BriefsMixin
+from .watch import WatchMixin
 from .auth import Reader
 from .test_records import hidden_words
 
@@ -98,6 +101,66 @@ def ask_worker_count(requested: int, available_gb: Optional[float]) -> int:
         return wanted
     fits = int((available_gb - ASK_MEMORY_FLOOR_GB) // ASK_WORKER_GB)
     return max(1, min(wanted, fits))
+
+
+# How often an API that started fewer Ask workers than asked for (memory was short at
+# start) looks again whether memory now holds one more.
+ASK_TOP_UP_SECONDS = 30.0
+
+
+def top_up_ask_workers(backend: Any, start: Callable[[int], Any], requested: int,
+                       started: int,
+                       available: Callable[[], Optional[float]] = lambda: memory_available_gb(),
+                       every: float = ASK_TOP_UP_SECONDS) -> Optional[threading.Thread]:
+    """Start the Ask workers memory refused at start-up once it holds them: every
+    ``every`` seconds, one more (``start(number)``) while the memory available holds one
+    more worker above the floor, until ``requested`` (at most ``ASK_WORKERS_MOST``) run;
+    never while one started is still building its runtime (it is not in
+    ``backend.ask_workers`` yet), never after ``backend.ask_stopped``. Measured on the
+    2026-11-07 graded runs: an API started at a moment of low memory kept one Ask worker
+    all day while four readers asked at once; every Ask's lookups, pre-reads and answer
+    shaping run on an Ask worker (13 s before and 11 s after each session, median).
+    None: nothing to top up."""
+    wanted = max(0, min(int(requested), ASK_WORKERS_MOST))
+    if started >= wanted or started <= 0:
+        return None
+
+    def loop() -> None:
+        count = started
+        while count < wanted and not backend.ask_stopped.wait(every):
+            if len(backend.ask_workers) < count:
+                continue   # the last one started is still building its runtime
+            free = available()
+            if free is None or free - ASK_MEMORY_FLOOR_GB < ASK_WORKER_GB:
+                continue
+            start(count)
+            count += 1
+            logging.getLogger("operator_api").info(json.dumps(
+                {"ask_workers": count, "requested": requested, "reason": "top_up"}))
+    thread = threading.Thread(target=loop, name="app-ask-top-up", daemon=True)
+    thread.start()
+    return thread
+
+
+def looked_up(found: Any) -> Optional[dict[str, Any]]:
+    """What the Ask's own lookup (``objective_runner.find_roots``, as the reader) already
+    looked up for the question, for the session not to look it up again
+    (``session_prefetch.first_reads``): each identifier it looked up, whatever it found
+    (one the lookup bounded out, or whose lookup failed or timed out, was not looked up:
+    only an unfound one whose reason is ``not_found`` with no gap counts: a find
+    short of time says so in a gap), and whether the resolver ran (its
+    ``entities`` is None when the lookup failed). None: no completed lookup."""
+    if not isinstance(found, Mapping):
+        return None
+    mentions = [str(item["mention"]) for key in ("roots", "ambiguous", "unfound")
+                for item in found.get(key) or ()
+                if isinstance(item, Mapping) and item.get("mention")
+                and item.get("found_by") != "resolver"
+                # an unfound mention counts only when its lookup completed and found
+                # nothing: a failed or timed-out lookup is made again in the session
+                and (key != "unfound" or (item.get("reason") == "not_found"
+                                          and not item.get("gaps")))]
+    return {"mentions": mentions, "entities": isinstance(found.get("entities"), list)}
 
 
 class SessionSlots:
@@ -805,7 +868,7 @@ class _Watched:
 
 # ---- the backend ---------------------------------------------------------------------
 
-class WorkspaceBackend(ActionsMixin):
+class WorkspaceBackend(BriefsMixin, ActionsMixin, WatchMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,
     one shared bounded queue), so one Ask never holds up another reader's page."""
@@ -2135,7 +2198,8 @@ class WorkspaceBackend(ActionsMixin):
                         return resolved, [], None, preread.brief(
                             None, [r for r in roots if r.get("found_by") in (
                                 "identifier", "resolver")], call,
-                            entities=resolved.get("entities") or ())
+                            entities=resolved.get("entities") or (),
+                        unfound=resolved.get("unfound") or ())
                     status("reading", "Reading the purchase orders behind the order's "
                                       "materials" if starts else
                            "Reading the purchase order's trail: receipts, confirmations "
@@ -2146,7 +2210,8 @@ class WorkspaceBackend(ActionsMixin):
                     return resolved, [], got, preread.brief(
                         got, [r for r in roots if r.get("found_by") in (
                             "identifier", "resolver")], call,
-                        entities=resolved.get("entities") or ())
+                        entities=resolved.get("entities") or (),
+                        unfound=resolved.get("unfound") or ())
             try:
                 resolved, several, got, told = submit(
                     self.ask_jobs, self.ask_stopped, reader, read, 1).result(
@@ -2185,11 +2250,13 @@ class WorkspaceBackend(ActionsMixin):
                              and root.get("found_by") in ("identifier", "resolver")]
                     if request.object_id:
                         roots.insert(0, {"object_id": request.object_id})
+                    looked = looked_up(pre.get("found"))
                     session.set_result(self.agent_ask.run(
                         reader.session, question, emit, context=brief,
                         **({"route": route} if route else {}),
                         **({"roots": roots} if roots else {}),
-                        **({"entities": pre["entities"]} if "entities" in pre else {})))
+                        **({"entities": pre["entities"]} if "entities" in pre else {}),
+                        **({"looked": looked} if looked is not None else {})))
                 finally:
                     self._sessions.release()
             except BaseException as error:  # noqa: BLE001 - handed to the route
@@ -3239,6 +3306,13 @@ class WorkspaceBackend(ActionsMixin):
             as_of=self.freshness().as_of or found.get("as_of"),
             complete=bool(found.get("complete")))
 
+    def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
+        """One alert's playbook (``operating.alert_playbooks``) built from the alert as this
+        reader's inbox shows it, every value read by this reader's own tool calls."""
+        env = self._actions_env()
+        return self.reads.run(reader, lambda view: alert_playbook_of(view, alert_id, env),
+                              timeout=READ_TIMEOUT_SECONDS)
+
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         try:
             # a write a reader waits on: ahead of every queued page read
@@ -3355,6 +3429,18 @@ class WorkspaceBackend(ActionsMixin):
                             open_url=s.open_url)
                 for s in same if not own & set(members.get(s.object_id, [s.object_id]))]
 
+    def explore(self, reader: Reader, object_type: str, object_id: str) -> m.Explore:
+        """The record's neighbours one hop out as this reader reads them (the link
+        explorer; ``operator_api.explorer``). KeyError when it is not a record they may
+        read."""
+        from . import explorer
+
+        def read(view: Any) -> m.Explore:
+            with view._request():
+                oid = page_oid(self, view, object_type, object_id)
+                return explorer.explore(view, oid, open_url=object_url)
+        return self.reads.run(reader, read, timeout=READ_TIMEOUT_SECONDS)
+
     def object_section(self, reader: Reader, object_type: str, object_id: str,
                        section: str) -> m.ObjectSection:
         """One section of the record's page (``object_section``), read on the section
@@ -3365,6 +3451,17 @@ class WorkspaceBackend(ActionsMixin):
                             lambda: self._run_section(reader, object_type, object_id,
                                                       section))
         return self._labelled(reader, out, "/api/object-section")
+
+    def object_impact(self, reader: Reader, object_type: str, object_id: str, mode: str,
+                      change: Optional[Mapping[str, Any]] = None) -> m.ImpactPanel:
+        """The record page's Impact panel (``object_impact``): ``plx.around`` mode what_if
+        or why as this reader reads it, on demand (never part of the page's own read)."""
+        if mode not in IMPACT_MODES:
+            raise ValueError("unknown_mode")
+        out = self.reads.run(reader, lambda view: object_impact(
+            self, view, object_type, object_id, mode, change),
+            timeout=PAGE_TIMEOUT_SECONDS, priority=SECTION_PRIORITY)
+        return self._labelled(reader, out, "/api/object-impact")
 
     def _labelled(self, reader: Reader, payload: Any, path: str) -> Any:
         """``payload`` (a copy) with the full-read label when the reader's session holds the
@@ -3524,6 +3621,29 @@ BRIEFING_QUESTIONS = {
     "customer_order_at_risk": "Why did this order change, and how do we know?",
     "customer_order_late": "Why is this order still open, and how do we know?",
 }
+
+
+def alert_playbook_of(view: Any, alert_id: str, environ: Mapping[str, str]
+                      ) -> Optional[dict[str, Any]]:
+    """The playbook of the alert ``alert_id`` when this reader's inbox shows it (trimmed
+    for them: a hidden alert and a missing one alike give None); the markings it holds
+    bound every value the playbook states."""
+    from operating import alert_playbooks as ap
+    from operating import briefing as bf
+
+    grant = getattr(getattr(view, "access", None), "grant", None)
+    if grant is None or not isinstance(alert_id, str):
+        return None
+    found = view.gap_inbox(kinds=list(bf.EVENT_KINDS), limit=bf.MAX_READ)
+    if found.get("status") != "read":
+        return None
+    gap = next((g for g in found.get("gaps") or () if g.get("id") == alert_id), None)
+    if gap is None:
+        return None
+    _, held = grant()
+    with view._request():
+        return ap.build(gap, bf.TYPE_OF_KIND.get(str(gap.get("kind")), ""), call=view._call,
+                        held=held, environ=environ)
 
 
 def briefing_aged(found: Mapping[str, Any], today: Optional[date] = None) -> dict[str, Any]:
@@ -6518,6 +6638,8 @@ def merged(page: m.ObjectPage, section: m.ObjectSection) -> m.ObjectPage:
         update["landed_cost"] = section.landed_cost
     elif section.section == "margin":
         update["profitability"] = section.profitability
+    elif section.section == "knows":
+        update["knows"] = section.knows
     elif section.section == "trail":
         update["trail"] = section.trail
         if section.not_found is not None:
@@ -6539,6 +6661,68 @@ def object_section(backend: WorkspaceBackend, view: Any, object_type: str,
         oid = page_oid(backend, view, object_type, object_id)
         page = quick_page(backend, view, oid)   # KeyError when not visible; kept
         return kept_section(backend, view, page, section)
+
+
+IMPACT_MODES = ("what_if", "why")
+
+
+def impact_change_words(change: Mapping[str, Any]) -> str:
+    kind = change.get("kind")
+    if kind == "delay":
+        return f"delayed {change.get('days')} days"
+    if kind == "price_change":
+        return f"price changed {change.get('percent')}%"
+    return {"out_of_stock": "out of stock", "customer_lost": "customer lost"}.get(
+        str(kind), str(kind))
+
+
+def object_impact(backend: WorkspaceBackend, view: Any, object_type: str, object_id: str,
+                  mode: str, change: Optional[Mapping[str, Any]]) -> m.ImpactPanel:
+    """``plx.around`` what_if / why for this reader, as a page panel. The record is the
+    page's: one this reader cannot see is not found (KeyError), as the page is."""
+    with view._request():
+        oid = page_oid(backend, view, object_type, object_id)
+        quick_page(backend, view, oid)   # KeyError when not visible
+        arguments: dict[str, Any] = {"from": oid, "mode": mode}
+        if mode == "what_if":
+            arguments["change"] = dict(change or {"kind": "delay", "days": 7})
+        got = view._call("plx.around", arguments) or {}
+    if got.get("error"):
+        if got["error"].get("code") == "not_found":
+            raise KeyError(oid)
+        # a record type outside the flow, or a change that does not fit it: no panel
+        return m.ImpactPanel(object_id=oid, mode=mode, applies=False)
+
+    def ref(item: Mapping[str, Any]) -> m.ObjectRef:
+        display = item.get("display")
+        label = display.get("untrusted_text") if isinstance(display, Mapping) else None
+        otype = str(item.get("object_type") or "Object")
+        return m.ObjectRef(object_id=item["object_id"], type=otype,
+                           label=str(label or otype)[:200],
+                           open_url=object_url(otype, item["object_id"]))
+
+    done = got.get("completeness") or {}
+    panel = m.ImpactPanel(
+        object_id=oid, mode=mode,
+        change=impact_change_words(got["change"]) if got.get("change") else None,
+        orders=[m.ImpactOrder(order=ref(a), tier=a["tier"], required_date=a.get("required_date"),
+                              new_material_date=a.get("new_material_date"),
+                              late_by_days=a.get("late_by_days"), slips=a.get("slips"),
+                              revenue=m.Money(**a["revenue"]) if a.get("revenue") else None)
+                for a in got.get("affected") or ()],
+        orders_total=int(done.get("total") or 0) if mode == "what_if" else 0,
+        customers=[ref(c) for c in got.get("customers") or ()],
+        money=[m.ImpactMoney(measure=x["measure"], orders=x["orders"], tier=x["tier"],
+                             money=m.Money(amount=x["amount"], currency=x["currency"]))
+               for x in got.get("money") or ()],
+        causes=[m.ImpactCause(cause=c["cause"], record=ref(c), tier=c["tier"],
+                              detail=c["detail"],
+                              sources=[x["l1_handle"] for x in c.get("citations") or ()])
+                for c in got.get("causes") or ()],
+        unknown=[str(g.get("detail") or g.get("reason"))[:300] for g in got.get("gaps") or ()
+                 if g.get("state") in ("unknown", "inaccessible")][:10],
+        partial=not done.get("complete", True), partial_reason=done.get("reason"))
+    return presentation.polished(panel)
 
 
 def page_sections(backend: WorkspaceBackend, view: Any, object_type: str,
@@ -6669,6 +6853,12 @@ def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
     oid, kind = page.object_id, page.type
     out = m.ObjectSection(object_id=oid, section=section)
     family = SECTION_PLANS.get(section)
+    if section == "knows":
+        out.applies = kind == "Person"
+        if out.applies:
+            with view._request():
+                out.knows = page_knows(view, oid)
+        return presentation.polished(out)
     if section == "margin":
         with view._request():
             out.profitability = page_profitability(backend, view, page)
@@ -6810,6 +7000,38 @@ def _grouped(view: Any, handle: str, measure: Mapping[str, str],
     None when it cannot be read for this reader (the refusal stands; ``_refusal`` says
     why)."""
     return _aggregate_read(view, handle, measure, group_by)[0]
+
+
+def page_knows(view: Any, oid: str) -> Optional[m.PersonKnows]:
+    """A person's page section from ``plx.aggregate`` mode ``who_knows`` read as this
+    reader (``operating.who_knows``: the people exclusion first, counts only); None when
+    the reader may not see the person or the mode refused."""
+    got = view._call("plx.aggregate", {"mode": "who_knows", "person": oid,
+                                       "measure": {"op": "count"}, "object_type": "Person"})
+    if not isinstance(got, Mapping) or got.get("error"):
+        return None
+    found = [p for p in got.get("people") or () if isinstance(p, Mapping)
+             and p.get("person") == oid]
+    if not found:
+        return None
+    one = found[0]
+
+    def records(kind: str) -> list[m.KnownRecord]:
+        out = []
+        for r in one.get(kind) or ():
+            rid = str(r.get("object_id") or "")
+            # the record's name arrives as source text in its envelope (shown, never run)
+            label = r.get("label")
+            label = label.get("untrusted_text") if isinstance(label, Mapping) else label
+            out.append(m.KnownRecord(object_id=rid, label=str(label or "")[:120],
+                                     url=object_url(rid.split(":", 1)[0], rid),
+                                     messages=int(r.get("messages") or 0)))
+        return out
+    waiting = one.get("waiting_on_them")
+    return m.PersonKnows(messages=int(one.get("messages") or 0), customers=records("customers"),
+                         suppliers=records("suppliers"), items=records("items"),
+                         waiting_on_them=waiting if isinstance(waiting, int) else None,
+                         complete=bool(got.get("complete")))
 
 
 def _aggregate_read(view: Any, handle: str, measure: Mapping[str, str],
@@ -7324,7 +7546,8 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
                                    source=backend._source(view, handle)))
     related = []
     for hop in (page.get("around") or {}).get("hops") or ():
-        for other in (hop.get("result") or {}).get("objects") or ():
+        result = hop.get("result") if isinstance(hop, Mapping) else None
+        for other in (result.get("objects") or ()) if isinstance(result, Mapping) else ():
             if isinstance(other, Mapping) and isinstance(other.get("object_id"), str) \
                     and len(related) < 20:
                 kind_of = str(other.get("object_type") or "Object")
@@ -7334,6 +7557,7 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
                                                     other["object_id"])[:200],
                     open_url=object_url(other.get("object_type") or "Object",
                                         other["object_id"])))
+    links = link_groups(backend, view, oid, page.get("around") or {}, own=page_handles(facts))
     not_found = []
     for answer in verdicts:
         for follow in answer.get("follow_ups") or ():
@@ -7343,13 +7567,20 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
     conflicts += received_before_ordered(backend, view, values, page, label)
     summary = next((a["text"] for a in verdicts if a is not lead), None) or kind
     if kind == "SalesOrder":
-        said, facts, absent = sales_order_view(label, values, related, facts, currency)
+        # the order's customer is its customer link's, wherever the hop came in the walk
+        customers = [r for g in links if g.role == "customer" for r in g.records]
+        said, facts, absent = sales_order_view(
+            label, values, customers + [r for r in related if r.type != "Customer"], facts,
+            currency)
         summary = said if summary == kind else summary   # an answer's own words stand
         not_found = absent + not_found
+        said_absent = fulfilment_absence(page, links)
+        if said_absent is not None:
+            not_found.append(said_absent)
     return m.ObjectPage(object_id=oid, type=kind, label=label[:200], summary=str(summary)[:600],
                         status=status, facts=facts, timeline=timeline[:50], linked=linked,
                         people=None, landed_cost=None, late_lines=[], related=related,
-                        not_found=dedupe_not_found(not_found)[:10], conflicts=conflicts[:6],
+                        links=links, not_found=dedupe_not_found(not_found)[:10], conflicts=conflicts[:6],
                         hidden=None,
                         freshness=backend.freshness(page, handles=page_handles(facts)))
 
@@ -7401,6 +7632,202 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
                                 "for invoiced revenue, cost lines and profit when you may "
                                 "read them."))
     return summary, facts, absent
+
+
+# The records at a link's other end the page shows as the order's or customer's shipments
+# and invoices (``LinkGroup.role``), by type: any link kind that reaches one of them, now or
+# once a new link kind is declared, lands there with no page code of its own.
+FULFILMENT_TYPES = frozenset({"Shipment", "ShipRelease", "DeliveryReceipt", "SalesInvoice",
+                              "SalesCreditMemo", "Payment"})
+# Records shown per link group, and evidence sources per record.
+LINK_RECORDS = 8
+LINK_EVIDENCE = 3
+# Words for navigation names that do not read as words on their own.
+_LINK_WORDS = {"same_record_as": "Same record in another system",
+               "erp_order": "ERP order", "fm_orders": "FileMaker orders",
+               "bc_invoices": "BC invoices"}
+
+
+@functools.lru_cache(maxsize=1)
+def _schema_links() -> dict[str, tuple[str, str, str, str]]:
+    """link type -> (from type, name, to type, reverse name) as the schema declares it;
+    empty when the schema cannot be read (each group then reads its link type's words)."""
+    try:
+        from ontology.schema import load_schema
+        links = load_schema().link_types
+    except Exception:   # a schema that cannot be read names no link; never fails a page
+        return {}
+    return {str(k): (str(v.get("from") or ""), str(v.get("name") or ""),
+                     str(v.get("to") or ""), str(v.get("reverse_name") or ""))
+            for k, v in links.items() if isinstance(v, Mapping)}
+
+
+def link_words(name: str) -> str:
+    """'sales_invoices' -> 'Sales invoices'; a known name its own words."""
+    if name in _LINK_WORDS:
+        return _LINK_WORDS[name]
+    text = re.sub(r"\s+", " ", re.sub(r"[_.]+", " ", name)).strip()
+    return (text[:1].upper() + text[1:]) if text else "Linked"
+
+
+def link_groups(backend: "WorkspaceBackend", view: Any, oid: str, around: Mapping[str, Any],
+                *, own: Iterable[str] = ()) -> list[m.LinkGroup]:
+    """The records one hop from ``oid``, one group per link kind the workspace walked (one
+    ``plx.around`` hop per link type the record's card lists, read as this reader), named
+    by the schema's navigation name. A hop is read with its leads (``with_leads``): the
+    records reached only through lead or disputed links (``possibly_related``) follow the
+    solid ones, each marked ``possible`` and never in the group's ``count``. Each record
+    carries the link's tier and its evidence: the cited rows, mail and documents the link
+    was read from that this reader may open, mail and documents first and the page's own
+    rows (``own``) left out; a citation the reader may not open is never shown. Generic by
+    link kind: a link kind declared later shows with no code of its own."""
+    from operating.ontology_tools_traverse import with_leads
+
+    schema = _schema_links()
+    own = set(own)
+    found: list[tuple[Mapping[str, Any], Mapping[str, Any], list[tuple[Mapping[str, Any], bool, list[str]]], int]] = []
+    wanted: list[str] = []
+    for hop in around.get("hops") or ():
+        result = hop.get("result") if isinstance(hop, Mapping) else None
+        if not isinstance(result, Mapping) or result.get("error"):
+            continue
+        solid_ids = {o.get("object_id") for o in result.get("objects") or ()
+                     if isinstance(o, Mapping)}
+        apart = result.get("possibly_related")
+        leads = apart.get("count") if isinstance(apart, Mapping) else None
+        read = with_leads(result)
+        seen: set[str] = set()
+        objects = []
+        for o in read.get("objects") or ():
+            if isinstance(o, Mapping) and isinstance(o.get("object_id"), str) \
+                    and o["object_id"] != oid and o["object_id"] not in seen:
+                seen.add(o["object_id"])
+                objects.append(o)
+        if not objects:
+            continue
+        by_other: dict[str, list[str]] = {}
+        for edge in read.get("edges") or ():
+            if not isinstance(edge, Mapping):
+                continue
+            other = edge.get("to") if edge.get("from") == oid else edge.get("from")
+            for reason in edge.get("reason") or ():
+                for c in (reason.get("citations") or ()) if isinstance(reason, Mapping) else ():
+                    h = c.get("l1_handle") if isinstance(c, Mapping) else None
+                    if isinstance(other, str) and isinstance(h, str) and h not in own:
+                        by_other.setdefault(other, []).append(h)
+        # the solid records first, then the possible ones, as many as the group shows
+        solid = [o for o in objects if o["object_id"] in solid_ids]
+        possible = [o for o in objects if o["object_id"] not in solid_ids]
+        shown = []
+        for o in (solid + possible)[:LINK_RECORDS]:
+            handles = list(dict.fromkeys(by_other.get(o["object_id"], ())))
+            # mail and documents first: what a person wrote is the evidence a reader wants
+            handles.sort(key=lambda h: system_of(h) not in ("Email", "Teams", "File"))
+            shown.append((o, o["object_id"] not in solid_ids, handles))
+            wanted.extend(handles)
+        n_leads = leads if isinstance(leads, int) and not isinstance(leads, bool) \
+            and leads >= len(possible) else len(possible)
+        found.append((hop, read, shown, n_leads))
+    wanted = list(dict.fromkeys(wanted))
+    decided = view.access.decide(wanted) if wanted else {}
+    out: list[m.LinkGroup] = []
+    for hop, read, shown, n_leads in found:
+        tiers_of = {}
+        for edge in read.get("edges") or ():
+            if isinstance(edge, Mapping):
+                for end in ("from", "to"):
+                    if isinstance(edge.get(end), str) and edge.get(end) != oid:
+                        tiers_of[edge[end]] = edge.get("tier")
+        link_type = str(hop.get("link_type") or "")
+        direction = "reverse" if hop.get("direction") == "reverse" else "forward"
+        declared = schema.get(link_type)
+        if declared:
+            name = declared[1] if direction == "forward" else declared[3]
+        else:
+            name = link_type.split(".", 1)[-1]
+        other_type = str(shown[0][0].get("object_type") or "") or (
+            (declared[2] if direction == "forward" else declared[0]) if declared else "Object")
+        records = []
+        for o, is_lead, handles in shown:
+            kind_of = str(o.get("object_type") or other_type or "Object")
+            evidence = []
+            for h in handles:
+                if decided.get(h) is not None:
+                    continue   # a citation this reader may not open is never shown
+                evidence.append(backend._source(view, h, openable=view._can_open(h)))
+                if len(evidence) >= LINK_EVIDENCE:
+                    break
+            tier = tiers_of.get(o["object_id"])
+            records.append(m.LinkRef(
+                object_id=o["object_id"], type=kind_of,
+                label=presentation.record_label(plain(o.get("display")), kind_of,
+                                                o["object_id"])[:200],
+                open_url=object_url(kind_of, o["object_id"]),
+                tier=tier if isinstance(tier, str) else ("lead" if is_lead else None),
+                possible=is_lead, evidence=evidence))
+        solid_shown = sum(1 for r in records if not r.possible)
+        listed = hop.get("listed_count")
+        total = (read.get("completeness") or {}).get("total") \
+            if isinstance(read.get("completeness"), Mapping) else None
+        count = next((n for n in (total, listed) if isinstance(n, int)
+                      and not isinstance(n, bool) and n >= solid_shown), None)
+        if count is None and solid_shown == 0:
+            count = 0
+        role = ("same_record" if name == "same_record_as" or link_type.endswith(
+                    ".same_record_as")
+                else "customer" if other_type == "Customer" and direction == "forward"
+                else "fulfilment" if other_type in FULFILMENT_TYPES else "related")
+        out.append(m.LinkGroup(link_type=link_type[:120], direction=direction, name=name[:80],
+                               words=link_words(name)[:80], type=other_type[:80], role=role,
+                               count=count, possible=n_leads, records=records))
+    return out
+
+
+def walk_whole(page: Mapping[str, Any]) -> bool:
+    """Whether the record's link walk read everything there is for this reader to read:
+    no link type left unwalked (the hop cap), no hop that errored or came back cut, and
+    nothing on the card or a hop withheld by permission. Only a whole walk may say a link
+    reaches nothing."""
+    from operating.ontology_tools_traverse import PERMISSION_LOSSES
+
+    around = page.get("around")
+    if not isinstance(around, Mapping) or around.get("truncated"):
+        return False
+    card = page.get("card") if isinstance(page.get("card"), Mapping) else {}
+    gaps = list(card.get("gaps") or ())
+    for hop in around.get("hops") or ():
+        result = hop.get("result") if isinstance(hop, Mapping) else None
+        if not isinstance(result, Mapping) or result.get("error"):
+            return False
+        done = result.get("completeness")
+        if isinstance(done, Mapping) and (done.get("truncated") or done.get("complete") is False):
+            return False
+        gaps.extend(result.get("gaps") or ())
+    return not any(not isinstance(g, Mapping) or g.get("reason") in PERMISSION_LOSSES
+                   for g in gaps)
+
+
+def fulfilment_absence(page: Mapping[str, Any], links: Sequence[m.LinkGroup]
+                       ) -> Optional[m.NotFound]:
+    """What a customer order's page says when it shows no confirmed shipment or invoice:
+    that none is linked only when the walk was whole (``walk_whole``) and no possible one
+    was reached; possibly related ones when only lead links reach them; else that none was
+    found in what the reader can see, never that there is none."""
+    groups = [g for g in links if g.role == "fulfilment"]
+    if any(not r.possible for g in groups for r in g.records):
+        return None
+    what = "Shipments and invoices of this order"
+    if groups:
+        n = sum(g.possible or len(g.records) for g in groups)
+        return m.NotFound(what=what, where_it_would_live=(
+            f"None confirmed; {n} possibly related (suggested links, not confirmed) "
+            "shown under Shipments and invoices."))
+    if walk_whole(page):
+        return m.NotFound(what=what, where_it_would_live=(
+            "No shipment or invoice is linked to this order in the records you can open."))
+    return m.NotFound(what=what, where_it_would_live=(
+        "None found in what you can see: part of this order's links could not be read for "
+        "you, so this is not absence."))
 
 
 # A receipt event of an order (its goods received or posted).
@@ -7679,6 +8106,11 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
             pass   # read by the first page that needs it
         threads = [start_ask_worker(backend, argv, fixtures, planner, n)
                    for n in range(ask_workers if args.ask else 0)]
+        if args.ask:
+            # the workers memory refused now start once it holds them
+            top_up_ask_workers(backend, lambda n: threads.append(
+                start_ask_worker(backend, argv, fixtures, planner, n)),
+                args.ask_workers, ask_workers)
         if fixtures is None and planner is None:
             threads += [start_read_worker(backend, argv, n)
                         for n in range(max(0, getattr(args, "read_workers", 1) - 1))]
@@ -7850,9 +8282,11 @@ def make_auth(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: s
         except session_identity.SessionIdentityRefused as error:
             parser.error("--dev-employee-oid refused: " + error.reason)
         return DevAuth(identity, mode="dev"), {"sign_in_available": True}
-    return (DevAuth(ticket_identity=ticket_identity(
-        resolver, session_identity.session_secret(os.environ), ctx["replay_guard"]),
-        mode="dev"), {"sign_in_available": True,
+    secret = session_identity.session_secret(os.environ)
+    return (DevAuth(ticket_identity=ticket_identity(resolver, secret, ctx["replay_guard"]),
+                    sign_in_identity=ticket_identity(resolver, secret, ctx["replay_guard"],
+                                                     single_use=True),
+                    mode="dev"), {"sign_in_available": True,
                       "message": "Demo sign-in: paste the access link you were given."})
 
 

@@ -215,13 +215,26 @@ def link_map(call: Callable[[str, dict], Any], object_ids: Sequence[str]) -> lis
 
 def brief(trail: Optional[m.EvidenceTrail], roots: Sequence[Mapping[str, Any]],
           call: Optional[Callable[[str, dict], Any]] = None,
-          entities: Sequence[Mapping[str, Any]] = ()) -> str:
+          entities: Sequence[Mapping[str, Any]] = (),
+          unfound: Sequence[Mapping[str, Any]] = ()) -> str:
     """What the agent is told before it starts: the record each identifier names (and its
     copies in other systems), and the trail's own content (``trail.materials_brief`` for a
     materials walk; for a purchase order its dated steps, each with the source to read and
-    cite)."""
+    cite). ``unfound``: the identifiers the Ask looked up as this reader that named no
+    one record (``objective_runner.find_roots``' ``unfound``; only those whose lookup
+    completed, reason ``not_found``, never a failed or timed-out one), said once so the session
+    does not repeat the same lookup."""
     from .trail import materials_brief
     lines: list[str] = []
+    missed = sorted({str(u["mention"])[:80] for u in unfound or ()
+                     if isinstance(u, Mapping) and u.get("mention")
+                     # a failed, timed-out or partial lookup says nothing
+                     and u.get("reason") == "not_found" and not u.get("gaps")})
+    if missed:
+        lines.append("Already looked up for you, as this reader, by identifier with no "
+                     "record found: " + ", ".join(f'"{m}"' for m in missed[:6]) + " (a "
+                     "different spelling, a related record or a text search may still "
+                     "find it; never say it does not exist from this alone).")
     for root in roots:
         if not root.get("mention") or not root.get("object_id"):
             continue

@@ -172,17 +172,17 @@ class TicketTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Fixture.ticket(ttl_seconds=si.SESSION_TICKET_TTL_SECONDS + 1)
 
-    def test_ticket_lives_at_most_two_hours_and_carries_a_jti(self):
-        self.assertEqual(si.SESSION_TICKET_TTL_SECONDS, 2 * 60 * 60)
+    def test_ticket_lives_at_most_a_working_day_and_carries_a_jti(self):
+        self.assertEqual(si.SESSION_TICKET_TTL_SECONDS, 8 * 60 * 60)
         with self.assertRaises(ValueError):
-            Fixture.ticket(ttl_seconds=3 * 60 * 60)
-        # A correctly signed 3h ticket (an old 12h minter) is refused by the verifier.
+            Fixture.ticket(ttl_seconds=9 * 60 * 60)
+        # A correctly signed 9h ticket (an old 12h minter) is refused by the verifier.
         claims = si.verify_session_ticket(Fixture.ticket(now=1000), SECRET, now=1001)
-        self.assertEqual(claims["exp"] - claims["iat"], 2 * 60 * 60)
+        self.assertEqual(claims["exp"] - claims["iat"], si.SESSION_TICKET_TTL_SECONDS)
         self.assertRegex(claims["jti"], r"^[A-Za-z0-9_-]{16,64}$")
         self.assertNotEqual(claims["jti"], si.verify_session_ticket(
             Fixture.ticket(now=1000), SECRET, now=1001)["jti"])
-        payload = {**claims, "exp": claims["iat"] + 3 * 60 * 60}
+        payload = {**claims, "exp": claims["iat"] + 9 * 60 * 60}
         long = _resign(payload)
         with self.assertRaises(si.SessionIdentityRefused) as caught:
             si.verify_session_ticket(long, SECRET, now=1001)
@@ -210,12 +210,12 @@ class TicketTests(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "session_ticket_revoked")
         # Entries die with the ticket: the guard stays small and the ticket is expired anyway.
         guard.check({"jti": "z" * 16, "exp": 5000}, consume=True, now=1004)
-        guard.check({"jti": "y" * 16, "exp": 19000}, consume=True, now=9000)
+        guard.check({"jti": "y" * 16, "exp": 70000}, consume=True, now=40000)
         with sqlite3.connect(guard.path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM ticket_jti").fetchone()[0], 1)
 
     def test_replay_guard_survives_a_restart_within_the_ticket_ttl(self):
-        # Identity tickets are bearer credentials: a host restart within the 2 h TTL
+        # Identity tickets are bearer credentials: a host restart within the ticket TTL
         # must not make a consumed or revoked jti usable again.
         first = si.verify_session_ticket(Fixture.ticket(now=1000), SECRET, now=1001)
         revoked = si.verify_session_ticket(Fixture.ticket(now=1000), SECRET, now=1001)
@@ -259,6 +259,29 @@ class EmployeeSessionTests(Fixture):
         with self.assertRaises(si.SessionIdentityRefused) as caught:
             si.employee_session(self.resolver(), channel=si.CHANNEL_MCP, object_id=OID_A)
         self.assertEqual(caught.exception.reason, "portal_role_not_employee")
+
+    def test_a_console_access_link_signs_in_once_and_its_session_keeps_working(self):
+        from operator_api.auth import SESSION_COOKIE, AuthRequired, DevAuth, ticket_identity
+        guard = si.TicketReplayGuard(self.dir / "once.db")
+        dev = DevAuth(ticket_identity=ticket_identity(self.resolver(), SECRET, guard),
+                      sign_in_identity=ticket_identity(self.resolver(), SECRET, guard,
+                                                       single_use=True), mode="dev")
+        link = self.ticket()
+        token, _ = dev.login(link)
+        for _ in range(3):               # the session works on its cookie, request after request
+            self.assertEqual(dev.authenticate({}, {SESSION_COOKIE: token}).session.email, EMAIL_A)
+        with self.assertRaises(AuthRequired) as again:      # the same link, a second time
+            dev.login(link)
+        self.assertEqual(again.exception.code, "access_link_refused")
+        dev.authenticate({}, {SESSION_COOKIE: token})        # the first session is unaffected
+        other = self.ticket()                               # a fresh link still works
+        token2, _ = dev.login(other)
+        guard.revoke(si.verify_session_ticket(other, SECRET))   # revocation still ends it
+        with self.assertRaises(AuthRequired):
+            dev.authenticate({}, {SESSION_COOKIE: token2})
+        dev.logout(token)                                   # logout ends that session
+        with self.assertRaises(AuthRequired):
+            dev.authenticate({}, {SESSION_COOKIE: token})
 
     def test_console_identity_comes_only_from_a_ticket_of_the_right_author(self):
         with self.assertRaises(si.SessionIdentityRefused) as caught:

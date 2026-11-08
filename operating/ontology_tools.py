@@ -390,6 +390,16 @@ def _visible_object_sql(store: str) -> str:
     return store + "AND " + document_marks.sql("o.object_id") + " "
 
 
+def _readable_text(store: Any, scope: Any, rows: Iterable[Any]) -> list[Any]:
+    """The captured-text rows ``scope``'s reader may read the text of: no row of a payroll
+    or HR-confidential document version for a reader without ``finance`` and ``pii``
+    (``operating.search.document_marks.readable_text``, each version judged whole by
+    ``store.sensitive_versions``)."""
+    from operating.search import document_marks
+    return document_marks.readable_text(rows, getattr(scope, "held", frozenset()),
+                                        store.sensitive_versions)
+
+
 def run_memo_for(kind: Any) -> dict[Any, Any] | None:
     """The decisions of ``kind`` kept for the plan run in progress (``run_memo``); None
     outside a run (each call decides afresh)."""
@@ -1190,7 +1200,7 @@ class StoreReader:
         version the field reads current at :at, the field's markings permitted (all in
         SQL; the caller re-checks the item ACL through that version)."""
         where = "AND o.object_type = :type " if object_type is not None else ""
-        return list(self.conn.execute(
+        return _readable_text(self, scope, self.conn.execute(
             "SELECT t.chunk_id AS row_no, t.body, fd.object_id, fd.version_handle, "
             "fd.citation, fd.field_path, fd.sender_class, o.object_type, "
             "o.binding_id AS object_binding, o.audience_key FROM chunk_text f "
@@ -1204,6 +1214,40 @@ class StoreReader:
             + where + "ORDER BY f.rowid LIMIT :batch",
             scope.params(words=words, after=after, batch=batch, type=object_type)))
 
+    SENSITIVE_KEPT = 100_000   # version verdicts kept per reader (a handle's text never changes)
+
+    def sensitive_versions(self, pairs: Sequence[tuple[str, str]]) -> set[str]:
+        """The version handles among ``pairs`` ((object id, version handle)) whose document
+        is personal financial or HR-confidential (``document_marks.sensitive_fields``):
+        each version judged once on every chunk of its text fields, in order, and its
+        name, subject, path and label values, whoever reads; the verdict kept."""
+        from ontology.text_index import chunk_text
+        from operating.search import document_marks
+        kept = self.__dict__.setdefault("_sensitive_kept", {})
+        todo = sorted({(o, h) for o, h in pairs if h not in kept})
+        for start in range(0, len(todo), 200):
+            part = dict(todo[start:start + 200])
+            pairs_json = _citation_pairs(part)
+            fields: dict[str, list[tuple[str, str]]] = {h: [] for h in part.values()}
+            for handle, path, body in self.conn.execute(
+                    "SELECT fd.version_handle, fd.field_path, t.body FROM json_each(:pairs) p "
+                    "CROSS JOIN text_fields fd ON " + _CITATION_RANGE + " "
+                    "JOIN text_chunks t ON t.field_id = fd.field_id "
+                    "ORDER BY fd.version_handle, fd.field_id, t.start", {"pairs": pairs_json}):
+                fields.setdefault(handle, []).append((path, chunk_text(body)))
+            for handle, path, value in self.conn.execute(
+                    "SELECT v.l1_handle, v.field_path, v.value FROM json_each(:pairs) p "
+                    "JOIN object_values v ON v.object_id = json_extract(p.value, '$[0]') "
+                    "AND v.l1_handle = json_extract(p.value, '$[1]') WHERE v.value_type = "
+                    "'text' AND v.field_path IN (SELECT value FROM json_each(:cues))",
+                    {"pairs": pairs_json, "cues": json.dumps(document_marks.CUE_PATHS)}):
+                fields.setdefault(handle, []).append((path, value))
+            if len(kept) > self.SENSITIVE_KEPT:
+                kept.clear()
+            for handle, got in fields.items():
+                kept[handle] = document_marks.sensitive_fields(got)
+        return {h for _o, h in pairs if kept.get(h)}
+
     def object_chunks(self, scope: _Scope, versions: Mapping[str, str]) -> list[sqlite3.Row]:
         """Every readable chunk of captured document text of each object of ``versions``
         (object_id -> the l1 handle of the version read; the shape of ``chunk_matches``,
@@ -1212,7 +1256,7 @@ class StoreReader:
         version's handle (a page or member adds a suffix), so each version is one seek on
         the ``text_fields`` key, which leads with the citation: matched on its object id
         alone, the store had no key to use and read every chunk (118 s a find, live)."""
-        return list(self.conn.execute(
+        return _readable_text(self, scope, self.conn.execute(
             "SELECT t.chunk_id AS row_no, t.body, fd.object_id, fd.version_handle, "
             "fd.citation, fd.field_path, fd.sender_class, o.object_type, "
             "o.binding_id AS object_binding, o.audience_key FROM json_each(:pairs) p "

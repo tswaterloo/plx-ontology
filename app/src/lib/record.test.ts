@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { missingText } from "@/components/answer-parts";
-import { factMap, factValue, groupLinked, groupRelated, groupTimeline, isBlocked, recordHead } from "./record";
-import type { ObjectPage, Source } from "./types";
+import { factMap, factValue, groupLinked, groupRelated, groupTimeline, isBlocked, linkSections, recordHead } from "./record";
+import type { LinkGroup, LinkRef, ObjectPage, Source } from "./types";
 
 const bc = (field: string): Source => ({ system: "BC", handle: "bc://production/c/purchaseOrders/1@e", label: "BC production", fields: { [field]: "x" } });
 const fact = (text: string, field: string) => ({ text, sources: [bc(field)], check: "read_from_record" });
@@ -170,5 +170,63 @@ describe("factValue", () => {
     expect(factValue("P-008864")).toBe("P-008864");
     expect(factValue("25,113.600 USD")).toBe("$25,113.60 USD");
     expect(factValue("Foo 28, 2026")).toBe("Foo 28, 2026");
+  });
+});
+
+describe("links by link kind", () => {
+  const ref = (type: string, id: string, label: string, extra: Partial<LinkRef> = {}): LinkRef => ({ object_id: `${type}:x:${id}`, type, label, open_url: `/object/${type}/${id}`, evidence: [], ...extra });
+  const group = (link_type: string, type: string, role: LinkGroup["role"], words: string, records: LinkRef[], count?: number): LinkGroup => ({
+    link_type,
+    direction: "reverse",
+    name: words.toLowerCase(),
+    words,
+    type,
+    role,
+    count: count ?? records.length,
+    records,
+  });
+  const mail: Source = { system: "Email", handle: "graph-mail://box/m1@c1", label: "Email", open_url: "/source?h=m1" };
+  const links: LinkGroup[] = [
+    group("SalesOrder.ordered_by", "Customer", "customer", "Ordered by", [ref("Customer", "c1", "Acme Foods")]),
+    group("SalesInvoice.bills", "SalesInvoice", "fulfilment", "Invoices", [ref("SalesInvoice", "i1", "PSI-9", { evidence: [mail] })]),
+    group("Shipment.ships", "Shipment", "fulfilment", "Shipments", [ref("Shipment", "s1", "SH-4", { tier: "lead" })], 14),
+    group("SalesOrderLine.line_of", "SalesOrderLine", "related", "Lines", [ref("SalesOrderLine", "l1", "Order line")]),
+    group("SalesOrder.mentioned_in_meeting_note", "MeetingNote", "related", "Mentioned in meeting note", [ref("MeetingNote", "n1", "Weekly ops")]),
+    group("Quote.converted_to", "Quote", "related", "Quotes", [ref("Quote", "q1", "Q-7")]),
+    group("SalesOrder.created_from_quote", "Quote", "related", "Created from quote", [ref("Quote", "q2", "Q-8")]),
+  ];
+
+  it("puts shipments and invoices in their section and every other link kind in the linked list", () => {
+    const got = linkSections({ type: "SalesOrder", links });
+    expect(got.fulfilment.map((s) => [s.heading, s.records.map((r) => r.label)])).toEqual([
+      ["Sales invoice", ["PSI-9"]],
+      ["Shipment", ["SH-4"]],
+    ]);
+    expect(got.fulfilment[0].records[0].evidence).toEqual([mail]);
+    // the customer is the header's; lines named only by their type say nothing; a link kind
+    // the app has never seen lands in the list; two links to one type say their words
+    expect(got.linked.map((s) => s.heading)).toEqual(["Meeting note", "Quote · quotes", "Quote · created from quote"]);
+  });
+
+  it("keeps the customer on another record's page and leaves out what the header names", () => {
+    const got = linkSections({ type: "Shipment", links }, "Quote:x:q1");
+    expect(got.linked.map((s) => s.heading)).toContain("Customer");
+    expect(got.linked.flatMap((s) => s.records.map((r) => r.label))).not.toContain("Q-7");
+  });
+
+  it("leaves out a customer's orders, which have their own table", () => {
+    const got = linkSections({ type: "Customer", links: [group("SalesOrder.ordered_by", "SalesOrder", "related", "Orders", [ref("SalesOrder", "o1", "SO-1")])] });
+    expect(got.linked).toEqual([]);
+  });
+
+  it("a record without links shows none", () => {
+    expect(linkSections({ type: "SalesOrder" })).toEqual({ fulfilment: [], linked: [] });
+  });
+
+  it("a sales order's details open the record each value is read from", () => {
+    const src: Source = { system: "BC", handle: "bc://production/c/salesOrders/so1@e1", label: "BC sales order", fields: { external_document_number: "PO-55" } };
+    const obj = { object_id: "SalesOrder:bc.sales_orders:so1", type: "SalesOrder", label: "SO-1", summary: "", status: { state: "read", text: "", sources: [] }, facts: [{ text: "External document number: PO-55", sources: [src], check: "read_from_record" }] } as unknown as ObjectPage;
+    const fact = recordHead(obj).keyFacts.find((k) => k.value === "PO-55");
+    expect(fact?.source).toEqual(src);
   });
 });

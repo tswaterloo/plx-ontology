@@ -1,5 +1,6 @@
 "use client";
 
+import { AlertPlaybookPanel } from "./alert-playbook";
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -160,16 +161,14 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
             )}
             {item.acknowledged && <span className="shrink-0 text-fg/80">Acknowledged</span>}
             <span className="min-w-0 flex-1 truncate">{[amount ? shortSummary(item.summary).replace(/\.$/, "") : shortSummary(item.summary), amount].filter(Boolean).join(" · ")}</span>
-            {item.trail && (
-              <button
-                type="button"
-                onClick={() => setOpen((v) => !v)}
-                aria-expanded={open}
-                className={cn("relative z-10 shrink-0 hover:text-fg cursor-pointer", !open && "lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100")}
-              >
-                {open ? "Hide evidence" : "Evidence"}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              className={cn("relative z-10 shrink-0 hover:text-fg cursor-pointer", !open && "lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100")}
+            >
+              {open ? "Hide" : item.trail ? "Evidence & next steps" : "Next steps"}
+            </button>
             {watcher && (
               <span className="relative z-10 flex shrink-0 items-baseline gap-2.5">
                 <button type="button" onClick={() => setState("snoozed")} disabled={busy} className="font-medium text-fg hover:underline disabled:opacity-60 cursor-pointer">
@@ -202,9 +201,10 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
           )}
         </div>
       </div>
-      {open && item.trail && (
-        <div className="relative z-10 pr-3 pb-3 pl-[56px]">
-          <EvidenceTrailCard trail={item.trail} bare inPage showNext={false} />
+      {open && (
+        <div className="relative z-10 space-y-3 pr-3 pb-3 pl-[56px]">
+          {item.trail && <EvidenceTrailCard trail={item.trail} bare inPage showNext={false} />}
+          {!watcher && <AlertPlaybookPanel alertId={item.id} />}
         </div>
       )}
     </li>

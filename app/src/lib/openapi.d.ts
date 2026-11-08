@@ -86,6 +86,31 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/alerts/{alert_id}/playbook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Alert Playbook
+         * @description One alert's ready-to-use next steps, worded from its own cited sources as you
+         *     read them: a drafted email to the supplier or customer, a Teams note to the record's
+         *     owner, links to the record here and in its source system, the change to make in the
+         *     source system yourself, and snooze / assign / mark handled. Nothing is sent or
+         *     written: its actions go through ``/api/actions/*`` (card id = its ``id``) and your
+         *     confirm.
+         */
+        get: operations["alert_playbook_api_alerts__alert_id__playbook_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ask": {
         parameters: {
             query?: never;
@@ -160,6 +185,75 @@ export type paths = {
          * @description Ends a dev session (Entra sign-out is the front end's MSAL logout).
          */
         post: operations["logout_api_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brief/meetings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Upcoming Meetings
+         * @description Calendar events in the next 14 days you may read, soonest first, each with the
+         *     link to its meeting prep brief.
+         */
+        get: operations["upcoming_meetings_api_brief_meetings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brief/weekly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Weekly Review
+         * @description The weekly ops review: orders booked, shipped and invoiced, on-time shipping, late
+         *     purchase orders, top alerts, cash position and margin (finance), quality holds, each
+         *     weekly figure against the week before. Generated from the records you may read, no
+         *     model call; every figure cites its sources and nothing hidden is counted.
+         */
+        get: operations["weekly_review_api_brief_weekly_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brief/{object_type}/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Meeting Brief
+         * @description The meeting prep brief for a calendar event or meeting (its customers and
+         *     suppliers matched by the attendee links) or for a customer or supplier itself: open
+         *     orders and purchase orders, late items and alerts, recent mail and Teams subjects
+         *     and dates, payments and balance (finance), open promises, quality issues and the
+         *     last meeting's notes when captured. Cited, bounded, no model call. Not found reads
+         *     the same as a record you cannot see.
+         */
+        get: operations["meeting_brief_api_brief__object_type___object_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -244,6 +338,28 @@ export type paths = {
          *     undoes it). Only your own briefing changes; nothing is sent.
          */
         post: operations["watcher_item_state_api_briefing_watcher__item_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/explore/{object_type}/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Explore
+         * @description The link explorer: a record's neighbours one hop out, grouped by kind of link,
+         *     capped per kind, as this reader may see them. Walk on by asking for a neighbour.
+         *     Not found reads the same as a record the reader cannot see.
+         */
+        get: operations["explore_api_explore__object_type___object_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -395,6 +511,29 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/object-impact/{mode}/{object_type}/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Object Impact
+         * @description A record's Impact panel, read on demand: what a change (a delay of N days, out
+         *     of stock, a customer lost, a price change) puts at risk downstream, or why an order
+         *     is late or unprofitable. Not found reads the same as a record the reader cannot
+         *     see; nothing is written.
+         */
+        get: operations["object_impact_api_object_impact__mode___object_type___object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/object-section/{section}/{object_type}/{object_id}": {
         parameters: {
             query?: never;
@@ -502,6 +641,150 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/watch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Watchlist
+         * @description Your follows, your alert rules and your alerts (newest first), each alert shown
+         *     only as far as your grant admits now. Kept in the Workbench, never in a source.
+         */
+        get: operations["watchlist_api_watch_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watch/alerts/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Watch Read
+         * @description Mark some of your alerts read.
+         */
+        post: operations["watch_read_api_watch_alerts_read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watch/follow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Watch Follow
+         * @description Follow a record you can open: you are told when it or a record linked to it
+         *     changes, and when a new record (a mail, a shipment, an invoice) is linked to it.
+         */
+        post: operations["watch_follow_api_watch_follow_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watch/follow/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Watch Unfollow
+         * @description Stop following a record.
+         */
+        delete: operations["watch_unfollow_api_watch_follow__object_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watch/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Watch Rule Create
+         * @description Keep the rule you were shown (its spec and digest), validated again.
+         */
+        post: operations["watch_rule_create_api_watch_rules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watch/rules/compile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Watch Rule Compile
+         * @description An alert rule in plain words, compiled into the restricted rule spec and shown
+         *     back in plain words for you to confirm; nothing is kept. A rule the grammar cannot
+         *     hold, or one over figures your markings do not cover, is refused with the reason.
+         */
+        post: operations["watch_rule_compile_api_watch_rules_compile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watch/rules/{rule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Watch Rule Delete
+         * @description Delete one of your rules.
+         */
+        delete: operations["watch_rule_delete_api_watch_rules__rule_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 };
 export type webhooks = Record<string, never>;
 export type components = {
@@ -550,7 +833,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss";
+            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss" | "assign";
             /** @description The person's edits; absent: the drafted payload. */
             payload?: components["schemas"]["ActionPayload"] | null;
             /**
@@ -587,7 +870,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss";
+            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss" | "assign";
             /** Missing */
             missing?: string[];
             /** Payload Hash */
@@ -605,7 +888,7 @@ export type components = {
              * Status
              * @enum {string}
              */
-            status: "pending" | "sent" | "failed" | "unknown" | "dry_run" | "follow_up" | "done" | "snoozed" | "dismissed";
+            status: "pending" | "sent" | "failed" | "unknown" | "dry_run" | "follow_up" | "done" | "snoozed" | "dismissed" | "assigned";
             /** Subject */
             subject?: string | null;
             /** Text */
@@ -620,6 +903,11 @@ export type components = {
          *     chat. Local: a follow-up's due date and note, a snooze's end, a dismissal's reason.
          */
         ActionPayload: {
+            /**
+             * Assignee
+             * @description Assign to: a colleague's address (kept in the Workbench only).
+             */
+            assignee?: string | null;
             /** Body */
             body?: string | null;
             /** Cc */
@@ -659,7 +947,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss";
+            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss" | "assign";
             /** Label */
             label: string;
             /**
@@ -704,7 +992,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss";
+            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss" | "assign";
             /** @description The person's edits; absent: the drafted payload. */
             payload?: components["schemas"]["ActionPayload"] | null;
         };
@@ -718,7 +1006,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss";
+            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss" | "assign";
             /** Missing */
             missing?: string[];
             /**
@@ -734,7 +1022,7 @@ export type components = {
              * Status
              * @enum {string}
              */
-            status: "pending" | "sent" | "failed" | "unknown" | "dry_run" | "follow_up" | "done" | "snoozed" | "dismissed";
+            status: "pending" | "sent" | "failed" | "unknown" | "dry_run" | "follow_up" | "done" | "snoozed" | "dismissed" | "assigned";
             /** Text */
             text: string;
         };
@@ -755,6 +1043,55 @@ export type components = {
         ActionsLog: {
             /** Rows */
             rows?: components["schemas"]["ActionLogRow"][];
+        };
+        /**
+         * AlertPlaybook
+         * @description One alert's ready-to-use next steps (``operating.alert_playbooks``), worded from its
+         *     own cited sources as you read them. Nothing is sent or written by reading it.
+         */
+        AlertPlaybook: {
+            /** Alert Id */
+            alert_id: string;
+            change?: components["schemas"]["PlaybookChange"] | null;
+            email?: components["schemas"]["PlaybookEmail"] | null;
+            /** Event Type */
+            event_type: string;
+            /** Facts */
+            facts?: components["schemas"]["PlaybookFact"][];
+            /**
+             * Id
+             * @description The card id the actions (``/api/actions/*``) take.
+             */
+            id: string;
+            /** Kind */
+            kind?: string | null;
+            /** Links */
+            links?: components["schemas"]["PlaybookLink"][];
+            /** Local */
+            local?: ("send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss" | "assign")[];
+            /** Missing */
+            missing?: string[];
+            /** Object Id */
+            object_id: string;
+            /** Object Type */
+            object_type: string;
+            /** Offers */
+            offers?: components["schemas"]["CardActionOffer"][];
+            /** Rests On */
+            rests_on?: string[];
+            /**
+             * Sent
+             * @constant
+             */
+            sent: false;
+            /** Summary */
+            summary?: string | null;
+            teams?: components["schemas"]["PlaybookTeams"] | null;
+            /**
+             * Writes
+             * @constant
+             */
+            writes: 0;
         };
         /** AnswerPayload */
         AnswerPayload: {
@@ -879,6 +1216,129 @@ export type components = {
             mode: "entra" | "dev" | "mock";
             /** Sign In Available */
             sign_in_available: boolean;
+        };
+        /**
+         * Brief
+         * @description A meeting prep brief or a weekly review, generated from the records you may read
+         *     (no model call). Every row and figure cites its sources; nothing hidden is counted.
+         */
+        Brief: {
+            /** As Of */
+            as_of: string;
+            /** Basis */
+            basis: string;
+            /** Gaps */
+            gaps?: components["schemas"]["BriefGap"][];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "meeting" | "weekly";
+            /** Parties */
+            parties?: components["schemas"]["ObjectRef"][];
+            /**
+             * Possible Parties
+             * @description Lead-tier matches (a domain only): never read.
+             */
+            possible_parties?: components["schemas"]["ObjectRef"][];
+            /** Sections */
+            sections: components["schemas"]["BriefSection"][];
+            subject?: components["schemas"]["ObjectRef"] | null;
+            /** Subject Sources */
+            subject_sources?: components["schemas"]["Source"][];
+            /**
+             * Summary Question
+             * @description A question for /api/ask (the answer path with its claim checks) that summarises this brief; optional.
+             */
+            summary_question?: string | null;
+            /** Title */
+            title: string;
+            /** When */
+            when?: string | null;
+        };
+        /** BriefFigure */
+        BriefFigure: {
+            /** Currency */
+            currency?: string | null;
+            /**
+             * Delta
+             * @description value - previous (signed decimal).
+             */
+            delta?: string | null;
+            /** Label */
+            label: string;
+            /** Note */
+            note?: string | null;
+            /**
+             * Previous
+             * @description The same figure the week before.
+             */
+            previous?: string | null;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+            /**
+             * Unit
+             * @enum {string}
+             */
+            unit: "records" | "money" | "percent";
+            /**
+             * Value
+             * @description Decimal string; null when not readable.
+             */
+            value?: string | null;
+        };
+        /** BriefGap */
+        BriefGap: {
+            /** Code */
+            code: string;
+            /** Detail */
+            detail: string;
+            /** State */
+            state: string;
+            /** Subject */
+            subject: string;
+        };
+        /** BriefRow */
+        BriefRow: {
+            /** @description Finance readers only; per currency. */
+            amount?: components["schemas"]["Money"] | null;
+            /**
+             * Date
+             * @description ISO date the row is about, when cited.
+             */
+            date?: string | null;
+            /** Detail */
+            detail?: string | null;
+            /** Label */
+            label: string;
+            object?: components["schemas"]["ObjectRef"] | null;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+        };
+        /** BriefSection */
+        BriefSection: {
+            /** Figures */
+            figures?: components["schemas"]["BriefFigure"][];
+            /** Key */
+            key: string;
+            /**
+             * More
+             * @description Rows you may read beyond those listed.
+             * @default 0
+             */
+            more: number;
+            /** Note */
+            note?: string | null;
+            /** Rows */
+            rows?: components["schemas"]["BriefRow"][];
+            /**
+             * State
+             * @description finance_marked: shown only to a reader holding finance (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list) could not be read, which is not the same as none.
+             * @enum {string}
+             */
+            state: "shown" | "empty" | "partial" | "finance_marked" | "unread";
+            /** Title */
+            title: string;
         };
         /**
          * Briefing
@@ -1025,13 +1485,18 @@ export type components = {
             /** Label */
             label: string;
             /**
+             * Last Run
+             * @description When the check last ran (ISO time).
+             */
+            last_run?: string | null;
+            /**
              * Status
              * @enum {string}
              */
             status: "complete" | "partial" | "not_checked" | "failed";
             /**
              * Words
-             * @description e.g. 'vendor replies: not checked this run'.
+             * @description e.g. 'vendor replies: checked (last run 2026-11-08 9:30 AM ET)'.
              */
             words: string;
         };
@@ -1045,7 +1510,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
             /** First Found */
             first_found?: string | null;
             /**
@@ -1077,7 +1542,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
             /** In Top */
             in_top: number;
             /** Label */
@@ -1127,7 +1592,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
             /**
              * Evidence
              * @description 'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.
@@ -1199,7 +1664,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
             /** Items */
             items?: components["schemas"]["BriefingItem"][];
             /**
@@ -1271,7 +1736,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss";
+            kind: "send_email" | "reply_in_thread" | "forward" | "teams_message" | "create_follow_up" | "mark_done" | "snooze" | "dismiss" | "assign";
             /** Label */
             label: string;
             /** Outbound */
@@ -1682,6 +2147,74 @@ export type components = {
             /** Trails */
             trails?: components["schemas"]["PoTrail"][];
         };
+        /**
+         * Explore
+         * @description A record's neighbours one hop out, grouped by kind of link, for the link explorer.
+         *     Walking on is the same read from a neighbour (lazy expansion), so two hops are two
+         *     reads, each as this reader sees it. No counts of what the reader may not see.
+         */
+        Explore: {
+            /**
+             * Capped
+             * @description True when kinds of link or records were left out to keep the read small.
+             * @default false
+             */
+            capped: boolean;
+            /** Groups */
+            groups?: components["schemas"]["ExploreGroup"][];
+            /** Label */
+            label: string;
+            /** Message */
+            message?: string | null;
+            /** Object Id */
+            object_id: string;
+            /**
+             * Partial
+             * @description True when some linked records are not visible to this reader (their number is never given).
+             * @default false
+             */
+            partial: boolean;
+            /** Type */
+            type: string;
+        };
+        /** ExploreGroup */
+        ExploreGroup: {
+            /**
+             * Key
+             * @description The link type and direction, stable across reads.
+             */
+            key: string;
+            /**
+             * Label
+             * @description The kind of link in words, e.g. 'Sales orders: ordered by'.
+             */
+            label: string;
+            /**
+             * More
+             * @description True when this reader's walk of this kind was cut at the cap; never a count.
+             * @default false
+             */
+            more: boolean;
+            /** Nodes */
+            nodes?: components["schemas"]["ExploreNode"][];
+        };
+        /** ExploreNode */
+        ExploreNode: {
+            /** Label */
+            label: string;
+            /** Object Id */
+            object_id: string;
+            /** Open Url */
+            open_url: string;
+            /**
+             * Tier
+             * @description firm: a verified, reviewed or corroborated link; suggested: a text-matched or lead link that has not been confirmed.
+             * @enum {string}
+             */
+            tier: "firm" | "suggested";
+            /** Type */
+            type: string;
+        };
         /** Fact */
         Fact: {
             /**
@@ -1958,6 +2491,118 @@ export type components = {
             stale_since?: string | null;
         };
         /**
+         * ImpactCause
+         * @description One cause of a late or unprofitable order, citing the records it rests on.
+         */
+        ImpactCause: {
+            /**
+             * Cause
+             * @enum {string}
+             */
+            cause: "late_supply" | "supplier_no_reply" | "short_receipt" | "qc_hold" | "cost_jump" | "freight";
+            /** Detail */
+            detail: string;
+            record: components["schemas"]["ObjectRef"];
+            /**
+             * Sources
+             * @description Cited L1 handles.
+             */
+            sources?: string[];
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "firm" | "lead";
+        };
+        /** ImpactMoney */
+        ImpactMoney: {
+            /**
+             * Measure
+             * @enum {string}
+             */
+            measure: "revenue_at_risk" | "revenue_lost" | "revenue_change" | "cost_change";
+            money: components["schemas"]["Money"];
+            /** Orders */
+            orders: number;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "firm" | "lead";
+        };
+        /**
+         * ImpactOrder
+         * @description One customer order a what-if change reaches (an order and its twins, once).
+         */
+        ImpactOrder: {
+            /** Late By Days */
+            late_by_days?: number | null;
+            /** New Material Date */
+            new_material_date?: string | null;
+            order: components["schemas"]["ObjectRef"];
+            /** Required Date */
+            required_date?: string | null;
+            /** @description Finance: only for a reader shown it. */
+            revenue?: components["schemas"]["Money"] | null;
+            /** Slips */
+            slips?: boolean | null;
+            /**
+             * Tier
+             * @description firm: every link on the chain is verified, reviewed or corroborated; lead: possible.
+             * @enum {string}
+             */
+            tier: "firm" | "lead";
+        };
+        /**
+         * ImpactPanel
+         * @description A record page's Impact panel (``plx.around`` mode what_if or why, as this reader
+         *     reads it). ``unknown``: what could not be established, never said to be absent.
+         *     ``partial``: a bound (depth, fan-out, time, list size) cut the walk, or some linked
+         *     records are not visible to this reader (``partial_reason`` withheld_by_permission).
+         */
+        ImpactPanel: {
+            /**
+             * Applies
+             * @description False: this kind of record has no impact walk.
+             * @default true
+             */
+            applies: boolean;
+            /** Causes */
+            causes?: components["schemas"]["ImpactCause"][];
+            /**
+             * Change
+             * @description what_if: the change in words.
+             */
+            change?: string | null;
+            /** Customers */
+            customers?: components["schemas"]["ObjectRef"][];
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "what_if" | "why";
+            /** Money */
+            money?: components["schemas"]["ImpactMoney"][];
+            /** Object Id */
+            object_id: string;
+            /** Orders */
+            orders?: components["schemas"]["ImpactOrder"][];
+            /**
+             * Orders Total
+             * @default 0
+             */
+            orders_total: number;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Partial Reason */
+            partial_reason?: string | null;
+            /** Unknown */
+            unknown?: string[];
+        };
+        /**
          * ItemFeedbackRequest
          * @description A briefing or alert item: useful, not useful or wrong.
          */
@@ -1995,6 +2640,21 @@ export type components = {
              * @enum {string}
              */
             verdict: "useful" | "not_useful" | "wrong";
+        };
+        /**
+         * KnownRecord
+         * @description A customer, supplier or item a person corresponds about: how many of their messages
+         *     the reader may read name it.
+         */
+        KnownRecord: {
+            /** Label */
+            label: string;
+            /** Messages */
+            messages: number;
+            /** Object Id */
+            object_id: string;
+            /** Url */
+            url: string;
         };
         /** LandedCost */
         LandedCost: {
@@ -2096,6 +2756,78 @@ export type components = {
             sources?: components["schemas"]["Source"][];
             /** Supplier */
             supplier?: string | null;
+        };
+        /** LinkGroup */
+        LinkGroup: {
+            /**
+             * Count
+             * @description How many records solid links reach as this reader reads it (possible ones never counted); null when not counted.
+             */
+            count?: number | null;
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "forward" | "reverse";
+            /**
+             * Link Type
+             * @description The schema's link type, e.g. SalesInvoice.bills.
+             */
+            link_type: string;
+            /**
+             * Name
+             * @description The link's navigation name on this record's type (the schema's name forward, reverse_name in reverse).
+             */
+            name: string;
+            /**
+             * Possible
+             * @description How many more records only lead or disputed links reach (possibly related), never in ``count``; the first of them are in ``records`` marked ``possible``.
+             */
+            possible?: number;
+            /** Records */
+            records?: components["schemas"]["LinkRef"][];
+            /**
+             * Role
+             * @description Where the page shows the group: the order's customer, its shipments and invoices, the same record in another system, or other links.
+             * @enum {string}
+             */
+            role: "customer" | "fulfilment" | "same_record" | "related";
+            /**
+             * Type
+             * @description The type of the records at the link's other end.
+             */
+            type: string;
+            /**
+             * Words
+             * @description The navigation name in plain words, e.g. 'Invoices'.
+             */
+            words: string;
+        };
+        /** LinkRef */
+        LinkRef: {
+            /**
+             * Evidence
+             * @description The records and messages the link was read from that this reader may open, mail and documents first; one the reader may not open is left out.
+             */
+            evidence?: components["schemas"]["Source"][];
+            /** Label */
+            label: string;
+            /** Object Id */
+            object_id: string;
+            /** Open Url */
+            open_url: string;
+            /**
+             * Possible
+             * @description Reached only through a lead or disputed link (possibly related): a suggested link, never in the group's count.
+             */
+            possible?: boolean;
+            /**
+             * Tier
+             * @description How firmly the link holds: verified, lead (a machine-read reference, e.g. a mail naming the order), ...
+             */
+            tier?: string | null;
+            /** Type */
+            type: string;
         };
         /** LinkedItem */
         LinkedItem: {
@@ -2302,6 +3034,8 @@ export type components = {
             freshness: components["schemas"]["Freshness"];
             /** @description Omitted when nothing counts what is hidden about this record. */
             hidden?: components["schemas"]["Hidden"] | null;
+            /** @description A person's: what they correspond about most (the knows section). */
+            knows?: components["schemas"]["PersonKnows"] | null;
             /** Label */
             label: string;
             landed_cost?: components["schemas"]["LandedCost"] | null;
@@ -2309,6 +3043,11 @@ export type components = {
             late_lines?: components["schemas"]["LateLine"][];
             /** Linked */
             linked?: components["schemas"]["LinkedItem"][];
+            /**
+             * Links
+             * @description The records one hop away, one group per link kind the schema declares for this record's type, each record with the evidence the link was read from.
+             */
+            links?: components["schemas"]["LinkGroup"][];
             /** Not Found */
             not_found?: components["schemas"]["NotFound"][];
             /** Object Id */
@@ -2370,6 +3109,8 @@ export type components = {
              * @default true
              */
             applies: boolean;
+            /** @description knows: on a person's page, the customers, suppliers and items they correspond about most and the threads waiting on them. */
+            knows?: components["schemas"]["PersonKnows"] | null;
             landed_cost?: components["schemas"]["LandedCost"] | null;
             /** Late Lines */
             late_lines?: components["schemas"]["LateLine"][];
@@ -2393,7 +3134,7 @@ export type components = {
              * Section
              * @enum {string}
              */
-            section: "late" | "people" | "landed_cost" | "trail" | "margin";
+            section: "late" | "people" | "landed_cost" | "trail" | "margin" | "knows";
             /**
              * Stale Since
              * @description Set when the server could not read this section in time and serves the last one it read for this same reader: when that was read (ISO). It is refreshed in the background.
@@ -2462,6 +3203,146 @@ export type components = {
             role: string;
             /** Sources */
             sources?: components["schemas"]["Source"][];
+        };
+        /**
+         * PersonKnows
+         * @description Who knows what (``plx.aggregate`` mode ``who_knows``): what one person of ours
+         *     corresponds about most, counted over the messages the reader may read, and the open
+         *     threads waiting on their reply. Counts only: never a message's text.
+         */
+        PersonKnows: {
+            /**
+             * Complete
+             * @description False: some people or threads could not be decided, so the counts may be low.
+             * @default false
+             */
+            complete: boolean;
+            /** Customers */
+            customers?: components["schemas"]["KnownRecord"][];
+            /** Items */
+            items?: components["schemas"]["KnownRecord"][];
+            /** Messages */
+            messages: number;
+            /** Suppliers */
+            suppliers?: components["schemas"]["KnownRecord"][];
+            /**
+             * Waiting On Them
+             * @description Open threads waiting on this person's reply; omitted when unknown.
+             */
+            waiting_on_them?: number | null;
+        };
+        /** PlaybookAddress */
+        PlaybookAddress: {
+            /** Address */
+            address: string;
+            /**
+             * Source
+             * @description The citation the address is read from.
+             */
+            source: string;
+        };
+        /**
+         * PlaybookChange
+         * @description The change a person makes in the source system themselves: the Workbench never
+         *     writes BC, the Portal or MC (``writes`` is 0).
+         */
+        PlaybookChange: {
+            /** By */
+            by: string;
+            /** Do This */
+            do_this: string;
+            /** Field */
+            field: string;
+            /** System */
+            system: string;
+            /** Value */
+            value?: string | null;
+            /** Value Basis */
+            value_basis: string;
+            /**
+             * Writes
+             * @constant
+             */
+            writes: 0;
+        };
+        /**
+         * PlaybookEmail
+         * @description A drafted message to the record's outside party (never sent here: it goes only
+         *     through ``/api/actions/preview`` and your confirm, ``card_id`` = the playbook's id).
+         */
+        PlaybookEmail: {
+            /** Body */
+            body: string;
+            /**
+             * Channel
+             * @constant
+             */
+            channel: "email";
+            /** Party */
+            party?: string | null;
+            /**
+             * Status
+             * @constant
+             */
+            status: "draft_not_sent";
+            /** Subject */
+            subject: string;
+            to?: components["schemas"]["PlaybookAddress"] | null;
+        };
+        /** PlaybookFact */
+        PlaybookFact: {
+            /** Citation */
+            citation: string;
+            /** Fact */
+            fact: string;
+            /** Value */
+            value: string;
+        };
+        /** PlaybookLink */
+        PlaybookLink: {
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "not_configured";
+            /** System */
+            system: string;
+            /** Url */
+            url?: string | null;
+        };
+        /** PlaybookOwner */
+        PlaybookOwner: {
+            /** Address */
+            address?: string | null;
+            /** Link */
+            link: string;
+            /** Name */
+            name: string;
+        };
+        /**
+         * PlaybookTeams
+         * @description A drafted Teams note to the record's internal owner, when the ontology knows them.
+         */
+        PlaybookTeams: {
+            /** Body */
+            body: string;
+            /**
+             * Channel
+             * @constant
+             */
+            channel: "teams";
+            owner?: components["schemas"]["PlaybookOwner"] | null;
+            /** Owner Known */
+            owner_known: boolean;
+            /**
+             * Status
+             * @constant
+             */
+            status: "draft_not_sent";
+            /** Why No Owner */
+            why_no_owner?: string | null;
         };
         /** PoTrail */
         PoTrail: {
@@ -3298,6 +4179,21 @@ export type components = {
             /** Text */
             text: string;
         };
+        /** UpcomingMeeting */
+        UpcomingMeeting: {
+            /** Brief Url */
+            brief_url: string;
+            object: components["schemas"]["ObjectRef"];
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+            /** Start */
+            start?: string | null;
+        };
+        /** UpcomingMeetings */
+        UpcomingMeetings: {
+            /** Meetings */
+            meetings: components["schemas"]["UpcomingMeeting"][];
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -3378,6 +4274,194 @@ export type components = {
             /** Text */
             text: string;
         };
+        /** WatchAlert */
+        WatchAlert: {
+            /** @description The followed record, or a rule's subject or the record its count is grouped by. */
+            about: components["schemas"]["WatchRef"];
+            /** Alert Id */
+            alert_id: string;
+            /** At */
+            at: string;
+            /**
+             * Changes
+             * @description Only values whose markings you hold.
+             */
+            changes: components["schemas"]["WatchChange"][];
+            /**
+             * Counted
+             * @description A windowed rule: the changes counted, every one on a record you may open.
+             */
+            counted?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "changed" | "linked" | "unlinked" | "linked_changed" | "removed" | "rule";
+            /** Link Type */
+            link_type?: string | null;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "follow" | "rule";
+            /** Read */
+            read: boolean;
+            /** @description The record that changed. */
+            record: components["schemas"]["WatchRef"];
+            /** Rule Id */
+            rule_id?: string | null;
+            /** Rule Text */
+            rule_text?: string | null;
+            /** Sentence */
+            sentence: string;
+        };
+        /** WatchChange */
+        WatchChange: {
+            /** After */
+            after?: string | null;
+            /** Before */
+            before?: string | null;
+            /** Property */
+            property: string;
+        };
+        /** WatchFollow */
+        WatchFollow: {
+            /** At */
+            at?: string | null;
+            /** Following */
+            following: boolean;
+            /** Label */
+            label?: string | null;
+            /** Object Id */
+            object_id: string;
+            /** Object Type */
+            object_type?: string | null;
+            /**
+             * Readable
+             * @description False when your grant no longer admits the record: it stays followed and tells you nothing until it does.
+             */
+            readable: boolean;
+            /**
+             * Watching Since
+             * @description When the incremental pass first read it; null: not yet.
+             */
+            watching_since?: string | null;
+        };
+        /** WatchFollowRequest */
+        WatchFollowRequest: {
+            /**
+             * Object Id
+             * @description The record's id, as its page states it.
+             */
+            object_id: string;
+        };
+        /** WatchReadRequest */
+        WatchReadRequest: {
+            /** Alert Ids */
+            alert_ids: string[];
+        };
+        /** WatchReadResult */
+        WatchReadResult: {
+            /** Marked */
+            marked: number;
+        };
+        /** WatchRef */
+        WatchRef: {
+            /**
+             * Label
+             * @description A label from the record's unmarked name or number; null when it has none.
+             */
+            label?: string | null;
+            /** Object Id */
+            object_id: string;
+            /** Type */
+            type?: string | null;
+        };
+        /** WatchRule */
+        WatchRule: {
+            /** At */
+            at: string;
+            /** Description */
+            description: string;
+            /** Note */
+            note?: string | null;
+            /** Rule Id */
+            rule_id: string;
+            /**
+             * Spec
+             * @description The compiled rule (plx-alert-rule/v1).
+             */
+            spec: {
+                [key: string]: unknown;
+            };
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "active" | "paused" | "refused";
+            /** Text */
+            text: string;
+            /** Watching Since */
+            watching_since?: string | null;
+        };
+        /** WatchRuleCompileRequest */
+        WatchRuleCompileRequest: {
+            /**
+             * Text
+             * @description The rule in plain words.
+             */
+            text: string;
+        };
+        /** WatchRuleDeleted */
+        WatchRuleDeleted: {
+            /** Deleted */
+            deleted: boolean;
+            /** Rule Id */
+            rule_id: string;
+        };
+        /**
+         * WatchRuleDraft
+         * @description The compiled rule shown back for confirmation; nothing is kept.
+         */
+        WatchRuleDraft: {
+            /**
+             * Compiled By
+             * @enum {string}
+             */
+            compiled_by: "grammar" | "model";
+            /**
+             * Description
+             * @description What the rule will do, in plain words.
+             */
+            description: string;
+            /**
+             * Digest
+             * @description Send it back with the spec to confirm this very rule.
+             */
+            digest: string;
+            /**
+             * Markings
+             * @description The markings the figures it reads carry.
+             */
+            markings: string[];
+            /** Spec */
+            spec: {
+                [key: string]: unknown;
+            };
+            /** Text */
+            text: string;
+        };
+        /** WatchRuleRequest */
+        WatchRuleRequest: {
+            /** Digest */
+            digest: string;
+            /** Spec */
+            spec: {
+                [key: string]: unknown;
+            };
+            /** Text */
+            text: string;
+        };
         /** WatcherItemState */
         WatcherItemState: {
             /** At */
@@ -3410,6 +4494,23 @@ export type components = {
              * @description A snooze's last day (YYYY-MM-DD, after today); absent: a week from today.
              */
             until?: string | null;
+        };
+        /**
+         * Watchlist
+         * @description Your follows, your alert rules and your alerts, newest first, as your grant shows
+         *     them now.
+         */
+        Watchlist: {
+            /** Alerts */
+            alerts: components["schemas"]["WatchAlert"][];
+            /** Configured */
+            configured: boolean;
+            /** Follows */
+            follows: components["schemas"]["WatchFollow"][];
+            /** Rules */
+            rules: components["schemas"]["WatchRule"][];
+            /** Unread */
+            unread: number;
         };
     };
     responses: never;
@@ -3618,6 +4719,55 @@ export interface operations {
             };
         };
     };
+    alert_playbook_api_alerts__alert_id__playbook_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                alert_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertPlaybook"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ask_api_ask_post: {
         parameters: {
             query?: never;
@@ -3760,6 +4910,126 @@ export interface operations {
             };
         };
     };
+    upcoming_meetings_api_brief_meetings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpcomingMeetings"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    weekly_review_api_brief_weekly_get: {
+        parameters: {
+            query?: {
+                /** @description Any day of the week (Monday to Sunday); default: last week */
+                week?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Brief"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    meeting_brief_api_brief__object_type___object_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                object_type: string;
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Brief"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     briefing_api_briefing_get: {
         parameters: {
             query?: {
@@ -3803,7 +5073,7 @@ export interface operations {
     briefing_items_api_briefing_items_get: {
         parameters: {
             query: {
-                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
+                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
                 offset?: number;
                 limit?: number;
                 view?: "all" | "since_visit";
@@ -3903,6 +5173,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    explore_api_explore__object_type___object_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                object_type: string;
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Explore"];
                 };
             };
             /** @description Unauthorized */
@@ -4284,12 +5604,67 @@ export interface operations {
             };
         };
     };
+    object_impact_api_object_impact__mode___object_type___object_id__get: {
+        parameters: {
+            query?: {
+                change?: ("delay" | "out_of_stock" | "customer_lost" | "price_change") | null;
+                days?: number | null;
+                percent?: string | null;
+            };
+            header?: never;
+            path: {
+                mode: "what_if" | "why";
+                object_type: string;
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpactPanel"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     object_section_api_object_section__section___object_type___object_id__get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                section: "late" | "people" | "landed_cost" | "trail" | "margin";
+                section: "late" | "people" | "landed_cost" | "trail" | "margin" | "knows";
                 object_type: string;
                 object_id: string;
             };
@@ -4504,6 +5879,310 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    watchlist_api_watch_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Watchlist"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    watch_read_api_watch_alerts_read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchReadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchReadResult"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    watch_follow_api_watch_follow_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchFollowRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchFollow"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    watch_unfollow_api_watch_follow__object_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchFollow"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    watch_rule_create_api_watch_rules_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchRule"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    watch_rule_compile_api_watch_rules_compile_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchRuleCompileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchRuleDraft"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    watch_rule_delete_api_watch_rules__rule_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchRuleDeleted"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

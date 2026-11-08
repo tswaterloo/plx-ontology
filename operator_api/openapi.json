@@ -73,7 +73,8 @@
               "create_follow_up",
               "mark_done",
               "snooze",
-              "dismiss"
+              "dismiss",
+              "assign"
             ],
             "title": "Kind",
             "type": "string"
@@ -178,7 +179,8 @@
               "create_follow_up",
               "mark_done",
               "snooze",
-              "dismiss"
+              "dismiss",
+              "assign"
             ],
             "title": "Kind",
             "type": "string"
@@ -224,7 +226,8 @@
               "follow_up",
               "done",
               "snoozed",
-              "dismissed"
+              "dismissed",
+              "assigned"
             ],
             "title": "Status",
             "type": "string"
@@ -270,6 +273,19 @@
         "additionalProperties": false,
         "description": "An action's fields. Outbound: to, cc, subject (a new email only), body, and the\ncited message a reply or forward answers (``in_reply_to``, not editable) or the Teams\nchat. Local: a follow-up's due date and note, a snooze's end, a dismissal's reason.",
         "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 320,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Assign to: a colleague's address (kept in the Workbench only).",
+            "title": "Assignee"
+          },
           "body": {
             "anyOf": [
               {
@@ -440,7 +456,8 @@
               "create_follow_up",
               "mark_done",
               "snooze",
-              "dismiss"
+              "dismiss",
+              "assign"
             ],
             "title": "Kind",
             "type": "string"
@@ -551,7 +568,8 @@
               "create_follow_up",
               "mark_done",
               "snooze",
-              "dismiss"
+              "dismiss",
+              "assign"
             ],
             "title": "Kind",
             "type": "string"
@@ -595,7 +613,8 @@
               "create_follow_up",
               "mark_done",
               "snooze",
-              "dismiss"
+              "dismiss",
+              "assign"
             ],
             "title": "Kind",
             "type": "string"
@@ -637,7 +656,8 @@
               "follow_up",
               "done",
               "snoozed",
-              "dismissed"
+              "dismissed",
+              "assigned"
             ],
             "title": "Status",
             "type": "string"
@@ -686,6 +706,159 @@
           }
         },
         "title": "ActionsLog",
+        "type": "object"
+      },
+      "AlertPlaybook": {
+        "additionalProperties": false,
+        "description": "One alert's ready-to-use next steps (``operating.alert_playbooks``), worded from its\nown cited sources as you read them. Nothing is sent or written by reading it.",
+        "properties": {
+          "alert_id": {
+            "title": "Alert Id",
+            "type": "string"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaybookChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaybookEmail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookFact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "id": {
+            "description": "The card id the actions (``/api/actions/*``) take.",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookLink"
+            },
+            "title": "Links",
+            "type": "array"
+          },
+          "local": {
+            "items": {
+              "enum": [
+                "send_email",
+                "reply_in_thread",
+                "forward",
+                "teams_message",
+                "create_follow_up",
+                "mark_done",
+                "snooze",
+                "dismiss",
+                "assign"
+              ],
+              "type": "string"
+            },
+            "title": "Local",
+            "type": "array"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "object_type": {
+            "title": "Object Type",
+            "type": "string"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/CardActionOffer"
+            },
+            "title": "Offers",
+            "type": "array"
+          },
+          "rests_on": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rests On",
+            "type": "array"
+          },
+          "sent": {
+            "const": false,
+            "title": "Sent",
+            "type": "boolean"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "teams": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaybookTeams"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "writes": {
+            "const": 0,
+            "title": "Writes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "alert_id",
+          "event_type",
+          "object_id",
+          "object_type",
+          "sent",
+          "writes"
+        ],
+        "title": "AlertPlaybook",
         "type": "object"
       },
       "AnswerPayload": {
@@ -1013,6 +1186,356 @@
         "title": "AuthConfig",
         "type": "object"
       },
+      "Brief": {
+        "additionalProperties": false,
+        "description": "A meeting prep brief or a weekly review, generated from the records you may read\n(no model call). Every row and figure cites its sources; nothing hidden is counted.",
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "basis": {
+            "title": "Basis",
+            "type": "string"
+          },
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/BriefGap"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "meeting",
+              "weekly"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "parties": {
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Parties",
+            "type": "array"
+          },
+          "possible_parties": {
+            "description": "Lead-tier matches (a domain only): never read.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Possible Parties",
+            "type": "array"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/BriefSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subject_sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Subject Sources",
+            "type": "array"
+          },
+          "summary_question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A question for /api/ask (the answer path with its claim checks) that summarises this brief; optional.",
+            "title": "Summary Question"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "when": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "When"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "as_of",
+          "sections",
+          "basis"
+        ],
+        "title": "Brief",
+        "type": "object"
+      },
+      "BriefFigure": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "value - previous (signed decimal).",
+            "title": "Delta"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The same figure the week before.",
+            "title": "Previous"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "unit": {
+            "enum": [
+              "records",
+              "money",
+              "percent"
+            ],
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Decimal string; null when not readable.",
+            "title": "Value"
+          }
+        },
+        "required": [
+          "label",
+          "unit"
+        ],
+        "title": "BriefFigure",
+        "type": "object"
+      },
+      "BriefGap": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "state",
+          "subject",
+          "detail"
+        ],
+        "title": "BriefGap",
+        "type": "object"
+      },
+      "BriefRow": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Finance readers only; per currency."
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO date the row is about, when cited.",
+            "title": "Date"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "BriefRow",
+        "type": "object"
+      },
+      "BriefSection": {
+        "additionalProperties": false,
+        "properties": {
+          "figures": {
+            "items": {
+              "$ref": "#/components/schemas/BriefFigure"
+            },
+            "title": "Figures",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "more": {
+            "default": 0,
+            "description": "Rows you may read beyond those listed.",
+            "title": "More",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/BriefRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "state": {
+            "description": "finance_marked: shown only to a reader holding finance (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list) could not be read, which is not the same as none.",
+            "enum": [
+              "shown",
+              "empty",
+              "partial",
+              "finance_marked",
+              "unread"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "state"
+        ],
+        "title": "BriefSection",
+        "type": "object"
+      },
       "Briefing": {
         "additionalProperties": false,
         "description": "Your briefing: the events routed to you that you may see, ranked; the top items one\nby one and every other one in its type's group; each check's state; a preview of the\ndaily digest. Suggestions only; nothing is sent or written.",
@@ -1272,6 +1795,18 @@
             "title": "Label",
             "type": "string"
           },
+          "last_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the check last ran (ISO time).",
+            "title": "Last Run"
+          },
           "status": {
             "enum": [
               "complete",
@@ -1283,7 +1818,7 @@
             "type": "string"
           },
           "words": {
-            "description": "e.g. 'vendor replies: not checked this run'.",
+            "description": "e.g. 'vendor replies: checked (last run 2026-11-08 9:30 AM ET)'.",
             "title": "Words",
             "type": "string"
           }
@@ -1316,7 +1851,50 @@
               "customer_order_at_risk",
               "po_undated",
               "customer_order_late",
-              "watcher_attention"
+              "watcher_attention",
+              "stock_out_risk",
+              "overdue_receivable",
+              "unit_cost_jump",
+              "customer_demand_drop",
+              "promise_date_slip",
+              "margin_erosion",
+              "supplier_reliability",
+              "shipped_not_invoiced",
+              "duplicate_customer_order",
+              "recurring_component_damage",
+              "customer_chasing_order",
+              "tell_before_they_ask",
+              "quality_hold_aging",
+              "reject_trend",
+              "customer_paying_slower",
+              "early_pay_discount_missed",
+              "duplicate_supplier_invoice",
+              "duplicate_supplier_payment",
+              "price_below_typical",
+              "price_below_cost",
+              "customer_price_drop",
+              "mc_task_overdue",
+              "mc_task_stuck",
+              "mc_approval_pending",
+              "planner_task_overdue",
+              "aged_receivable_worsening",
+              "aged_payable_worsening",
+              "production_late",
+              "assembly_damage_spike",
+              "teams_unanswered_ask",
+              "commitment_due",
+              "commitment_missed",
+              "needs_my_reply",
+              "slow_moving_stock",
+              "expiring_lot_stock",
+              "assembly_blocked_by_component",
+              "certificate_expiring",
+              "freight_cost_anomaly",
+              "stale_quote",
+              "duplicate_party_candidate",
+              "key_field_missing",
+              "twins_disagree",
+              "source_stale"
             ],
             "title": "Event Type",
             "type": "string"
@@ -1401,7 +1979,50 @@
               "customer_order_at_risk",
               "po_undated",
               "customer_order_late",
-              "watcher_attention"
+              "watcher_attention",
+              "stock_out_risk",
+              "overdue_receivable",
+              "unit_cost_jump",
+              "customer_demand_drop",
+              "promise_date_slip",
+              "margin_erosion",
+              "supplier_reliability",
+              "shipped_not_invoiced",
+              "duplicate_customer_order",
+              "recurring_component_damage",
+              "customer_chasing_order",
+              "tell_before_they_ask",
+              "quality_hold_aging",
+              "reject_trend",
+              "customer_paying_slower",
+              "early_pay_discount_missed",
+              "duplicate_supplier_invoice",
+              "duplicate_supplier_payment",
+              "price_below_typical",
+              "price_below_cost",
+              "customer_price_drop",
+              "mc_task_overdue",
+              "mc_task_stuck",
+              "mc_approval_pending",
+              "planner_task_overdue",
+              "aged_receivable_worsening",
+              "aged_payable_worsening",
+              "production_late",
+              "assembly_damage_spike",
+              "teams_unanswered_ask",
+              "commitment_due",
+              "commitment_missed",
+              "needs_my_reply",
+              "slow_moving_stock",
+              "expiring_lot_stock",
+              "assembly_blocked_by_component",
+              "certificate_expiring",
+              "freight_cost_anomaly",
+              "stale_quote",
+              "duplicate_party_candidate",
+              "key_field_missing",
+              "twins_disagree",
+              "source_stale"
             ],
             "title": "Event Type",
             "type": "string"
@@ -1521,7 +2142,50 @@
               "customer_order_at_risk",
               "po_undated",
               "customer_order_late",
-              "watcher_attention"
+              "watcher_attention",
+              "stock_out_risk",
+              "overdue_receivable",
+              "unit_cost_jump",
+              "customer_demand_drop",
+              "promise_date_slip",
+              "margin_erosion",
+              "supplier_reliability",
+              "shipped_not_invoiced",
+              "duplicate_customer_order",
+              "recurring_component_damage",
+              "customer_chasing_order",
+              "tell_before_they_ask",
+              "quality_hold_aging",
+              "reject_trend",
+              "customer_paying_slower",
+              "early_pay_discount_missed",
+              "duplicate_supplier_invoice",
+              "duplicate_supplier_payment",
+              "price_below_typical",
+              "price_below_cost",
+              "customer_price_drop",
+              "mc_task_overdue",
+              "mc_task_stuck",
+              "mc_approval_pending",
+              "planner_task_overdue",
+              "aged_receivable_worsening",
+              "aged_payable_worsening",
+              "production_late",
+              "assembly_damage_spike",
+              "teams_unanswered_ask",
+              "commitment_due",
+              "commitment_missed",
+              "needs_my_reply",
+              "slow_moving_stock",
+              "expiring_lot_stock",
+              "assembly_blocked_by_component",
+              "certificate_expiring",
+              "freight_cost_anomaly",
+              "stale_quote",
+              "duplicate_party_candidate",
+              "key_field_missing",
+              "twins_disagree",
+              "source_stale"
             ],
             "title": "Event Type",
             "type": "string"
@@ -1697,7 +2361,50 @@
               "customer_order_at_risk",
               "po_undated",
               "customer_order_late",
-              "watcher_attention"
+              "watcher_attention",
+              "stock_out_risk",
+              "overdue_receivable",
+              "unit_cost_jump",
+              "customer_demand_drop",
+              "promise_date_slip",
+              "margin_erosion",
+              "supplier_reliability",
+              "shipped_not_invoiced",
+              "duplicate_customer_order",
+              "recurring_component_damage",
+              "customer_chasing_order",
+              "tell_before_they_ask",
+              "quality_hold_aging",
+              "reject_trend",
+              "customer_paying_slower",
+              "early_pay_discount_missed",
+              "duplicate_supplier_invoice",
+              "duplicate_supplier_payment",
+              "price_below_typical",
+              "price_below_cost",
+              "customer_price_drop",
+              "mc_task_overdue",
+              "mc_task_stuck",
+              "mc_approval_pending",
+              "planner_task_overdue",
+              "aged_receivable_worsening",
+              "aged_payable_worsening",
+              "production_late",
+              "assembly_damage_spike",
+              "teams_unanswered_ask",
+              "commitment_due",
+              "commitment_missed",
+              "needs_my_reply",
+              "slow_moving_stock",
+              "expiring_lot_stock",
+              "assembly_blocked_by_component",
+              "certificate_expiring",
+              "freight_cost_anomaly",
+              "stale_quote",
+              "duplicate_party_candidate",
+              "key_field_missing",
+              "twins_disagree",
+              "source_stale"
             ],
             "title": "Event Type",
             "type": "string"
@@ -1863,7 +2570,8 @@
               "create_follow_up",
               "mark_done",
               "snooze",
-              "dismiss"
+              "dismiss",
+              "assign"
             ],
             "title": "Kind",
             "type": "string"
@@ -2909,6 +3617,134 @@
         "title": "EvidenceTrail",
         "type": "object"
       },
+      "Explore": {
+        "additionalProperties": false,
+        "description": "A record's neighbours one hop out, grouped by kind of link, for the link explorer.\nWalking on is the same read from a neighbour (lazy expansion), so two hops are two\nreads, each as this reader sees it. No counts of what the reader may not see.",
+        "properties": {
+          "capped": {
+            "default": false,
+            "description": "True when kinds of link or records were left out to keep the read small.",
+            "title": "Capped",
+            "type": "boolean"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/ExploreGroup"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "partial": {
+            "default": false,
+            "description": "True when some linked records are not visible to this reader (their number is never given).",
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "type",
+          "label"
+        ],
+        "title": "Explore",
+        "type": "object"
+      },
+      "ExploreGroup": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "description": "The link type and direction, stable across reads.",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "description": "The kind of link in words, e.g. 'Sales orders: ordered by'.",
+            "title": "Label",
+            "type": "string"
+          },
+          "more": {
+            "default": false,
+            "description": "True when this reader's walk of this kind was cut at the cap; never a count.",
+            "title": "More",
+            "type": "boolean"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/ExploreNode"
+            },
+            "title": "Nodes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "label"
+        ],
+        "title": "ExploreGroup",
+        "type": "object"
+      },
+      "ExploreNode": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "tier": {
+            "description": "firm: a verified, reviewed or corroborated link; suggested: a text-matched or lead link that has not been confirmed.",
+            "enum": [
+              "firm",
+              "suggested"
+            ],
+            "title": "Tier",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "type",
+          "label",
+          "open_url",
+          "tier"
+        ],
+        "title": "ExploreNode",
+        "type": "object"
+      },
       "Fact": {
         "additionalProperties": false,
         "properties": {
@@ -3750,6 +4586,270 @@
         "title": "Home",
         "type": "object"
       },
+      "ImpactCause": {
+        "additionalProperties": false,
+        "description": "One cause of a late or unprofitable order, citing the records it rests on.",
+        "properties": {
+          "cause": {
+            "enum": [
+              "late_supply",
+              "supplier_no_reply",
+              "short_receipt",
+              "qc_hold",
+              "cost_jump",
+              "freight"
+            ],
+            "title": "Cause",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "sources": {
+            "description": "Cited L1 handles.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "tier": {
+            "enum": [
+              "firm",
+              "lead"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cause",
+          "record",
+          "tier",
+          "detail"
+        ],
+        "title": "ImpactCause",
+        "type": "object"
+      },
+      "ImpactMoney": {
+        "additionalProperties": false,
+        "properties": {
+          "measure": {
+            "enum": [
+              "revenue_at_risk",
+              "revenue_lost",
+              "revenue_change",
+              "cost_change"
+            ],
+            "title": "Measure",
+            "type": "string"
+          },
+          "money": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "orders": {
+            "title": "Orders",
+            "type": "integer"
+          },
+          "tier": {
+            "enum": [
+              "firm",
+              "lead"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "measure",
+          "money",
+          "orders",
+          "tier"
+        ],
+        "title": "ImpactMoney",
+        "type": "object"
+      },
+      "ImpactOrder": {
+        "additionalProperties": false,
+        "description": "One customer order a what-if change reaches (an order and its twins, once).",
+        "properties": {
+          "late_by_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late By Days"
+          },
+          "new_material_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Material Date"
+          },
+          "order": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "required_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Date"
+          },
+          "revenue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Finance: only for a reader shown it."
+          },
+          "slips": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slips"
+          },
+          "tier": {
+            "description": "firm: every link on the chain is verified, reviewed or corroborated; lead: possible.",
+            "enum": [
+              "firm",
+              "lead"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order",
+          "tier"
+        ],
+        "title": "ImpactOrder",
+        "type": "object"
+      },
+      "ImpactPanel": {
+        "additionalProperties": false,
+        "description": "A record page's Impact panel (``plx.around`` mode what_if or why, as this reader\nreads it). ``unknown``: what could not be established, never said to be absent.\n``partial``: a bound (depth, fan-out, time, list size) cut the walk, or some linked\nrecords are not visible to this reader (``partial_reason`` withheld_by_permission).",
+        "properties": {
+          "applies": {
+            "default": true,
+            "description": "False: this kind of record has no impact walk.",
+            "title": "Applies",
+            "type": "boolean"
+          },
+          "causes": {
+            "items": {
+              "$ref": "#/components/schemas/ImpactCause"
+            },
+            "title": "Causes",
+            "type": "array"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "what_if: the change in words.",
+            "title": "Change"
+          },
+          "customers": {
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Customers",
+            "type": "array"
+          },
+          "mode": {
+            "enum": [
+              "what_if",
+              "why"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "money": {
+            "items": {
+              "$ref": "#/components/schemas/ImpactMoney"
+            },
+            "title": "Money",
+            "type": "array"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/ImpactOrder"
+            },
+            "title": "Orders",
+            "type": "array"
+          },
+          "orders_total": {
+            "default": 0,
+            "title": "Orders Total",
+            "type": "integer"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "partial_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partial Reason"
+          },
+          "unknown": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown",
+            "type": "array"
+          }
+        },
+        "required": [
+          "object_id",
+          "mode"
+        ],
+        "title": "ImpactPanel",
+        "type": "object"
+      },
       "ItemFeedbackRequest": {
         "additionalProperties": false,
         "description": "A briefing or alert item: useful, not useful or wrong.",
@@ -3873,6 +4973,36 @@
           "verdict"
         ],
         "title": "ItemFeedbackRequest",
+        "type": "object"
+      },
+      "KnownRecord": {
+        "additionalProperties": false,
+        "description": "A customer, supplier or item a person corresponds about: how many of their messages\nthe reader may read name it.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "label",
+          "url",
+          "messages"
+        ],
+        "title": "KnownRecord",
         "type": "object"
       },
       "LandedCost": {
@@ -4201,6 +5331,138 @@
           "open_url"
         ],
         "title": "LatePo",
+        "type": "object"
+      },
+      "LinkGroup": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many records solid links reach as this reader reads it (possible ones never counted); null when not counted.",
+            "title": "Count"
+          },
+          "direction": {
+            "enum": [
+              "forward",
+              "reverse"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "link_type": {
+            "description": "The schema's link type, e.g. SalesInvoice.bills.",
+            "title": "Link Type",
+            "type": "string"
+          },
+          "name": {
+            "description": "The link's navigation name on this record's type (the schema's name forward, reverse_name in reverse).",
+            "title": "Name",
+            "type": "string"
+          },
+          "possible": {
+            "description": "How many more records only lead or disputed links reach (possibly related), never in ``count``; the first of them are in ``records`` marked ``possible``.",
+            "title": "Possible",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/LinkRef"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "role": {
+            "description": "Where the page shows the group: the order's customer, its shipments and invoices, the same record in another system, or other links.",
+            "enum": [
+              "customer",
+              "fulfilment",
+              "same_record",
+              "related"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "type": {
+            "description": "The type of the records at the link's other end.",
+            "title": "Type",
+            "type": "string"
+          },
+          "words": {
+            "description": "The navigation name in plain words, e.g. 'Invoices'.",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "link_type",
+          "direction",
+          "name",
+          "words",
+          "type",
+          "role"
+        ],
+        "title": "LinkGroup",
+        "type": "object"
+      },
+      "LinkRef": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "description": "The records and messages the link was read from that this reader may open, mail and documents first; one the reader may not open is left out.",
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "possible": {
+            "description": "Reached only through a lead or disputed link (possibly related): a suggested link, never in the group's count.",
+            "title": "Possible",
+            "type": "boolean"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How firmly the link holds: verified, lead (a machine-read reference, e.g. a mail naming the order), ...",
+            "title": "Tier"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "type",
+          "label",
+          "open_url"
+        ],
+        "title": "LinkRef",
         "type": "object"
       },
       "LinkedItem": {
@@ -4751,6 +6013,17 @@
             ],
             "description": "Omitted when nothing counts what is hidden about this record."
           },
+          "knows": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersonKnows"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A person's: what they correspond about most (the knows section)."
+          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -4777,6 +6050,14 @@
               "$ref": "#/components/schemas/LinkedItem"
             },
             "title": "Linked",
+            "type": "array"
+          },
+          "links": {
+            "description": "The records one hop away, one group per link kind the schema declares for this record's type, each record with the evidence the link was read from.",
+            "items": {
+              "$ref": "#/components/schemas/LinkGroup"
+            },
+            "title": "Links",
             "type": "array"
           },
           "not_found": {
@@ -4934,6 +6215,17 @@
             "title": "Applies",
             "type": "boolean"
           },
+          "knows": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersonKnows"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "knows: on a person's page, the customers, suppliers and items they correspond about most and the threads waiting on them."
+          },
           "landed_cost": {
             "anyOf": [
               {
@@ -5016,7 +6308,8 @@
               "people",
               "landed_cost",
               "trail",
-              "margin"
+              "margin",
+              "knows"
             ],
             "title": "Section",
             "type": "string"
@@ -5276,6 +6569,337 @@
           "role"
         ],
         "title": "Person",
+        "type": "object"
+      },
+      "PersonKnows": {
+        "additionalProperties": false,
+        "description": "Who knows what (``plx.aggregate`` mode ``who_knows``): what one person of ours\ncorresponds about most, counted over the messages the reader may read, and the open\nthreads waiting on their reply. Counts only: never a message's text.",
+        "properties": {
+          "complete": {
+            "default": false,
+            "description": "False: some people or threads could not be decided, so the counts may be low.",
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "customers": {
+            "items": {
+              "$ref": "#/components/schemas/KnownRecord"
+            },
+            "title": "Customers",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KnownRecord"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          },
+          "suppliers": {
+            "items": {
+              "$ref": "#/components/schemas/KnownRecord"
+            },
+            "title": "Suppliers",
+            "type": "array"
+          },
+          "waiting_on_them": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Open threads waiting on this person's reply; omitted when unknown.",
+            "title": "Waiting On Them"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "PersonKnows",
+        "type": "object"
+      },
+      "PlaybookAddress": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "source": {
+            "description": "The citation the address is read from.",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "address",
+          "source"
+        ],
+        "title": "PlaybookAddress",
+        "type": "object"
+      },
+      "PlaybookChange": {
+        "additionalProperties": false,
+        "description": "The change a person makes in the source system themselves: the Workbench never\nwrites BC, the Portal or MC (``writes`` is 0).",
+        "properties": {
+          "by": {
+            "title": "By",
+            "type": "string"
+          },
+          "do_this": {
+            "title": "Do This",
+            "type": "string"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "system": {
+            "title": "System",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "value_basis": {
+            "title": "Value Basis",
+            "type": "string"
+          },
+          "writes": {
+            "const": 0,
+            "title": "Writes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "system",
+          "do_this",
+          "field",
+          "value_basis",
+          "writes",
+          "by"
+        ],
+        "title": "PlaybookChange",
+        "type": "object"
+      },
+      "PlaybookEmail": {
+        "additionalProperties": false,
+        "description": "A drafted message to the record's outside party (never sent here: it goes only\nthrough ``/api/actions/preview`` and your confirm, ``card_id`` = the playbook's id).",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "channel": {
+            "const": "email",
+            "title": "Channel",
+            "type": "string"
+          },
+          "party": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party"
+          },
+          "status": {
+            "const": "draft_not_sent",
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaybookAddress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "channel",
+          "subject",
+          "body",
+          "status"
+        ],
+        "title": "PlaybookEmail",
+        "type": "object"
+      },
+      "PlaybookFact": {
+        "additionalProperties": false,
+        "properties": {
+          "citation": {
+            "title": "Citation",
+            "type": "string"
+          },
+          "fact": {
+            "title": "Fact",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact",
+          "value",
+          "citation"
+        ],
+        "title": "PlaybookFact",
+        "type": "object"
+      },
+      "PlaybookLink": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "not_configured"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "system": {
+            "title": "System",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "system",
+          "status"
+        ],
+        "title": "PlaybookLink",
+        "type": "object"
+      },
+      "PlaybookOwner": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "link": {
+            "title": "Link",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "link"
+        ],
+        "title": "PlaybookOwner",
+        "type": "object"
+      },
+      "PlaybookTeams": {
+        "additionalProperties": false,
+        "description": "A drafted Teams note to the record's internal owner, when the ontology knows them.",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "channel": {
+            "const": "teams",
+            "title": "Channel",
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaybookOwner"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "owner_known": {
+            "title": "Owner Known",
+            "type": "boolean"
+          },
+          "status": {
+            "const": "draft_not_sent",
+            "title": "Status",
+            "type": "string"
+          },
+          "why_no_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why No Owner"
+          }
+        },
+        "required": [
+          "channel",
+          "owner_known",
+          "body",
+          "status"
+        ],
+        "title": "PlaybookTeams",
         "type": "object"
       },
       "PoTrail": {
@@ -7264,6 +8888,59 @@
         "title": "UnderstoodEntity",
         "type": "object"
       },
+      "UpcomingMeeting": {
+        "additionalProperties": false,
+        "properties": {
+          "brief_url": {
+            "title": "Brief Url",
+            "type": "string"
+          },
+          "object": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          }
+        },
+        "required": [
+          "object",
+          "brief_url"
+        ],
+        "title": "UpcomingMeeting",
+        "type": "object"
+      },
+      "UpcomingMeetings": {
+        "additionalProperties": false,
+        "properties": {
+          "meetings": {
+            "items": {
+              "$ref": "#/components/schemas/UpcomingMeeting"
+            },
+            "title": "Meetings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "meetings"
+        ],
+        "title": "UpcomingMeetings",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -7436,6 +9113,497 @@
         "title": "VerdictEvent",
         "type": "object"
       },
+      "WatchAlert": {
+        "additionalProperties": false,
+        "properties": {
+          "about": {
+            "$ref": "#/components/schemas/WatchRef",
+            "description": "The followed record, or a rule's subject or the record its count is grouped by."
+          },
+          "alert_id": {
+            "title": "Alert Id",
+            "type": "string"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "changes": {
+            "description": "Only values whose markings you hold.",
+            "items": {
+              "$ref": "#/components/schemas/WatchChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "counted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A windowed rule: the changes counted, every one on a record you may open.",
+            "title": "Counted"
+          },
+          "kind": {
+            "enum": [
+              "changed",
+              "linked",
+              "unlinked",
+              "linked_changed",
+              "removed",
+              "rule"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "link_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link Type"
+          },
+          "origin": {
+            "enum": [
+              "follow",
+              "rule"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
+          "read": {
+            "title": "Read",
+            "type": "boolean"
+          },
+          "record": {
+            "$ref": "#/components/schemas/WatchRef",
+            "description": "The record that changed."
+          },
+          "rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Id"
+          },
+          "rule_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Text"
+          },
+          "sentence": {
+            "title": "Sentence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alert_id",
+          "at",
+          "origin",
+          "kind",
+          "sentence",
+          "about",
+          "record",
+          "changes",
+          "read"
+        ],
+        "title": "WatchAlert",
+        "type": "object"
+      },
+      "WatchChange": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "property": {
+            "title": "Property",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property"
+        ],
+        "title": "WatchChange",
+        "type": "object"
+      },
+      "WatchFollow": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "following": {
+            "title": "Following",
+            "type": "boolean"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "readable": {
+            "description": "False when your grant no longer admits the record: it stays followed and tells you nothing until it does.",
+            "title": "Readable",
+            "type": "boolean"
+          },
+          "watching_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the incremental pass first read it; null: not yet.",
+            "title": "Watching Since"
+          }
+        },
+        "required": [
+          "object_id",
+          "following",
+          "readable"
+        ],
+        "title": "WatchFollow",
+        "type": "object"
+      },
+      "WatchFollowRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "object_id": {
+            "description": "The record's id, as its page states it.",
+            "maxLength": 400,
+            "minLength": 1,
+            "title": "Object Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "title": "WatchFollowRequest",
+        "type": "object"
+      },
+      "WatchReadRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "alert_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Alert Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "alert_ids"
+        ],
+        "title": "WatchReadRequest",
+        "type": "object"
+      },
+      "WatchReadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "marked": {
+            "title": "Marked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "marked"
+        ],
+        "title": "WatchReadResult",
+        "type": "object"
+      },
+      "WatchRef": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A label from the record's unmarked name or number; null when it has none.",
+            "title": "Label"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "title": "WatchRef",
+        "type": "object"
+      },
+      "WatchRule": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "spec": {
+            "additionalProperties": true,
+            "description": "The compiled rule (plx-alert-rule/v1).",
+            "title": "Spec",
+            "type": "object"
+          },
+          "state": {
+            "enum": [
+              "active",
+              "paused",
+              "refused"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "watching_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watching Since"
+          }
+        },
+        "required": [
+          "rule_id",
+          "text",
+          "spec",
+          "description",
+          "at",
+          "state"
+        ],
+        "title": "WatchRule",
+        "type": "object"
+      },
+      "WatchRuleCompileRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "The rule in plain words.",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "WatchRuleCompileRequest",
+        "type": "object"
+      },
+      "WatchRuleDeleted": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "deleted"
+        ],
+        "title": "WatchRuleDeleted",
+        "type": "object"
+      },
+      "WatchRuleDraft": {
+        "additionalProperties": false,
+        "description": "The compiled rule shown back for confirmation; nothing is kept.",
+        "properties": {
+          "compiled_by": {
+            "enum": [
+              "grammar",
+              "model"
+            ],
+            "title": "Compiled By",
+            "type": "string"
+          },
+          "description": {
+            "description": "What the rule will do, in plain words.",
+            "title": "Description",
+            "type": "string"
+          },
+          "digest": {
+            "description": "Send it back with the spec to confirm this very rule.",
+            "title": "Digest",
+            "type": "string"
+          },
+          "markings": {
+            "description": "The markings the figures it reads carry.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Markings",
+            "type": "array"
+          },
+          "spec": {
+            "additionalProperties": true,
+            "title": "Spec",
+            "type": "object"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "spec",
+          "description",
+          "markings",
+          "compiled_by",
+          "digest"
+        ],
+        "title": "WatchRuleDraft",
+        "type": "object"
+      },
+      "WatchRuleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Digest",
+            "type": "string"
+          },
+          "spec": {
+            "additionalProperties": true,
+            "title": "Spec",
+            "type": "object"
+          },
+          "text": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "spec",
+          "digest"
+        ],
+        "title": "WatchRuleRequest",
+        "type": "object"
+      },
       "WatcherItemState": {
         "additionalProperties": false,
         "properties": {
@@ -7519,6 +9687,50 @@
           "state"
         ],
         "title": "WatcherItemStateRequest",
+        "type": "object"
+      },
+      "Watchlist": {
+        "additionalProperties": false,
+        "description": "Your follows, your alert rules and your alerts, newest first, as your grant shows\nthem now.",
+        "properties": {
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/WatchAlert"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "follows": {
+            "items": {
+              "$ref": "#/components/schemas/WatchFollow"
+            },
+            "title": "Follows",
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/WatchRule"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "unread": {
+            "title": "Unread",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "configured",
+          "follows",
+          "rules",
+          "alerts",
+          "unread"
+        ],
+        "title": "Watchlist",
         "type": "object"
       }
     }
@@ -7772,6 +9984,71 @@
         ]
       }
     },
+    "/api/alerts/{alert_id}/playbook": {
+      "get": {
+        "description": "One alert's ready-to-use next steps, worded from its own cited sources as you\nread them: a drafted email to the supplier or customer, a Teams note to the record's\nowner, links to the record here and in its source system, the change to make in the\nsource system yourself, and snooze / assign / mark handled. Nothing is sent or\nwritten: its actions go through ``/api/actions/*`` (card id = its ``id``) and your\nconfirm.",
+        "operationId": "alert_playbook_api_alerts__alert_id__playbook_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "alert_id",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Alert Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertPlaybook"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Alert Playbook",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/ask": {
       "post": {
         "description": "Ask a question; the answer streams as server-sent events.",
@@ -7962,6 +10239,173 @@
         ]
       }
     },
+    "/api/brief/meetings": {
+      "get": {
+        "description": "Calendar events in the next 14 days you may read, soonest first, each with the\nlink to its meeting prep brief.",
+        "operationId": "upcoming_meetings_api_brief_meetings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpcomingMeetings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Upcoming Meetings",
+        "tags": [
+          "briefs"
+        ]
+      }
+    },
+    "/api/brief/weekly": {
+      "get": {
+        "description": "The weekly ops review: orders booked, shipped and invoiced, on-time shipping, late\npurchase orders, top alerts, cash position and margin (finance), quality holds, each\nweekly figure against the week before. Generated from the records you may read, no\nmodel call; every figure cites its sources and nothing hidden is counted.",
+        "operationId": "weekly_review_api_brief_weekly_get",
+        "parameters": [
+          {
+            "description": "Any day of the week (Monday to Sunday); default: last week",
+            "in": "query",
+            "name": "week",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Any day of the week (Monday to Sunday); default: last week",
+              "title": "Week"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brief"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Weekly Review",
+        "tags": [
+          "briefs"
+        ]
+      }
+    },
+    "/api/brief/{object_type}/{object_id}": {
+      "get": {
+        "description": "The meeting prep brief for a calendar event or meeting (its customers and\nsuppliers matched by the attendee links) or for a customer or supplier itself: open\norders and purchase orders, late items and alerts, recent mail and Teams subjects\nand dates, payments and balance (finance), open promises, quality issues and the\nlast meeting's notes when captured. Cited, bounded, no model call. Not found reads\nthe same as a record you cannot see.",
+        "operationId": "meeting_brief_api_brief__object_type___object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_type",
+            "required": true,
+            "schema": {
+              "title": "Object Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brief"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Meeting Brief",
+        "tags": [
+          "briefs"
+        ]
+      }
+    },
     "/api/briefing": {
       "get": {
         "description": "Your briefing: the events routed to you that you may see, ranked by impact; the\ntop ones each with why, a suggested next action and how we know, every other one\ncounted in its type's group; each check's state; and a preview of the daily\ndigest (never sent). ``view=since_visit``: only what is new since your last visit.",
@@ -8044,7 +10488,50 @@
                 "customer_order_at_risk",
                 "po_undated",
                 "customer_order_late",
-                "watcher_attention"
+                "watcher_attention",
+                "stock_out_risk",
+                "overdue_receivable",
+                "unit_cost_jump",
+                "customer_demand_drop",
+                "promise_date_slip",
+                "margin_erosion",
+                "supplier_reliability",
+                "shipped_not_invoiced",
+                "duplicate_customer_order",
+                "recurring_component_damage",
+                "customer_chasing_order",
+                "tell_before_they_ask",
+                "quality_hold_aging",
+                "reject_trend",
+                "customer_paying_slower",
+                "early_pay_discount_missed",
+                "duplicate_supplier_invoice",
+                "duplicate_supplier_payment",
+                "price_below_typical",
+                "price_below_cost",
+                "customer_price_drop",
+                "mc_task_overdue",
+                "mc_task_stuck",
+                "mc_approval_pending",
+                "planner_task_overdue",
+                "aged_receivable_worsening",
+                "aged_payable_worsening",
+                "production_late",
+                "assembly_damage_spike",
+                "teams_unanswered_ask",
+                "commitment_due",
+                "commitment_missed",
+                "needs_my_reply",
+                "slow_moving_stock",
+                "expiring_lot_stock",
+                "assembly_blocked_by_component",
+                "certificate_expiring",
+                "freight_cost_anomaly",
+                "stale_quote",
+                "duplicate_party_candidate",
+                "key_field_missing",
+                "twins_disagree",
+                "source_stale"
               ],
               "title": "Event Type",
               "type": "string"
@@ -8239,6 +10726,78 @@
         "summary": "Watcher Item State",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/explore/{object_type}/{object_id}": {
+      "get": {
+        "description": "The link explorer: a record's neighbours one hop out, grouped by kind of link,\ncapped per kind, as this reader may see them. Walk on by asking for a neighbour.\nNot found reads the same as a record the reader cannot see.",
+        "operationId": "explore_api_explore__object_type___object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_type",
+            "required": true,
+            "schema": {
+              "title": "Object Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Explore"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Explore",
+        "tags": [
+          "object"
         ]
       }
     },
@@ -8775,6 +11334,148 @@
         ]
       }
     },
+    "/api/object-impact/{mode}/{object_type}/{object_id}": {
+      "get": {
+        "description": "A record's Impact panel, read on demand: what a change (a delay of N days, out\nof stock, a customer lost, a price change) puts at risk downstream, or why an order\nis late or unprofitable. Not found reads the same as a record the reader cannot\nsee; nothing is written.",
+        "operationId": "object_impact_api_object_impact__mode___object_type___object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mode",
+            "required": true,
+            "schema": {
+              "enum": [
+                "what_if",
+                "why"
+              ],
+              "title": "Mode",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_type",
+            "required": true,
+            "schema": {
+              "title": "Object Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "title": "Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "change",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "delay",
+                    "out_of_stock",
+                    "customer_lost",
+                    "price_change"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Change"
+            }
+          },
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 365,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Days"
+            }
+          },
+          {
+            "in": "query",
+            "name": "percent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^-?\\d{1,4}(\\.\\d{1,2})?$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Percent"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImpactPanel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Object Impact",
+        "tags": [
+          "object"
+        ]
+      }
+    },
     "/api/object-section/{section}/{object_type}/{object_id}": {
       "get": {
         "description": "One slow section of a record's page (late check, people, landed cost, how we\nknow), read after its quick first read and merged into it. Not found reads the\nsame as a record the reader cannot see.",
@@ -8790,7 +11491,8 @@
                 "people",
                 "landed_cost",
                 "trail",
-                "margin"
+                "margin",
+                "knows"
               ],
               "title": "Section",
               "type": "string"
@@ -9120,6 +11822,386 @@
         "summary": "Suggestions",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/watch": {
+      "get": {
+        "description": "Your follows, your alert rules and your alerts (newest first), each alert shown\nonly as far as your grant admits now. Kept in the Workbench, never in a source.",
+        "operationId": "watchlist_api_watch_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Watchlist"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Watchlist",
+        "tags": [
+          "watch"
+        ]
+      }
+    },
+    "/api/watch/alerts/read": {
+      "post": {
+        "description": "Mark some of your alerts read.",
+        "operationId": "watch_read_api_watch_alerts_read_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchReadResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Watch Read",
+        "tags": [
+          "watch"
+        ]
+      }
+    },
+    "/api/watch/follow": {
+      "post": {
+        "description": "Follow a record you can open: you are told when it or a record linked to it\nchanges, and when a new record (a mail, a shipment, an invoice) is linked to it.",
+        "operationId": "watch_follow_api_watch_follow_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchFollowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchFollow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Watch Follow",
+        "tags": [
+          "watch"
+        ]
+      }
+    },
+    "/api/watch/follow/{object_id}": {
+      "delete": {
+        "description": "Stop following a record.",
+        "operationId": "watch_unfollow_api_watch_follow__object_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "maxLength": 400,
+              "minLength": 1,
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchFollow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Watch Unfollow",
+        "tags": [
+          "watch"
+        ]
+      }
+    },
+    "/api/watch/rules": {
+      "post": {
+        "description": "Keep the rule you were shown (its spec and digest), validated again.",
+        "operationId": "watch_rule_create_api_watch_rules_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchRule"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Watch Rule Create",
+        "tags": [
+          "watch"
+        ]
+      }
+    },
+    "/api/watch/rules/compile": {
+      "post": {
+        "description": "An alert rule in plain words, compiled into the restricted rule spec and shown\nback in plain words for you to confirm; nothing is kept. A rule the grammar cannot\nhold, or one over figures your markings do not cover, is refused with the reason.",
+        "operationId": "watch_rule_compile_api_watch_rules_compile_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchRuleCompileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchRuleDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Watch Rule Compile",
+        "tags": [
+          "watch"
+        ]
+      }
+    },
+    "/api/watch/rules/{rule_id}": {
+      "delete": {
+        "description": "Delete one of your rules.",
+        "operationId": "watch_rule_delete_api_watch_rules__rule_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "maxLength": 40,
+              "minLength": 1,
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchRuleDeleted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Watch Rule Delete",
+        "tags": [
+          "watch"
         ]
       }
     }

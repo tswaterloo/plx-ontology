@@ -154,3 +154,7 @@ details.ow-tech{border:1px solid var(--p-grid);background:var(--p-paper);border-
 @media(max-width:600px){.ow-answer-slot{margin-left:0;padding-left:8px}.ow-correct-field{max-width:none}.ow-jump{flex-wrap:nowrap}}
 .ow-follow-up,.ow-workspace{grid-template-columns:minmax(0,1fr)}.ow-follow-up>*{min-width:0;max-width:100%}.ow-follow-up input,.ow-follow-up select,.ow-follow-up textarea{width:100%;box-sizing:border-box}
 .row-main{display:block}.row-title,.row-sub{display:block}.row-title{overflow-wrap:anywhere}.ow-tag{overflow-wrap:anywhere}
+/* Keyboard focus: every control shows a ring, the console's own text fields keep theirs. */
+button:focus-visible,a:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--p-accent);outline-offset:2px}
+.nav-item,#close-detail,#back-detail{min-height:32px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}

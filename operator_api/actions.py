@@ -104,6 +104,13 @@ class ActionsMixin:
         return [{"id": m.get("userId"), "email": m.get("email")} for m in items]
 
     def _card(self, reader: Reader, card_id: str) -> dict[str, Any]:
+        from operating import alert_playbooks as ap
+        if card_id.startswith(ap.CARD_PREFIX):
+            # an alert's playbook, rebuilt now as this reader's own (never from the request)
+            built = self.alert_playbook_dict(reader, card_id[len(ap.CARD_PREFIX):])
+            if built is None:
+                raise UserFacing("not_found", "That alert is no longer on your list.", 404)
+            return ap.card(built)
         found = self.suggestions(reader)
         card = ca.card_dict(found.items, card_id) if found.status == "read" else None
         if card is None:
@@ -136,6 +143,17 @@ class ActionsMixin:
             raise UserFacing("action_refused", " ".join(refused.problems), refused.status)
         return m.ActionResult(**result)
 
+    def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
+        """The playbook of one alert this reader may see (None: not theirs to see)."""
+        raise NotImplementedError
+
+    def alert_playbook(self, reader: Reader, alert_id: str) -> m.AlertPlaybook:
+        from operating import alert_playbooks as ap
+        built = self.alert_playbook_dict(reader, alert_id)
+        if built is None:
+            raise UserFacing("not_found", "That alert is no longer on your list.", 404)
+        return playbook_model(built, ca.offers(ap.card(built)))
+
     def action_states(self, reader: Reader) -> m.ActionStates:
         states = self._desk().states(self._mailbox(reader), reader.display_name, self._today())
         return m.ActionStates(cards={k: m.ActionResult(**v) for k, v in states.items()})
@@ -162,3 +180,12 @@ def thread_parties(raw: Any) -> Optional[dict[str, Any]]:
     return {"from": address(raw.get("from")),
             "reply_to": None if parties is None or None in parties else parties,
             "subject": raw["subject"] if isinstance(raw.get("subject"), str) else None}
+
+
+def playbook_model(built: Mapping[str, Any], offers: Any) -> m.AlertPlaybook:
+    """A playbook (``operating.alert_playbooks.build``) as the API states it."""
+    body = {k: v for k, v in built.items() if k != "schema"}
+    body["facts"] = [{"fact": f["fact"], "value": f["value"], "citation": f["citation"]}
+                     for f in built.get("facts") or ()]
+    return m.AlertPlaybook(**body, offers=offers)
+

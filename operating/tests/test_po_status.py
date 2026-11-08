@@ -94,8 +94,17 @@ class VocabularyTest(unittest.TestCase):
         self.assertEqual([ps.fm_item_received(w, "10") for w in (
             "Complete", "OverPO", "Cancel", " b.order ", "Pending", "Generated")],
             ["10", "10", "10", ps.PARTIAL_RECEIPT, None, None])
-        for word in ("Revised", "InProcess", None, "", ps.UNREAD):
+        for word in ("Revised", "InProcess", ps.UNREAD):
             self.assertIs(ps.fm_item_received(word, "10"), ps.UNREAD, word)
+        # no state stored is not a withheld one: unstated, which only the FM header
+        # decides (fm_by_header); alone it decides nothing (the quantities stay unknown)
+        for word in (None, ""):
+            self.assertIs(ps.fm_item_received(word, "10"), ps.UNSTATED, word)
+        self.assertIs(ps.fm_item_received(None, "10", True), ps.UNSTATED_RECEIPT)
+        self.assertIsNone(ps.fm_rollup([("10", ps.UNSTATED, None)]))
+        self.assertEqual(ps.record({"status": ["Pending"]}, [("10", "0", "ea")],
+                                   [("10", ps.UNSTATED, None)]),
+                         ps.PoStatus(ps.UNKNOWN, reason="quantities_unknown"))
         self.assertIs(ps.fm_item_received("Complete", ps.UNREAD), ps.UNREAD)
         gold = [("10", "0", "ea")]
         self.assertEqual(ps.record({"status": ["Pending"]}, gold, [("10", "10", None)]),
@@ -457,6 +466,91 @@ class _FakeSource:
         return self._promised
 
 
+class _TwinSource:
+    """A duck-typed source of one order's settled records: ``records`` id -> (status
+    values, lines); ``fm`` id -> FM items as the source reads them."""
+
+    def __init__(self, records, fm=None):
+        self.records, self.fm = records, fm or {}
+
+    def twins(self, oid):
+        return sorted(self.records), False, []
+
+    def values(self, oid):
+        return self.records[oid][0], [], False
+
+    def lines(self, oid):
+        return self.records[oid][1], [], False, []
+
+    def fm_lines(self, oid):
+        return self.fm.get(oid, UNREAD_ITEMS), [], False, []
+
+
+UNREAD_ITEMS = ps.UNREAD
+PORTAL, FM = "PurchaseOrder:portal.app_purchase_order:1", \
+    "PurchaseOrder:portal.fm_generated_purchase_order:77"
+BC = "PurchaseOrder:bc.purchase_orders:9"
+
+
+class SystemOfRecordTest(unittest.TestCase):
+    """An order is open while a line has an outstanding quantity unless its system of
+    record says cancelled or closed: FileMaker's header for an FM-era order whose items
+    carry no stored state, BC's own lines for a BC order."""
+
+    def status(self, records, fm=None):
+        return ps.read(_TwinSource(records, fm), sorted(records)[0], dates=False).status
+
+    def mirrored(self, fm_head, portal_got="0", items=(("10", ps.UNSTATED, None),)):
+        return self.status({PORTAL: ({"status": ["Pending"]}, [("10", portal_got, "ea")]),
+                            FM: ({"fm_status": fm_head}, None)}, {FM: list(items)})
+
+    def test_an_fm_order_without_item_states_follows_its_header(self):
+        self.assertEqual(self.mirrored(["Pending"]), ps.PoStatus(ps.OPEN, ps.SUBMITTED))
+        self.assertEqual(self.mirrored(["Revised"]), ps.PoStatus(ps.OPEN, ps.SUBMITTED))
+        self.assertEqual(self.mirrored(["B.Order"]), ps.PoStatus(ps.OPEN, ps.PARTIAL))
+        self.assertEqual(self.mirrored(["Pending"], items=[("10", ps.UNSTATED_RECEIPT,
+                                                            None)]),
+                         ps.PoStatus(ps.OPEN, ps.PARTIAL))   # goods recorded against it
+        self.assertEqual(self.mirrored(["Complete"]).cls, ps.CLOSED)
+        self.assertEqual(self.mirrored(["Cancel"]).cls, ps.CLOSED)
+        # a receipt the Portal lines record is no seeded 0: a stale header never reopens it
+        self.assertEqual(self.mirrored(["B.Order"], portal_got="10"),
+                         ps.PoStatus(ps.CLOSED, ps.RECEIVED))
+        self.assertEqual(self.mirrored(["Pending"], portal_got="4"),
+                         ps.PoStatus(ps.OPEN, ps.PARTIAL))
+        # fail closed: an unknown or disputed header word, an item state not readable
+        for head in (["InProcess"], ["Pending", "Complete"]):
+            self.assertEqual(self.mirrored(head).cls, ps.UNKNOWN, head)
+        self.assertEqual(self.mirrored(["Pending"], items=[("10", ps.UNSTATED, None),
+                                                           ("5", ps.UNREAD, None)]).cls,
+                         ps.UNKNOWN)
+        # an item with its own state decides over the header (FileMaker leaves it stale)
+        self.assertEqual(self.mirrored(["B.Order"], items=[("10", "10", None)]),
+                         ps.PoStatus(ps.CLOSED, ps.RECEIVED))
+
+    def test_a_bc_order_is_open_while_its_own_lines_are_outstanding(self):
+        def bc(status, flag, lines):
+            return self.status({BC: ({"bc_status": [status], "bc_fully_received": [flag]},
+                                     lines)})
+        self.assertEqual(bc("Open", "true", [("5", "5", "ea"), ("3", "1", "ea")]).cls,
+                         ps.OPEN)   # the flag says received; a line is outstanding
+        self.assertEqual(bc("Open", "false", [("5", "5", "ea")]),
+                         ps.PoStatus(ps.CLOSED, ps.RECEIVED))
+        self.assertEqual(bc("Released", "false", [("5", None, "ea")]).cls, ps.OPEN)
+        self.assertEqual(bc("Draft", "false", [("5", "0", "ea")]).cls, ps.DRAFT)
+        # no readable line: the flag states it; neither: unknown, never guessed
+        self.assertEqual(bc("Open", "false", None).cls, ps.OPEN)
+        self.assertEqual(bc("Open", "true", [(ps.UNREAD,) * 3]).cls, ps.CLOSED)
+        self.assertEqual(bc("Open", "maybe", None).reason, "status_missing")
+
+    def test_cardinality_every_order_read_once(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                got = [self.mirrored(["Pending" if i % 2 else "B.Order"]).cls
+                       for i in range(n)]
+                self.assertEqual(got.count(ps.OPEN), n)
+
+
 class ToolSourceFirmTwinTest(unittest.TestCase):
     """The plx tools as one principal calls them read a firm twin's open line date too (the
     packaging eval's reader): through ``plx.around`` at the ``corroborated`` floor, never
@@ -647,14 +741,15 @@ class VocabularySummaryTest(unittest.TestCase):
         # open-po-lines/route.ts:117-120, po-queries.ts:529-533,572-574 @5afa0a20):
         # FileMaker's own receiving state of each item says what was received. The QC
         # log's sumqty is never read: on the mirror it is a running total across the log.
-        def run(status="Complete", items=None, complete=True, fields=None, receipts=()):
+        def run(status="Complete", items=None, complete=True, fields=None, receipts=(),
+                fm_head="Pending"):
             heads = [{"id": "po-m", "status": "Pending",
                       "custom_fields": fields if fields is not None
                       else json.dumps({"fmGeneratedPoId": 77})}]
             lines = [{"purchase_order_id": "po-m", "quantity": "10", "quantity_received": "0",
                       "uom": "ea"}]
             scans = {"portal_po": _scan(heads), "portal_line": _scan(lines),
-                     "fm_po": _scan([{"id": 77, "status": "Pending"}]),
+                     "fm_po": _scan([{"id": 77, "status": fm_head}]),
                      "fm_item": _scan(items if items is not None
                                       else [{"id": 701, "idpogen": 77, "qty": "10",
                                              "status": status}], complete),
@@ -677,10 +772,21 @@ class VocabularySummaryTest(unittest.TestCase):
         # however large a sumqty against it, a Complete one closed however small
         self.assertEqual(run("Pending", receipts=["35847482.0", "35848982.0"])[0]["open"], 1)
         self.assertEqual(run("Complete", receipts=["1"])[0]["closed"], 1)
+        # no item state stored (a store or mirror without FileMaker's item states):
+        # FileMaker's own header, the system of record of its order, decides the item
+        self.assertEqual(run(None)[0]["open"], 1)                       # Pending: none yet
+        self.assertEqual(run(None, fm_head="Revised")[0]["open"], 1)    # revised, issued
+        self.assertEqual(run(None, fm_head="B.Order")[0]["open"], 1)    # partly received
+        # a closing FM header states no received quantity: the Portal word's census
+        # (this check classifies the Portal header) cannot decide it, so unknown
+        self.assertEqual(run(None, fm_head="Complete")[0]["unknown"], 1)
         # fail closed: unknown, never open or closed, on any part not proven
         for case, args in {
                 "an item word FileMaker gives no receipt state by": ("Revised",),
-                "no item status": (None,),
+                "no item status, an FM header word that settles nothing": (
+                    None, None, True, None, (), "InProcess"),
+                "no item status, no FM header word": (None, None, True, None, (),
+                                                        None),
                 "FM ordered differs": ("Complete", [{"id": 701, "idpogen": 77, "qty": "9",
                                                      "status": "Complete"}]),
                 "FM qty column missing": ("Complete", [{"id": 701, "idpogen": 77,

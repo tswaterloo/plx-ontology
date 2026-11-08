@@ -203,9 +203,16 @@ class PortfolioOverStdioTest(unittest.TestCase):
         self.assertIn(f"Inbox built at {found['home']['run_at']}", text)
         self.assertEqual((found["home"]["stale"], found["gaps"]), (False, []))
         self.assertTrue(found["home"]["gaps"])
+        # every gap is cited; the readable text lists as many as fit its byte budget, in
+        # rank order, and counts the rest (``mcp_portfolio._fit``), never drops one silently
+        shown = [g for g in found["home"]["gaps"] if g["citations"][0] in text]
+        self.assertEqual(shown, found["home"]["gaps"][:len(shown)])
+        self.assertTrue(shown)
         for gap in found["home"]["gaps"]:
             self.assertTrue(gap["citations"], gap)
-            self.assertIn(gap["citations"][0], text)
+        rest = len(found["home"]["gaps"]) - len(shown)
+        if rest:
+            self.assertIn(f"... {rest} more in the structured result.", text)
 
         # -- unscoped: late POs from the inbox's late and unconfirmed orders; landed cost
         # names the scope it needs (never complete, never a scan)

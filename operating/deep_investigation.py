@@ -279,7 +279,14 @@ ANSWER_DUTIES = (
     "quantity on hand and \"available\" the quantity free to use (on hand less what is "
     "reserved or allocated), each read from the item's or lot's own quantity property "
     "(plx.schema lists it), as the question words it; a movement, adjustment or "
-    "transaction entry is never a stock level, and its largest value is no balance."
+    "transaction entry is never a stock level, and its largest value is no balance. "
+    "(E) Done is read on the record too: a record whose own status or completion field "
+    "says it is complete, closed, shipped, received or invoiced is not open, even when "
+    "no linked shipment, receipt or invoice was found; cite that field and say the "
+    "linked record was not found, never list it as open or not shipped on the missing "
+    "link alone. (F) Names: a question asking which or what things (products, items, "
+    "customers, suppliers) or who names each by its name or description as its record "
+    "holds it, the code beside it; codes alone are no names."
 )
 
 

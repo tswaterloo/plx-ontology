@@ -25,6 +25,7 @@ const KIND: Record<string, string> = {
   mark_done: "Marked done",
   snooze: "Snoozed",
   dismiss: "Dismissed",
+  assign: "Assigned",
 };
 
 /** Tasks drawn as the app draws its places: a white glyph on a grey tile. */
@@ -49,7 +50,7 @@ function dayLabel(iso: string, now = new Date()): string {
   if (k === dayKey(new Date(now.getTime() - 86_400_000).toISOString())) return "Yesterday";
   const d = new Date(iso);
   const sameYear = d.toLocaleDateString("en-CA", { year: "numeric", timeZone: TZ }) === now.toLocaleDateString("en-CA", { year: "numeric", timeZone: TZ });
-  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }), timeZone: TZ });
+  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }), timeZone: TZ }).replace("Sept", "Sep");
 }
 
 const timeOf = (iso: string) => new Date(iso).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: TZ });

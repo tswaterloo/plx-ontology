@@ -1,0 +1,1187 @@
+{
+ "generated_from": "ontology/schema/domains",
+ "types": {
+  "AgedPayable": {
+   "role": "finance",
+   "family": "finance",
+   "props": {
+    "party_number": {
+     "role": "party",
+     "marked": [
+      "finance"
+     ]
+    },
+    "currency": {
+     "role": "other",
+     "marked": [
+      "finance"
+     ]
+    },
+    "balance_due": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "current_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "period1_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "period2_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "period3_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "aged_as_of_date": {
+     "role": "aging",
+     "marked": [
+      "finance"
+     ]
+    },
+    "period_length": {
+     "role": "aging",
+     "marked": [
+      "finance"
+     ]
+    }
+   }
+  },
+  "AgedReceivable": {
+   "role": "finance",
+   "family": "finance",
+   "props": {
+    "party_number": {
+     "role": "party",
+     "marked": [
+      "finance"
+     ]
+    },
+    "currency": {
+     "role": "other",
+     "marked": [
+      "finance"
+     ]
+    },
+    "balance_due": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "current_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "period1_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "period2_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "period3_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "aged_as_of_date": {
+     "role": "aging",
+     "marked": [
+      "finance"
+     ]
+    },
+    "period_length": {
+     "role": "aging",
+     "marked": [
+      "finance"
+     ]
+    }
+   }
+  },
+  "AssemblyOrder": {
+   "role": "document"
+  },
+  "AssemblyOrderAllocation": {
+   "role": "document"
+  },
+  "AssemblyOrderComponent": {
+   "role": "document"
+  },
+  "AssemblyOrderDamage": {
+   "role": "document"
+  },
+  "AssemblyOrderPacket": {
+   "role": "record"
+  },
+  "AssemblyOrderStatusEntry": {
+   "role": "document"
+  },
+  "Attachment": {
+   "role": "document"
+  },
+  "Batch": {
+   "role": "document"
+  },
+  "BatchAllocation": {
+   "role": "document"
+  },
+  "BatchSchedule": {
+   "role": "document"
+  },
+  "BcCompany": {
+   "role": "finance"
+  },
+  "BcEntityMapping": {
+   "role": "record"
+  },
+  "CalendarEvent": {
+   "role": "event",
+   "family": "event",
+   "props": {
+    "mailbox": {
+     "role": "other"
+    },
+    "id": {
+     "role": "other"
+    },
+    "ical_uid": {
+     "role": "other"
+    },
+    "subject": {
+     "role": "other"
+    },
+    "body_preview": {
+     "role": "text"
+    },
+    "location": {
+     "role": "text"
+    },
+    "content": {
+     "role": "text"
+    },
+    "organizer": {
+     "role": "person"
+    },
+    "attendees": {
+     "role": "person"
+    },
+    "start": {
+     "role": "when"
+    },
+    "end": {
+     "role": "when"
+    },
+    "is_all_day": {
+     "role": "other"
+    },
+    "is_cancelled": {
+     "role": "status"
+    },
+    "is_organizer": {
+     "role": "person"
+    },
+    "is_online_meeting": {
+     "role": "other"
+    },
+    "online_meeting": {
+     "role": "other"
+    },
+    "series_master_id": {
+     "role": "other"
+    },
+    "type": {
+     "role": "status"
+    },
+    "sensitivity": {
+     "role": "other"
+    },
+    "show_as": {
+     "role": "other"
+    },
+    "categories": {
+     "role": "other"
+    },
+    "created_at": {
+     "role": "when"
+    },
+    "last_modified": {
+     "role": "when"
+    }
+   }
+  },
+  "CertificateOfAnalysis": {
+   "role": "record"
+  },
+  "Contact": {
+   "role": "person"
+  },
+  "ContactRelation": {
+   "role": "person"
+  },
+  "ContainerMember": {
+   "role": "document"
+  },
+  "Customer": {
+   "role": "party"
+  },
+  "CustomerLocation": {
+   "role": "party"
+  },
+  "CustomerPoDocument": {
+   "role": "document"
+  },
+  "CustomerPurchaseOrder": {
+   "role": "document"
+  },
+  "DecisionRecord": {
+   "role": "record"
+  },
+  "DeliveryReceipt": {
+   "role": "document"
+  },
+  "Email": {
+   "role": "document"
+  },
+  "FgItem": {
+   "role": "record"
+  },
+  "ForwarderQuote": {
+   "role": "document"
+  },
+  "FreightBill": {
+   "role": "document"
+  },
+  "GeneralLedgerEntry": {
+   "role": "finance",
+   "family": "finance",
+   "props": {
+    "entry_number": {
+     "role": "other",
+     "marked": [
+      "finance"
+     ]
+    },
+    "document_number": {
+     "role": "account",
+     "marked": [
+      "finance"
+     ]
+    },
+    "document_type": {
+     "role": "account",
+     "marked": [
+      "finance"
+     ]
+    },
+    "account_number": {
+     "role": "account",
+     "marked": [
+      "finance"
+     ]
+    },
+    "description": {
+     "role": "text",
+     "marked": [
+      "finance"
+     ]
+    },
+    "debit_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "credit_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    }
+   }
+  },
+  "GlAccount": {
+   "role": "finance",
+   "family": "finance",
+   "props": {
+    "number": {
+     "role": "other",
+     "marked": [
+      "finance"
+     ]
+    },
+    "display_name": {
+     "role": "other",
+     "marked": [
+      "finance"
+     ]
+    },
+    "category": {
+     "role": "account",
+     "marked": [
+      "finance"
+     ]
+    },
+    "sub_category": {
+     "role": "account",
+     "marked": [
+      "finance"
+     ]
+    },
+    "blocked": {
+     "role": "status",
+     "marked": [
+      "finance"
+     ]
+    }
+   }
+  },
+  "InventoryLot": {
+   "role": "record"
+  },
+  "ItemLedgerEntry": {
+   "role": "finance"
+  },
+  "ItemLedgerLot": {
+   "role": "finance"
+  },
+  "ItemUnitOfMeasure": {
+   "role": "record"
+  },
+  "KnowledgeEntry": {
+   "role": "task"
+  },
+  "KnowledgeItem": {
+   "role": "record"
+  },
+  "Lot": {
+   "role": "record"
+  },
+  "MCApproval": {
+   "role": "task",
+   "family": "task",
+   "props": {
+    "gate_id": {
+     "role": "other"
+    },
+    "task_id": {
+     "role": "other"
+    },
+    "status": {
+     "role": "status"
+    },
+    "reason": {
+     "role": "text"
+    },
+    "requested_by": {
+     "role": "person",
+     "marked": [
+      "pii"
+     ]
+    },
+    "requested_runtime": {
+     "role": "other"
+    },
+    "requested_at": {
+     "role": "when"
+    },
+    "decided_by": {
+     "role": "person",
+     "marked": [
+      "pii"
+     ]
+    },
+    "decided_at": {
+     "role": "when"
+    },
+    "note": {
+     "role": "text"
+    },
+    "workbench_intent_id": {
+     "role": "other"
+    }
+   }
+  },
+  "MCBucket": {
+   "role": "task",
+   "family": "task",
+   "props": {
+    "bucket_id": {
+     "role": "other"
+    },
+    "name": {
+     "role": "other"
+    },
+    "project": {
+     "role": "other"
+    },
+    "health": {
+     "role": "status"
+    }
+   }
+  },
+  "MCProject": {
+   "role": "task",
+   "family": "task",
+   "props": {
+    "project_id": {
+     "role": "other"
+    },
+    "name": {
+     "role": "other"
+    },
+    "owner": {
+     "role": "person"
+    },
+    "health": {
+     "role": "status"
+    },
+    "status": {
+     "role": "status"
+    },
+    "target": {
+     "role": "other"
+    },
+    "description": {
+     "role": "text"
+    },
+    "retired_in_mc": {
+     "role": "status"
+    }
+   }
+  },
+  "MCTask": {
+   "role": "task",
+   "family": "task",
+   "props": {
+    "task_id": {
+     "role": "other"
+    },
+    "title": {
+     "role": "other"
+    },
+    "description": {
+     "role": "text"
+    },
+    "stage": {
+     "role": "status"
+    },
+    "bucket": {
+     "role": "status"
+    },
+    "priority": {
+     "role": "status"
+    },
+    "assignee": {
+     "role": "person",
+     "marked": [
+      "pii"
+     ]
+    },
+    "reporter": {
+     "role": "person",
+     "marked": [
+      "pii"
+     ]
+    },
+    "accountable_owner": {
+     "role": "person",
+     "marked": [
+      "pii"
+     ]
+    },
+    "created_at": {
+     "role": "when"
+    },
+    "updated_at": {
+     "role": "when"
+    }
+   }
+  },
+  "MCTaskEvent": {
+   "role": "task",
+   "family": "task",
+   "props": {
+    "task_id": {
+     "role": "other"
+    },
+    "kind": {
+     "role": "status"
+    },
+    "at": {
+     "role": "when"
+    },
+    "actor": {
+     "role": "person",
+     "marked": [
+      "pii"
+     ]
+    }
+   }
+  },
+  "Manufacturer": {
+   "role": "party"
+  },
+  "ManufacturingJob": {
+   "role": "document"
+  },
+  "Meeting": {
+   "role": "event",
+   "family": "event",
+   "props": {
+    "mailbox": {
+     "role": "other"
+    },
+    "ical_uid": {
+     "role": "other"
+    },
+    "subject": {
+     "role": "other"
+    },
+    "organizer": {
+     "role": "person"
+    },
+    "attendees": {
+     "role": "person"
+    },
+    "start": {
+     "role": "when"
+    },
+    "end": {
+     "role": "when"
+    },
+    "is_cancelled": {
+     "role": "status"
+    },
+    "is_online_meeting": {
+     "role": "other"
+    },
+    "online_meeting": {
+     "role": "other"
+    },
+    "series_master_id": {
+     "role": "other"
+    },
+    "type": {
+     "role": "status"
+    }
+   }
+  },
+  "MeetingTranscript": {
+   "role": "event",
+   "family": "event",
+   "props": {
+    "id": {
+     "role": "other"
+    },
+    "meeting_id": {
+     "role": "other"
+    },
+    "organizer": {
+     "role": "person"
+    },
+    "join_url": {
+     "role": "other"
+    },
+    "ical_uid": {
+     "role": "other"
+    },
+    "subject": {
+     "role": "other"
+    },
+    "meeting_start": {
+     "role": "when"
+    },
+    "meeting_end": {
+     "role": "when"
+    },
+    "created_at": {
+     "role": "when"
+    },
+    "end_at": {
+     "role": "when"
+    },
+    "speakers": {
+     "role": "person"
+    },
+    "cue_count": {
+     "role": "other"
+    },
+    "content_sha256": {
+     "role": "other"
+    }
+   }
+  },
+  "PackingSlip": {
+   "role": "document"
+  },
+  "Payment": {
+   "role": "finance",
+   "family": "finance",
+   "props": {
+    "document_number": {
+     "role": "account",
+     "marked": [
+      "finance"
+     ]
+    },
+    "external_document_number": {
+     "role": "account",
+     "marked": [
+      "finance"
+     ]
+    },
+    "customer_number": {
+     "role": "party",
+     "marked": [
+      "finance"
+     ]
+    },
+    "vendor_number": {
+     "role": "party",
+     "marked": [
+      "finance"
+     ]
+    },
+    "posting_date": {
+     "role": "when",
+     "marked": [
+      "finance"
+     ]
+    },
+    "amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "applies_to_invoice_number": {
+     "role": "other",
+     "marked": [
+      "finance"
+     ]
+    },
+    "applies_to_invoice_id": {
+     "role": "other",
+     "marked": [
+      "finance"
+     ]
+    },
+    "journal": {
+     "role": "account",
+     "marked": [
+      "finance"
+     ]
+    },
+    "description": {
+     "role": "text",
+     "marked": [
+      "finance"
+     ]
+    }
+   }
+  },
+  "Person": {
+   "role": "person"
+  },
+  "PlannerTask": {
+   "role": "event",
+   "family": "task",
+   "props": {
+    "id": {
+     "role": "other"
+    },
+    "plan_id": {
+     "role": "other"
+    },
+    "plan_title": {
+     "role": "other"
+    },
+    "group_id": {
+     "role": "other"
+    },
+    "bucket_id": {
+     "role": "other"
+    },
+    "bucket_name": {
+     "role": "status"
+    },
+    "title": {
+     "role": "other"
+    },
+    "percent_complete": {
+     "role": "status"
+    },
+    "priority": {
+     "role": "status"
+    },
+    "start_at": {
+     "role": "when"
+    },
+    "due_at": {
+     "role": "when"
+    },
+    "completed_at": {
+     "role": "when"
+    },
+    "created_at": {
+     "role": "when"
+    },
+    "created_by": {
+     "role": "person"
+    },
+    "completed_by": {
+     "role": "person"
+    },
+    "assignees": {
+     "role": "person"
+    },
+    "description": {
+     "role": "text"
+    },
+    "checklist": {
+     "role": "text"
+    },
+    "references": {
+     "role": "other"
+    }
+   }
+  },
+  "PortalUser": {
+   "role": "person"
+  },
+  "Product": {
+   "role": "party"
+  },
+  "ProductComponent": {
+   "role": "document"
+  },
+  "ProductionTask": {
+   "role": "document"
+  },
+  "PurchaseCreditMemo": {
+   "role": "document",
+   "family": "finance",
+   "props": {
+    "bc_number": {
+     "role": "other"
+    },
+    "vendor_number": {
+     "role": "party"
+    },
+    "applies_to_invoice_number": {
+     "role": "other"
+    },
+    "applies_to_invoice_id": {
+     "role": "other"
+    },
+    "status": {
+     "role": "status"
+    },
+    "currency": {
+     "role": "other"
+    },
+    "credit_memo_date": {
+     "role": "when"
+    },
+    "posting_date": {
+     "role": "when"
+    },
+    "due_date": {
+     "role": "aging"
+    },
+    "subtotal": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "total_tax": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "total_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    }
+   }
+  },
+  "PurchaseCreditMemoLine": {
+   "role": "document"
+  },
+  "PurchaseInvoice": {
+   "role": "document",
+   "family": "finance",
+   "props": {
+    "bc_number": {
+     "role": "other"
+    },
+    "vendor_invoice_number": {
+     "role": "other"
+    },
+    "order_number": {
+     "role": "other"
+    },
+    "vendor_number": {
+     "role": "party"
+    },
+    "invoice_date": {
+     "role": "when"
+    },
+    "posting_date": {
+     "role": "when"
+    },
+    "due_date": {
+     "role": "aging"
+    },
+    "status": {
+     "role": "status"
+    },
+    "currency": {
+     "role": "other"
+    },
+    "subtotal": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "total_tax": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "total_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "remaining_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "bc_last_modified_at": {
+     "role": "when"
+    }
+   }
+  },
+  "PurchaseInvoiceLine": {
+   "role": "document"
+  },
+  "PurchaseOrder": {
+   "role": "document"
+  },
+  "PurchaseOrderLine": {
+   "role": "document"
+  },
+  "PurchaseRequisition": {
+   "role": "document"
+  },
+  "PurchaseRequisitionLine": {
+   "role": "document"
+  },
+  "Quote": {
+   "role": "document"
+  },
+  "QuoteLine": {
+   "role": "document"
+  },
+  "Receipt": {
+   "role": "document"
+  },
+  "ReceiptLine": {
+   "role": "document"
+  },
+  "SalesCreditMemo": {
+   "role": "document",
+   "family": "finance",
+   "props": {
+    "bc_number": {
+     "role": "other"
+    },
+    "external_document_number": {
+     "role": "account"
+    },
+    "customer_number": {
+     "role": "party"
+    },
+    "applies_to_invoice_number": {
+     "role": "other"
+    },
+    "applies_to_invoice_id": {
+     "role": "other"
+    },
+    "status": {
+     "role": "status"
+    },
+    "credit_memo_date": {
+     "role": "when"
+    },
+    "posting_date": {
+     "role": "when"
+    },
+    "due_date": {
+     "role": "aging"
+    },
+    "subtotal": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "total_tax": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "total_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    }
+   }
+  },
+  "SalesCreditMemoLine": {
+   "role": "document"
+  },
+  "SalesInvoice": {
+   "role": "document",
+   "family": "finance",
+   "props": {
+    "bc_number": {
+     "role": "other"
+    },
+    "invoice_number": {
+     "role": "other"
+    },
+    "external_document_number": {
+     "role": "account"
+    },
+    "order_number": {
+     "role": "other"
+    },
+    "customer_number": {
+     "role": "party"
+    },
+    "customer_po": {
+     "role": "other"
+    },
+    "status": {
+     "role": "status"
+    },
+    "invoice_date": {
+     "role": "when"
+    },
+    "posting_date": {
+     "role": "when"
+    },
+    "due_date": {
+     "role": "aging"
+    },
+    "subtotal": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "total_tax": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "total_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "remaining_amount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    },
+    "bc_last_modified_at": {
+     "role": "when"
+    },
+    "currency": {
+     "role": "other"
+    },
+    "home_currency": {
+     "role": "other"
+    },
+    "exchange_rate": {
+     "role": "other",
+     "marked": [
+      "finance"
+     ]
+    },
+    "line_count": {
+     "role": "other"
+    },
+    "invoice_discount": {
+     "role": "money",
+     "marked": [
+      "finance"
+     ]
+    }
+   }
+  },
+  "SalesInvoiceLine": {
+   "role": "document"
+  },
+  "SalesOrder": {
+   "role": "document"
+  },
+  "SalesOrderLine": {
+   "role": "document"
+  },
+  "SharePointFile": {
+   "role": "document"
+  },
+  "ShipRelease": {
+   "role": "document"
+  },
+  "Shipment": {
+   "role": "document"
+  },
+  "ShipmentLine": {
+   "role": "document"
+  },
+  "Supplier": {
+   "role": "party"
+  },
+  "SupplierConfirmation": {
+   "role": "document"
+  },
+  "SupplierInvoice": {
+   "role": "document"
+  },
+  "SupplierItem": {
+   "role": "party"
+  },
+  "Team": {
+   "role": "thread",
+   "family": "thread",
+   "props": {
+    "team_id": {
+     "role": "other"
+    },
+    "display_name": {
+     "role": "other"
+    },
+    "description": {
+     "role": "text"
+    },
+    "created_at": {
+     "role": "when"
+    }
+   }
+  },
+  "TeamsChannel": {
+   "role": "thread",
+   "family": "thread",
+   "props": {
+    "team_id": {
+     "role": "other"
+    },
+    "channel_id": {
+     "role": "other"
+    },
+    "display_name": {
+     "role": "other"
+    },
+    "description": {
+     "role": "text"
+    },
+    "membership_type": {
+     "role": "status"
+    },
+    "created_at": {
+     "role": "when"
+    },
+    "last_activity_at": {
+     "role": "when"
+    },
+    "participants": {
+     "role": "person"
+    },
+    "participants_basis": {
+     "role": "other"
+    },
+    "original_url": {
+     "role": "other"
+    }
+   }
+  },
+  "TeamsChat": {
+   "role": "thread",
+   "family": "thread",
+   "props": {
+    "chat_id": {
+     "role": "other"
+    },
+    "topic": {
+     "role": "text"
+    },
+    "chat_type": {
+     "role": "status"
+    },
+    "created_at": {
+     "role": "when"
+    },
+    "last_activity_at": {
+     "role": "when"
+    },
+    "last_updated": {
+     "role": "when"
+    },
+    "participants": {
+     "role": "person"
+    },
+    "participants_basis": {
+     "role": "other"
+    },
+    "original_url": {
+     "role": "other"
+    }
+   }
+  },
+  "Warehouse": {
+   "role": "record"
+  }
+ }
+}

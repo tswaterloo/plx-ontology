@@ -528,6 +528,9 @@ class Line:
     credited: Decimal = Decimal(0)
     unit: str | None = None
     credit_amount: Decimal = Decimal(0)
+    # the cost the netted credit memos' own Sales Credit Memo ledger entries returned (BC's
+    # costAmountActual of a return: booked cost = shipped cost - this)
+    returned_cost: Decimal = Decimal(0)
     invoice_handles: list[str] = field(default_factory=list)
     credit_handles: list[str] = field(default_factory=list)
     ledger_handles: list[str] = field(default_factory=list)
@@ -717,6 +720,8 @@ def _line_input(line: Line, entry: Mapping[str, Any] | None, returns: set) -> No
             else line.ledger_handles
         if handle not in target:
             target.append(handle)
+            if target is line.return_handles and value is not None:
+                line.returned_cost += value
 
 
 # ---------------------------------------------------------------------- customer orders

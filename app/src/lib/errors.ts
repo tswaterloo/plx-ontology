@@ -8,6 +8,8 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     public readonly incident?: string,
+    /** The server's plain sentence (a refused rule's reason). */
+    public readonly detail?: string,
   ) {
     super(code);
     this.name = "ApiError";
@@ -94,7 +96,8 @@ export async function apiErrorFrom(res: Response): Promise<ApiError> {
   try {
     const body = (await res.json()) as { code?: unknown; error?: { code?: unknown; message?: unknown } };
     const code = body?.error?.code ?? body?.code;
-    return new ApiError(res.status, typeof code === "string" ? code : `http_${res.status}`, incidentOf(body?.error?.message));
+    const message = body?.error?.message;
+    return new ApiError(res.status, typeof code === "string" ? code : `http_${res.status}`, incidentOf(message), typeof message === "string" ? message.slice(0, 600) : undefined);
   } catch {
     return new ApiError(res.status, `http_${res.status}`);
   }

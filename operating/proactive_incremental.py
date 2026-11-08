@@ -38,8 +38,12 @@ the full pass (``operating.vendor_watch --refresh new``), and a nightly full pas
 (``plx-proactive``) re-reads everything. The engine's runs and this pass hold one lock per
 inbox (``proactive_engine.run``): they never fold over each other.
 
-Read only on the store and the delta layers; writes only the inbox and its change file
-``<inbox>.changes.sqlite`` (fingerprints, counts). Run::
+**Watchlists**: the records that moved are also judged against the people's follows and
+alert rules (``operating.watchlists``), whose alerts go to each owner's own inbox.
+
+Read only on the store and the delta layers; writes only the inbox, its change file
+``<inbox>.changes.sqlite`` (fingerprints, counts) and the watchlists file beside the store
+(``<store>.watchlists.sqlite``: snapshots and alerts). Run::
 
     python3 -m operating.proactive_incremental --state-dir STATE [--as-of YYYY-MM-DD]
 """
@@ -493,6 +497,7 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     whole = sorted(set(whole) | set(rules))
                     subjects, read = {}, set()
                 keys = _audience_keys(st, ch, digest, moved) if subjects else None
+                out["watchlists"] = _watch(st, store, moved, clock)
             finally:
                 st.close()
             out["planned_seconds"] = round(time.monotonic() - started, 2)
@@ -530,6 +535,19 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                        "ORDER BY pass_id DESC LIMIT ?)", (KEEP_PASSES,))
             ch.execute("COMMIT")
     return out
+
+
+def _watch(st: pe._Store, store: Path, moved: set[str],
+           clock: Callable[[], datetime]) -> dict[str, Any]:
+    """The people's follows and alert rules judged over what moved
+    (``operating.watchlists``): counts only; a failure is reported and leaves the pass's
+    own work untouched (no alert is written, the snapshots stay as they were)."""
+    from . import watchlists
+
+    try:
+        return watchlists.evaluate(st, watchlists.watch_path(store), moved, clock=clock)
+    except Exception as error:  # noqa: BLE001 - the watchlists never stop the pass
+        return {"state": "failed", "error": type(error).__name__}
 
 
 def _last_run_day(inbox: Path) -> str | None:

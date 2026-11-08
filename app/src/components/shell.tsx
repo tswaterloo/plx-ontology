@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Bookmark, CalendarCheck2, Clock3, History, Inbox, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Search, TriangleAlert, type LucideIcon } from "lucide-react";
+import { BellRing, Bookmark, CalendarCheck2, CalendarClock, ChartColumnBig, Clock3, History, Inbox, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Search, TriangleAlert, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -176,7 +176,10 @@ const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean }[] =
   { href: "/", label: "Today", icon: Inbox },
   { href: "/late", label: "Late POs", icon: Clock3, late: true },
   { href: "/briefing", label: "Briefing", icon: CalendarCheck2 },
+  { href: "/prepare", label: "Prepare", icon: CalendarClock },
+  { href: "/weekly", label: "Weekly review", icon: ChartColumnBig },
   { href: "/ask", label: "Ask", icon: MessageCircle },
+  { href: "/rules", label: "Watching", icon: BellRing },
   { href: "/actions", label: "Action log", icon: History },
   { href: "/feedback", label: "Feedback", icon: MessageSquareText },
 ];
@@ -556,7 +559,7 @@ function TabBar() {
   const path = usePathname();
   const home = useHome();
   const late = lateOf(home);
-  const tabs = NAV.filter((n) => n.href !== "/actions" && n.href !== "/feedback");
+  const tabs = NAV.filter((n) => !["/actions", "/feedback", "/prepare", "/weekly"].includes(n.href));
   return (
     <nav
       aria-label="Main"
@@ -613,7 +616,7 @@ function MobileTitleBar() {
   const path = usePathname();
   if (path === "/" || TOOLBAR_PAGES.some((p) => path === p || path.startsWith(`${p}/`))) return null;
   return (
-    <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-[color-mix(in_srgb,var(--bg-subtle)_88%,transparent)] px-3 backdrop-blur-xl lg:hidden">
+    <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-[color-mix(in_srgb,var(--bg-subtle)_88%,transparent)] px-4 backdrop-blur-xl lg:hidden">
       <Link href="/" aria-label="Today">
         <Logo />
       </Link>
@@ -625,7 +628,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-const TOOLBAR_PAGES: string[] = ["/late", "/briefing", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/actions", "/feedback"];
+const TOOLBAR_PAGES: string[] = ["/late", "/briefing", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/actions", "/feedback", "/rules"];
 
 function ShellSkeleton() {
   return (

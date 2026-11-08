@@ -1,0 +1,37 @@
+# The 4-hourly pass of the whole-store rules (plx-proactive-whole.timer): the store-only
+# rules the incremental pass leaves to a full pass (operating.declared_inputs
+# NOT_INCREMENTAL; vendor_watch.WHOLE_PASS: stock-out, receivables, order-to-cash,
+# chief-executive, chase, hold and payables alerts), then the vendor checks with the time
+# left. Read only; writes only the gap inbox. Otherwise as plx-proactive.service.
+[Unit]
+Description=PLX Workbench 4-hourly pass of the whole-store proactive rules
+After=plx-ingest.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+# the tool-call rules on a pool of 3 workers whatever the host's free memory reads at the
+# start (without it a loaded host sizes the pool to one, no pool: the margins, the orders at
+# risk and the cards are then read only up to their per-run bounds); 6 GB engine + 3 x 2.5 GB
+# workers sit under MemoryHigh
+Environment=PLX_PROACTIVE_WORKERS=3
+# the store the incremental pass reads (plx-proactive-inc.service)
+Environment=PLX_ONTOLOGY_PG=1
+# the engine's budget (each detector also stops at its own window), the vendor checks the rest
+ExecStart=/data/venv/bin/python3 -m operating.vendor_watch --state-dir /data/plx-state \
+  --config @PLX_HOME@/.config/plx/workbench-host-vince/host.json \
+  --refresh whole --refresh-seconds 2700 --budget-seconds 4200 --bound 400
+# serving keeps its share of the host: lower CPU and I/O weight than plx-api
+Nice=5
+CPUWeight=50
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+MemoryHigh=15G
+MemoryMax=16G
+MemorySwapMax=4G
+TimeoutStartSec=4800
+UMask=0077

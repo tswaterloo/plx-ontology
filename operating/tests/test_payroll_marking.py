@@ -301,6 +301,160 @@ class MarkedAttachmentReadPathTests(unittest.TestCase):
                              "resolved")
 
 
+STUB_TAIL = ("Direct deposit made to the account on file. Questions about this statement go to "
+             "the people team at extension 210. Moonflower reference 7731.")
+LABELLED = "Quarterly schedule notes for the moonflower review."
+
+
+class TextIndexReadGuardTests(unittest.TestCase):
+    """Captured text the document-text index holds without ``finance`` and ``pii``
+    (indexed before the marking, Postgres before the text index's step migration) and
+    that search has no chunks of. Each document version is judged whole, once: a pay stub
+    whose second chunk holds no pay phrase, and a file only its folder labels as payroll,
+    are never read by a reader without both, by any read of the index (word match, a
+    hit's own text, ``plx.find``, ``plx.documents``); a reader holding both and the owner
+    read them, and a business document's text stays readable."""
+
+    def setUp(self):
+        import os
+        import zlib
+        from unittest import mock
+        from tests import test_ontology_tools_evidence as fx
+        patch = mock.patch.dict(os.environ, {"PLX_RERANK": "off"})
+        patch.start()
+        self.addCleanup(patch.stop)
+        os.environ.pop("PLX_SEARCH", None)   # no search store: its marks decide nothing
+        self.fx = fx
+        # field, object, version, citation, path, chunks: the stub's tail is its own chunk
+        rows = [(1, fx.A1, fx.A1_H, fx.A1_H + "&page=1", "row.content_text",
+                 [PAYSTUB, STUB_TAIL]),
+                (2, fx.M1, fx.M1_H, fx.M1_H, "row.body_text", [INVOICE]),
+                (3, fx.M2, fx.M2_H, fx.M2_H, "row.body_text", [LABELLED])]
+
+        def extend(store):
+            chunk = 0
+            for field, oid, handle, citation, path, texts in rows:
+                store.conn.execute(
+                    "INSERT INTO text_fields (field_id, object_id, version_handle, citation, "
+                    "field_path, document_kind, sender_class, text_digest) "
+                    "VALUES (?,?,?,?,?,'email','person','d')", (field, oid, handle, citation,
+                                                                 path))
+                at = 0
+                for text in texts:
+                    chunk += 1
+                    store.conn.execute("INSERT INTO text_chunks (chunk_id, field_id, start, "
+                                       "body) VALUES (?,?,?,?)",
+                                       (chunk, field, at, zlib.compress(text.encode())))
+                    store.conn.execute("INSERT INTO chunk_text (rowid, body) VALUES (?, ?)",
+                                       (chunk, text))
+                    at += len(text)
+            # labelled by its folder only (its text says nothing of pay)
+            store.val(fx.M2, "path", "text", "/ConfidentialPayrollInformation/2026/notes.txt")
+        self.extend = extend
+
+    def tools(self, markings):
+        from operating import ontology_tools as ot
+        tools = self.fx.tools(extend=self.extend)
+        tools.base.policy = ot.ReadPolicy(tenant="plx", audiences=dict(
+            self.fx.POLICY_AUDIENCES), markings=markings)
+        return tools
+
+    def seen(self, markings):
+        fx = self.fx
+        tools = self.tools(markings)
+        store, scope = tools.base.store, tools.base._scope(fx.FULL, fx.NOW)
+        out = {"matches": {r["object_id"] for r in store.chunk_matches(
+                   scope, '"moonflower"', None, 0, 50)},
+               "chunks": {r["object_id"] for r in store.object_chunks(
+                   scope, {fx.A1: fx.A1_H, fx.M1: fx.M1_H, fx.M2: fx.M2_H})},
+               "invoice": {r["object_id"] for r in store.chunk_matches(
+                   scope, '"corrugated"', None, 0, 50)}}
+        for name, call in (
+                ("find", lambda: tools.base.call("plx.find", {"query": "moonflower"},
+                                                 fx.FULL)),
+                ("documents", lambda: tools.call("plx.documents", {
+                    "query": "moonflower", "sources": ["graph_mail"]}, fx.FULL))):
+            got = json.dumps(call())
+            out[name] = {k for k, needle in (("stub", "people team"), ("labelled", "schedule"))
+                         if needle in got}
+        return out
+
+    def test_a_reader_without_finance_and_pii_never_gets_their_text(self):
+        fx = self.fx
+        seen = self.seen({"finance": {"full"}})            # finance, not pii
+        self.assertEqual(seen, {"matches": set(), "chunks": {fx.M1}, "invoice": {fx.M1},
+                                "find": set(), "documents": set()})
+
+    def test_a_reader_holding_both_and_the_owner_read_them(self):
+        from ontology.store_ddl import MARKINGS
+        fx = self.fx
+        for markings in ({"finance": {"full"}, "pii": {"full"}},
+                         {m: {"full"} for m in MARKINGS}):
+            seen = self.seen(markings)
+            self.assertEqual((seen["matches"], seen["chunks"], seen["invoice"]),
+                             ({fx.A1, fx.M2}, {fx.A1, fx.M1, fx.M2}, {fx.M1}), markings)
+            self.assertEqual(seen["find"] | seen["documents"], {"stub", "labelled"},
+                             (markings, seen))
+
+    def test_a_version_is_judged_once_whoever_reads(self):
+        from unittest import mock
+        from operating.search import document_marks
+        fx = self.fx
+        tools = self.tools({"finance": {"full"}})
+        store, scope = tools.base.store, tools.base._scope(fx.FULL, fx.NOW)
+        judged = []
+        real = document_marks.sensitive_fields
+        with mock.patch.object(document_marks, "sensitive_fields",
+                               lambda fields: judged.append(1) or real(fields)):
+            for _ in range(3):
+                store.chunk_matches(scope, '"moonflower"', None, 0, 50)
+        self.assertEqual(len(judged), 2)   # the stub and the labelled file, once each
+
+    def test_an_undecidable_judge_shows_nothing(self):
+        from unittest import mock
+        fx = self.fx
+        tools = self.tools({"finance": {"full"}})
+        store, scope = tools.base.store, tools.base._scope(fx.FULL, fx.NOW)
+        with mock.patch.object(type(store), "sensitive_versions",
+                               side_effect=RuntimeError("store unreadable")):
+            self.assertEqual(store.chunk_matches(scope, '"corrugated"', None, 0, 50), [])
+
+
+class PgTextGuardTests(unittest.TestCase):
+    """The Postgres reader judges a version on its own chunks (the same SQL, through the
+    compatibility layer): a two-chunk pay stub is judged whole, a business text is not."""
+
+    def test_postgres_judges_every_chunk_of_a_version(self):
+        import zlib
+        import psycopg
+        from operating.pg.ontology_reader import PgStoreReader
+        from operating.pg.sqlite_compat import PgCompatConnection
+        from operating.tests import pg_testdb
+        from operating.tests.test_pg_schema_migrate import MIGRATIONS
+        name, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, name)
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            for migration in MIGRATIONS:
+                pg.execute(migration.read_text(encoding="utf-8"))
+            chunk = 0
+            for field, oid, handle, texts in (
+                    (1, "Attachment:a:1", "graph-mail://m/1#attachment=1", [PAYSTUB, STUB_TAIL]),
+                    (2, "Email:e:2", "graph-mail://m/2", [INVOICE])):
+                pg.execute("INSERT INTO ontology.text_fields VALUES (%s, %s, %s, %s, "
+                           "'row.content_text', 'email', 'person', '[]', 'd')",
+                           (field, oid, handle, handle + "&page=1"))
+                for at, text in enumerate(texts):
+                    chunk += 1
+                    pg.execute("INSERT INTO ontology.text_chunks VALUES (%s, %s, %s, %s)",
+                               (chunk, field, at * 5000, zlib.compress(text.encode())))
+        reader = PgStoreReader(PgCompatConnection(dsn))
+        self.addCleanup(reader.close)
+        reader.deferred = set()
+        self.assertEqual(reader.sensitive_versions([
+            ("Attachment:a:1", "graph-mail://m/1#attachment=1"),
+            ("Email:e:2", "graph-mail://m/2")]), {"graph-mail://m/1#attachment=1"})
+
+
 class _MailReader:
     """M1 with A1 listed as its attachment, and A1's text."""
 

@@ -2398,6 +2398,9 @@ class ClaudeCodeAgent:
         # The records the Ask found for the question before the session (object_id,
         # object_type, same_as): its first reads are their cards (``for_question``).
         self.known_roots: list[Mapping[str, Any]] = []
+        # What the Ask already looked up for the question before the session
+        # (``session_prefetch.first_reads``' ``looked``): not looked up again. None: all is.
+        self.looked_up: Mapping[str, Any] | None = None
         # Reads the host makes in the session before its first turn whose results are not
         # shown (``HostGate`` quiet): the sources the task already told the session about
         # (the app's pre-read brief), so what it cites of them is evidence this session
@@ -2425,7 +2428,7 @@ class ClaudeCodeAgent:
             # lookup that found them is not made again
             told.first_reads, told.follow_reads = known, None
             return told
-        told.first_reads = session_prefetch.first_reads(question)
+        told.first_reads = session_prefetch.first_reads(question, self.looked_up)
         told.follow_reads = session_prefetch.follow_reads if told.first_reads else None
         return told
 

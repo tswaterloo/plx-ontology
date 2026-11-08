@@ -215,5 +215,64 @@ def handle_withheld(handle: str, held: Iterable[str], object_ids: Iterable[str] 
     return key in got[1] or any(o in got[0] for o in ids)
 
 
-__all__ = ["DOCUMENT_TYPES", "FILE_TYPES", "enabled", "forget", "handle_withheld",
-           "holds_every", "params", "sql", "withheld", "withheld_set"]
+# --------------------------------------------------------------------------- text rows
+
+SENSITIVE = frozenset({"finance", "pii"})   # ``operating.chunking.sensitive.MARKS``
+
+
+LABEL_PATHS = ("row.sensitivity_label", "row.retention_label", "row.compliance_tag")
+TITLE_PATHS = ("row.name", "row.subject")
+CUE_PATHS = TITLE_PATHS + ("row.path",) + LABEL_PATHS
+
+
+def sensitive_fields(fields: Iterable[tuple[str, str]]) -> bool:
+    """Whether a document version whose fields are ``fields`` ((field path, text), its
+    text fields' text and its name, subject, path and label values) is personal financial
+    or HR-confidential, judged as ``ontology.text_index._sensitive`` judges a document: its
+    whole text, its name or subject as support, the folders of its path and its recorded
+    labels as labels."""
+    from operating.chunking.sensitive import folders, personal_financial
+    texts, title, labels = [], None, []
+    for path, text in fields:
+        if not isinstance(text, str):
+            continue
+        if path in TITLE_PATHS and title is None:
+            title = text
+        if path == "row.path":
+            labels.extend(folders(text))
+        elif path in LABEL_PATHS:
+            labels.append(text)
+        texts.append(text)
+    return personal_financial("\n".join(texts), title=title, labels=labels) is not None
+
+
+def readable_text(rows: Iterable[Any], held: Iterable[str],
+                  sensitive: Any) -> list[Any]:
+    """The captured-text rows (``text_fields`` / ``text_chunks``: each with ``object_id``
+    and ``version_handle``) a reader holding ``held`` may read the text of: every row for
+    a reader holding ``finance`` and ``pii``; else none of a document version
+    ``sensitive`` (``[(object id, version handle)] -> the handles judged personal
+    financial or HR-confidential``: ``StoreReader.sensitive_versions``, the whole version
+    judged once by :func:`sensitive_fields`) names. Undecidable (``sensitive`` raised):
+    no row is shown.
+
+    The text index marks such a document's fields ``finance`` and ``pii`` since 7aba9f1245
+    (``ontology.text_index._sensitive``), but a store whose fields were indexed before
+    (a generation, Postgres before the text index's step migration re-marked it) holds
+    them without, and a document with no search chunks is not known to ``withheld``. The
+    judge's measured false positives (trial balances, bank reconciliations, customer
+    statements) are withheld only from a reader without ``pii``: accepted."""
+    rows = list(rows)
+    if not rows or SENSITIVE <= frozenset(held):
+        return rows
+    pairs = sorted({(row["object_id"], row["version_handle"]) for row in rows})
+    try:
+        marked = set(sensitive(pairs))
+    except Exception:  # noqa: BLE001 - undecidable: withheld (fail closed)
+        return []
+    return [row for row in rows if row["version_handle"] not in marked]
+
+
+__all__ = ["DOCUMENT_TYPES", "FILE_TYPES", "SENSITIVE", "enabled", "forget",
+           "handle_withheld", "holds_every", "params", "readable_text", "sensitive_fields",
+           "sql", "withheld", "withheld_set"]

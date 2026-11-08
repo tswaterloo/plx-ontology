@@ -1,7 +1,7 @@
 """Console session tickets for a named employee, minted and revoked on the host.
 
     python3 -m operator_ui.console_ticket mint --state-dir DIR --host-config FILE \\
-        [--reader-env PLX_EMPLOYEE_READER] [--ttl-minutes 60] [--port 8765] --out FILE
+        [--reader-env PLX_EMPLOYEE_READER] [--ttl-minutes 480] [--port 8765] --out FILE
     python3 -m operator_ui.console_ticket revoke --state-dir DIR --ticket-file FILE
     python3 -m operator_ui.console_ticket preflight --state-dir DIR --host-config FILE \\
         [--reader-env PLX_EMPLOYEE_READER]
@@ -12,7 +12,7 @@ not mint one yet. ``mint`` is the host's stand-in for it, for one recorded emplo
 session (requirement WS-16): it reads the employee's identity claims (``uid``, ``email``,
 ``entraTenantId``, ``entraObjectId``: the format ``PLX_EMPLOYEE_READER`` holds) from the
 variable ``--reader-env`` names, signs a human ticket with ``PLX_WORKBENCH_SESSION_SECRET``
-for at most two hours, and verifies it exactly as the console will
+for at most eight hours (a working day), and verifies it exactly as the console will
 (``session_identity.employee_session``: the host config's employee policy and Portal access
 snapshot must grant that employee now, the ticket's e-mail must be the Portal row's, the
 state directory's replay guard must not have revoked it). Only then is the console URL
@@ -284,8 +284,8 @@ def preflight(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str,
 
 
 def _ttl(raw: str) -> int:
-    if not raw.isascii() or not raw.isdecimal() or not 1 <= int(raw) <= 120:
-        raise argparse.ArgumentTypeError("1..120 minutes")
+    if not raw.isascii() or not raw.isdecimal() or not 1 <= int(raw) <= 480:
+        raise argparse.ArgumentTypeError("1..480 minutes")
     return int(raw)
 
 
@@ -310,7 +310,7 @@ def main(argv: Sequence[str] | None = None, *,
                          help="with --employee-policy: the Portal access snapshot")
     minting.add_argument("--reader-env", default=READER_ENV,
                          help="variable holding the employee's JSON identity claims")
-    minting.add_argument("--ttl-minutes", type=_ttl, default=60)
+    minting.add_argument("--ttl-minutes", type=_ttl, default=480)
     minting.add_argument("--port", type=_port, default=8765,
                          help="the console's loopback port, for the URL")
     minting.add_argument("--out", required=True, type=Path,

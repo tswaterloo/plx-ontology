@@ -5,13 +5,14 @@
 
 import { ApiError, apiErrorFrom } from "./errors";
 import { SseParser } from "./sse";
-import type { LateList,
+import type { Explore, LateList,
   ActionConfirm,
   ActionPreview,
   ActionRequest,
   ActionResult,
   ActionStates,
   ActionsLog,
+  AlertPlaybook,
   AskEvent,
   AskRequest,
   AuthConfig,
@@ -19,6 +20,8 @@ import type { LateList,
   BriefingItems,
   BriefingSeen,
   BriefingView,
+  Brief,
+  UpcomingMeetings,
   WatcherItemState,
   WatcherItemStateRequest,
   DevLoginResponse,
@@ -37,6 +40,13 @@ import type { LateList,
   SourceView,
   SuggestResponse,
   Suggestions,
+  ImpactPanel,
+  Watchlist,
+  WatchFollow,
+  WatchRule,
+  WatchRuleDraft,
+  WatchRuleDeleted,
+  WatchReadResult,
 } from "./types";
 
 type TokenProvider = () => Promise<string | null>;
@@ -152,6 +162,38 @@ export async function setWatcherItemState(
   return (await (await call(path, { method: "POST", json })).json()) as WatcherItemState;
 }
 
+/** Your follows, alert rules and alerts, as your grant shows them now. */
+export function getWatchlist(signal?: AbortSignal): Promise<Watchlist> {
+  return getJson<Watchlist>("/api/watch", signal);
+}
+
+/** Follow a record you can open (its page's object id), or stop following it. */
+export async function setFollowing(objectId: string, on: boolean): Promise<WatchFollow> {
+  const res = on
+    ? await call("/api/watch/follow", { method: "POST", json: { object_id: objectId } })
+    : await call(`/api/watch/follow/${encodeURIComponent(objectId)}`, { method: "DELETE" });
+  return (await res.json()) as WatchFollow;
+}
+
+/** An alert rule in plain words, compiled and shown back; nothing is kept. */
+export async function compileRule(text: string): Promise<WatchRuleDraft> {
+  return (await (await call("/api/watch/rules/compile", { method: "POST", json: { text } })).json()) as WatchRuleDraft;
+}
+
+/** Keep the very rule you were shown. */
+export async function createRule(draft: WatchRuleDraft): Promise<WatchRule> {
+  const json = { text: draft.text, spec: draft.spec, digest: draft.digest };
+  return (await (await call("/api/watch/rules", { method: "POST", json })).json()) as WatchRule;
+}
+
+export async function deleteRule(ruleId: string): Promise<WatchRuleDeleted> {
+  return (await (await call(`/api/watch/rules/${encodeURIComponent(ruleId)}`, { method: "DELETE" })).json()) as WatchRuleDeleted;
+}
+
+export async function markAlertsRead(alertIds: string[]): Promise<WatchReadResult> {
+  return (await (await call("/api/watch/alerts/read", { method: "POST", json: { alert_ids: alertIds } })).json()) as WatchReadResult;
+}
+
 /** Every late purchase order you may see, a page at a time, longest late first ("show all"). */
 export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promise<LateList> {
   const n = Math.min(100, Math.max(1, Math.floor(limit)));
@@ -178,6 +220,29 @@ export function getActionStates(signal?: AbortSignal): Promise<ActionStates> {
   return getJson<ActionStates>("/api/actions/state", signal);
 }
 
+/** One alert's ready-to-use next steps (drafts, links, the change to make in the source system). */
+export function getAlertPlaybook(alertId: string, signal?: AbortSignal): Promise<AlertPlaybook> {
+  return getJson<AlertPlaybook>(`/api/alerts/${encodeURIComponent(alertId)}/playbook`, signal);
+}
+
+/** The record types a meeting prep brief is prepared for (any other fails closed, no request). */
+export const BRIEF_TYPES: readonly string[] = ["CalendarEvent", "Meeting", "Customer", "Supplier"];
+
+/** The meeting prep brief of a calendar event, meeting, customer or supplier. */
+export function getMeetingBrief(type: string, id: string, signal?: AbortSignal): Promise<Brief> {
+  return getJson<Brief>(`/api/brief/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, signal);
+}
+
+/** The weekly review of the week holding `week` (YYYY-MM-DD; default last week). */
+export function getWeeklyReview(week?: string, signal?: AbortSignal): Promise<Brief> {
+  return getJson<Brief>(`/api/brief/weekly${week ? `?week=${encodeURIComponent(week)}` : ""}`, signal);
+}
+
+/** Calendar events in the next 14 days, each with its brief link. */
+export function getUpcomingMeetings(signal?: AbortSignal): Promise<UpcomingMeetings> {
+  return getJson<UpcomingMeetings>("/api/brief/meetings", signal);
+}
+
 /** Your confirmed actions, newest first. */
 export function getActionsLog(signal?: AbortSignal): Promise<ActionsLog> {
   return getJson<ActionsLog>("/api/actions/log", signal);
@@ -201,14 +266,36 @@ export function getObject(type: string, id: string, signal?: AbortSignal, quick 
   return getJson<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}${quick ? "?quick=1" : ""}`, signal);
 }
 
+/** A record's neighbours one hop out, by kind of link, as this reader may see them (the
+ * link explorer). Walking on is this call for a neighbour. */
+export function getExplore(type: string, id: string, signal?: AbortSignal): Promise<Explore> {
+  if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
+  return getJson<Explore>(`/api/explore/${type}/${encodeURIComponent(id)}`, signal);
+}
+
 /** The slow sections of a record's page, read after its quick first read and merged in
  * (`mergeSection`): the late check, people, landed cost, how we know and the margin. */
-export const PAGE_SECTIONS: readonly SectionName[] = ["late", "people", "landed_cost", "trail", "margin"];
+export const PAGE_SECTIONS: readonly SectionName[] = ["late", "people", "landed_cost", "trail", "margin", "knows"];
 
 export function getObjectSection(section: SectionName, type: string, id: string, signal?: AbortSignal): Promise<ObjectSection> {
   if (!PAGE_SECTIONS.includes(section) || !isObjectType(type) || !id || id.length > 700)
     return Promise.reject(new ApiError(404, "not_found"));
   return getJson<ObjectSection>(`/api/object-section/${section}/${type}/${encodeURIComponent(id)}`, signal);
+}
+
+export type ImpactChange = { kind: "delay"; days: number } | { kind: "out_of_stock" } | { kind: "customer_lost" } | { kind: "price_change"; percent: string };
+
+/** A record's Impact panel, read on demand: what-if (a change walked downstream) or why. */
+export function getImpact(mode: "what_if" | "why", type: string, id: string, change?: ImpactChange, signal?: AbortSignal): Promise<ImpactPanel> {
+  if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
+  const q = new URLSearchParams();
+  if (mode === "what_if" && change) {
+    q.set("change", change.kind);
+    if (change.kind === "delay") q.set("days", String(Math.max(1, Math.min(365, Math.round(change.days)))));
+    if (change.kind === "price_change") q.set("percent", change.percent);
+  }
+  const qs = q.toString();
+  return getJson<ImpactPanel>(`/api/object-impact/${mode}/${type}/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`, signal);
 }
 
 /** `page` with one section merged, as the full page (no `quick`) carries it. */
@@ -225,6 +312,8 @@ export function mergeSection(page: ObjectPage, s: ObjectSection): ObjectPage {
       return { ...page, trail: s.trail ?? null, ...(s.not_found ? { not_found: s.not_found } : {}), ...(s.proposals ? { proposals: s.proposals } : {}) };
     case "margin":
       return { ...page, profitability: s.profitability ?? null };
+    case "knows":
+      return { ...page, knows: s.knows ?? null };
   }
   return page;
 }

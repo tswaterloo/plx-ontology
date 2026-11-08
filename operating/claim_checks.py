@@ -2500,8 +2500,13 @@ def known_now(arguments: Any, result: Mapping[str, Any]) -> bool:
     or the moment it names (as the result states it, ``meta.as_known_at``) is at or after
     every capture the result read (``meta.freshness``, each source's ``captured_at``, all
     listed): nothing was captured since, so what was known then is what is known now.
-    Any doubt (no moment, no capture time, a capture list cut short): not now."""
+    Any doubt (no moment, no capture time, a capture list cut short): not now. A
+    ``plx.aggregate`` count that read the same groups now as at its moment says so
+    (``same_as_now``): its count is the count known now too.
+    """
     if not isinstance(arguments, Mapping) or "as_known_at" not in arguments:
+        return True
+    if isinstance(result, Mapping) and result.get("same_as_now") is True:
         return True
     meta = result.get("meta") if isinstance(result, Mapping) else None
     coverage = result.get("freshness_coverage") if isinstance(result, Mapping) else None

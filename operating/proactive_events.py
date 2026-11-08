@@ -997,6 +997,28 @@ def _instant(raw: Any) -> datetime | None:
     return moment if moment.tzinfo is not None else None
 
 
+def recipients(row: Mapping[str, Any]) -> list[str] | None | bool:
+    """A message's To and Cc addresses (``to_addresses``, ``cc_addresses``: each one JSON
+    list of addresses), lower-case: None when neither is projected (an older build), False
+    when one is unreadable (not a list of addresses: its people cannot be cleared)."""
+    found: list[str] = []
+    held = False
+    for prop in ("to_addresses", "cc_addresses"):
+        raw = row.get(prop)
+        if raw in (None, ""):
+            continue
+        held = True
+        try:
+            listed = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            return False
+        if not isinstance(listed, list) or not all(
+                isinstance(a, str) and "@" in a for a in listed):
+            return False
+        found.extend(a.strip().casefold() for a in listed)
+    return found if held else None
+
+
 def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                     result: Callable, people: Any, orders: Mapping[str, tuple[str, str]],
                     order_key: str = "order",
@@ -1087,7 +1109,8 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     for start in range(0, len(wanted), 500):
         for oid, prop, value in st.conn.execute(
                 "SELECT object_id, property, value FROM object_values WHERE superseded_at IS "
-                "NULL AND property IN ('sent_at', 'sender', 'subject', 'body_preview') AND "
+                "NULL AND property IN ('sent_at', 'sender', 'subject', 'body_preview', "
+                "'to_addresses', 'cc_addresses') AND "
                 "object_id IN (SELECT value FROM json_each(?))",
                 (json.dumps(wanted[start:start + 500]),)):
             if value not in (None, ""):
@@ -1105,6 +1128,14 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         skipped["mention_of_reused_number"] += reused
     judged: set[str] = set()
     uncleared: set[str] = set()
+    outcomes: Counter = Counter()   # each judged (order, conversation) by its outcome
+
+    def addressed_out(oid: str, found: list[str] | None, outside: list[str]) -> bool:
+        if found:
+            return any(not internal(a) for a in found)
+        moment = _instant(values[oid]["sent_at"])
+        return any(_instant(values[o]["sent_at"]) < moment for o in outside)
+
     waiting: dict[str, tuple[int, str, str, bool, list[str]]] = {}
     seen: set[tuple[str, str]] = set()
     for mail, pos in named.items():
@@ -1120,29 +1151,47 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             seen.add((order, conversation))
             thread = sorted(threads.get(conversation, ()),
                             key=lambda o: (_instant(values[o]["sent_at"]), o))
-            # every copy of the conversation, an undated one included, is cleared first
+            # every copy of the conversation, an undated one included, is cleared first:
+            # each sender and each To/Cc recipient of ours
             senders = {o: (values[o].get("sender") or "").strip().casefold()
                        for o in copies.get(conversation, ())}
+            told = {o: recipients(values[o]) for o in copies.get(conversation, ())}
             if any(not s or "@" not in s or (internal(s) and not people.identity_clear(s))
-                   for s in senders.values()):
+                   for s in senders.values()) or any(
+                    found is False or any(internal(a) and not people.identity_clear(a)
+                                          for a in found or ())
+                    for found in told.values()):
                 uncleared.add(order)   # someone of ours not cleared (or no sender): unjudged
                 continue
             judged.add(order)
             ours = [o for o in thread if internal(senders[o])]
-            if not ours:
-                continue
-            last = ours[-1]
-            sent = _instant(values[last]["sent_at"])
             outside = [o for o in thread if not internal(senders[o])]
-            if not any(_instant(values[o]["sent_at"]) < sent for o in outside) \
-                    or any(_instant(values[o]["sent_at"]) > sent for o in outside):
-                continue   # never with the outside, or answered
+            if not ours:
+                outcomes["no_message_of_ours"] += 1
+                continue
+            # a message of ours is to the outside when an outside address is among its
+            # recipients; with no recipients projected, when the outside wrote before it
+            requests = [o for o in ours if addressed_out(o, told[o], outside)]
+            if not requests:
+                outcomes["addressed_internally" if any(told[o] for o in ours)
+                         else "never_with_the_outside"] += 1
+                continue
+            last = requests[-1]
+            sent = _instant(values[last]["sent_at"])
+            if any(_instant(values[o]["sent_at"]) > sent for o in outside):
+                outcomes["answered"] += 1
+                continue
             waited = (as_of - sent.date()).days
-            if waited < NO_REPLY_DAYS or sent.date() < since:
+            if waited < NO_REPLY_DAYS:
+                outcomes["waiting_under_threshold"] += 1
+                continue
+            if sent.date() < since:
+                outcomes["sent_before_window"] += 1
                 continue
             row = values[last]
             subject = row.get("subject") or ""
-            if _FORWARD.match(subject) or _FORWARDED.search(row.get("body_preview") or ""):
+            if not told[last] and (_FORWARD.match(subject)
+                                   or _FORWARDED.search(row.get("body_preview") or "")):
                 # who a forward went to is not projected (no To/Cc): an internal forward to
                 # a colleague is never read as a request to the vendor
                 skipped["forward_not_judged"] += 1
@@ -1153,6 +1202,7 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                     or (not _REPLY.match(subject) and asks_vendor(subject))):
                 skipped["last_message_asks_nothing"] += 1
                 continue
+            outcomes["waiting"] += 1
             rep = members[order][0]
             # firm when some message of the conversation names one of the order's records
             # by a settled or corroborated link; else the order is named by a lead only
@@ -1174,8 +1224,8 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                     + f"Our request to the vendor of {sent} has had no reply for {waited} days",
             missing="Whether the vendor answered outside the mail read here, or when it "
                     "will confirm; follow up if not (nothing is sent)",
-            why=f"Our last message in a conversation with the outside about this order, "
-                f"sent {sent}, asks for a quote, price, confirmation or delivery date, and "
+            why=f"Our last message to the outside about this order (an outside recipient, "
+                f"or a conversation the outside wrote in before it), sent {sent}, asks for a quote, price, confirmation or delivery date, and "
                 f"no later message from outside is in its conversation for {waited} days"
                 + (" (the message names the order by a mention, not a confirmed link)"
                    if is_lead else "") + " (the request is cited).",
@@ -1195,7 +1245,9 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                        "not_evaluated": {k: v for k, v in sorted({
                            "participants_not_cleared": len(uncleared - judged),
                            "no_cleared_mail_names_it": len(unjudged - uncleared)}.items())
-                           if v}}
+                           if v},
+                       # each (order, conversation) judged, by its outcome: why no alert
+                       "conversations": dict(sorted(outcomes.items()))}
     if resolution:
         out["mention_resolution"] = dict(sorted(resolution.items()))
     return out
@@ -1305,12 +1357,14 @@ def _bounded(result: Callable, gaps: list, skipped: Counter, *, more: bool, spen
 INVOICE_DATES = ("posting_date", "invoice_date")   # BC's posting date, Sage's invoice date
 
 
-def _recent_invoiced_orders(st: Any, as_of: date) -> list[str]:
+def _recent_invoiced_orders(st: Any, as_of: date, *, days: int = MARGIN_DAYS,
+                            since: int = -1) -> list[str]:
     """Orders whose invoices (a BC posting date or a Sage invoice date) fall within
     ``MARGIN_DAYS`` before the newest such date their own system holds (not after
     ``as_of``): each system's own recency (``po_status.system_of`` of the invoice), so a
     system whose invoices end earlier (BC's capture ends months before Sage's) still
-    yields its latest orders. The systems take turns, each most recently invoiced first
+    yields its latest orders (``days``/``since``: more than ``since`` and at most ``days``
+    days before it; the margin erosion rule's earlier orders). The systems take turns, each most recently invoiced first
     (days before its newest, then the date, then the order), so one system's slow margin
     reads (a Sage order's run takes minutes) never keep another's orders unread."""
     from .po_status import system_of
@@ -1343,7 +1397,7 @@ def _recent_invoiced_orders(st: Any, as_of: date) -> list[str]:
             continue
         top = newest[system_of(link["from_object"])]
         back = (top - day).days
-        if back > MARGIN_DAYS:
+        if back > days:
             continue
         order = link["to_object"]
         if order not in last or (back, -day.toordinal()) < (last[order][0],
@@ -1352,6 +1406,8 @@ def _recent_invoiced_orders(st: Any, as_of: date) -> list[str]:
             last_invoice[order] = link["from_object"]
     per_system: dict[str, list[str]] = defaultdict(list)
     for order in sorted(last, key=lambda o: (last[o][0], -last[o][1].toordinal(), o)):
+        if last[order][0] <= since:
+            continue   # its latest invoice is within ``since``: a recent order, not earlier
         per_system[system_of(last_invoice[order])].append(order)
     turns = [(rank, system, order) for system, orders in per_system.items()
              for rank, order in enumerate(orders)]
@@ -1386,10 +1442,13 @@ def read_margin(call: Callable, root: str) -> Any:
 def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
                     cites: Callable, result: Callable, bound: int = CALL_BOUND,
                     pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None,
-                    roots: Sequence[str] | None = None) -> dict[str, Any]:
+                    roots: Sequence[str] | None = None,
+                    read: Callable[[str], Any] | None = None) -> dict[str, Any]:
     """``pmap``: the engine's process pool: every recently invoiced order is read on its
     workers (no ``bound``; one not reached in time is ``time_budget``). ``roots``: the
-    recently invoiced orders (``_recent_invoiced_orders``) when already read."""
+    recently invoiced orders (``_recent_invoiced_orders``) when already read. ``read``:
+    one order's margin without a pool (default ``customer_profit.read_order``; the engine
+    shares its readings with the margin erosion rule)."""
     if call is None:
         return result([], status="not_configured", reasons=["tool_caller_not_given"])
     from . import customer_profit as cp
@@ -1413,7 +1472,8 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
                 continue
         else:
             try:
-                order = cp.read_order(call, cp.Order(root, root, []))
+                order = read(root) if read is not None else \
+                    cp.read_order(call, cp.Order(root, root, []))
             except Exception as error:  # noqa: BLE001 - one order fails alone
                 if type(error).__name__ == "TimeBudgetSpent":
                     spent = True    # what was found stands; the rest is not looked at

@@ -373,7 +373,8 @@ class AgentAsk:
             emit: Callable[[str, Mapping[str, Any]], None] = lambda kind, data: None,
             context: str = "", route: Optional[str] = None,
             roots: Sequence[Mapping[str, Any]] = (),
-            entities: Optional[Sequence[Mapping[str, Any]]] = None) -> AskRun:
+            entities: Optional[Sequence[Mapping[str, Any]]] = None,
+            looked: Optional[Mapping[str, Any]] = None) -> AskRun:
         """One question as the reader (``ReaderRefused`` before any session for a reader
         with no employee identity). ``emit(kind, data)``: ``("call", {"tool": name})`` as
         each tool call starts; ``("result", {"tool", "step"})`` as another tool's result
@@ -383,7 +384,9 @@ class AgentAsk:
         ``citations``: what its passed claims cite, for the caller to decide for the
         reader before showing it). ``entities``: the things the question names as the
         app resolved them before the session (``objective_runner.resolve_entities``), so
-        the session's answer gate never searches for them; None: it resolves them."""
+        the session's answer gate never searches for them; None: it resolves them.
+        ``looked``: what the app already looked up for the question as this reader
+        (``session_prefetch.first_reads``): the session does not look it up again."""
         from operating import agent_session as runner
         from . import ask_progress as progress
 
@@ -452,6 +455,8 @@ class AgentAsk:
             # the records the Ask found for the question (``roots``: object_id,
             # object_type, same_as) are the session's first reads, not looked up again
             agent.known_roots = [dict(root) for root in roots if isinstance(root, Mapping)]
+            if looked is not None and hasattr(agent, "looked_up"):
+                agent.looked_up = dict(looked)
             if route == "lookup" or (route is None and deep.is_lookup(question)):
                 effort = os.environ.get(LOOKUP_EFFORT_ENV, LOOKUP_EFFORT).strip()
                 if effort and effort != "default" and hasattr(agent, "effort"):

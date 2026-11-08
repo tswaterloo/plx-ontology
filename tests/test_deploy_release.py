@@ -68,6 +68,12 @@ class DeployFilesTest(unittest.TestCase):
                 self.assertIn("WorkingDirectory=/srv/rel/current", text, name)
             self.assertTrue((out / "plx-proactive-inc.path").is_file())
             self.assertTrue((out / "plx-proactive-nightly.timer").is_file())
+            whole = (out / "plx-proactive-whole.service").read_text()
+            self.assertIn("--refresh whole", whole)
+            self.assertIn("Environment=PLX_ONTOLOGY_PG=1", whole)
+            self.assertIn("User=someone", whole)
+            self.assertIn("01,05,09,13,17,21:15:00",
+                          (out / "plx-proactive-whole.timer").read_text())
             secret = (out / "plx-api.service.d" / "live-secret.conf").read_text()
             # required, never optional: a missing live secret must stop the API, not fall
             # back to the development session secret another env file sets

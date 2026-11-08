@@ -859,6 +859,148 @@ class SliceTests(unittest.TestCase):
         self.assertEqual(set(marks), {"[]"})
 
 
+class _FakePostgres:
+    """A SQLite store as the Postgres reader shows it to the traverse tools: the store
+    state (``PRAGMA data_version``) and the load state (``ontology.load_state``,
+    ``ontology.applied_owned``) are the test's; every other statement runs on SQLite."""
+
+    postgres = True
+    total_changes = 0
+
+    def __init__(self, conn):
+        self.inner, self.version, self._lock = conn, 1, threading.RLock()
+        self.load = {"generation": {"content_digest": "g1"}}
+        self.changed, self.owned = set(), []
+        self.meta = [("schema_digest", "s1"), ("steps_digest", "t1")]
+        self.migrations = (0, None)
+        self._pg = self
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def execute(self, sql, *args):
+        if sql.strip() == "PRAGMA data_version":
+            return self.inner.execute("SELECT ?", (self.version,))
+        return self.inner.execute(sql, *args)
+
+    def cursor(self):   # the raw connection's cursor
+        fake = self
+
+        class Cursor:
+            rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, sql, params=()):
+                if "applied_owned" in sql:
+                    self.rows = [(o,) for layer, o in fake.owned if layer == params[0]]
+                elif "updated_at" in sql:
+                    self.rows = [(n,) for n in fake.changed]
+                elif "store_meta" in sql:
+                    self.rows = list(fake.meta)
+                elif "to_regclass" in sql:
+                    self.rows = [(True,)]
+                elif "schema_migrations" in sql:
+                    self.rows = [fake.migrations]
+                else:
+                    self.rows = list(fake.load.items())
+
+            def fetchall(self):
+                return self.rows
+
+        return Cursor()
+
+    def land(self, layer, owned, *, also=()):
+        """A delta layer applied: it replaced ``owned`` (and wrote ``also`` too)."""
+        self.load.setdefault("delta_layers", []).append(layer)
+        self.load[f"delta:{layer}"] = {"owned": len(owned)}
+        self.owned += [(layer, o) for o in owned]
+        self.changed = {"delta_layers", f"delta:{layer}", *also}
+        self.version += 1
+
+
+class LayerCarriedFactsTests(unittest.TestCase):
+    """On Postgres a delta layer is a new store state: the per-type slice facts are kept
+    over it and patched with the rows of the objects it replaced, never read again whole,
+    and only add (a marking the layer brought is seen at once); any other load change
+    reads them again."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "ontology.sqlite"
+        source = build().conn
+        with contextlib.closing(sqlite3.connect(path)) as target:
+            source.backup(target)
+        source.close()
+        self.path = path
+        self.store = ot.StoreReader.open(path)
+        self.addCleanup(self.store.conn.close)
+        self.fake = _FakePostgres(self.store.conn)
+        self.store.conn = self.fake
+        base = ot.OntologyTools(self.store, POLICY, item_gate=item_gate, schema=SCHEMA,
+                                grammar=None, contracts=CONTRACTS, clock=lambda: NOW,
+                                monotonic=Clock().monotonic)
+        self.tools = tt.TraverseTools(base)
+        self.scans = []
+        self.fake.inner.set_trace_callback(self.scans.append)
+
+    def marks(self):
+        self.scans.clear()
+        with self.store.lock:
+            return set(self.tools._slices_of("object", {"Order"})["Order"][0])
+
+    def whole_reads(self):
+        return [s for s in self.scans if "= 'Order'" in s or "= :name" in s]
+
+    def test_a_layer_patches_the_facts_and_another_change_reads_them_again(self):
+        self.assertEqual(self.marks(), {"[]", '["finance"]'})
+        self.assertTrue(self.whole_reads())
+        with contextlib.closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("UPDATE object_versions SET markings = '[\"pii\"]' "
+                           "WHERE object_id = 'Order:portal.order:o-1'")
+        self.fake.land("d1", ["Order:portal.order:o-1"])
+        # the layer's own marking is in at once, the old ones stay (only adds)
+        self.assertEqual(self.marks(), {"[]", '["finance"]', '["pii"]'})
+        self.assertEqual(self.whole_reads(), [])
+        # a layer whose replaced objects are not all recorded: read again
+        self.fake.land("d2", ["Order:portal.order:o-2"])
+        self.fake.owned.pop()
+        self.marks()
+        self.assertTrue(self.whole_reads())
+        # a migration's load state beside a layer: read again
+        self.fake.land("d3", ["Order:portal.order:o-2"], also={"schema"})
+        self.marks()
+        self.assertTrue(self.whole_reads())
+        # a step migration (no load state of its own) then a layer: read again, and the
+        # marking it brought is seen
+        self.fake.land("d3b", ["Order:portal.order:o-2"])
+        self.assertNotIn('["l5"]', self.marks())
+        self.assertEqual(self.whole_reads(), [])   # a layer alone: carried
+        with contextlib.closing(sqlite3.connect(self.path)) as writer, writer:
+            writer.execute("UPDATE object_versions SET markings = '[\"l5\"]' "
+                           "WHERE object_id = 'Order:portal.order:o-4'")
+        self.fake.meta = [("schema_digest", "s1"), ("steps_digest", "t2")]
+        self.fake.migrations = (1, "2099-01-30 00:00:00+00")
+        self.fake.land("d3c", ["Order:portal.order:o-2"])
+        self.assertIn('["l5"]', self.marks())
+        self.assertTrue(self.whole_reads())
+        # a migration record alone (same digests) is a migration too
+        self.fake.migrations = (2, "2099-01-31 00:00:00+00")
+        self.fake.land("d3d", ["Order:portal.order:o-2"])
+        self.marks()
+        self.assertTrue(self.whole_reads())
+        # another generation: read again
+        self.fake.load["generation"] = {"content_digest": "g2"}
+        self.fake.land("d4", ["Order:portal.order:o-2"])
+        self.assertEqual(self.marks(), {'["pii"]', "[]", '["finance"]', '["l5"]'})
+        self.assertTrue(self.whole_reads())
+
+
 class KeptFactsTests(unittest.TestCase):
     """The store facts ``prime`` reads are kept beside the store file, so a later process
     over the same unchanged file skips the whole-store scan; anything else reads it."""

@@ -1171,6 +1171,34 @@ class ResolveTests(MirrorTestCase):
                                                                 "external_reference")]})
         self.assertEqual(custom.resolve(OPS, "c7")["candidate_count"], 1)
 
+    def test_exact_read_of_identifier_column_starts_from_the_index(self):
+        """An ``eq``/``in`` read of an indexed identifier column is narrowed by the
+        identifier index (no whole-relation parse) and returns exactly the rows the
+        unindexed read does: case stays exact, a missing value finds nothing, and a
+        value a float or boolean cell could also print as is read as before."""
+        plain = self.mirror()
+        plain.rows(OPS, "public.customer")
+        values = (("C7",), ("c7",), ("C7", "NOPE-1"), ("NOPE-1",), ("7.0",))
+        expected = {value: [r["key"] for r in plain.rows(
+            OPS, "public.customer", where=[["code", "in", list(value)]])["rows"]]
+            for value in values}
+        plain.close()
+        self.assertEqual(len(expected[("C7",)]), 1)
+        self.assertEqual(expected[("c7",)], [])
+        self.assertEqual(expected[("NOPE-1",)], [])
+        custom = self.mirror(identifiers={"public.customer": [("code", "customer_code",
+                                                                "external_reference")]})
+        custom.resolve(OPS, "c7")   # the index is built for the configured column
+        statements = []
+        custom._db.set_trace_callback(statements.append)
+        for value in values:
+            statements.clear()
+            got = custom.rows(OPS, "public.customer", where=[["code", "in", list(value)]])
+            self.assertEqual([r["key"] for r in got["rows"]], expected[value], value)
+            narrowed = any("FROM identifier_index" in s and "row_current" in s
+                           for s in statements)
+            self.assertEqual(narrowed, value != ("7.0",), value)
+
 
 class DecimalTests(unittest.TestCase):
     def test_float_artifact_keeps_exact_and_flags_normalization(self):

@@ -202,6 +202,11 @@ class MigrationReviewTests(unittest.TestCase):
                        "'ontology.text_fields_id'), %s, %s, 'api://made-up/line', "
                        "'row.quantity', 'record', 'internal', '[]', 'made-up')",
                        (oid, handle))
+            # a payroll document's field: the text index marked it finance and pii
+            pg.execute("INSERT INTO ontology.text_fields VALUES (nextval("
+                       "'ontology.text_fields_id'), %s, %s, 'api://made-up/stub', "
+                       "'row.quantity', 'record', 'internal', '[\"finance\",\"pii\"]', "
+                       "'made-up')", (oid, handle))
             pg.execute("CREATE SCHEMA search")
             for table in ("chunks", "entities"):
                 pg.execute(f"CREATE TABLE search.{table} (id text PRIMARY KEY, object_id "
@@ -218,9 +223,11 @@ class MigrationReviewTests(unittest.TestCase):
         self.assertTrue(applied["applied"], applied)
         self.assertEqual(applied["remarked.text_fields"], 1)
         with psycopg.connect(self.dsn) as pg:
-            self.assertEqual(pg.execute("SELECT markings FROM ontology.text_fields WHERE "
-                                        "object_id = %s", (oid,)).fetchone()[0],
-                             '["finance"]')
+            self.assertEqual(pg.execute("SELECT citation, markings FROM ontology.text_fields "
+                                        "WHERE object_id = %s ORDER BY 1", (oid,)).fetchall(),
+                             [("api://made-up/line", '["finance"]'),
+                              # its pair stays (stricter, never wider)
+                              ("api://made-up/stub", '["finance","pii"]')])
             for table in ("chunks", "entities"):
                 self.assertEqual(pg.execute(f"SELECT markings FROM search.{table}"
                                             ).fetchone()[0], ["finance"])

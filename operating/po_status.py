@@ -25,13 +25,19 @@ derives its fulfillment code from the header and the summed line quantities
   (``generated_purchase_order_item.status``, ``fm_receiving_status``: Complete, OverPO or
   Cancel settled, B.Order partly received, Pending or Generated nothing yet) decides what
   was received, provided the FM items' ordered total is the gold one; any other item word
-  or FM total leaves the quantities unknown. The QC receiving log's ``sumqty`` is never
+  or FM total leaves the quantities unknown. An item FileMaker stores no state for (a
+  store or mirror that does not carry it) takes the order's one FM header word, FileMaker
+  being the system of record of its own order (``fm_by_header``: B.Order partly
+  received, Pending, Generated or Revised nothing yet but a recorded receipt; a Complete
+  or Cancel header closes by itself and states no quantity); it never rolls up over a receipt the Portal lines record. The QC receiving log's ``sumqty`` is never
   read as a quantity: on the mirror it is a FileMaker running total across the whole log
   (each export's rows in id order), not one receipt's quantity;
 * a null or unmapped word (Revised, Generated, anything new), quantities that are not
   readable in one unit, or no ordered quantity at all is **unknown**, with its reason,
   and counted by every reader, never guessed;
-* a BC order reads its own ``status`` (Draft: not issued) and ``fullyReceived``;
+* a BC order reads its own ``status`` (Draft: not issued) and its own lines: open while
+  any line has an outstanding quantity, received once none has; ``fullyReceived`` only
+  when no line is readable;
 * a Sage order whose ``iscomplete`` is 1 is **closed** ``HISTORICAL_SAGE``: a completed
   historical Sage record, never judged for lateness (on every captured header iscomplete 1
   has linescmpl >= lines and 0 has fewer; the vocabulary check keeps that cross-tab); any
@@ -240,10 +246,17 @@ def classify(raw: Any, ordered: Decimal | None, received: Decimal | None) -> PoS
     return PoStatus(CLOSED, RECEIVED)
 
 
-def bc(status: Any, fully_received: Any) -> PoStatus:
-    """A Business Central purchase order: Draft is not issued; else ``fullyReceived``."""
+def bc(status: Any, fully_received: Any, lines: Any = None) -> PoStatus:
+    """A Business Central purchase order, BC being the system of record of its own
+    order: Draft is not issued; an issued order with readable ``lines`` (``(ordered,
+    received, unit)``) is open while any line has an outstanding quantity and received
+    once none has (the lines govern);
+    with no readable line its ``fullyReceived`` flag states it."""
     if header_class(status, "bc") == NOT_ISSUED:
         return PoStatus(DRAFT, "DRAFT")
+    if lines and all(UNREAD not in (want, got) for want, got, _ in lines):
+        return (PoStatus(OPEN) if any(line_open(want, got) for want, got, _ in lines)
+                else PoStatus(CLOSED, RECEIVED))
     flag = _flag(fully_received)
     if flag is None:
         return PoStatus(UNKNOWN, reason="status_missing")
@@ -321,7 +334,8 @@ def record(values: Mapping[str, Sequence[Any]],
         flags = {_flag(v) for v in values.get("bc_fully_received") or ()}
         statuses.append(PoStatus(UNKNOWN, reason="status_disputed")
                         if len(heads) > 1 or len(flags) > 1
-                        else bc(next(iter(heads), None), next(iter(flags), None)))
+                        else bc(next(iter(heads), None), next(iter(flags), None),
+                                lines if values.get("bc_status") else None))
     if values.get("sage_is_complete"):
         statuses.append(sage(values["sage_is_complete"][0]))
     return combine(statuses)
@@ -352,7 +366,7 @@ def _fm_received(totals: tuple[Decimal | None, Decimal | None], fm_lines: Any
     fm_lines = list(fm_lines)
     got_total, partial = Decimal(0), False
     for _, got, _ in fm_lines:
-        if got is UNREAD:
+        if got is UNREAD or isinstance(got, _Unstated):
             return None, None
         if got is PARTIAL_RECEIPT:
             partial = True
@@ -400,6 +414,21 @@ class _Partial:
 
 
 PARTIAL_RECEIPT = _Partial()   # an item FileMaker says is partly received (amount unread)
+
+
+class _Unstated:
+    """An FM item FileMaker serves no receiving state for (none stored, not withheld):
+    ``receipt`` whether goods are recorded against it. Only the FM header decides it
+    (``fm_by_header``); anywhere else it is unread."""
+
+    def __init__(self, receipt: bool) -> None:
+        self.receipt = receipt
+
+    def __repr__(self) -> str:
+        return "UNSTATED"
+
+
+UNSTATED, UNSTATED_RECEIPT = _Unstated(False), _Unstated(True)
 # FileMaker's receiving state of a PO item (``generated_purchase_order_item.status``):
 # settled (nothing outstanding: received in full, over-received or the item cancelled),
 # partly received (a back order), nothing received yet; any other word is unread.
@@ -408,6 +437,10 @@ FM_ITEM_SETTLED = frozenset({"COMPLETE", "OVERPO", "CANCEL"})
 FM_ITEM_CANCELLED = frozenset({"CANCEL"})
 FM_ITEM_PARTIAL = frozenset({"B.ORDER"})
 FM_ITEM_NOTHING = frozenset({"PENDING", "GENERATED"})
+# FM header words of an issued order with nothing settled yet: where FileMaker serves no
+# item state, such a header says nothing arrived but recorded receipts (``fm_by_header``).
+# Revised is a FileMaker order revised after issue, never cancelled or closed.
+FM_HEADER_NOTHING = frozenset({*FM_ITEM_NOTHING, "REVISED"})
 
 
 # A FileMaker QC lot's status that says the goods never arrived usable (QC refused them):
@@ -439,8 +472,41 @@ def fm_item_received(status: Any, ordered: Any, receipt: bool | None = None) -> 
         return PARTIAL_RECEIPT
     if text in FM_ITEM_NOTHING:
         return None
-    # no word served: a receipt alone does not say whether all arrived, so unread
+    if text is None and status is not UNREAD:
+        # no state stored: a receipt alone does not say whether all arrived; only the
+        # FM header decides such an item (``fm_by_header``), anywhere else it is unread
+        return UNSTATED_RECEIPT if receipt else UNSTATED
     return UNREAD
+
+
+def fm_by_header(items: Any, header: Sequence[Any] | None) -> Any:
+    """An FM order's items with every item FileMaker serves no state for
+    (``_Unstated``) decided by the order's one FM header word, FileMaker being the system
+    of record of its own order: B.Order is partly received; Pending, Generated or
+    Revised received nothing but what a recorded receipt shows (partly received). A
+    closing header (Complete, Cancel) states no received quantity (it closes the order by
+    itself, its remainder unread), so it, two header words, none or any other word is
+    ``UNREAD``, never guessed. Items that carry their own state are unchanged."""
+    if items is None or items is UNREAD:
+        return items
+    items = list(items)
+    if not any(isinstance(got, _Unstated) for _, got, _ in items):
+        return items
+    words = {word(v) for v in header or ()}
+    text = next(iter(words)) if len(words) == 1 else None
+    out = []
+    for want, got, unit in items:
+        if isinstance(got, _Unstated):
+            if text in FM_ITEM_PARTIAL:
+                got = PARTIAL_RECEIPT
+            elif text in FM_HEADER_NOTHING:
+                got = PARTIAL_RECEIPT if got.receipt else None
+            else:
+                return UNREAD
+            if got is UNREAD:
+                return UNREAD
+        out.append((want, got, unit))
+    return out
 
 
 def fm_rollup(items: Any) -> "PoStatus | None":
@@ -456,8 +522,8 @@ def fm_rollup(items: Any) -> "PoStatus | None":
         return None
     got_any = open_any = False
     for want, got, _unit in items:
-        if got is UNREAD or want is UNREAD:
-            return None
+        if got is UNREAD or want is UNREAD or isinstance(got, _Unstated):
+            return None   # an item state not stated: the header decides
         if got is PARTIAL_RECEIPT:
             got_any = open_any = True
             continue
@@ -805,7 +871,7 @@ def _header_closed(values: Sequence[Any] | None) -> bool:
 
 def _read_side(source: Any, records: Sequence[str],
                reads: Mapping[str, tuple[dict[str, list[Any]], list, bool]],
-               notes: list | None = None
+               notes: list | None = None, *, bc_lines: bool = True
                ) -> tuple[PoStatus, list, list, bool, dict[str, tuple[Any, list]]]:
     """One side of a PO (its settled twins, or the firm twins linked to them) by the one
     definition: the combined status, its evidence and link marks, whether a part is
@@ -824,7 +890,10 @@ def _read_side(source: Any, records: Sequence[str],
     logs: dict[str, Any] = {}
     for twin in fm:
         found, evidence, hidden, link_marks = source.fm_lines(twin)
-        logs[twin] = found
+        # items FileMaker states no receiving state for take its header's word as the
+        # received quantity of the mirror's seeded 0 (``fm_by_header``); they never roll
+        # up (a stale header never overrides a receipt the Portal lines record)
+        logs[twin] = fm_by_header(found, reads[twin][0].get("fm_status"))
         status = fm_rollup(found)
         if status is not None and status.cls == OPEN and _header_closed(
                 reads[twin][0].get("fm_status")):
@@ -844,7 +913,8 @@ def _read_side(source: Any, records: Sequence[str],
         cited += evidence
         lines = fm_lines = None
         words = {word(v) for v in values.get("status", ())}
-        if len(words) == 1 and header_class(next(iter(words))) == ISSUED:
+        issued_bc = bc_lines and bool(values.get("bc_status")) and not bc_draft(values)
+        if issued_bc or len(words) == 1 and header_class(next(iter(words))) == ISSUED:
             lines, evidence, hidden, link_marks = source.lines(member)
             blind = blind or hidden
             cited += evidence
@@ -1122,7 +1192,9 @@ def _compare(source: Any, out: "PoRead", lines_of: Mapping[str, tuple[Any, list]
     mine_bc = any(system_of(r) == POSTED_COPY for r in out.members)
     their_bc = any(system_of(r) == POSTED_COPY for r in firm)
     # a receipt in ANY copy closes the order (owner, 2026-11-06): whichever side records
-    # the goods received decides, whatever the other copy's header or lines still say
+    # the goods received decides, whatever the other copy's header or lines still say.
+    # A BC copy compared here is the posted copy of a Portal or FileMaker order (that
+    # order's own system closes it); a BC order with no such twin governs by its own lines
     received_by = (mine_side if mine == FULLY_RECEIVED else
                    their_side if other == FULLY_RECEIVED else None)
     if received_by is not None and out.status != PoStatus(CLOSED, RECEIVED):
@@ -1415,7 +1487,8 @@ class DateDefaults:
 _DEFAULTS_CACHE: dict[str, DateDefaults] = {}
 
 
-def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True) -> PoRead:
+def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True,
+         bc_lines: bool = True) -> PoRead:
     """The one purchase-order reader. ``source`` reads for one caller with its own
     permission filtering and markings: ``twins(oid)`` -> (members, blind, identity marks);
     ``values(m)`` -> (status values, evidence, hidden); ``lines(m)`` and ``fm_lines(m)``
@@ -1428,13 +1501,15 @@ def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True
     Lines are read only for a single issued Portal word (a closed, draft, unmapped or
     missing word is the same class for every reader); the FM QC log only when the Portal
     lines received nothing and the PO has an FM twin (two twins logging receipts: unread). Dates are read
-    for an open or received PO when ``dates`` and ``today`` are given."""
+    for an open or received PO when ``dates`` and ``today`` are given. ``bc_lines`` False:
+    an issued BC order's status is its ``fullyReceived`` flag alone, its lines unread (the
+    unnamed ``plx.process`` choice, which every reader of the order decides alike)."""
     members, blind, identity_marks = source.twins(oid)
     reads = {m: source.values(m) for m in members}
     out = PoRead(oid, list(members), PoStatus(UNKNOWN, reason="status_missing"),
                  identity_marks=list(identity_marks))
-    out.status, out.evidence, out.marks, hidden, lines_of = _read_side(source, members, reads,
-                                                                       out.notes)
+    out.status, out.evidence, out.marks, hidden, lines_of = _read_side(
+        source, members, reads, out.notes, bc_lines=bc_lines)
     blind = blind or hidden
     # a firm (``corroborated``) twin is another system's record of this order: its status
     # never joins this PO's, but where the two disagree the conflict is named (``_compare``)
@@ -1509,7 +1584,7 @@ def _one_log(logs: Sequence[Any]) -> Any:
     """The FM QC log of a PO with one or more FM twins: unread when any is unread or more
     than one twin logs a receipt (two logs of one order are not summed); the one twin's
     that logs one; otherwise (no QC receipt anywhere) the first, which decides nothing."""
-    if any(log is UNREAD or any(got is UNREAD or got is not None and got is not PARTIAL_RECEIPT
+    if any(log is UNREAD or any(got is UNREAD or isinstance(got, _Unstated) or got is not None and got is not PARTIAL_RECEIPT
                                 and _number(got) is None for _, got, _ in log)
            for log in logs):
         return UNREAD
@@ -2633,6 +2708,9 @@ def _fm_log(scans: Mapping[str, Mapping[str, Any]]) -> Callable[[str], Any]:
     if not (fm_scan.get("complete") and item_scan.get("complete")):
         return lambda fm_id: UNREAD
     fm_ids = {str(r.get("id")) for r in fm_scan.get("rows") or ()}
+    heads: dict[str, list[Any]] = defaultdict(list)
+    for r in fm_scan.get("rows") or ():
+        heads[str(r.get("id"))].append(r.get("status"))
     items: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
     for row in item_scan.get("rows") or ():
         qty = row.get("qty", UNREAD)
@@ -2642,7 +2720,9 @@ def _fm_log(scans: Mapping[str, Mapping[str, Any]]) -> Callable[[str], Any]:
     def log(fm_id: str) -> Any:
         if fm_id not in fm_ids:
             return UNREAD
-        return [(qty, got, None) for qty, got in items.get(fm_id, ())]
+        # an item with no state stored: the FM header decides it (``fm_by_header``)
+        return fm_by_header([(qty, got, None) for qty, got in items.get(fm_id, ())],
+                            heads.get(fm_id))
     return log
 
 

@@ -9,12 +9,29 @@ import unittest
 from unittest import mock
 
 
-def _schemas():
-    """The served schema and one whose first gaps-only link unit's binding changed."""
+_ENDS = ("from_binding", "to_binding", "via")
+
+
+def _gaps_units(schema, *, naming_ends):
+    """The gaps-only link units of ``schema`` whose binding names (or names no) binding of
+    its ends: a key join's (``from_binding``/``to_binding``) is part of each end binding's
+    unit key, so changing it changes those units too."""
     from ontology.project_incremental import plan
+    out = []
+    for unit in sorted(u for u, rows in plan(schema).rows.items() if rows == ("gaps",)):
+        lid, index = unit[2:].rsplit("#", 1)
+        binding = schema.link_types[lid]["bindings"][int(index)]
+        if any(binding.get(end) for end in _ENDS) == naming_ends:
+            out.append(unit)
+    return out
+
+
+def _schemas(*, naming_ends=False):
+    """The served schema and one whose first gaps-only link unit's binding changed (by
+    default one naming no end binding: a build step's link no binding's unit holds)."""
     from ontology.schema import load_schema
     old = load_schema()
-    unit = sorted(u for u, rows in plan(old).rows.items() if rows == ("gaps",))[0]
+    unit = _gaps_units(old, naming_ends=naming_ends)[0]
     lid, index = unit[2:].rsplit("#", 1)
     new = copy.deepcopy(old)
     binding = new.link_types[lid]["bindings"][int(index)]
@@ -34,6 +51,22 @@ class GapsUnitTests(unittest.TestCase):
         self.assertEqual(out["touched_links"], [])
         self.assertFalse([r for r in out["refused"] if r.startswith("unit_rows_unknown")])
         self.assertEqual(out["delete"]["links"], [])
+
+    def test_a_key_join_change_touches_the_types_of_its_ends(self):
+        """A gaps-only key-join unit names its ends' bindings: its change re-derives
+        their units, so their types are touched, never left out of the steps to re-run."""
+        from ontology.schema_migrate import diff
+        old, new, unit = _schemas(naming_ends=True)
+        lid, index = unit[2:].rsplit("#", 1)
+        binding = old.link_types[lid]["bindings"][int(index)]
+        ends = {old.link_types[lid]["from"], old.link_types[lid]["to"]}
+        out = diff(old, new, present=[])
+        self.assertIn(unit, out["units"]["affected"])
+        for end in ("from_binding", "to_binding"):
+            if binding.get(end):
+                self.assertIn(f"b:{binding[end]}", out["units"]["affected"])
+        self.assertLessEqual(ends, set(out["touched_types"]))
+        self.assertFalse([r for r in out["refused"] if r.startswith("unit_rows_unknown")])
 
     def test_an_unknown_kind_of_unit_rows_is_refused(self):
         from ontology import project_incremental

@@ -4434,6 +4434,22 @@ class SourceMirror:
             params.extend(values)
         matches = []
         pending = self._pending(relation)
+        if not include_missing and not pending:
+            # An exact read of an indexed identifier column starts from the identifier
+            # index (one key lookup) instead of parsing every row of the relation: a
+            # carrier probe for an identifier no row holds took seconds per relation
+            # (11-07 graded run, plx.find on missing identifiers 9-20 s). Every row
+            # still passes the same prefilter and exact check below.
+            indexed = set(json.loads(state["identifier_columns_json"] or "[]"))
+            for column, op, value in predicates:
+                forms = _index_forms(op, value) if column in indexed else None
+                if forms is not None:
+                    clauses.append(
+                        "key_json IN (SELECT key_json FROM identifier_index WHERE "
+                        f"norm_value IN ({','.join('?' for _ in forms)}) AND relation = ? "
+                        "AND column_name = ?)")
+                    params.extend([*forms, relation, column])
+                    break
         query = ("SELECT key_json, run_index, run_length, row_json, row_digest, capture_id, "
                  f"{_SEEN_AT} AS last_seen_at, absent_since_capture, "
                  "missing_from_source_since, lineage, deleted_in_source, deleted_basis, " +
@@ -4981,6 +4997,35 @@ def _matches(row: Mapping[str, Any], column: str, op: str, value: Any) -> bool:
 
 
 _INTEGER_TEXT = re.compile(r"^[+-]?\d+$")
+
+
+def _index_forms(op: str, value: Any) -> list[str] | None:
+    """The identifier-index values (``_norm_identifier``) a cell equal to ``value`` (``eq``)
+    or to one of its items (``in``) is indexed under, or None when some match might not
+    be indexed: only a text or integer cell is (a float, boolean, object or array cell is
+    not), so an asked value whose text a float's ``repr``, a boolean or a JSON value could
+    also have, or one the index never holds (empty, control characters, past 256
+    characters), reads the relation as before."""
+    if op not in ("eq", "in"):
+        return None
+    items = value if op == "in" else [value]
+    if not isinstance(items, (list, tuple)) or not items:
+        return None
+    forms: set[str] = set()
+    for item in items:
+        if isinstance(item, bool) or not isinstance(item, (int, str)):
+            return None
+        text = str(item)
+        if text in ("true", "false") or text.startswith(("{", "[", '"')) \
+                or text != text.strip() \
+                or (_NUMERIC_TEXT.fullmatch(text) and not _INTEGER_TEXT.fullmatch(text)) \
+                or text.casefold().lstrip("+-") in ("inf", "nan", "infinity"):
+            return None
+        norm = _norm_identifier(text)
+        if norm is None:
+            return None
+        forms.add(norm)
+    return sorted(forms)
 
 
 def _sql_prefilter(column: str, op: str, value: Any) -> tuple[str, list[Any]]:

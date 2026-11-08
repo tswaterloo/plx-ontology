@@ -23,11 +23,35 @@ from . import sales_order_status as so_status
 
 ANY = "*"   # a rule whose subject may be a record of any type (a cluster's root)
 
-# Rules an incremental pass leaves whole: the vendor-mail rule reads the whole store's mail
-# by conversation (judged whole on each new day and by the full pass, its claims wait a
-# week), the customer-PO rule reads the Portal mirror (the full pass).
+# Rules an incremental pass leaves to the full pass and to the first pass of a new day
+# (``DATED``): the vendor-mail rule reads the whole store's mail by conversation (its
+# claims wait a week), the customer-PO rule reads the Portal mirror. The business alerts
+# sum over every order, purchase order or line of an item (a stock position, a trailing
+# cost average) or read every invoice; the chief-executive signals compare a customer's or
+# a supplier's whole history in two windows; the order-to-cash, damage, chase and hold
+# alerts read every shipped order, customer PO group, damage entry, chase or held batch;
+# the receivable and payable alerts (``operating.proactive_cash``) read every AR and AP
+# document and payment (about 200,000 on the live store). No link walk from a changed
+# record reaches what they judge, so an incremental pass would have to judge them whole
+# each time (minutes, every pass): they wait for the full pass instead.
 WHOLE: tuple[str, ...] = ()
-NOT_INCREMENTAL = ("vendor_no_reply", "order_without_customer_po")
+NOT_INCREMENTAL = ("vendor_no_reply", "order_without_customer_po",
+                   "stock_out_risk", "overdue_receivable", "unit_cost_jump",
+                   "customer_demand_drop", "promise_date_slip", "supplier_reliability",
+                   "shipped_not_invoiced", "duplicate_customer_order",
+                   "recurring_component_damage", "customer_chase", "quality_holds",
+                   "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables",
+                   "price_consistency",
+                   "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+                   "planner_task_overdue", "aged_balance_worsening", "production_late",
+                   "assembly_damage_spike", "teams_unanswered_ask",
+                   "commitments", "needs_reply",
+                   "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall",
+                   "certificate_expiry", "freight_cost_anomaly", "stale_quote",
+                   "duplicate_parties",
+                   "key_fields_missing", "twin_disagreement", "stale_captures")
+# The operations alerts (tasks, gates, aged snapshots, production, damage windows, Teams
+# conversations) read the whole store as well, so they wait for the full pass too.
 
 # Every rule's truth or wording moves with the business day (days late, expiry windows,
 # revision windows, the test-record filter's old drafts): a new day judges them whole.

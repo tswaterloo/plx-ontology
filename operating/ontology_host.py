@@ -165,6 +165,10 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
         people=people_directory_of(runtime),
         documents=documents,
         label_reserve=label_reserve))
+    # plx.around modes what_if / why over this same table (operating/ontology_tools_impact.py)
+    from . import ontology_tools_impact
+    ontology_tools_impact.register(table, traverse, contracts=tools.contracts,
+                                   schema=schema if schema is not None else tools.schema)
     # plx.agenda: a meeting's agenda read through this same table (operating/meeting_agenda.py).
     from . import meeting_agenda
     meeting_agenda.register(table, schema if schema is not None else tools.schema)
@@ -175,6 +179,32 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     from . import ontology_query
     ontology_query.register(table, tools)
     return table
+
+
+def aggregate_modes(table: Mapping[str, dict[str, Any]], tools: OntologyTools, *,
+                    prime: bool = True) -> dict[str, dict[str, Any]]:
+    """The modes of ``plx.aggregate`` (a call naming ``mode``), apart from the table:
+    plx.aggregate itself is served by ``CaseHostTools`` (``AggregateTools``), never by the
+    table, so a mode registered on the table would never be reached. ``cash_forecast``:
+    13 weeks of expected cash, its book read in the background from now (``prime``);
+    ``quote_conversion`` and ``cross_sell``: the sales book (``operating.proactive_sales``),
+    read in the background from now too; ``margin_variance``: a margin change split into
+    price, material cost, returns/credits and mix from the checked order margins, read
+    through ``table`` as the caller; ``who_knows``: per person, what they correspond about
+    and what waits on them, counts only, people exclusion first. Each wraps the one before: a call naming its mode is
+    its own, any other goes on, and one naming no known mode is refused."""
+    from . import cash_forecast, margin_variance, proactive_sales, who_knows
+
+    def unknown(arguments: Any, actor: Any) -> dict[str, Any]:
+        return _error("invalid_input", "mode must be cash_forecast, margin_variance, "
+                      "quote_conversion, cross_sell or who_knows")
+    modes: dict[str, dict[str, Any]] = {"plx.aggregate": {"name": "plx.aggregate",
+                                                          "handler": unknown}}
+    cash_forecast.register(modes, tools, prime=prime, other_modes=True)
+    proactive_sales.register(modes, tools, prime=prime)
+    margin_variance.register(modes, tools, calls=table)
+    who_knows.register(modes, tools)
+    return modes
 
 
 # How long ``prime_unbound`` waits for store facts read in the background before it
@@ -765,6 +795,8 @@ class CaseHostTools:
         # Tools served through ``call`` besides the ontology tools (``register_tool``).
         self._registered: dict[str, Any] = {}
         self._table: dict[str, dict[str, Any]] | None = None
+        # plx.aggregate's modes over that table (``aggregate_modes``), built on first use
+        self._modes: tuple[Any, dict[str, dict[str, Any]]] | None = None
 
     def close(self) -> None:
         """Release the store connection and remove the working directory (the empty
@@ -1151,6 +1183,11 @@ class CaseHostTools:
             return self._registered[name](arguments, self.actor)
         self._check_overlay()
         tools.policy = self.policy_for(actor)
+        if name == "plx.aggregate" and isinstance(arguments, dict) and "mode" in arguments:
+            table = self.table
+            if self._modes is None or self._modes[0] is not table:
+                self._modes = (table, aggregate_modes(table, tools))
+            return self._modes[1]["plx.aggregate"]["handler"](arguments, actor)
         if name in ANSWER_TOOLS:
             if self._answers is None or self._answers.base is not tools:
                 self._answers = AggregateTools(tools)

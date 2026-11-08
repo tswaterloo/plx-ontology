@@ -2555,7 +2555,8 @@ class EvidenceTools:
             WHERE t.chunk_id IN (SELECT value FROM json_each(:ids))
             AND o.audience_key IN (SELECT value FROM json_each(:aud))
             ORDER BY t.chunk_id"""
-        scan = f"""SELECT fd.object_id, fd.citation, fd.field_path, t.body, o.audience_key
+        scan = f"""SELECT fd.object_id, fd.version_handle, fd.citation, fd.field_path, t.body,
+                    o.audience_key
                     FROM text_chunks t
                     JOIN text_fields fd ON fd.field_id = t.field_id
                     JOIN objects o ON o.object_id = fd.object_id
@@ -2573,7 +2574,9 @@ class EvidenceTools:
             return set(), True   # an index this store lacks, or a query it cannot read
         cut = len(rows) > DOC_SCAN_CAP
         out: set[str] = set()
-        for row in rows[:DOC_SCAN_CAP]:
+        # a payroll or HR-confidential document's text is never read for a reader without
+        # finance and pii (``operating.search.document_marks.readable_text``)
+        for row in ot._readable_text(self.store, scope, rows[:DOC_SCAN_CAP]):
             if _family(row["audience_key"]) not in families:
                 continue
             out.add(row["object_id"])

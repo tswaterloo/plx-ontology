@@ -6,7 +6,7 @@
 import { currencyCode, formatDate, formatMoney, plainWords, plural, readable, recordLabel, typeLabel } from "./format";
 import { etaShown as etaHeadline } from "./eta";
 import { lateness, recordState, type Shown, type Status } from "./status";
-import type { Fact, LinkedItem, ObjectPage, ObjectRef, PoTrail, Source, TimelineEvent } from "./types";
+import type { Fact, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectRef, PoTrail, Source, TimelineEvent } from "./types";
 
 export interface RecordFact {
   key: string;
@@ -33,6 +33,9 @@ export function factMap(facts: Fact[] | undefined): Map<string, RecordFact> {
   }
   return out;
 }
+
+/** The record the first of ``keys`` present is read from. */
+const srcOf = (f: Map<string, RecordFact>, ...keys: string[]): Source | undefined => keys.map((k) => f.get(k)).find((x) => x && x.value !== "")?.source;
 
 const get = (f: Map<string, RecordFact>, ...keys: string[]) => {
   for (const k of keys) {
@@ -76,7 +79,8 @@ export interface RecordHead {
   leadStatus?: Status;
   badges: Shown[];
   stats: StatSpec[];
-  keyFacts: { label: string; value: string; status?: Status }[];
+  /** `source`: the record the value is read from, opened from the value. */
+  keyFacts: { label: string; value: string; status?: Status; source?: Source }[];
   askLabel: string;
 }
 
@@ -259,7 +263,7 @@ function supplierHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
       { label: "Code", value: get(f, "code", "vendor_number", "number") ?? "" },
       { label: "Currency", value: currency ?? "" },
       { label: "Blocked", value: blocked ? "Blocked in Business Central" : f.has("blocked") ? "No" : "", status: blocked ? "late" : undefined },
-      { label: "Payment terms", value: get(f, "payment_terms", "payment_terms_code") ?? "" },
+      { label: "Payment terms", value: get(f, "payment_terms", "payment_terms_code") ?? "", source: srcOf(f, "payment_terms", "payment_terms_code") },
     ],
     askLabel: name,
   };
@@ -304,9 +308,9 @@ function customerHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
     stats: stats.slice(0, 4),
     keyFacts: [
       { label: "Currency", value: currency ? `${currency}${curConflict ? " ⚠" : ""}` : "", status: curConflict ? "suspect" : undefined },
-      { label: "Business line", value: titleCase(get(f, "business_line")) ?? "" },
-      { label: "Payment terms", value: get(f, "payment_terms", "payment_terms_code") ?? "" },
-      { label: "Credit limit", value: limit === undefined ? "" : isZero(limit) ? "No credit limit set" : (moneyText(limit, currency) ?? limit) },
+      { label: "Business line", value: titleCase(get(f, "business_line")) ?? "", source: srcOf(f, "business_line") },
+      { label: "Payment terms", value: get(f, "payment_terms", "payment_terms_code") ?? "", source: srcOf(f, "payment_terms", "payment_terms_code") },
+      { label: "Credit limit", value: limit === undefined ? "" : isZero(limit) ? "No credit limit set" : (moneyText(limit, currency) ?? limit), source: srcOf(f, "credit_limit") },
       { label: "Blocked", value: blocked ? "Blocked in Business Central" : f.has("blocked") ? "No" : "", status: blocked ? "late" : undefined },
     ],
     askLabel: obj.label,
@@ -347,7 +351,7 @@ function aoHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
   const ordered = get(f, "ordered_pieces", "ordered_quantity", "quantity");
   const expected = get(f, "expected_quantity");
   const stats: StatSpec[] = [];
-  if (ordered) stats.push({ label: "Ordered", value: `${Number(ordered).toLocaleString("en-CA")} pcs` });
+  if (ordered) stats.push({ label: "Ordered", value: Number.isFinite(Number(ordered)) ? `${Number(ordered).toLocaleString("en-CA")} ${Number(ordered) === 1 ? "pc" : "pcs"}` : ordered });
   if (expected !== undefined) stats.push({ label: "Expected", value: expected });
   stats.push({ label: "Made", value: made ?? "not recorded", status: made ? undefined : "risk" });
   if (batch) stats.push({ label: "Batch", value: batch.label });
@@ -407,7 +411,7 @@ function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
     keyFacts: [...f.values()]
       .filter((x) => x.label.toLowerCase() !== "name" && !INTERNAL_FACT.test(x.key) && !/\buniq\b/i.test(x.label))
       .slice(0, 6)
-      .map((x) => ({ label: x.label, value: factValue(x.value) })),
+      .map((x) => ({ label: x.label, value: factValue(x.value), source: x.source })),
     askLabel: name,
   };
 }
@@ -516,4 +520,41 @@ export function groupRelated(refs: ObjectRef[]): { type: string; label: string; 
     byType.set(r.type, g);
   }
   return [...byType.values()];
+}
+
+/** The kind of page section a record's link groups land in. */
+export type LinkPlace = "fulfilment" | "linked";
+
+/**
+ * A record's links (one group per link kind the schema declares) for the page: the
+ * shipments and invoices section, and the linked list of everything else. Whatever the
+ * header or a section already shows is left out: an order's customer (the header names
+ * it), a customer's orders and a supplier's purchase orders (their own tables). A group
+ * whose records are all named only by their type ("Order line") is left out; a group of
+ * the same type as another says its link's words. `shownInHeader`: the record the header
+ * names (a purchase order's supplier), not listed again. Any link kind declared later lands in
+ * one of the two with no page code of its own.
+ */
+export function linkSections(obj: Pick<ObjectPage, "type" | "links">, shownInHeader?: string | null): Record<LinkPlace, { group: LinkGroup; heading: string; records: LinkRef[] }[]> {
+  const groups = (obj.links ?? []).filter((g) => {
+    if (g.role === "customer" && obj.type === "SalesOrder") return false;
+    if (obj.type === "Customer" && g.type === "SalesOrder") return false;
+    if (/^(?:Supplier|Vendor)$/.test(obj.type) && g.type === "PurchaseOrder") return false;
+    return true;
+  });
+  const sameType = new Map<string, number>();
+  for (const g of groups) sameType.set(g.type, (sameType.get(g.type) ?? 0) + 1);
+  const out: Record<LinkPlace, { group: LinkGroup; heading: string; records: LinkRef[] }[]> = { fulfilment: [], linked: [] };
+  for (const g of groups) {
+    const tl = typeLabel(g.type);
+    const records = (g.records ?? []).filter((r) => {
+      if (r.object_id === shownInHeader) return false;
+      const l = r.label.trim().toLowerCase();
+      return l !== tl.toLowerCase() && l.replace(/\s+/g, "") !== r.type.toLowerCase() && !/^(?:(?:PO|order|sales order|invoice|shipment|credit memo) line|Receipt|Aged (?:payable|receivable))$/i.test(r.label.trim());
+    });
+    if (records.length === 0) continue;
+    const heading = g.role === "same_record" ? g.words : (sameType.get(g.type) ?? 0) > 1 ? `${tl} · ${g.words.toLowerCase()}` : tl;
+    out[g.role === "fulfilment" ? "fulfilment" : "linked"].push({ group: g, heading, records });
+  }
+  return out;
 }

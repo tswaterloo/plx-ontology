@@ -210,7 +210,7 @@ class World:
             return result if result.get("ok") else None
         oi.register(table, oi.InvestigateTools(table, rows=rows, scope=oi.read_scope(base),
                                                captured=oi.capture_claims(base)))
-        self.table = table
+        self.table, self.base = table, base
         self.calls: list[str] = []
 
     def call(self, name: str, arguments: dict) -> dict:

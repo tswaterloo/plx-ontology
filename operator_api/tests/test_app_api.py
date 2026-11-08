@@ -209,6 +209,28 @@ class AccessLink(unittest.TestCase):
         self.assertEqual((denied.status_code, denied.json()["error"]["code"]), (403, "no_workbench_access"))
 
 
+class SessionLength(unittest.TestCase):
+    """A demo session lasts a working day of use: 8 h idle, sliding, never past 24 h."""
+
+    def test_slides_on_activity_and_ends_when_idle_or_at_the_cap(self):
+        from operator_api import auth as a
+        now = [1000.0]
+        dev = DevAuth(fixture_identity("plx", ["staff:demo"]), mode="mock", clock=lambda: now[0])
+        token, _ = dev.login()
+        hour = 3600.0
+        for _ in range(5):               # active every 7 h: well past the first 8 h window
+            now[0] += 7 * hour
+            if now[0] - 1000.0 >= a.DEV_SESSION_MAX_SECONDS:
+                break
+            self.assertTrue(dev._held(token)[0])
+        now[0] = 1000.0 + a.DEV_SESSION_MAX_SECONDS + 1
+        self.assertFalse(dev._held(token)[0], "never past a day from sign-in")
+        token, _ = dev.login()
+        now[0] += 8 * hour + 1
+        self.assertFalse(dev._held(token)[0], "idle for 8 h ends the session")
+        self.assertFalse(dev._held("not-a-token")[0])
+
+
 class BindRefusals(unittest.TestCase):
     def test_dev_and_mock_bind_loopback_or_tailscale_only(self):
         for mode in ("dev", "mock"):
@@ -328,6 +350,7 @@ class MockMatchesOpenapi(unittest.TestCase):
             ("GET", "/api/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412", None, None,
              "ObjectPage"),
             ("GET", "/api/object/PurchaseOrder/90412", None, None, "ObjectPage"),
+            ("GET", "/api/explore/PurchaseOrder/90412", None, None, "Explore"),
             *(("GET", f"/api/object-section/{name}/PurchaseOrder/90412", None, None,
                "ObjectSection") for name in m.PAGE_SECTIONS),
             ("GET", "/api/source", {"handle": "bc://demo/purchaseOrders/90412"}, None,
@@ -340,6 +363,8 @@ class MockMatchesOpenapi(unittest.TestCase):
             self.assertEqual(response.status_code, 200, (path, response.text))
             self.assertEqual(conforms(response.json(), component(name)), [], path)
             route = path if path in SPEC["paths"] else \
+                "/api/explore/{object_type}/{object_id}" if path.startswith("/api/explore/") \
+                else \
                 "/api/object-section/{section}/{object_type}/{object_id}" \
                 if path.startswith("/api/object-section/") \
                 else "/api/object/{object_type}/{object_id}"
@@ -466,3 +491,27 @@ class WatcherItemStateRoute(unittest.TestCase):
         self.assertEqual((bad.status_code, bad.json()["error"]["code"]), (400, "snooze_invalid"))
         self.assertEqual(client.post(url, json={"state": "deleted"}).status_code, 422)
         self.assertEqual(calls[0], ("aw-0000000000000001", "dismissed", None))
+
+
+class BriefRoutes(unittest.TestCase):
+    """The three brief routes for a signed-in reader (the mock world: no calendar, no
+    records); the auth walk above covers them signed out."""
+
+    def test_weekly_review_meetings_and_a_brief_that_fails_closed(self):
+        client = signed_in()
+        weekly = client.get("/api/brief/weekly", params={"week": "2026-11-02"})
+        self.assertEqual(weekly.status_code, 200, weekly.text)
+        body = weekly.json()
+        self.assertEqual((body["kind"], body["title"]),
+                         ("weekly", "Weekly review, week of 2026-11-02"))
+        states = {s["key"]: s["state"] for s in body["sections"]}
+        self.assertEqual(states["cash"], "finance_marked")
+        self.assertEqual(states["top_alerts"], "unread")   # no alert list: never "none"
+        self.assertEqual(client.get("/api/brief/weekly", params={"week": "nope"}).status_code,
+                         422)
+        self.assertEqual(client.get("/api/brief/meetings").json(), {"meetings": []})
+        for path in ("/api/brief/PurchaseOrder/90412", "/api/brief/CalendarEvent/x",
+                     "/api/brief/Customer/" + "x" * 701):
+            got = client.get(path)
+            self.assertIn(got.status_code, (404, 422), path)
+            self.assertIn("error", got.json(), path)

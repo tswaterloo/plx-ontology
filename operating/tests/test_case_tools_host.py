@@ -808,6 +808,53 @@ class AgendaOnTheCaseHostTests(unittest.TestCase):
             self.assertNotIn(hidden, text)
 
 
+class AggregateModesOnTheCaseHostTests(unittest.TestCase):
+    """plx.aggregate's modes through the case host's own call path (``serving_tools`` ->
+    ``CaseHostTools.call``): the host serves plx.aggregate itself, never from its tool
+    table, so a call naming a mode must reach the modes there."""
+
+    def test_a_mode_call_reaches_the_modes_and_any_other_call_plx_aggregate(self):
+        from operating.tests import test_rnd_process_maps as rnd
+        rnd.Fixture.build()
+        full = next(iter(rnd.FULL.principals))
+        runtime = AgendaOnTheCaseHostTests.Runtime({full: lambda r: True})
+
+        def host(grants):
+            made = serving_tools(runtime, rnd.FULL, store_path=rnd.Fixture.path,
+                                 marking_grants=grants)
+            self.addCleanup(made.close)
+            return made
+        served = host({"finance": [full]})
+        got = served.call("plx.aggregate", {"mode": "margin_variance", "variance": {
+            "from": "2026-08-01", "to": "2026-10-30"}}, rnd.FULL)
+        self.assertEqual((got.get("mode"), got.get("format")),
+                         ("margin_variance", "plx-margin-variance/v1"), got)
+        self.assertEqual(served.call("plx.aggregate", {"mode": "margin_variance",
+                                                       "variance": {"from": "soon"}},
+                                     rnd.FULL)["error"]["code"], "invalid_input")
+        unknown = served.call("plx.aggregate", {"mode": "what_if"}, rnd.FULL)
+        self.assertEqual(unknown["error"]["code"], "invalid_input")
+        for mode in ("cash_forecast", "margin_variance", "quote_conversion", "cross_sell",
+                     "who_knows"):
+            self.assertIn(mode, unknown["error"]["message"])
+        # the sales modes reach the sales book through the same dispatch, never the
+        # unknown-mode refusal (cross_sell without a customer is its own refusal)
+        rate = served.call("plx.aggregate", {"mode": "quote_conversion"}, rnd.FULL)
+        self.assertEqual(rate.get("mode"), "quote_conversion", rate)
+        sell = served.call("plx.aggregate", {"mode": "cross_sell"}, rnd.FULL)
+        self.assertEqual(sell["error"]["code"], "invalid_input", sell)
+        self.assertNotIn("mode must be", sell["error"]["message"])
+        knows = served.call("plx.aggregate", {"mode": "who_knows"}, rnd.FULL)
+        self.assertNotIn("mode must be", json.dumps(knows))
+        self.assertTrue(knows.get("mode") == "who_knows" or "error" in knows, knows)
+        plain = served.call("plx.aggregate", {"object_type": "Task",
+                                              "measure": {"op": "count"}}, rnd.FULL)
+        self.assertNotIn("mode", plain)
+        # a reader without finance gets no figure from the mode
+        self.assertEqual(host({}).call("plx.aggregate", {"mode": "margin_variance"},
+                                       rnd.FULL)["error"]["code"], "finance_not_held")
+
+
 class MailPinGapTests(unittest.TestCase):
     """plx.read's mail body pin (``PagedRead._extras``): a pin it cannot offer is always
     a gap, also when the extras do not fit and the generic read is returned."""

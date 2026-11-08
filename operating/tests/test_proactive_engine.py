@@ -47,6 +47,7 @@ ROOT = Path(__file__).resolve().parents[2]
 AS_OF = date(2026, 10, 19)
 T0 = "2026-10-01T00:00:00.000000Z"
 QC_LINK = "RelPublicAppIncomingQcRecord.inspects"
+ON_HAND = ("InventoryLot", "quantity_on_hand", "InventoryLot.of_item")   # not served yet
 OPS = Actor("plx", frozenset({"ops"}))
 
 
@@ -267,6 +268,7 @@ class Engine(unittest.TestCase):
         moment = at or datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
         return pe.run(self.store, self.inbox, AS_OF, coverage=coverage,
                       qc_link_types=options.pop("qc_link_types", (QC_LINK,)),
+                      on_hand_sources=options.pop("on_hand_sources", (ON_HAND,)),
                       clock=lambda: moment, people=options.pop("people", people()),
                       **options)
 
@@ -712,11 +714,29 @@ class InboxTest(Engine):
                                             "order_without_customer_po": "not_configured",
                                             "orders_at_risk": "not_configured",
                                             "receipt_without_qc": "blocked",
+                                            "margin_erosion": "not_configured",
+                                            # no on-hand source declared in the schema
+                                            "stock_out_risk": "blocked",
+                                            "slow_moving_stock": "blocked",
+                                            "expiring_lot_stock": "blocked",
+                                            # nor an assembly order start date
+                                            "assembly_component_shortfall": "blocked",
+                                            # no MC task or production due date declared
+                                            "mc_task_overdue": "blocked",
+                                            "production_late": "blocked",
                                             # no tenant mail directory beside the store
                                             "vendor_no_reply": "blocked",
+                                            "customer_chase": "blocked",
+                                            "commitments": "blocked",
+                                            "needs_reply": "blocked",
                                             "vendor_terms_unapplied": "not_configured",
                                             "negative_margin": "not_configured"})
-        # every rule run, each complete: only then is the read complete
+        # every rule run: each one the schema serves is complete, and the read is complete
+        # only when every rule is; the rules blocked until the schema declares their fields
+        # (MC task and production due dates, an assembly order's start date) keep it
+        # incomplete and are named, never read as clean
+        schema_blocked = {"mc_task_overdue": "blocked", "production_late": "blocked",
+                          "assembly_component_shortfall": "blocked"}
         def card(_tool, arguments):
             return {"object": {"object_id": arguments["object_id"]}, "leads": [],
                     "conflicts": []}
@@ -724,13 +744,15 @@ class InboxTest(Engine):
         full = self.read()
         self.assertEqual(set(full["detectors"]), set(pe.DETECTORS))
         self.assertEqual((full["complete"], full["not_run"], full["truncated"]),
-                         (True, {}, False), full["detectors"])
+                         (False, schema_blocked, False), full["detectors"])
+        self.assertEqual({d for d, state in full["detectors"].items() if state != "complete"},
+                         set(schema_blocked))
         # a rule the inbox holds no row for (a run before it existed) did not run either
         with contextlib.closing(sqlite3.connect(self.inbox)) as conn, conn:
             conn.execute("DELETE FROM detector_runs WHERE detector = 'expired_quote'")
         gone = self.read()
         self.assertEqual((gone["complete"], gone["not_run"]),
-                         (False, {"expired_quote": "not_run"}))
+                         (False, {**schema_blocked, "expired_quote": "not_run"}))
 
     def test_a_spent_time_budget_is_truncated_never_complete_and_keeps_gaps(self):
         world, ids = seeded()
@@ -2166,7 +2188,8 @@ class PostgresStoreTest(Engine):
                 mock.patch.dict(os.environ, {"PLX_PG_DSN": dsn}), \
                 mock.patch.object(pe, "PARALLEL_LINK_ROWS", 1):
             summary = pe.run(self.store, self.inbox, AS_OF, coverage=ids["coverage"],
-                             qc_link_types=(QC_LINK,), people=people(), threads=2,
+                             qc_link_types=(QC_LINK,), on_hand_sources=(ON_HAND,),
+                             people=people(), threads=2,
                              clock=lambda: datetime(2026, 10, 19, 6, tzinfo=timezone.utc))
         self.assertTrue(opened)   # read from Postgres, not the SQLite file
         self.assertEqual({d: s for d, s in summary["detectors"].items() if s == "failed"},

@@ -82,6 +82,75 @@ class KnownRootsTests(unittest.TestCase):
         self.assertIsNone(told.follow_reads)
         self.assertEqual(agent.first_reads, [])      # the agent itself is unchanged
 
+    def test_what_the_ask_looked_up_is_not_looked_up_again(self):
+        question = "how many lines of PO 90412 and ZX-9001 for Zanzibar Soap Co?"
+        everything = sp.first_reads(question)
+        queries = [a["query"] for name, a in everything if "query" in a]
+        self.assertEqual(len(queries), 2)
+        # the Ask looked up PO 90412 (written its own way) and ran the resolver
+        looked = {"mentions": ["po#90412"], "entities": True}
+        reads = sp.first_reads(question, looked)
+        self.assertEqual([a.get("query") for _n, a in reads],
+                         [q for q in queries if "90412" not in q])
+        self.assertNotIn("entities", [a.get("mode") for _n, a in reads])
+        # the resolver failed at the Ask: it runs in the session
+        self.assertIn(("plx.find", {"mode": "entities", "text": question}),
+                      sp.first_reads(question, {"mentions": [], "entities": False}))
+        self.assertEqual(sp.first_reads(question, None), everything)
+        # through the session's agent: nothing it looked up, and no follow-up read of it
+        from operating.agent_session import ClaudeCodeAgent
+        agent = ClaudeCodeAgent()
+        agent.looked_up = {"mentions": [q for q in queries], "entities": True}
+        told = agent.for_question(question)
+        self.assertEqual(told.first_reads, [])
+        self.assertIsNone(told.follow_reads)
+        self.assertEqual(ClaudeCodeAgent().for_question(question).first_reads, everything)
+
+    def test_the_session_is_told_what_was_looked_up_from_the_asks_own_lookup(self):
+        from operator_api.backend import looked_up
+        from operator_api.preread import brief
+        found = {"roots": [{"mention": "R-0162", "object_id": "Item:bc:R-0162",
+                            "found_by": "identifier"},
+                           {"mention": "Zanzibar Soap", "object_id": FIRM["object_id"],
+                            "found_by": "resolver"}],
+                 "ambiguous": [],
+                 "unfound": [{"mention": "PO 90412", "reason": "not_found"},
+                             {"mention": "ZX-9001", "reason": "mentions_bounded"}],
+                 "entities": []}
+        # a mention bounded out was never looked up, nor is a resolved name an identifier
+        self.assertEqual(looked_up(found), {"mentions": ["R-0162", "PO 90412"],
+                                            "entities": True})
+        self.assertFalse(looked_up({**found, "entities": None})["entities"])
+        self.assertIsNone(looked_up(None))
+        told = brief(None, [], unfound=found["unfound"])
+        self.assertIn('"PO 90412"', told)
+        self.assertIn("never say it does not exist", told)
+        self.assertNotIn("ZX-9001", told)
+        self.assertEqual(brief(None, [], unfound=[]), "")
+
+    def test_an_ask_lookup_that_timed_out_is_looked_up_again_in_the_session(self):
+        from operating.agent_session import ClaudeCodeAgent
+        from operator_api.backend import looked_up
+        from operator_api.preread import brief
+        question = "where is PO 90412 at?"
+        for reason in ("timeout", "internal_error", "invalid_input", "not_found"):
+            with self.subTest(reason=reason):
+                unfound = {"mention": "PO 90412", "reason": reason}
+                if reason == "not_found":   # found nothing in the time it had
+                    unfound["gaps"] = [{"state": "unknown", "reason": "time_budget"}]
+                found = {"roots": [], "ambiguous": [], "unfound": [unfound],
+                         "entities": []}
+                looked = looked_up(found)
+                self.assertEqual(looked["mentions"], [])
+                agent = ClaudeCodeAgent()
+                agent.looked_up = looked
+                finds = [a.get("query") for name, a in
+                         agent.for_question(question).first_reads if name == "plx.find"]
+                self.assertEqual(len(finds), 1)
+                self.assertIn("90412", finds[0])
+                # the brief claims no absence for a lookup that never completed
+                self.assertEqual(brief(None, [], unfound=found["unfound"]), "")
+
 
 class WarmHelperTests(unittest.TestCase):
     def test_a_sessions_helpers_are_taken_warm_from_the_readers_spares(self):

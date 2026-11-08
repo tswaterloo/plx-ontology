@@ -15,6 +15,7 @@ export const EDITABLE: Record<ActionKind, (keyof ActionPayload)[]> = {
   mark_done: ["note"],
   snooze: ["until"],
   dismiss: ["reason"],
+  assign: ["assignee", "note"],
 };
 
 /** Only the editable fields of a payload: what the dialog sends back as edits. */
@@ -54,6 +55,7 @@ const LOCAL_CONFIRM: Partial<Record<ActionKind, string>> = {
   mark_done: "Mark done",
   snooze: "Snooze",
   dismiss: "Dismiss",
+  assign: "Assign",
 };
 
 /** The confirm button's words: "Send" only when the message really goes. */
@@ -98,6 +100,8 @@ export function actionChip(state: ActionResult | null | undefined, drafted: bool
       return { status: "neutral", label: "Snoozed", title: state.text };
     case "dismissed":
       return { status: "neutral", label: "Dismissed", title: state.text };
+    case "assigned":
+      return { status: "new", label: "Assigned", title: state.text };
     default:
       return { status: "neutral", label: "Unknown state" };
   }

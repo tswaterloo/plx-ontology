@@ -182,7 +182,9 @@ def openness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
     when unknown because a value or line it reads is withheld from this reader: the unnamed
     ``plx.process`` call then asks for the process rather than choose one a reader with
     more access would not get."""
-    po = ps.read(ps.ContextSource(tools, ctx, graph), oid, dates=False)
+    # an issued BC order is open by its own flag here, its lines unread: the lines (which
+    # a reader may be refused) decide its lateness, never which graph an unnamed call gets
+    po = ps.read(ps.ContextSource(tools, ctx, graph), oid, dates=False, bc_lines=False)
     return None if po.blind else po.status.cls == ps.OPEN
 
 

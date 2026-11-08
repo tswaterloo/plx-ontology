@@ -165,6 +165,7 @@ from operating.ontology_tools import (  # noqa: F401 (origin_rank: re-exported)
     _inline_defs,
     _markings,
     _source_of,
+    _to_ms,
     _value_out,
     unit_out,
     units_text,
@@ -369,6 +370,8 @@ class AggregateTools:
                                             deterministic=True)
             try:
                 result = handler(arguments, actor, gate_name)
+                if name == "plx.aggregate":
+                    self._same_as_now(arguments, actor, gate_name, result)
             except ToolError as exc:
                 result = _error(exc.code, exc.message, exc.hint)
                 try:
@@ -383,6 +386,34 @@ class AggregateTools:
             finally:
                 self.store.conn.create_function(gate_name, 1, None)
         return self._checked(name, result)
+
+    def _same_as_now(self, arguments: Mapping[str, Any], actor: Actor, gate: str,
+                     result: dict[str, Any]) -> None:
+        """Mark a count read at an ``as_known_at`` before now ``same_as_now`` when the same
+        call read now returns the same complete groups (each key, value and member, any
+        revision): what was known then is then also what is known now, so the count is
+        the tool's count now as well (``claim_checks.known_now``). A question stating a
+        time before the data's end reads it with ``as_known_at``; without this its count
+        stayed a lower bound even when nothing it counts changed since. Anything else
+        (another measure, a time at or after now, an incomplete or refused result on
+        either side, a difference) marks nothing."""
+        measure = arguments.get("measure")
+        if "as_known_at" not in arguments or not isinstance(measure, Mapping) \
+                or measure.get("op") not in ("count", "count_distinct") \
+                or "error" in result or not _count_whole(result):
+            return
+        since = {g.get("reason") for g in result.get("gaps") or () if isinstance(g, Mapping)}
+        if self.base._as_known_at(arguments) >= _to_ms(self.base.clock()) \
+                or "captured_after_as_known_at" in since:
+            return   # now, or a member captured since: read now it counts more
+        now = {k: v for k, v in arguments.items() if k != "as_known_at"}
+        try:
+            current = self._aggregate(now, actor, gate)
+        except ToolError:
+            return
+        if "error" not in current and _count_whole(current) \
+                and _count_signature(current) == _count_signature(result):
+            result["same_as_now"] = True
 
     def rows(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
         """The members of a set (``arguments["set"]``) with the values of ``properties``
@@ -1967,6 +1998,43 @@ class AggregateTools:
 
 
 # --------------------------------------------------------------------------- pure helpers
+
+def _count_whole(result: Mapping[str, Any]) -> bool:
+    """Whether an aggregate answer is whole: not partial, nothing refused or withheld,
+    complete (or a page of whole groups)."""
+    done = result.get("completeness") or {}
+    return result.get("partial") is False and not {"refused", "withheld"} & set(result) \
+        and (done.get("complete") is True or done.get("reason") in ("group_page",
+                                                                    "result_size"))
+
+
+def _unpinned_handle(handle: Any) -> Any:
+    """A record handle without its version pin (``...@rev``); a fragment stays whole."""
+    if not isinstance(handle, str) or "#" in handle:
+        return handle
+    return handle.rpartition("@")[0] or handle
+
+
+def _count_signature(result: Mapping[str, Any]) -> tuple:
+    """What a count answer states, revision-free: each group's key, value and members
+    (``members_cited``, else its value citations' records), and every gap's reason and
+    subject other than the time read."""
+    groups = []
+    for group in result.get("groups") or ():
+        if not isinstance(group, Mapping):
+            return (None,)
+        cites = [c.get("l1_handle") for c in group.get("inputs_citations") or ()
+                 if isinstance(c, Mapping)]
+        groups.append((json.dumps(group.get("key"), sort_keys=True, default=str),
+                       group.get("value"), group.get("inputs"),
+                       tuple(sorted(map(str, map(_unpinned_handle,
+                                                 group.get("members_cited") or ())))),
+                       tuple(sorted(map(str, map(_unpinned_handle, cites))))))
+    gaps = sorted((str(g.get("reason")), str(g.get("subject"))) for g in
+                  result.get("gaps") or () if isinstance(g, Mapping))
+    return (tuple(sorted(groups)), tuple(gaps), json.dumps(result.get("summary"),
+                                                           sort_keys=True, default=str))
+
 
 def _allocations(row: Mapping[str, Any], supply: str) -> list[Mapping[str, Any]]:
     """The reviewed allocations of ``supply`` a link carries: ``person_allocated``

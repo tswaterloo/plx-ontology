@@ -86,6 +86,42 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   purchase invoice carries the record's cited total and currency as its ranking amount
   (``_with_amounts``), shown only to a reader who may open both; ``operating.briefing``
   ranks and routes them per reader;
+* the business alerts (``operating.proactive_business``): ``stock_out_risk`` (open customer
+  orders an item's on hand plus inbound purchase orders cannot cover by their ship dates;
+  ``REQUIRES_GRANT``), ``overdue_receivable`` and ``unit_cost_jump`` (finance-marked);
+* the operations alerts (``operating.proactive_ops``): overdue and stuck Mission Control
+  tasks, MC approvals waiting, overdue Planner tasks, aged receivables and payables
+  worsening (finance-marked), late production and assembly damage spikes, and Teams asks a
+  person left unanswered (people cleared first; ``REQUIRES_GRANT``);
+* the chief-executive signals (``operating.proactive_ceo``): ``customer_demand_drop`` (a
+  customer's last 90 days of orders against its run-rate, finance-marked),
+  ``promise_date_slip`` (a customer's orders missing their promised date, with a trend) and
+  ``supplier_reliability`` (a supplier's late receipts getting worse), all
+  ``REQUIRES_GRANT``; ``margin_erosion`` (recent invoiced margin against the earlier
+  orders', from the negative-margin rule's order margins, finance-marked);
+  ``shipped_not_invoiced`` (``REQUIRES_GRANT``), ``duplicate_customer_order`` and
+  ``recurring_component_damage``;
+* ``operating.proactive_chasers``: ``customer_chase`` (customers chasing where an order is,
+  and orders to tell them about first; people cleared first, ``REQUIRES_GRANT``) and
+  ``quality_holds`` (batches and lots on hold past their days, reject trends);
+* ``operating.proactive_cash``: ``customer_payment_behaviour`` (a customer paying slower
+  than its own prior year), ``early_pay_discounts`` (a supplier discount missed) and
+  ``duplicate_payables`` (a supplier invoice or payment entered twice), finance-marked;
+* ``operating.proactive_stock``: ``slow_moving_stock`` and ``assembly_component_shortfall``
+  (``REQUIRES_GRANT``), ``expiring_lot_stock``, ``certificate_expiry`` and
+  ``freight_cost_anomaly`` (finance-marked), each ``blocked`` naming a field not served;
+* ``operating.proactive_prices``: ``price_consistency`` (a customer paying far below the
+  typical price of a product, or below its cost, over the last 180 days), finance-marked;
+* ``operating.proactive_sales``: ``stale_quote`` (a Portal or Business Central quote open past
+  its days with no order; ``REQUIRES_GRANT``; the value finance-marked in the event);
+* ``operating.proactive_quality``: ``duplicate_parties`` (customers and suppliers that may be
+  one, each a review proposal a person confirms), ``key_fields_missing`` (an active record
+  without a key field, ``REQUIRES_GRANT``), ``twin_disagreement`` (copies in two systems
+  stating different values) and ``stale_captures`` (a source not captured lately);
+* ``operating.proactive_commitments``: ``commitments`` (promises in our messages about an
+  open customer order, due or missed) and ``needs_reply`` (inbound mail and one-to-one
+  Teams messages waiting on their addressee's reply, shown to that person only); people
+  cleared first, ``REQUIRES_GRANT``;
 * ``card_rules``: ``missing_in_record`` and attested conflicts from the ``plx.object``
   cards of the documents that attest a record (bounded per-object reads, ``CARD_BOUND``).
 
@@ -183,14 +219,48 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              "invoice_quantity_mismatch",
              "po_receipt_quantity_mismatch", "receipt_without_qc", "expired_quote",
              "conflicting_quantity", "late_order", "order_without_customer_po",
+             # the business alerts (``operating.proactive_business``): stock that cannot
+             # cover open customer orders, overdue receivables, a purchase cost jump
+             "stock_out_risk", "overdue_receivable", "unit_cost_jump",
+             # the operations alerts (``operating.proactive_ops``): stalled work, ageing
+             # balances, late or damaged production, unanswered Teams asks
+             "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+             "planner_task_overdue", "aged_balance_worsening", "production_late",
+             "assembly_damage_spike", "teams_unanswered_ask",
+             # the signals a chief executive wants unasked (``operating.proactive_ceo``):
+             # a customer ordering less, promised dates missed, a supplier getting later
+             "customer_demand_drop", "promise_date_slip", "supplier_reliability",
+             # order-to-cash alerts found in the business's traffic: a shipment no invoice
+             # bills, the same customer order keyed twice
+             "shipped_not_invoiced", "duplicate_customer_order",
+             "recurring_component_damage",
+             # the two largest pains (``operating.proactive_chasers``): customers chasing
+             # where an order is, and quality holds aging with rejects rising
+             "customer_chase", "quality_holds",
+             # receivables and payables (``operating.proactive_cash``): customers paying
+             # slower, early-pay discounts missed, supplier invoices or payments twice
+             "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables",
+             "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall",
+             "certificate_expiry", "freight_cost_anomaly",
+             # what each customer pays for the same product (``operating.proactive_prices``)
+             "price_consistency",
+             # sales (``operating.proactive_sales``): open quotes not converted to an order
+             "stale_quote",
+             # data quality (``operating.proactive_quality``): duplicate customers and
+             # suppliers, key fields missing, twins disagreeing, sources not captured lately
+             "duplicate_parties", "key_fields_missing", "twin_disagreement",
+             "stale_captures",
+             # promises we made, due or missed, and mail waiting on its owner's reply
+             # (``operating.proactive_commitments``; one message read shared by both)
+             "commitments", "needs_reply",
              # unanswered vendor requests over the whole store's mail (after the late rule:
              # it judges the orders that rule finds open)
              "vendor_no_reply",
              # the rules that make tool calls, the last three proactive events among them:
              # the quick margins first (what they leave carries on), the customer orders a
              # late PO hits next, the attested-document cards last
-             "negative_margin", "orders_at_risk", "vendor_terms_unapplied",
-             "card_rules")
+             "negative_margin", "margin_erosion", "orders_at_risk",
+             "vendor_terms_unapplied", "card_rules")
 # Each detector's own time window (seconds from its start, never past the run's deadline,
 # ``Budget.open``): a detector that reaches it is ``truncated`` (``time_budget``) and the
 # others still run. Measured on the live store (2.5M objects, 2026-11-06, a loaded host):
@@ -201,27 +271,75 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
 DETECTOR_SECONDS_DEFAULT = 600.0
 DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     "orders_at_risk": 1500.0, "vendor_terms_unapplied": 600.0,
-                    "card_rules": 900.0}
+                    "card_rules": 900.0,
+                    # the business alerts: one pass over orders, invoices or PO lines each
+                    "stock_out_risk": 600.0, "overdue_receivable": 300.0,
+                    "unit_cost_jump": 300.0,
+                    # the operations alerts: one pass over tasks, gates, snapshots or
+                    # production records each; the Teams asks scan every message's keys
+                    "mc_task_overdue": 300.0, "mc_task_stuck": 300.0,
+                    "mc_approval_pending": 300.0, "planner_task_overdue": 300.0,
+                    "aged_balance_worsening": 300.0, "production_late": 300.0,
+                    "assembly_damage_spike": 300.0, "teams_unanswered_ask": 600.0,
+                    # the chief-executive signals: one pass over orders or receipts each; the
+                    # margin erosion reads the earlier orders' margins on the pool
+                    "customer_demand_drop": 300.0, "promise_date_slip": 300.0,
+                    "supplier_reliability": 600.0, "margin_erosion": 600.0,
+                    # measured alone on the gen 11 store (2026-11-08, a loaded host, links
+                    # not prefetched): 421 s, 358 s and 279 s
+                    "shipped_not_invoiced": 600.0, "duplicate_customer_order": 600.0,
+                    "recurring_component_damage": 600.0,
+                    # bounded by the open orders' and held batches' records (index reads
+                    # only); the order join is shared with the late-order rule
+                    "customer_chase": 300.0, "quality_holds": 120.0,
+                    # the Sage AR and AP documents (122k and 73k records) read once per run
+                    # on the store's threads (``proactive_cash.read_records``), shared by
+                    # the three rules
+                    "customer_payment_behaviour": 300.0, "early_pay_discounts": 300.0,
+                    "duplicate_payables": 300.0,
+                    # operations: index reads of their record types and the links at those
+                    # records only (``_Store.touching``), each well under a minute
+                    "slow_moving_stock": 60.0, "expiring_lot_stock": 60.0,
+                    "assembly_component_shortfall": 60.0, "certificate_expiry": 60.0,
+                    "freight_cost_anomaly": 60.0,
+                    # every posted invoice line of the last 360 days (two windows; 253 s live
+                    # for one, 2026-11-08) and the purchase costs
+                    # (the cost-jump rule's reads)
+                    "price_consistency": 600.0, "stale_quote": 60.0,
+                    # data quality: the party, order and item records by type and their
+                    # identity links by index; the capture times and one record per audience
+                    # (one pass over the record table: 108 s on the whole store)
+                    "duplicate_parties": 120.0, "key_fields_missing": 120.0,
+                    "twin_disagreement": 300.0, "stale_captures": 240.0,
+                    # the open orders' messages, dates first, read once for both
+                    "commitments": 60.0, "needs_reply": 60.0}
 # Store-only detectors that run side by side on threads (each on its own store connection):
 # every set-based rule but the customer-PO scan (it reads the runtime's mirror, on the
 # run's own thread); the vendor rule after the late rule on the same thread (it reads that
 # rule's order join).
 THREADS_ENV = "PLX_PROACTIVE_DETECTOR_THREADS"
 MAX_DETECTOR_THREADS = 6
-CHAINED = {"vendor_no_reply": LATE_RULE}
+# (the reply rule after the promise rule: it reads the messages that one read, ``memo``)
+CHAINED = {"vendor_no_reply": LATE_RULE, "needs_reply": "commitments"}
 # The vendor-terms check is incremental: it keeps its readings per purchase order in the
 # inbox (``event_cache``) and investigates only the ones whose mail thread changed.
 INCREMENTAL = ("vendor_terms_unapplied",)
 # Rules that make tool calls (the run principal's ``plx.process``/``plx.object``/
 # ``plx.investigate``): not configured without a caller, never part of the store scope.
 CALLING = frozenset({"card_rules", "orders_at_risk", "vendor_terms_unapplied",
-                     "negative_margin"})
+                     "negative_margin", "margin_erosion"})
 SET_BASED = frozenset(DETECTORS) - CALLING
 STATES = ("open", "acknowledged", "resolved")
 # Detectors whose claim rests on what sources do not hold (an absence), so on the run
 # principal's grant: their gaps show only to a reader granted every recorded audience.
 REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor_no_reply",
-                            "late_customer_order"})
+                            "late_customer_order", "stock_out_risk",
+                            "teams_unanswered_ask",
+                            "customer_demand_drop", "promise_date_slip",
+                            "supplier_reliability", "shipped_not_invoiced",
+                            "customer_chase", "slow_moving_stock",
+                            "assembly_component_shortfall", "commitments", "needs_reply",
+                            "stale_quote", "key_fields_missing"})
 # Gap kinds whose wording sums over the whole run (money at stake): an open one is reworded
 # only by a ``complete`` run of its detector.
 WHOLE_ONLY = frozenset({"po_impact_margin"})
@@ -1275,17 +1393,34 @@ SO_PROPS = (*so_status.READ_PROPS, so_status.DATE_PROP, *so_status.OWN_DAYS, *SO
 SO_ABSENCE_TYPES = (so_status.TYPE, "Shipment", "SalesInvoice")
 
 
-def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
-    """A customer order open past its own required date by the one sales-order definition
-    (``operating.sales_order_status``): ONE gap per order across its records, joined by
-    settled identity links only. A lead twin that is closed, or a lead shipment or invoice,
-    leaves it unjudged; an unknown status is ``not_evaluated``, never open; an order no
-    record of which holds a line states no goods (``no_order_lines``, not judged); an
-    order whose every required date is a source default is undated, never late. Late when its
-    requested date is before the business day ``as_of``: cited by the date and by each
-    status value it is open by (each its own group), and shown only to a reader granted
-    every audience the absence of a closure rests on (``REQUIRES_GRANT``)."""
-    name = LATE_SO
+@dataclasses.dataclass
+class _OrderVerdict:
+    """One customer order (a settled identity cluster of ``SalesOrder`` records) as the one
+    sales-order definition reads it: ``cls`` (``open``, ``closed``, ``draft`` or
+    ``unknown``), the skip ``reason`` and its cause (``read``) when unknown or undated, the
+    requested date (``wanted``) of an open order and the identity links' markings."""
+    top: str
+    group: list
+    cls: str
+    read: list
+    link_marks: list
+    order: Any = None
+    wanted: Any = None
+    reason: str | None = None
+
+
+def _customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdict]]:
+    """Every customer order of the store by the one sales-order definition
+    (``operating.sales_order_status``), joined by settled identity links only: closed when
+    any record is closed or a settled shipment or invoice is linked; a lead shipment or
+    invoice, a closed lead twin, an unknown status or no line on any record leaves it
+    ``unknown`` (with its reason), never open; an open order carries its requested date
+    (``wanted``: never a bulk default of its source nor the record's own day). Read once per
+    run (``memo``): the late-order rule and the stock-out rule judge the same orders."""
+    return st.memo("customer_orders", lambda: _read_customer_orders(st))
+
+
+def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdict]]:
     found = st.values((so_status.TYPE,), SO_PROPS)
     binding = {oid: po_status.binding_of(oid) for oid in found}
     twins = st.links(so_status.twin_links())
@@ -1324,54 +1459,84 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
     state = {oid: so_status.record_status(entry["props"], binding=binding[oid],
                                           fulfilled=fulfilled.get(oid, False))
              for oid, entry in found.items()}
-    requires = sorted({r[0] for r in st.conn.execute(
-        "SELECT DISTINCT audience_key FROM objects WHERE object_type IN "
-        "(SELECT value FROM json_each(?))", (json.dumps(list(SO_ABSENCE_TYPES)),))}) or \
-        ["sales_order:none_stored"]
-    skipped = _Skips()
-    classes: Counter = Counter()
-    counts: Counter = Counter()
-    gaps = []
+    out: list[_OrderVerdict] = []
     for top, group in sorted(members.items()):
         link_marks = marks.get(top, [])
-
-        def rows(*names: str) -> list[dict[str, Any]]:
-            return [r for m in group for n in names for r in found[m]["props"].get(n, ())]
         read: list[Part] = [(m, _markings(*link_marks)) for m in group] + _parts(
-            rows(*so_status.READ_PROPS, so_status.DATE_PROP), *link_marks)
-        order = so_status.order_status(state[m] for m in group)
+            [r for m in group for n in (*so_status.READ_PROPS, so_status.DATE_PROP)
+             for r in found[m]["props"].get(n, ())], *link_marks)
+        verdict = _OrderVerdict(top, group, "unknown", read, link_marks)
+        out.append(verdict)
+        order = verdict.order = so_status.order_status(state[m] for m in group)
+
+        def wanted(group: Sequence[str] = group) -> Any:
+            return so_status.requested_date([
+                (found[m]["props"].get(so_status.DATE_PROP, ()),
+                 [r.get("value") for n in so_status.OWN_DAYS
+                  for r in found[m]["props"].get(n, ())],
+                 defaults.get(binding[m], ())) for m in group])
         if order.cls == so_status.CLOSED:
-            classes["closed"] += 1
+            verdict.cls = "closed"
+            # its promise too: the promise-date rule judges a shipped order against it
+            verdict.wanted = wanted()
             continue
         if any(m in fulfilled for m in group):   # a lead shipment or invoice only
-            classes["unknown"] += 1
-            skipped.note("fulfilment_unsettled", group, read)
+            verdict.reason = "fulfilment_unsettled"
             continue
         leads = sorted(lead_twins.get(top, ()))
         if any(state[t].cls == so_status.CLOSED or t in fulfilled for t, _m in leads):
             # a lead (a number match) may be this order's closed record: never judged open
-            classes["unknown"] += 1
-            skipped.note("closed_in_unsettled_twin", group,
-                         [*read, *((t, _markings(m, *link_marks)) for t, m in leads)])
+            verdict.reason = "closed_in_unsettled_twin"
+            verdict.read = [*read, *((t, _markings(m, *link_marks)) for t, m in leads)]
             continue
         if order.cls == so_status.UNKNOWN:
-            classes["unknown"] += 1
-            skipped.note(order.reason, group, read)
+            verdict.reason = order.reason
             continue
         if order.cls == so_status.DRAFT:
-            classes["draft"] += 1
+            verdict.cls = "draft"
             continue
         if not any(m in lined for m in group):
             # no record of the order holds a line: no goods are stated on it (a header
             # copied without its lines, or an empty shell), so it is not judged
-            classes["unknown"] += 1
-            skipped.note(so_status.NO_LINES, group, read)
+            verdict.reason = so_status.NO_LINES
             continue
-        classes["open"] += 1
-        wanted = so_status.requested_date([
-            (found[m]["props"].get(so_status.DATE_PROP, ()),
-             [r.get("value") for n in so_status.OWN_DAYS for r in found[m]["props"].get(n, ())],
-             defaults.get(binding[m], ())) for m in group])
+        verdict.cls = "open"
+        verdict.wanted = wanted()
+    return found, out
+
+
+def _absence_audiences(st: _Store, types: Sequence[str], none: str) -> list[str]:
+    """Every audience a record of ``types`` sits in: a verdict resting on what those
+    records do not hold needs a grant on each (``REQUIRES_GRANT``); none stored: ``none``."""
+    return sorted({r[0] for r in st.conn.execute(
+        "SELECT DISTINCT audience_key FROM objects WHERE object_type IN "
+        "(SELECT value FROM json_each(?))", (json.dumps(list(types)),))}) or [none]
+
+
+def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
+    """A customer order open past its own required date by the one sales-order definition
+    (``_customer_orders``): ONE gap per order across its records. Late when its
+    requested date is before the business day ``as_of``: cited by the date and by each
+    status value it is open by (each its own group), and shown only to a reader granted
+    every audience the absence of a closure rests on (``REQUIRES_GRANT``)."""
+    name = LATE_SO
+    found, verdicts = _customer_orders(st)
+    requires = _absence_audiences(st, SO_ABSENCE_TYPES, "sales_order:none_stored")
+    skipped = _Skips()
+    classes: Counter = Counter()
+    counts: Counter = Counter()
+    gaps = []
+    for verdict in verdicts:
+        group, link_marks, read = verdict.group, verdict.link_marks, verdict.read
+
+        def rows(*names: str) -> list[dict[str, Any]]:
+            return [r for m in group for n in names for r in found[m]["props"].get(n, ())]
+        classes[verdict.cls] += 1
+        if verdict.cls != "open":
+            if verdict.reason is not None:
+                skipped.note(verdict.reason, group, read)
+            continue
+        order, wanted = verdict.order, verdict.wanted
         if wanted.day is None:
             if wanted.reason != "required_date_disputed":
                 counts["undated"] += 1
@@ -1409,8 +1574,8 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
     result = _result(gaps, not_evaluated=skipped)
     # every order is closed, a draft, judged on its date, or counted unjudged by reason
     judged = classes["closed"] + classes["draft"] + counts["evaluated"]
-    result["coverage"] = _coverage(len(members), judged, dict(skipped), unit="sales_orders")
-    result["counts"] = {"orders": len(members),
+    result["coverage"] = _coverage(len(verdicts), judged, dict(skipped), unit="sales_orders")
+    result["counts"] = {"orders": len(verdicts),
                         "classes": {c: classes.get(c, 0)
                                     for c in ("open", "closed", "draft", "unknown")},
                         **{k: counts.get(k, 0) for k in ("evaluated", "late", "undated")}}
@@ -2761,6 +2926,133 @@ AMOUNT_OF = {"PurchaseOrder": ("total_cost", "currency"),
              "PurchaseInvoice": ("total_amount", "currency")}
 
 
+def _business_steps(st: _Store, as_of: date,
+                    on_hand: Sequence[tuple[str, str, str | None]] | None,
+                    people: Callable[[], Any] = lambda: None,
+                    moment: datetime | None = None
+                    ) -> dict[str, Callable[[], dict[str, Any]]]:
+    """The business alerts (``operating.proactive_business``) as engine steps; ``on_hand``:
+    where on hand is read (None: what the schema declares, ``declared_on_hand``)."""
+    from . import proactive_business as pb
+    from . import proactive_ceo as ceo
+    from . import proactive_chasers as chasers
+    from . import proactive_cash as cash
+    from . import proactive_stock as stock
+    from . import proactive_prices as prices
+    from . import proactive_sales as sales
+    from . import proactive_quality as quality
+    from . import proactive_commitments as commit
+
+    common = {"gap": _gap, "cites": _cites, "result": _result, "settled": SETTLED,
+              "skips": _Skips}
+    return {
+        "stock_out_risk": lambda: pb.stock_out_risk(
+            st, as_of, orders=lambda: _customer_orders(st), po_source=_po_source(st),
+            absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
+            on_hand=on_hand, **common),
+        "overdue_receivable": lambda: pb.overdue_receivable(st, as_of, **common),
+        "unit_cost_jump": lambda: pb.unit_cost_jump(st, as_of, po_source=_po_source(st),
+                                                    **common),
+        # the chief-executive signals (``operating.proactive_ceo``)
+        "customer_demand_drop": lambda: ceo.customer_demand_drop(
+            st, as_of, orders=lambda: _customer_orders(st),
+            absence=lambda types: _absence_audiences(st, types, "sales_order:none_stored"),
+            **common),
+        "promise_date_slip": lambda: ceo.promise_date_slip(
+            st, as_of, orders=lambda: _customer_orders(st),
+            absence=lambda types: _absence_audiences(st, types, "sales_order:none_stored"),
+            **common),
+        "supplier_reliability": lambda: ceo.supplier_reliability(
+            st, as_of, po_source=_po_source(st),
+            absence=lambda types: _absence_audiences(st, types, "receipt:none_stored"),
+            **common),
+        "shipped_not_invoiced": lambda: pb.shipped_not_invoiced(
+            st, as_of, absence=lambda types: _absence_audiences(st, types,
+                                                                "invoice:none_stored"),
+            **common),
+        "duplicate_customer_order": lambda: pb.duplicate_customer_order(st, as_of,
+                                                                    **common),
+        "recurring_component_damage": lambda: pb.recurring_component_damage(
+            st, as_of, **common),
+        # the customer chase and quality-hold alerts (``operating.proactive_chasers``)
+        "customer_chase": lambda: chasers.customer_chase(
+            st, as_of, people=people(), orders=lambda: _customer_orders(st),
+            absence=lambda types: _absence_audiences(st, types, "sales_order:none_stored"),
+            **common),
+        "quality_holds": lambda: chasers.quality_holds(st, as_of, **common),
+        # receivables and payables (``operating.proactive_cash``)
+        "customer_payment_behaviour": lambda: cash.customer_payment_behaviour(
+            st, as_of, **common),
+        "early_pay_discounts": lambda: cash.early_pay_discounts(st, as_of, **common),
+        "duplicate_payables": lambda: cash.duplicate_payables(st, as_of, **common),
+        # operations (``operating.proactive_stock``)
+        "slow_moving_stock": lambda: stock.slow_moving_stock(
+            st, as_of, absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
+            on_hand=on_hand, **common),
+        "expiring_lot_stock": lambda: stock.expiring_lot_stock(
+            st, as_of, orders=lambda: _customer_orders(st), on_hand=on_hand, **common),
+        "assembly_component_shortfall": lambda: stock.assembly_component_shortfall(
+            st, as_of, po_source=lambda: _po_source(st),
+            absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
+            on_hand=on_hand, **common),
+        "certificate_expiry": lambda: stock.certificate_expiry(st, as_of, **common),
+        "freight_cost_anomaly": lambda: stock.freight_cost_anomaly(st, as_of, **common),
+        # what each customer pays for the same product (``operating.proactive_prices``)
+        "price_consistency": lambda: prices.price_consistency(st, as_of, **common),
+        # sales (``operating.proactive_sales``)
+        "stale_quote": lambda: sales.stale_quote(st, as_of, **common),
+        # data quality (``operating.proactive_quality``)
+        "duplicate_parties": lambda: quality.duplicate_parties(st, as_of, **common),
+        "key_fields_missing": lambda: quality.key_fields_missing(
+            st, as_of, absence=lambda types: _absence_audiences(st, types,
+                                                                "record:none_stored"),
+            status_of={"PurchaseOrder": lambda: st.memo("quality:po_open", lambda: {
+                           m: po_status.read(_po_source(st), top, as_of).status.cls
+                           for top, members in _po_source(st).clusters.items()
+                           for m in members}),
+                       "SalesOrder": lambda: st.memo("quality:so_open", lambda: {
+                           m: v.cls for v in _customer_orders(st)[1] for m in v.group})},
+            **common),
+        "twin_disagreement": lambda: quality.twin_disagreement(st, as_of, **common),
+        "stale_captures": lambda: quality.stale_captures(st, as_of, now=moment, **common),
+        # promises we made and mail waiting on a reply (``operating.proactive_commitments``)
+        **{name: (lambda rule=rule: rule(
+            st, as_of, people=people(), orders=lambda: _customer_orders(st),
+            absence=lambda types: _absence_audiences(st, types, "sales_order:none_stored"),
+            **common))
+           for name, rule in (("commitments", commit.commitments),
+                              ("needs_reply", commit.needs_reply))}}
+
+
+def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
+               sources: Mapping[str, Any] | None
+               ) -> dict[str, Callable[[], dict[str, Any]]]:
+    """The operations alerts (``operating.proactive_ops``) as engine steps; ``sources``:
+    overrides of what the schema declares (``proactive_ops.declared_sources``)."""
+    from . import proactive_ops as po
+
+    given = dict(sources or {})
+    common = {"gap": _gap, "cites": _cites, "result": _result, "skips": _Skips}
+    tasks = lambda: st.memo("ops:mc_tasks", lambda: po.mc_tasks(   # noqa: E731
+        st, as_of, people=people(), settled=SETTLED, due_props=given.get("mc_task_due"),
+        **common))
+    return {
+        "mc_task_overdue": lambda: tasks()[po.MC_OVERDUE],
+        "mc_task_stuck": lambda: tasks()[po.MC_STUCK],
+        "mc_approval_pending": lambda: po.mc_approval_pending(
+            st, as_of, people=people(), settled=SETTLED, **common),
+        "planner_task_overdue": lambda: po.planner_task_overdue(
+            st, as_of, people=people(), settled=SETTLED, **common),
+        "aged_balance_worsening": lambda: po.aged_balance_worsening(
+            st, as_of, settled=SETTLED, **common),
+        "production_late": lambda: po.production_late(
+            st, as_of, settled=SETTLED, sources=given.get("production_due"), **common),
+        "assembly_damage_spike": lambda: po.assembly_damage_spike(
+            st, as_of, settled=SETTLED, dates=given.get("damage_date"), **common),
+        "teams_unanswered_ask": lambda: po.teams_unanswered_ask(
+            st, as_of, people=people(), text_props=given.get("ask_text"), **common)}
+
+
 def _event_steps(st: _Store, as_of: date, call: Callable | None,
                  cache: Mapping[str, Mapping[str, Any]] | None = None,
                  vendor_bound: int | None = None, *,
@@ -2790,8 +3082,53 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
     def margin_map(task: Callable, items: Sequence[Any]) -> list[Any]:
         """The margins read since the run's start (``margins``: ``_HeadStart``)."""
         if task is margins.task and list(items) == margins.items:
-            return margins.collect()
+            return st.memo("recent_margins", margins.collect)
         return pmap(task, items)
+
+    def roots() -> list[str]:
+        return st.memo("margin_roots", lambda: ev._recent_invoiced_orders(st, as_of))
+
+    def order_margins(items: Sequence[str]) -> list[Any]:
+        """Each order's checked margin (``read_margin``), the recent ones read once for
+        the negative-margin rule and the erosion rule alike; without a pool one by one
+        (an order whose run fails is undecided, never a figure)."""
+        items = list(items)
+        if margins is not None:
+            return margin_map(ev.read_margin, items)
+        if pmap is not None:
+            if items == roots():
+                return st.memo("recent_margins", lambda: pmap(ev.read_margin, items))
+            return pmap(ev.read_margin, items)
+        from .proactive_pool import NOT_READ
+
+        out = []
+        for n, root in enumerate(items):
+            if n >= ev.CALL_BOUND:   # without a pool as bounded as the negative-margin rule
+                out.append(NOT_READ)
+                continue
+            try:
+                out.append(one_margin(root))
+            except Exception as error:  # noqa: BLE001 - one order fails alone
+                if type(error).__name__ == "TimeBudgetSpent":
+                    raise
+                out.append(None)
+        return out
+
+    def one_margin(root: str) -> Any:
+        """One order's margin read once per run without a pool (both margin rules)."""
+        return st.memo(f"margin:{root}", lambda: ev.read_margin(call, root))
+
+    def erosion() -> dict[str, Any]:
+        from . import proactive_ceo as ceo
+        from .proactive_pool import NOT_READ
+
+        return ceo.margin_erosion(
+            st, as_of, call, recent=roots() if call is not None else (),
+            trailing=st.memo("margin_trailing", lambda: ev._recent_invoiced_orders(
+                st, as_of, days=ev.MARGIN_DAYS + ceo.MARGIN_TRAILING_DAYS,
+                since=ev.MARGIN_DAYS)) if call is not None else (),
+            margins=order_margins, not_read=NOT_READ, settled=SETTLED, skips=_Skips,
+            **common)
 
     def no_reply() -> dict[str, Any]:
         found = orders()
@@ -2816,9 +3153,11 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
             st, as_of, call, family="F27", cache=(cache or {}).get("vendor_terms_unapplied"),
             **mail, **common),
         "negative_margin": lambda: ev.negative_margin(
-            st, as_of, call, pmap=pmap if margins is None else margin_map,
-            roots=st.memo("margin_roots", lambda: ev._recent_invoiced_orders(st, as_of)),
-            **common)}
+            st, as_of, call, pmap=None if pmap is None else (
+                lambda task, items: order_margins(items) if task is ev.read_margin
+                else (margin_map if margins is not None else pmap)(task, items)),
+            roots=roots(), read=one_margin, **common),
+        "margin_erosion": erosion}
 
 
 def currency_word(raw: Any) -> str | None:
@@ -3282,6 +3621,8 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
          coverage: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None,
         call: Callable | None = None, card_bound: int = CARD_BOUND,
         qc_link_types: Sequence[str] | None = None, budget: Budget | None = None,
+        on_hand_sources: Sequence[tuple[str, str, str | None]] | None = None,
+        ops_sources: Mapping[str, Any] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         only: Sequence[str] | None = None, vendor_bound: int | None = None,
         reader_may_read: Callable[[str], bool] | None = None,
@@ -3368,6 +3709,12 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             "order_without_customer_po": lambda: _order_without_customer_po(
                 st, coverage() if callable(coverage) else coverage),
             "expired_quote": lambda: _expired_quote(st, as_of),
+            **_business_steps(st, as_of, on_hand_sources,
+                              people=lambda: people if people is not None
+                              else _people(Path(store_path)), moment=moment),
+            **_ops_steps(st, as_of, lambda: people if people is not None
+                         else st.memo("ops:people", lambda: _people(Path(store_path))),
+                         ops_sources),
             "conflicting_quantity": lambda: _conflicting_quantity(st, as_of),
             "late_order": lambda: _late_order(st, as_of),
             "orders_at_risk": lambda: (
@@ -3985,6 +4332,17 @@ def _reader_view(conn: sqlite3.Connection, may_read: Callable[[str], bool],
     return json.dumps(visible), json.dumps(ostore.allowed_marking_sets(held))
 
 
+def _owned(follow_up: Any, kind: str, reader: Any) -> bool:
+    """A gap of a person's own mail (``proactive_commitments.OWNER_KINDS``) only for that
+    person's reader (its ``employee:<oid>`` principal); any other kind for every reader."""
+    from .proactive_commitments import owned_by
+
+    return owned_by(follow_up if isinstance(follow_up, Mapping) else {}, kind, reader)
+
+
+_OWNER_KINDS = frozenset({"needs_my_reply"})   # ``proactive_commitments.OWNER_KINDS``
+
+
 def _has_requires(conn: sqlite3.Connection) -> bool:
     """An inbox written before ``gap_requires`` has none: its ``REQUIRES_GRANT`` gaps
     then show to nobody until the next run records their requirements."""
@@ -4229,9 +4587,12 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             "SELECT COALESCE(SUM(objects), 0) FROM scope WHERE audience_key IN (SELECT value "
             "FROM json_each(:aud)) AND markings IN (SELECT value FROM json_each(:marks))",
             params).fetchone()[0]
-        runs = conn.execute("SELECT detector, status, reasons, not_evaluated FROM "
+        runs = conn.execute("SELECT detector, status, reasons, not_evaluated, run_at FROM "
                             "detector_runs ORDER BY detector").fetchall()
         detectors = {row["detector"]: row["status"] for row in runs}
+        # each rule's last run (a full, 4-hourly, calling or incremental pass): its time
+        run_at = {row["detector"]: row["run_at"] for row in runs
+                  if isinstance(row["run_at"], str)}
         reasons = {row["detector"]: json.loads(row["reasons"]) for row in runs
                    if row["reasons"] not in (None, "[]")}
         # the late rule's skips by reason (store-wide, never per reader: a restricted
@@ -4292,6 +4653,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 if state not in states or hide(row["gap_id"], reader) is not None:
                     continue
                 follow_up = json.loads(row["follow_up"])
+                if not _owned(follow_up, row["kind"], reader):
+                    continue   # another person's own mail: never theirs to see
                 order = follow_up.pop(_ORDER, None)
                 held = orders.get(order["key"]) if isinstance(order, dict) else None
                 if held is not None:
@@ -4332,6 +4695,7 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             "max_objects": None, "unscanned": None,
             "unread": {f"{name}_failed": 1 for name in failed},
             "detectors": detectors, "detector_reasons": reasons, "history": history,
+            "detector_run_at": run_at,
             "kind_history": first_found,
             "not_run": not_run, "rules": rules,
             "complete": not (truncated or failed or not_run or refreshing),
@@ -4418,6 +4782,7 @@ def acknowledge(inbox: Any, store: Any, gap_id: str, *, reader: str,
         rows = conn.execute(
             "SELECT g.* FROM gaps g WHERE g.gap_id = :id AND g.state = 'open' AND "
             + _OBJECT_VISIBLE.format(o="g.object_id"), {**params, "id": gap_id}).fetchall()
+        rows = [row for row in rows if _owned(json.loads(row["follow_up"]), row["kind"], reader)]
         if not _visible(conn, rows, params, decide):
             raise PermissionError("gap_not_visible")
         at = clock().isoformat()
@@ -4440,14 +4805,17 @@ def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
         current, _ = _current_since(conn, served[0] if served else None)
         # a gap of older data than the store served is shown to no one (``read_inbox``):
         # it is not counted as one hidden from this reader either
+        # a person's own mail (``OWNER_KINDS``) is nobody else's: never counted as hidden
         total = Counter(row["kind"] for row in conn.execute(
             "SELECT kind, detector, last_seen FROM gaps WHERE state = 'open' AND kind IN "
-            "(SELECT value FROM json_each(:kinds))", params) if _of_served(row, current))
+            "(SELECT value FROM json_each(:kinds))", params) if _of_served(row, current)
+            and row["kind"] not in _OWNER_KINDS)
         rows = [row for row in conn.execute(
             "SELECT g.* FROM gaps g WHERE g.state = 'open' AND g.kind IN (SELECT value FROM "
             "json_each(:kinds)) AND " + _OBJECT_VISIBLE.format(o="g.object_id"),
             params).fetchall() if _of_served(row, current)]
-        seen = Counter(row["kind"] for row, _ in _visible(conn, rows, params, decide))
+        seen = Counter(row["kind"] for row, _ in _visible(conn, rows, params, decide)
+                       if row["kind"] not in _OWNER_KINDS)
     return {kind: total[kind] - seen[kind] for kind in sorted(total)
             if total[kind] - seen[kind] > 0}
 

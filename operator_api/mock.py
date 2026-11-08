@@ -13,13 +13,14 @@ import re
 import secrets
 import threading
 import time
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Optional, Sequence
 from urllib.parse import quote
 
 from operating.answer_gate import _sentences
 
 from . import ask_progress, models as m, presentation, proposals
 from .actions import ActionsMixin
+from .watch import MockWatchMixin
 from .auth import Reader
 
 LABEL = "FIXTURE: synthetic demo data (isolated-fixture), not real PLX records"
@@ -408,7 +409,7 @@ def _pick(question: str) -> tuple[str, Any]:
     return "other", _unknown_answer
 
 
-class MockBackend(ActionsMixin):
+class MockBackend(ActionsMixin, MockWatchMixin):
     data_label = LABEL
 
     def __init__(self, *, step_delay: float = 0.0) -> None:
@@ -672,6 +673,47 @@ class MockBackend(ActionsMixin):
         from .errors import UserFacing
         raise UserFacing("item_not_found", "That item isn't in your briefing.", 404)
 
+    def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
+        """The demo world holds no calendar: nothing to prepare."""
+        return m.UpcomingMeetings(meetings=[])
+
+    def meeting_brief(self, reader: Reader, object_type: str, object_id: str) -> m.Brief:
+        from .errors import UserFacing
+        raise UserFacing("not_found", "That record is not one you can open.", 404)
+
+    def weekly_review(self, reader: Reader, week: Any) -> m.Brief:
+        """The real builder over no records: every figure reads as not readable."""
+        from operating import briefs as br
+        from .briefs import brief_model
+
+        def call(tool: str, args: dict) -> dict:
+            return {"error": {"code": "not_served", "message": "the demo serves no records"}}
+        return brief_model(br.weekly_review(call, frozenset(), {"status": "not_configured"},
+                                            week=week))
+
+    def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
+        """A demo alert's playbook by the real builder over the demo briefing; no record
+        reads (no party address, no owner), so its email names no recipient."""
+        from operating import alert_playbooks as ap
+
+        found, labels = self._briefing(False)
+        item = next((i for i in found.get("items") or () if i.get("id") == alert_id), None)
+        if item is None:
+            return None
+        gap = {**item, "event": {**(item.get("facts") or {}), **(item.get("links") or {})}}
+        cited = (item.get("citations") or [None])[0]
+
+        def call(tool: str, args: dict) -> dict:
+            label = labels.get(args.get("object_id", ""))
+            if tool != "plx.object" or not label or not cited:
+                return {}
+            number = label.rsplit(" ", 1)[-1]
+            return {"object": {"display": {"untrusted_text": number,
+                                           "origin": {"citation": cited}}}, "values": []}
+
+        return ap.build(gap, str(item.get("event_type") or ""), call=call, held=(),
+                        environ={}, owner_links={})
+
     def suggestions(self, reader: Reader) -> m.Suggestions:
         """Demo suggestions built by the real composer (``operating.proactive_suggestions``)
         over the demo briefing, one demo PO trail (no confirmation, a cleared vendor
@@ -787,6 +829,29 @@ class MockBackend(ActionsMixin):
             hidden=HIDDEN_FINANCE if po else NO_HIDDEN, freshness=FRESH)
         page.proposals = proposals.for_page(page)   # drafts only: never sent
         return page
+
+    def explore(self, reader: Reader, object_type: str, object_id: str) -> m.Explore:
+        """The fixture's neighbours: the page's related records (firm), its linked
+        messages and files are not records and are not walked."""
+        page = self.object_page(reader, object_type, object_id)
+        nodes = [m.ExploreNode(object_id=r.object_id, type=r.type, label=r.label,
+                               open_url=r.open_url, tier="firm") for r in page.related]
+        groups = []
+        for kind in dict.fromkeys(n.type for n in nodes):
+            groups.append(m.ExploreGroup(key=f"{kind}|related", label=f"{kind}: related",
+                                         nodes=[n for n in nodes if n.type == kind]))
+        return m.Explore(object_id=page.object_id, type=page.type, label=page.label,
+                         groups=groups, message=None if groups else
+                         "No linked records are visible to you for this one.")
+
+    def object_impact(self, reader: Reader, object_type: str, object_id: str, mode: str,
+                      change: Any = None) -> m.ImpactPanel:
+        """The Impact panel: the mock has no links to walk, so nothing is reached and
+        that is said as unknown, never as none."""
+        page = self.object_page(reader, object_type, object_id)
+        return m.ImpactPanel(object_id=page.object_id, mode=mode,
+                             change=None if mode == "why" else "delayed 7 days",
+                             unknown=["the mock workspace records no links to walk"])
 
     def object_section(self, reader: Reader, object_type: str, object_id: str,
                        section: str) -> m.ObjectSection:

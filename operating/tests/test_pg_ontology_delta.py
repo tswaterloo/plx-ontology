@@ -185,7 +185,8 @@ class DeltaToPostgresTests(unittest.TestCase):
         """``kept`` holds every fact a full read finds (a slice never narrower, so no
         absence is claimed that a full read would withhold)."""
         from operating import ontology_tools_traverse as tt
-        self.assertEqual(set(kept), set(read))
+        # the layer mark a reader notes beside its facts (``_carried``) is not a fact
+        self.assertEqual(set(kept) - {tt._LAYER_MARK}, set(read) - {tt._LAYER_MARK})
         self.assertLessEqual(set(read["audience_keys"]), set(kept["audience_keys"]))
         for name, keys in read["audiences"].items():
             self.assertLessEqual(set(keys), set(kept["audiences"][name]))

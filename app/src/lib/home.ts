@@ -31,7 +31,7 @@ export function headline(home: HomeResponse | null, briefing: Briefing | null): 
 export function refreshingLine(checkedOn?: string | null): string {
   const day = checkedOn ? new Date(checkedOn) : null;
   const when = day && !Number.isNaN(day.getTime())
-    ? ` (last checked ${day.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "America/Toronto" })})`
+    ? ` (last checked ${day.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "America/Toronto" }).replace("Sept", "Sep")})`
     : "";
   return `Some checks are re-running on the latest data${when}. Results appear here when they finish.`;
 }

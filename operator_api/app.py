@@ -14,6 +14,7 @@ milliseconds are logged (``operator_api.latency``), never its query or body.
 
 from __future__ import annotations
 
+from datetime import date
 import json
 import logging
 import secrets
@@ -21,7 +22,7 @@ import time
 from typing import Any, Callable, Iterator, Literal, Optional
 from urllib.parse import urlsplit
 
-from fastapi import Body, Depends, FastAPI, Query, Request, Response
+from fastapi import Body, Depends, FastAPI, Path as PathParam, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -218,7 +219,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         token, who = auth.login(body.ticket)
         response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="strict",
                             secure=secure_cookie, path="/api",
-                            max_age=8 * 60 * 60)
+                            max_age=24 * 60 * 60)   # the server session is the authority (8 h idle, 24 h cap)
         return m.DevLoginResponse(ok=True, me=backend.me(who))
 
     @app.post("/api/auth/logout", response_model=m.LogoutResponse, tags=["auth"])
@@ -334,6 +335,52 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         without your confirm)."""
         return backend.suggestions(who)
 
+    @app.get("/api/alerts/{alert_id}/playbook", response_model=m.AlertPlaybook,
+             tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                          404: {"model": m.ErrorResponse}})
+    def alert_playbook(alert_id: str = PathParam(min_length=1, max_length=200),
+                       who: Reader = Depends(reader)) -> m.AlertPlaybook:
+        """One alert's ready-to-use next steps, worded from its own cited sources as you
+        read them: a drafted email to the supplier or customer, a Teams note to the record's
+        owner, links to the record here and in its source system, the change to make in the
+        source system yourself, and snooze / assign / mark handled. Nothing is sent or
+        written: its actions go through ``/api/actions/*`` (card id = its ``id``) and your
+        confirm."""
+        return backend.alert_playbook(who, alert_id)
+
+    @app.get("/api/brief/meetings", response_model=m.UpcomingMeetings, tags=["briefs"],
+             responses={401: {"model": m.ErrorResponse}})
+    def upcoming_meetings(who: Reader = Depends(reader)) -> m.UpcomingMeetings:
+        """Calendar events in the next 14 days you may read, soonest first, each with the
+        link to its meeting prep brief."""
+        return backend.upcoming_meetings(who)
+
+    @app.get("/api/brief/weekly", response_model=m.Brief, tags=["briefs"],
+             responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
+    def weekly_review(week: Optional[date] = Query(None, description="Any day of the week "
+                                                   "(Monday to Sunday); default: last week"),
+                      who: Reader = Depends(reader)) -> m.Brief:
+        """The weekly ops review: orders booked, shipped and invoiced, on-time shipping, late
+        purchase orders, top alerts, cash position and margin (finance), quality holds, each
+        weekly figure against the week before. Generated from the records you may read, no
+        model call; every figure cites its sources and nothing hidden is counted."""
+        return backend.weekly_review(who, week)
+
+    @app.get("/api/brief/{object_type}/{object_id:path}", response_model=m.Brief,
+             tags=["briefs"], responses={401: {"model": m.ErrorResponse},
+                                         404: {"model": m.ErrorResponse}})
+    def meeting_brief(object_type: str, object_id: str,
+                      who: Reader = Depends(reader)) -> m.Brief:
+        """The meeting prep brief for a calendar event or meeting (its customers and
+        suppliers matched by the attendee links) or for a customer or supplier itself: open
+        orders and purchase orders, late items and alerts, recent mail and Teams subjects
+        and dates, payments and balance (finance), open promises, quality issues and the
+        last meeting's notes when captured. Cited, bounded, no model call. Not found reads
+        the same as a record you cannot see."""
+        if len(object_type) > 60 or len(object_id) > 700 or not object_id:
+            return problem("invalid_request", 422)
+        return backend.meeting_brief(who, object_type, object_id)
+
     @app.post("/api/actions/preview", response_model=m.ActionPreview, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
                          422: {"model": m.ErrorResponse}})
@@ -370,6 +417,63 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Your confirmed actions, newest first, from the actions journal."""
         return backend.actions_log(who, limit)
 
+    # ---- watchlists and alert rules ----------------------------------------------------
+
+    @app.get("/api/watch", response_model=m.Watchlist, tags=["watch"],
+             responses={401: {"model": m.ErrorResponse}})
+    def watchlist(who: Reader = Depends(reader)) -> m.Watchlist:
+        """Your follows, your alert rules and your alerts (newest first), each alert shown
+        only as far as your grant admits now. Kept in the Workbench, never in a source."""
+        return backend.watchlist(who)
+
+    @app.post("/api/watch/follow", response_model=m.WatchFollow, tags=["watch"],
+              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def watch_follow(body: m.WatchFollowRequest, who: Reader = Depends(reader)
+                     ) -> m.WatchFollow:
+        """Follow a record you can open: you are told when it or a record linked to it
+        changes, and when a new record (a mail, a shipment, an invoice) is linked to it."""
+        return backend.watch_follow(who, body)
+
+    @app.delete("/api/watch/follow/{object_id:path}", response_model=m.WatchFollow,
+                tags=["watch"], responses={401: {"model": m.ErrorResponse}})
+    def watch_unfollow(object_id: str = PathParam(min_length=1, max_length=400),
+                       who: Reader = Depends(reader)) -> m.WatchFollow:
+        """Stop following a record."""
+        return backend.watch_unfollow(who, object_id)
+
+    @app.post("/api/watch/rules/compile", response_model=m.WatchRuleDraft, tags=["watch"],
+              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
+    def watch_rule_compile(body: m.WatchRuleCompileRequest, who: Reader = Depends(reader)
+                           ) -> m.WatchRuleDraft:
+        """An alert rule in plain words, compiled into the restricted rule spec and shown
+        back in plain words for you to confirm; nothing is kept. A rule the grammar cannot
+        hold, or one over figures your markings do not cover, is refused with the reason."""
+        return backend.watch_rule_compile(who, body)
+
+    @app.post("/api/watch/rules", response_model=m.WatchRule, tags=["watch"],
+              responses={401: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def watch_rule_create(body: m.WatchRuleRequest, who: Reader = Depends(reader)
+                          ) -> m.WatchRule:
+        """Keep the rule you were shown (its spec and digest), validated again."""
+        return backend.watch_rule_create(who, body)
+
+    @app.delete("/api/watch/rules/{rule_id}", response_model=m.WatchRuleDeleted,
+                tags=["watch"], responses={401: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse}})
+    def watch_rule_delete(rule_id: str = PathParam(min_length=1, max_length=40),
+                          who: Reader = Depends(reader)) -> m.WatchRuleDeleted:
+        """Delete one of your rules."""
+        return backend.watch_rule_delete(who, rule_id)
+
+    @app.post("/api/watch/alerts/read", response_model=m.WatchReadResult, tags=["watch"],
+              responses={401: {"model": m.ErrorResponse}})
+    def watch_read(body: m.WatchReadRequest, who: Reader = Depends(reader)
+                   ) -> m.WatchReadResult:
+        """Mark some of your alerts read."""
+        return backend.watch_read(who, body)
+
     @app.post("/api/briefing/seen", response_model=m.BriefingSeen, tags=["home"],
               responses={401: {"model": m.ErrorResponse}})
     def briefing_seen(who: Reader = Depends(reader)) -> m.BriefingSeen:
@@ -405,10 +509,26 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("not_found", 404)
         return JSONResponse(page.model_dump(mode="json"))
 
+    @app.get("/api/explore/{object_type}/{object_id:path}", response_model=m.Explore,
+             tags=["object"], responses={401: {"model": m.ErrorResponse},
+                                         404: {"model": m.ErrorResponse}})
+    def explore(object_type: str, object_id: str, who: Reader = Depends(reader)) -> Response:
+        """The link explorer: a record's neighbours one hop out, grouped by kind of link,
+        capped per kind, as this reader may see them. Walk on by asking for a neighbour.
+        Not found reads the same as a record the reader cannot see."""
+        if len(object_type) > 60 or len(object_id) > 700 or not object_id:
+            return problem("invalid_request", 422)
+        try:
+            out = backend.explore(who, object_type, object_id)
+        except (KeyError, LookupError):
+            return problem("not_found", 404)
+        return JSONResponse(out.model_dump(mode="json"))
+
     @app.get("/api/object-section/{section}/{object_type}/{object_id:path}",
              response_model=m.ObjectSection, tags=["object"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
-    def object_section(section: Literal["late", "people", "landed_cost", "trail", "margin"],
+    def object_section(section: Literal["late", "people", "landed_cost", "trail", "margin",
+                                        "knows"],
                        object_type: str, object_id: str,
                        who: Reader = Depends(reader)) -> Response:
         """One slow section of a record's page (late check, people, landed cost, how we
@@ -418,6 +538,39 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("invalid_request", 422)
         try:
             out = backend.object_section(who, object_type, object_id, section)
+        except (KeyError, LookupError):
+            return problem("not_found", 404)
+        return JSONResponse(out.model_dump(mode="json"))
+
+    @app.get("/api/object-impact/{mode}/{object_type}/{object_id:path}",
+             response_model=m.ImpactPanel, tags=["object"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def object_impact(mode: Literal["what_if", "why"], object_type: str, object_id: str,
+                      change: Optional[Literal["delay", "out_of_stock", "customer_lost",
+                                               "price_change"]] = None,
+                      days: Optional[int] = Query(None, ge=1, le=365),
+                      percent: Optional[str] = Query(None, pattern=r"^-?\d{1,4}(\.\d{1,2})?$"),
+                      who: Reader = Depends(reader)) -> Response:
+        """A record's Impact panel, read on demand: what a change (a delay of N days, out
+        of stock, a customer lost, a price change) puts at risk downstream, or why an order
+        is late or unprofitable. Not found reads the same as a record the reader cannot
+        see; nothing is written."""
+        if len(object_type) > 60 or len(object_id) > 700 or not object_id:
+            return problem("invalid_request", 422)
+        spec: Optional[dict[str, Any]] = None
+        if mode == "what_if":
+            kind = change or "delay"
+            spec = {"kind": kind}
+            if kind == "delay":
+                spec["days"] = days or 7
+            elif kind == "price_change":
+                if percent is None:
+                    return problem("invalid_request", 422)
+                spec["percent"] = percent
+        elif change is not None:
+            return problem("invalid_request", 422)
+        try:
+            out = backend.object_impact(who, object_type, object_id, mode, spec)
         except (KeyError, LookupError):
             return problem("not_found", 404)
         return JSONResponse(out.model_dump(mode="json"))

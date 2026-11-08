@@ -855,6 +855,38 @@ class LinkedItem(_Model):
     source: Source
 
 
+class LinkRef(ObjectRef):
+    tier: Optional[str] = Field(None, description="How firmly the link holds: verified, "
+                                                  "lead (a machine-read reference, e.g. a "
+                                                  "mail naming the order), ...")
+    evidence: list[Source] = Field(default_factory=list, description=(
+        "The records and messages the link was read from that this reader may open, mail "
+        "and documents first; one the reader may not open is left out."))
+    possible: bool = Field(False, json_schema_extra=_optional, description="Reached only through a lead or disputed "
+                                              "link (possibly related): a suggested link, "
+                                              "never in the group's count.")
+
+
+class LinkGroup(_Model):
+    link_type: str = Field(description="The schema's link type, e.g. SalesInvoice.bills.")
+    direction: Literal["forward", "reverse"]
+    name: str = Field(description="The link's navigation name on this record's type "
+                                  "(the schema's name forward, reverse_name in reverse).")
+    words: str = Field(description="The navigation name in plain words, e.g. 'Invoices'.")
+    type: str = Field(description="The type of the records at the link's other end.")
+    role: Literal["customer", "fulfilment", "same_record", "related"] = Field(
+        description="Where the page shows the group: the order's customer, its shipments "
+                    "and invoices, the same record in another system, or other links.")
+    count: Optional[int] = Field(None, description="How many records solid links reach as "
+                                                   "this reader reads it (possible ones "
+                                                   "never counted); null when not counted.")
+    possible: int = Field(0, json_schema_extra=_optional, description="How many more records only lead or disputed "
+                                         "links reach (possibly related), never in "
+                                         "``count``; the first of them are in ``records`` "
+                                         "marked ``possible``.")
+    records: list[LinkRef] = Field(default_factory=list)
+
+
 class Person(_Model):
     name: str
     role: str = Field(description="What they did on the records: owner, approver, sender...")
@@ -982,6 +1014,30 @@ class Proposal(_Model):
                                                     "sends or writes; the person does.")
 
 
+class KnownRecord(_Model):
+    """A customer, supplier or item a person corresponds about: how many of their messages
+    the reader may read name it."""
+    object_id: str
+    label: str
+    url: str
+    messages: int
+
+
+class PersonKnows(_Model):
+    """Who knows what (``plx.aggregate`` mode ``who_knows``): what one person of ours
+    corresponds about most, counted over the messages the reader may read, and the open
+    threads waiting on their reply. Counts only: never a message's text."""
+    messages: int
+    customers: list[KnownRecord] = Field(default_factory=list)
+    suppliers: list[KnownRecord] = Field(default_factory=list)
+    items: list[KnownRecord] = Field(default_factory=list)
+    waiting_on_them: Optional[int] = Field(
+        None, json_schema_extra=_optional,
+        description="Open threads waiting on this person's reply; omitted when unknown.")
+    complete: bool = Field(False, description="False: some people or threads could not be "
+                                              "decided, so the counts may be low.")
+
+
 class ObjectPage(_Model):
     object_id: str
     type: str
@@ -996,6 +1052,9 @@ class ObjectPage(_Model):
     landed_cost: Optional[LandedCost] = None
     late_lines: list[LateLine] = Field(default_factory=list)
     related: list[ObjectRef] = Field(default_factory=list)
+    links: list[LinkGroup] = Field(default_factory=list, description=(
+        "The records one hop away, one group per link kind the schema declares for this "
+        "record's type, each record with the evidence the link was read from."))
     not_found: list[NotFound] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)
     hidden: Optional[Hidden] = Field(None, description="Omitted when nothing counts what is "
@@ -1009,6 +1068,9 @@ class ObjectPage(_Model):
     profitability: Optional[Profitability] = Field(
         None, json_schema_extra=_optional,
         description="A BC customer's or sales order's margin and why (the margin section).")
+    knows: Optional[PersonKnows] = Field(
+        None, json_schema_extra=_optional,
+        description="A person's: what they correspond about most (the knows section).")
     complete: bool = Field(
         True, description="False on a quick first read (?quick=1): the record, its "
                           "timeline and links without the checks (lateness, landed cost, "
@@ -1028,7 +1090,88 @@ class ObjectPage(_Model):
                     "(ISO). It is refreshed in the background.")
 
 
-PAGE_SECTIONS = ("late", "people", "landed_cost", "trail", "margin")
+PAGE_SECTIONS = ("late", "people", "landed_cost", "trail", "margin", "knows")
+
+
+class ExploreNode(_Model):
+    object_id: str
+    type: str
+    label: str
+    open_url: str
+    tier: Literal["firm", "suggested"] = Field(
+        description="firm: a verified, reviewed or corroborated link; suggested: a "
+                    "text-matched or lead link that has not been confirmed.")
+
+
+class ExploreGroup(_Model):
+    key: str = Field(description="The link type and direction, stable across reads.")
+    label: str = Field(description="The kind of link in words, e.g. 'Sales orders: ordered by'.")
+    nodes: list[ExploreNode] = Field(default_factory=list)
+    more: bool = Field(False, description="True when this reader's walk of this kind was "
+                                          "cut at the cap; never a count.")
+
+
+class Explore(_Model):
+    """A record's neighbours one hop out, grouped by kind of link, for the link explorer.
+    Walking on is the same read from a neighbour (lazy expansion), so two hops are two
+    reads, each as this reader sees it. No counts of what the reader may not see."""
+    object_id: str
+    type: str
+    label: str
+    groups: list[ExploreGroup] = Field(default_factory=list)
+    partial: bool = Field(False, description="True when some linked records are not visible "
+                                             "to this reader (their number is never given).")
+    capped: bool = Field(False, description="True when kinds of link or records were left "
+                                            "out to keep the read small.")
+    message: Optional[str] = None
+
+
+class ImpactOrder(_Model):
+    """One customer order a what-if change reaches (an order and its twins, once)."""
+    order: ObjectRef
+    tier: Literal["firm", "lead"] = Field(description="firm: every link on the chain is "
+                                          "verified, reviewed or corroborated; lead: possible.")
+    required_date: Optional[str] = None
+    new_material_date: Optional[str] = None
+    late_by_days: Optional[int] = None
+    slips: Optional[bool] = None
+    revenue: Optional[Money] = Field(None, description="Finance: only for a reader shown it.")
+
+
+class ImpactMoney(_Model):
+    measure: Literal["revenue_at_risk", "revenue_lost", "revenue_change", "cost_change"]
+    money: Money
+    orders: int
+    tier: Literal["firm", "lead"]
+
+
+class ImpactCause(_Model):
+    """One cause of a late or unprofitable order, citing the records it rests on."""
+    cause: Literal["late_supply", "supplier_no_reply", "short_receipt", "qc_hold", "cost_jump",
+                   "freight"]
+    record: ObjectRef
+    tier: Literal["firm", "lead"]
+    detail: str
+    sources: list[str] = Field(default_factory=list, description="Cited L1 handles.")
+
+
+class ImpactPanel(_Model):
+    """A record page's Impact panel (``plx.around`` mode what_if or why, as this reader
+    reads it). ``unknown``: what could not be established, never said to be absent.
+    ``partial``: a bound (depth, fan-out, time, list size) cut the walk, or some linked
+    records are not visible to this reader (``partial_reason`` withheld_by_permission)."""
+    object_id: str
+    mode: Literal["what_if", "why"]
+    change: Optional[str] = Field(None, description="what_if: the change in words.")
+    orders: list[ImpactOrder] = Field(default_factory=list)
+    orders_total: int = 0
+    customers: list[ObjectRef] = Field(default_factory=list)
+    money: list[ImpactMoney] = Field(default_factory=list)
+    causes: list[ImpactCause] = Field(default_factory=list)
+    unknown: list[str] = Field(default_factory=list)
+    partial: bool = False
+    partial_reason: Optional[str] = None
+    applies: bool = Field(True, description="False: this kind of record has no impact walk.")
 
 
 class ObjectSection(_Model):
@@ -1038,7 +1181,7 @@ class ObjectSection(_Model):
     ``landed_cost``, ``trail`` (how we know, with the page's ``not_found`` said against
     it), ``margin`` (a BC customer's or sales order's margin and why). The full page (no ``quick``) is the quick read with every section merged."""
     object_id: str
-    section: Literal["late", "people", "landed_cost", "trail", "margin"]
+    section: Literal["late", "people", "landed_cost", "trail", "margin", "knows"]
     applies: bool = Field(True, description="False: this kind of record has no such "
                                             "section (nothing to show, nothing withheld).")
     status: Optional[ObjectStatus] = Field(
@@ -1049,6 +1192,10 @@ class ObjectSection(_Model):
     people: Optional[list[Person]] = Field(None, json_schema_extra=_optional)
     landed_cost: Optional[LandedCost] = Field(None, json_schema_extra=_optional)
     trail: Optional[EvidenceTrail] = Field(None, json_schema_extra=_optional)
+    knows: Optional[PersonKnows] = Field(
+        None, json_schema_extra=_optional,
+        description="knows: on a person's page, the customers, suppliers and items they "
+                    "correspond about most and the threads waiting on them.")
     profitability: Optional[Profitability] = Field(
         None, json_schema_extra=_optional,
         description="margin: a BC customer's margin and why, or a BC sales order's (its "
@@ -1204,7 +1351,25 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "vendor_terms_unapplied", "negative_margin", "lot_near_expiry",
                     "lot_on_hold", "quote_accepted_no_order", "quantity_mismatch",
                     "customer_order_at_risk", "po_undated", "customer_order_late",
-                    "watcher_attention"]
+                    "watcher_attention", "stock_out_risk", "overdue_receivable",
+                    "unit_cost_jump", "customer_demand_drop", "promise_date_slip",
+                    "margin_erosion", "supplier_reliability",
+                    "shipped_not_invoiced", "duplicate_customer_order",
+                    "recurring_component_damage", "customer_chasing_order",
+                    "tell_before_they_ask", "quality_hold_aging", "reject_trend",
+                    "customer_paying_slower", "early_pay_discount_missed",
+                    "duplicate_supplier_invoice", "duplicate_supplier_payment",
+                    "price_below_typical", "price_below_cost", "customer_price_drop",
+                    "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+                    "planner_task_overdue", "aged_receivable_worsening",
+                    "aged_payable_worsening", "production_late",
+                    "assembly_damage_spike", "teams_unanswered_ask",
+                    "commitment_due", "commitment_missed", "needs_my_reply",
+                    "slow_moving_stock", "expiring_lot_stock",
+                    "assembly_blocked_by_component", "certificate_expiring",
+                    "freight_cost_anomaly", "stale_quote",
+                    "duplicate_party_candidate",
+                    "key_field_missing", "twins_disagree", "source_stale"]
 
 
 class BriefingItem(_Model):
@@ -1278,7 +1443,9 @@ class BriefingCheck(_Model):
     check: str
     label: str
     status: Literal["complete", "partial", "not_checked", "failed"]
-    words: str = Field(description="e.g. 'vendor replies: not checked this run'.")
+    words: str = Field(description="e.g. 'vendor replies: checked (last run 2026-11-08 "
+                                   "9:30 AM ET)'.")
+    last_run: Optional[str] = Field(None, description="When the check last ran (ISO time).")
 
 
 class Briefing(_Model):
@@ -1383,6 +1550,110 @@ class WatcherItemState(_Model):
     at: str
 
 
+# ---- watchlists and alert rules (``/api/watch*``) ---------------------------------------
+
+class WatchRef(_Model):
+    object_id: str
+    type: Optional[str] = None
+    label: Optional[str] = Field(None, description="A label from the record's unmarked "
+                                 "name or number; null when it has none.")
+
+
+class WatchFollowRequest(_Model):
+    object_id: str = Field(min_length=1, max_length=400, description="The record's id, as "
+                           "its page states it.")
+
+
+class WatchFollow(_Model):
+    object_id: str
+    object_type: Optional[str] = None
+    label: Optional[str] = None
+    at: Optional[str] = None
+    following: bool
+    readable: bool = Field(description="False when your grant no longer admits the record: "
+                           "it stays followed and tells you nothing until it does.")
+    watching_since: Optional[str] = Field(None, description="When the incremental pass "
+                                          "first read it; null: not yet.")
+
+
+class WatchChange(_Model):
+    property: str
+    before: Optional[str] = None
+    after: Optional[str] = None
+
+
+class WatchAlert(_Model):
+    alert_id: str
+    at: str
+    origin: Literal["follow", "rule"]
+    kind: Literal["changed", "linked", "unlinked", "linked_changed", "removed", "rule"]
+    sentence: str
+    about: WatchRef = Field(description="The followed record, or a rule's subject or the "
+                            "record its count is grouped by.")
+    record: WatchRef = Field(description="The record that changed.")
+    link_type: Optional[str] = None
+    changes: list[WatchChange] = Field(description="Only values whose markings you hold.")
+    rule_id: Optional[str] = None
+    rule_text: Optional[str] = None
+    counted: Optional[int] = Field(None, description="A windowed rule: the changes counted, "
+                                   "every one on a record you may open.")
+    read: bool
+
+
+class WatchRule(_Model):
+    rule_id: str
+    text: str
+    spec: dict[str, Any] = Field(description="The compiled rule (plx-alert-rule/v1).")
+    description: str
+    at: str
+    state: Literal["active", "paused", "refused"]
+    note: Optional[str] = None
+    watching_since: Optional[str] = None
+
+
+class Watchlist(_Model):
+    """Your follows, your alert rules and your alerts, newest first, as your grant shows
+    them now."""
+    configured: bool
+    follows: list[WatchFollow]
+    rules: list[WatchRule]
+    alerts: list[WatchAlert]
+    unread: int
+
+
+class WatchRuleCompileRequest(_Model):
+    text: str = Field(min_length=1, max_length=300, description="The rule in plain words.")
+
+
+class WatchRuleDraft(_Model):
+    """The compiled rule shown back for confirmation; nothing is kept."""
+    text: str
+    spec: dict[str, Any]
+    description: str = Field(description="What the rule will do, in plain words.")
+    markings: list[str] = Field(description="The markings the figures it reads carry.")
+    compiled_by: Literal["grammar", "model"]
+    digest: str = Field(description="Send it back with the spec to confirm this very rule.")
+
+
+class WatchRuleRequest(_Model):
+    text: str = Field(min_length=1, max_length=300)
+    spec: dict[str, Any]
+    digest: str = Field(min_length=1, max_length=64)
+
+
+class WatchRuleDeleted(_Model):
+    rule_id: str
+    deleted: bool
+
+
+class WatchReadRequest(_Model):
+    alert_ids: list[str] = Field(max_length=500)
+
+
+class WatchReadResult(_Model):
+    marked: int
+
+
 # ---- proactive suggestions ("needs your attention: what to do") -------------------------
 
 class DraftTo(_Model):
@@ -1448,9 +1719,9 @@ class SuggestionConfidence(_Model):
 
 
 ActionKind = Literal["send_email", "reply_in_thread", "forward", "teams_message",
-                     "create_follow_up", "mark_done", "snooze", "dismiss"]
+                     "create_follow_up", "mark_done", "snooze", "dismiss", "assign"]
 ActionStatus = Literal["pending", "sent", "failed", "unknown", "dry_run", "follow_up",
-                       "done", "snoozed", "dismissed"]
+                       "done", "snoozed", "dismissed", "assigned"]
 
 
 class CardActionOffer(_Model):
@@ -1478,6 +1749,8 @@ class ActionPayload(_Model):
     until: Optional[str] = Field(None, max_length=10)
     reason: Optional[str] = Field(None, max_length=2000)
     note: Optional[str] = Field(None, max_length=2000)
+    assignee: Optional[str] = Field(None, max_length=320, description="Assign to: a "
+                                    "colleague's address (kept in the Workbench only).")
 
 
 class ActionRequest(_Model):
@@ -1551,6 +1824,86 @@ class ActionResult(_Model):
     request: Optional[GraphRequest] = None
 
 
+class PlaybookAddress(_Model):
+    address: str
+    source: str = Field(description="The citation the address is read from.")
+
+
+class PlaybookEmail(_Model):
+    """A drafted message to the record's outside party (never sent here: it goes only
+    through ``/api/actions/preview`` and your confirm, ``card_id`` = the playbook's id)."""
+    channel: Literal["email"]
+    party: Optional[str] = None
+    to: Optional[PlaybookAddress] = None
+    subject: str
+    body: str
+    status: Literal["draft_not_sent"]
+
+
+class PlaybookOwner(_Model):
+    name: str
+    address: Optional[str] = None
+    link: str
+
+
+class PlaybookTeams(_Model):
+    """A drafted Teams note to the record's internal owner, when the ontology knows them."""
+    channel: Literal["teams"]
+    owner: Optional[PlaybookOwner] = None
+    owner_known: bool
+    why_no_owner: Optional[str] = None
+    body: str
+    status: Literal["draft_not_sent"]
+
+
+class PlaybookChange(_Model):
+    """The change a person makes in the source system themselves: the Workbench never
+    writes BC, the Portal or MC (``writes`` is 0)."""
+    system: str
+    do_this: str
+    field: str
+    value: Optional[str] = None
+    value_basis: str
+    writes: Literal[0]
+    by: str
+
+
+class PlaybookLink(_Model):
+    system: str
+    url: Optional[str] = None
+    status: Literal["ready", "not_configured"]
+    reason: Optional[str] = None
+
+
+class PlaybookFact(_Model):
+    fact: str
+    value: str
+    citation: str
+
+
+class AlertPlaybook(_Model):
+    """One alert's ready-to-use next steps (``operating.alert_playbooks``), worded from its
+    own cited sources as you read them. Nothing is sent or written by reading it."""
+    id: str = Field(description="The card id the actions (``/api/actions/*``) take.")
+    alert_id: str
+    event_type: str
+    kind: Optional[str] = None
+    object_id: str
+    object_type: str
+    summary: Optional[str] = None
+    email: Optional[PlaybookEmail] = None
+    teams: Optional[PlaybookTeams] = None
+    change: Optional[PlaybookChange] = None
+    links: list[PlaybookLink] = Field(default_factory=list)
+    local: list[ActionKind] = Field(default_factory=list)
+    offers: list[CardActionOffer] = Field(default_factory=list)
+    facts: list[PlaybookFact] = Field(default_factory=list)
+    rests_on: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    sent: Literal[False]
+    writes: Literal[0]
+
+
 class ActionStates(_Model):
     cards: dict[str, ActionResult] = Field(default_factory=dict, description="Each card's "
                                            "latest action by you.")
@@ -1616,3 +1969,77 @@ class Suggestions(_Model):
         description="Set when the server could not read this page in time and serves the "
                     "last page it read for this same reader: when that page was read "
                     "(ISO). It is refreshed in the background.")
+
+
+# ---- briefs (operating/briefs.py): meeting prep and the weekly review ---------------------
+
+class BriefRow(_Model):
+    label: str
+    detail: Optional[str] = None
+    date: Optional[str] = Field(None, description="ISO date the row is about, when cited.")
+    amount: Optional[Money] = Field(None, description="Finance readers only; per currency.")
+    object: Optional[ObjectRef] = None
+    sources: list[Source] = Field(default_factory=list)
+
+
+class BriefFigure(_Model):
+    label: str
+    value: Optional[str] = Field(None, description="Decimal string; null when not readable.")
+    unit: Literal["records", "money", "percent"]
+    currency: Optional[str] = None
+    previous: Optional[str] = Field(None, description="The same figure the week before.")
+    delta: Optional[str] = Field(None, description="value - previous (signed decimal).")
+    note: Optional[str] = None
+    sources: list[Source] = Field(default_factory=list)
+
+
+class BriefSection(_Model):
+    key: str
+    title: str
+    state: Literal["shown", "empty", "partial", "finance_marked", "unread"] = Field(
+        description="finance_marked: shown only to a reader holding finance (the same "
+                    "whatever the data holds); partial: a read limit was reached or a part "
+                    "was not readable; unread: its source (the alert list) could not be "
+                    "read, which is not the same as none.")
+    note: Optional[str] = None
+    rows: list[BriefRow] = Field(default_factory=list)
+    more: int = Field(0, description="Rows you may read beyond those listed.")
+    figures: list[BriefFigure] = Field(default_factory=list)
+
+
+class BriefGap(_Model):
+    code: str
+    state: str
+    subject: str
+    detail: str
+
+
+class Brief(_Model):
+    """A meeting prep brief or a weekly review, generated from the records you may read
+    (no model call). Every row and figure cites its sources; nothing hidden is counted."""
+    kind: Literal["meeting", "weekly"]
+    title: str
+    subject: Optional[ObjectRef] = None
+    subject_sources: list[Source] = Field(default_factory=list)
+    when: Optional[str] = None
+    as_of: str
+    parties: list[ObjectRef] = Field(default_factory=list)
+    possible_parties: list[ObjectRef] = Field(
+        default_factory=list, description="Lead-tier matches (a domain only): never read.")
+    sections: list[BriefSection]
+    gaps: list[BriefGap] = Field(default_factory=list)
+    basis: str
+    summary_question: Optional[str] = Field(
+        None, description="A question for /api/ask (the answer path with its claim checks) "
+                          "that summarises this brief; optional.")
+
+
+class UpcomingMeeting(_Model):
+    object: ObjectRef
+    start: Optional[str] = None
+    brief_url: str
+    sources: list[Source] = Field(default_factory=list)
+
+
+class UpcomingMeetings(_Model):
+    meetings: list[UpcomingMeeting]

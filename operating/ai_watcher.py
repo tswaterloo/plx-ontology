@@ -1576,8 +1576,11 @@ def detector_covers(inbox: Path, subject: str, groups: Sequence[Sequence[str]]) 
         return False
     roots = {handle_root(h) for group in groups for h in group}
     with closing(_ro(inbox)) as conn:
+        # a person's own mail (``proactive_commitments.OWNER_KINDS``) is shown to its owner
+        # only: it covers nothing every other reader would see
         for (gap_id,) in conn.execute("SELECT gap_id FROM gaps WHERE state = 'open' AND "
-                                      "object_id = ?", (subject,)):
+                                      "object_id = ? AND kind <> 'needs_my_reply'",
+                                      (subject,)):
             cited = {handle_root(r[0]) for r in conn.execute(
                 "SELECT handle FROM gap_cites WHERE gap_id = ?", (gap_id,))}
             if roots and roots <= cited:

@@ -44,7 +44,7 @@ import time
 from typing import Any, Collection, Iterator, Sequence
 
 from ontology.store_ddl import VALUE_COLUMNS
-from operating.ontology_tools import StoreReader
+from operating.ontology_tools import StoreReader, _readable_text
 from operating.pg.sqlite_compat import PgCompatConnection, Row
 
 ENV = "PLX_ONTOLOGY_PG"
@@ -663,6 +663,14 @@ class PgStoreReader(StoreReader):
             held = self.__dict__["_windows"] = WordWindows(self.conn)
         return held
 
+    def sensitive_versions(self, pairs: Sequence[tuple[str, str]]) -> set[str]:
+        """``StoreReader.sensitive_versions`` where the chunks are: the SQLite
+        generation's while the load deferred ``text_chunks``, else Postgres."""
+        if "text_chunks" in self.deferred and self.text_reader is not None:
+            with self.text_reader.lock:
+                return self.text_reader.sensitive_versions(pairs)
+        return super().sensitive_versions(pairs)
+
     def object_chunks(self, scope: Any, object_ids: Sequence[str]) -> list[Any]:
         """The document chunks of these objects: from the SQLite generation while the
         load deferred ``text_chunks`` (``ontology_load.DEFERRABLE``), else Postgres."""
@@ -872,8 +880,8 @@ class PgStoreReader(StoreReader):
                 return self.conn.execute(sql, scope.params(
                     words=words, after=after, batch=want, type=object_type,
                     rows=json.dumps([row for row, _id in part]))).fetchall()
-            return _candidates(self.windows.windows(
-                "chunk_text", query, after, want=max(WINDOW_MATCHES, 3 * batch)), read, batch)
+            return _readable_text(self, scope, _candidates(self.windows.windows(
+                "chunk_text", query, after, want=max(WINDOW_MATCHES, 3 * batch)), read, batch))
         if self.text_reader is None:
             self._no_words("chunk_text")
             return []

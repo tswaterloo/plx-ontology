@@ -61,12 +61,12 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 SCHEMA = "plx-card-actions/v1"
 OUTBOUND = ("send_email", "reply_in_thread", "forward", "teams_message")
-LOCAL = ("create_follow_up", "mark_done", "snooze", "dismiss")
+LOCAL = ("create_follow_up", "mark_done", "snooze", "dismiss", "assign")
 KINDS = OUTBOUND + LOCAL
 LABELS = {"send_email": "Send email", "reply_in_thread": "Reply in thread",
           "forward": "Forward", "teams_message": "Teams message",
           "create_follow_up": "Follow up", "mark_done": "Mark done", "snooze": "Snooze",
-          "dismiss": "Dismiss"}
+          "dismiss": "Dismiss", "assign": "Assign to"}
 TEAMS_CHATS_ENV = "PLX_ACTIONS_TEAMS_CHATS"
 INTERNAL_DOMAINS_ENV = "PLX_ACTIONS_INTERNAL_DOMAINS"
 KNOWN_DOMAINS_ENV = "PLX_ACTIONS_KNOWN_DOMAINS"
@@ -214,7 +214,10 @@ def default_payload(kind: str, card: Mapping[str, Any], ctx: Context) -> dict[st
         return {"to": [], "cc": [], "subject": None, "body": f"For your attention: {note}"}
     if kind == "teams_message":
         chats = teams_chats(ctx.environ)
-        return {"chat_id": chats[0]["chat_id"] if chats else None, "body": note}
+        # an alert playbook's note to the record's owner, else the card's headline and step
+        drafted = (card.get("teams_draft") or {}).get("body")
+        return {"chat_id": chats[0]["chat_id"] if chats else None,
+                "body": drafted if isinstance(drafted, str) and drafted.strip() else note}
     if kind == "create_follow_up":
         return {"due": (ctx.today + timedelta(days=FOLLOW_UP_DAYS)).isoformat(),
                 "note": f"Follow up: {card.get('headline', '')}"[:MAX_NOTE]}
@@ -222,6 +225,8 @@ def default_payload(kind: str, card: Mapping[str, Any], ctx: Context) -> dict[st
         return {"until": (ctx.today + timedelta(days=SNOOZE_DAYS)).isoformat()}
     if kind == "dismiss":
         return {"reason": ""}
+    if kind == "assign":
+        return {"assignee": "", "note": ""}
     return {"note": ""}
 
 
@@ -488,6 +493,21 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
         payload["reason"] = _text(raw.get("reason"), MAX_NOTE)
         if not payload["reason"]:
             problems.append("Say why you dismiss it.")
+    elif kind == "assign":
+        # a colleague only, decided by the exclusion guard (unavailable: refused), kept in
+        # the journal; nobody is messaged
+        assignee = str(raw.get("assignee") or "").strip().lower()
+        payload["assignee"], payload["note"] = assignee, _text(raw.get("note"), MAX_NOTE)
+        guard = ctx.exclusion
+        if not _ADDRESS.fullmatch(assignee):
+            problems.append("Assign to: a colleague's email address is needed.")
+        elif not ctx.is_internal(_domain(assignee)):
+            problems.append(f"Assign to a colleague: {assignee} is outside the company.")
+        elif guard is None or getattr(guard, "unavailable", "absent"):
+            problems.append("The people-exclusion list is not available, so nobody can be "
+                            "assigned (fail closed).")
+        elif _excluded(guard, assignee, True):
+            problems.append(f"{assignee} cannot be assigned work in the Workbench.")
     else:
         payload["note"] = _text(raw.get("note"), MAX_NOTE)
     return {"card_id": str(card["id"]), "kind": kind, "label": LABELS[kind],
@@ -618,7 +638,7 @@ def _at(rows: Sequence[Mapping[str, Any]], outcomes: Mapping[str, str], status: 
 
 
 _LOCAL_STATUS = {"create_follow_up": "follow_up", "mark_done": "done", "snooze": "snoozed",
-                 "dismiss": "dismissed"}
+                 "dismiss": "dismissed", "assign": "assigned"}
 
 
 def _state_text(row: Mapping[str, Any]) -> str:
@@ -638,6 +658,8 @@ def _state_text(row: Mapping[str, Any]) -> str:
         return f"Snoozed until {row.get('until')}"
     if status == "dismissed":
         return f"Dismissed: {row.get('reason')}"
+    if status == "assigned":
+        return f"Assigned to {row.get('assignee')} by {row['actor']['name']}"
     return "Done"
 
 
@@ -699,7 +721,7 @@ class ActionDesk:
                "subject": payload.get("subject"), "chat_id": payload.get("chat_id"),
                "in_reply_to": payload.get("in_reply_to"), "due": payload.get("due"),
                "until": payload.get("until"), "reason": payload.get("reason"),
-               "note": payload.get("note"),
+               "note": payload.get("note"), "assignee": payload.get("assignee"),
                "citations": [{k: c[k] for k in ("fact", "value", "handle")}
                              for c in found["citations"] if c["present"]]}
         try:
@@ -738,19 +760,24 @@ class ActionDesk:
     def _now(self) -> str:
         return self.clock().astimezone(timezone.utc).isoformat(timespec="seconds")
 
-    def _own(self, email: str | None, name: str) -> list[dict[str, Any]]:
+    def _own(self, email: str | None, name: str, *, assigned: bool = False
+             ) -> list[dict[str, Any]]:
+        """This person's rows; with ``assigned`` also the cards a colleague assigned to
+        them (their latest state is that assignment until they act on it)."""
         try:
             rows = self.journal.rows()
         except JournalBroken:
             return []
-        return [r for r in rows if (r["actor"].get("email") or None) == email
-                and (email is not None or r["actor"]["name"] == name)]
+        return [r for r in rows if ((r["actor"].get("email") or None) == email
+                                    and (email is not None or r["actor"]["name"] == name))
+                or (assigned and email is not None and r.get("status") == "assigned"
+                    and r.get("assignee") == email.lower())]
 
     def states(self, email: str | None, name: str, today: date) -> dict[str, dict[str, Any]]:
         """Each card's latest action by this person, as a status chip (an ended snooze
         counts no more)."""
         out: dict[str, dict[str, Any]] = {}
-        for row in self._own(email, name):
+        for row in self._own(email, name, assigned=True):
             if row["status"] == "snoozed" and str(row.get("until")) < today.isoformat():
                 out.pop(row["card_id"], None)
                 continue

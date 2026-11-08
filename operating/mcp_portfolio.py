@@ -690,11 +690,15 @@ def home_text(home: Mapping[str, Any], gaps: Sequence[Mapping[str, Any]] = ()) -
     """plx.find home mode's readable answer (``gaps``: the answer's own gaps about the
     inbox, each said by its reason code)."""
     rules = [r for r in home["rules"] if r["status"] != "complete" or r["not_evaluated"]]
+    # rules of one status and the same reasons are named together, so every rule fits the
+    # line however many there are, and the inbox's gaps keep their room
+    grouped: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+    for r in rules:
+        grouped.setdefault((r["status"], tuple(r["reasons"] or ())), []).append(
+            r["rule"] + (f" ({r['not_evaluated']} not judged)" if r["not_evaluated"] else ""))
     rule_words = "; ".join(
-        f"{r['rule']} {r['status']}"
-        + (f" ({', '.join(r['reasons'])})" if r["reasons"] else "")
-        + (f", {r['not_evaluated']} not judged" if r["not_evaluated"] else "")
-        for r in rules)
+        ", ".join(names) + f" {status}" + (f" ({', '.join(reasons)})" if reasons else "")
+        for (status, reasons), names in grouped.items())
     head = [f"What needs your attention (engine inbox {home['inbox']}"
             + (f", as of {home['as_of']}" if home.get("as_of") else "")
             + ("; stale" if home["stale"] else "") + f"): {home['returned']} open gap"

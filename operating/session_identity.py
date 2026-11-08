@@ -96,8 +96,9 @@ from .entitlements import _AGENT_PREFIXES
 SESSION_TICKET_VERSION = "v1"
 SESSION_TICKET_SECRET_ENV = "PLX_WORKBENCH_SESSION_SECRET"
 SESSION_TICKET_AUDIENCE = "plx-workbench"
-# The Portal's upload ticket caps at 2h too (upload-ticket.ts UPLOAD_TICKET_TTL_SECONDS).
-SESSION_TICKET_TTL_SECONDS = 2 * 60 * 60
+# A ticket lasts a working day at most (the Portal mints shorter ones); the signature, audience,
+# expiry, replay guard and revocation are all still checked on every request.
+SESSION_TICKET_TTL_SECONDS = 8 * 60 * 60
 SESSION_TICKET_MAX_LENGTH = 4096
 SESSION_TICKET_CLOCK_SKEW_SECONDS = 60
 MIN_SECRET_BYTES = 32
@@ -259,7 +260,7 @@ class TicketReplayGuard:
     one presentation (the MCP host's start-up ticket). ``revoke`` makes a jti
     unusable for the rest of its TTL, which a host that re-authenticates the
     bearer on every request (the console) checks with ``check``. Both are kept in
-    a SQLite file (only the jti's SHA-256), so a restart within the 2 h TTL
+    a SQLite file (only the jti's SHA-256), so a restart within the ticket's TTL (up to 8 h)
     forgets nothing; hosts sharing the file share the guard. After the ticket's
     ``exp`` the ticket is refused as expired anyway, so entries are dropped then.
     Bounded: a full guard refuses new tickets (fail closed).

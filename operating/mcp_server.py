@@ -815,7 +815,25 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "po_impact_margin", "systems_disagree", "eta_slipped", "lot_near_expiry",
               "lot_on_hold", "quote_accepted_no_order", "invoice_quantity_mismatch",
               "vendor_no_reply", "vendor_terms_unapplied", "negative_margin",
-              "undated_po", "late_customer_order")
+              "undated_po", "late_customer_order", "stock_out_risk", "overdue_receivable",
+              "unit_cost_jump", "customer_demand_drop", "promise_date_slip",
+              "margin_erosion", "supplier_reliability",
+              "shipped_not_invoiced", "duplicate_customer_order",
+              "recurring_component_damage", "customer_chasing_order",
+              "tell_before_they_ask", "quality_hold_aging", "reject_trend",
+              "customer_paying_slower", "early_pay_discount_missed",
+              "duplicate_supplier_invoice", "duplicate_supplier_payment",
+              "price_below_typical", "price_below_cost",
+              "customer_price_drop",
+              "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+              "planner_task_overdue", "aged_receivable_worsening",
+              "aged_payable_worsening", "production_late", "assembly_damage_spike",
+              "teams_unanswered_ask",
+              "commitment_due", "commitment_missed", "needs_my_reply",
+              "slow_moving_stock", "expiring_lot_stock", "assembly_blocked_by_component",
+              "certificate_expiring", "freight_cost_anomaly", "stale_quote",
+              "duplicate_party_candidate", "key_field_missing", "twins_disagree",
+              "source_stale")
 LATE_PO_KINDS = ("late_po", "unconfirmed_po")
 NARROWED_READ = 20000   # inbox items a kind-narrowed home question reads
 _PURCHASE_ORDERS = r"(?:purchase orders|pos)"

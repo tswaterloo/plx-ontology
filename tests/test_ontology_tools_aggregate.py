@@ -1080,6 +1080,27 @@ class AsKnownAtTests(_Base):
                                          "right_as_known_at": "2099-01-10"})
         self.assertEqual(side["error"]["code"], "not_known_at")
 
+    def test_a_count_at_t_is_known_now_only_when_now_reads_the_same(self):
+        # A question stating a time before the data's end reads its count at that time;
+        # the count binds exactly (``known_now``) only when the same call now returns the
+        # same members: a record captured after T makes it a count of then alone.
+        from operating.claim_checks import known_now
+        args = {"set": self.set_of(STAFF, L1, L2), "measure": {"op": "count"},
+                "as_known_at": "2099-01-22"}
+        same = self.call("plx.aggregate", args)
+        self.assertEqual(same["groups"][0]["value"], "2")
+        self.assertIs(same.get("same_as_now"), True)
+        self.assertTrue(known_now(args, same))
+        summed = self.agg(STAFF, [L1, L2], {"property": "ordered_quantity", "op": "sum"},
+                          as_known_at="2099-01-22")
+        self.assertNotIn("same_as_now", summed)   # counts only
+        self.capture_later(L2)
+        args = dict(args, set=self.set_of(STAFF, L1, L2), as_known_at="2099-01-10")
+        then = self.call("plx.aggregate", args)
+        self.assertEqual(then["groups"][0]["value"], "1")
+        self.assertNotIn("same_as_now", then)
+        self.assertFalse(known_now(args, then))
+
     def test_a_record_existing_at_t_counts_and_is_not_missing_before_it_went_missing(self):
         self.missing_since("2099-01-25T00:00:00Z")
         measure = {"property": "ordered_quantity", "op": "sum"}

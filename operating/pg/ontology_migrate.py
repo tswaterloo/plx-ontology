@@ -288,11 +288,61 @@ def _apply_steps(cur: Any, layer: Path, record: Mapping[str, Any],
     out["copied.link_rows"] = copied["copied.link_rows"]
     if record.get("values"):
         _apply_step_values(cur, layer, record["values"], out)
+    if record.get("text_marks"):
+        _apply_text_marks(cur, layer, record["text_marks"], out)
     out["seconds"] = round(time.monotonic() - t, 3)
     out["reproject"] = reproject(cur, _newer(cur, record["scope"], record["delta_mark"]),
                                  "steps:" + record["id"])
     cur.execute("INSERT INTO ontology.store_meta (key, value) VALUES ('steps_digest', %s) "
                 "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (record["to"],))
+
+
+def _apply_text_marks(cur: Any, layer: Path, spec: Mapping[str, Any],
+                      out: dict[str, Any]) -> None:
+    """The text index's step migration across a change that only marks
+    (``step_migrate.MARKS_ONLY``): every served text field of a document the layer names
+    (``text_marks``: its version handle) gets ``spec["marks"]`` added; nothing else is
+    written (no text read again, no chunk touched; a chunk is read under its field's
+    markings). Markings are only ever added. An unknown marking refuses."""
+    from ontology.step_migrate import TEXT_MARKS
+    from ontology.store import StoreError, markings_text
+    marks = set(spec.get("marks") or ())
+    conn = sqlite3.connect(f"file:{layer}?mode=ro", uri=True)
+    try:
+        handles = [r[0] for r in conn.execute(
+            f"SELECT version_handle FROM {TEXT_MARKS} ORDER BY version_handle")]
+    finally:
+        conn.close()
+    if len(handles) != int(spec.get("documents", -1)) or not marks:
+        raise Refused("text_marks_incomplete")
+    cur.execute("CREATE TEMP TABLE text_marked_documents (version_handle text PRIMARY KEY) "
+                "ON COMMIT DROP")
+    with cur.copy("COPY text_marked_documents (version_handle) FROM STDIN") as copy:
+        for handle in handles:
+            copy.write_row((handle,))
+    cur.execute("ANALYZE text_marked_documents")
+    cur.execute("SELECT f.field_id, f.markings FROM ontology.text_fields f "
+                "JOIN text_marked_documents d ON d.version_handle = f.version_handle")
+    held = cur.fetchall()
+    changed = []
+    for field_id, markings in held:
+        try:
+            new = markings_text(set(json.loads(markings)) | marks)
+        except (StoreError, TypeError, ValueError) as exc:
+            raise Refused("text_marks_markings") from exc
+        if new != markings:
+            changed.append((field_id, new))
+    if changed:
+        cur.execute("CREATE TEMP TABLE text_marked (field_id bigint PRIMARY KEY, "
+                    "markings text NOT NULL) ON COMMIT DROP")
+        with cur.copy("COPY text_marked (field_id, markings) FROM STDIN") as copy:
+            for row in changed:
+                copy.write_row(row)
+        cur.execute("UPDATE ontology.text_fields f SET markings = r.markings FROM "
+                    "text_marked r WHERE r.field_id = f.field_id")
+    out["text_marks.documents"] = len(handles)
+    out["text_marks.fields"] = len(held)
+    out["remarked.text_fields"] = len(changed)
 
 
 def _apply_step_values(cur: Any, layer: Path, owned: Sequence[Mapping[str, Any]],
@@ -480,6 +530,7 @@ def _text_index(cur: Any, record: Mapping[str, Any], report: dict[str, Any]) -> 
     the text index step: refused (``text_index_input``); an object holding a version the
     served rows did not is queued for the delta to project again (``ontology.reproject``:
     its text is indexed then)."""
+    from ontology.step_migrate import SENSITIVE_MARKS
     from ontology.store import StoreError, markings_text
     bindings = record["delete"]["bindings"]
     cur.execute("SELECT DISTINCT p.binding_id FROM prior p JOIN ontology.text_fields f "
@@ -528,6 +579,10 @@ def _text_index(cur: Any, record: Mapping[str, Any], report: dict[str, Any]) -> 
         try:
             for text in versions:
                 want.update(json.loads(text))
+            # a payroll or HR-confidential document's pair (the text index's, not its
+            # version's or its path's) stays: stricter, never wider
+            if set(SENSITIVE_MARKS) <= set(json.loads(held)):
+                want.update(SENSITIVE_MARKS)
             new = markings_text(want)
         except (StoreError, TypeError, ValueError) as exc:
             raise Refused(f"text_index_markings:{bid}") from exc

@@ -153,6 +153,188 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                             "label": "Customer order past its required date",
                             "departments": ("ACCTMGMT", "SALES", "OPS"),
                             "check": ("late_customer_order",)},
+    # the business alerts (``operating.proactive_business``); the receivable and the cost
+    # jump rest on finance-marked figures, so only a reader holding finance opens them
+    "stock_out_risk": {"kinds": ("stock_out_risk",), "label": "Stock cannot cover open orders",
+                       "departments": ("OPS", "PROC", "SALES", "WH"),
+                       "check": ("stock_out_risk",)},
+    "overdue_receivable": {"kinds": ("overdue_receivable",),
+                           "label": "Customer invoice overdue",
+                           "departments": ("FIN", "ACCTMGMT"),
+                           "check": ("overdue_receivable",), "hidden": "none"},
+    "unit_cost_jump": {"kinds": ("unit_cost_jump",), "label": "Purchase cost jumped",
+                       "departments": ("PROC", "FIN"), "check": ("unit_cost_jump",),
+                       "hidden": "none"},
+    # the operations alerts (``operating.proactive_ops``): stalled work, ageing balances
+    # (finance-marked), late or damaged production, Teams asks left unanswered (resting on
+    # a person's chat: a reader who may not open one is never told it exists)
+    "mc_task_overdue": {"kinds": ("mc_task_overdue",), "label": "Mission Control task overdue",
+                        "departments": ("OPS", "PROD"), "check": ("mc_task_overdue",)},
+    "mc_task_stuck": {"kinds": ("mc_task_stuck",), "label": "Mission Control task stuck",
+                      "departments": ("OPS", "PROD"), "check": ("mc_task_stuck",)},
+    "mc_approval_pending": {"kinds": ("mc_approval_pending",),
+                            "label": "Approval waiting for a decision",
+                            "departments": ("OPS", "FIN", "PROC"),
+                            "check": ("mc_approval_pending",)},
+    "planner_task_overdue": {"kinds": ("planner_task_overdue",),
+                             "label": "Planner task overdue",
+                             "departments": ("OPS", "PROD", "PROC", "SALES", "WH"),
+                             "check": ("planner_task_overdue",), "hidden": "none"},
+    "aged_receivable_worsening": {"kinds": ("aged_receivable_worsening",),
+                                  "label": "Customer balance ageing worse",
+                                  "departments": ("FIN", "ACCTMGMT"),
+                                  "check": ("aged_balance_worsening",), "hidden": "none"},
+    "aged_payable_worsening": {"kinds": ("aged_payable_worsening",),
+                               "label": "Vendor balance ageing worse",
+                               "departments": ("FIN", "PROC"),
+                               "check": ("aged_balance_worsening",), "hidden": "none"},
+    "production_late": {"kinds": ("production_late",), "label": "Production past due",
+                        "departments": ("PROD", "OPS"), "check": ("production_late",)},
+    "assembly_damage_spike": {"kinds": ("assembly_damage_spike",),
+                              "label": "Assembly damage spiked",
+                              "departments": ("PROD", "QUALITY", "QA", "QC", "PROC"),
+                              "check": ("assembly_damage_spike",)},
+    "teams_unanswered_ask": {"kinds": ("teams_unanswered_ask",),
+                             "label": "Teams question unanswered",
+                             "departments": ("OPS", "SALES", "PROC", "FIN", "PROD", "WH",
+                                             "ACCTMGMT", "QUALITY"),
+                             "check": ("teams_unanswered_ask",), "hidden": "none"},
+    # the chief-executive signals (``operating.proactive_ceo``); the demand drop and the
+    # margin erosion state finance-marked figures, so only a reader holding finance opens them
+    "customer_demand_drop": {"kinds": ("customer_demand_drop",),
+                             "label": "Customer ordering much less",
+                             "departments": ("SALES", "ACCTMGMT", "FIN"),
+                             "check": ("customer_demand_drop",), "hidden": "none"},
+    "promise_date_slip": {"kinds": ("promise_date_slip",),
+                          "label": "Customer orders missing their promised date",
+                          "departments": ("OPS", "SALES", "ACCTMGMT"),
+                          "check": ("promise_date_slip",)},
+    "margin_erosion": {"kinds": ("margin_erosion",), "label": "Margin eroding",
+                       "departments": ("FIN", "SALES", "PROC"),
+                       "check": ("margin_erosion",), "hidden": "none"},
+    "supplier_reliability": {"kinds": ("supplier_reliability",),
+                             "label": "Supplier delivering later than before",
+                             "departments": ("PROC", "OPS"),
+                             "check": ("supplier_reliability",)},
+    # the order-to-cash and damage alerts (``operating.proactive_business``); a shipment no
+    # invoice bills rests on an absence, so it shows only to a reader granted every invoice
+    # audience (``REQUIRES_GRANT``)
+    "shipped_not_invoiced": {"kinds": ("shipped_not_invoiced",),
+                             "label": "Shipped but not invoiced",
+                             "departments": ("FIN", "ACCTMGMT", "OPS"),
+                             "check": ("shipped_not_invoiced",)},
+    "duplicate_customer_order": {"kinds": ("duplicate_customer_order",),
+                                 "label": "Customer order entered twice",
+                                 "departments": ("SALES", "ACCTMGMT", "OPS"),
+                                 "check": ("duplicate_customer_order",)},
+    "recurring_component_damage": {"kinds": ("recurring_component_damage",),
+                                   "label": "Item damaged again and again in assembly",
+                                   "departments": ("QUALITY", "QA", "QC", "PROC", "OPS"),
+                                   "check": ("recurring_component_damage",)},
+    # the two largest pains (``operating.proactive_chasers``): a customer chasing where an
+    # order is rests on mail and on no shipment being recorded (``REQUIRES_GRANT``), so
+    # what a reader may not open is never counted to it
+    "customer_chasing_order": {"kinds": ("customer_chasing_order",),
+                               "label": "Customer chasing an order",
+                               "departments": ("SALES", "ACCTMGMT", "CS", "OPS"),
+                               "check": ("customer_chase",), "hidden": "none"},
+    "tell_before_they_ask": {"kinds": ("tell_before_they_ask",),
+                             "label": "Tell the customer before they ask",
+                             "departments": ("SALES", "ACCTMGMT", "CS", "OPS"),
+                             "check": ("customer_chase",), "hidden": "none"},
+    # promises we made (``operating.proactive_commitments``): resting on no shipment,
+    # invoice or later message being recorded (``REQUIRES_GRANT``)
+    "commitment_due": {"kinds": ("commitment_due",), "label": "Promise due",
+                       "departments": ("SALES", "ACCTMGMT", "CS", "OPS"),
+                       "check": ("commitments",), "hidden": "none"},
+    "commitment_missed": {"kinds": ("commitment_missed",), "label": "Promise missed",
+                          "departments": ("SALES", "ACCTMGMT", "CS", "OPS"),
+                          "check": ("commitments",), "hidden": "none"},
+    # a person's own mail waiting on their reply: shown to that person only, for every
+    # department (``proactive_engine.read_inbox``), never counted as hidden to another
+    "needs_my_reply": {"kinds": ("needs_my_reply",), "label": "Needs your reply",
+                       "departments": (),
+                       "check": ("needs_reply",), "hidden": "none"},
+    "quality_hold_aging": {"kinds": ("quality_hold_aging",),
+                           "label": "Quality hold getting old",
+                           "departments": ("QUALITY", "QA", "QC", "OPS"),
+                           "check": ("quality_holds",)},
+    "reject_trend": {"kinds": ("reject_trend",), "label": "Rejects rising",
+                     "departments": ("QUALITY", "QA", "QC", "PROC"),
+                     "check": ("quality_holds",)},
+    # receivables and payables (``operating.proactive_cash``), every figure finance-marked
+    "customer_paying_slower": {"kinds": ("customer_paying_slower",),
+                               "label": "Customer paying more slowly",
+                               "departments": ("FIN", "ACCTMGMT", "SALES"),
+                               "check": ("customer_payment_behaviour",)},
+    "early_pay_discount_missed": {"kinds": ("early_pay_discount_missed",),
+                                  "label": "Early-pay discount missed",
+                                  "departments": ("FIN", "PROC"),
+                                  "check": ("early_pay_discounts",)},
+    "duplicate_supplier_invoice": {"kinds": ("duplicate_supplier_invoice",),
+                                   "label": "Supplier invoice entered twice",
+                                   "departments": ("FIN", "PROC"),
+                                   "check": ("duplicate_payables",)},
+    "duplicate_supplier_payment": {"kinds": ("duplicate_supplier_payment",),
+                                   "label": "Supplier paid twice",
+                                   "departments": ("FIN", "PROC"),
+                                   "check": ("duplicate_payables",)},
+    # operations (``operating.proactive_stock``): stock and value are finance-marked; a slow
+    # item and an assembly shortfall rest on an absence (``REQUIRES_GRANT``)
+    "slow_moving_stock": {"kinds": ("slow_moving_stock",), "label": "Stock not moving",
+                          "departments": ("OPS", "WH", "PROC", "FIN"),
+                          "check": ("slow_moving_stock",)},
+    "expiring_lot_stock": {"kinds": ("expiring_lot_stock",),
+                           "label": "Lot with stock expiring soon",
+                           "departments": ("WH", "PROD", "QUALITY", "QA", "OPS"),
+                           "check": ("expiring_lot_stock",), "days": "left"},
+    "assembly_blocked_by_component": {"kinds": ("assembly_blocked_by_component",),
+                                      "label": "Assembly order short of components",
+                                      "departments": ("PROD", "PROC", "OPS"),
+                                      "check": ("assembly_component_shortfall",),
+                                      "days": "left"},
+    "certificate_expiring": {"kinds": ("certificate_expiring",),
+                             "label": "Certificate expiring soon",
+                             "departments": ("QUALITY", "QA", "QC", "PROC"),
+                             "check": ("certificate_expiry",), "days": "left"},
+    "freight_cost_anomaly": {"kinds": ("freight_cost_anomaly",),
+                             "label": "Freight bill far above usual",
+                             "departments": ("FIN", "WH", "OPS"),
+                             "check": ("freight_cost_anomaly",)},
+    # what each customer pays for the same product (``operating.proactive_prices``),
+    # finance-marked
+    "price_below_typical": {"kinds": ("price_below_typical",),
+                            "label": "Customer paying far below the usual price",
+                            "departments": ("SALES", "ACCTMGMT", "FIN"),
+                            "check": ("price_consistency",)},
+    "customer_price_drop": {"kinds": ("customer_price_drop",),
+                            "label": "Customer's price dropped",
+                            "departments": ("SALES", "ACCTMGMT", "FIN"),
+                            "check": ("price_consistency",)},
+    "price_below_cost": {"kinds": ("price_below_cost",),
+                         "label": "Customer price below cost",
+                         "departments": ("SALES", "ACCTMGMT", "FIN"),
+                         "check": ("price_consistency",)},
+    # sales (``operating.proactive_sales``): the value is in the event, finance-marked; the
+    # claim rests on no order being recorded (``REQUIRES_GRANT``)
+    "stale_quote": {"kinds": ("stale_quote",), "label": "Quote not converted to an order",
+                    "departments": ("SALES", "ACCTMGMT", "OPS", "FIN"),
+                    "check": ("stale_quote",)},
+    # data quality (``operating.proactive_quality``): a duplicate is a proposal a person
+    # confirms; a missing field rests on an absence (``REQUIRES_GRANT``)
+    "duplicate_party_candidate": {"kinds": ("duplicate_party_candidate",),
+                                  "label": "Customer or supplier entered twice",
+                                  "departments": ("FIN", "SALES", "PROC", "OPS"),
+                                  "check": ("duplicate_parties",)},
+    "key_field_missing": {"kinds": ("key_field_missing",), "label": "Key field missing",
+                          "departments": ("OPS", "FIN", "SALES", "PROC", "WH"),
+                          "check": ("key_fields_missing",)},
+    "twins_disagree": {"kinds": ("twins_disagree",), "label": "Systems disagree on a record",
+                       "departments": ("OPS", "FIN", "SALES", "PROC"),
+                       "check": ("twin_disagreement",)},
+    "source_stale": {"kinds": ("source_stale",), "label": "Source not updated lately",
+                     "departments": ("OPS", "IT", "FIN"), "check": ("stale_captures",),
+                     "days": "old"},
     # what the AI watcher raised from a cycle of changes (``operating.ai_watcher``), shown
     # only while its switch is on (``optional``: the type and its check are listed only
     # when the check reports a run): routed by the departments the item names, and never
@@ -166,6 +348,9 @@ EVENT_KINDS = tuple(TYPE_OF_KIND)
 # What may be said of the events of a type routed to a reader that it may NOT open
 # (``HIDDEN_POLICY``): "count" (how many, never which, what or where) or "none" (not
 # even that some exist). See the module doc.
+# Event types of a person's own mail (``proactive_engine.read_inbox`` shows them to their
+# owner only): always the reader's own, routed whatever the department.
+OWN_MAIL = frozenset({"needs_my_reply"})
 HIDDEN_POLICY = {name: spec.get("hidden", "count") for name, spec in EVENT_TYPES.items()}
 # A type whose days count down to a deadline (days left): its urgency is the horizon the
 # check looks ahead (``proactive_events.EXPIRY_DAYS``) less the days left, so a lot expiring
@@ -185,7 +370,21 @@ CHECK_WORDS = {"late_or_unconfirmed_po": "late purchase orders",
                "invoice_quantity_mismatch": "invoiced against received quantities",
                "orders_at_risk": "customer orders hit by late purchase orders",
                "late_customer_order": "customer orders past their required date",
-               "ai_watcher": "new mail, chat and record changes"}
+               "ai_watcher": "new mail, chat and record changes",
+               "customer_payment_behaviour": "customers paying more slowly",
+               "early_pay_discounts": "early-pay discounts missed",
+               "duplicate_payables": "supplier invoices and payments entered twice",
+               "slow_moving_stock": "stock not moving",
+               "expiring_lot_stock": "lots with stock expiring",
+               "assembly_component_shortfall": "assembly orders short of components",
+               "certificate_expiry": "certificates expiring",
+               "freight_cost_anomaly": "freight bills far above usual",
+               "price_consistency": "what each customer pays for the same product",
+               "stale_quote": "open quotes with no order",
+               "duplicate_parties": "customers and suppliers entered twice",
+               "key_fields_missing": "key fields missing on active records",
+               "twin_disagreement": "systems disagreeing on one record",
+               "stale_captures": "sources not updated lately"}
 REASON_WORDS = {"time_budget": "time ran out", "event_bound": "only the most recent were read",
                 "impact_bound": "only the first ones were followed",
                 "card_bound": "only the first ones were read",
@@ -233,6 +432,115 @@ NEXT_ACTIONS = {
                             "the customer.", "late_order_ship_or_close"),
     "watcher_attention": ("Open the cited sources and decide whether anyone needs to act "
                           "(nothing is sent).", "watcher_review"),
+    "mc_task_overdue": ("Ask the task's owner for a new date or to hand it on, and update "
+                        "the task in Mission Control.", "mc_task_new_date"),
+    "mc_task_stuck": ("Ask the task's owner what blocks it; move, reassign or cancel it in "
+                      "Mission Control.", "mc_task_unblock"),
+    "mc_approval_pending": ("Remind the approver to decide; never approve on their behalf.",
+                            "mc_approval_remind"),
+    "planner_task_overdue": ("Ask the assignee for a new date, or close the task if it is "
+                             "no longer needed.", "planner_task_new_date"),
+    "aged_receivable_worsening": ("Review the customer's overdue invoices and agree a "
+                                  "payment plan or credit hold with their account owner.",
+                                  "aged_ar_review"),
+    "aged_payable_worsening": ("Check which vendor bills are overdue and why, and schedule "
+                               "payment or raise the dispute with the vendor.",
+                               "aged_ap_review"),
+    "production_late": ("Ask production for a finish date and tell the owners of the "
+                        "customer orders that wait on it.", "production_new_date"),
+    "assembly_damage_spike": ("Have Quality review the recent damage entries for a common "
+                              "cause (line, component lot or handling).",
+                              "damage_find_cause"),
+    "teams_unanswered_ask": ("Follow up with the person in the conversation, or ask someone "
+                             "else who can answer (nothing is sent for you).",
+                             "teams_follow_up"),
+    "stock_out_risk": ("Decide how to cover the shortfall before the first order hit "
+                       "ships: expedite an inbound order, buy more, or agree a later date "
+                       "with the customers.", "stock_cover_shortfall"),
+    "overdue_receivable": ("Ask the customer's account owner to chase payment, and check "
+                           "whether a payment or credit is not yet recorded.",
+                           "receivable_chase_payment"),
+    "unit_cost_jump": ("Check the purchase order's cost with the supplier: a new price, a "
+                       "different pack or an entry error, before it is paid or reused.",
+                       "cost_jump_check_supplier"),
+    "customer_demand_drop": ("Ask the customer's account owner why orders fell and whether "
+                             "the business is moving elsewhere.", "demand_ask_why"),
+    "promise_date_slip": ("Find what keeps delaying this customer's orders and tell the "
+                          "customer the dates that will hold.", "slip_find_cause"),
+    "margin_erosion": ("Compare recent prices and costs with the earlier orders and decide "
+                       "whether to re-price or renegotiate the cost.", "margin_review_price"),
+    "supplier_reliability": ("Raise the late deliveries with the supplier and check the open "
+                             "orders that depend on it.", "supplier_raise_lateness"),
+    "shipped_not_invoiced": ("Check whether the shipment was invoiced; if not, raise the "
+                             "invoice for what shipped (nothing is posted until you post it).",
+                             "unbilled_raise_invoice"),
+    "duplicate_customer_order": ("Ask the customer whether they meant two orders; if not, "
+                                 "propose cancelling the later one before it ships.",
+                                 "duplicate_confirm_cancel"),
+    "recurring_component_damage": ("Look at the damage entries together and decide whether to "
+                                   "raise it with the supplier or hold the item's stock.",
+                                   "damage_review_supplier"),
+    "customer_chasing_order": ("Send the customer the drafted status reply (nothing is sent "
+                               "until you send it) and tell the account's rep.",
+                               "chase_reply_status"),
+    "tell_before_they_ask": ("Tell the customer where the order stands before its date, "
+                             "with the drafted note (nothing is sent until you send it).",
+                             "chase_tell_first"),
+    "commitment_due": ("Do what we promised by its date, or tell the customer the new date "
+                       "now.", "promise_keep"),
+    "commitment_missed": ("Tell the customer where it stands and the new date, then do what "
+                          "was promised.", "promise_missed_tell"),
+    "needs_my_reply": ("Reply to the message, or hand it to who should answer.",
+                       "reply_or_hand_off"),
+    "quality_hold_aging": ("Ask QC to release or reject the held stock; the orders waiting "
+                           "on it are held up until then.", "hold_decide_release"),
+    "reject_trend": ("Review the rejects with QC and, for a supplier's lots, send the drafted "
+                     "complaint (nothing is sent until you send it).", "reject_review_supplier"),
+    "customer_paying_slower": ("Call the customer's payer about the slower payments and "
+                               "decide whether its terms or credit limit should change.",
+                               "payer_call_terms"),
+    "early_pay_discount_missed": ("Ask the supplier whether the discount can still be "
+                                  "taken, and pay discount invoices by their date.",
+                                  "discount_claim_supplier"),
+    "duplicate_supplier_invoice": ("Check the two invoices; cancel the copy before it is "
+                                   "paid, or ask the supplier for the money back.",
+                                   "duplicate_invoice_cancel"),
+    "duplicate_supplier_payment": ("Check the two payments and ask the supplier for a "
+                                   "refund or a credit on the next invoice.",
+                                   "duplicate_payment_recover"),
+    "slow_moving_stock": ("Decide what to do with the stock: sell it off, use it in another "
+                          "product, return it to the supplier or write it down.",
+                          "slow_stock_decide"),
+    "expiring_lot_stock": ("Plan this lot into an open order before it expires, or ask "
+                           "Quality to retest or dispose of it.", "lot_expiry_plan_use"),
+    "assembly_blocked_by_component": ("Expedite the short components' purchase orders, or "
+                                      "move the assembly order's start.",
+                                      "assembly_expedite_or_move"),
+    "certificate_expiring": ("Ask the supplier for a renewed certificate before the material "
+                             "is used or shipped.", "certificate_request_renewal"),
+    "freight_cost_anomaly": ("Check the freight bill's charges and ask the carrier to "
+                             "correct it if the rate is wrong.", "freight_check_bill"),
+    "price_below_typical": ("Check the customer's agreed price for the product and raise "
+                            "it at the next quote, or record why it is lower.",
+                            "price_review_customer"),
+    "customer_price_drop": ("Ask the account owner why the customer's price fell and "
+                            "restore the agreed price on the next order if it was not "
+                            "meant.", "price_drop_review"),
+    "price_below_cost": ("Stop quoting the product at this price: check the agreed price "
+                         "and the cost, and reprice the customer's next order.",
+                         "price_below_cost_reprice"),
+    "stale_quote": ("Follow up with the customer on the open quote: ask what holds the "
+                    "decision, renew the offer if it lapsed, and close it if the deal is "
+                    "lost.", "quote_follow_up"),
+    "duplicate_party_candidate": ("Open both records and confirm they are one, or reject "
+                                  "the match; nothing is linked until you confirm.",
+                                  "duplicate_party_review"),
+    "key_field_missing": ("Enter the missing field in the system the record is kept in.",
+                          "key_field_fill"),
+    "twins_disagree": ("Check which system is right and correct the other one.",
+                       "twins_reconcile"),
+    "source_stale": ("Check that the source's capture is running and restart it if it "
+                     "stopped.", "source_capture_check"),
 }
 # The next step in the words of the department that acts on it, for a reader routed by
 # department (an Executive or admin reader, routed every type, gets the general step above):
@@ -269,6 +577,114 @@ NEXT_ACTIONS_BY_DEPARTMENT: dict[str, dict[str, tuple[str, str]]] = {
                "if it is wrong.", "mismatch_recount"),
         "FIN": ("Hold the invoice until the billed quantity matches what was received.",
                 "mismatch_hold_invoice"),
+    },
+    "assembly_damage_spike": {
+        "QUALITY": ("Review the recent damage entries for a common cause and hold the "
+                    "component lot if one is behind it.", "damage_quality_review"),
+        "PROC": ("Ask the component supplier about the lots behind the damage.",
+                 "damage_ask_supplier"),
+    },
+    "aged_receivable_worsening": {
+        "ACCTMGMT": ("Ask the customer about their overdue invoices and agree a date to pay.",
+                     "aged_ar_ask_customer"),
+    },
+    "stock_out_risk": {
+        "PROC": ("Expedite or add a purchase order for the item so it arrives before the "
+                 "first order hit ships.", "stock_expedite_supply"),
+        "SALES": ("Tell the customers hit before the date is missed and agree a later date "
+                  "or a partial shipment.", "stock_tell_customer"),
+        "OPS": ("Re-plan the orders hit around the stock that will arrive, and confirm the "
+                "new dates with the account owners.", "stock_replan"),
+        "WH": ("Count the item's stock and correct the record if it is wrong; the shortfall "
+               "rests on it.", "stock_count"),
+    },
+    "overdue_receivable": {
+        "FIN": ("Check for an unapplied payment or credit, then send the customer a payment "
+                "reminder (nothing is sent until you send it).", "receivable_check_remind"),
+        "SALES": ("Ask the customer when they will pay, and hold new orders on terms if "
+                  "Finance asks.", "receivable_ask_customer"),
+    },
+    "customer_demand_drop": {
+        "SALES": ("Call the customer: ask what changed and whether orders are going to "
+                  "another supplier.", "demand_call_customer"),
+        "ACCTMGMT": ("Review the account with the customer: open quotes, products they "
+                     "stopped buying and their plans.", "demand_review_account"),
+        "FIN": ("Update the forecast for this customer's lower orders.",
+                "demand_update_forecast"),
+    },
+    "promise_date_slip": {
+        "OPS": ("Find what delays this customer's orders (stock, capacity or shipping) and "
+                "re-plan the open ones.", "slip_replan"),
+        "SALES": ("Tell the customer the dates that will hold and stop promising dates "
+                  "Operations cannot meet.", "slip_tell_customer"),
+        "ACCTMGMT": ("Call the customer about the missed dates before they escalate, with "
+                     "the new dates from Operations.", "slip_call_customer"),
+    },
+    "margin_erosion": {
+        "FIN": ("Check whether cost went up or price went down on the recent orders, and "
+                "flag it for pricing.", "margin_check_cause"),
+        "SALES": ("Review the prices quoted to this customer or for this product against the "
+                  "earlier orders before quoting again.", "margin_review_quotes"),
+        "PROC": ("Check whether the item's purchase cost rose and whether a better price "
+                 "can be agreed.", "margin_check_cost"),
+    },
+    "supplier_reliability": {
+        "PROC": ("Ask the supplier why deliveries are later and get dates that hold, or "
+                 "line up another source.", "supplier_ask_why"),
+        "OPS": ("Plan with the supplier's later deliveries in mind and check the orders "
+                "that depend on its open purchase orders.", "supplier_plan_buffer"),
+    },
+    "unit_cost_jump": {
+        "PROC": ("Ask the supplier why the price changed and get the agreed price in "
+                 "writing before the next order.", "cost_jump_ask_supplier"),
+        "FIN": ("Check the cost against the supplier's invoice before it is paid, and "
+                "review the item's standard cost.", "cost_jump_check_invoice"),
+    },
+    "shipped_not_invoiced": {
+        "FIN": ("Raise the invoice for what shipped, or record the invoice that already "
+                "exists against the order.", "unbilled_invoice_now"),
+        "SALES": ("Confirm with the customer what was delivered so Finance can invoice it.",
+                  "unbilled_confirm_delivery"),
+        "OPS": ("Confirm the shipment really left and its quantities, so Finance can invoice "
+                "it.", "unbilled_confirm_shipment"),
+    },
+    "duplicate_customer_order": {
+        "SALES": ("Ask the customer whether the second order is wanted; draft the question "
+                  "(nothing is sent until you send it).", "duplicate_ask_customer"),
+        "OPS": ("Hold picking the later order until Sales confirms it is not a repeat.",
+                "duplicate_hold_picking"),
+    },
+    "recurring_component_damage": {
+        "QUALITY": ("Inspect the item's stock and its damage entries, and open a supplier "
+                    "complaint if it is the supplier's packaging.", "damage_inspect_complain"),
+        "PROC": ("Raise the damage with the supplier and ask for credit or a packaging "
+                 "change before the next order.", "damage_tell_supplier"),
+        "OPS": ("Check how the item is handled on the line and in storage.",
+                "damage_check_handling"),
+    },
+    "customer_chasing_order": {
+        "SALES": ("Reply to the customer with the drafted status and the date that will "
+                  "hold (nothing is sent until you send it).", "chase_reply_status"),
+        "OPS": ("Confirm what is holding the order up and the date it will ship, so Sales "
+                "can answer the customer.", "chase_confirm_date"),
+    },
+    "tell_before_they_ask": {
+        "SALES": ("Send the customer the drafted note on where the order stands before its "
+                  "date (nothing is sent until you send it).", "chase_tell_first"),
+        "OPS": ("Check whether the order will be ready by its date and tell Sales.",
+                "chase_check_ready"),
+    },
+    "quality_hold_aging": {
+        "QUALITY": ("Test or review the held stock now and release or reject it.",
+                    "hold_release_or_reject"),
+        "OPS": ("Re-plan the orders waiting on the held stock, or ask QC for a decision.",
+                "hold_replan"),
+    },
+    "reject_trend": {
+        "QUALITY": ("Look at the rejects together and open a supplier complaint for the "
+                    "supplier's lots (the draft is on the alert).", "reject_open_complaint"),
+        "PROC": ("Raise the rejects with the supplier and ask for credit or replacement.",
+                 "reject_tell_supplier"),
     },
     "eta_slipped": {
         "OPS": ("Check whether the plan still holds with the new date and move the work that "
@@ -505,18 +921,47 @@ def _check_state(inbox: Mapping[str, Any], name: str) -> tuple[str, str]:
             f" ({'; '.join(w for w in why if w)})" if any(why) else "")
     if status == "failed":
         return "failed", "could not be checked this run"
+    if status == "blocked":
+        from .proactive_stock import field_words
+
+        fields = field_words((inbox.get("detector_reasons") or {}).get(name) or ())
+        if fields:
+            return "not_checked", ("not checked: waiting on data the sources do not serve "
+                                   f"yet ({', '.join(fields)})")
     return "not_checked", "not checked this run"
 
 
+def at_words(stamp: Any) -> str | None:
+    """A run time in the business's words, to the minute in US Eastern ("2026-11-08 9:30
+    AM ET"); None when it does not read as a time."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    try:
+        moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    local = moment.astimezone(ZoneInfo("America/New_York"))
+    hour = local.hour % 12 or 12
+    return (f"{local.date().isoformat()} {hour}:{local.minute:02d} "
+            f"{'AM' if local.hour < 12 else 'PM'} ET")
+
+
 def _checks(inbox: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Each check behind the event types with this run's state."""
+    """Each check behind the event types with this run's state and its last run's time."""
     out = []
     ran = inbox.get("detectors") or {}
+    run_at = inbox.get("detector_run_at") or {}
     for name in dict.fromkeys(d for spec in EVENT_TYPES.values() for d in spec["check"]
                               if not spec.get("optional") or d in ran):
         state, words = _check_state(inbox, name)
+        last = at_words(run_at.get(name)) if run_at.get(name) else None
         out.append({"check": name, "label": CHECK_WORDS.get(name, name), "status": state,
-                    "words": f"{CHECK_WORDS.get(name, name)}: {words}"})
+                    "words": f"{CHECK_WORDS.get(name, name)}: {words}"
+                             + (f" (last run {last})" if last else ""),
+                    "last_run": run_at.get(name) if last else None})
     return out
 
 
@@ -599,6 +1044,11 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
                        for r in involvement.by_object.get(oid, ())]
             if reasons:
                 item.yours = reasons
+    for item in visible:
+        if item.event_type in OWN_MAIL and not item.yours:
+            # a person's own mail (the inbox shows it to its owner only): theirs, whatever
+            # their department
+            item.yours = [{"reason": "your_mail", "via": item.gap.get("object_id")}]
     mine: list[Item] = []
     others = 0
     for item in visible:
@@ -812,6 +1262,75 @@ TODAY_WORDS = {
                             "past their required date"),
     "watcher_attention": ("change", "changes", "flagged for attention",
                           "flagged for attention"),
+    "stock_out_risk": ("item", "items", "fell short of open orders",
+                       "short of open orders"),
+    "overdue_receivable": ("customer invoice", "customer invoices", "went overdue",
+                           "overdue"),
+    "unit_cost_jump": ("purchase cost", "purchase costs", "jumped", "jumped"),
+    "mc_task_overdue": ("task", "tasks", "went overdue", "overdue"),
+    "mc_task_stuck": ("task", "tasks", "stalled", "stalled"),
+    "mc_approval_pending": ("approval", "approvals", "is waiting", "waiting"),
+    "planner_task_overdue": ("Planner task", "Planner tasks", "went overdue", "overdue"),
+    "aged_receivable_worsening": ("customer balance", "customer balances", "aged worse",
+                                  "ageing worse"),
+    "aged_payable_worsening": ("vendor balance", "vendor balances", "aged worse",
+                               "ageing worse"),
+    "production_late": ("production record", "production records", "went past due",
+                        "past due"),
+    "assembly_damage_spike": ("item", "items", "had a damage spike", "with a damage spike"),
+    "teams_unanswered_ask": ("Teams question", "Teams questions", "went unanswered",
+                             "unanswered"),
+    "customer_demand_drop": ("customer", "customers", "ordered much less",
+                             "ordering much less"),
+    "promise_date_slip": ("customer", "customers", "kept missing promised dates",
+                          "missing promised dates"),
+    "margin_erosion": ("margin", "margins", "eroded", "eroding"),
+    "supplier_reliability": ("supplier", "suppliers", "got later", "delivering later"),
+    "shipped_not_invoiced": ("shipped order", "shipped orders", "went uninvoiced",
+                             "not invoiced"),
+    "duplicate_customer_order": ("customer order", "customer orders", "was entered twice",
+                                 "entered twice"),
+    "recurring_component_damage": ("item", "items", "kept getting damaged",
+                                   "damaged again"),
+    "customer_chasing_order": ("order", "orders", "was chased by its customer",
+                               "chased by customers"),
+    "tell_before_they_ask": ("order", "orders", "came due for a customer who chases",
+                             "to tell customers about first"),
+    "commitment_due": ("promise", "promises", "comes due", "due"),
+    "commitment_missed": ("promise", "promises", "was missed", "missed"),
+    "needs_my_reply": ("message", "messages", "waits on your reply", "waiting on your reply"),
+    "quality_hold_aging": ("held batch or lot", "held batches and lots",
+                           "stayed on hold too long", "on hold too long"),
+    "reject_trend": ("reject trend", "reject trends", "started rising", "rising"),
+    "customer_paying_slower": ("customer", "customers", "started paying more slowly",
+                               "paying more slowly"),
+    "early_pay_discount_missed": ("supplier discount", "supplier discounts", "was missed",
+                                  "missed"),
+    "duplicate_supplier_invoice": ("supplier invoice", "supplier invoices",
+                                   "was entered twice", "entered twice"),
+    "duplicate_supplier_payment": ("supplier payment", "supplier payments", "was made twice",
+                                   "made twice"),
+    "slow_moving_stock": ("item", "items", "stopped moving", "not moving"),
+    "expiring_lot_stock": ("lot with stock", "lots with stock", "came near expiry",
+                           "near expiry"),
+    "assembly_blocked_by_component": ("assembly order", "assembly orders",
+                                      "became short of components", "short of components"),
+    "certificate_expiring": ("certificate", "certificates", "came near expiry",
+                             "near expiry"),
+    "duplicate_party_candidate": ("customer or supplier", "customers or suppliers",
+                                  "may be entered twice", "entered twice"),
+    "key_field_missing": ("record", "records", "is missing a key field",
+                          "missing a key field"),
+    "twins_disagree": ("record", "records", "has systems disagreeing", "disagreeing"),
+    "source_stale": ("source", "sources", "was not updated lately", "not updated lately"),
+    "freight_cost_anomaly": ("freight bill", "freight bills", "came in far above usual",
+                             "far above usual"),
+    "price_below_typical": ("customer price", "customer prices", "fell far below the usual",
+                            "far below the usual"),
+    "customer_price_drop": ("customer price", "customer prices", "dropped", "dropped"),
+    "price_below_cost": ("customer price", "customer prices", "fell below cost",
+                         "below cost"),
+    "stale_quote": ("quote", "quotes", "went stale with no order", "with no order"),
 }
 TODAY_PARTS = 3   # the line names the worst types; the rest are "and N more"
 
@@ -858,7 +1377,7 @@ def today_line(briefing: Mapping[str, Any]) -> str:
     unopened = f"; {hidden} more you can't open" if hidden else ""
     # checks last run on older data: their findings are held back, never "nothing"
     behind = (" Some checks are re-running on the latest data"
-              + (f" (last checked {str(briefing['checked_on'])[:10]})"
+              + (f" (last checked {at_words(briefing['checked_on']) or str(briefing['checked_on'])[:10]})"
                  if briefing.get("checked_on") else "")
               + ", so more may show shortly.") if briefing.get("refreshing") else ""
     if new:

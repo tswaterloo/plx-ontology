@@ -86,6 +86,11 @@ function Fields({ kind, form, set, preview }: { kind: ActionKind; form: ActionPa
             <input id="action-reason" className={bare} value={text("reason")} onChange={(e) => set({ ...form, reason: e.target.value })} data-testid="action-reason" />
           </Line>
         )}
+        {has("assignee") && (
+          <Line id="action-assignee" label="Assign to">
+            <input id="action-assignee" type="email" placeholder="colleague@company" className={bare} value={text("assignee")} onChange={(e) => set({ ...form, assignee: e.target.value })} data-testid="action-assignee" />
+          </Line>
+        )}
         {has("note") && (
           <Line id="action-note" label="Note">
             <input id="action-note" className={bare} value={text("note")} onChange={(e) => set({ ...form, note: e.target.value })} />
@@ -208,7 +213,7 @@ export function ActionDialog({
   onDone,
   state,
 }: {
-  card: ProactiveSuggestion;
+  card: { id: string; subject: { label: string } };
   offer: CardActionOffer;
   onClose: () => void;
   onDone: (r: ActionResult) => void;
@@ -337,7 +342,7 @@ export function ActionDialog({
 }
 
 /** The card's action buttons; one opens its preview dialog. */
-export function CardActions({ card, onDone, state }: { card: ProactiveSuggestion; onDone: (r: ActionResult) => void; state?: ActionResult | null }) {
+export function CardActions({ card, onDone, state }: { card: { id: string; subject: { label: string }; actions?: CardActionOffer[] | null }; onDone: (r: ActionResult) => void; state?: ActionResult | null }) {
   const [open, setOpen] = useState<CardActionOffer | null>(null);
   const offers = card.actions ?? [];
   if (!offers.length) return null;

@@ -38,7 +38,8 @@ from operating import session_identity
 from operating.session_identity import SessionIdentity, SessionIdentityRefused
 
 SESSION_COOKIE = "plx_app_session"
-DEV_SESSION_SECONDS = 8 * 60 * 60
+DEV_SESSION_SECONDS = 8 * 60 * 60          # idle window: each use slides it forward
+DEV_SESSION_MAX_SECONDS = 24 * 60 * 60     # but never past a day from sign-in
 MAX_DEV_SESSIONS = 256
 # Tailscale's addresses: the CGNAT range it assigns and its IPv6 ULA prefix.
 TAILSCALE_NETS = (ipaddress.ip_network("100.64.0.0/10"),
@@ -157,14 +158,18 @@ class DevAuth:
 
     def __init__(self, identity: Callable[[], SessionIdentity] | None = None, *,
                  ticket_identity: Callable[[str], SessionIdentity] | None = None,
+                 sign_in_identity: Callable[[str], SessionIdentity] | None = None,
                  mode: str = "dev", clock: Callable[[], float] = time.time) -> None:
         if mode not in ("dev", "mock"):
             raise ValueError("dev_auth_mode_invalid")
         if (identity is None) == (ticket_identity is None):
             raise ValueError("dev_auth_needs_exactly_one_identity")
         self.mode, self.identity, self.ticket_identity = mode, identity, ticket_identity
+        # ``sign_in_identity``: how a ticket is verified at sign-in (it uses the ticket up);
+        # every later request re-verifies it with ``ticket_identity`` without using it up.
+        self.sign_in_identity = sign_in_identity or ticket_identity
         self.clock = clock
-        self._sessions: dict[str, tuple[float, Optional[str]]] = {}
+        self._sessions: dict[str, tuple[float, Optional[str], float]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -180,14 +185,14 @@ class DevAuth:
         token = secrets.token_urlsafe(32)
         now = self.clock()
         with self._lock:
-            for key in [k for k, (exp, _) in self._sessions.items() if exp <= now]:
+            for key in [k for k, (exp, _, _) in self._sessions.items() if exp <= now]:
                 del self._sessions[key]
             while len(self._sessions) >= MAX_DEV_SESSIONS:
                 self._sessions.pop(next(iter(self._sessions)))
             expires = now + DEV_SESSION_SECONDS
             if reader.session.expires_at is not None:
                 expires = min(expires, float(reader.session.expires_at))
-            self._sessions[token] = (expires, ticket)
+            self._sessions[token] = (expires, ticket, now + DEV_SESSION_MAX_SECONDS)
         return token, reader
 
     def logout(self, token: str | None) -> None:
@@ -198,17 +203,22 @@ class DevAuth:
     def _held(self, token: str) -> tuple[bool, Optional[str]]:
         now = self.clock()
         with self._lock:
-            for key, (exp, ticket) in list(self._sessions.items()):
+            for key, (exp, ticket, cap) in list(self._sessions.items()):
                 if hmac.compare_digest(key, token):
                     if exp > now:
+                        # sliding on activity; a ticket's own expiry is still checked per request
+                        self._sessions[key] = (min(max(exp, now + DEV_SESSION_SECONDS), cap),
+                                               ticket, cap)
                         return True, ticket
                     del self._sessions[key]
         return False, None
 
     def _reader(self, ticket: Optional[str], *, signing_in: bool = False) -> Reader:
         try:
-            session = (self.ticket_identity(ticket) if self.ticket_identity is not None
-                       else self.identity())
+            if self.ticket_identity is None:
+                session = self.identity()
+            else:
+                session = (self.sign_in_identity if signing_in else self.ticket_identity)(ticket)
         except SessionIdentityRefused as refused:
             # An expired, revoked or malformed ticket is the link's fault, not the person's
             # access: at sign-in the link is refused, later the session has ended (the
@@ -232,15 +242,18 @@ class DevAuth:
         return {"mode": self.mode, "dev_login": True}
 
 
-def ticket_identity(resolver: Any, secret: Any, replay_guard: Any
+def ticket_identity(resolver: Any, secret: Any, replay_guard: Any, *, single_use: bool = False
                     ) -> Callable[[str], SessionIdentity]:
-    """A console session ticket verified as the live console verifies it, per request."""
+    """A console session ticket verified as the live console verifies it, per request.
+    ``single_use``: the verification also uses the ticket's id up in the replay guard, so a
+    second presentation is refused (the sign-in; later requests do not use it up)."""
     def identity(ticket: str) -> SessionIdentity:
         if secret is None:
             raise SessionIdentityRefused("session_secret_unavailable")
         return session_identity.employee_session(
             resolver, channel=session_identity.CHANNEL_CONSOLE, ticket=ticket,
-            secret=secret, replay_guard=replay_guard, client="plx-workbench-app")
+            secret=secret, replay_guard=replay_guard, single_use=single_use,
+            client="plx-workbench-app")
     return identity
 
 

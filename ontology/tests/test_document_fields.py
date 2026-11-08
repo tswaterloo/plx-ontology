@@ -411,13 +411,19 @@ class DocumentFieldsTests(unittest.TestCase):
             "from": self.po_object("p1"), "path": [
                 {"link_type": "SupplierConfirmation.confirms", "direction": "reverse"}],
             "tier_floor": "lead"}, READER))
-        self.assertEqual([o["object_id"] for o in around["objects"]],
+        # A lowered floor reaches the confirmation through its lead link, shown apart as
+        # possibly related: never in the answer's set, count or listing.
+        self.assertEqual(around["objects"], [])
+        self.assertEqual(around["hops"][0]["count"], 0)
+        self.assertEqual([o["object_id"] for o in around["possibly_related"]["objects"]],
                          [self.confirmation("ATT-1")])
+        self.assertEqual({e["tier"] for e in around["possibly_related"]["edges"]}, {"lead"})
         strict = self.ok("plx.around", tt.TraverseTools(tools).call("plx.around", {
             "from": self.po_object("p1"), "path": [
                 {"link_type": "SupplierConfirmation.confirms", "direction": "reverse"}]},
             READER))
         self.assertEqual(strict["objects"], [])   # a lead is never traversed by default
+        self.assertNotIn("possibly_related", strict)
 
     def test_a_customer_po_naming_an_own_purchase_order_is_reported_as_maybe_issued(self):
         """Direction at read time (decision 2026-10-08): the class stage cannot see the
@@ -1929,6 +1935,16 @@ def _values(found):
     return {name: field.get("value") for name, field in found["fields"].items()}
 
 
+# Placed values, written currencies and the FreightBill document links come back with the
+# document-field migration; until it lands, document fields derive as the
+# served store was built (labelled reads only) and the schema declares no FreightBill
+# document link. The tests below hold in both states: what the migration adds is asserted
+# when its code is in the tree, and what the served derivation reads otherwise.
+DOCUMENT_MIGRATION = hasattr(document_fields, "PLACED_HOW")
+_MIGRATION_SKIP = ("placed values return with the document-field migration (lane/migration-2); "
+                   "the served derivation places no value")
+
+
 class PlacedValuesTests(unittest.TestCase):
     """A value printed beside or below its label without ':' or '#' is placed by the page's
     columns (module docstring, *Placed values*): from a PDF's layout view, cited where the
@@ -1951,6 +1967,7 @@ class PlacedValuesTests(unittest.TestCase):
         "  Upon request, Seller shall provide a certificate of insurance to Buyer.",
     ])
 
+    @unittest.skipUnless(DOCUMENT_MIGRATION, _MIGRATION_SKIP)
     def test_ocr_text_values_beside_and_below_their_labels(self):
         found = document_fields.extract_fields(b"%PDF-scan", "application/pdf",
                                                filename="scan.pdf", text=self.OCR)
@@ -2002,8 +2019,12 @@ class PlacedValuesTests(unittest.TestCase):
         text = self.OCR.replace("Price (USD)", "Price (USD) / freight in CAD")
         found = document_fields.extract_fields(b"%PDF-scan", "application/pdf",
                                                filename="scan.pdf", text=text)
-        self.assertEqual(found["fields"]["amount"]["gap"], "currency_unknown")
+        amount = found["fields"]["amount"]
+        self.assertIsNone(amount.get("value"))   # neither written currency is taken
+        self.assertEqual(amount["gap"],
+                         "currency_unknown" if DOCUMENT_MIGRATION else "label_seen_unread")
 
+    @unittest.skipUnless(DOCUMENT_MIGRATION, _MIGRATION_SKIP)
     @unittest.skipUnless(importlib.util.find_spec("pypdf") and
                          importlib.util.find_spec("reportlab"), "needs pypdf and reportlab")
     def test_text_layer_values_are_placed_by_the_layout_view(self):
@@ -2052,11 +2073,18 @@ class PlacedValuesTests(unittest.TestCase):
         self.assertIsNone(fields["notify_party"].get("value"))   # a French form header
         # A column head naming another field ('ORIGINATING CARRIER' beside 'ORIGIN').
         self.assertIsNone(fields["port_of_loading"].get("value"))
-        self.assertEqual((fields["consignee"]["value"], fields["consignee"]["gap"],
-                          [c["text"] for c in fields["consignee"]["citations"]]),
-                         (None, "unreadable", ["xelmnartuve"]))
+        consignee = fields["consignee"]
+        cited = [c["text"] for c in consignee["citations"]]
+        if DOCUMENT_MIGRATION:
+            self.assertEqual((consignee["value"], consignee["gap"], cited),
+                             (None, "unreadable", ["xelmnartuve"]))
+        else:   # the served derivation places nothing: the label is seen, never read
+            self.assertEqual((consignee["value"], consignee["gap"], cited),
+                             (None, "label_seen_unread", ["CONSIGNEE"]))
         # 'EUR-PALLET' writes no currency: the '$' amount's stays unknown.
-        self.assertEqual(fields["amount"]["gap"], "currency_unknown")
+        self.assertIsNone(fields["amount"].get("value"))
+        self.assertEqual(fields["amount"]["gap"],
+                         "currency_unknown" if DOCUMENT_MIGRATION else "label_seen_unread")
 
     def test_a_title_a_registration_number_and_running_text_give_no_value(self):
         text = "\n".join([
@@ -2092,6 +2120,8 @@ class PlacedValuesTests(unittest.TestCase):
         self.assertIsNone(found["fields"]["document_date"].get("value"))
         self.assertEqual(found["fields"]["document_date"]["gap"], "label_seen_unread")
 
+    # Whether the bytes were held keys the fields only for the placement's layout view.
+    @unittest.skipUnless(DOCUMENT_MIGRATION, _MIGRATION_SKIP)
     @unittest.skipUnless(importlib.util.find_spec("pypdf") and
                          importlib.util.find_spec("reportlab"), "needs pypdf and reportlab")
     def test_fields_are_kept_under_whether_the_bytes_were_held(self):
@@ -2120,9 +2150,12 @@ class DocumentLinkTypesTests(unittest.TestCase):
         for pair in [("SupplierInvoice", "PurchaseOrder"), ("SupplierInvoice", "SalesOrder"),
                      ("SupplierInvoice", "SalesInvoice"), ("SupplierConfirmation", "SalesOrder"),
                      ("SupplierConfirmation", "SalesInvoice"), ("PackingSlip", "SalesInvoice"),
-                     ("FreightBill", "SalesInvoice"), ("CustomerPoDocument", "PurchaseOrder"),
+                     ("CustomerPoDocument", "PurchaseOrder"),
                      ("CustomerPoDocument", "SalesInvoice")]:
             self.assertIn(pair, declared)
+        # A freight bill's sales-invoice link comes back with the document-field migration;
+        # the served schema waits for it and declares none until then.
+        self.assertEqual(("FreightBill", "SalesInvoice") in declared, DOCUMENT_MIGRATION)
 
 
 if __name__ == "__main__":

@@ -546,6 +546,18 @@ class TraverseTools:
         contract = self.contracts["tools"][name]
         if not isinstance(arguments, dict):
             return self._checked(name, _error("invalid_input", "arguments must be an object"))
+        if name == "plx.around" and "mode" in arguments:
+            # what_if / why (operating/ontology_tools_impact.py): composed of this reader's
+            # own plx.around and plx.object calls through the host table, outside the lock
+            impact = getattr(self, "impact", None)
+            if impact is None:
+                return self._checked(name, _error(
+                    "invalid_input", "mode is not served by this host",
+                    "walk the links with path instead"))
+            return impact.call(arguments, actor)
+        if name == "plx.around" and "change" in arguments:
+            return self._checked(name, _error("invalid_input",
+                                              "change needs mode what_if"))
         problems = validate(arguments, contract["input"], root=self.contracts, limit=3)
         if problems:
             return self._checked(name, _error("invalid_input", "; ".join(problems)))
@@ -715,7 +727,7 @@ class TraverseTools:
                                     statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS)
         try:
             kept = _store_identity(reader.conn)
-            with _facts_lock(kept[0] if kept is not None else None):
+            with _marker_lock(kept[0] if kept is not None else None):
                 kept = _store_identity(reader.conn)
                 if kept is not None and _read_facts(*kept) is not None:
                     return   # another process kept them meanwhile
@@ -780,11 +792,18 @@ class TraverseTools:
         stamp = (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
         facts = self.store.facts
         if facts is None or facts[0] != stamp:
-            facts = self.store.facts = (stamp, {})
+            # Postgres: what is loaded now, read before any fact of this state is, so the
+            # facts kept under it hold at least that (``_carried``)
+            mark = _pg_layer_mark(conn) if getattr(conn, "postgres", False) else None
+            carried = self._carried(facts, mark) if facts is not None else {}
+            facts = self.store.facts = (stamp, carried)
+            if mark is not None:
+                facts[1][_LAYER_MARK] = mark
             families = getattr(self, "_families", None)
             if families is not None and getattr(conn, "_pg", None) is not None:
                 # Postgres moved on (a delta layer): the new version's kept facts (the
                 # follower keeps them, ``fold_layer_facts``), else read in the background
+                # while the slices carried over the layer serve meanwhile
                 self.prime_lazily(families)
                 facts = self.store.facts
         pending = getattr(self, "_pending", None)
@@ -812,6 +831,54 @@ class TraverseTools:
                     self.store.facts = (current, {})
                 facts = self.store.facts
         return facts[1]
+
+    def _carried(self, old: tuple[Any, dict], mark: Mapping[str, Any] | None) -> dict:
+        """The slice facts of the previous Postgres store state kept over the delta layers
+        applied since (``_layer_change``), each patched with the rows of the objects
+        those layers replaced (``ontology.applied_owned``): a layer changes only its own
+        objects' versions, their links and their events, so the per-type facts of every
+        other row stand. Without this, every layer made each tool process scan again the
+        types its next calls touched (70 s each, ten processes at once, after every
+        layer). The patch only adds (``_patched_slices``): a row the layer removed keeps
+        its markings and end in the facts, which makes a slice look less covered, never
+        more. Any other change (another generation, a migration or any other load
+        state written, a layer whose replaced objects are not all recorded, a failed
+        read) carries nothing: the facts are read again as before."""
+        before = old[1].get(_LAYER_MARK)
+        kept = {key: value for key, value in old[1].items()
+                if isinstance(key, tuple) and key[:1] in (("slice_of",), ("slices",))}
+        if before is None or mark is None or not kept:
+            return {}
+        try:
+            changed = _pg_changed_since(self.store.conn, old[0][0])
+            layers = _layer_change(before, mark, changed)
+            if layers is None:
+                return {}
+            owned = _pg_owned(self.store.conn, layers, mark)
+            if owned is None:
+                return {}
+            patch = {kind: self._read_slice_rows(kind, owned) for kind in _SLICE_ROWS
+                     if owned and any(key[1] == kind for key in kept)}
+        except Exception:   # noqa: BLE001 - any doubt (a failed read): read them again
+            return {}
+        return {key: _patched_slices(value, patch.get(key[1]) or {}, key[2]
+                                     if key[0] == "slice_of" else None)
+                for key, value in kept.items()}
+
+    def _read_slice_rows(self, kind: str, owned: Sequence[str]
+                         ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
+        """``_slices``' facts of only the rows of these objects: their versions (object),
+        the links from or to them, the events relating them."""
+        rows = _SLICE_ROWS[kind]
+        ids = "(SELECT value FROM json_each(:ids))"
+        if kind == "object":
+            rows = f"{rows} WHERE o.object_id IN {ids}"
+        elif kind == "link":
+            rows = f"{rows} WHERE from_object IN {ids} UNION ALL {rows} WHERE to_object IN {ids}"
+        else:
+            rows = (f"{rows} WHERE event_id IN (SELECT event_id FROM event_objects "
+                    f"WHERE object_id IN {ids})")
+        return self._grouped_slices(rows, {"ids": json.dumps(list(owned))})
 
     @staticmethod
     def _laps(tool: str) -> Callable[[str], None]:
@@ -1630,12 +1697,17 @@ class TraverseTools:
         """``_slices``' read, of every type of ``kind`` or of the type ``name`` alone."""
         rows = _SLICE_ROWS[kind] if name is None else \
             f"{_SLICE_ROWS[kind]} WHERE {_SLICE_NAMES[kind]} = :name"
+        return self._grouped_slices(rows, {} if name is None else {"name": name})
+
+    def _grouped_slices(self, rows: str, params: Mapping[str, Any]
+                        ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
+        """The slice facts per type name of the rows ``rows`` selects (``_slices``)."""
         out: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
         for found, markings, gated, until in self.store.conn.execute(
                 f"SELECT name, markings, {_GATED_SQL}, MAX(CASE WHEN "
                 f"superseded_at IS NULL OR plx_l9_time(superseded_at) IS NULL THEN "
                 f"'{_OPEN}' ELSE plx_l9_time(superseded_at) END) "
-                f"FROM ({rows}) GROUP BY 1, 2, 3", {} if name is None else {"name": name}):
+                f"FROM ({rows}) GROUP BY 1, 2, 3", params):
             kept_marks, kept_handles = out.setdefault(found, ({}, {}))
             kept_marks[markings] = max(until, kept_marks.get(markings, until))
             for handle in json.loads(gated) if gated else ():
@@ -2711,6 +2783,9 @@ def _save_facts(store: str, identity: Mapping[str, Any], facts: Mapping[Any, Any
         path = facts_path(store)
     except OSError:
         return
+    # the layer mark is this reader's note of the load state its facts were read under
+    # (``_carried``), not a fact: a kept file holds the facts only
+    facts = {key: value for key, value in facts.items() if key != _LAYER_MARK}
     text = json.dumps({"format": FACTS_FORMAT, "store": dict(identity),
                        "facts": _encode_facts(facts)}, sort_keys=True)
     if len(text) > FACTS_MAX_BYTES:
@@ -2822,6 +2897,129 @@ def _read_slice_part(store: str, kind: str, low: Any, high: Any
         return out
     finally:
         conn.close()
+
+
+# The key of a Postgres store state's load mark among its facts (``_pg_layer_mark``).
+_LAYER_MARK = ("layer_mark",)
+
+
+def _pg_layer_mark(conn: Any) -> dict[str, Any] | None:
+    """What the Postgres ontology has loaded: its generation's content digest, the delta
+    layers applied over it in order, and how many objects each replaced
+    (``ontology.load_state``, as ``ontology_delta.apply_layer`` writes it). None when it
+    cannot be read."""
+    raw, lock = getattr(conn, "_pg", None), getattr(conn, "_lock", None)
+    if raw is None or lock is None:
+        return None
+    try:
+        with lock, raw.cursor() as cur:
+            cur.execute("SELECT name, value FROM ontology.load_state WHERE name = "
+                        "'generation' OR name = 'delta_layers' OR name LIKE 'delta:%%'")
+            rows = {name: value for name, value in cur.fetchall()}
+            # a migration (a schema or a step migration) rewrites rows across whole
+            # bindings or link-id prefixes, and a step migration writes no load state:
+            # its record and the served digests are part of the mark
+            cur.execute("SELECT key, value FROM ontology.store_meta WHERE key IN "
+                        "('schema_digest', 'steps_digest') ORDER BY key")
+            served = tuple(tuple(row) for row in cur.fetchall())
+            cur.execute("SELECT to_regclass('ontology.schema_migrations') IS NOT NULL")
+            applied: tuple = (None, None)
+            if cur.fetchall()[0][0]:
+                cur.execute("SELECT count(*), max(applied_at)::text "
+                            "FROM ontology.schema_migrations")
+                applied = tuple(cur.fetchall()[0])
+    except Exception:   # noqa: BLE001 - no mark: nothing is carried over
+        return None
+    rows = {name: json.loads(value) if isinstance(value, str) else value
+            for name, value in rows.items()}
+    generation = rows.get("generation")
+    digest = generation.get("content_digest") if isinstance(generation, Mapping) else None
+    layers = rows.get("delta_layers") or []
+    if not isinstance(digest, str) or not isinstance(layers, list) \
+            or not all(isinstance(layer, str) for layer in layers):
+        return None
+    owned = {name[6:]: (value or {}).get("owned") for name, value in rows.items()
+             if name.startswith("delta:") and isinstance(value, Mapping)}
+    return {"digest": digest, "layers": tuple(layers), "owned": owned,
+            "migrations": (served, applied)}
+
+
+def _pg_changed_since(conn: Any, version: Any) -> set[str] | None:
+    """The load-state rows written after the store state ``version``
+    (``ontology.sq_data_version``: milliseconds of the latest write); None when unread."""
+    raw, lock = getattr(conn, "_pg", None), getattr(conn, "_lock", None)
+    if raw is None or lock is None or not isinstance(version, int):
+        return None
+    with lock, raw.cursor() as cur:
+        cur.execute("SELECT name FROM ontology.load_state WHERE "
+                    "(extract(epoch FROM updated_at) * 1000)::bigint > %s", (version,))
+        return {row[0] for row in cur.fetchall()}
+
+
+def _pg_owned(conn: Any, layers: Sequence[str], mark: Mapping[str, Any]
+              ) -> list[str] | None:
+    """The objects these delta layers replaced (``ontology.applied_owned``); None unless
+    every layer's recorded objects are exactly as many as its load state says."""
+    raw, lock = getattr(conn, "_pg", None), getattr(conn, "_lock", None)
+    if raw is None or lock is None:
+        return None
+    out: list[str] = []
+    with lock, raw.cursor() as cur:
+        for layer in layers:
+            cur.execute("SELECT object_id FROM ontology.applied_owned WHERE layer = %s",
+                        (layer,))
+            found = [row[0] for row in cur.fetchall()]
+            if len(set(found)) != mark["owned"].get(layer):
+                return None
+            out.extend(found)
+    return sorted(set(out))
+
+
+def _layer_change(before: Mapping[str, Any], after: Mapping[str, Any],
+                  changed: set[str] | None) -> list[str] | None:
+    """The delta layers applied between two load marks (``_pg_layer_mark``), when they
+    are all that changed: the same generation, no migration applied (the same migration
+    record and served schema and step digests), the earlier layers in the same order
+    ahead of the new ones, each new layer's replaced-object count recorded, and no load
+    state written since but the layer list and the layers' own entries. None for any
+    other change (nothing can be carried over it)."""
+    if changed is None or before.get("digest") != after.get("digest") \
+            or "migrations" not in before or before["migrations"] != after.get("migrations"):
+        return None
+    old, new = tuple(before.get("layers") or ()), tuple(after.get("layers") or ())
+    if new[:len(old)] != old:
+        return None
+    added = list(new[len(old):])
+    allowed = {"delta_layers", *(f"delta:{layer}" for layer in new)}
+    if not changed <= allowed:
+        return None
+    if any(not isinstance(after.get("owned", {}).get(layer), int) for layer in added):
+        return None
+    return added
+
+
+def _patched_slices(kept: Mapping[str, tuple[dict[str, str], dict[str, str] | None]],
+                    patch: Mapping[str, tuple[dict[str, str], dict[str, str] | None]],
+                    name: str | None) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
+    """Slice facts (``_slices``) with the facts of more rows added (``name``: of that type
+    alone): each marking and item-gated handle keeps its latest end, and a type's handles
+    are None once either side is or past ``HOP_SCAN_CAP`` open ones."""
+    out = {key: (dict(marks), None if handles is None else dict(handles))
+           for key, (marks, handles) in kept.items()}
+    for found, (marks, handles) in patch.items():
+        if name is not None and found != name:
+            continue
+        kept_marks, kept_handles = out.setdefault(found, ({}, {}))
+        for markings, until in marks.items():
+            kept_marks[markings] = max(until, kept_marks.get(markings, until))
+        if kept_handles is None or handles is None:
+            out[found] = (kept_marks, None)
+            continue
+        for handle, until in handles.items():
+            kept_handles[handle] = max(until, kept_handles.get(handle, until))
+        if sum(until == _OPEN for until in kept_handles.values()) > HOP_SCAN_CAP:
+            out[found] = (kept_marks, None)
+    return out
 
 
 def _merged_slices(parts: Iterable[Mapping[str, tuple[dict[str, str], dict[str, str]]]]
@@ -3274,7 +3472,7 @@ def _one_snapshot(conn: Any) -> Iterator[None]:
 
 
 @contextmanager
-def _facts_lock(marker: str | None) -> Iterator[None]:
+def _marker_lock(marker: str | None) -> Iterator[None]:
     """One process at a time reads or folds a database's facts (an exclusive lock on a
     file beside its marker); none without a marker."""
     if marker is None:

@@ -524,7 +524,7 @@ class OneGateTests(unittest.TestCase):
                     ("plx.case_close", {"case_id": "x", "outcome": "y"})]
 
         with mock.patch.object(session_prefetch, "first_reads",
-                               lambda question: [("plx.find", query)]), \
+                               lambda question, looked=None: [("plx.find", query)]), \
                 mock.patch.object(session_prefetch, "follow_reads", follow):
             transcript = runner.record(self.item, runner.ClaudeCodeAgent(spawn=spawn,
                                                                          max_turns=8),
@@ -641,7 +641,7 @@ class OneGateTests(unittest.TestCase):
             seen = {}
             agent = runner.ClaudeCodeAgent(spawn=session(seen), max_turns=8)
             agent.quiet_reads = agent_session.told_reads(brief) if quiet else []
-            with mock.patch.object(session_prefetch, "first_reads", lambda question: []):
+            with mock.patch.object(session_prefetch, "first_reads", lambda question, looked=None: []):
                 ran = agent.for_question("q").run("Answer the question." + brief, host)
             outcomes[quiet] = seen["gate"]
             if quiet:
@@ -692,7 +692,7 @@ class OneGateTests(unittest.TestCase):
                     break
             return 0, "\n".join(out)
         spawn.feeds = spawn.stops = True
-        with mock.patch.object(session_prefetch, "first_reads", lambda question: []):
+        with mock.patch.object(session_prefetch, "first_reads", lambda question, looked=None: []):
             ran = runner.ClaudeCodeAgent(spawn=spawn, max_turns=8, budget_seconds=150,
                                          max_steps=30).for_question("q").run(
                 "Answer the question.", host)
@@ -745,7 +745,7 @@ class OneGateTests(unittest.TestCase):
             from evals.tests.test_runner import _stream
             return 0, _stream("Written.", client.calls)
 
-        with mock.patch.object(session_prefetch, "first_reads", lambda question: []):
+        with mock.patch.object(session_prefetch, "first_reads", lambda question, looked=None: []):
             runner.ClaudeCodeAgent(spawn=spawn, max_turns=8, helpers=1).for_question(
                 "q").run("Answer the question.", host)
         self.assertEqual(seen["gate"], ("answered", []))
@@ -776,7 +776,7 @@ class OneGateTests(unittest.TestCase):
         with mock.patch.object(host, "mcp_server", deaf), \
                 mock.patch.object(agent_session, "LIST_SECONDS", 2.0), \
                 mock.patch.object(session_prefetch, "first_reads",
-                                  lambda question: [("plx.find", seen["query"])]), \
+                                  lambda question, looked=None: [("plx.find", seen["query"])]), \
                 mock.patch.object(session_prefetch, "follow_reads", lambda done: []):
             transcript = runner.record(
                 self.item, runner.ClaudeCodeAgent(
@@ -814,7 +814,7 @@ class OneGateTests(unittest.TestCase):
         runs = []
         with mock.patch.object(agent_session, "SPARES", spares), \
                 mock.patch.object(session_prefetch, "first_reads",
-                                  lambda question: [("plx.find", seen["query"])]), \
+                                  lambda question, looked=None: [("plx.find", seen["query"])]), \
                 mock.patch.object(session_prefetch, "follow_reads", lambda done: []):
             for reader in ("a", "a", "b", "a"):
                 agent = runner.ClaudeCodeAgent(spawn=self.gated_session(seen), max_turns=8)

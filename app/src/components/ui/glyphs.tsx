@@ -1,4 +1,4 @@
-import { CalendarCheck2, Clock3, History, Inbox, MessageCircle, MessageSquareText, type LucideIcon } from "lucide-react";
+import { CalendarCheck2, CalendarClock, ChartColumnBig, Clock3, History, Inbox, MessageCircle, MessageSquareText, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /**
@@ -46,6 +46,8 @@ export const PLACES: Record<string, { icon: LucideIcon; tile: string }> = {
   "/late": { icon: Clock3, tile: "bg-[linear-gradient(180deg,#ec7058,#df4a33)]" },
   "/briefing": { icon: CalendarCheck2, tile: "bg-[linear-gradient(180deg,#f0ae3f,#e3951a)]" },
   "/ask": { icon: MessageCircle, tile: "bg-[linear-gradient(180deg,#2fb0a2,#13917f)]" },
+  "/prepare": { icon: CalendarClock, tile: "bg-[linear-gradient(180deg,#5aa8e8,#3a8bd6)]" },
+  "/weekly": { icon: ChartColumnBig, tile: "bg-[linear-gradient(180deg,#6cc070,#43a047)]" },
   "/actions": { icon: History, tile: "bg-[linear-gradient(180deg,#90939b,#72757e)]" },
   "/feedback": { icon: MessageSquareText, tile: "bg-[linear-gradient(180deg,#9b7be6,#7d5bd6)]" },
 };

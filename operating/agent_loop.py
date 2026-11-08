@@ -742,8 +742,8 @@ PLANNER_RULES = (
     'is one claim {"id":...,"value":...,"op":"count" or "sum","of":[{"citation":...,'
     '"field":... (sum only)},...],"role":...}: a count\'s role is the value\'s '
     "name (receipt_count), never a quantity type; each record once. A count is exact "
-    "only when a plx.aggregate or plx.query count of this run (without as_known_at) "
-    "returned it "
+    "only when a plx.aggregate or plx.query count of this run (without as_known_at, or "
+    "a plx.aggregate count marked same_as_now) returned it "
     "complete, listing the records the claim cites; otherwise the answer shows it as "
     "\"at least N\", N the records it cites, where records from two sources (a Portal "
     "row and a BC record) may be one record and count once, unless one such count group "

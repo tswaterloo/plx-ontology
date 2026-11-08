@@ -152,6 +152,57 @@ class AskWorkerCountTests(unittest.TestCase):
         self.assertEqual(ask_worker_count(4, None), 4)    # unknown memory: as asked
         self.assertEqual(ask_worker_count(0, 40.0), 0)
 
+    def test_workers_memory_refused_at_start_up_start_once_it_holds_them(self):
+        import threading
+        import time
+        from types import SimpleNamespace
+        from operator_api import backend as be
+
+        free = [10.0]   # GB available, as the box reports it from moment to moment
+        started: list[int] = []
+        api = SimpleNamespace(ask_stopped=threading.Event(), ask_workers=["w0"])
+
+        def start(n: int) -> None:
+            started.append(n)
+            free[0] -= be.ASK_WORKER_GB
+
+        def wait_for(count: int) -> None:
+            ends = time.monotonic() + 5
+            while len(started) < count and time.monotonic() < ends:
+                time.sleep(0.01)
+
+        thread = be.top_up_ask_workers(api, start, 4, 1, available=lambda: free[0],
+                                       every=0.01)
+        time.sleep(0.1)
+        self.assertEqual(started, [])      # under the floor: none more
+        free[0] = 22.0                     # memory came back
+        wait_for(1)
+        time.sleep(0.1)
+        # one more fits above the floor; the next waits until the first has its runtime
+        self.assertEqual(started, [1])
+        api.ask_workers.append("w1")
+        free[0] = 40.0
+        wait_for(2)
+        time.sleep(0.1)
+        self.assertEqual(started, [1, 2])
+        api.ask_workers.append("w2")
+        wait_for(3)
+        thread.join(2)
+        self.assertEqual(started, [1, 2, 3])          # never past the request
+        self.assertFalse(thread.is_alive())
+        # nothing to top up, unknown memory, or a stopped API: none started
+        self.assertIsNone(be.top_up_ask_workers(api, start, 2, 2))
+        self.assertIsNone(be.top_up_ask_workers(api, start, 9, be.ASK_WORKERS_MOST))
+        stopped = SimpleNamespace(ask_stopped=threading.Event(), ask_workers=["w0"])
+        late: list[int] = []
+        unknown = be.top_up_ask_workers(stopped, late.append, 4, 1, available=lambda: None,
+                                        every=0.01)
+        time.sleep(0.1)
+        stopped.ask_stopped.set()
+        unknown.join(2)
+        self.assertEqual(late, [])
+        self.assertFalse(unknown.is_alive())
+
 
 if __name__ == "__main__":
     unittest.main()

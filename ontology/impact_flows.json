@@ -1,0 +1,139 @@
+{
+  "format": "plx-impact-flow/v1",
+  "description": "The supply-to-demand flow plx.around's what_if and why modes walk (operating/ontology_tools_impact.py). Each stage is an object type and its rank: a link between two stage types joins them (whatever link type the schema declares), walked toward higher ranks for what_if (downstream) and lower ranks for why (upstream). Identity links of a stage type join its twins at the same depth. Every type, link and property here is checked against the compiled schema when loaded; an unknown one fails closed.",
+  "stages": [
+    {
+      "type": "Supplier",
+      "role": "supplier"
+    },
+    {
+      "type": "PurchaseOrder",
+      "role": "supply_order",
+      "dates": [
+        "expected_date"
+      ],
+      "status": "status"
+    },
+    {
+      "type": "PurchaseOrderLine",
+      "role": "supply_line",
+      "dates": [
+        "bc_expected_receipt_date"
+      ],
+      "cost": "line_total",
+      "ordered": "ordered_quantity",
+      "received": "received_quantity",
+      "unit_price": "unit_price"
+    },
+    {
+      "type": "Product",
+      "role": "item",
+      "unit_cost": "bc_unit_cost"
+    },
+    {
+      "type": "AssemblyOrderComponent",
+      "role": "component"
+    },
+    {
+      "type": "AssemblyOrder",
+      "role": "work_order",
+      "status": "status",
+      "quality": "quality_status"
+    },
+    {
+      "type": "AssemblyOrderAllocation",
+      "role": "allocation"
+    },
+    {
+      "type": "SalesOrderLine",
+      "role": "order_line",
+      "revenue": "line_total"
+    },
+    {
+      "type": "SalesOrder",
+      "role": "order",
+      "required": "required_date",
+      "revenue": "total_amount",
+      "status": "status"
+    },
+    {
+      "type": "Customer",
+      "role": "customer"
+    }
+  ],
+  "excluded_links": [
+    "Customer.same_party_as_supplier"
+  ],
+  "closed_status": [
+    "closed",
+    "cancelled",
+    "canceled",
+    "complete",
+    "completed",
+    "realized",
+    "shipped",
+    "invoiced",
+    "fully invoiced",
+    "void",
+    "voided"
+  ],
+  "evidence": [
+    {
+      "cause": "qc_hold",
+      "from": "PurchaseOrderLine",
+      "path": [
+        [
+          "ReceiptLine.receives_line",
+          "reverse"
+        ],
+        [
+          "ReceiptLine.received_lot",
+          "forward"
+        ]
+      ],
+      "quality": "qc_status"
+    },
+    {
+      "cause": "freight",
+      "from": "PurchaseOrder",
+      "path": [
+        [
+          "FreightBill.for_purchase_order",
+          "reverse"
+        ]
+      ]
+    },
+    {
+      "cause": "freight",
+      "from": "SalesOrder",
+      "path": [
+        [
+          "FreightBill.for_sales_order",
+          "reverse"
+        ]
+      ]
+    },
+    {
+      "cause": "supplier_no_reply",
+      "from": "PurchaseOrder",
+      "path": [
+        [
+          "Email.mentions_purchase_order",
+          "reverse"
+        ]
+      ],
+      "reply_link": "Email.sent_by_supplier"
+    }
+  ],
+  "held_words": [
+    "hold",
+    "on hold",
+    "quarantine",
+    "quarantined",
+    "rejected",
+    "failed",
+    "pending qc",
+    "blocked"
+  ],
+  "cost_jump_ratio": "1.10"
+}

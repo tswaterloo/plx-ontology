@@ -1,0 +1,18 @@
+{
+  "format": "plx-source-links/v1",
+  "_usage": "Where a record opens in its source system (operating.alert_playbooks.source_links). A record's system is chosen by its binding prefix; its page by its record type. The base URL comes from the environment variable named in base_env and must be https; while it is unset, or a type has no page, the link is not_configured (never guessed). BC pages are the standard web client card pages; {number} is the record's cited number. Portal and FileMaker record pages are not known yet: add them here when their URL patterns are confirmed.",
+  "systems": {
+    "bc": {"label": "BC", "binding_prefixes": ["bc."], "base_env": "PLX_BC_WEB_URL",
+           "records": {"PurchaseOrder": "&page=50&filter='No.'%20IS%20'{number}'",
+                       "SalesOrder": "&page=42&filter='No.'%20IS%20'{number}'",
+                       "SalesInvoice": "&page=132&filter='No.'%20IS%20'{number}'",
+                       "Quote": "&page=41&filter='No.'%20IS%20'{number}'",
+                       "Product": "&page=30&filter='No.'%20IS%20'{number}'",
+                       "Supplier": "&page=26&filter='No.'%20IS%20'{number}'",
+                       "Customer": "&page=21&filter='No.'%20IS%20'{number}'"}},
+    "portal": {"label": "Portal", "binding_prefixes": ["portal."], "base_env": "PLX_PORTAL_WEB_URL",
+               "records": {}},
+    "filemaker": {"label": "FileMaker", "binding_prefixes": ["fm.", "filemaker."],
+                  "base_env": "PLX_FILEMAKER_WEB_URL", "records": {}}
+  }
+}

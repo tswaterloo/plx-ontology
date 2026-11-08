@@ -496,7 +496,8 @@ class DetectorTest(Case):
         self.assertEqual(found[0]["citations"], [handle(int(ids["request"].rsplit(":", 1)[1]))])
         self.assertEqual(summary["coverage"]["vendor_no_reply"], {
             "unit": "open_purchase_orders", "total": 7, "evaluated": 4,
-            "not_evaluated": {"no_cleared_mail_names_it": 1, "participants_not_cleared": 2}})
+            "not_evaluated": {"no_cleared_mail_names_it": 1, "participants_not_cleared": 2},
+            "conversations": {"answered": 1, "waiting": 1}})
         self.assertEqual(summary["not_evaluated"]["vendor_no_reply"],
                          {"forward_not_judged": 1, "last_message_asks_nothing": 2})
         # no reply is a verdict on the whole conversation: a reader who may not read every
@@ -513,6 +514,50 @@ class DetectorTest(Case):
         self.assertIn("people_exclusion_unavailable",
                       blind["detector_reasons"]["vendor_no_reply"])
         self.assertNotIn("vendor_no_reply", self.events())
+
+    def test_vendor_no_reply_reads_who_our_message_went_to(self):
+        """Our purchase order mailed to the vendor that never answered is a request
+        waiting, though the vendor never wrote in its conversation (its To says it went
+        outside); a message of ours to colleagues only is no request to the vendor; a
+        recipient of ours the exclusion does not clear, or an unreadable recipient list,
+        leaves the conversation unjudged (fail closed)."""
+        w = World()
+        ours, vendor = "ops@synth-tenant.example", "sales@synth-vendor.example"
+        orders: dict[str, str] = {}
+
+        def mail(conversation, sent, sender, order, *, to=None, cc=None,
+                 preview="Please confirm the delivery date of the attached order?"):
+            props = {"conversation_id": conversation, "sent_at": sent, "sender": sender,
+                     "subject": "Purchase order", "body_preview": preview}
+            if to is not None:
+                props["to_addresses"] = to
+            if cc is not None:
+                props["cc_addresses"] = cc
+            oid = w.obj("Email", props, audience=BOX_OURS)
+            if order:
+                w.link("Email.mentions_purchase_order", oid, order, "corroborated")
+            return oid
+        for case in ("fresh", "fresh_cc", "internal", "excluded", "unreadable", "answered"):
+            orders[case] = po(w, "Pending", "2026-11-30")
+        mail("f1", "2026-10-05T10:00:00Z", ours, orders["fresh"], to=json.dumps([vendor]))
+        mail("f2", "2026-10-05T10:00:00Z", ours, orders["fresh_cc"],
+             to=json.dumps([ours]), cc=json.dumps([vendor.upper()]))
+        # the vendor wrote; our last word went to a colleague only: no request to it
+        mail("f3", "2026-09-20T10:00:00Z", vendor, orders["internal"], preview="Got it.")
+        mail("f3", "2026-10-05T10:00:00Z", ours, None, to=json.dumps([ours]))
+        mail("f4", "2026-10-05T10:00:00Z", ours, orders["excluded"],
+             to=json.dumps([vendor]), cc=json.dumps(["boss@synth-tenant.example"]))
+        mail("f5", "2026-10-05T10:00:00Z", ours, orders["unreadable"], to="sales at vendor")
+        mail("f6", "2026-10-05T10:00:00Z", ours, orders["answered"], to=json.dumps([vendor]))
+        mail("f6", "2026-10-06T10:00:00Z", vendor, None, preview="Ships Friday.")
+        summary = self.run_engine(w)
+        found = sorted((g["object_id"], g["event"]["days"])
+                       for g in self.events()["vendor_no_reply"])
+        self.assertEqual(found, sorted([(orders["fresh"], 14), (orders["fresh_cc"], 14)]))
+        self.assertEqual(summary["coverage"]["vendor_no_reply"], {
+            "unit": "open_purchase_orders", "total": 6, "evaluated": 4,
+            "not_evaluated": {"participants_not_cleared": 2},
+            "conversations": {"addressed_internally": 1, "answered": 1, "waiting": 2}})
 
     def test_a_mention_of_a_reused_number_ties_no_mail_to_the_order(self):
         """A number-text mention (a lead) of an order whose number another order also
@@ -889,7 +934,8 @@ class DetectorTest(Case):
             return order
 
         with mock.patch.object(cp, "read_order", read_order):
-            summary = self.run_engine(w, call=lambda *_: {})
+            # the margin erosion rule reads the earlier orders too: this rule's alone
+            summary = self.run_engine(w, call=lambda *_: {}, only=["negative_margin"])
         self.assertEqual(asked, [orders[n] for n in ("bc_new", "sage_new", "bc_mid",
                                                      "sage_mid")])
         self.assertEqual(summary["coverage"]["negative_margin"]["total"], 4)
@@ -1142,8 +1188,11 @@ class DetectorTest(Case):
         self.assertNotIn("F27", calls)
         self.assertEqual(build["detector_reasons"]["vendor_terms_unapplied"], ["read_apart"])
         checks = {c["check"]: c for c in self.brief(EVERYTHING)["checks"]}
+        # each check says when it last ran, to the minute in US Eastern
         self.assertEqual(checks["vendor_terms_unapplied"]["words"], "vendor terms in replies: "
-                         "partly checked this run (the rest wait for the vendor-mail pass)")
+                         "partly checked this run (the rest wait for the vendor-mail pass) "
+                         f"(last run {bf.at_words(MOMENT.isoformat())})")
+        self.assertTrue(checks["vendor_terms_unapplied"]["last_run"])
         with closing(sqlite3.connect(self.inbox)) as conn:
             before = conn.execute("SELECT detector, run_at FROM detector_runs WHERE detector "
                                   "= 'lot_attention'").fetchall()
