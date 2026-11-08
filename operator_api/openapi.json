@@ -7662,6 +7662,150 @@
         "title": "OwnerWorkload",
         "type": "object"
       },
+      "OwnerWorkloadItem": {
+        "additionalProperties": false,
+        "properties": {
+          "age_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Days"
+          },
+          "channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel"
+          },
+          "counterpart": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterpart"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "record_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Type"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "waiting_on": {
+            "description": "The person (an Entra object id) for a thread awaiting their reply; else the departments that answer it.",
+            "title": "Waiting On",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "waiting_on"
+        ],
+        "title": "OwnerWorkloadItem",
+        "type": "object"
+      },
+      "OwnerWorkloadItems": {
+        "additionalProperties": false,
+        "description": "One person's items behind one count of the owner workload, for the owner only: what\nthe owner may open through the normal path (marked HR, payroll and pay items stay\nwithheld and are counted in ``withheld``, never shown). The full message opens through\nits record page.",
+        "properties": {
+          "bucket": {
+            "title": "Bucket",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OwnerWorkloadItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "person": {
+            "title": "Person",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "withheld": {
+            "description": "Counted for the person but not shown to you (marked, or not readable by you); never named.",
+            "title": "Withheld",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person",
+          "bucket",
+          "total",
+          "withheld",
+          "truncated",
+          "note"
+        ],
+        "title": "OwnerWorkloadItems",
+        "type": "object"
+      },
       "OwnerWorkloadPerson": {
         "additionalProperties": false,
         "properties": {
@@ -14731,6 +14875,88 @@
           }
         },
         "summary": "Owner Workload",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/owner/workload/{person}/{bucket}": {
+      "get": {
+        "description": "The items behind one count of one person (bucket awaiting_reply, tasks or alerts):\nsubject, counterpart, age, who it waits on, a snippet and the record to open. Owner\nonly (403 for every other reader); excluded people never appear; marked items you\ncannot open stay withheld.",
+        "operationId": "owner_workload_items_api_owner_workload__person___bucket__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "person",
+            "required": true,
+            "schema": {
+              "title": "Person",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "title": "Bucket",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerWorkloadItems"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Owner Workload Items",
         "tags": [
           "actions"
         ]

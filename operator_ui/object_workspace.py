@@ -693,7 +693,8 @@ class ObjectWorkspace:
 
     def gap_inbox(self, *, inbox: Any = None, limit: int | None = None,
                   kinds: Sequence[str] | None = None,
-                  states: Sequence[str] | None = None) -> dict[str, Any]:
+                  states: Sequence[str] | None = None,
+                  all_owners: bool = False) -> dict[str, Any]:
         """The gaps the scheduled engine found (``operating.proactive_engine``: set-based
         rules over the whole projection store, persisted in the inbox beside it), trimmed
         for this reader: a gap shows only when its subject and a citation of each of its
@@ -719,7 +720,8 @@ class ObjectWorkspace:
                 held=held, decide=self.access.decide,
                 **({"limit": limit} if limit is not None else {}),
                 **({"kinds": list(kinds)} if kinds is not None else {}),
-                **({"states": list(states)} if states is not None else {}))
+                **({"states": list(states)} if states is not None else {}),
+                **({"all_owners": True} if all_owners else {}))
             return {**base, **found}
 
     def briefing(self, *, inbox: Any = None, since_visit: bool = False) -> dict[str, Any]:

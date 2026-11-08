@@ -37,14 +37,33 @@ def rd_line(i: int, project: str, customer: str = "Customer:1", state: str = "wa
                       "messages": [{"id": f"Email:{i}", "subject": "Sample"}]}}
 
 
+def item(i: int, owner: str, kind: str = "reply_owed", days: int = 3, cites=None,
+         counterpart: str = "buyer{i}@synth-customer.example"):
+    """A trimmed alert-list item as the reader's view returns it."""
+    return {"id": f"g{i}", "kind": kind, "state": "open", "object_id": f"Email:{i}",
+            "object_type": "Email", "summary": f"Waiting for an answer about order {i}",
+            "citations": list(cites or [f"Email:{i}"]), "first_seen": "2026-11-01T00:00:00Z",
+            "event": {"days": days, "asked_by": counterpart.format(i=i),
+                      "messages": [{"id": f"Email:{i}", "subject": f"Sample {i}",
+                                    "channel": "mail"}]},
+            "follow_up": {"owner": owner,
+                          "who_can_answer": ["OPS"] if kind != "reply_owed" else []}}
+
+
 class Backend(be.WorkspaceBackend):
     owner = False
     gaps: list = []
     refuse: set = set()
 
+    asked: list = []
+
     def _brief_run(self, reader, job):
+        def gap_inbox(**kw):
+            self.asked.append(kw)   # the trim: a refused citation hides its whole item
+            kept = [g for g in self.gaps if not set(g.get("citations") or ()) & self.refuse]
+            return {"status": "read", "gaps": kept}
         view = SimpleNamespace(
-            gap_inbox=lambda **kw: {"status": "read", "gaps": list(self.gaps)},
+            gap_inbox=gap_inbox,
             access=SimpleNamespace(
                 reader_policy=lambda: (None, SimpleNamespace(unrestricted=self.owner)),
                 decide=lambda handles: {h: ({"reason": "no"} if h in self.refuse else None)
@@ -76,6 +95,7 @@ class Owner(unittest.TestCase):
         self.backend = Backend(lambda s: None, data_label="t", store_path=store,
                                data_dir=self.dir)
         self.backend.owner, self.backend.gaps, self.backend.refuse = False, [], set()
+        self.backend.asked = []
         patcher = mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": EXCLUDED})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -128,6 +148,112 @@ class Owner(unittest.TestCase):
         with mock.patch("operating.briefs.env_people", return_value=None):
             closed = self.client().get("/api/owner/workload").json()
         self.assertEqual(closed["people"], [])
+
+    # ---- the drill-down: the items behind a count ------------------------------------------
+
+    def bound_guard(self, *excluded: str):
+        """A bound people exclusion: decides every person and address, excludes ``excluded``."""
+        people = mock.MagicMock()
+        people.unavailable = None
+        people.decides.return_value = True
+        people.is_excluded.side_effect = lambda v: v in (EXCLUDED, *excluded)
+        patcher = mock.patch("operating.briefs.env_people", return_value=people)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def items_of(self, person: str, bucket: str, client: "TestClient | None" = None):
+        return (client or self.client()).get(f"/api/owner/workload/{person}/{bucket}")
+
+    def test_drill_is_owner_only_whatever_the_request_claims(self):
+        self.backend.gaps = [item(1, B)]
+        anon = self.client(login=False)
+        self.assertEqual(self.items_of(B, "awaiting_reply", anon).status_code, 401)
+        client = self.client()
+        self.assertEqual(self.items_of(B, "awaiting_reply", client).status_code, 403)
+        for kw in ({"params": {"owner": "1", "as": ME}},
+                   {"headers": {"X-Owner": "1", "X-Forwarded-User": "owner"}}):
+            found = client.get(f"/api/owner/workload/{B}/awaiting_reply", **kw)
+            self.assertEqual(found.status_code, 403)
+            self.assertNotIn("Sample", found.text)
+        (self.dir / "workload-grants.json").write_text(json.dumps(
+            {"teams": {B: "SALES"}, "managers": {ME: ["SALES"]}}))   # a manager grant
+        found = self.items_of(B, "awaiting_reply", client)
+        self.assertEqual(found.status_code, 403)
+        self.assertNotIn("Sample", found.text)
+        self.assertEqual(client.post(f"/api/owner/workload/{B}/tasks", json={}).status_code, 405)
+
+    def test_owner_sees_the_items_with_their_fields_and_a_link(self):
+        self.backend.owner = True
+        self.bound_guard()
+        self.backend.gaps = [item(1, B, days=4), item(2, B, kind="mc_task_overdue", days=9),
+                             item(3, B, kind="price_below_cost", days=2), item(4, C, days=7)]
+        found = self.items_of(B, "awaiting_reply")
+        self.assertEqual(found.status_code, 200, found.text)
+        body = found.json()
+        (one,) = body["items"]
+        self.assertEqual((body["person"], body["total"], body["withheld"]), (B, 1, 0))
+        self.assertEqual((one["title"], one["counterpart"], one["age_days"], one["waiting_on"]),
+                         ("Sample 1", "buyer1@synth-customer.example", 4, B))
+        self.assertEqual((one["record_type"], one["record_id"]), ("Email", "Email:1"))
+        self.assertIn("snippet", one)
+        self.assertEqual(self.backend.asked[-1].get("all_owners"), True)
+        (task,) = self.items_of(B, "tasks").json()["items"]
+        self.assertEqual((task["age_days"], task["waiting_on"]), (9, "OPS"))
+        (alert,) = self.items_of(B, "alerts").json()["items"]
+        self.assertEqual(alert["kind"], "price_below_cost")
+        self.assertEqual(self.items_of(B, "nonsense").status_code, 404)
+        self.assertEqual(self.items_of("not-a-person", "tasks").status_code, 404)
+
+    def test_excluded_people_and_their_mail_never_appear_and_it_fails_closed(self):
+        self.backend.owner = True
+        self.backend.gaps = [item(1, EXCLUDED), item(2, B, counterpart="x@excluded.example"),
+                             item(3, B)]
+        gone = self.items_of(EXCLUDED, "awaiting_reply")
+        self.assertEqual(gone.status_code, 404)
+        self.assertNotIn("Sample 1", gone.text)
+        # the guard cannot decide a customer address: that item is not shown (fail closed)
+        self.assertEqual(self.items_of(B, "awaiting_reply").json()["items"], [])
+        self.bound_guard("x@excluded.example")
+        found = self.items_of(B, "awaiting_reply")
+        self.assertEqual([i["id"] for i in found.json()["items"]], ["g3"])
+        self.assertNotIn("excluded.example", found.text)
+        with mock.patch("operating.briefs.env_people", return_value=None):
+            self.assertEqual(self.items_of(B, "awaiting_reply").status_code, 404)
+
+    def test_marked_items_the_owner_cannot_open_stay_withheld(self):
+        self.backend.owner = True
+        self.bound_guard()
+        self.backend.gaps = [item(1, B), item(2, B, cites=["Payroll:9"])]
+        self.backend.refuse = {"Payroll:9"}   # the normal path refuses the pay-marked record
+        # the inbox says B has 1 awaiting reply; add the marked one to it
+        conn = sqlite3.connect(pe.inbox_path(self.dir / "store.sqlite"))
+        conn.execute("INSERT INTO gaps VALUES ('reply_owed', ?, 'open', NULL)",
+                     (json.dumps({"owner": B}),))
+        conn.commit()
+        conn.close()
+        found = self.items_of(B, "awaiting_reply")
+        body = found.json()
+        self.assertEqual([i["id"] for i in body["items"]], ["g1"])
+        self.assertEqual(body["withheld"], 1)
+        self.assertNotIn("Payroll", found.text)
+        self.assertNotIn("Sample 2", found.text)
+        self.backend.refuse = set()
+        self.assertEqual(len(self.items_of(B, "awaiting_reply").json()["items"]), 2)
+
+    def test_drill_cardinality_one_ten_sixty(self):
+        self.backend.owner = True
+        self.bound_guard()
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.backend.gaps = [item(i, B, days=i) for i in range(n)]
+                t0 = time.monotonic()
+                body = self.items_of(B, "awaiting_reply").json()
+                self.assertEqual(len(body["items"]), n)
+                self.assertEqual(len({i["id"] for i in body["items"]}), n)
+                self.assertEqual(body["total"], n)
+                self.assertEqual([i["age_days"] for i in body["items"]],
+                                 sorted((i["age_days"] for i in body["items"]), reverse=True))
+                self.assertLess(time.monotonic() - t0, 20)
 
     # ---- the R&D board --------------------------------------------------------------------
 

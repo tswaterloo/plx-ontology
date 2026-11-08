@@ -2240,6 +2240,35 @@ class OwnerWorkload(_Model):
     note: str
 
 
+class OwnerWorkloadItem(_Model):
+    id: str
+    kind: str
+    title: str
+    counterpart: Optional[str] = None
+    age_days: Optional[int] = None
+    channel: Optional[str] = None
+    waiting_on: str = Field(description="The person (an Entra object id) for a thread awaiting "
+                            "their reply; else the departments that answer it.")
+    snippet: Optional[str] = None
+    record_id: Optional[str] = None
+    record_type: Optional[str] = None
+
+
+class OwnerWorkloadItems(_Model):
+    """One person's items behind one count of the owner workload, for the owner only: what
+    the owner may open through the normal path (marked HR, payroll and pay items stay
+    withheld and are counted in ``withheld``, never shown). The full message opens through
+    its record page."""
+    person: str
+    bucket: str
+    total: int
+    withheld: int = Field(description="Counted for the person but not shown to you (marked, "
+                          "or not readable by you); never named.")
+    truncated: bool
+    items: list[OwnerWorkloadItem] = Field(default_factory=list)
+    note: str
+
+
 class LabelChange(_Model):
     id: str
     kind: str

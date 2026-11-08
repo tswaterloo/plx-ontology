@@ -572,6 +572,52 @@ class BriefsMixin:
             owner_kinds=OWNER_KINDS, excluded=it.excluded_by(br.env_people()))
         return m.OwnerWorkload(**raw)
 
+    def owner_workload_items(self, reader: Reader, person: str, bucket: str
+                             ) -> m.OwnerWorkloadItems:
+        """One person's items behind a count, owner-open reader only (403 otherwise, checked
+        first); the people exclusion fails closed. Items come from the owner's own trimmed
+        alert list, so a marked item the owner cannot open is counted, never shown."""
+        from operating import inbox_triage as it
+        from operating import proactive_engine as pe
+        from operating.proactive_commitments import OWNER_KINDS
+        if not self._is_owner(reader):
+            raise UserFacing("forbidden", "Only the owner sees the workload of each person.",
+                             403)
+        person = str(person).lower()
+        if bucket not in it.BUCKETS or not it._OID.match(person):
+            raise UserFacing("not_found", "No such person or count.", 404)
+        people = br.env_people()
+        excluded = it.excluded_by(people)
+        if excluded(person):
+            raise UserFacing("not_found", "No such person or count.", 404)
+
+        def address_excluded(address: str) -> bool:
+            try:
+                return bool(people.is_excluded(address))
+            except Exception:  # noqa: BLE001 - an undecidable counterpart is never shown
+                return True
+
+        def job(view: Any) -> Any:
+            found = view.gap_inbox(limit=bf_max(), all_owners=True)
+            if not isinstance(found, Mapping) or found.get("status") != "read":
+                return None
+            return found.get("gaps") or ()
+        gaps = self._brief_run(reader, job)
+        if gaps is None:
+            raise UserFacing("not_found", "The alert list could not be read.", 404)
+        shown = it.owner_items(gaps, person=person, bucket=bucket, owner_kinds=OWNER_KINDS,
+                               excluded=excluded, address_excluded=address_excluded,
+                               today=date.today())
+        store = getattr(self, "store_path", None)
+        counted = sum(1 for r in (it.open_rows(pe.inbox_path(store)) if store else ())
+                      if r.get("owner") == person
+                      and it.bucket_of(r.get("kind"), OWNER_KINDS) == bucket)
+        return m.OwnerWorkloadItems(
+            person=person, bucket=bucket, total=len(shown),
+            withheld=max(counted - len(shown), 0), truncated=len(shown) > it.DRILL_MAX,
+            items=[m.OwnerWorkloadItem(**x) for x in shown[:it.DRILL_MAX]],
+            note="Open an item to read the full message on its own page. " + it.OWNER_NOTE)
+
     def _workload_grants(self) -> Any:
         from operating import inbox_triage as it
         data_dir = getattr(self, "data_dir", None)

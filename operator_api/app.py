@@ -365,6 +365,18 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         Owner only (403 for every other reader); counts only, never message content."""
         return backend.owner_workload(who)
 
+    @app.get("/api/owner/workload/{person}/{bucket}", response_model=m.OwnerWorkloadItems,
+             tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                        404: {"model": m.ErrorResponse}})
+    def owner_workload_items(person: str, bucket: str, who: Reader = Depends(reader)
+                             ) -> m.OwnerWorkloadItems:
+        """The items behind one count of one person (bucket awaiting_reply, tasks or alerts):
+        subject, counterpart, age, who it waits on, a snippet and the record to open. Owner
+        only (403 for every other reader); excluded people never appear; marked items you
+        cannot open stay withheld."""
+        return backend.owner_workload_items(who, person, bucket)
+
     @app.get("/api/rd-projects", response_model=m.RdBoard, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
     def rd_board(who: Reader = Depends(reader)) -> m.RdBoard:

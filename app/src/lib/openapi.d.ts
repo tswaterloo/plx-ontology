@@ -755,6 +755,29 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/owner/workload/{person}/{bucket}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Owner Workload Items
+         * @description The items behind one count of one person (bucket awaiting_reply, tasks or alerts):
+         *     subject, counterpart, age, who it waits on, a snippet and the record to open. Owner
+         *     only (403 for every other reader); excluded people never appear; marked items you
+         *     cannot open stay withheld.
+         */
+        get: operations["owner_workload_items_api_owner_workload__person___bucket__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rd-projects": {
         parameters: {
             query?: never;
@@ -4001,6 +4024,58 @@ export type components = {
             people?: components["schemas"]["OwnerWorkloadPerson"][];
             /** Window Days */
             window_days: number;
+        };
+        /** OwnerWorkloadItem */
+        OwnerWorkloadItem: {
+            /** Age Days */
+            age_days?: number | null;
+            /** Channel */
+            channel?: string | null;
+            /** Counterpart */
+            counterpart?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Record Id */
+            record_id?: string | null;
+            /** Record Type */
+            record_type?: string | null;
+            /** Snippet */
+            snippet?: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Waiting On
+             * @description The person (an Entra object id) for a thread awaiting their reply; else the departments that answer it.
+             */
+            waiting_on: string;
+        };
+        /**
+         * OwnerWorkloadItems
+         * @description One person's items behind one count of the owner workload, for the owner only: what
+         *     the owner may open through the normal path (marked HR, payroll and pay items stay
+         *     withheld and are counted in ``withheld``, never shown). The full message opens through
+         *     its record page.
+         */
+        OwnerWorkloadItems: {
+            /** Bucket */
+            bucket: string;
+            /** Items */
+            items?: components["schemas"]["OwnerWorkloadItem"][];
+            /** Note */
+            note: string;
+            /** Person */
+            person: string;
+            /** Total */
+            total: number;
+            /** Truncated */
+            truncated: boolean;
+            /**
+             * Withheld
+             * @description Counted for the person but not shown to you (marked, or not readable by you); never named.
+             */
+            withheld: number;
         };
         /** OwnerWorkloadPerson */
         OwnerWorkloadPerson: {
@@ -7539,6 +7614,65 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    owner_workload_items_api_owner_workload__person___bucket__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                person: string;
+                bucket: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnerWorkloadItems"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -64,7 +64,7 @@ import json
 from pathlib import Path
 import re
 import threading
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ontology import store as ostore
 
@@ -906,3 +906,75 @@ def owner_workload(rows: Iterable[Mapping[str, Any]], closed: Iterable[Mapping[s
                         **{k: person[oid][k] for k in ("awaiting_reply", "tasks", "alerts",
                                                        "alerts_closed")}}
                        for oid in sorted(person)]}
+
+
+BUCKETS = ("awaiting_reply", "tasks", "alerts")
+DRILL_MAX = 200
+SNIPPET_CHARS = 200
+
+
+def bucket_of(kind: Any, owner_kinds: Iterable[str]) -> str:
+    """The count a kind of alert belongs to in ``owner_workload``."""
+    return ("awaiting_reply" if kind in frozenset(owner_kinds) else
+            "tasks" if kind in TASK_KINDS else "alerts")
+
+
+def _text(value: Any, limit: int) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = " ".join(value.split())
+    return value if len(value) <= limit else value[:limit - 1].rstrip() + "…"
+
+
+def owner_items(gaps: Iterable[Mapping[str, Any]], *, person: str, bucket: str,
+                owner_kinds: Iterable[str], excluded: Callable[[str], bool],
+                address_excluded: Callable[[str], bool], today: date) -> list[dict[str, Any]]:
+    """One person's open items of one count (``bucket``), from the owner reader's own trimmed
+    alert list (``read_inbox``: nothing the owner may not open reaches here, and a pay-marked
+    or HR item stays withheld). The person, or a counterpart, the people exclusion does not
+    clear gives nothing (fail closed). Each item: subject or title, the counterpart, its age,
+    who it waits on, a short snippet and the record to open (the message, task or alert's
+    own page). Oldest first (the caller keeps at most ``DRILL_MAX``)."""
+    person = str(person).lower()
+    if bucket not in BUCKETS or excluded(person):
+        return []
+    owner_kinds = frozenset(owner_kinds)
+    out: list[dict[str, Any]] = []
+    for item in gaps:
+        follow_up = item.get("follow_up") if isinstance(item.get("follow_up"), Mapping) else {}
+        owner = follow_up.get("owner")
+        if (item.get("state") == "resolved" or not isinstance(owner, str)
+                or owner.lower() != person
+                or bucket_of(item.get("kind"), owner_kinds) != bucket):
+            continue
+        event = item.get("event") if isinstance(item.get("event"), Mapping) else {}
+        message = next(iter(event.get("messages") or ()), None)
+        message = message if isinstance(message, Mapping) else {}
+        counterpart = next((c for c in (event.get("asked_by"), event.get("contact"),
+                                        event.get("customer"), event.get("counterpart"))
+                            if isinstance(c, str) and c.strip()), None)
+        if counterpart and "@" in counterpart and address_excluded(counterpart):
+            continue
+        teams = [t for t in follow_up.get("who_can_answer") or ()
+                 if isinstance(t, str) and _TEAM.match(t)]
+        summary = _text(item.get("summary"), SNIPPET_CHARS)
+        title = _text(message.get("subject"), 200) or summary or str(item.get("kind"))
+        days = event.get("days")
+        if not isinstance(days, int) or isinstance(days, bool):
+            seen = str(item.get("first_seen") or "")[:10]
+            try:
+                days = max((today - date.fromisoformat(seen)).days, 0)
+            except ValueError:
+                days = None
+        object_id = item.get("object_id") if isinstance(item.get("object_id"), str) else None
+        out.append({
+            "id": str(item.get("id")), "kind": str(item.get("kind")), "title": title,
+            "counterpart": _text(counterpart, 200), "age_days": days,
+            "channel": message.get("channel") if bucket == "awaiting_reply" else None,
+            "waiting_on": person if bucket == "awaiting_reply" or not teams
+            else ", ".join(teams),
+            "snippet": summary if summary != title else None,
+            "record_id": object_id if object_id and ":" in object_id else None,
+            "record_type": object_id.split(":")[0] if object_id and ":" in object_id else None})
+    out.sort(key=lambda r: (-(r["age_days"] if r["age_days"] is not None else -1), r["id"]))
+    return out

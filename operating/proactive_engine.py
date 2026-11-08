@@ -5110,7 +5110,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
                states: Sequence[str] = ("open", "acknowledged"),
                limit: int = MAX_SHOWN, kinds: Sequence[str] | None = None,
-               today: date | None = None, since: str | None = None) -> dict[str, Any]:
+               today: date | None = None, since: str | None = None,
+               all_owners: bool = False) -> dict[str, Any]:
     """The gaps one reader may see, trimmed: every late order first (longest late first), then
     by priority; what the last run
     covered of what this reader may read. ``may_read(audience_key)``, ``held`` (the
@@ -5129,7 +5130,10 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     counted to ``today`` (default the business day now) when read, never frozen at the
     run (``_relative``).
     ``since``: only gaps first seen at or after this ISO moment, newest first (an alert
-    rule's new findings: an older backlog never uses up ``limit``)."""
+    rule's new findings: an older backlog never uses up ``limit``).
+    ``all_owners``: a person's own-mail kinds are listed whoever owns them (everything else
+    about the trim is unchanged); only the owner-only workload drill-down sets it, after its
+    route has refused every other reader."""
     path = Path(inbox)
     today = _today() if today is None else today
     if not path.is_file():
@@ -5229,7 +5233,7 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 if state not in states or hide(row["gap_id"], reader) is not None:
                     continue
                 follow_up = json.loads(row["follow_up"])
-                if not _owned(follow_up, row["kind"], reader):
+                if not all_owners and not _owned(follow_up, row["kind"], reader):
                     continue   # another person's own mail: never theirs to see
                 order = follow_up.pop(_ORDER, None)
                 held = orders.get(order["key"]) if isinstance(order, dict) else None

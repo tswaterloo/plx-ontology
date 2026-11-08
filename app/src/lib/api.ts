@@ -30,6 +30,8 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   ReplyTriage,
   Workload,
   OwnerWorkload,
+  OwnerWorkloadBucket,
+  OwnerWorkloadItems,
   RdBoard,
   UpcomingMeetings,
   WatcherItemState,
@@ -307,6 +309,11 @@ export function getWorkload(signal?: AbortSignal): Promise<Workload> {
 // Per-person counts: the owner only (any other reader gets a 403).
 export function getOwnerWorkload(signal?: AbortSignal): Promise<OwnerWorkload> {
   return getJson<OwnerWorkload>("/api/owner/workload", signal);
+}
+
+// One person's items behind one count: the owner only (any other reader gets a 403).
+export function getOwnerWorkloadItems(person: string, bucket: OwnerWorkloadBucket, signal?: AbortSignal): Promise<OwnerWorkloadItems> {
+  return getJson<OwnerWorkloadItems>(`/api/owner/workload/${encodeURIComponent(person)}/${bucket}`, signal);
 }
 
 // R&D and sample projects per customer, from the threads and records you may open.
