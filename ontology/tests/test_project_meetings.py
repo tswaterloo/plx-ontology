@@ -36,7 +36,7 @@ class MeetingsProjectionTests(unittest.TestCase):
         self.state = Path(self.tmp.name)
         store = cm.open_store(self.state, tcm.audience())
         api, _ = cm.build_api(tcm.ENV, sender=tcm.FakeGraph())
-        report = cm.MeetingsCapture(store, api, tcm.audience(), tcm.CAPTURE,
+        report = cm.MeetingsCapture(store, api, tcm.audience(), tcm.CAPTURE, transcripts_granted=True,
                                     clock=lambda: tcm.NOW).run(tcm.scope())
         store.close()
         self.assertEqual(report["status"], "complete", report["reasons"])

@@ -1,0 +1,241 @@
+{
+ "buy-2026-11-04": {
+  "actions": [
+   {
+    "line": 3,
+    "owner": "raj.mehta@plx.example",
+    "records": [
+     "Customer:C2"
+    ]
+   },
+   {
+    "line": 5,
+    "owner": "marco.silva@plx.example",
+    "records": [
+     "Supplier:S2",
+     "PurchaseOrder:PO100903"
+    ]
+   },
+   {
+    "line": 8,
+    "owner": "raj.mehta@plx.example",
+    "records": []
+   }
+  ],
+  "hr": false
+ },
+ "cs-2026-11-06": {
+  "actions": [
+   {
+    "line": 1,
+    "owner": "sam.okafor@plx.example",
+    "records": [
+     "SalesOrder:104527"
+    ]
+   },
+   {
+    "line": 2,
+    "owner": "raj.mehta@plx.example",
+    "records": [
+     "Customer:C2"
+    ]
+   },
+   {
+    "line": 5,
+    "owner": "priya.nair@plx.example",
+    "records": [
+     "SalesOrder:104511",
+     "Customer:C1"
+    ]
+   }
+  ],
+  "hr": false
+ },
+ "hr-2026-11-04": {
+  "actions": [
+   {
+    "line": 2,
+    "owner": "hannah.cole@plx.example",
+    "records": []
+   },
+   {
+    "line": 4,
+    "owner": "hannah.cole@plx.example",
+    "records": []
+   }
+  ],
+  "hr": true
+ },
+ "ops-2026-10-26": {
+  "actions": [
+   {
+    "line": 3,
+    "owner": "sam.okafor@plx.example",
+    "records": []
+   },
+   {
+    "line": 6,
+    "owner": "marco.silva@plx.example",
+    "records": []
+   }
+  ],
+  "hr": false
+ },
+ "ops-2026-11-02": {
+  "actions": [
+   {
+    "line": 3,
+    "owner": "sam.okafor@plx.example",
+    "records": [
+     "SalesOrder:104511"
+    ]
+   },
+   {
+    "line": 5,
+    "owner": "priya.nair@plx.example",
+    "records": [
+     "Customer:C1"
+    ]
+   },
+   {
+    "line": 8,
+    "owner": "marco.silva@plx.example",
+    "records": [
+     "Supplier:S1",
+     "Item:TAP-2200"
+    ]
+   }
+  ],
+  "hr": false
+ },
+ "ops-2026-11-09": {
+  "actions": [
+   {
+    "line": 2,
+    "owner": "marco.silva@plx.example",
+    "records": [
+     "PurchaseOrder:PO100871"
+    ]
+   },
+   {
+    "line": 7,
+    "owner": "priya.nair@plx.example",
+    "records": [
+     "SalesOrder:104527",
+     "Customer:C2"
+    ]
+   },
+   {
+    "line": 9,
+    "owner": "priya.nair@plx.example",
+    "records": [
+     "Item:PPC-80"
+    ]
+   }
+  ],
+  "hr": false
+ },
+ "plan-2026-11-07": {
+  "actions": [
+   {
+    "line": 2,
+    "owner": "marco.silva@plx.example",
+    "records": [
+     "Item:TAP-2200",
+     "Supplier:S1"
+    ]
+   },
+   {
+    "line": 4,
+    "owner": "sam.okafor@plx.example",
+    "records": []
+   },
+   {
+    "line": 6,
+    "owner": "raj.mehta@plx.example",
+    "records": [
+     "Customer:C1"
+    ]
+   }
+  ],
+  "hr": false
+ },
+ "qa-2026-11-03": {
+  "actions": [
+   {
+    "line": 3,
+    "owner": "lena.hoffmann@plx.example",
+    "records": [
+     "Supplier:S2"
+    ]
+   },
+   {
+    "line": 4,
+    "owner": "sam.okafor@plx.example",
+    "records": []
+   },
+   {
+    "line": 8,
+    "owner": "sam.okafor@plx.example",
+    "records": [
+     "SalesOrder:104602"
+    ]
+   },
+   {
+    "line": 9,
+    "owner": "lena.hoffmann@plx.example",
+    "records": [
+     "Lot:L24-0912",
+     "Customer:C3"
+    ]
+   }
+  ],
+  "hr": false
+ },
+ "qa-2026-11-10": {
+  "actions": [
+   {
+    "line": 2,
+    "owner": "marco.silva@plx.example",
+    "records": [
+     "Supplier:S2"
+    ]
+   },
+   {
+    "line": 3,
+    "owner": "lena.hoffmann@plx.example",
+    "records": [
+     "Supplier:S2"
+    ]
+   }
+  ],
+  "hr": false
+ },
+ "sales-2026-11-05": {
+  "actions": [
+   {
+    "line": 1,
+    "owner": "priya.nair@plx.example",
+    "records": [
+     "Customer:C1",
+     "CustomerPurchaseOrder:NB-55210"
+    ]
+   },
+   {
+    "line": 4,
+    "owner": "priya.nair@plx.example",
+    "records": [
+     "Item:TAP-2200"
+    ]
+   },
+   {
+    "line": 6,
+    "owner": "raj.mehta@plx.example",
+    "records": [
+     "Customer:C3"
+    ]
+   }
+  ],
+  "hr": false
+ }
+}

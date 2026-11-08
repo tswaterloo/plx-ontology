@@ -41,15 +41,20 @@ NOT_INCREMENTAL = ("vendor_no_reply", "order_without_customer_po",
                    "shipped_not_invoiced", "duplicate_customer_order",
                    "recurring_component_damage", "customer_chase", "quality_holds",
                    "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables",
+                   "returns_and_credits",
                    "price_consistency",
                    "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
                    "planner_task_overdue", "aged_balance_worsening", "production_late",
                    "assembly_damage_spike", "teams_unanswered_ask",
-                   "commitments", "needs_reply",
+                   "commitments", "needs_reply", "approvals_waiting", "chase_escalation",
+                   "expedite_requests", "supplier_shortage", "payment_chase",
                    "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall",
-                   "certificate_expiry", "freight_cost_anomaly", "stale_quote",
+                   "certificate_expiry", "freight_cost_anomaly", "stale_quote", "priority_fill_unmet",
                    "duplicate_parties",
-                   "key_fields_missing", "twin_disagreement", "stale_captures")
+                   "key_fields_missing", "twin_disagreement", "stale_captures",
+                   "reorder_soon",
+                   "inventory_adjustment", "blocked_account_activity", "gl_posting_errors",
+                   "recurring_task_missed", "cash_application", "statement_reconciliation")
 # The operations alerts (tasks, gates, aged snapshots, production, damage windows, Teams
 # conversations) read the whole store as well, so they wait for the full pass too.
 
@@ -78,7 +83,8 @@ def inputs() -> dict[str, Any]:
         # FileMaker receipts and their lots, confirmations and supplier invoices
         "late_or_unconfirmed_po": Inputs(("PurchaseOrder",), order, 3, po_twins),
         "late_customer_order": Inputs(
-            ("SalesOrder",), (*so_status.FULFILLED_LINKS, so_status.LINE_OF), 1,
+            ("SalesOrder",), (*so_status.FULFILLED_LINKS, so_status.LINE_OF,
+                              *pe.WORK_LINE_LINKS, *pe.WORK_ALLOCATION), 3,
             tuple(so_status.twin_links())),
         "po_receipt_quantity_mismatch": Inputs(
             ("PurchaseOrderLine",), (*order, *pe.RECEIPT_LINKS), 4,

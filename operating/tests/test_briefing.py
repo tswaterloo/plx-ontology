@@ -58,6 +58,10 @@ class Case(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.store = Path(tmp.name) / "store.sqlite"
         self.inbox = pe.inbox_path(self.store)
+        # a read counts relative days to the business day; the fixtures' day is AS_OF
+        today = mock.patch.object(pe, "_today", return_value=AS_OF)
+        today.start()
+        self.addCleanup(today.stop)
 
     def run_engine(self, world: World, *, call=None, at: datetime = MOMENT,
                    **options) -> dict:
@@ -829,6 +833,73 @@ class DetectorTest(Case):
                          (free, "No-charge order: nothing invoiced, item cost 31.78 CAD"))
         self.assertNotIn("event", charge)
         self.assertNotIn(free, json.dumps(self.brief(EVERYTHING)["items"]))
+
+    def test_free_and_sample_lines_are_free_goods_never_a_margin_loss(self):
+        """Zero-price and sample lines cost their items but lose no sale: an order losing
+        money only through them is free goods (low, unranked), and an order whose priced
+        lines lose money is a loss on those lines alone."""
+        from decimal import Decimal
+        w = World()
+        orders = {k: w.obj("SalesOrder", {}) for k in ("free_only", "priced_loss")}
+        figures = {}
+        for order in orders.values():
+            invoice = w.obj("SalesInvoice", {"posting_date": "2026-08-10"},
+                            markings='["finance"]')
+            figures[order] = handle(w.n)
+            w.link("SalesInvoice.bills", invoice, order)
+
+        def line(n, oid, revenue, cost, item=None):
+            return cp.Line(n, f"l{n}", item, revenue=Decimal(revenue), cost=Decimal(cost),
+                           margin=Decimal(revenue) - Decimal(cost), currency="CAD",
+                           invoice_handles=[figures[oid]])
+
+        def read_order(_call, order):
+            oid = order.object_id
+            if oid == orders["free_only"]:
+                order.lines = [line(1, oid, "100", "60"), line(2, oid, "0", "80")]
+            else:
+                order.lines = [line(1, oid, "100", "150"), line(2, oid, "5", "20",
+                                                                 item="Product:SAMPLE-KIT")]
+            order.revenue = sum((ln.revenue for ln in order.lines), Decimal(0))
+            order.cost = sum((ln.cost for ln in order.lines), Decimal(0))
+            order.margin, order.currency = order.revenue - order.cost, "CAD"
+            return order
+
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {})
+        found = self.events()
+        (free,) = found["free_goods_lines"]
+        self.assertEqual(free["object_id"], orders["free_only"])
+        self.assertIn("cost 80 CAD; its priced lines made 40 CAD", free["summary"])
+        self.assertNotIn("event", free)
+        (loss,) = found["negative_margin"]
+        self.assertEqual(loss["object_id"], orders["priced_loss"])
+        self.assertEqual(loss["event"]["amount"], {"value": "50", "currency": "CAD",
+                                                   "basis": "loss"})
+        self.assertNotIn(orders["free_only"], json.dumps(self.brief(EVERYTHING)["items"]))
+        # a reader without finance may not open the figures: sees neither
+        self.assertEqual({k for k in self.events(held=frozenset())}
+                         & {"free_goods_lines", "negative_margin"}, set())
+
+    def test_unjudged_records_and_a_failed_check_are_said_never_silent(self):
+        inbox = {"status": "read", "gaps": [], "complete": False,
+                 "detectors": {"late_customer_order": "failed"},
+                 "detector_run_at": {"late_customer_order": "2026-11-07T19:00:00+00:00"},
+                 "failed_at": {"late_customer_order": "2026-11-07T19:00:00+00:00"},
+                 "rules": [{"rule": "late_customer_order", "not_evaluated": 12,
+                            "not_evaluated_by_reason": {"no_order_lines": 9,
+                                                        "status_unmapped": 3}},
+                           {"rule": "late_or_unconfirmed_po", "not_evaluated": None,
+                            "not_evaluated_by_reason": {}}]}
+        out = bf.build(inbox, routing=EVERYTHING, hidden=None, last_visit=None)
+        self.assertEqual([n["words"] for n in out["data_notes"]], [
+            "customer orders past their required date: cannot check 9 records that lack "
+            "order lines",
+            "customer orders past their required date: cannot check 3 records that hold a "
+            "status no rule reads"])
+        check = next(c for c in out["checks"] if c["check"] == "late_customer_order")
+        self.assertEqual(check["status"], "failed")
+        self.assertIn("check failed at 2026-11-07 2:00 PM ET", check["words"])
 
     def test_a_credited_order_is_a_loss_unless_its_goods_came_back(self):
         """Revenue zero after credit memos: a no-charge order only when the goods were

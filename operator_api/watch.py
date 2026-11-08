@@ -42,6 +42,10 @@ class WatchContext:
     held: frozenset[str]
     decide: Callable[[Sequence[str]], Mapping[str, Any]]
     records: Callable[[Iterable[str]], Mapping[str, Any]]
+    # (kinds, since) -> the findings this reader's inbox shows now under their grant, first
+    # seen at or after ``since``, newest first
+    findings: Callable[[Sequence[str], str], Sequence[Mapping[str, Any]]] = \
+        lambda _kinds, _since: []
 
 
 def _visible(ctx: WatchContext, rec: Any) -> bool:
@@ -77,11 +81,18 @@ def state(ctx: WatchContext) -> m.Watchlist:
             object_id=f["object_id"], object_type=f["object_type"],
             label=wl._label(rec, vocab) if ok else None, at=f["at"], following=True,
             readable=ok, watching_since=f["baseline_at"]))
+    kept = store.rules(ctx.reader)
     rules = [m.WatchRule(**{k: r[k] for k in ("rule_id", "text", "spec", "description",
                                               "at", "state", "note")},
-                         watching_since=r["baseline_at"]) for r in store.rules(ctx.reader)]
+                         watching_since=r["baseline_at"]) for r in kept]
     alerts = wl.trim(store.raw_alerts(ctx.reader, wl.ALERTS_SHOWN), ctx.may_read, ctx.held,
                      ctx.decide, ctx.records)
+    signals = [r for r in kept if "signal" in r["spec"]]
+    if signals:
+        alerts = sorted(alerts + wl.signal_alerts(signals, ctx.findings,
+                                                  store.signal_reads(ctx.reader)),
+                        key=lambda a: (a["at"], a["alert_id"]), reverse=True
+                        )[:wl.ALERTS_SHOWN]
     return m.Watchlist(
         configured=True, follows=shown, rules=rules, unread=sum(not a["read"] for a in alerts),
         alerts=[m.WatchAlert(
@@ -171,7 +182,9 @@ def create_rule(ctx: WatchContext, text: str, spec: Mapping[str, Any],
                                                 wl.describe(checked, vocab))
     except wl.RuleRefused as refused:
         raise UserFacing("rule_refused", refused.problems[0], 422) from None
-    return m.WatchRule(**made, note=None, watching_since=None)
+    # a signal rule reads findings first seen from now: it watches at once
+    return m.WatchRule(**made, note=None,
+                       watching_since=made["at"] if "signal" in checked else None)
 
 
 def delete_rule(ctx: WatchContext, rule_id: str) -> m.WatchRuleDeleted:
@@ -203,8 +216,12 @@ def view_context(view: Any) -> WatchContext:
             return wl._read(st, ids)
         finally:
             st.close()
+    def findings(kinds: Sequence[str], since: str) -> Sequence[Mapping[str, Any]]:
+        return pe.read_inbox(pe.inbox_path(path), path, reader=pe.reader_key(view.actor),
+                             may_read=may_read, held=held, decide=view.access.decide,
+                             kinds=list(kinds), since=since, limit=wl.SIGNALS_SHOWN)["gaps"]
     return WatchContext(pe.reader_key(view.actor), wl.watch_path(path), may_read,
-                        frozenset(held), view.access.decide, records)
+                        frozenset(held), view.access.decide, records, findings)
 
 
 class WatchMixin:

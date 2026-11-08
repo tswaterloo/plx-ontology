@@ -277,6 +277,9 @@ _BC_PLX = "/v2.0/{tenant:tenant}/{environment:environment}/api/plx/integration/v
 _CHANNEL = "/v1.0/teams/{team:guid}/channels/{channel:teams_thread}"
 TEMPLATES: dict[str, tuple[str, str]] = {
     "graph.users": (GRAPH, "/v1.0/users"),
+    # The directory's groups (mail and SMTP proxy addresses only): the people exclusion
+    # records them so a distribution list's address is decided offline (GET only).
+    "graph.groups": (GRAPH, "/v1.0/groups"),
     "graph.user": (GRAPH, "/v1.0/users/{user:user_ref}"),
     # An employee's transitive group membership, cast to groups (directory
     # roles and administrative units excluded): integrations.graph_directory.
@@ -398,9 +401,10 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     # parses), one event's content once its organizer and attendees cleared the people
     # guard; the organizer's
     # online meeting found by its join URL, its transcripts and one transcript's text
-    # (WebVTT, ``SourceApi.get_document``); a captured mailbox's Planner tasks (how its
-    # plans are found: the groups listing and group members answer 403 to this app, live
-    # 2026-11-04), one plan, its buckets and tasks and one task's details.
+    # (WebVTT, ``SourceApi.get_document``); a captured mailbox's Planner tasks, the
+    # tenant's Microsoft 365 groups, one group's members and its plans (every plan the
+    # app can read: a group answering 403 falls back to the plans found through
+    # mailboxes' tasks), one plan, its buckets and tasks and one task's details.
     "graph.user_calendar_view": (GRAPH, "/v1.0/users/{user:user_id}/calendarView"),
     "graph.user_event": (GRAPH, "/v1.0/users/{user:user_id}/events/{event:mail_id}"),
     "graph.user_online_meetings": (GRAPH, "/v1.0/users/{user:user_id}/onlineMeetings"),
@@ -410,6 +414,9 @@ TEMPLATES: dict[str, tuple[str, str]] = {
                                                 "onlineMeetings/{meeting:meeting_id}/"
                                                 "transcripts/{transcript:meeting_id}/content"),
     "graph.user_planner_tasks": (GRAPH, "/v1.0/users/{user:user_id}/planner/tasks"),
+    "graph.groups": (GRAPH, "/v1.0/groups"),
+    "graph.group_members": (GRAPH, "/v1.0/groups/{group:guid}/members"),
+    "graph.group_planner_plans": (GRAPH, "/v1.0/groups/{group:guid}/planner/plans"),
     "graph.planner_plan": (GRAPH, "/v1.0/planner/plans/{plan:planner_id}"),
     "graph.planner_plan_buckets": (GRAPH, "/v1.0/planner/plans/{plan:planner_id}/buckets"),
     "graph.planner_plan_tasks": (GRAPH, "/v1.0/planner/plans/{plan:planner_id}/tasks"),

@@ -159,6 +159,10 @@ class NamespaceAuthority:
     def from_file(cls, path: str | Path) -> "NamespaceAuthority":
         return cls.from_json(json.loads(Path(path).read_text(encoding="utf-8")))
 
+    def patterns(self) -> tuple[str, ...]:
+        """Every configured namespace pattern."""
+        return tuple(sorted(self._grants))
+
     def principals_for(self, namespace: str) -> frozenset[str] | None:
         """Principals of the most specific pattern naming ``namespace``; None if unknown."""
         if namespace in self._grants:
@@ -384,8 +388,79 @@ def _probe(args: argparse.Namespace, client: Any = None) -> dict[str, Any]:
     return report
 
 
+# ---------------------------------------------------------------- kept-store capture
+
+BRAIN_ENV = ("BRAIN_API_KEY", "BRAIN_BASE_URL", "VMC_API_KEY", "VMC_API_URL")
+BRAIN_KEYS = ("BRAIN_API_KEY", "VMC_API_KEY")   # either one: the pair it belongs to
+
+
+def capture_main(argv: list[str], *, client: Any = None,
+                 environ: Mapping[str, str] | None = None) -> int:
+    """``capture``: the host ingest's brain source. Reads ``agent/items`` into the kept
+    store of ``--state-dir`` (``<DIR>/knowledge-capture``, versioned: each run is a new
+    capture of its units, earlier ones kept) as ``--principal`` under the host's
+    namespace authority, every namespace it names granted to the principal (none granted:
+    refused before any request). Without a brain key the run is blocked with the
+    missing setting named, before any request; the MC key is never sent to the brain.
+    Prints counts and codes only."""
+    parser = argparse.ArgumentParser(prog="knowledge_source capture")
+    parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--namespaces", required=True,
+                        help="plx-knowledge-namespaces/v1 file (the host's authority)")
+    parser.add_argument("--principal", required=True)
+    parser.add_argument("--namespace", action="append", default=None,
+                        help="pattern to read (default: every pattern the file grants "
+                             "the principal)")
+    args = parser.parse_args(argv)
+    env = os.environ if environ is None else environ
+    try:
+        authority = NamespaceAuthority.from_file(args.namespaces)
+        actor = Actor(authority.tenant, frozenset({args.principal}))
+        requested = args.namespace or sorted(
+            pattern for pattern in authority.patterns()
+            if args.principal in (authority.principals_for(pattern) or ()))
+        if not requested:
+            raise NamespaceDenied("knowledge_namespace_denied", "")
+        if client is None:
+            if not any((env.get(name) or "").strip() for name in BRAIN_KEYS):
+                report = {"ok": True, "requests_sent": 0, "units": [],
+                          "blocked_upstream": [{
+                              "part": "brain.items", "source": "vmc-brain",
+                              "error_code": "credentials_absent", "cause": "later_ask",
+                              "later_ask": "credentials",
+                              "missing_settings": list(BRAIN_KEYS)}]}
+                print(json.dumps(report, sort_keys=True))
+                return 0
+            from integrations.plx_hub_guard import BrainConfig
+            from integrations.vmc import BrainReadClient
+            client = BrainReadClient(BrainConfig.from_env(env))
+        path = store_path(args.state_dir)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with CaptureStore(path, authority) as store:
+            counts = capture(client, store, authority, actor, requested)
+        state = "complete" if counts["complete"] else "partial"
+        report = {"ok": True, "requests_sent": counts["requests"],
+                  **{k: v for k, v in counts.items() if k != "relations"},
+                  "units": [{"state": state, "reason": None if counts["complete"]
+                             else "source_changed_or_capped"}] * max(1, counts["units"])}
+    except NamespaceDenied as exc:
+        report = {"ok": False, "error": exc.code}
+    except (SourceUnavailable, UpstreamError, ReadOnlyGuardError) as exc:
+        report = {"ok": False, "error": "source_unavailable", "error_class": type(exc).__name__}
+    except (OSError, ValueError) as exc:
+        code = str(exc.args[0]) if exc.args else ""
+        report = {"ok": False, "error": code if _ERROR_CODE.fullmatch(code)
+                  else "configuration_invalid", "error_class": type(exc).__name__}
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report["ok"] else 1
+
+
 def main(argv: list[str] | None = None, *, client: Any = None) -> int:
-    """The live probe; ``client`` replaces the brain client (tests only)."""
+    """The live probe (``capture``: the kept-store capture, :func:`capture_main`);
+    ``client`` replaces the brain client (tests only)."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["capture"]:
+        return capture_main(argv[1:], client=client)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--state-dir", required=True, help="fresh directory outside Git")
     parser.add_argument("--grant", action="append", required=True,
@@ -406,5 +481,5 @@ def main(argv: list[str] | None = None, *, client: Any = None) -> int:
     return 0 if report["ok"] else 1
 
 
-__all__ = ["BRAIN_KIND", "NamespaceAuthority", "NamespaceDenied", "capture", "is_personal",
+__all__ = ["BRAIN_ENV", "BRAIN_KIND", "NamespaceAuthority", "capture_main", "NamespaceDenied", "capture", "is_personal",
            "store_exists", "store_path"]

@@ -36,9 +36,12 @@ any request naming them:
   (``content: "withheld_sensitivity"``);
 * a Planner task assigned to, created or completed by an excluded person is withheld the
   same way: its details are never requested and nothing of it is kept (``tasks_withheld``).
-  The application cannot read group membership (``/groups`` answers 403 to it, live
-  2026-11-04), so plans are found through the captured mailboxes' own tasks
-  (``graph.user_planner_tasks``) and an excluded person's own task list is never requested;
+  Plans are found through the captured mailboxes' own tasks (``graph.user_planner_tasks``;
+  an excluded person's own task list is never requested) and, with the scope's
+  ``plan_groups``, through every Microsoft 365 group (``graph.groups``, listed with
+  ``directory_credentials``: the admin application answers 403 to ``/groups``, live
+  2026-11-04/08): a group whose members are all excluded people is skipped, one whose
+  members cannot be listed or decided is skipped whole (fail closed);
 * a transcript is read only of a meeting whose event cleared the guard, whose organizer is
   a tenant user who is not excluded (looked up by address after the guard decided it), and
   is kept only when every speaker the WebVTT names is the organizer or an attendee of the
@@ -148,6 +151,9 @@ _PERMISSION = {"graph.users": "User.Read.All", "graph.user": "User.Read.All",
                "graph.user_calendar_view": "Calendars.Read",
                "graph.user_event": "Calendars.Read",
                "graph.user_planner_tasks": "Tasks.Read.All",
+               "graph.groups": "GroupMember.Read.All",
+               "graph.group_members": "GroupMember.Read.All",
+               "graph.group_planner_plans": "Tasks.Read.All",
                "graph.planner_plan": "Tasks.Read.All",
                "graph.planner_plan_buckets": "Tasks.Read.All",
                "graph.planner_plan_tasks": "Tasks.Read.All",
@@ -167,6 +173,10 @@ UTC_PREFER = {"Prefer": 'outlook.timezone="UTC"'}
 SENSITIVE = frozenset({"private", "confidential"})
 JOIN_PREFIX = "https://teams.microsoft.com/l/meetup-join/"
 TRANSCRIPT_CHECKS = "meetings_transcript_checks"
+# Transcripts stay dormant until Vince grants OnlineMeetingTranscript.Read.All (and the
+# application access policy OnlineMeetings.Read.All needs): no online-meeting or transcript
+# request is made unless this is "1" in the capture's environment.
+TRANSCRIPTS_GRANTED = "PLX_MEETINGS_TRANSCRIPTS_GRANTED"
 UNIT_PREFIX = "meetings:"
 REASON_MAX = 64
 MAX_TEXT = 1000
@@ -245,11 +255,14 @@ class MeetingsScope:
     """``plx-meetings-capture-scope/v1``: ``mailboxes`` (addresses or object ids) and/or
     ``all_mailboxes`` (every directory mailbox less the excluded people and the mail
     capture's HR / payroll deny list, ``directory_scope``), which ``parts`` run
-    (``calendar``, ``planner``, ``transcripts``) and the caps of ``_LIMITS``. Anything
-    unknown or out of bounds is refused."""
+    (``calendar``, ``planner``, ``transcripts``) and the caps of ``_LIMITS``.
+    ``plan_groups``: Planner plans are also found through every Microsoft 365 group of
+    the tenant (a group whose members are all excluded people is skipped), listed with
+    ``directory_credentials`` (a credential prefix holding GroupMember.Read.All; default
+    the capture's own). Anything unknown or out of bounds is refused."""
 
     KEYS = {"schema", "note", "mailboxes", "all_mailboxes", "directory_scope", "parts",
-            *_LIMITS}
+            "plan_groups", "directory_credentials", *_LIMITS}
 
     def __init__(self, document: Any, *, base: Path | None = None) -> None:
         if not isinstance(document, Mapping) or document.get("schema") != SCOPE_SCHEMA \
@@ -273,6 +286,13 @@ class MeetingsScope:
                 or len(set(parts)) != len(parts):
             raise MeetingsCaptureError("scope_parts_invalid")
         self.parts = frozenset(parts)
+        self.plan_groups = document.get("plan_groups", False)
+        if not isinstance(self.plan_groups, bool):
+            raise MeetingsCaptureError("scope_plan_groups_invalid")
+        self.directory_credentials = document.get("directory_credentials")
+        if self.directory_credentials is not None \
+                and self.directory_credentials not in CREDENTIAL_PREFIXES:
+            raise MeetingsCaptureError("scope_directory_credentials_invalid")
         for key, (default, low, high) in _LIMITS.items():
             value = document.get(key, default)
             if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
@@ -553,8 +573,10 @@ def _new_counts() -> dict[str, int]:
         "plans_read", "tasks_listed", "tasks_withheld", "task_reads", "tasks_unchanged",
         "meetings_checked", "meetings_external_organizer", "meetings_not_found",
         "transcripts_listed", "transcripts_read", "transcripts_withheld_unknown_speaker",
+        "transcripts_withheld_excluded",
         "transcripts_unaddressable", "transcripts_over_cap", "provenance_dropped",
-        "transcripts_withheld_no_occurrence", "events_denied")}
+        "transcripts_withheld_no_occurrence", "events_denied", "groups_listed",
+        "groups_excluded", "groups_unread", "plans_from_groups", "tasks_denied")}
 
 
 @dataclass
@@ -602,12 +624,21 @@ class MeetingsCapture:
 
     def __init__(self, store: CaptureStore, api: Any, audience: LiveSourceAudience,
                  actor: Actor, *, workers: int = WORKERS,
-                 clock: Callable[[], datetime] | None = None) -> None:
+                 clock: Callable[[], datetime] | None = None,
+                 transcripts_granted: bool | None = None,
+                 directory_api: Any = None) -> None:
         self.store, self.api, self.audience, self.actor = store, api, audience, actor
+        self.transcripts_granted = (os.environ.get(TRANSCRIPTS_GRANTED) == "1"
+                                    if transcripts_granted is None else bool(transcripts_granted))
+        # the group listing and group members (``plan_groups``); default the capture's own
+        self.directory_api = api if directory_api is None else directory_api
         self.people = people_exclusion.from_api(api)
         self.workers = max(1, min(int(workers), 32))
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._deny: Any = None   # the mail capture's HR / payroll deny list (``run``)
+        # object ids the deny list matched (directory listing, group members): a task
+        # naming one is withheld like an excluded person's
+        self._denied_ids: set[str] = set()
 
     def _denied(self, address: Any, department: Any = None) -> bool:
         """An organizer the HR / payroll deny list matches (their mail is never read, so
@@ -618,6 +649,16 @@ class MeetingsCapture:
         if department is not None:
             user["department"] = department
         return bool(address) and self._deny.denies(user)
+
+    def _task_withheld(self, raw: Mapping[str, Any]) -> str | None:
+        """``withheld`` (an excluded or undecided person), ``denied`` (a deny-listed person,
+        or the deny list unloadable: fail closed) or None (the task may be read)."""
+        people = _task_people(raw)
+        if self._decides(people) is not False:
+            return "withheld"
+        if self._deny is None or self._denied_ids.intersection(people):
+            return "denied"
+        return None
 
     # ---------------------------------------------------------------- run
 
@@ -644,6 +685,10 @@ class MeetingsCapture:
         reasons = set(listing)
         meetings: dict[str, _Meeting] = {}
         plan_ids: dict[str, None] = {}
+        if "planner" in scope.parts and scope.plan_groups:
+            found, why = self._group_plans(counts, blocked, out_of_time)
+            plan_ids.update(dict.fromkeys(found))
+            reasons |= why
         budget = {"events": scope.max_event_reads_per_run, "tasks": scope.max_task_reads_per_run,
                   "transcripts": scope.max_transcript_reads_per_run}
         for box in mailboxes:
@@ -673,7 +718,18 @@ class MeetingsCapture:
                 reasons |= set(result["reasons"])
             if len(plan_ids) > scope.max_plans_per_run:
                 reasons.add("cap:max_plans")
-        if "transcripts" in scope.parts:
+        if "transcripts" in scope.parts and not self.transcripts_granted:
+            # dormant: no online-meeting or transcript request until the grant is recorded
+            report["transcripts"] = {"status": "dormant", "reasons": ["dormant:transcript_grant"],
+                                     "needs": ["OnlineMeetingTranscript.Read.All",
+                                               "OnlineMeetings.Read.All"]}
+        elif "transcripts" in scope.parts:
+            # Every held meeting is a candidate, not only the events this run read: an
+            # incremental calendar read re-reads only changed events (mostly future ones),
+            # so a meeting that ended after its event was last read was never looked up
+            # (2026-11-08: 3,167 events held, 272 ended online meetings in the window,
+            # no transcript lookup ever recorded).
+            self._held_meetings(meetings, scope)
             result = self._transcripts(meetings, scope, counts, blocked, budget, out_of_time)
             report["transcripts"] = result
             reasons |= set(result["reasons"])
@@ -704,6 +760,7 @@ class MeetingsCapture:
                 counts["mailboxes_listed"] += listing.listed
                 counts["mailboxes_excluded"] += listing.excluded
                 counts["mailboxes_denied"] += listing.denied
+                self._denied_ids |= set(listing.withheld)
                 if listing.status != "complete":
                     reasons.add("cap:directory_listing")
                 names += [m for m in listing.mailboxes if m not in names]
@@ -887,6 +944,27 @@ class MeetingsCapture:
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
             return list(pool.map(one, urls))
 
+    def _held_meetings(self, meetings: dict[str, _Meeting], scope: MeetingsScope) -> None:
+        """Add the online meetings of every calendar event the store holds (current
+        versions, each cleared by the guard when it was read) that ended within
+        ``transcript_days_back``; an event this run read stays as read."""
+        floor = self._clock() - timedelta(days=scope.transcript_days_back)
+        for unit in self.store.units(EVENT_KIND.name):
+            records = self.store.current_records(EVENT_KIND.name, unit)
+            # A mailbox whose owner is excluded now (or undecided) gives no candidate.
+            owners = {r.path[0] for r in records}
+            if not owners or self._decides(sorted(owners)) is not False:
+                continue
+            for record in records:
+                row = (record.payload or {}).get("row") if isinstance(record.payload,
+                                                                      Mapping) else None
+                if not isinstance(row, Mapping):
+                    continue
+                end = _moment(row.get("end"))
+                if end is None or end < floor:
+                    continue
+                self._note_meeting(row, meetings)
+
     def _note_meeting(self, row: Mapping[str, Any], meetings: dict[str, _Meeting]) -> None:
         join = (row.get("online_meeting") or {}).get("join_url")
         organizer = (row.get("organizer") or {}).get("address")
@@ -906,6 +984,97 @@ class MeetingsCapture:
 
     # ---------------------------------------------------------------- planner
 
+    def _group_plans(self, counts: dict[str, int], blocked: list[dict[str, Any]],
+                     out_of_time: Callable[[], bool] = lambda: False
+                     ) -> tuple[list[str], set[str]]:
+        """Every plan of every Microsoft 365 group the app can read, less the groups whose
+        members are all excluded or deny-listed people. Groups left when the run's time
+        budget ends are not read (``TIME_BUDGET``). A group whose members cannot be listed or decided
+        is skipped whole (fail closed); its plans may still be found through a mailbox's
+        tasks. No excluded person's id is ever placed in a request."""
+        try:
+            self.people.require_bound()
+        except people_exclusion.ExclusionUnavailable:
+            blocked.append(self.people.block_part("meetings.people_exclusion"))
+            return [], {"blocked:people_exclusion"}
+        if out_of_time():
+            return [], {TIME_BUDGET}
+        try:
+            groups, done = self.directory_api.get_pages(grammar.url(
+                "graph.groups", {"$filter": "groupTypes/any(c:c eq 'Unified')",
+                                 "$select": "id", "$top": "999"}),
+                max_pages=50, max_items=5000)
+        except SourceUnavailable as exc:
+            return [], {_failure("meetings.groups", "graph.groups", exc, blocked)}
+        reasons = set() if done.get("complete") else {"cap:group_listing"}
+        ids = list(dict.fromkeys(str(g.get("id") or "").lower() for g in groups
+                                 if isinstance(g, Mapping) and _valid("guid", g.get("id"))))
+        counts["groups_listed"] += len(ids)
+
+        def one(group: str) -> tuple[str, Any]:
+            if out_of_time():
+                return "late", None
+            try:
+                members, whole = self.directory_api.get_pages(grammar.url(
+                    "graph.group_members", {"$select": "id,mail,userPrincipalName,department",
+                                            "$top": "999"}, group=group),
+                    max_pages=20, max_items=5000)
+            except SourceUnavailable as exc:
+                return "unread", _failure("meetings.group_members", "graph.group_members",
+                                          exc, blocked)
+            if not whole.get("complete"):
+                return "unread", "cap:group_members"
+            verdicts = []
+            for m in members:
+                if not isinstance(m, Mapping):
+                    continue
+                verdict = self._decides([v for v in (m.get("id"), m.get("mail"),
+                                                     m.get("userPrincipalName"))
+                                         if isinstance(v, str) and v])
+                address = m.get("mail") or m.get("userPrincipalName")
+                if verdict is False and address and self._denied(address,
+                                                                 m.get("department")):
+                    if isinstance(m.get("id"), str):
+                        self._denied_ids.add(m["id"].lower())
+                    verdict = True
+                verdicts.append(verdict)
+            if None in verdicts:
+                return "unread", "group_members_undecided"
+            if verdicts and all(verdicts):
+                return "excluded", None
+            try:
+                plans, whole = self.api.get_pages(grammar.url(
+                    "graph.group_planner_plans", {"$select": "id"}, group=group),
+                    max_pages=20, max_items=2000)
+            except SourceUnavailable as exc:
+                return "unread", _failure("meetings.group_plans", "graph.group_planner_plans",
+                                          exc, blocked)
+            found = [p["id"] for p in plans
+                     if isinstance(p, Mapping) and _valid("planner_id", p.get("id"))]
+            return "read", (found, None if whole.get("complete") else "cap:group_plans")
+
+        if self.workers == 1 or len(ids) <= 1:
+            results = [one(g) for g in ids]
+        else:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                results = list(pool.map(one, ids))
+        plan_ids: dict[str, None] = {}
+        for state, value in results:
+            if state == "late":
+                reasons.add(TIME_BUDGET)
+            elif state == "excluded":
+                counts["groups_excluded"] += 1
+            elif state == "unread":
+                counts["groups_unread"] += 1
+                reasons.add(value)
+            else:
+                found, cap = value
+                plan_ids.update(dict.fromkeys(found))
+                if cap:
+                    reasons.add(cap)
+        counts["plans_from_groups"] += len(plan_ids)
+        return list(plan_ids), reasons
+
     def _mailbox_plans(self, box: Mapping[str, Any], counts: dict[str, int],
                        blocked: list[dict[str, Any]]) -> list[str] | str:
         """The plans the mailbox's own (cleared) tasks belong to, or a failure reason."""
@@ -917,7 +1086,7 @@ class MeetingsCapture:
         except SourceUnavailable as exc:
             return _failure("meetings.planner_tasks", "graph.user_planner_tasks", exc, blocked)
         plans = [t["planId"] for t in tasks if _valid("planner_id", t.get("planId"))
-                 and self._decides(_task_people(t)) is False]
+                 and self._task_withheld(t) is None]
         counts["plans_found"] += len(set(plans))
         return list(dict.fromkeys(plans)) if done.get("complete") else "cap:planner_tasks"
 
@@ -956,9 +1125,9 @@ class MeetingsCapture:
                     or raw.get("planId") != plan_id or not isinstance(raw.get("@odata.etag"), str):
                 counts["provenance_dropped"] += 1
                 continue
-            decided = self._decides(_task_people(raw))
-            if decided is not False:
-                counts["tasks_withheld"] += 1
+            why = self._task_withheld(raw)
+            if why is not None:
+                counts["tasks_withheld" if why == "withheld" else "tasks_denied"] += 1
                 continue
             kept.append(raw)
         changed = [raw for raw in kept if not (raw["id"] in current and current[raw["id"]]
@@ -1043,6 +1212,14 @@ class MeetingsCapture:
             if budget["transcripts"] <= 0:
                 reasons.add("cap:transcript_reads")
                 break
+            # Every participant of every occurrence cleared under the exclusion as it is
+            # now (an attendee excluded since the event was read withholds the meeting;
+            # undecided withholds it too), before any request names the meeting.
+            parties = {meeting.organizer_address, *(i for o in meeting.occurrences.values()
+                                                    for i in o.identities)}
+            if self._decides(sorted(p for p in parties if p)) is not False:
+                counts["transcripts_withheld_excluded"] += 1
+                continue   # not marked checked: decided again each run, no request made
             organizer = self._organizer(meeting.organizer_address, organizers, counts,
                                         blocked, reasons)
             if organizer is None:
@@ -1263,7 +1440,19 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
     try:
         api, transport = build_api(environ, sender=sender, retry=BoundedBackoff(
             budget_seconds=min(RETRY_BUDGET_SECONDS, budget or RETRY_BUDGET_SECONDS)))
-        capture = MeetingsCapture(store, api, audience, actor, workers=args.workers)
+        directory_api, directory_transport = None, None
+        if scope.plan_groups and scope.directory_credentials not in (
+                None, credential_prefix(os.environ if environ is None else environ)):
+            directory_api, directory_transport = build_api(
+                {**(os.environ if environ is None else environ),
+                 CREDENTIALS_ENV: scope.directory_credentials},
+                sender=sender, retry=BoundedBackoff(budget_seconds=min(
+                    RETRY_BUDGET_SECONDS, budget or RETRY_BUDGET_SECONDS)))
+        capture = MeetingsCapture(
+            store, api, audience, actor, workers=args.workers,
+            transcripts_granted=(os.environ if environ is None else environ).get(
+                TRANSCRIPTS_GRANTED) == "1",
+            directory_api=directory_api)
         runs, blocked = [], []
         for number in range(1, args.runs + 1):
             run = capture.run(scope, out_of_time=out_of_time)
@@ -1283,6 +1472,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         resolved = sum(1 for h in handles[:500] if store.resolve(h, actor).get("ok"))
         leaked = sum(1 for h in handles[:500] if store.resolve(h, withheld).get("ok"))
         last = runs[-1]
+        transports = [t for t in (transport, directory_transport) if t is not None]
         report = {
             "check": "graph.meetings_capture",
             "evidence_label": "injected-transport" if transport.sender_injected
@@ -1302,8 +1492,9 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                               "resolved_offline": resolved},
             "leak_check": {"withheld_actor_rows": sum(hidden.values()),
                            "withheld_actor_resolved": leaked},
-            "requests_sent": transport.requests_sent, "gets_sent": transport.gets_sent,
-            "operations_read": sorted(transport.operations_read)}
+            "requests_sent": sum(t.requests_sent for t in transports),
+            "gets_sent": sum(t.gets_sent for t in transports),
+            "operations_read": sorted(set().union(*(t.operations_read for t in transports)))}
         report["ok"] = bool(resolved == min(len(handles), 500) and leaked == 0
                             and not sum(hidden.values())
                             and not any(r.startswith("source_error:")

@@ -834,9 +834,15 @@ class AggregateModesOnTheCaseHostTests(unittest.TestCase):
                                      rnd.FULL)["error"]["code"], "invalid_input")
         unknown = served.call("plx.aggregate", {"mode": "what_if"}, rnd.FULL)
         self.assertEqual(unknown["error"]["code"], "invalid_input")
-        for mode in ("cash_forecast", "margin_variance", "quote_conversion", "cross_sell",
-                     "who_knows"):
+        for mode in ("cash_forecast", "demand_forecast", "margin_variance",
+                     "quote_conversion", "cross_sell", "who_knows"):
             self.assertIn(mode, unknown["error"]["message"])
+        # the demand forecast is served through the same dispatch: a bad bucket is its own
+        # refusal, never the unknown-mode one
+        demand = served.call("plx.aggregate", {"mode": "demand_forecast", "bucket": "day"},
+                             rnd.FULL)
+        self.assertEqual(demand["error"]["code"], "invalid_input", demand)
+        self.assertNotIn("mode must be", demand["error"]["message"])
         # the sales modes reach the sales book through the same dispatch, never the
         # unknown-mode refusal (cross_sell without a customer is its own refusal)
         rate = served.call("plx.aggregate", {"mode": "quote_conversion"}, rnd.FULL)

@@ -439,6 +439,12 @@ export function FreshnessLabel({
         {freshness.as_of ? <>Data as of {formatDateTime(freshness.as_of, now)}</> : freshness.label}
         {freshness.as_of && behind ? <span data-testid="freshness-behind">; {behind}</span> : null}
       </p>
+      {freshness.capture_alarm?.line ? (
+        <p className="flex items-center gap-1.5 text-meta text-fg" data-testid="freshness-capture-alarm">
+          <OpenRing size={12} />
+          {freshness.capture_alarm.line}.
+        </p>
+      ) : null}
       {lag ? (
         <p className="flex items-center gap-1.5 text-meta text-fg" data-testid="freshness-search-lag">
           <OpenRing size={12} />

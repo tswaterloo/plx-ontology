@@ -1690,9 +1690,14 @@ class SharePointCaptures(Reopenable):
         "roots": {"drive_id", "root_path", "status", "last_run_at", "last_complete_at"},
         "items": {"version_id", "l1_handle", "drive_id", "item_id", "record", "digest",
                   "content_status", "content_sha256", "text_status", "text_sha256",
-                  "recorded_at", "superseded_at", "last_seen_at"},
+                  "recorded_at", "superseded_at", "removed_reason", "last_seen_at"},
     }
-    _LATEST = ("SELECT * FROM items WHERE version_id IN "
+    # ``gone``: the interval ended because the item was no longer in the source
+    # (``absent_after_resync``: deleted, or moved where the capture may not look) and no
+    # later version of it exists. A move out of scope is re-gated, not missing.
+    _LATEST = ("SELECT i.*, (i.removed_reason = 'absent_after_resync' AND i.version_id = "
+               "(SELECT MAX(x.version_id) FROM items x WHERE x.drive_id = i.drive_id AND "
+               "x.item_id = i.item_id)) AS gone FROM items i WHERE i.version_id IN "
                "(SELECT MAX(version_id) FROM items GROUP BY l1_handle)")
 
     @staticmethod
@@ -1842,13 +1847,18 @@ class SharePointCaptures(Reopenable):
                 fields = self._row(row)
                 if ocr:
                     fields["text_sha256"] = row["text_sha256"]
+                # A file gone from the source is missing from it since the removal (as a
+                # removed mail), never deleted; the record is not "superseded" by content.
+                gone = bool(row["gone"])
                 yield CapturedRecord(
                     source=self.source, relation=relation,
                     record_key=canonical([row["drive_id"], row["item_id"]]),
                     row=fields, l1_handle=row["l1_handle"], field_prefix="row",
                     digest=row["digest"], recorded_at=row["recorded_at"],
-                    superseded_at=row["superseded_at"], last_seen_at=row["last_seen_at"],
-                    audience_key=f"sharepoint:{row['drive_id']}")
+                    superseded_at=None if gone else row["superseded_at"],
+                    last_seen_at=row["last_seen_at"],
+                    audience_key=f"sharepoint:{row['drive_id']}",
+                    missing_from_source_since=row["superseded_at"] if gone else None)
 
         self._stream = stream
         return _Relations(relations, stream)

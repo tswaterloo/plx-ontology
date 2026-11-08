@@ -351,6 +351,9 @@ class MockMatchesOpenapi(unittest.TestCase):
              "ObjectPage"),
             ("GET", "/api/object/PurchaseOrder/90412", None, None, "ObjectPage"),
             ("GET", "/api/explore/PurchaseOrder/90412", None, None, "Explore"),
+            ("GET", "/api/history/PurchaseOrder/90412", None, None, "RecordHistory"),
+            ("GET", "/api/as-of/PurchaseOrder/90412", {"at": "2026-10-01"}, None,
+             "RecordAsOf"),
             *(("GET", f"/api/object-section/{name}/PurchaseOrder/90412", None, None,
                "ObjectSection") for name in m.PAGE_SECTIONS),
             ("GET", "/api/source", {"handle": "bc://demo/purchaseOrders/90412"}, None,
@@ -364,6 +367,9 @@ class MockMatchesOpenapi(unittest.TestCase):
             self.assertEqual(conforms(response.json(), component(name)), [], path)
             route = path if path in SPEC["paths"] else \
                 "/api/explore/{object_type}/{object_id}" if path.startswith("/api/explore/") \
+                else "/api/history/{object_type}/{object_id}" \
+                if path.startswith("/api/history/") \
+                else "/api/as-of/{object_type}/{object_id}" if path.startswith("/api/as-of/") \
                 else \
                 "/api/object-section/{section}/{object_type}/{object_id}" \
                 if path.startswith("/api/object-section/") \

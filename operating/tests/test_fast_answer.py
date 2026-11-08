@@ -2183,9 +2183,36 @@ class ChangesRecipeTests(unittest.TestCase):
         # the fixture's Portal was not captured since then: said, the answer partial
         self.assertIn("not_captured_since", [g["reason"] for g in draft.gaps])
         self.assertEqual(draft.answerability, "partial")
-        # a long list says it goes on; nothing listed is the agent's to say
+        # a list longer than a page is counted exactly over every page (the eval asks a
+        # count past 8), its newest records named; the count is the distinct numbers the
+        # tool lists, read here page by page independently of the recipe
         draft = self.draft(changes_fixture.FULL, ("AssemblyOrder",))
-        self.assertEqual(len(draft.values), fast_answer.MAX_CHANGES)
+        numbers, cursor = set(), None
+        while True:
+            page = changes_fixture.changes(changes_fixture.FULL, since=changes_fixture.SINCE,
+                                           object_types=["AssemblyOrder"],
+                                           **({"cursor": cursor} if cursor else {}))
+            numbers |= {fast_answer._norm_id(c["object"]["display"]) for c in page["changes"]
+                        if c["kind"] in ("changed", "first_captured")}
+            cursor = page["completeness"]["next_cursor"]
+            if not cursor:
+                break
+        self.assertGreater(len(numbers), fast_answer.MAX_CHANGES)
+        counted = [v for v in draft.values if v["name"] == "changed_count"]
+        self.assertEqual([v["value"] for v in counted], [str(len(numbers))])
+        self.assertTrue(counted[0]["calculation"]["inputs"])
+        self.assertIn(f"{len(numbers)} assembly orders changed or are new since yesterday",
+                      " ".join(draft.sentences))
+        self.assertEqual(len(draft.values) - 1, fast_answer.MAX_CHANGES)
+        self.assertNotIn("list_paged", [g["reason"] for g in draft.gaps])
+        count = {"kind": "number", "id": "changed_count", "value": str(len(numbers)),
+                 "tolerance": "0", "label": live_ops_keys.LABELS["changed_count"]}
+        self.assertEqual(live_ops.contradicted(count, " ".join(draft.sentences),
+                                               draft.values, ""), [])
+        # past the page cap the count is not exact: the list goes on, uncounted
+        with mock.patch.object(fast_answer, "MAX_CHANGE_PAGES", 0):
+            draft = self.draft(changes_fixture.FULL, ("AssemblyOrder",))
+        self.assertNotIn("changed_count", [v["name"] for v in draft.values])
         self.assertIn("list_paged", [g["reason"] for g in draft.gaps])
         self.assertNotIn("MO-FM-7", " ".join(draft.sentences))   # an ETL restamp
         with self.assertRaises(fast_answer.Unanswerable):

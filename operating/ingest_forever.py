@@ -117,6 +117,7 @@ GRAPH_ENV = ("MICROSOFT_GRAPH_TENANT_ID", "MICROSOFT_GRAPH_CLIENT_ID",
 BC_ENV = ("BC_TENANT_ID", "BC_CLIENT_ID", "BC_CLIENT_SECRET", "BC_ENVIRONMENT")
 PORTAL_ENV = ("PLX_WORKBENCH_API_URL", "PLX_WORKBENCH_API_KEY")
 MC_ENV = ("MC_MCP_API_KEY",)
+BRAIN_OPTIONAL_ENV = ("BRAIN_API_KEY", "BRAIN_BASE_URL", "VMC_API_KEY", "VMC_API_URL")
 # The meetings capture reads with the admin application (``integrations.capture_meetings``
 # ``CREDENTIALS_ENV``, default ``AZURE``): its secret is required, the prefix setting and
 # the mail application's names are passed when set (``PLX_MEETINGS_GRAPH_CREDENTIALS=
@@ -289,6 +290,9 @@ class SourceSpec:
     writes: Callable[[Path], tuple[Path, ...]] | None = None
     # Credential-shaped names passed to the child when set, never required.
     optional_env: tuple[str, ...] = ()
+    # At least one of these must be set (a source with alternative credential pairs),
+    # else blocked like a missing ``env`` name; each is passed when set.
+    env_one_of: tuple[str, ...] = ()
 
 
 def _python() -> str:
@@ -513,6 +517,21 @@ def summarize_bc(report: Mapping[str, Any]) -> dict[str, Any]:
     return _units(units, report)
 
 
+def _brain_argv(state: Path, options: Mapping[str, Any]) -> list[str]:
+    return [_python(), "-m", "integrations.knowledge_source", "capture",
+            "--state-dir", str(state), "--namespaces", options["namespaces"],
+            "--principal", options.get("principal", DEFAULT_PRINCIPAL)]
+
+
+def summarize_brain(report: Mapping[str, Any]) -> dict[str, Any]:
+    """The namespaces read (one unit each), complete when the listing reached the
+    brain's total unchanged; a missing key is a typed block, no unit."""
+    units = [{"complete": unit.get("state") == "complete", "resumed": False,
+              "resumable": False, "reason": unit.get("reason") or unit.get("state")}
+             for unit in _rows(report.get("units"))]
+    return _units(units, report)
+
+
 def summarize_mc(report: Mapping[str, Any]) -> dict[str, Any]:
     """Units of the last pass; a failed one's reason names its error code
     (``source_error:auth_refused``: MC refused the key), never a bare class."""
@@ -590,6 +609,15 @@ SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in (
                summarize_meetings, {**_GRAPH_FIELDS, "principal": "str"},
                frozenset({"live_audience"}), MEETINGS_ENV, projected="meetings",
                writes=_state_store("meetings"), optional_env=MEETINGS_OPTIONAL_ENV),
+    # The brain's knowledge items (``agent/items``, GET only through
+    # ``integrations.vmc``) into the kept knowledge store the host already projects as
+    # ``KnowledgeItem``: needs a brain or VMC key (never the MC key), and the host's
+    # ``knowledge_namespaces`` authority granting the capture principal.
+    SourceSpec("brain", "vmc-brain", _brain_argv, summarize_brain,
+               {"namespaces": "path", "principal": "str", "timeout_seconds": "seconds"},
+               frozenset({"namespaces"}), (), "snapshot", None, projected="brain",
+               writes=_state_store("brain"), optional_env=BRAIN_OPTIONAL_ENV,
+               env_one_of=("BRAIN_API_KEY", "VMC_API_KEY")),
     SourceSpec("mc", "mission-control-mcp", _mc_argv, summarize_mc,
                {"scope": "str", "queries": "strs", "max_task_reads": "int",
                 "operator_email_default": "str", "timeout_seconds": "seconds",
@@ -598,10 +626,8 @@ SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in (
                projected="mission_control", writes=_state_store("mission_control")),
 )}
 # Capture CLIs on main this runner does not call: capture-breadth repeats the mail and
-# SharePoint captures above into the same stores; the brain capture
-# (integrations.knowledge_source) takes only a fresh directory, never a kept one.
-NOT_RUN = {"capture_breadth": "duplicates_mail_and_sharepoint",
-           "knowledge_source": "fresh_state_dir_only"}
+# SharePoint captures above into the same stores.
+NOT_RUN = {"capture_breadth": "duplicates_mail_and_sharepoint"}
 
 
 
@@ -740,6 +766,8 @@ def run_source(spec: SourceSpec, options: Mapping[str, Any], state: Path,
     :data:`STOPPED`, which a continuous run never records (the capture resumes from its
     own cursor next time)."""
     missing = [name for name in spec.env if not environ.get(name)]
+    if spec.env_one_of and not any(environ.get(name) for name in spec.env_one_of):
+        missing += list(spec.env_one_of)
     if missing:
         return blocked_result(spec, [typed_block({
             "part": f"{spec.name}.credentials", "source": spec.source,
@@ -989,7 +1017,11 @@ def duplicates(state: Path, spec: SourceSpec, sources: Mapping[str, SourceSpec],
 BUILD_INPUTS = ("live", "snapshot")
 
 
-def ingest_settings(value: Any) -> dict[str, Any]:
+INGEST_KEYS = frozenset({"mode", "grace_seconds", "max_parallel", "build_inputs", "builds",
+                         "cpu_budget"})
+
+
+def ingest_settings(value: Any, warnings: list[str] | None = None) -> dict[str, Any]:
     """The host config's ``ingest`` section: ``mode`` :data:`MODE`, ``grace_seconds``
     (the time a child gets past its budget), ``max_parallel`` (capture children at
     once, 1 to :data:`MAX_PARALLEL`; absent: one per configured source, at most
@@ -998,11 +1030,14 @@ def ingest_settings(value: Any) -> dict[str, Any]:
     ``off``: captures and their records only, the served generation stays and the row
     deltas keep the stores current, docs/pg-cutover.md) and ``cpu_budget`` (cores the
     mail and SharePoint children's text extraction and OCR share, 1 to 256; absent:
-    ``integrations.cpu_budget.host_budget`` as each child starts); anything else is
-    refused."""
-    if not isinstance(value, Mapping) or set(value) - {"mode", "grace_seconds",
-                                                       "max_parallel", "build_inputs",
-                                                       "builds", "cpu_budget"} \
+    ``integrations.cpu_budget.host_budget`` as each child starts). A key this code does
+    not know (a newer checkout's setting, a typo) is ignored and named in ``warnings``
+    (``ingest.<key>``), never a refusal: one forward key in the shared config held the
+    continuous ingest in a restart loop for 23 h (2026-11-07). A known key with a bad
+    value is still refused."""
+    if isinstance(value, Mapping) and warnings is not None:
+        warnings.extend(f"ingest.{key}" for key in sorted(map(str, set(value) - INGEST_KEYS)))
+    if not isinstance(value, Mapping) \
             or value.get("mode") != MODE \
             or value.get("builds", "on") not in ("on", "off") \
             or value.get("build_inputs", "live") not in BUILD_INPUTS:
@@ -1036,16 +1071,23 @@ def max_parallel(settings: Mapping[str, Any], configured: int) -> int:
 
 
 def section_options(spec: SourceSpec, section: Any, base: Path,
-                    defaults: Mapping[str, Any]) -> dict[str, Any]:
-    """One source section, every key one of ``spec.fields`` and of its kind (a path names
-    a file, resolved against ``base``), the host's ``defaults`` filling a field it leaves
-    out; a required field still missing refuses it (``source_config_invalid``)."""
+                    defaults: Mapping[str, Any], warnings: list[str] | None = None,
+                    name: str = "source") -> dict[str, Any]:
+    """One source section, every known key one of ``spec.fields`` and of its kind (a path
+    names a file, resolved against ``base``), the host's ``defaults`` filling a field it
+    leaves out; a required field still missing refuses it (``source_config_invalid``). A
+    key the CLI does not take is never passed to it: ignored and named in ``warnings``
+    (``<name>.<key>``), so a forward key never stops the ingest host."""
     # ``min_interval_seconds``: the continuous mode's cadence (``Continuous``), every
     # source's; never passed to its CLI.
     fields = {**spec.fields, "min_interval_seconds": "seconds"}
-    if not isinstance(section, Mapping) or set(section) - set(fields):
+    if not isinstance(section, Mapping):
         raise IngestError("source_config_invalid")
-    options = {key: _option(fields[key], value, base) for key, value in section.items()}
+    unknown = sorted(map(str, set(section) - set(fields)))
+    if warnings is not None:
+        warnings.extend(f"{name}.{key}" for key in unknown)
+    options = {key: _option(fields[key], value, base) for key, value in section.items()
+               if key in fields}
     for key, value in defaults.items():
         if key in spec.fields and key not in options and value is not None:
             options[key] = _option(spec.fields[key], str(value), base)

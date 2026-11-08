@@ -1,0 +1,70 @@
+{
+ "id": "ho-qa-2026-11-17",
+ "title": "QA review",
+ "date": "2026-11-17T15:00:00Z",
+ "organizer": {
+  "name": "Lena Hoffmann",
+  "email": "lena.hoffmann@plx.example"
+ },
+ "attendees": [
+  {
+   "name": "Lena Hoffmann",
+   "email": "lena.hoffmann@plx.example"
+  },
+  {
+   "name": "Dana Price",
+   "email": "dana.price@plx.example"
+  },
+  {
+   "name": "Sam Okafor",
+   "email": "sam.okafor@plx.example"
+  }
+ ],
+ "transcript": [
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 20,
+   "text": "Lot L24-0912 retest came back fine."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 57,
+   "text": "Great, so we release it?"
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 94,
+   "text": "Yes, we're releasing it today."
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 131,
+   "text": "I'm going to send the updated COA for lot L24-0912 to Andean Ingredients."
+  },
+  {
+   "speaker": "Sam Okafor",
+   "timestamp": 168,
+   "text": "I'll pull the pallets out of quarantine after lunch."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 205,
+   "text": "Lena, can you also look into why the first test failed?"
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 242,
+   "text": "Sure, I'll dig into it."
+  },
+  {
+   "speaker": "Sam Okafor",
+   "timestamp": 279,
+   "text": "Could the lab have mixed up the samples?"
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 316,
+   "text": "No idea."
+  }
+ ]
+}

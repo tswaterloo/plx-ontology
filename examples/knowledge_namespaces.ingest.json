@@ -1,0 +1,13 @@
+{
+  "schema": "plx-knowledge-namespaces/v1",
+  "tenant": "plx",
+  "note": "The brain namespaces the host's capture principal reads in continuous ingest (integrations/knowledge_source.py capture, GET agent/items only; no write route exists). Least grant: the company-wide rollup brief and the company/ namespace family; no department, project, RAG, session-artifact or brain-ingest namespace, and personal namespaces are never configurable. Widen only by an explicit entry.",
+  "namespaces": {
+    "swarm/rollup/company": [
+      "svc:workbench-host"
+    ],
+    "swarm/company/*": [
+      "svc:workbench-host"
+    ]
+  }
+}

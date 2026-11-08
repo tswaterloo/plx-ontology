@@ -4,7 +4,8 @@ A citation handle is ``<scheme>://<rest>``. The schemes a Workbench answer may c
 the Portal reporting mirror (``api``), operator-supplied originals (``original``), Graph
 mail (``graph-mail``), SharePoint (``sharepoint``), Business Central (``bc``), Mission
 Control (``mc``), brain knowledge (``brain``), Teams channel and chat message
-(``teams-channel``, ``teams-chat``) and SharePoint list item (``sharepoint-list``) captures.
+(``teams-channel``, ``teams-chat``), SharePoint list item (``sharepoint-list``) and
+meetings (``calendar-event``, ``planner-task``, ``meeting-transcript``) captures.
 ``claim_checks.HANDLE``, the injection guard's ``handle`` grammar and ``ontology_tools``
 build their patterns from ``HANDLE_PREFIX``; the JSON contracts (``evals/item.schema.json``
 and ``operating/ontology_tool_contracts.json`` ``$defs/handle``) cannot import it
@@ -21,7 +22,8 @@ from __future__ import annotations
 import re
 
 CITATION_SCHEMES = ("api", "bc", "graph-mail", "sharepoint", "original", "mc", "brain",
-                    "teams-channel", "sharepoint-list", "teams-chat")
+                    "teams-channel", "sharepoint-list", "teams-chat", "calendar-event",
+                    "planner-task", "meeting-transcript")
 FIXTURE_SCHEME = "fixture"
 
 

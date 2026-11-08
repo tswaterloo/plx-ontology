@@ -3,6 +3,16 @@
 <edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
  <edmx:DataServices>
   <Schema Namespace="Microsoft.NAV" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+   <EnumType Name="contactBusinessRelation">
+    <Member Name="_x0020_" Value="0" />
+    <Member Name="Customer" Value="1" />
+    <Member Name="Vendor" Value="2" />
+    <Member Name="Bank_x0020_Account" Value="3" />
+    <Member Name="Employee" Value="4" />
+    <Member Name="None" Value="5" />
+    <Member Name="Other" Value="6" />
+    <Member Name="Multiple" Value="7" />
+   </EnumType>
    <EnumType Name="salesQuoteEntityBufferStatus">
     <Member Name="Draft" Value="0" />
     <Member Name="Sent" Value="1" />
@@ -333,7 +343,7 @@
     <Property Name="displayName" Type="Edm.String" />
     <Property Name="companyNumber" Type="Edm.String" />
     <Property Name="companyName" Type="Edm.String" />
-    <Property Name="businessRelation" Type="Edm.String" />
+    <Property Name="contactBusinessRelation" Type="Microsoft.NAV.contactBusinessRelation" />
     <Property Name="addressLine1" Type="Edm.String" />
     <Property Name="addressLine2" Type="Edm.String" />
     <Property Name="city" Type="Edm.String" />

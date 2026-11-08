@@ -233,6 +233,16 @@ class DerivedCode(_Model):
     checked_at: Optional[str] = Field(None, description="When it was checked (ISO).")
 
 
+class CaptureAlarm(_Model):
+    """Capture sources that have not succeeded for twice their normal interval, or a
+    capture service that keeps failing to start (``operating.ops_health``)."""
+    stalled: list[str] = Field(default_factory=list, description="Capture sources past "
+                               "twice their normal interval.")
+    start_loop: bool = Field(False, description="The capture service keeps failing to start.")
+    line: str = Field(description="The health line Home shows, e.g. 'captures not "
+                      "refreshed: mail, teams (oldest 23 h)'.")
+
+
 class Freshness(_Model):
     as_of: Optional[str] = Field(None, description="The data cut-off (ISO): the newest "
                                  "capture the served data holds, the same on every screen. "
@@ -255,6 +265,9 @@ class Freshness(_Model):
         None, json_schema_extra=_optional,
         description="Derived data made by older code than the code deployed: the label "
                     "says it is being refreshed; never presented as current.")
+    capture_alarm: Optional[CaptureAlarm] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when captures are stalled: Home shows its line.")
 
 
 class ObjectRef(_Model):
@@ -1111,6 +1124,70 @@ class ExploreGroup(_Model):
                                           "cut at the cap; never a count.")
 
 
+class HistoryChange(_Model):
+    property: str
+    label: str = Field(description="The property in words, e.g. 'PO number'.")
+    before: list[str] = Field(default_factory=list, description="Its values just before.")
+    after: list[str] = Field(default_factory=list, description="Its values from then on.")
+    more: bool = Field(False, description="True when more values were recorded than shown.")
+
+
+class HistoryEntry(_Model):
+    at: str = Field(description="When the capture first held it (ISO, UTC).")
+    kind: Literal["first_recorded", "changed", "link_added", "link_removed",
+                  "removed_from_source", "restored"]
+    title: str = Field(description="What happened, in words.")
+    source: Optional[str] = Field(None, description="Who or which system wrote it, e.g. "
+                                                    "'BC purchase order'; a link's basis.")
+    source_handle: Optional[str] = Field(None, description="The captured version it was "
+                                                           "read from (an L1 handle).")
+    changes: list[HistoryChange] = Field(default_factory=list)
+    more_changes: bool = False
+    link: Optional[ExploreNode] = Field(None, description="The record linked or unlinked.")
+    link_label: Optional[str] = Field(None, description="The kind of link in words.")
+
+
+class RecordHistory(_Model):
+    """A record's change log as this reader may read it, newest first, a page at a time.
+    A change the reader may not read (a value marked beyond them then or since, a record
+    they cannot open) is left out and ``partial`` says so, never how many."""
+    object_id: str
+    type: str
+    label: str
+    entries: list[HistoryEntry] = Field(default_factory=list)
+    next_cursor: Optional[str] = Field(None, description="Pass as cursor for older changes.")
+    partial: bool = False
+    message: Optional[str] = None
+    access_label: Optional[str] = Field(
+        None, description="Set when read under a full-read grant (journalled).")
+
+
+class AsOfValue(_Model):
+    label: str
+    values: list[str] = Field(default_factory=list)
+    source: Optional[str] = None
+
+
+class AsOfLinks(_Model):
+    label: str
+    count: int
+
+
+class RecordAsOf(_Model):
+    """The record as the Workbench had recorded it at a time: its values and its links
+    counted per kind, as this reader may read them (markings judged then and since)."""
+    object_id: str
+    type: str
+    label: str
+    at: str = Field(description="The time read (the end of the day for a bare date).")
+    values: list[AsOfValue] = Field(default_factory=list)
+    links: list[AsOfLinks] = Field(default_factory=list)
+    partial: bool = False
+    message: Optional[str] = None
+    access_label: Optional[str] = Field(
+        None, description="Set when read under a full-read grant (journalled).")
+
+
 class Explore(_Model):
     """A record's neighbours one hop out, grouped by kind of link, for the link explorer.
     Walking on is the same read from a neighbour (lazy expansion), so two hops are two
@@ -1357,19 +1434,27 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "shipped_not_invoiced", "duplicate_customer_order",
                     "recurring_component_damage", "customer_chasing_order",
                     "tell_before_they_ask", "quality_hold_aging", "reject_trend",
+                    "expedite_unanswered", "supplier_shortage_open_orders",
+                    "supplier_chasing_payment",
                     "customer_paying_slower", "early_pay_discount_missed",
                     "duplicate_supplier_invoice", "duplicate_supplier_payment",
+                    "customer_credits_rising",
                     "price_below_typical", "price_below_cost", "customer_price_drop",
                     "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
                     "planner_task_overdue", "aged_receivable_worsening",
                     "aged_payable_worsening", "production_late",
                     "assembly_damage_spike", "teams_unanswered_ask",
                     "commitment_due", "commitment_missed", "needs_my_reply",
+                    "approval_waiting", "chase_escalating",
                     "slow_moving_stock", "expiring_lot_stock",
                     "assembly_blocked_by_component", "certificate_expiring",
-                    "freight_cost_anomaly", "stale_quote",
+                    "freight_cost_anomaly", "stale_quote", "priority_order_unfilled",
                     "duplicate_party_candidate",
-                    "key_field_missing", "twins_disagree", "source_stale"]
+                    "key_field_missing", "twins_disagree", "source_stale",
+                    "reorder_soon",
+                    "inventory_adjustment", "blocked_account_activity", "gl_posting_errors",
+                    "recurring_task_missed", "label_change",
+                    "unapplied_remittance", "short_payment", "statement_difference"]
 
 
 class BriefingItem(_Model):
@@ -1381,6 +1466,11 @@ class BriefingItem(_Model):
     evidence: Literal["live", "fixture-only"] = Field(
         "fixture-only", description="'live': a recorded run of this event's check over this "
                                     "data has found one; else 'fixture-only'.")
+    carried: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when this item is from an earlier or failed check, never current: "
+                    "e.g. 'check failed at 2026-11-07 2:00 PM ET; last checked 2026-11-06 "
+                    "2:00 PM ET'. Null: found by the latest check.")
     object_id: str
     object_type: str
     subject_label: str = Field(description="The record's display label for this reader.")
@@ -1480,6 +1570,11 @@ class Briefing(_Model):
     checked_on: Optional[str] = Field(
         None, json_schema_extra=_optional,
         description="While refreshing: when the checks left out last ran (ISO time).")
+    carried: int = Field(0, ge=0, description="How many items are from an earlier or failed "
+                                            "check (each marked by its carried words).")
+    data_notes: list[str] = Field(default_factory=list, description=(
+        "What the checks could not judge, per check and reason, as counts only: e.g. "
+        "'late customer orders: cannot check 12 records that lack order lines'."))
     more: bool = False
     items: list[BriefingItem] = Field(default_factory=list, description="The top items.")
     groups: list[BriefingGroup] = Field(default_factory=list)
@@ -1904,6 +1999,206 @@ class AlertPlaybook(_Model):
     writes: Literal[0]
 
 
+class RecordPackDocument(_Model):
+    family: str = Field(description="What the document is, from its title words (invoice, "
+                        "packing_slip, bol, pod, coa, order_confirmation, tracking, ...).")
+    label: str
+    title: Optional[str] = None
+    kind: str = Field(description="attachment, sharepoint_file, original, email or record.")
+    date: Optional[str] = None
+    via: str = Field(description="The record it was found around (the pack's or a linked one).")
+    url: Optional[str] = None
+    citation: str
+
+
+class RecordPackDraft(_Model):
+    """The reply to the record's party listing the documents (never sent here: it goes only
+    through ``/api/actions/preview`` and your confirm, ``card_id`` = ``card_id``)."""
+    channel: Literal["email"]
+    party: Optional[str] = None
+    to: Optional[PlaybookAddress] = None
+    subject: str
+    body: str
+    status: Literal["draft_not_sent"]
+    attach: list[str] = Field(default_factory=list, description="Citations of the documents "
+                              "to attach when you send it.")
+
+
+class MeetingFollowUp(_Model):
+    """A meeting's follow-up page (``operating.meeting_followup.page``): summary, cited
+    decisions, action items with their prepared work, open questions, risks and status.
+    Nothing in it is sent or written."""
+    follow_up: dict[str, Any]
+
+
+class MyActionItems(_Model):
+    """One person's meeting action items (only that person and each meeting's organiser)."""
+    person: Optional[str] = None
+    items: list[dict[str, Any]]
+
+
+class RecordPack(_Model):
+    """The documents a customer or supplier usually asks for about one record, found around
+    it and its linked records as you may read them, with a drafted reply."""
+    object_id: str
+    object_type: str
+    label: str
+    documents: list[RecordPackDocument] = Field(default_factory=list)
+    expected: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    missing_labels: list[str] = Field(default_factory=list)
+    records_read: int
+    links: list[PlaybookLink] = Field(default_factory=list)
+    card_id: Optional[str] = Field(None, description="The card the actions take; null when the "
+                                   "record's id is too long for a card.")
+    draft: RecordPackDraft
+    draft_missing: list[str] = Field(default_factory=list)
+    offers: list[CardActionOffer] = Field(default_factory=list)
+    gaps: list[dict[str, str]] = Field(default_factory=list)
+    basis: str
+    sent: Literal[False]
+    writes: Literal[0]
+
+
+class ApprovalNudge(_Model):
+    channel: Literal["email", "teams"]
+    to: list[dict[str, str]] = Field(default_factory=list)
+    subject: str
+    body: str
+    status: Literal["draft_not_sent"]
+    sent: Literal[False]
+
+
+class ApprovalItem(_Model):
+    id: str
+    kind: str
+    channel: str
+    summary: Optional[str] = None
+    family: Optional[str] = None
+    asked_by: Optional[str] = None
+    waiting_on: list[str] = Field(default_factory=list)
+    days: int
+    aging: str
+    object_id: Optional[str] = None
+    citations: list[str] = Field(default_factory=list)
+    nudge: ApprovalNudge
+    card_id: Optional[str] = Field(None, description="The nudge's card for ``/api/actions/*``.")
+    offers: list[CardActionOffer] = Field(default_factory=list)
+
+
+class ApprovalGroup(_Model):
+    waiting_on: str
+    count: int
+    oldest_days: int
+    items: list[ApprovalItem]
+
+
+class ApprovalsQueue(_Model):
+    """Every pending approval on your own alert list (mail asks no one answered, Mission
+    Control gates), grouped by who it waits on, oldest first, each with a nudge drafted.
+    Nothing is sent or written."""
+    as_of: str
+    total: int
+    by_aging: dict[str, int] = Field(default_factory=dict)
+    groups: list[ApprovalGroup] = Field(default_factory=list)
+    sent: Literal[0]
+    writes: Literal[0]
+
+
+class ReplyLine(_Model):
+    id: str
+    kind: str
+    summary: Optional[str] = None
+    channel: str
+    sent: Optional[str] = None
+    subject: Optional[str] = None
+    days: int
+    records_named: dict[str, int] = Field(default_factory=dict)
+    customer_tier: Optional[str] = None
+    chases: int = 0
+    rank: list[int] = Field(default_factory=list)
+    new_inquiry: bool = Field(False, description="A first question from a domain we never "
+                              "mailed (a prospect): low priority, listed last.")
+    object_id: Optional[str] = None
+    citations: list[str] = Field(default_factory=list)
+    draft: ApprovalNudge
+    card_id: Optional[str] = Field(None, description="The reply's card for ``/api/actions/*``.")
+    offers: list[CardActionOffer] = Field(default_factory=list)
+
+
+class ReplyTriage(_Model):
+    """What needs your reply today: your own mail and one-to-one chats where someone asked
+    you something you have not answered, heaviest first (records named, the customer's
+    tier, repeat chases, days waited), each with a holding reply drafted. Only your own
+    mailbox; nothing is sent or written."""
+    as_of: str
+    total: int
+    lines: list[ReplyLine] = Field(default_factory=list)
+    sent: Literal[0]
+    writes: Literal[0]
+
+
+class WorkloadTeam(_Model):
+    team: str
+    awaiting_reply: Optional[int] = Field(None, description="Null when fewer than three "
+                                          "people make up the team (it would name one).")
+    tasks: int
+    alerts: int
+    suppressed: bool = False
+
+
+class WorkloadPerson(_Model):
+    person: str
+    team: str
+    self: bool
+    awaiting_reply: int
+    tasks: int
+    alerts: int
+
+
+class Workload(_Model):
+    """Who is overloaded: open threads awaiting reply, open tasks and other alerts, counted
+    per team; per person only your own counts and those of the teams the owner granted you.
+    Counts only, never message content."""
+    teams: list[WorkloadTeam] = Field(default_factory=list)
+    people: list[WorkloadPerson] = Field(default_factory=list)
+    granted_teams: list[str] = Field(default_factory=list)
+
+
+class WorkloadGrants(_Model):
+    """The owner's assignment: each person's team, and the teams each manager sees per
+    person (Entra object ids, team codes in capitals)."""
+    teams: dict[str, str] = Field(default_factory=dict)
+    managers: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class LabelChange(_Model):
+    id: str
+    kind: str
+    state: Optional[str] = None
+    requested_on: Optional[str] = None
+    approved_on: Optional[str] = None
+    done_on: Optional[str] = None
+    done_by: Optional[str] = None
+    channel: Optional[str] = None
+    days: Optional[int] = None
+    stale: bool
+    no_approval: bool
+    summary: Optional[str] = None
+    citations: list[str] = Field(default_factory=list)
+
+
+class LabelChanges(_Model):
+    """An item's label and artwork changes on your alert list: requested, approved, done,
+    stale, changed with no approval."""
+    object_id: str
+    total: int
+    by_state: dict[str, int] = Field(default_factory=dict)
+    stale: int
+    no_approval: int
+    changes: list[LabelChange] = Field(default_factory=list)
+
+
 class ActionStates(_Model):
     cards: dict[str, ActionResult] = Field(default_factory=dict, description="Each card's "
                                            "latest action by you.")
@@ -1976,6 +2271,9 @@ class Suggestions(_Model):
 class BriefRow(_Model):
     label: str
     detail: Optional[str] = None
+    who: Optional[str] = Field(None, description="Who sent a mail or Teams thread, as you may "
+                                                 "read their person record; only once the "
+                                                 "people exclusion is loaded.")
     date: Optional[str] = Field(None, description="ISO date the row is about, when cited.")
     amount: Optional[Money] = Field(None, description="Finance readers only; per currency.")
     object: Optional[ObjectRef] = None
@@ -1996,11 +2294,13 @@ class BriefFigure(_Model):
 class BriefSection(_Model):
     key: str
     title: str
-    state: Literal["shown", "empty", "partial", "finance_marked", "unread"] = Field(
+    state: Literal["shown", "empty", "partial", "finance_marked", "unread", "blocked"] = Field(
         description="finance_marked: shown only to a reader holding finance (the same "
                     "whatever the data holds); partial: a read limit was reached or a part "
-                    "was not readable; unread: its source (the alert list) could not be "
-                    "read, which is not the same as none.")
+                    "was not readable; unread: its source (the alert list, or your item "
+                    "access) could not be read, which is not the same as none; blocked: the "
+                    "people exclusion is not loaded, so no mail, Teams or meeting line is "
+                    "shown.")
     note: Optional[str] = None
     rows: list[BriefRow] = Field(default_factory=list)
     more: int = Field(0, description="Rows you may read beyond those listed.")
@@ -2032,6 +2332,10 @@ class Brief(_Model):
     summary_question: Optional[str] = Field(
         None, description="A question for /api/ask (the answer path with its claim checks) "
                           "that summarises this brief; optional.")
+    stored_at: Optional[str] = Field(
+        None, description="When a finished week's review was generated and kept; served "
+                          "again only while your grant is the same and every source it shows "
+                          "still opens for you.")
 
 
 class UpcomingMeeting(_Model):
@@ -2043,3 +2347,154 @@ class UpcomingMeeting(_Model):
 
 class UpcomingMeetings(_Model):
     meetings: list[UpcomingMeeting]
+
+
+# ---- approve-to-write (operating.write_intents) -------------------------------------------
+
+WriteOperation = Literal["purchase_order_create", "sales_order_create",
+                         "purchase_order_line_update", "vendor_note", "customer_note"]
+WriteStatus = Literal["prepared", "approved", "would_write", "written", "failed", "pending",
+                      "unknown"]
+
+
+class WritePrepare(_Model):
+    """An exact entry for a business system, as an autopilot or a person prepared it."""
+    system: Literal["bc", "portal"]
+    operation: WriteOperation
+    environment: Optional[str] = Field(None, max_length=50,
+                                       description="BC environment; absent: Production.")
+    company_id: str = Field(min_length=36, max_length=36)
+    record_id: Optional[str] = Field(None, max_length=36, description="The record a change "
+                                     "or note is for; absent for a new order.")
+    payload: dict[str, Any]
+    precondition: dict[str, str] = Field(description="etag: the record's @odata.etag as "
+                                         "read; party_id: the vendor or customer read.")
+    reason: str = Field(min_length=1, max_length=1000)
+    citations: list[str] = Field(min_length=1, max_length=20)
+
+
+class WriteHistoryRow(_Model):
+    status: WriteStatus
+    at: str
+    actor: str
+
+
+class WriteIntentView(_Model):
+    intent: dict[str, Any]
+    status: WriteStatus
+    text: str
+    at: str
+    approved_by: Optional[dict[str, Any]] = None
+    request: Optional[dict[str, Any]] = Field(None, description="The exact BC API v2.0 "
+                                              "request recorded (would write).")
+    missing: list[str] = Field(default_factory=list, description="What a live write lacks.")
+    history: list[WriteHistoryRow] = Field(default_factory=list)
+    replayed: bool = False
+
+
+class WriteIntentList(_Model):
+    items: list[WriteIntentView]
+
+
+class WriteChange(_Model):
+    field: str
+    current: Any = None
+    proposed: Any = None
+    changed: bool
+
+
+class WriteLine(_Model):
+    n: int
+    fields: dict[str, Any]
+    amount: Optional[str] = None
+
+
+class WriteWarning(_Model):
+    code: str
+    text: str
+
+
+class WritePreview(_Model):
+    """Field by field against the record as read now; nothing is done."""
+    intent_id: str
+    intent: dict[str, Any]
+    label: str
+    current_etag: Optional[str] = None
+    changes: list[WriteChange]
+    lines: list[WriteLine]
+    warnings: list[WriteWarning]
+    problems: list[str]
+    request: dict[str, Any]
+    undo: str
+    live_missing: list[str]
+    preview_hash: str
+
+
+class WriteApprove(_Model):
+    confirm: bool = Field(description="True only from the person's second (Confirm) click.")
+    preview_hash: str = Field(max_length=64)
+    acknowledge_warnings: bool = False
+
+
+class WriteExecute(_Model):
+    idempotency_key: str = Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    checked_bc: bool = Field(False, description="The person checked BC after an unknown "
+                                                "outcome and the entry is not there.")
+
+
+class LabourSource(_Model):
+    handle: str = Field(description="The captured time-sheet attachment or message it is "
+                        "read from (no file name: a time sheet's name may be a person's).")
+    sent: str = Field(description="The message's sent date.")
+
+
+class LabourWeek(_Model):
+    department: str
+    week: str = Field(description="The Monday the week starts.")
+    run: Optional[str] = Field(None, description="The production run or order the sheet "
+                               "names; null: the department's whole week.")
+    hours: str
+    overtime_hours: Optional[str] = Field(None, description="Null when a sheet of the week "
+                                          "has no overtime column.")
+    overtime_basis: Optional[Literal["stated", "over_44_hours", "mixed", "fewer_than_3"]] = \
+        Field(None, description="stated: the sheets' overtime columns; over_44_hours: a "
+              "sheet with none, each person's hours past 44 in the week; mixed: both; "
+              "fewer_than_3: fewer than 3 people worked overtime, so none is shown.")
+    headcount_days: Optional[int] = Field(None, description="Person-days with hours; null "
+                                          "when a sheet has no day columns.")
+    week_basis: Literal["stated", "sent"] = Field(description="stated: the sheet's own week "
+                                                 "or dates; sent: the message's sent date.")
+    markings: list[str]
+    sources: list[LabourSource]
+
+
+class LabourAlert(_Model):
+    kind: Literal["labour_overtime_spike"]
+    department: str
+    week: str
+    overtime_hours: str
+    baseline_median: str
+    baseline_weeks: int
+    rise_percent: str
+    markings: list[str]
+    sources: list[LabourSource]
+
+
+class LabourPoint(_Model):
+    week: str
+    hours: str
+    overtime_hours: Optional[str] = None
+
+
+class LabourTrend(_Model):
+    department: str
+    points: list[LabourPoint]
+
+
+class LabourPage(_Model):
+    state: Literal["ready", "not_granted", "not_built"]
+    note: str
+    built_at: Optional[str] = None
+    weeks: list[LabourWeek]
+    trend: list[LabourTrend]
+    alerts: list[LabourAlert]

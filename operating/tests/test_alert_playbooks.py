@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 import json
+from pathlib import Path
 import unittest
 import zlib
 
@@ -40,6 +41,7 @@ class Store:
         self.objects: dict[str, tuple[str, list[dict]]] = {}
         self.edges: list[dict] = []
         self.calls: list[tuple[str, dict]] = []
+        self.handles: dict[str, str] = {}   # a display's citation other than h(oid)
 
     def add(self, oid: str, number: str, **values: tuple[str, list[str]]) -> str:
         self.objects[oid] = (number, [
@@ -57,7 +59,8 @@ class Store:
             if found is None:
                 return {"error": {"code": "not_visible"}}
             return {"object": {"object_id": args["object_id"], "display": {
-                "untrusted_text": found[0], "origin": {"citation": h(args["object_id"])}}},
+                "untrusted_text": found[0], "origin": {"citation": self.handles.get(
+                    args["object_id"], h(args["object_id"]))}}},
                 "values": found[1]}
         if tool == "plx.around":
             link = args["path"][0]["link_type"]
@@ -264,10 +267,30 @@ class Links(unittest.TestCase):
         self.assertIn("PLX_BC_WEB_URL", none["reason"])
         plain = build(g, world(), environ={"PLX_BC_WEB_URL": "http://bc.example/x"})["links"][1]
         self.assertEqual(plain["status"], "not_configured")
-        ready = build(g, world(), environ={
-            "PLX_BC_WEB_URL": "https://businesscentral.example/t/env?company=Synth"})["links"][1]
-        self.assertEqual(ready["url"], "https://businesscentral.example/t/env?company=Synth"
-                                       "&page=50&filter='No.'%20IS%20'PO-SYNTH-1'")
+        base = {"PLX_BC_WEB_URL": "https://businesscentral.example/t/env?company=Synth"}
+        # the record's company is read from its cited number's handle, never the base's:
+        # every company the books file names opens in its own company
+        books = json.loads((Path(__file__).resolve().parents[2] / "integrations"
+                            / "bc_company_books.json").read_text())["names"]
+        for env, companies in books.items():
+            for guid, company in companies.items():
+                with self.subTest(company=company):
+                    store = world()
+                    store.handles[PO] = f"bc://{env}/{guid}/purchaseOrders/synth-po-1@g"
+                    ready = build(g, store, environ=base)["links"][1]
+                    self.assertEqual(ready["url"], "https://businesscentral.example/t/env?"
+                                     f"company={ap.quote(company, safe='')}&page=50&filter="
+                                     "'Purchase%20Header'.'No.'%20IS%20'PO-SYNTH-1'")
+        # a handle naming no known company (another system's, an unknown company id, an
+        # environment the books do not name) gets no link: never the base's company
+        for handle in ("synth://po@1", "bc://production/00000000-0000-0000-0000-000000000000/"
+                       "purchaseOrders/x@g", f"bc://elsewhere/{guid}/purchaseOrders/x@g"):
+            with self.subTest(handle=handle):
+                store = world()
+                store.handles[PO] = handle
+                unknown = build(g, store, environ=base)["links"][1]
+                self.assertEqual((unknown["status"], unknown["url"]), ("not_configured", None))
+                self.assertIn("company is not known", unknown["reason"])
         portal = build(gap("late_customer_order", SO, required="2026-10-30"), world(),
                        environ={"PLX_PORTAL_WEB_URL": "https://portal.example"})["links"][1]
         self.assertEqual(portal["status"], "not_configured")

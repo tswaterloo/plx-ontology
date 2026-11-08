@@ -501,13 +501,11 @@ class IngestModeTest(unittest.TestCase):
     def test_config_fails_closed(self) -> None:
         table = fake_table(self.script, "mail")
         for document, ingest, error in (
-                ({"nosuch": {}}, None, "host_config_invalid"),
-                ({"mail": {"unknown_key": 1}}, None, "host_config_invalid:mail"),
                 ({"mail": {"timeout_seconds": 0}}, None, "host_config_invalid:mail"),
                 ({"mail": {}}, {"mode": "loop"}, "host_config_invalid:ingest"),
                 ({"mail": {}}, {"mode": forever.MODE, "grace_seconds": 0},
                  "host_config_invalid:ingest"),
-                ({"mail": {}}, {"mode": forever.MODE, "cadence": 5},
+                ({"mail": {}}, {"mode": forever.MODE, "cpu_budget": 0},
                  "host_config_invalid:ingest"),
                 ({}, None, "host_config_invalid:ingest")):
             code, out, err = self.main("run", "--state-dir", str(self.state), "--config",
@@ -520,9 +518,9 @@ class IngestModeTest(unittest.TestCase):
         plain.write_text(json.dumps({"schema": host_module.CONFIG_SCHEMA,
                                      "mirror_audience": "mirror-audience.json",
                                      "sharepoint_lists": {}}), encoding="utf-8")
-        with self.assertRaises(host_module.HostError) as raised:
-            host_module.HostConfig.from_file(plain)
-        self.assertEqual(raised.exception.code, "host_config_invalid")
+        # (A cycle-mode config ignores it with a warning: no source is configured from it.)
+        held = host_module.HostConfig.from_file(plain)
+        self.assertEqual((held.sources, held.config_warnings), ({}, ["sharepoint_lists"]))
         # Serving refuses a state directory a reboot throws away (its cursors with it).
         code, out, err = self.main("serve", "--no-console", "--max-cycles", "1",
                                    "--state-dir", str(self.state), "--config",
@@ -545,6 +543,59 @@ class IngestModeTest(unittest.TestCase):
                          ("ingest", "complete", True))
         self.assertEqual((summary["schema"], summary["reason"], summary["refreshes"]),
                          (host_module.CONTINUOUS_SCHEMA, "max_refreshes", 1))
+
+    def test_forward_config_keys_warn_and_a_start_loop_is_recorded(self) -> None:
+        """A key this checkout does not know (a newer checkout's ``ingest`` setting, a
+        source option, a top-level section) is ignored with a warning, never a refusal
+        that restarts the unit forever (2026-11-07: ``ingest.cpu_budget`` held captures in
+        a 23 h restart loop). A start that is still refused is recorded, so ops_health
+        names the loop; the next good start clears it."""
+        from operating import ops_health
+        table = fake_table(self.script, "mail")
+        forward = self.config({"mail": {"unknown_key": 1}, "nosuch": {}},
+                              ingest={"mode": forever.MODE, "grace_seconds": 1,
+                                      "future_knob": 4})
+        code, out, err = self.main("run", "--state-dir", str(self.state), "--config",
+                                   str(forward), table=table)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(err.splitlines()[0]),
+                         {"warning": "host_config_keys_ignored",
+                          "keys": ["ingest.future_knob", "mail.unknown_key", "nosuch"]})
+        self.assertTrue(self.ran("mail"))
+        # the unknown option never reaches the capture CLI
+        self.assertNotIn("unknown_key", host_module.HostConfig.from_file(
+            forward, capture_sources=table).sources["mail"])
+        # a refused serve start, again and again: the restart loop is a breach
+        bad = self.config({"mail": {}}, ingest={"mode": "loop"})
+        for _ in range(3):
+            code, _out, err = self.main("serve", "--no-console", "--max-cycles", "1",
+                                        "--state-dir", str(self.state), "--config",
+                                        str(bad), table=table)
+            self.assertEqual((code, json.loads(err)), (2, {"error": "host_config_invalid:ingest"}))
+        report = ops_health.collect(self.state, environ={}, include_api=False)
+        start = next(c for c in report["checks"] if c["name"] == "ingest_start")
+        self.assertEqual((start["state"], start["value"]), ("breach", 3))
+        self.assertIn("host_config_invalid:ingest", start["detail"])
+        self.assertTrue(ops_health.capture_alarm(report)["start_loop"])
+        # a good start clears it and records each source's normal turn
+        with mock.patch.object(forever, "ephemeral", return_value=False):
+            code, _out, err = self.main("serve", "--no-console", "--max-cycles", "1",
+                                        "--state-dir", str(self.state), "--config",
+                                        str(forward), table=table)
+        self.assertEqual(code, 0, err)
+        held = ops_health.serve_health(self.state)
+        self.assertEqual(held["failures"], [])
+        self.assertEqual(set(held["turn_seconds"]), {"mail"})
+        self.assertIn("ingest.future_knob", held["config_warnings"])
+        report = ops_health.collect(self.state, environ={}, include_api=False)
+        self.assertEqual(next(c for c in report["checks"] if c["name"] == "ingest_start")
+                         ["state"], "ok")
+        # a setting that did not take effect (a typo of ingest.builds) is a Home alarm
+        ignored = next(c for c in report["checks"] if c["name"] == "config_keys_ignored")
+        self.assertEqual(ignored["state"], "breach")
+        alarm = ops_health.capture_alarm(report)
+        self.assertIn("capture settings not applied: ingest.future_knob", alarm["line"])
+        self.assertFalse(alarm["start_loop"])
 
     def test_live_check_config_on_the_real_table(self) -> None:
         """The live check's own config on the real capture table, without credentials:

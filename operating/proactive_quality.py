@@ -82,6 +82,7 @@ PUBLIC_DOMAINS = frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotma
                             "me.com", "aol.com", "protonmail.com", "proton.me", "gmx.com",
                             "mail.com", "shaw.ca", "rogers.com", "sympatico.ca",
                             "bell.net", "telus.net"})
+BLOCK_FLAGS = ("deleted_at", "bc_blocked", "blocked", "is_active")   # _flag_active reads
 BLOCK_MAX = 25            # records one key may join before it is too common to pair
 # A name alone never proposes (the whole store had 19,000 same-name pairs, most of them
 # bill-to and ship-to copies): it takes a name and one other shared key, or a tax id.
@@ -278,7 +279,8 @@ def duplicate_parties(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                                      ("tax", TAX_PROPS), ("address", ADDRESS_PROPS),
                                      ("postal", POSTAL_PROPS))}
         wanted = [*NAME_PROPS, *(p for v in declared.values() for p in v),
-                  *(p for p in ("code", "erp_code", "currency") if declares(object_type, p))]
+                  *(p for p in ("code", "erp_code", "currency", *BLOCK_FLAGS)
+                    if declares(object_type, p))]
         found = st.values([object_type], wanted)
         binding = _bindings(st, types)
         link = f"{object_type}.same_record_as"
@@ -354,16 +356,23 @@ def duplicate_parties(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             where = ("in " + systems[0]) if systems[0] == systems[1] else \
                 f"in {systems[0]} and {systems[1]}"
             noun = object_type.lower()
+            retired = any(_flag_active(found[x]["props"])[0] == "done" for x in (a, b))
+            counts["blocked_copy"] += retired
             made = gap(DUPLICATE, DUP_RULE, a, object_type, b,
                        summary=f"Two {noun} records {where} may be one {noun}: "
                                f"{_text(name_a)} and {_text(name_b)} "
-                               f"(score {score}: {', '.join(basis)})",
+                               f"(score {score}: {', '.join(basis)})"
+                               + ("; one of them is blocked or deleted, likely the retired "
+                                  "copy" if retired else ""),
                        missing=f"Are these the same {noun}? Confirm or reject the link in "
                                "the record's workspace; nothing is linked until a person "
                                "confirms.",
                        why="Their names and the keys they share score them as one "
                            f"{noun}; no settled link says so yet.",
-                       priority="high" if score >= HIGH_AT else "medium",
+                       # a pair one of whose records is blocked or deleted is most often
+                       # the retired copy of the other: low priority (owner, 2026-11-08)
+                       priority="low" if retired else
+                       "high" if score >= HIGH_AT else "medium",
                        about=(object_type, "same_record_as"),
                        groups=[cites([name_a]), cites([name_b])],
                        extra=cites(evidence),
@@ -648,6 +657,9 @@ def stale_captures(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     def one_per_audience() -> dict[str, str]:
         # one record per audience, in one pass over the record table (a probe per audience
         # scanned it once per mailbox: 157 s on the whole store)
+        firsts = getattr(st, "audience_firsts", None)
+        if firsts is not None:
+            return firsts()   # the run's one ranged scan, shared with its audience keys
         return st.memo("quality:one_per_audience", lambda: {
             key: oid for key, oid in st.conn.execute(
                 "SELECT audience_key, MIN(object_id) FROM objects GROUP BY audience_key")})

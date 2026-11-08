@@ -25,6 +25,24 @@ FIN = ["finance"]
 OPS, ALL = frozenset({"ops"}), frozenset({"ops", "secret"})
 
 
+class People:
+    """The people exclusion as the briefs see it: loaded (``unavailable`` None) naming the
+    synthetic ids in ``excluded``, or unavailable with a code."""
+
+    def __init__(self, excluded=(), unavailable=None) -> None:
+        self.excluded, self.unavailable = set(excluded), unavailable
+
+    def is_excluded(self, value):
+        if self.unavailable:
+            raise RuntimeError(self.unavailable)
+        if value == "undecidable":
+            raise RuntimeError("excluded_people_unresolved")
+        return value in self.excluded
+
+
+PEOPLE = People()
+
+
 def h(oid: str, prop: str = "") -> str:
     return "synth://" + oid.replace(":", "/") + "@1" + (f"#{prop}" if prop else "")
 
@@ -218,7 +236,8 @@ def dumped(brief: dict) -> str:
 
 class MeetingBrief(unittest.TestCase):
     def brief(self, st, alerts, oid=EVENT, held=FIN):
-        return br.meeting_brief(st, frozenset(held), alerts, oid, now=NOW, declared=None)
+        return br.meeting_brief(st, frozenset(held), alerts, oid, now=NOW, declared=None,
+                                people=PEOPLE)
 
     def test_full_reader_sees_every_section_cited(self):
         st, alerts, orders = world()
@@ -303,7 +322,7 @@ class MeetingBrief(unittest.TestCase):
         self.assertEqual(out["subject"]["object_id"], CUS)
         self.assertEqual(len(section(out, "alerts")["rows"]), 2)
         self.assertEqual(br.meeting_brief(st, frozenset(), {"status": "not_configured"}, CUS,
-                                          now=NOW, declared=None)["sections"][1]["rows"], [])
+                                          now=NOW, declared=None)["sections"][2]["rows"], [])
 
     def test_an_unread_alert_list_never_reads_as_none(self):
         st, _, _ = world()
@@ -339,6 +358,7 @@ class MeetingBrief(unittest.TestCase):
         st, alerts, _ = world(n_orders=10)
         ticks = iter(range(0, 10_000))
         out = br.meeting_brief(st, frozenset(FIN), alerts, EVENT, now=NOW, declared=None,
+                               people=PEOPLE,
                                budget_seconds=12, clock=lambda: next(ticks))
         self.assertIn("partial", {s["state"] for s in out["sections"]})
         self.assertIn("budget_exhausted", {g["code"] for g in out["gaps"]})
@@ -362,9 +382,10 @@ def weekly_world(n: int, *, late_every: int = 3) -> Store:
 
 
 class WeeklyReview(unittest.TestCase):
-    def review(self, st, held=FIN, alerts=None):
+    def review(self, st, held=FIN, alerts=None, **kw):
         return br.weekly_review(st, frozenset(held), alerts or {"status": "read", "gaps": []},
-                                week=date(2026, 11, 4), today=date(2026, 11, 9))
+                                week=date(2026, 11, 4), today=date(2026, 11, 9),
+                                people=PEOPLE, **kw)
 
     def figure(self, out, label):
         return next(f for f in section(out, "figures")["figures"] if f["label"] == label)
@@ -474,3 +495,334 @@ class WeeklyReview(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def people_world(n_mail: int = 3):
+    """``world`` plus a sender person per mail (the first one excluded, the second one
+    undecidable), an action item citing the last meeting's transcript and an overdue aged
+    balance."""
+    st, alerts, orders = world(n_mail=n_mail)
+    for i in range(n_mail):
+        ident = {0: "synth-oid-excluded", 1: "undecidable"}.get(i, f"synth-oid-{i}")
+        person = st.add(f"Person:graph.users:synth-p{i}", f"Sender {i}", object_id=ident)
+        st.link(f"Email:graph.mail:synth-mail-{i}", "Email.sent_by_person", person)
+    st.objects["AgedReceivable:bc.aged:synth-ar"]["values"] += [
+        {"property": f"period{k}_amount", "value": {"untrusted_text": v}, "markings": FIN,
+         "citation": {"l1_handle": h("AgedReceivable:bc.aged:synth-ar", f"p{k}")}}
+        for k, v in ((1, "100.10"), (2, "0.20"), (3, "50"))]
+    st.objects[orders[0]]["values"] = [
+        dict(v, value={"untrusted_text": "2026-11-01"}) if v["property"] == "required_date"
+        else v for v in st.objects[orders[0]]["values"]]
+    alerts["gaps"].append(gap("commitment_due", "MeetingTranscript:meetings.transcripts:synth-tr",
+                              "Send the revised spec"))
+    return st, alerts, orders
+
+
+class PrepBriefAdditions(unittest.TestCase):
+    """Who sent each thread, the people exclusion failing closed, item access, talking
+    points, overdue balances and the last meeting's action items."""
+
+    def brief(self, st, alerts, *, held=FIN, people=PEOPLE, decide=None, oid=EVENT):
+        return br.meeting_brief(st, frozenset(held), alerts, oid, now=NOW, declared=None,
+                                people=people, decide=decide)
+
+    def test_threads_name_who_and_drop_excluded_or_undecidable_senders(self):
+        st, alerts, _ = people_world(n_mail=4)
+        st.sees = OPS
+        out = self.brief(st, alerts, people=People(excluded={"synth-oid-excluded"}))
+        rows = section(out, "threads")["rows"]
+        self.assertEqual(sorted(r["who"] for r in rows), ["Sender 2", "Sender 3"])
+        self.assertEqual(section(out, "threads")["more"], 0)
+        text = dumped(out)
+        for word in ("Sender 0", "Sender 1", "Re: order SO-000", "Re: order SO-001",
+                     "Secret pricing"):
+            self.assertNotIn(word, text)
+        for row in rows:
+            self.assertIn(h(row["object_id"].replace("Email:graph.mail:synth-mail-",
+                                                     "Person:graph.users:synth-p")),
+                          {s["handle"] for s in row["sources"]})
+
+    def test_people_exclusion_unavailable_fails_closed(self):
+        st, alerts, _ = people_world()
+        for people in (None, People(unavailable="excluded_people_oids_absent")):
+            out = self.brief(st, alerts, people=people)
+            for key in ("threads", "notes"):
+                sec = section(out, key)
+                self.assertEqual((sec["state"], sec["rows"], sec["more"]), ("blocked", [], 0))
+            self.assertIn("people_exclusion_unavailable", {g["code"] for g in out["gaps"]})
+            text = dumped(out)
+            self.assertEqual(section(out, "promises")["state"], "blocked")
+            for word in ("Re: order", "Sender", "Transcript", "revised spec", "We promised"):
+                self.assertNotIn(word, text, people)
+            # nothing about people was even read
+            self.assertFalse([c for c in st.calls if "Email" in json.dumps(c[1])
+                              and c[0] == "plx.around" and c[1]["from"] == CUS
+                              and people is None and False])
+            weekly = br.weekly_review(weekly_world(2), frozenset(FIN), {"status": "read", "gaps": [
+                gap("customer_chasing_order", "SalesOrder:portal.app_sales_order:w-so-0",
+                    "Customer asked where it is")]}, week=date(2026, 11, 4),
+                today=date(2026, 11, 9), people=people)
+            for key in ("asks", "commitments_missed"):
+                self.assertEqual(section(weekly, key)["state"], "blocked")
+            self.assertNotIn("Customer asked", dumped(weekly))
+
+    def test_item_access_drops_rows_uncounted_and_fails_closed(self):
+        st, alerts, orders = people_world()
+        refused = h(orders[0], "status")
+        out = self.brief(st, alerts, decide=lambda hs: {x: ({"reason": "item_refused"}
+                                                            if x == refused else None)
+                                                        for x in hs})
+        sec = section(out, "orders")
+        self.assertNotIn(orders[0], [r["object_id"] for r in sec["rows"]])
+        self.assertIn(orders[1], [r["object_id"] for r in sec["rows"]])
+        self.assertEqual(sec["more"], 0)
+        self.assertNotIn("Agree a new date for Order SO-000", dumped(out))
+
+        def broken(_hs):
+            raise RuntimeError("policy store down")
+        out = self.brief(st, alerts, decide=broken)
+        for sec in out["sections"]:
+            self.assertEqual(sec["rows"], [], sec["key"])
+            self.assertEqual(sec["more"], 0)
+        self.assertNotIn("SO-00", dumped(out))
+        self.assertIn("item access", {g["subject"] for g in out["gaps"]})
+
+    def test_talking_points_overdue_and_action_items_are_cited_lines(self):
+        st, alerts, orders = people_world()
+        out = self.brief(st, alerts)
+        points = section(out, "talking_points")["rows"]
+        self.assertTrue(points)
+        self.assertLessEqual(len(points), br.MAX_POINTS)
+        shown = {s["handle"] for sec in out["sections"] if sec["key"] != "talking_points"
+                 for r in sec["rows"] for s in r["sources"]}
+        for p in points:
+            self.assertTrue(p["sources"], p)
+            self.assertLessEqual({s["handle"] for s in p["sources"]}, shown, p)
+        self.assertTrue(points[0]["label"].startswith("Agree a new date for Order SO-000"))
+        self.assertIn("days past its required date", section(out, "orders")["rows"][0]["detail"])
+        money = section(out, "money")["rows"]
+        overdue = next(r for r in money if r["label"] == "Overdue")
+        self.assertEqual(overdue["amount"], {"amount": "150.30", "currency": "CAD"})
+        self.assertIn("Ask about the overdue balance", {p["label"] for p in points})
+        notes = section(out, "notes")["rows"]
+        self.assertIn("Action item: Promise due", {r["label"] for r in notes})
+        # a reader without finance: no money line, no overdue point, no amount at all
+        st.sees = OPS
+        st.held = frozenset()
+        out = self.brief(st, alerts, held=())
+        self.assertEqual(section(out, "money")["state"], "finance_marked")
+        text = dumped(out)
+        for word in ("150.30", "4200.10", "overdue balance", "lost money", "1000.50"):
+            self.assertNotIn(word, text)
+
+    def test_one_unread_aging_bucket_states_no_overdue(self):
+        st, alerts, _ = people_world()
+        st.objects["AgedReceivable:bc.aged:synth-ar"]["values"] = [
+            v for v in st.objects["AgedReceivable:bc.aged:synth-ar"]["values"]
+            if v["property"] != "period2_amount"]
+        out = self.brief(st, alerts)
+        self.assertNotIn("Overdue", {r["label"] for r in section(out, "money")["rows"]})
+
+    def test_cardinality_with_senders(self):
+        for n in (1, 10, 60):
+            st, alerts, _ = people_world(n_mail=max(n, 2))
+            st.sees = OPS
+            started = time.monotonic()
+            out = self.brief(st, alerts, people=People())
+            self.assertLess(time.monotonic() - started, 5)
+            sec = section(out, "threads")
+            # the undecidable sender's row is dropped; every other row is shown or counted
+            self.assertEqual(len(sec["rows"]) + sec["more"], max(n, 2) - 1, n)
+            ids = [r["object_id"] for r in sec["rows"]]
+            self.assertEqual(len(ids), len(set(ids)))
+
+
+class WeeklyAdditions(unittest.TestCase):
+    WEEK, TODAY = date(2026, 11, 2), date(2026, 11, 9)
+
+    def alerts(self, n: int) -> dict:
+        gaps = []
+        for i in range(n):
+            g = gap("promise_date_slip", f"SalesOrder:portal.app_sales_order:w-so-{i}",
+                    f"Promised date moved: carrier delay {i}")
+            g.update(first_seen="2026-11-03T10:00:00Z", last_seen="2026-11-08T10:00:00Z",
+                     state="open")
+            gaps.append(g)
+        closed = gap("late_po", "PurchaseOrder:bc.purchase_orders:wp", "PO late")
+        closed.update(first_seen="2026-10-20T10:00:00Z", last_seen="2026-11-05T10:00:00Z",
+                      state="resolved")
+        missed = gap("commitment_missed", "SalesOrder:portal.app_sales_order:w-so-0",
+                     "Promise missed: send COA")
+        missed.update(first_seen="2026-11-04T10:00:00Z", state="open")
+        ar = gap("aged_receivable_worsening", "Customer:bc.customers:wc", "AR aging worse")
+        ask = gap("customer_chasing_order", "SalesOrder:portal.app_sales_order:w-so-0",
+                  "Customer chased the order")
+        return {"status": "read", "with_resolved": True,
+                "gaps": gaps + [closed, missed, ar, ask]}
+
+    def review(self, st, alerts, held=FIN, **kw):
+        return br.weekly_review(st, frozenset(held), alerts, week=self.WEEK, today=self.TODAY,
+                                people=PEOPLE, **kw)
+
+    def test_sections_flow_and_cardinality(self):
+        for n in (1, 10, 60):
+            st = weekly_world(n)
+            started = time.monotonic()
+            out = self.review(st, self.alerts(n))
+            self.assertLess(time.monotonic() - started, 5)
+            slips = section(out, "slips")
+            self.assertEqual(len(slips["rows"]), min(n, br.TOP_ALERTS))
+            self.assertIn("carrier delay", slips["rows"][0]["detail"])
+            flow = {f["label"]: f["value"] for f in section(out, "alert_flow")["figures"]}
+            self.assertEqual(flow, {"Alerts opened": str(n + 1), "Alerts closed": "1"})
+            self.assertEqual(len(section(out, "commitments_missed")["rows"]), 1)
+            self.assertEqual(len(section(out, "asks")["rows"]), 1)
+            self.assertEqual(len(section(out, "cash")["rows"]), 1)
+            late = next(f for f in section(out, "figures")["figures"]
+                        if f["label"] == "Shipped late")
+            self.assertEqual(late["value"], str(len(range(0, n, 3))))
+            # a resolved alert is never an open one
+            self.assertNotIn("PO late", json.dumps(section(out, "top_alerts")))
+
+    def test_restricted_reader_and_open_only_list(self):
+        st = weekly_world(3)
+        st.held = frozenset()
+        alerts = self.alerts(2)
+        alerts.pop("with_resolved")
+        out = self.review(st, alerts, held=())
+        for key in ("cash", "margin"):
+            self.assertEqual(section(out, key)["state"], "finance_marked")
+        self.assertNotIn("AR aging worse", dumped(out))
+        closed = next(f for f in section(out, "alert_flow")["figures"]
+                      if f["label"] == "Alerts closed")
+        self.assertIsNone(closed["value"])
+
+
+class Archive(unittest.TestCase):
+    def test_kept_week_is_redecided_and_unfinished_weeks_never_kept(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            arc = br.WeeklyArchive(Path(tmp) / "weekly.sqlite")
+            raw = br.weekly_review(weekly_world(2), frozenset(FIN), {"status": "read",
+                                   "gaps": []}, week=date(2026, 11, 2),
+                                   today=date(2026, 11, 9), people=PEOPLE)
+            ok = lambda hs: {x: None for x in hs}  # noqa: E731
+            week = date(2026, 11, 2)
+            self.assertTrue(arc.put("r1", week, "g1", raw, date(2026, 11, 9)))
+            self.assertFalse(arc.put("r1", date(2026, 11, 9), "g1", raw, date(2026, 11, 12)))
+            got = arc.get("r1", week, "g1", ok)
+            self.assertEqual(got["sections"], raw["sections"])
+            self.assertIn("stored_at", got)
+            self.assertIsNone(arc.get("r2", week, "g1", ok))        # another reader
+            self.assertIsNone(arc.get("r1", week, "g2", ok))        # a changed grant
+            self.assertIsNone(arc.get("r1", week, "g1", None))      # undecidable
+            self.assertIsNone(arc.get("r1", week, "g1", lambda hs: {
+                x: {"reason": "item_refused"} for x in hs}))         # a revoked item
+            self.assertEqual(arc.weeks("r1", "g1"), ["2026-11-02"])
+            self.assertEqual(arc.weeks("r1", "g2"), [])
+            self.assertEqual(oct((Path(tmp) / "weekly.sqlite").stat().st_mode & 0o777), "0o600")
+
+
+
+class AgendaBriefOption(unittest.TestCase):
+    """``plx.agenda`` option ``brief``: the brief read through the host table's primitives
+    as the caller, its answer within the tool's output contract."""
+
+    def tool(self, st, held=FIN):
+        from operating.meeting_agenda import AgendaTool
+        return AgendaTool(lambda name, args, actor: st(name, args), None,
+                          held_markings=lambda actor: held)
+
+    def test_brief_and_weekly_through_the_tool(self):
+        import os
+        from unittest import mock
+        from ontology.json_contract import validate
+        from operating import ontology_tools
+        contracts = ontology_tools.load_contracts()
+        out_schema = contracts["tools"]["plx.agenda"]["output"]
+        st, _, _ = world()
+        with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": "",
+                                          "PLX_EXCLUSION_ENV_FILE": ""}):
+            out = self.tool(st).call({"brief": CUS}, "actor")
+            self.assertEqual(out["schema"], br.MEETING_SCHEMA)
+            self.assertEqual(validate(out, out_schema, root=contracts), [])
+            # no exclusion configured: people's lines fail closed
+            self.assertEqual(section(out, "threads")["state"], "blocked")
+            self.assertNotIn("Re: order", dumped(out))
+            # the alert list is not read here: said, never empty
+            self.assertEqual(section(out, "alerts")["state"], "unread")
+            weekly = self.tool(weekly_world(3)).call({"brief": "weekly", "week": "2026-11-02"},
+                                                     "actor")
+            self.assertEqual(weekly["schema"], br.WEEKLY_SCHEMA)
+            self.assertEqual(validate(weekly, out_schema, root=contracts), [])
+        # restricted reader: no money at all
+        st.held = frozenset()
+        out = self.tool(st, held=frozenset()).call({"brief": CUS}, "actor")
+        self.assertEqual(section(out, "money")["state"], "finance_marked")
+        self.assertNotIn("4200.10", dumped(out))
+
+    def test_unknown_or_ambiguous_input_fails_closed(self):
+        from operating.meeting_agenda import AgendaTool
+        st, _, _ = world()
+        tool = self.tool(st)
+        for args, code in (({}, "invalid_input"), ({"brief": CUS, "agenda": "x"}, "invalid_input"),
+                           ({"brief": "Invoice:bc.x:synth-1"}, "brief_refused"),
+                           ({"brief": "weekly", "week": "2026-13-45"}, "invalid_input"),
+                           ({"brief": CUS, "week": "2026-11-02"}, "invalid_input"),
+                           ({"brief": "Customer:bc.customers:absent"}, "brief_refused")):
+            self.assertEqual(tool.call(args, "actor")["error"]["code"], code, args)
+        bare = AgendaTool(lambda name, args, actor: st(name, args), None)
+        self.assertEqual(bare.call({"brief": CUS}, "actor")["error"]["code"],
+                         "brief_not_served")
+
+
+class StandingReviewPack(unittest.TestCase):
+    """A recurring internal review (no outside party) gets its pack and agenda from the
+    reader's own alerts, built live; a row the reader may not open is not counted."""
+
+    def world(self, title: str = "Weekly incoming ETAs review"):
+        st = Store()
+        st.add(EVENT, title, start="2026-11-12T14:00:00")
+        pos = [f"PurchaseOrder:bc.purchase_orders:synth-po-{i}" for i in range(3)]
+        for i, po in enumerate(pos):
+            st.add(po, f"PO-{i}", status="Open")
+        alerts = [gap("eta_slipped", pos[0], "PO-0 delivery moved a week", "high"),
+                  gap("late_po", pos[1], "PO-1 is 4 days late"),
+                  gap("late_po", pos[2], "PO-2 is 9 days late"),
+                  gap("approval_waiting", pos[0], "An approval has waited 3 days"),
+                  gap("production_late", pos[1], "Not this review")]
+        return st, {"status": "read", "gaps": alerts}, pos
+
+    def brief(self, st, alerts, decide=None):
+        return br.meeting_brief(st, frozenset(FIN), alerts, EVENT, now=NOW, declared=None,
+                                people=PEOPLE, decide=decide)
+
+    def test_the_review_pack_and_agenda_come_from_the_readers_alerts(self):
+        st, alerts, pos = self.world()
+        out = self.brief(st, alerts)
+        self.assertEqual(out["review"], ["incoming"])
+        incoming = section(out, "review_incoming")
+        self.assertEqual(len(incoming["rows"]), 3)
+        self.assertNotIn("Not this review", dumped(incoming))
+        self.assertEqual(len(section(out, "review_waiting")["rows"]), 1)
+        agenda = section(out, "agenda")
+        self.assertEqual([r["label"] for r in agenda["rows"]],
+                         ["1. Incoming deliveries and ETAs", "2. waiting on someone"])
+        self.assertTrue(agenda["rows"][0]["detail"].startswith("3 open items"))
+        self.assertTrue(all(r["sources"] for r in agenda["rows"]))
+        # an alert on a record the reader may not open is neither listed nor counted
+        hidden = h(pos[2])
+        out = self.brief(st, alerts, decide=lambda hs: {x: ({"reason": "item"}
+                                                              if x == hidden else None)
+                                                          for x in hs})
+        self.assertEqual(len(section(out, "review_incoming")["rows"]), 2)
+        self.assertTrue(section(out, "agenda")["rows"][0]["detail"].startswith("2 open items"))
+        self.assertNotIn("PO-2 is 9 days late", dumped(out))
+
+    def test_a_meeting_with_a_party_or_no_review_words_gets_no_pack(self):
+        st, alerts, _ = self.world("Lunch")
+        out = self.brief(st, alerts)
+        self.assertEqual(out["review"], [])
+        self.assertFalse([s for s in out["sections"] if s["key"].startswith("review_")
+                          or s["key"] == "agenda"])

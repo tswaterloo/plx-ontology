@@ -115,7 +115,31 @@ class Catalog:
 
 
 DOMAINS_DATA = load_domains()
+
+
+def generated_link_ends(domains: dict[str, dict]) -> dict[str, dict]:
+    """The generated schema files declaring a type that a curated link starts or ends at (a
+    curated ``TeamsChatMessage.sent_by_person`` link from the generated Teams message type):
+    the loader compiles them together, so the curated files are closed over them too."""
+    declared = {obj["id"] for data in domains.values() for obj in data.get("object_types", [])}
+    ends = {link[end] for data in domains.values() for link in data.get("link_types", [])
+            for end in ("from", "to")} - declared
+    out = {}
+    for name, data in schema.load_documents():
+        if name.startswith("domains/") or not isinstance(data, dict):
+            continue
+        if ends & {obj.get("id") for obj in data.get("object_types", [])}:
+            out[name] = data
+    return out
+
+
+GENERATED_ENDS = generated_link_ends(DOMAINS_DATA)
 CATALOG = Catalog(DOMAINS_DATA)
+for _data in GENERATED_ENDS.values():
+    for _obj in _data.get("object_types", []):
+        CATALOG.types.setdefault(_obj["id"], _obj)
+        for _binding in _obj["bindings"]:
+            CATALOG.binding_type.setdefault(_binding["id"], _obj["id"])
 
 
 def lane_types() -> dict[str, dict]:
@@ -402,9 +426,29 @@ class BindingsMatchReadableSources(unittest.TestCase):
             # the lot set is ODataV4 Page 38, read by its own closed grammar op, not an API v2.0 set
             self.assertIn(binding["relation"], grammar.BC_ENTITY_SETS | {bc_read.LOT_SET}, bid)
             spec = grammar.BC_QUERY_SPECS.get(binding["relation"])
-            if spec is not None and path not in spec.select and availability == "served":
+            if spec is not None and path not in spec.select and availability == "served" \
+                    and (bid, path) not in self._pii_paths():
                 unselected.append(f"{bid}:{path}")
         self.assertEqual(unselected, [])
+
+    def _pii_paths(self) -> set[tuple[str, str]]:
+        return {(source["binding"], source["path"]) for obj in CATALOG.types.values()
+                for prop in obj["properties"] if "pii" in prop.get("markings", ())
+                for source in prop["sources"]}
+
+    def test_pii_card_fields_come_from_the_capture_and_case_reads_refuse_them(self):
+        # The capture reads every field of a BC card; a pii value (a customer's e-mail and
+        # phone) is served from it, and the case-read $select allowlist never names one.
+        checked = 0
+        for bid, path in self._pii_paths():
+            binding = CATALOG.bindings.get(bid)
+            if binding is None or binding["source"] != "bc":
+                continue
+            spec = grammar.BC_QUERY_SPECS.get(binding["relation"])
+            if spec is not None:
+                checked += 1
+                self.assertNotIn(path, spec.select, bid)
+        self.assertGreaterEqual(checked, 4)
 
     def test_bc_lineage_comes_from_the_capture_company(self):
         for bid, binding in CATALOG.bindings.items():
@@ -413,7 +457,8 @@ class BindingsMatchReadableSources(unittest.TestCase):
 
 
 def curated_documents() -> list[tuple[str, dict]]:
-    return [(f"domains/{name}.json", copy.deepcopy(data)) for name, data in DOMAINS_DATA.items()]
+    return ([(f"domains/{name}.json", copy.deepcopy(data)) for name, data in DOMAINS_DATA.items()]
+            + [(name, copy.deepcopy(data)) for name, data in GENERATED_ENDS.items()])
 
 
 def compile_curated(documents=None):

@@ -62,17 +62,24 @@ WHOLE_PASS = frozenset({"stock_out_risk", "overdue_receivable", "unit_cost_jump"
                         "customer_demand_drop", "promise_date_slip", "supplier_reliability",
                         "shipped_not_invoiced", "duplicate_customer_order",
                         "recurring_component_damage", "customer_chase", "quality_holds",
+                        "expedite_requests", "supplier_shortage", "payment_chase",
                         "customer_payment_behaviour", "early_pay_discounts",
-                        "duplicate_payables", "price_consistency",
+                        "duplicate_payables", "returns_and_credits",
+                        "price_consistency",
                         "mc_task_overdue", "mc_task_stuck",
                         "mc_approval_pending", "planner_task_overdue",
                         "aged_balance_worsening", "production_late",
                         "assembly_damage_spike", "teams_unanswered_ask",
                         "commitments", "needs_reply", "slow_moving_stock", "expiring_lot_stock",
+                        "approvals_waiting", "chase_escalation",
                         "assembly_component_shortfall", "certificate_expiry",
-                        "freight_cost_anomaly", "stale_quote",
+                        "freight_cost_anomaly", "stale_quote", "priority_fill_unmet",
                         "duplicate_parties",
-                        "key_fields_missing", "twin_disagreement", "stale_captures"})
+                        "key_fields_missing", "twin_disagreement", "stale_captures",
+                        "reorder_soon",
+                        "inventory_adjustment", "blocked_account_activity",
+                        "gl_posting_errors", "recurring_task_missed",
+                        "cash_application", "statement_reconciliation"})
 REFRESH_MODES = ("new", "always", "never", "calling", "whole")
 
 
@@ -145,6 +152,14 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
                            budget=pe.Budget(max(left, 1.0),
                                             reserve=pe.AMOUNTS_RESERVE_SECONDS),
                            only=pe.INCREMENTAL, vendor_bound=bound, pool=pool)
+            # recorded meetings follow themselves up here, as the same reader (a no-op
+            # without a captured transcript or an export: operating.meeting_followup.cycle)
+            try:
+                from . import meeting_followup
+                found = {**found, "meetings": meeting_followup.cycle(
+                    state_dir, session, environ=environ, today=day)}
+            except Exception as error:  # noqa: BLE001 - the alerts stand without it
+                found = {**found, "meetings": {"failed": type(error).__name__}}
         finally:
             session.close()
     finally:
@@ -152,7 +167,7 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             pool.close()
         runtime.close()
     return {**{key: found.get(key) for key in ("detectors", "detector_reasons", "reused",
-                                               "gaps_by_kind", "not_evaluated")},
+                                               "gaps_by_kind", "not_evaluated", "meetings")},
             "full_refresh": full}
 
 

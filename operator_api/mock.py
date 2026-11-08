@@ -20,6 +20,7 @@ from operating.answer_gate import _sentences
 
 from . import ask_progress, models as m, presentation, proposals
 from .actions import ActionsMixin
+from .write_intents_api import WriteIntentsMixin
 from .watch import MockWatchMixin
 from .auth import Reader
 
@@ -409,7 +410,7 @@ def _pick(question: str) -> tuple[str, Any]:
     return "other", _unknown_answer
 
 
-class MockBackend(ActionsMixin, MockWatchMixin):
+class MockBackend(ActionsMixin, WriteIntentsMixin, MockWatchMixin):
     data_label = LABEL
 
     def __init__(self, *, step_delay: float = 0.0) -> None:
@@ -673,9 +674,51 @@ class MockBackend(ActionsMixin, MockWatchMixin):
         from .errors import UserFacing
         raise UserFacing("item_not_found", "That item isn't in your briefing.", 404)
 
+    def labour(self, reader: Reader) -> m.LabourPage:
+        """The demo world holds no time sheets and grants no labour reader."""
+        return m.LabourPage(state="not_granted", note="Labour figures need the hr or "
+                            "ops-management grant.", weeks=[], trend=[], alerts=[])
+
     def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
         """The demo world holds no calendar: nothing to prepare."""
         return m.UpcomingMeetings(meetings=[])
+
+    def approvals_queue(self, reader: Reader) -> m.ApprovalsQueue:
+        return m.ApprovalsQueue(as_of="2026-01-05", total=0, sent=0, writes=0)
+
+    def record_pack(self, reader: Reader, object_type: str, object_id: str) -> m.RecordPack:
+        from .errors import UserFacing
+        raise UserFacing("not_found", "That record is not one you can open.", 404)
+
+    # meeting follow-ups: the real views over the follow-ups kept under ``state_dir`` (none:
+    # not found), read with no record reads and no markings
+    state_dir: Any = None
+    meeting_people: Any = None   # None: the host's people exclusion
+
+    def meeting_follow_up(self, reader: Reader, meeting_id: str) -> m.MeetingFollowUp:
+        from operating import meeting_followup as mf
+        from operating import card_actions as ca
+        from .briefs import _follow_ups, _viewer
+        from .errors import UserFacing
+        store = mf.FollowUps(self.state_dir, self.meeting_people) if self.state_dir else None
+        record = store.get(meeting_id) if store else None
+        page = mf.page(record, _viewer(reader, frozenset()), None, ()) if record else None
+        if page is None:
+            raise UserFacing("not_found", "That meeting is not one you attended.", 404)
+        for action in page["actions"]:
+            card = action["prepared"].get("card")
+            if card:
+                action["prepared"]["offers"] = ca.offers(card)
+        return m.MeetingFollowUp(follow_up=page)
+
+    def my_action_items(self, reader: Reader, person: Any) -> m.MyActionItems:
+        from operating import meeting_followup as mf
+        from .briefs import _viewer
+        from .errors import UserFacing
+        if not self.state_dir:
+            raise UserFacing("not_found", "No meeting follow-ups are kept here.", 404)
+        return m.MyActionItems(person=person, items=mf.my_items(
+            mf.FollowUps(self.state_dir, self.meeting_people), _viewer(reader, frozenset()), person))
 
     def meeting_brief(self, reader: Reader, object_type: str, object_id: str) -> m.Brief:
         from .errors import UserFacing
@@ -843,6 +886,22 @@ class MockBackend(ActionsMixin, MockWatchMixin):
         return m.Explore(object_id=page.object_id, type=page.type, label=page.label,
                          groups=groups, message=None if groups else
                          "No linked records are visible to you for this one.")
+
+    def record_history(self, reader: Reader, object_type: str, object_id: str,
+                       cursor: Optional[str] = None) -> m.RecordHistory:
+        """The mock keeps no versions: its history is unknown, said so, never empty."""
+        if cursor:
+            raise ValueError("invalid_cursor")
+        page = self.object_page(reader, object_type, object_id)
+        return m.RecordHistory(object_id=page.object_id, type=page.type, label=page.label,
+                               message="The mock workspace keeps no change history.")
+
+    def record_as_of(self, reader: Reader, object_type: str, object_id: str,
+                     at: str) -> m.RecordAsOf:
+        """The mock keeps no versions: what it held then is unknown, said so."""
+        page = self.object_page(reader, object_type, object_id)
+        return m.RecordAsOf(object_id=page.object_id, type=page.type, label=page.label,
+                            at=at, message="The mock workspace keeps no earlier versions.")
 
     def object_impact(self, reader: Reader, object_type: str, object_id: str, mode: str,
                       change: Any = None) -> m.ImpactPanel:

@@ -168,7 +168,8 @@ class MCPServerStdioTests(unittest.TestCase):
         self.assertIn("plx.act", tools)
         self.assertFalse({"plx.action_get", "plx.action_propose"} & set(tools))
         encoded = json.dumps(listing["result"]["tools"], separators=(",", ":"))
-        self.assertLess(len(encoded.encode("utf-8")), 48_000)
+        self.assertLessEqual(len(encoded.encode("utf-8")),
+                             CONTRACTS["limits"]["max_listing_bytes"])
         # Without --ontology-store the tools still answer: plx.find falls back to the
         # host's readers (this host has no upstream, so nothing is found, never absent).
         missing = self.call(3, "plx.find", {"query": "PO100012"})
@@ -186,6 +187,40 @@ class MCPServerStdioTests(unittest.TestCase):
         self.assertFalse(investigated["result"]["isError"], investigated)
         self.assertEqual(investigated["result"]["structuredContent"]["answerability"]["state"],
                          "blocked")
+
+    def test_every_agent_listing_stays_within_the_listing_budget(self):
+        """The tool-count and byte caps bind each agent's own listing (the Ask included),
+        not only the default agent's."""
+        from operating import agent_definitions
+        limits = CONTRACTS["limits"]
+        for agent in sorted(agent_definitions.load().agents):
+            with self.subTest(agent=agent):
+                proc = subprocess.Popen([sys.executable, "-m", "operating.mcp_server",
+                    "--state-dir", str(Path(self.temp.name) / ("state-" + agent)),
+                    "--source-mirror-audience", str(AUDIENCE), "--fixture",
+                    "--principal", "staff:operations", "--agent", agent],
+                    cwd=ROOT, env=_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, bufsize=1)
+                try:
+                    for message in (
+                            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                                "protocolVersion": "2025-06-18", "capabilities": {},
+                                "clientInfo": {"name": "test", "version": "0"}}},
+                            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}):
+                        proc.stdin.write(json.dumps(message) + "\n")
+                    proc.stdin.flush()
+                    replies = [json.loads(proc.stdout.readline()) for _ in range(2)]
+                finally:
+                    proc.stdin.close()
+                    proc.wait(timeout=10)
+                    proc.stdout.close()
+                    proc.stderr.close()
+                tools = replies[1]["result"]["tools"]
+                size = len(json.dumps(tools, separators=(",", ":")).encode("utf-8"))
+                print(f"LISTING {agent} {len(tools)} tools {size} bytes")
+                self.assertLessEqual(len(tools), limits["max_case_host_tools"])
+                self.assertLessEqual(size, limits["max_listing_bytes"])
 
     def test_retired_case_tools_are_unknown(self):
         self.initialize()

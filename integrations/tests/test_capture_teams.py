@@ -1365,3 +1365,30 @@ class ProbeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChatsReconcileTests(CaptureCase):
+    """The census's chat count against what the store holds: every listed chat is
+    captured, hosted in another tenant, otherwise settled unreadable, pending or never
+    read (2026-11-08: census 4,260, captured 3,739; the rest were other-tenant chats)."""
+
+    def test_every_listed_chat_is_accounted_for_at_cardinality(self):
+        self.capture.run(scope())   # the fixture's one chat, captured
+        for n in (1, 10, 60):
+            other = [f"19:meeting_{n:03d}{i:05d}@thread.v2" for i in range(n)]
+            pending = [f"19:pending_{n:03d}{i:05d}@thread.v2" for i in range(n)]
+            for chat, reason in [*((c, capture_teams.OTHER_TENANT) for c in other),
+                                 *((c, "source_error:SourceUnavailable:retried.http_429")
+                                   for c in pending)]:
+                unit = Conversation("chat", chat).unit
+                run = self.store.begin_run("teams_chat", unit, [unit])
+                self.store.pause_run(run["run_id"], reason=reason)
+            never = [f"19:never_{n:03d}{i:05d}@thread.v2" for i in range(n)]
+            listed = [CHAT, *other, *pending, *never, CHAT]   # a duplicate counts once
+            out = capture_teams.chats_reconcile(self.store, listed)
+            self.assertEqual(out["listed"], 1 + 3 * n)
+            self.assertEqual((out["captured"], out["other_tenant"], out["pending"],
+                              out["never_read"]), (1, n, n, n), n)
+            self.assertEqual(out["pending_reasons"], {"source_error": n})
+            self.assertEqual(sum(out[s] for s in capture_teams.RECONCILE_STATES),
+                             out["listed"])

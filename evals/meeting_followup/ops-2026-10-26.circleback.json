@@ -1,0 +1,70 @@
+{
+ "id": "ops-2026-10-26",
+ "title": "Ops weekly",
+ "date": "2026-10-26T14:00:00Z",
+ "organizer": {
+  "name": "Dana Price",
+  "email": "dana.price@plx.example"
+ },
+ "attendees": [
+  {
+   "name": "Dana Price",
+   "email": "dana.price@plx.example"
+  },
+  {
+   "name": "Marco Silva",
+   "email": "marco.silva@plx.example"
+  },
+  {
+   "name": "Sam Okafor",
+   "email": "sam.okafor@plx.example"
+  }
+ ],
+ "transcript": [
+  {
+   "speaker": "Dana Price",
+   "timestamp": 20,
+   "text": "Can everyone hear me?"
+  },
+  {
+   "speaker": "Sam Okafor",
+   "timestamp": 57,
+   "text": "Yes."
+  },
+  {
+   "speaker": "Sam Okafor",
+   "timestamp": 94,
+   "text": "The forklift is due for service next week."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 131,
+   "text": "Sam, can you book the forklift service for next week?"
+  },
+  {
+   "speaker": "Sam Okafor",
+   "timestamp": 168,
+   "text": "Sure, I'll book it."
+  },
+  {
+   "speaker": "Marco Silva",
+   "timestamp": 205,
+   "text": "PO100903 from Andean Ingredients is delayed two weeks."
+  },
+  {
+   "speaker": "Marco Silva",
+   "timestamp": 242,
+   "text": "I'll update Priya and the customers affected by end of day."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 279,
+   "text": "The decision is to air freight only if the customer pays."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 316,
+   "text": "Thanks."
+  }
+ ]
+}

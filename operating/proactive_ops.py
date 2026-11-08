@@ -119,6 +119,11 @@ PRODUCTION_DONE = frozenset({"complete", "completed", "closed", "done", "finishe
                              "cancelled", "canceled", "shipped", "void"})
 PRODUCTION_HIGH_DAYS = 7
 
+# the people a task or approval links (cleared against the exclusion)
+MC_TASK_PEOPLE = "MCTask.with_person"
+MC_APPROVAL_PEOPLE = "MCApproval.with_person"
+PLANNER_PEOPLE = "PlannerTask.with_person"
+
 DAMAGE_TYPE = "AssemblyOrderDamage"
 DAMAGE_OF = "AssemblyOrderDamage.damage_of"
 AO_MAKES = "AssemblyOrder.makes"
@@ -252,7 +257,7 @@ def mc_tasks(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Ca
         return {MC_OVERDUE: blocked, MC_STUCK: dict(blocked)}
     due_props = tuple(declared_sources()["mc_task_due"] if due_props is None else due_props)
     found = st.values([MC_TASK], ("task_id", "title", "stage", "updated_at", *due_props))
-    linked = _person_ids(st, ["MCTask.with_person"], settled)
+    linked = _person_ids(st, [MC_TASK_PEOPLE], settled)
     audience = _audiences(st, found)
     late_skips, stuck_skips = skips(), skips()
     late, stuck = [], []
@@ -342,7 +347,7 @@ def mc_approval_pending(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         return blocked
     found = st.values([MC_GATE], ("gate_id", "task_id", "status", "requested_at",
                                   "decided_at"))
-    linked = _person_ids(st, ["MCApproval.with_person"], settled)
+    linked = _person_ids(st, [MC_APPROVAL_PEOPLE], settled)
     audience = _audiences(st, found)
     skipped = skips()
     gaps = []
@@ -428,7 +433,7 @@ def planner_task_overdue(st: Any, as_of: date, *, gap: Callable, cites: Callable
         return blocked
     found = st.values([PLANNER_TASK], ("title", "plan_title", "due_at", "completed_at",
                                        "percent_complete", "assignees"))
-    linked = _person_ids(st, ["PlannerTask.with_person"], settled)
+    linked = _person_ids(st, [PLANNER_PEOPLE], settled)
     audience = _audiences(st, found)
     skipped = skips()
     gaps = []

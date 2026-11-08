@@ -821,19 +821,27 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "shipped_not_invoiced", "duplicate_customer_order",
               "recurring_component_damage", "customer_chasing_order",
               "tell_before_they_ask", "quality_hold_aging", "reject_trend",
+              "expedite_unanswered", "supplier_shortage_open_orders",
+              "supplier_chasing_payment",
               "customer_paying_slower", "early_pay_discount_missed",
               "duplicate_supplier_invoice", "duplicate_supplier_payment",
+              "customer_credits_rising",
               "price_below_typical", "price_below_cost",
               "customer_price_drop",
               "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
               "planner_task_overdue", "aged_receivable_worsening",
               "aged_payable_worsening", "production_late", "assembly_damage_spike",
               "teams_unanswered_ask",
-              "commitment_due", "commitment_missed", "needs_my_reply",
+              "commitment_due", "commitment_missed", "needs_my_reply", "reply_owed",
+              "approval_waiting", "chase_escalating",
+              "label_change_unapproved", "label_change_stale", "label_change_tracked",
               "slow_moving_stock", "expiring_lot_stock", "assembly_blocked_by_component",
-              "certificate_expiring", "freight_cost_anomaly", "stale_quote",
+              "certificate_expiring", "freight_cost_anomaly", "stale_quote", "priority_order_unfilled",
               "duplicate_party_candidate", "key_field_missing", "twins_disagree",
-              "source_stale")
+              "source_stale",
+              "reorder_soon", "inventory_adjustment", "blocked_account_activity",
+              "gl_posting_errors", "recurring_task_missed", "unapplied_remittance",
+              "short_payment", "statement_difference")
 LATE_PO_KINDS = ("late_po", "unconfirmed_po")
 NARROWED_READ = 20000   # inbox items a kind-narrowed home question reads
 _PURCHASE_ORDERS = r"(?:purchase orders|pos)"
@@ -1010,7 +1018,8 @@ def _home_gap(gap: Any) -> dict[str, Any] | None:
 
 
 _HOME_RULES = _FIND_OUTPUT["properties"]["home"]["properties"]["not_run"]["items"]["enum"]
-_RULE_STATES = ("complete", "truncated", "failed", "blocked", "not_configured", "not_run")
+_RULE_STATES = ("complete", "truncated", "failed", "blocked", "not_configured", "not_set_up",
+                "not_run")
 _RULE_REASON = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 
 
@@ -1040,6 +1049,13 @@ def _home_rules(found: Any, not_run: Any) -> list[dict[str, Any]]:
                     "not_evaluated": count if type(count) is int and count >= 0 else None,
                     "reasons": said if status != "complete" else []})
     return out
+
+
+def _rule_clean(rule: Mapping[str, Any]) -> bool:
+    """A home rule entry that finished cleanly: complete, nothing left unjudged that the
+    reader may read, no reason said (``rules_clean`` names it instead of an entry)."""
+    return (rule.get("status") == "complete" and rule.get("not_evaluated") == 0
+            and not rule.get("reasons"))
 
 
 # The gap an inbox answer names when the inbox cannot stand for "what needs attention" now:
@@ -1183,7 +1199,11 @@ def _home_answer(inbox: dict[str, Any], kinds: tuple[str, ...], limit: Any,
                 "as_of": stamp(inbox.get("as_of")), "run_at": run_at,
                 "age_seconds": age,
                 "stale": stale, "complete": complete, "not_run": not_run,
-                "rules": rules,
+                # only the rules that did not finish cleanly carry an entry; the clean ones
+                # (complete, nothing left unjudged) are named, so the list never crowds the
+                # gaps out of the page as rules are added
+                "rules": [rule for rule in rules if not _rule_clean(rule)],
+                "rules_clean": [rule["rule"] for rule in rules if _rule_clean(rule)],
                 "scanned": int(inbox.get("scanned") or 0), "unrecognized": unrecognized,
                 "returned": len(page), "more": more,
                 **({"late_orders": {"count": len(late), "complete": late_complete}}
@@ -1194,8 +1214,9 @@ def _home_answer(inbox: dict[str, Any], kinds: tuple[str, ...], limit: Any,
                         "on it with plx.investigate (root: its object_id); cite what you "
                         "read. stale: built for a day other than today (ET), over 26 h old "
                         "or the store changed since; not_run: rules "
-                        "that did not run; rules[].not_evaluated: records you may read a "
-                        "rule left unjudged (null: unknown), rules[].reasons why; "
+                        "that did not run; rules: those not finished cleanly, "
+                        "not_evaluated: records you may read left unjudged (null: unknown), "
+                        "reasons: why; rules_clean: the rest; "
                         "run_at, age_seconds: when this inbox was built (nothing is scanned "
                         "now). No gap here is not 'none'."}
         result = {"status": "home", "candidates": [], "gaps": inbox_gaps, "home": home,

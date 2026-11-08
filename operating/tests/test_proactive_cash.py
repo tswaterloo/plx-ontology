@@ -195,6 +195,85 @@ class CashAlerts(Engine):
         self.run_rules(w)
         self.assertEqual(self.kinds(pc.DUP_INVOICE), [])
 
+    def test_the_same_amount_for_one_po_under_two_numbers_is_raised_and_rent_is_not(self):
+        w = World()
+        a = ap_invoice(w, "SYNTHV1", "88123", 30, amount="4200.00", po="PO-SYN-1")
+        b = ap_invoice(w, "SYNTHV1", "INV-77", 27, amount="4200.00", po="PO-SYN-1")
+        ap_invoice(w, "SYNTHV2", "A-1", 30, amount="900.00")          # nothing in common
+        ap_invoice(w, "SYNTHV2", "B-2", 29, amount="900.00")
+        for i, day in enumerate((95, 64, 33, 30)):                     # rent: a repeat charge
+            ap_invoice(w, "SYNTHV3", f"R{i}9", day, amount="7000.00", po="PO-RENT")
+        ap_invoice(w, "SYNTHV4", "X-10", 40, amount="300.00", po="PO-SYN-4")  # 10 days apart
+        ap_invoice(w, "SYNTHV4", "Y-20", 30, amount="300.00", po="PO-SYN-4")
+        ap_invoice(w, "SYNTHV5", "C-1", 30, amount="650.00", po="PO-SYN-5")   # other POs
+        ap_invoice(w, "SYNTHV5", "D-2", 29, amount="650.00", po="PO-SYN-6")
+        summary = self.run_rules(w)
+        (gap,) = self.kinds(pc.DUP_INVOICE)
+        self.assertEqual(gap["event"]["documents"], sorted([a, b]))
+        self.assertEqual(gap["follow_up"]["match"], "amount_and_po")
+        self.assertEqual(gap["follow_up"]["priority"], "low")
+        self.assertIn("for purchase order PO-SYN-1", gap["summary"])
+        self.assertEqual(summary["detectors"][pc.DUPLICATE_RULE], "complete")
+        self.assertEqual(self.kinds(pc.DUP_INVOICE, held=frozenset()), [])
+
+    def test_a_customer_whose_credits_rise_against_its_own_year_is_raised(self):
+        w = World()
+        steady = []
+        for cust, recent_credits, prior_credits in (("SYNTHC1", 2, 0), ("SYNTHC2", 2, 6),
+                                                    ("SYNTHC3", 1, 0)):
+            for i in range(4):
+                ar_invoice(w, cust, f"{cust}-I{i}", 20 + i, 5, amount="1000.00")
+                ar_invoice(w, cust, f"{cust}-P{i}", 150 + 40 * i, 120, amount="1000.00")
+            for i in range(recent_credits):
+                doc(w, AR, {"idcust": cust, "idinvc": f"{cust}-CN{i}", "dateinvc": sage(10 + i),
+                            "trxtypetxt": "3", "codecurn": "CAD", "amtinvctc": "-300.00"})
+            for i in range(prior_credits):
+                steady.append(doc(w, AR, {"idcust": cust, "idinvc": f"{cust}-OC{i}",
+                                          "dateinvc": sage(200 + i), "trxtypetxt": "3",
+                                          "codecurn": "CAD", "amtinvctc": "-300.00"}))
+        for i in range(2):                                   # new: no year before to judge
+            ar_invoice(w, "SYNTHC4", f"C4-I{i}", 20 + i, 5, amount="1000.00")
+            doc(w, AR, {"idcust": "SYNTHC4", "idinvc": f"C4-CN{i}", "dateinvc": sage(10 + i),
+                        "trxtypetxt": "3", "codecurn": "CAD", "amtinvctc": "-300.00"})
+        summary = self.run_rules(w)
+        self.assertEqual(summary["detectors"][pc.CREDITS_RULE], "complete")
+        (gap,) = self.kinds(pc.CREDITS_RISING)
+        self.assertEqual(gap["event"]["party"], {"system": "sage", "code": "SYNTHC1"})
+        self.assertEqual(gap["summary"],
+                         "Customer SYNTHC1 (sage) got 2 credit notes worth 600.00 CAD in the "
+                         "last 90 days: 15.0% of the 4000.00 CAD invoiced, against 0.0% in "
+                         "the 365 days before")
+        self.assertEqual(gap["event"]["amount"]["value"], "600.00")
+        self.assertEqual(len(gap["citations"]), 10)   # 2 credits and 8 invoices summed
+        # a reader without finance, or who may not open the Sage documents, sees nothing
+        self.assertEqual(self.kinds(pc.CREDITS_RISING, held=frozenset()), [])
+        self.assertEqual(self.kinds(pc.CREDITS_RISING, may_read=lambda a: a != AR[2]), [])
+
+    def test_a_bc_credit_memo_counts_as_a_credit_and_one_without_a_currency_is_skipped(self):
+        w = World()
+        for i in range(4):
+            w.obj("SalesInvoice", {"customer_number": "SYNTHB1", "invoice_number": f"SI-{i}",
+                                   "invoice_date": str(AS_OF - timedelta(days=20 + i)),
+                                   "total_amount": "1000.00", "remaining_amount": "0",
+                                   "currency": "USD", "status": "Paid"},
+                  binding="bc.salesInvoices", audience="api:bc.sales", markings=FIN)
+            w.obj("SalesInvoice", {"customer_number": "SYNTHB1", "invoice_number": f"SP-{i}",
+                                   "invoice_date": str(AS_OF - timedelta(days=200 + i)),
+                                   "total_amount": "1000.00", "remaining_amount": "0",
+                                   "currency": "USD", "status": "Paid"},
+                  binding="bc.salesInvoices", audience="api:bc.sales", markings=FIN)
+        for i, cur in enumerate(("USD", "USD", "")):
+            w.obj("SalesCreditMemo", {"customer_number": "SYNTHB1", "bc_number": f"CM-{i}",
+                                      "credit_memo_date": str(AS_OF - timedelta(days=5 + i)),
+                                      "total_amount": "500.00", "status": "Paid",
+                                      **({"currency_code": cur} if cur else {})},
+                  binding="bc.salesCreditMemos", audience="api:bc.sales", markings=FIN)
+        summary = self.run_rules(w)
+        (gap,) = self.kinds(pc.CREDITS_RISING)
+        self.assertIn("got 2 credit notes worth 1000.00 USD", gap["summary"])
+        self.assertEqual(gap["object_type"], "SalesCreditMemo")
+        self.assertEqual(summary["detectors"][pc.CREDITS_RULE], "complete")
+
     def test_each_check_says_its_label_and_last_run_time(self):
         w = World()
         slow_customer(w, "SYNTHC1")
@@ -232,6 +311,14 @@ class CashAlerts(Engine):
                     slow_customer(w, f"SYNTHC{i}")
                     ap_invoice(w, f"SYNTHV{i}", f"INV-{10000 + i}", 40, paid=10)
                     ap_invoice(w, f"SYNTHV{i}", f"{10000 + i}", 30, paid=5)
+                    for j in range(4):
+                        ar_invoice(w, f"SYNTHR{i}", f"R{i}-I{j}", 20 + j, 5, amount="1000.00")
+                        ar_invoice(w, f"SYNTHR{i}", f"R{i}-P{j}", 150 + j, 120,
+                                   amount="1000.00")
+                    for j in range(2):
+                        doc(w, AR, {"idcust": f"SYNTHR{i}", "idinvc": f"R{i}-CN{j}",
+                                    "dateinvc": sage(10 + j), "trxtypetxt": "3",
+                                    "codecurn": "CAD", "amtinvctc": "-300.00"})
                 started = time.monotonic()
                 summary = self.run_rules(w)
                 self.assertLess(time.monotonic() - started, 60)
@@ -241,6 +328,9 @@ class CashAlerts(Engine):
                 self.assertEqual(len({g["event"]["party"]["code"]
                                       for g in self.kinds(pc.SLOWER)}), n)
                 self.assertEqual(len(self.kinds(pc.DUP_INVOICE)), n)
+                credits = self.kinds(pc.CREDITS_RISING)
+                self.assertEqual(len({g["event"]["party"]["code"] for g in credits}), n)
+                self.assertEqual(len(credits), n)
                 self.inbox.unlink()
                 self.store.unlink()
 

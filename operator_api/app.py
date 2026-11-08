@@ -335,6 +335,56 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         without your confirm)."""
         return backend.suggestions(who)
 
+    @app.get("/api/approvals", response_model=m.ApprovalsQueue, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def approvals_queue(who: Reader = Depends(reader)) -> m.ApprovalsQueue:
+        """Every pending approval on your alert list (mail asks with no answer from the
+        approver, Mission Control approvals), by who it waits on and how long, each with a
+        drafted nudge. Nothing is sent."""
+        return backend.approvals_queue(who)
+
+    @app.get("/api/replies", response_model=m.ReplyTriage, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def reply_triage(who: Reader = Depends(reader)) -> m.ReplyTriage:
+        """What needs your reply today: your own mail and one-to-one chats where someone
+        asked you something you have not answered, heaviest first, each with a drafted
+        reply. Only your own mailbox. Nothing is sent."""
+        return backend.reply_triage(who)
+
+    @app.get("/api/workload", response_model=m.Workload, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def workload(who: Reader = Depends(reader)) -> m.Workload:
+        """Open threads awaiting reply, open tasks and alerts per team; per person only
+        your own and the teams the owner granted you. Counts only."""
+        return backend.workload(who)
+
+    @app.post("/api/workload/grants", response_model=m.WorkloadGrants, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def assign_workload_grants(body: m.WorkloadGrants,
+                               who: Reader = Depends(reader)) -> m.WorkloadGrants:
+        """The owner assigns each person's team and the teams each manager sees per
+        person (kept in the Workbench's own data directory)."""
+        return backend.assign_workload_grants(who, body)
+
+    @app.get("/api/label-changes/{object_id:path}", response_model=m.LabelChanges,
+             tags=["actions"], responses={401: {"model": m.ErrorResponse}})
+    def label_changes(object_id: str, who: Reader = Depends(reader)) -> m.LabelChanges:
+        """The item page's label and artwork section: changes requested, approved, done,
+        stale or with no approval, from your own alert list."""
+        return backend.label_changes(who, object_id)
+
+    @app.get("/api/record-pack/{object_type}/{object_id:path}", response_model=m.RecordPack,
+             tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                          404: {"model": m.ErrorResponse}})
+    def record_pack(object_type: str, object_id: str,
+                    who: Reader = Depends(reader)) -> m.RecordPack:
+        """The documents a customer or supplier usually asks for about this record (invoice,
+        packing slip, BOL, COA, confirmation, ...), found in captured attachments,
+        SharePoint and originals around it as you may read them, and a drafted reply.
+        Nothing is sent: the draft goes through ``/api/actions/*`` and your confirm."""
+        return backend.record_pack(who, object_type, object_id)
+
     @app.get("/api/alerts/{alert_id}/playbook", response_model=m.AlertPlaybook,
              tags=["actions"], responses={401: {"model": m.ErrorResponse},
                                           404: {"model": m.ErrorResponse}})
@@ -355,6 +405,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         link to its meeting prep brief."""
         return backend.upcoming_meetings(who)
 
+    @app.get("/api/labour", response_model=m.LabourPage, tags=["briefs"],
+             responses={401: {"model": m.ErrorResponse}})
+    def labour(who: Reader = Depends(reader)) -> m.LabourPage:
+        """Labour hours from the department time sheets: department and week totals of
+        hours, overtime hours and headcount-days, the overtime trend and the overtime-spike
+        alert (30% over a department's 8-week median). Hours only, never pay; no per-person
+        figure; groups of fewer than 3 people are not shown. Only a reader granted hr or
+        ops-management sees any figure (state not_granted otherwise)."""
+        return backend.labour(who)
+
     @app.get("/api/brief/weekly", response_model=m.Brief, tags=["briefs"],
              responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
     def weekly_review(week: Optional[date] = Query(None, description="Any day of the week "
@@ -365,6 +425,27 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         weekly figure against the week before. Generated from the records you may read, no
         model call; every figure cites its sources and nothing hidden is counted."""
         return backend.weekly_review(who, week)
+
+    @app.get("/api/meetings/follow-up/{meeting_id}", response_model=m.MeetingFollowUp,
+             tags=["briefs"], responses={401: {"model": m.ErrorResponse},
+                                         404: {"model": m.ErrorResponse}})
+    def meeting_follow_up(meeting_id: str, who: Reader = Depends(reader)) -> m.MeetingFollowUp:
+        """A recorded meeting's follow-up: summary, decisions, action items with the work
+        prepared for each (a draft to approve and send, a document pack, a write intent for
+        the write desk, a proposed Planner task or an answer computed now) and their status.
+        Only the meeting's organiser and attendees see it; an HR meeting needs the hr
+        marking. Nothing is sent or written here."""
+        if len(meeting_id) > 200:
+            return problem("invalid_request", 422)
+        return backend.meeting_follow_up(who, meeting_id)
+
+    @app.get("/api/meetings/action-items", response_model=m.MyActionItems, tags=["briefs"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def my_action_items(person: Optional[str] = Query(None, max_length=200),
+                        who: Reader = Depends(reader)) -> m.MyActionItems:
+        """My action items from recorded meetings (``person``: another person's, shown only
+        for meetings you organised), open and overdue first."""
+        return backend.my_action_items(who, person)
 
     @app.get("/api/brief/{object_type}/{object_id:path}", response_model=m.Brief,
              tags=["briefs"], responses={401: {"model": m.ErrorResponse},
@@ -416,6 +497,47 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                     who: Reader = Depends(reader)) -> m.ActionsLog:
         """Your confirmed actions, newest first, from the actions journal."""
         return backend.actions_log(who, limit)
+
+    # ---- approve-to-write (operating.write_intents) ------------------------------------
+    _wr = {401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+           404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+           422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}}
+
+    @app.post("/api/writes", response_model=m.WriteIntentView, tags=["writes"], responses=_wr)
+    def write_prepare(body: m.WritePrepare, who: Reader = Depends(reader)) -> m.WriteIntentView:
+        """Record an exact entry for a business system (a BC purchase order, sales order,
+        purchase order line change, vendor or customer note) with its precondition, reason
+        and citations, as you. The same entry again returns the same intent. Nothing is
+        written."""
+        return backend.write_prepare(who, body)
+
+    @app.get("/api/writes", response_model=m.WriteIntentList, tags=["writes"], responses=_wr)
+    def write_list(who: Reader = Depends(reader)) -> m.WriteIntentList:
+        """The write entries you prepared or hold a write grant for, newest first."""
+        return backend.write_list(who)
+
+    @app.get("/api/writes/{intent_id}/preview", response_model=m.WritePreview,
+             tags=["writes"], responses=_wr)
+    def write_preview(intent_id: str, who: Reader = Depends(reader)) -> m.WritePreview:
+        """The entry field by field against the record as read now (read-only), its
+        warnings and refusals, the exact BC API v2.0 request and the undo note."""
+        return backend.write_preview(who, intent_id)
+
+    @app.post("/api/writes/{intent_id}/approve", response_model=m.WriteIntentView,
+              tags=["writes"], responses=_wr)
+    def write_approve(intent_id: str, body: m.WriteApprove, who: Reader = Depends(reader)
+                      ) -> m.WriteIntentView:
+        """Approve the entry you previewed: only with a write grant for its entity, never
+        your own entry, cleared by the people exclusion, warnings acknowledged."""
+        return backend.write_approve(who, intent_id, body)
+
+    @app.post("/api/writes/{intent_id}/execute", response_model=m.WriteIntentView,
+              tags=["writes"], responses=_wr)
+    def write_execute(intent_id: str, body: m.WriteExecute, who: Reader = Depends(reader)
+                      ) -> m.WriteIntentView:
+        """Run an approved entry once per entry: today recorded as "would write" with the
+        exact request; live writing is off."""
+        return backend.write_execute(who, intent_id, body)
 
     # ---- watchlists and alert rules ----------------------------------------------------
 
@@ -520,6 +642,51 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("invalid_request", 422)
         try:
             out = backend.explore(who, object_type, object_id)
+        except (KeyError, LookupError):
+            return problem("not_found", 404)
+        return JSONResponse(out.model_dump(mode="json"))
+
+    @app.get("/api/history/{object_type}/{object_id:path}", response_model=m.RecordHistory,
+             tags=["object"], responses={401: {"model": m.ErrorResponse},
+                                         404: {"model": m.ErrorResponse},
+                                         422: {"model": m.ErrorResponse}})
+    def record_history(object_type: str, object_id: str,
+                       cursor: Optional[str] = Query(None, min_length=1, max_length=512,
+                                                     description="next_cursor of the page "
+                                                     "before, for older changes"),
+                       who: Reader = Depends(reader)) -> Response:
+        """A record's History tab: every change to its values and links over time, newest
+        first, each with when and which system wrote it, as this reader may read them (a
+        value marked beyond them then or since is left out, and the page says some are).
+        Not found reads the same as a record the reader cannot see."""
+        if len(object_type) > 60 or len(object_id) > 700 or not object_id:
+            return problem("invalid_request", 422)
+        try:
+            out = backend.record_history(who, object_type, object_id, cursor)
+        except ValueError:
+            return problem("invalid_request", 422)
+        except (KeyError, LookupError):
+            return problem("not_found", 404)
+        return JSONResponse(out.model_dump(mode="json"))
+
+    @app.get("/api/as-of/{object_type}/{object_id:path}", response_model=m.RecordAsOf,
+             tags=["object"], responses={401: {"model": m.ErrorResponse},
+                                         404: {"model": m.ErrorResponse},
+                                         422: {"model": m.ErrorResponse}})
+    def record_as_of(object_type: str, object_id: str,
+                     at: str = Query(..., min_length=10, max_length=40,
+                                     pattern=r"^\d{4}-\d{2}-\d{2}([T ][0-9:.]+(Z|[+-]\d{2}:?\d{2}))?$",
+                                     description="A date (its end) or an ISO time with zone"),
+                     who: Reader = Depends(reader)) -> Response:
+        """The record as the Workbench had recorded it at a time: its values and its links
+        counted per kind, as this reader may read them. Not found reads the same as a
+        record the reader cannot see, or one not yet recorded then."""
+        if len(object_type) > 60 or len(object_id) > 700 or not object_id:
+            return problem("invalid_request", 422)
+        try:
+            out = backend.record_as_of(who, object_type, object_id, at)
+        except ValueError:
+            return problem("invalid_request", 422)
         except (KeyError, LookupError):
             return problem("not_found", 404)
         return JSONResponse(out.model_dump(mode="json"))

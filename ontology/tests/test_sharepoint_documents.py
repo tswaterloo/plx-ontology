@@ -208,3 +208,33 @@ class SharePointDocumentsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SharePointRemovedAtSourceTests(unittest.TestCase):
+    """A file deleted at source (``absent_after_resync``) is marked
+    ``missing_from_source_since`` its removal, as a removed mail is; a file still
+    present is not (live audit 2026-11-07: removed files were served unmarked)."""
+
+    def test_a_deleted_file_is_missing_from_source_and_the_others_are_not(self):
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        case = CaptureCase("run")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        capture = case.capture()
+        self.assertTrue(capture.run(scope())["complete"])
+        case.drive.delete("01FILEC")
+        self.assertTrue(capture.run(scope())["complete"])
+        compiled = schema_loader.load_schema()
+        path = Path(case.tmp.name) / "removed.sqlite"
+        with SharePointCaptures(case.state) as files:
+            build_store(path, compiled, {"portal_api": StaticPortal([]), "sharepoint": files},
+                        clock=lambda: NOW)
+        conn = sqlite3.connect(path)
+        self.addCleanup(conn.close)
+        rows = {json.loads(k)["id"]: m for k, m in conn.execute(
+            "SELECT native_key, missing_from_source_since FROM objects WHERE "
+            "object_type = 'SharePointFile'")}
+        self.assertIsNotNone(rows["01FILEC"])
+        self.assertEqual([i for i, m in rows.items() if m is None and i == "01FILEC"], [])
+        self.assertGreaterEqual(len(rows), 3)
+        self.assertEqual(sum(m is not None for m in rows.values()), 1)

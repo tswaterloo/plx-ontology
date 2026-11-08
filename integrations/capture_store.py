@@ -1025,6 +1025,21 @@ class CaptureStore:
                                "ORDER BY run_id DESC LIMIT 1", (kind_name, unit)).fetchone()
         return None if row is None else _run_dict(row)
 
+    def unit_holdings(self, kind_name: str) -> dict[str, dict[str, Any]]:
+        """Writer side, one pass for every unit of a kind: whether it holds current
+        records (``held``) and its latest run's ``state`` and ``reason``."""
+        out: dict[str, dict[str, Any]] = {}
+        for row in self._db.execute(
+                "SELECT r.unit, r.state, r.reason FROM runs r JOIN (SELECT unit, "
+                "max(run_id) AS run_id FROM runs WHERE kind = ? GROUP BY unit) l "
+                "ON r.run_id = l.run_id", (kind_name,)):
+            out[row["unit"]] = {"held": False, "state": row["state"], "reason": row["reason"]}
+        for row in self._db.execute(
+                "SELECT DISTINCT unit FROM versions WHERE kind = ? AND superseded_at IS NULL "
+                "AND missing_from_source_since IS NULL", (kind_name,)):
+            out.setdefault(row["unit"], {"state": None, "reason": None})["held"] = True
+        return out
+
     def unit_acl(self, kind_name: str, unit: str) -> dict[str, Any] | None:
         """Writer side (no actor): the unit's latest recorded source ACL (a ``unit_acl``
         kind), or None when none is recorded."""

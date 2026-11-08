@@ -238,6 +238,21 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                                "label": "Customer chasing an order",
                                "departments": ("SALES", "ACCTMGMT", "CS", "OPS"),
                                "check": ("customer_chase",), "hidden": "none"},
+    # pains found in the mail (``operating.proactive_mail_pains``): an expedite and a
+    # shortage rest on mail and on no shipment or receipt being recorded
+    # (``REQUIRES_GRANT``); a supplier's payment chase is finance-marked
+    "expedite_unanswered": {"kinds": ("expedite_unanswered",),
+                            "label": "Expedite with no answer",
+                            "departments": ("OPS", "PROC", "SALES", "CS"),
+                            "check": ("expedite_requests",), "hidden": "none"},
+    "supplier_shortage_open_orders": {"kinds": ("supplier_shortage_open_orders",),
+                                      "label": "Supplier shortage hits open orders",
+                                      "departments": ("PROC", "OPS", "SALES"),
+                                      "check": ("supplier_shortage",), "hidden": "none"},
+    "supplier_chasing_payment": {"kinds": ("supplier_chasing_payment",),
+                                 "label": "Supplier chasing us for payment",
+                                 "departments": ("FIN", "PROC"),
+                                 "check": ("payment_chase",)},
     "tell_before_they_ask": {"kinds": ("tell_before_they_ask",),
                              "label": "Tell the customer before they ask",
                              "departments": ("SALES", "ACCTMGMT", "CS", "OPS"),
@@ -252,9 +267,25 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                           "check": ("commitments",), "hidden": "none"},
     # a person's own mail waiting on their reply: shown to that person only, for every
     # department (``proactive_engine.read_inbox``), never counted as hidden to another
-    "needs_my_reply": {"kinds": ("needs_my_reply",), "label": "Needs your reply",
+    "needs_my_reply": {"kinds": ("needs_my_reply", "reply_owed"), "label": "Needs your reply",
                        "departments": (),
-                       "check": ("needs_reply",), "hidden": "none"},
+                       "check": ("needs_reply", "inbox_triage"), "hidden": "none"},
+    # label and artwork changes (``operating.label_changes``): done with no approval, or
+    # requested and not done (the tracked ones show on the item page only)
+    "label_change": {"kinds": ("label_change_unapproved", "label_change_stale"),
+                     "label": "Label or artwork change", "departments": (
+                         "ARTWORK", "QA", "QC", "QUALITY", "PROD", "SALES", "ACCTMGMT"),
+                     "check": ("label_changes",), "hidden": "none"},
+    # mail threads waiting on someone (``operating.proactive_threads``): resting on no later
+    # reply being recorded (``requires``: every audience of the conversation's copies)
+    "approval_waiting": {"kinds": ("approval_waiting",), "label": "Approval waiting",
+                         "departments": ("FIN", "PROC", "SALES", "QUALITY", "OPS",
+                                         "ACCTMGMT", "PROD", "WH"),
+                         "check": ("approvals_waiting",), "hidden": "none"},
+    "chase_escalating": {"kinds": ("chase_escalating",), "label": "Chased again and again",
+                         "departments": ("SALES", "ACCTMGMT", "CS", "OPS", "PROC", "FIN",
+                                         "WH", "QUALITY"),
+                         "check": ("chase_escalation",), "hidden": "none"},
     "quality_hold_aging": {"kinds": ("quality_hold_aging",),
                            "label": "Quality hold getting old",
                            "departments": ("QUALITY", "QA", "QC", "OPS"),
@@ -279,6 +310,10 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                                    "label": "Supplier paid twice",
                                    "departments": ("FIN", "PROC"),
                                    "check": ("duplicate_payables",)},
+    "customer_credits_rising": {"kinds": ("customer_credits_rising",),
+                                "label": "Customer credits and returns rising",
+                                "departments": ("FIN", "ACCTMGMT", "SALES", "QA"),
+                                "check": ("returns_and_credits",)},
     # operations (``operating.proactive_stock``): stock and value are finance-marked; a slow
     # item and an assembly shortfall rest on an absence (``REQUIRES_GRANT``)
     "slow_moving_stock": {"kinds": ("slow_moving_stock",), "label": "Stock not moving",
@@ -317,6 +352,10 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                          "check": ("price_consistency",)},
     # sales (``operating.proactive_sales``): the value is in the event, finance-marked; the
     # claim rests on no order being recorded (``REQUIRES_GRANT``)
+    "priority_order_unfilled": {"kinds": ("priority_order_unfilled",),
+                            "label": "Priority-listed order late or unscheduled",
+                            "departments": ("SALES", "ACCTMGMT", "OPS"),
+                            "check": ("priority_fill_unmet",)},
     "stale_quote": {"kinds": ("stale_quote",), "label": "Quote not converted to an order",
                     "departments": ("SALES", "ACCTMGMT", "OPS", "FIN"),
                     "check": ("stale_quote",)},
@@ -332,9 +371,39 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
     "twins_disagree": {"kinds": ("twins_disagree",), "label": "Systems disagree on a record",
                        "departments": ("OPS", "FIN", "SALES", "PROC"),
                        "check": ("twin_disagreement",)},
+    # integrity (``operating.proactive_integrity``): finance-marked but the tasks; a blocked
+    # account's open orders rest on no closure being recorded (``REQUIRES_GRANT``)
+    "inventory_adjustment": {"kinds": ("inventory_adjustment",),
+                             "label": "Stock written down by hand",
+                             "departments": ("FIN", "WH", "OPS"),
+                             "check": ("inventory_adjustment",)},
+    "blocked_account_activity": {"kinds": ("blocked_account_activity",),
+                                 "label": "Open orders with a blocked account",
+                                 "departments": ("FIN", "SALES", "PROC"),
+                                 "check": ("blocked_account_activity",)},
+    "gl_posting_errors": {"kinds": ("gl_posting_errors",),
+                          "label": "Ledger batch failed to post",
+                          "departments": ("FIN",), "check": ("gl_posting_errors",)},
+    "recurring_task_missed": {"kinds": ("recurring_task_missed",),
+                              "label": "Recurring check missed a cycle",
+                              "departments": ("QUALITY", "QA", "QC", "OPS"),
+                              "check": ("recurring_task_missed",)},
+    # sheet readings (``operating.proactive_sheets``): finance-marked
+    "unapplied_remittance": {"kinds": ("unapplied_remittance",),
+                             "label": "Remittance not applied",
+                             "departments": ("FIN",), "check": ("cash_application",)},
+    "short_payment": {"kinds": ("short_payment",), "label": "Customer paid short",
+                      "departments": ("FIN", "SALES"), "check": ("cash_application",)},
+    "statement_difference": {"kinds": ("statement_difference",),
+                             "label": "Supplier statement differs from our books",
+                             "departments": ("FIN", "PROC"),
+                             "check": ("statement_reconciliation",)},
     "source_stale": {"kinds": ("source_stale",), "label": "Source not updated lately",
                      "departments": ("OPS", "IT", "FIN"), "check": ("stale_captures",),
                      "days": "old"},
+    # an item whose forecast demand exceeds on hand plus inbound (``REQUIRES_GRANT``)
+    "reorder_soon": {"kinds": ("reorder_soon",), "label": "Reorder soon",
+                     "departments": ("PROC", "OPS", "WH"), "check": ("reorder_soon",)},
     # what the AI watcher raised from a cycle of changes (``operating.ai_watcher``), shown
     # only while its switch is on (``optional``: the type and its check are listed only
     # when the check reports a run): routed by the departments the item names, and never
@@ -350,7 +419,7 @@ EVENT_KINDS = tuple(TYPE_OF_KIND)
 # even that some exist). See the module doc.
 # Event types of a person's own mail (``proactive_engine.read_inbox`` shows them to their
 # owner only): always the reader's own, routed whatever the department.
-OWN_MAIL = frozenset({"needs_my_reply"})
+OWN_MAIL = frozenset({"needs_my_reply", "reply_owed"})
 HIDDEN_POLICY = {name: spec.get("hidden", "count") for name, spec in EVENT_TYPES.items()}
 # A type whose days count down to a deadline (days left): its urgency is the horizon the
 # check looks ahead (``proactive_events.EXPIRY_DAYS``) less the days left, so a lot expiring
@@ -374,6 +443,7 @@ CHECK_WORDS = {"late_or_unconfirmed_po": "late purchase orders",
                "customer_payment_behaviour": "customers paying more slowly",
                "early_pay_discounts": "early-pay discounts missed",
                "duplicate_payables": "supplier invoices and payments entered twice",
+               "returns_and_credits": "customers' credits and returns rising",
                "slow_moving_stock": "stock not moving",
                "expiring_lot_stock": "lots with stock expiring",
                "assembly_component_shortfall": "assembly orders short of components",
@@ -381,14 +451,57 @@ CHECK_WORDS = {"late_or_unconfirmed_po": "late purchase orders",
                "freight_cost_anomaly": "freight bills far above usual",
                "price_consistency": "what each customer pays for the same product",
                "stale_quote": "open quotes with no order",
+               "priority_fill_unmet": "priority-listed orders late or unscheduled",
                "duplicate_parties": "customers and suppliers entered twice",
                "key_fields_missing": "key fields missing on active records",
                "twin_disagreement": "systems disagreeing on one record",
-               "stale_captures": "sources not updated lately"}
+               "stale_captures": "sources not updated lately",
+               "reorder_soon": "items to reorder soon",
+               "inventory_adjustment": "stock written down by hand",
+               "blocked_account_activity": "open orders with blocked accounts",
+               "gl_posting_errors": "ledger batches that failed to post",
+               "recurring_task_missed": "recurring checks that missed a cycle",
+               "cash_application": "remittances matched to open invoices",
+               "statement_reconciliation": "supplier statements against our payables"}
 REASON_WORDS = {"time_budget": "time ran out", "event_bound": "only the most recent were read",
                 "impact_bound": "only the first ones were followed",
                 "card_bound": "only the first ones were read",
                 "read_apart": "the rest wait for the vendor-mail pass"}
+
+# Why a rule could not judge some records, in plain words ("cannot check: 12 records lack
+# order lines"); a reason not listed is said by its own name, never dropped.
+UNJUDGED_WORDS = {"no_order_lines": "lack order lines",
+                  "status_missing": "hold no status",
+                  "status_unmapped": "hold a status no rule reads",
+                  "no_required_date": "hold no required date",
+                  "required_date_default": "hold only an import or default required date",
+                  "required_date_disputed": "hold two different required dates",
+                  "no_need_date": "hold no due date",
+                  "need_date_disputed": "hold two different due dates",
+                  "fulfilment_unsettled": "have a shipment or invoice not yet confirmed as theirs",
+                  "closed_in_unsettled_twin": "may be closed in an unconfirmed copy",
+                  "date_unparseable": "hold a date that cannot be read",
+                  "not_projected": "are not in the records yet"}
+
+
+def data_notes(inbox: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """What the checks could not judge, as data-quality notes per check and reason: only
+    the counts this reader's own trimmed read gives (``read_inbox``'s ``rules``), never
+    a record named."""
+    out = []
+    for rule in inbox.get("rules") or ():
+        if not isinstance(rule, Mapping):
+            continue
+        name = str(rule.get("rule"))
+        for reason, n in sorted((rule.get("not_evaluated_by_reason") or {}).items()):
+            if not isinstance(n, int) or n <= 0:
+                continue
+            words = UNJUDGED_WORDS.get(reason, str(reason).replace("_", " "))
+            out.append({"check": name, "reason": reason, "count": n,
+                        "words": f"{CHECK_WORDS.get(name, name)}: cannot check {n} "
+                                 f"record{'' if n == 1 else 's'} that {words}"})
+    return out
+
 
 RANK_BASIS = ("Your own items first (records you are named on, that your mail mentions, or "
               "whose supplier or customer writes to you), then by customer orders affected, then money involved (largest first within "
@@ -483,6 +596,14 @@ NEXT_ACTIONS = {
     "customer_chasing_order": ("Send the customer the drafted status reply (nothing is sent "
                                "until you send it) and tell the account's rep.",
                                "chase_reply_status"),
+    "expedite_unanswered": ("Answer the expedite with the date that will hold, or chase "
+                            "the other side for one.", "expedite_answer_date"),
+    "supplier_shortage_open_orders": ("Get the supplier's new date or quantity, then re-plan "
+                                      "or tell the customers of the orders it hits.",
+                                      "shortage_replan_tell"),
+    "supplier_chasing_payment": ("Check whether the supplier's invoice is paid; if not, "
+                                 "schedule it and tell the supplier when.",
+                                 "payable_answer_supplier"),
     "tell_before_they_ask": ("Tell the customer where the order stands before its date, "
                              "with the drafted note (nothing is sent until you send it).",
                              "chase_tell_first"),
@@ -492,6 +613,13 @@ NEXT_ACTIONS = {
                           "was promised.", "promise_missed_tell"),
     "needs_my_reply": ("Reply to the message, or hand it to who should answer.",
                        "reply_or_hand_off"),
+    "label_change": ("Record who approved the change, or make it and tell the requester.",
+                     "label_change_follow_up"),
+    "approval_waiting": ("Decide the approval, or send the approver the drafted nudge "
+                         "(nothing is sent until you send it).", "approval_nudge"),
+    "chase_escalating": ("Find who owns the answer, send the chaser a holding reply with "
+                         "the date it will come (nothing is sent until you send it), and "
+                         "raise it with the owner's lead.", "chase_escalate_owner"),
     "quality_hold_aging": ("Ask QC to release or reject the held stock; the orders waiting "
                            "on it are held up until then.", "hold_decide_release"),
     "reject_trend": ("Review the rejects with QC and, for a supplier's lots, send the drafted "
@@ -508,6 +636,9 @@ NEXT_ACTIONS = {
     "duplicate_supplier_payment": ("Check the two payments and ask the supplier for a "
                                    "refund or a credit on the next invoice.",
                                    "duplicate_payment_recover"),
+    "customer_credits_rising": ("Review the customer's credit notes for one product, "
+                                "shipment or price behind them, and talk to the account.",
+                                "credits_account_review"),
     "slow_moving_stock": ("Decide what to do with the stock: sell it off, use it in another "
                           "product, return it to the supplier or write it down.",
                           "slow_stock_decide"),
@@ -529,6 +660,9 @@ NEXT_ACTIONS = {
     "price_below_cost": ("Stop quoting the product at this price: check the agreed price "
                          "and the cost, and reprice the customer's next order.",
                          "price_below_cost_reprice"),
+    "priority_order_unfilled": ("Set a ship date for the priority-listed order (or expedite "
+                                "the late one) and confirm it to the customer.",
+                                "priority_order_schedule"),
     "stale_quote": ("Follow up with the customer on the open quote: ask what holds the "
                     "decision, renew the offer if it lapsed, and close it if the deal is "
                     "lost.", "quote_follow_up"),
@@ -541,6 +675,24 @@ NEXT_ACTIONS = {
                        "twins_reconcile"),
     "source_stale": ("Check that the source's capture is running and restart it if it "
                      "stopped.", "source_capture_check"),
+    "reorder_soon": ("Raise a purchase order for the shortfall now, or expedite an open "
+                     "one, before the forecast demand uses up the stock.", "reorder_raise_po"),
+    "inventory_adjustment": ("Ask the warehouse why the item was written down and post a "
+                             "loss, damage or correction against the right account.",
+                             "adjustment_review"),
+    "blocked_account_activity": ("Hold the open orders, or have finance lift the block "
+                                 "before they ship or are received.", "blocked_account_hold"),
+    "gl_posting_errors": ("Correct the entries (open the period or the account) and post "
+                          "the batch before month end.", "gl_batch_post"),
+    "recurring_task_missed": ("Check the task was done; record it, or do it now and keep "
+                              "the schedule.", "recurring_task_check"),
+    "unapplied_remittance": ("Find the payment in the bank and apply it to the invoices "
+                             "the remittance lists.", "cash_apply"),
+    "short_payment": ("Ask the customer about the short amount: a deduction to accept, a "
+                      "dispute to settle or a balance to collect.", "short_pay_follow_up"),
+    "statement_difference": ("Reconcile each item with the supplier: request a missing "
+                             "invoice, confirm a payment, or correct our books.",
+                             "statement_reconcile"),
 }
 # The next step in the words of the department that acts on it, for a reader routed by
 # department (an Executive or admin reader, routed every type, gets the general step above):
@@ -667,6 +819,28 @@ NEXT_ACTIONS_BY_DEPARTMENT: dict[str, dict[str, tuple[str, str]]] = {
                   "hold (nothing is sent until you send it).", "chase_reply_status"),
         "OPS": ("Confirm what is holding the order up and the date it will ship, so Sales "
                 "can answer the customer.", "chase_confirm_date"),
+    },
+    "expedite_unanswered": {
+        "OPS": ("Confirm the date the order can ship or the PO can arrive, and answer the "
+                "expedite.", "expedite_confirm_date"),
+        "PROC": ("Chase the supplier for a firm date on the expedited purchase order.",
+                 "expedite_chase_supplier"),
+        "SALES": ("Tell the customer the date that will hold for the expedited order.",
+                  "expedite_tell_customer"),
+    },
+    "supplier_shortage_open_orders": {
+        "PROC": ("Ask the supplier for its new date or quantity, or find another source.",
+                 "shortage_ask_supplier"),
+        "OPS": ("Re-plan the open orders that depend on the short purchase order.",
+                "shortage_replan"),
+        "SALES": ("Tell the customers of the affected orders before their dates.",
+                  "shortage_tell_customers"),
+    },
+    "supplier_chasing_payment": {
+        "FIN": ("Check the supplier's invoice: pay it or tell the supplier when it will be "
+                "paid.", "payable_pay_or_date"),
+        "PROC": ("Make sure the supplier's chase is answered so supply is not held.",
+                 "payable_protect_supply"),
     },
     "tell_before_they_ask": {
         "SALES": ("Send the customer the drafted note on where the order stands before its "
@@ -920,7 +1094,12 @@ def _check_state(inbox: Mapping[str, Any], name: str) -> tuple[str, str]:
         return "partial", "partly checked this run" + (
             f" ({'; '.join(w for w in why if w)})" if any(why) else "")
     if status == "failed":
-        return "failed", "could not be checked this run"
+        failed = at_words((inbox.get("failed_at") or {}).get(name))
+        return "failed", (f"check failed at {failed}" if failed else
+                          "could not be checked this run") + (
+            "; its earlier findings are shown marked as not rechecked")
+    if status == "not_set_up":
+        return "not_checked", "not set up yet"
     if status == "blocked":
         from .proactive_stock import field_words
 
@@ -1024,7 +1203,7 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
                 "rank_basis": RANK_BASIS, "routing": _routing_out(routing),
                 "last_visit": last_visit, "as_of": None, "run_at": None, "complete": False,
                 "since_visit": since_visit, "late_total": None, "yours": 0,
-                "involvement": None,
+                "involvement": None, "carried": 0, "data_notes": [],
                 "today": today_line({"status": "unavailable"})}
     run_at = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
     visible: list[Item] = []
@@ -1098,6 +1277,9 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
             # checks whose findings are of older data than served now: not listed until
             # they run over it (``proactive_engine.read_inbox``)
             "refreshing": list(inbox.get("refreshing") or ()),
+            # of the items, those carried from an earlier or failed check (marked)
+            "carried": sum(1 for i in shown if i.get("carried")),
+            "data_notes": data_notes(inbox),
             "checked_on": inbox.get("checked_on")
             if isinstance(inbox.get("checked_on"), str) else None}
     found["today"] = today_line(found)
@@ -1200,7 +1382,10 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
             "new_since_visit": item.new_since_visit,
             "new_this_generation": item.new_this_generation,
             "yours": bool(item.yours),
-            "involvement": [dict(r) for r in item.yours]}
+            "involvement": [dict(r) for r in item.yours],
+            # a finding from an earlier or failed check: shown marked, never as current
+            **({"carried": dict(gap["carried"])} if isinstance(gap.get("carried"), Mapping)
+               else {})}
 
 
 _AMOUNT_WORDS = {"loss": "lost", "margin_at_stake": "margin at stake",
@@ -1294,11 +1479,20 @@ TODAY_WORDS = {
                                    "damaged again"),
     "customer_chasing_order": ("order", "orders", "was chased by its customer",
                                "chased by customers"),
+    "expedite_unanswered": ("expedite", "expedites", "went unanswered", "unanswered"),
+    "supplier_shortage_open_orders": ("supplier shortage", "supplier shortages",
+                                      "hit open orders", "hitting open orders"),
+    "supplier_chasing_payment": ("supplier payment chase", "supplier payment chases",
+                                 "came in", "chasing us"),
     "tell_before_they_ask": ("order", "orders", "came due for a customer who chases",
                              "to tell customers about first"),
     "commitment_due": ("promise", "promises", "comes due", "due"),
     "commitment_missed": ("promise", "promises", "was missed", "missed"),
     "needs_my_reply": ("message", "messages", "waits on your reply", "waiting on your reply"),
+    "approval_waiting": ("approval", "approvals", "went unanswered", "waiting"),
+    "label_change": ("label or artwork change", "label or artwork changes",
+                     "is not approved or not done", "open"),
+    "chase_escalating": ("thread", "threads", "was chased again and again", "escalating"),
     "quality_hold_aging": ("held batch or lot", "held batches and lots",
                            "stayed on hold too long", "on hold too long"),
     "reject_trend": ("reject trend", "reject trends", "started rising", "rising"),
@@ -1310,6 +1504,8 @@ TODAY_WORDS = {
                                    "was entered twice", "entered twice"),
     "duplicate_supplier_payment": ("supplier payment", "supplier payments", "was made twice",
                                    "made twice"),
+    "customer_credits_rising": ("customer", "customers", "started getting more credits",
+                                "getting more credits"),
     "slow_moving_stock": ("item", "items", "stopped moving", "not moving"),
     "expiring_lot_stock": ("lot with stock", "lots with stock", "came near expiry",
                            "near expiry"),
@@ -1323,6 +1519,17 @@ TODAY_WORDS = {
                           "missing a key field"),
     "twins_disagree": ("record", "records", "has systems disagreeing", "disagreeing"),
     "source_stale": ("source", "sources", "was not updated lately", "not updated lately"),
+    "inventory_adjustment": ("item", "items", "was written down by hand", "written down"),
+    "blocked_account_activity": ("blocked account", "blocked accounts", "has open orders",
+                                 "with open orders"),
+    "gl_posting_errors": ("ledger batch", "ledger batches", "failed to post",
+                          "failed to post"),
+    "recurring_task_missed": ("recurring check", "recurring checks", "missed a cycle",
+                              "missed a cycle"),
+    "unapplied_remittance": ("remittance", "remittances", "is not applied", "not applied"),
+    "short_payment": ("short payment", "short payments", "paid short", "paid short"),
+    "statement_difference": ("supplier statement", "supplier statements",
+                             "differs from our books", "differing from our books"),
     "freight_cost_anomaly": ("freight bill", "freight bills", "came in far above usual",
                              "far above usual"),
     "price_below_typical": ("customer price", "customer prices", "fell far below the usual",
@@ -1331,6 +1538,9 @@ TODAY_WORDS = {
     "price_below_cost": ("customer price", "customer prices", "fell below cost",
                          "below cost"),
     "stale_quote": ("quote", "quotes", "went stale with no order", "with no order"),
+    "reorder_soon": ("item", "items", "needs reordering soon", "to reorder soon"),
+    "priority_order_unfilled": ("priority-listed order", "priority-listed orders",
+                                "is late or unscheduled", "late or unscheduled"),
 }
 TODAY_PARTS = 3   # the line names the worst types; the rest are "and N more"
 
@@ -1376,10 +1586,14 @@ def today_line(briefing: Mapping[str, Any]) -> str:
     # what the reader can't open is a count only (``HIDDEN_POLICY``), never which kind
     unopened = f"; {hidden} more you can't open" if hidden else ""
     # checks last run on older data: their findings are held back, never "nothing"
+    carried = int(briefing.get("carried") or 0)
     behind = (" Some checks are re-running on the latest data"
               + (f" (last checked {at_words(briefing['checked_on']) or str(briefing['checked_on'])[:10]})"
                  if briefing.get("checked_on") else "")
               + ", so more may show shortly.") if briefing.get("refreshing") else ""
+    if carried:
+        behind += (f" {carried} item{' is' if carried == 1 else 's are'} from an earlier "
+                   "check, marked with when it was last checked.")
     if new:
         lead = "Since your last visit: " if visit else "In the latest check: "
         return lead + "; ".join(parts(new, True)) + "." + behind

@@ -42,7 +42,13 @@ function Row({ row }: { row: BriefRow }) {
         ) : (
           <span className="font-medium">{row.label}</span>
         )}
-        {row.detail && <p className="text-muted">{row.detail}</p>}
+        {(row.who || row.detail) && (
+          <p className="text-muted">
+            {row.who && <span data-testid="brief-row-who">{row.who}</span>}
+            {row.who && row.detail ? " · " : null}
+            {row.detail}
+          </p>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-3 text-muted">
         {row.amount && <span className="tabular-nums text-fg">{formatMoney(row.amount.amount, row.amount.currency)}</span>}
@@ -72,6 +78,7 @@ const EMPTY: Record<string, string> = {
   empty: "Nothing here you may read.",
   finance_marked: "Finance-marked: shown only to readers who hold finance.",
   unread: "Could not be read: this is not the same as none.",
+  blocked: "Not shown: the people exclusion is not loaded. This is not the same as none.",
 };
 
 export function BriefSectionView({ section }: { section: BriefSection }) {
@@ -116,7 +123,10 @@ export function BriefView({ brief, eyebrow }: { brief: Brief; eyebrow: string })
       <PageHeader
         eyebrow={eyebrow}
         title={brief.title}
-        sub={brief.when ? `${formatDate(brief.when)} · read ${formatDate(brief.as_of)}` : `Read ${formatDate(brief.as_of)}`}
+        sub={
+          (brief.when ? `${formatDate(brief.when)} · read ${formatDate(brief.as_of)}` : `Read ${formatDate(brief.as_of)}`) +
+          (brief.stored_at ? ` · kept ${formatDate(brief.stored_at)}` : "")
+        }
         actions={
           ask && (
             <Link href={ask} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium" title="Ask for a checked summary">

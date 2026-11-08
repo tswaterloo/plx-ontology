@@ -111,6 +111,50 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Approvals Queue
+         * @description Every pending approval on your alert list (mail asks with no answer from the
+         *     approver, Mission Control approvals), by who it waits on and how long, each with a
+         *     drafted nudge. Nothing is sent.
+         */
+        get: operations["approvals_queue_api_approvals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/as-of/{object_type}/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Record As Of
+         * @description The record as the Workbench had recorded it at a time: its values and its links
+         *     counted per kind, as this reader may read them. Not found reads the same as a
+         *     record the reader cannot see, or one not yet recorded then.
+         */
+        get: operations["record_as_of_api_as_of__object_type___object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ask": {
         parameters: {
             query?: never;
@@ -456,6 +500,29 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/history/{object_type}/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Record History
+         * @description A record's History tab: every change to its values and links over time, newest
+         *     first, each with when and which system wrote it, as this reader may read them (a
+         *     value marked beyond them then or since is left out, and the page says some are).
+         *     Not found reads the same as a record the reader cannot see.
+         */
+        get: operations["record_history_api_history__object_type___object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/home": {
         parameters: {
             query?: never;
@@ -465,6 +532,51 @@ export type paths = {
         };
         /** Home */
         get: operations["home_api_home_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/label-changes/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Label Changes
+         * @description The item page's label and artwork section: changes requested, approved, done,
+         *     stale or with no approval, from your own alert list.
+         */
+        get: operations["label_changes_api_label_changes__object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/labour": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Labour
+         * @description Labour hours from the department time sheets: department and week totals of
+         *     hours, overtime hours and headcount-days, the overtime trend and the overtime-spike
+         *     alert (30% over a department's 8-week median). Hours only, never pay; no per-person
+         *     figure; groups of fewer than 3 people are not shown. Only a reader granted hr or
+         *     ops-management sees any figure (state not_granted otherwise).
+         */
+        get: operations["labour_api_labour_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -503,6 +615,51 @@ export type paths = {
         };
         /** Me */
         get: operations["me_api_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/action-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My Action Items
+         * @description My action items from recorded meetings (``person``: another person's, shown only
+         *     for meetings you organised), open and overdue first.
+         */
+        get: operations["my_action_items_api_meetings_action_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/follow-up/{meeting_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Meeting Follow Up
+         * @description A recorded meeting's follow-up: summary, decisions, action items with the work
+         *     prepared for each (a draft to approve and send, a document pack, a write intent for
+         *     the write desk, a proposed Planner task or an answer computed now) and their status.
+         *     Only the meeting's organiser and attendees see it; an HR meeting needs the hr
+         *     marking. Nothing is sent or written here.
+         */
+        get: operations["meeting_follow_up_api_meetings_follow_up__meeting_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -569,6 +726,51 @@ export type paths = {
          *     reference (e.g. a PO number) resolved within ``object_type``.
          */
         get: operations["object_page_api_object__object_type___object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/record-pack/{object_type}/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Record Pack
+         * @description The documents a customer or supplier usually asks for about this record (invoice,
+         *     packing slip, BOL, COA, confirmation, ...), found in captured attachments,
+         *     SharePoint and originals around it as you may read them, and a drafted reply.
+         *     Nothing is sent: the draft goes through ``/api/actions/*`` and your confirm.
+         */
+        get: operations["record_pack_api_record_pack__object_type___object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/replies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reply Triage
+         * @description What needs your reply today: your own mail and one-to-one chats where someone
+         *     asked you something you have not answered, heaviest first, each with a drafted
+         *     reply. Only your own mailbox. Nothing is sent.
+         */
+        get: operations["reply_triage_api_replies_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -780,6 +982,138 @@ export type paths = {
          * @description Delete one of your rules.
          */
         delete: operations["watch_rule_delete_api_watch_rules__rule_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workload
+         * @description Open threads awaiting reply, open tasks and alerts per team; per person only
+         *     your own and the teams the owner granted you. Counts only.
+         */
+        get: operations["workload_api_workload_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workload/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assign Workload Grants
+         * @description The owner assigns each person's team and the teams each manager sees per
+         *     person (kept in the Workbench's own data directory).
+         */
+        post: operations["assign_workload_grants_api_workload_grants_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/writes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Write List
+         * @description The write entries you prepared or hold a write grant for, newest first.
+         */
+        get: operations["write_list_api_writes_get"];
+        put?: never;
+        /**
+         * Write Prepare
+         * @description Record an exact entry for a business system (a BC purchase order, sales order,
+         *     purchase order line change, vendor or customer note) with its precondition, reason
+         *     and citations, as you. The same entry again returns the same intent. Nothing is
+         *     written.
+         */
+        post: operations["write_prepare_api_writes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/writes/{intent_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Write Approve
+         * @description Approve the entry you previewed: only with a write grant for its entity, never
+         *     your own entry, cleared by the people exclusion, warnings acknowledged.
+         */
+        post: operations["write_approve_api_writes__intent_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/writes/{intent_id}/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Write Execute
+         * @description Run an approved entry once per entry: today recorded as "would write" with the
+         *     exact request; live writing is off.
+         */
+        post: operations["write_execute_api_writes__intent_id__execute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/writes/{intent_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Write Preview
+         * @description The entry field by field against the record as read now (read-only), its
+         *     warnings and refusals, the exact BC API v2.0 request and the undo note.
+         */
+        get: operations["write_preview_api_writes__intent_id__preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1159,6 +1493,120 @@ export type components = {
             /** @description How we know (optional: older clients ignore it). */
             trail?: components["schemas"]["EvidenceTrail"] | null;
         };
+        /** ApprovalGroup */
+        ApprovalGroup: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["ApprovalItem"][];
+            /** Oldest Days */
+            oldest_days: number;
+            /** Waiting On */
+            waiting_on: string;
+        };
+        /** ApprovalItem */
+        ApprovalItem: {
+            /** Aging */
+            aging: string;
+            /** Asked By */
+            asked_by?: string | null;
+            /**
+             * Card Id
+             * @description The nudge's card for ``/api/actions/*``.
+             */
+            card_id?: string | null;
+            /** Channel */
+            channel: string;
+            /** Citations */
+            citations?: string[];
+            /** Days */
+            days: number;
+            /** Family */
+            family?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            nudge: components["schemas"]["ApprovalNudge"];
+            /** Object Id */
+            object_id?: string | null;
+            /** Offers */
+            offers?: components["schemas"]["CardActionOffer"][];
+            /** Summary */
+            summary?: string | null;
+            /** Waiting On */
+            waiting_on?: string[];
+        };
+        /** ApprovalNudge */
+        ApprovalNudge: {
+            /** Body */
+            body: string;
+            /**
+             * Channel
+             * @enum {string}
+             */
+            channel: "email" | "teams";
+            /**
+             * Sent
+             * @constant
+             */
+            sent: false;
+            /**
+             * Status
+             * @constant
+             */
+            status: "draft_not_sent";
+            /** Subject */
+            subject: string;
+            /** To */
+            to?: {
+                [key: string]: string;
+            }[];
+        };
+        /**
+         * ApprovalsQueue
+         * @description Every pending approval on your own alert list (mail asks no one answered, Mission
+         *     Control gates), grouped by who it waits on, oldest first, each with a nudge drafted.
+         *     Nothing is sent or written.
+         */
+        ApprovalsQueue: {
+            /** As Of */
+            as_of: string;
+            /** By Aging */
+            by_aging?: {
+                [key: string]: number;
+            };
+            /** Groups */
+            groups?: components["schemas"]["ApprovalGroup"][];
+            /**
+             * Sent
+             * @constant
+             */
+            sent: 0;
+            /** Total */
+            total: number;
+            /**
+             * Writes
+             * @constant
+             */
+            writes: 0;
+        };
+        /** AsOfLinks */
+        AsOfLinks: {
+            /** Count */
+            count: number;
+            /** Label */
+            label: string;
+        };
+        /** AsOfValue */
+        AsOfValue: {
+            /** Label */
+            label: string;
+            /** Source */
+            source?: string | null;
+            /** Values */
+            values?: string[];
+        };
         /** AskRequest */
         AskRequest: {
             /** Conversation Id */
@@ -1243,6 +1691,11 @@ export type components = {
             possible_parties?: components["schemas"]["ObjectRef"][];
             /** Sections */
             sections: components["schemas"]["BriefSection"][];
+            /**
+             * Stored At
+             * @description When a finished week's review was generated and kept; served again only while your grant is the same and every source it shows still opens for you.
+             */
+            stored_at?: string | null;
             subject?: components["schemas"]["ObjectRef"] | null;
             /** Subject Sources */
             subject_sources?: components["schemas"]["Source"][];
@@ -1314,6 +1767,11 @@ export type components = {
             object?: components["schemas"]["ObjectRef"] | null;
             /** Sources */
             sources?: components["schemas"]["Source"][];
+            /**
+             * Who
+             * @description Who sent a mail or Teams thread, as you may read their person record; only once the people exclusion is loaded.
+             */
+            who?: string | null;
         };
         /** BriefSection */
         BriefSection: {
@@ -1333,10 +1791,10 @@ export type components = {
             rows?: components["schemas"]["BriefRow"][];
             /**
              * State
-             * @description finance_marked: shown only to a reader holding finance (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list) could not be read, which is not the same as none.
+             * @description finance_marked: shown only to a reader holding finance (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, which is not the same as none; blocked: the people exclusion is not loaded, so no mail, Teams or meeting line is shown.
              * @enum {string}
              */
-            state: "shown" | "empty" | "partial" | "finance_marked" | "unread";
+            state: "shown" | "empty" | "partial" | "finance_marked" | "unread" | "blocked";
             /** Title */
             title: string;
         };
@@ -1355,6 +1813,12 @@ export type components = {
             /** As Of */
             as_of?: string | null;
             /**
+             * Carried
+             * @description How many items are from an earlier or failed check (each marked by its carried words).
+             * @default 0
+             */
+            carried: number;
+            /**
              * Checked On
              * @description While refreshing: when the checks left out last ran (ISO time).
              */
@@ -1371,6 +1835,11 @@ export type components = {
              * @default true
              */
             counts_exact: boolean;
+            /**
+             * Data Notes
+             * @description What the checks could not judge, per check and reason, as counts only: e.g. 'late customer orders: cannot check 12 records that lack order lines'.
+             */
+            data_notes?: string[];
             /** Departments */
             departments?: string[];
             /**
@@ -1510,7 +1979,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** First Found */
             first_found?: string | null;
             /**
@@ -1542,7 +2011,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** In Top */
             in_top: number;
             /** Label */
@@ -1579,6 +2048,11 @@ export type components = {
              */
             amount_suspect?: string | null;
             /**
+             * Carried
+             * @description Set when this item is from an earlier or failed check, never current: e.g. 'check failed at 2026-11-07 2:00 PM ET; last checked 2026-11-06 2:00 PM ET'. Null: found by the latest check.
+             */
+            carried?: string | null;
+            /**
              * Counterpart
              * @description A purchase order's supplier as this reader reads it (one supplier only); null when not readable or not a PO.
              */
@@ -1592,7 +2066,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /**
              * Evidence
              * @description 'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.
@@ -1664,7 +2138,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** Items */
             items?: components["schemas"]["BriefingItem"][];
             /**
@@ -1725,6 +2199,29 @@ export type components = {
             score: number | null;
             /** Type */
             type: string;
+        };
+        /**
+         * CaptureAlarm
+         * @description Capture sources that have not succeeded for twice their normal interval, or a
+         *     capture service that keeps failing to start (``operating.ops_health``).
+         */
+        CaptureAlarm: {
+            /**
+             * Line
+             * @description The health line Home shows, e.g. 'captures not refreshed: mail, teams (oldest 23 h)'.
+             */
+            line: string;
+            /**
+             * Stalled
+             * @description Capture sources past twice their normal interval.
+             */
+            stalled?: string[];
+            /**
+             * Start Loop
+             * @description The capture service keeps failing to start.
+             * @default false
+             */
+            start_loop: boolean;
         };
         /**
          * CardActionOffer
@@ -2373,6 +2870,8 @@ export type components = {
             as_of?: string | null;
             /** @description The next projection build waits for disk space; the label says how much ('next build waits for 374 GB free'). */
             build_wait?: components["schemas"]["BuildWait"] | null;
+            /** @description Set when captures are stalled: Home shows its line. */
+            capture_alarm?: components["schemas"]["CaptureAlarm"] | null;
             /** @description Derived data made by older code than the code deployed: the label says it is being refreshed; never presented as current. */
             derived_code?: components["schemas"]["DerivedCode"] | null;
             /** @description Documents the latest delta cycle has not read yet; the label names them, and on a record's page whether its document fields are pending. */
@@ -2463,6 +2962,74 @@ export type components = {
              * @description A shared unit's human label, or the one unnamed bucket for other people's mail, chats and files.
              */
             owner_or_team: string;
+        };
+        /** HistoryChange */
+        HistoryChange: {
+            /**
+             * After
+             * @description Its values from then on.
+             */
+            after?: string[];
+            /**
+             * Before
+             * @description Its values just before.
+             */
+            before?: string[];
+            /**
+             * Label
+             * @description The property in words, e.g. 'PO number'.
+             */
+            label: string;
+            /**
+             * More
+             * @description True when more values were recorded than shown.
+             * @default false
+             */
+            more: boolean;
+            /** Property */
+            property: string;
+        };
+        /** HistoryEntry */
+        HistoryEntry: {
+            /**
+             * At
+             * @description When the capture first held it (ISO, UTC).
+             */
+            at: string;
+            /** Changes */
+            changes?: components["schemas"]["HistoryChange"][];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "first_recorded" | "changed" | "link_added" | "link_removed" | "removed_from_source" | "restored";
+            /** @description The record linked or unlinked. */
+            link?: components["schemas"]["ExploreNode"] | null;
+            /**
+             * Link Label
+             * @description The kind of link in words.
+             */
+            link_label?: string | null;
+            /**
+             * More Changes
+             * @default false
+             */
+            more_changes: boolean;
+            /**
+             * Source
+             * @description Who or which system wrote it, e.g. 'BC purchase order'; a link's basis.
+             */
+            source?: string | null;
+            /**
+             * Source Handle
+             * @description The captured version it was read from (an L1 handle).
+             */
+            source_handle?: string | null;
+            /**
+             * Title
+             * @description What happened, in words.
+             */
+            title: string;
         };
         /** HistoryTurn */
         HistoryTurn: {
@@ -2655,6 +3222,169 @@ export type components = {
             object_id: string;
             /** Url */
             url: string;
+        };
+        /** LabelChange */
+        LabelChange: {
+            /** Approved On */
+            approved_on?: string | null;
+            /** Channel */
+            channel?: string | null;
+            /** Citations */
+            citations?: string[];
+            /** Days */
+            days?: number | null;
+            /** Done By */
+            done_by?: string | null;
+            /** Done On */
+            done_on?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** No Approval */
+            no_approval: boolean;
+            /** Requested On */
+            requested_on?: string | null;
+            /** Stale */
+            stale: boolean;
+            /** State */
+            state?: string | null;
+            /** Summary */
+            summary?: string | null;
+        };
+        /**
+         * LabelChanges
+         * @description An item's label and artwork changes on your alert list: requested, approved, done,
+         *     stale, changed with no approval.
+         */
+        LabelChanges: {
+            /** By State */
+            by_state?: {
+                [key: string]: number;
+            };
+            /** Changes */
+            changes?: components["schemas"]["LabelChange"][];
+            /** No Approval */
+            no_approval: number;
+            /** Object Id */
+            object_id: string;
+            /** Stale */
+            stale: number;
+            /** Total */
+            total: number;
+        };
+        /** LabourAlert */
+        LabourAlert: {
+            /** Baseline Median */
+            baseline_median: string;
+            /** Baseline Weeks */
+            baseline_weeks: number;
+            /** Department */
+            department: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "labour_overtime_spike";
+            /** Markings */
+            markings: string[];
+            /** Overtime Hours */
+            overtime_hours: string;
+            /** Rise Percent */
+            rise_percent: string;
+            /** Sources */
+            sources: components["schemas"]["LabourSource"][];
+            /** Week */
+            week: string;
+        };
+        /** LabourPage */
+        LabourPage: {
+            /** Alerts */
+            alerts: components["schemas"]["LabourAlert"][];
+            /** Built At */
+            built_at?: string | null;
+            /** Note */
+            note: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "not_granted" | "not_built";
+            /** Trend */
+            trend: components["schemas"]["LabourTrend"][];
+            /** Weeks */
+            weeks: components["schemas"]["LabourWeek"][];
+        };
+        /** LabourPoint */
+        LabourPoint: {
+            /** Hours */
+            hours: string;
+            /** Overtime Hours */
+            overtime_hours?: string | null;
+            /** Week */
+            week: string;
+        };
+        /** LabourSource */
+        LabourSource: {
+            /**
+             * Handle
+             * @description The captured time-sheet attachment or message it is read from (no file name: a time sheet's name may be a person's).
+             */
+            handle: string;
+            /**
+             * Sent
+             * @description The message's sent date.
+             */
+            sent: string;
+        };
+        /** LabourTrend */
+        LabourTrend: {
+            /** Department */
+            department: string;
+            /** Points */
+            points: components["schemas"]["LabourPoint"][];
+        };
+        /** LabourWeek */
+        LabourWeek: {
+            /** Department */
+            department: string;
+            /**
+             * Headcount Days
+             * @description Person-days with hours; null when a sheet has no day columns.
+             */
+            headcount_days?: number | null;
+            /** Hours */
+            hours: string;
+            /** Markings */
+            markings: string[];
+            /**
+             * Overtime Basis
+             * @description stated: the sheets' overtime columns; over_44_hours: a sheet with none, each person's hours past 44 in the week; mixed: both; fewer_than_3: fewer than 3 people worked overtime, so none is shown.
+             */
+            overtime_basis?: ("stated" | "over_44_hours" | "mixed" | "fewer_than_3") | null;
+            /**
+             * Overtime Hours
+             * @description Null when a sheet of the week has no overtime column.
+             */
+            overtime_hours?: string | null;
+            /**
+             * Run
+             * @description The production run or order the sheet names; null: the department's whole week.
+             */
+            run?: string | null;
+            /** Sources */
+            sources: components["schemas"]["LabourSource"][];
+            /**
+             * Week
+             * @description The Monday the week starts.
+             */
+            week: string;
+            /**
+             * Week Basis
+             * @description stated: the sheet's own week or dates; sent: the message's sent date.
+             * @enum {string}
+             */
+            week_basis: "stated" | "sent";
         };
         /** LandedCost */
         LandedCost: {
@@ -2903,6 +3633,18 @@ export type components = {
             /** Tenant */
             tenant: string;
         };
+        /**
+         * MeetingFollowUp
+         * @description A meeting's follow-up page (``operating.meeting_followup.page``): summary, cited
+         *     decisions, action items with their prepared work, open questions, risks and status.
+         *     Nothing in it is sent or written.
+         */
+        MeetingFollowUp: {
+            /** Follow Up */
+            follow_up: {
+                [key: string]: unknown;
+            };
+        };
         /** Money */
         Money: {
             /**
@@ -2912,6 +3654,18 @@ export type components = {
             amount: string;
             /** Currency */
             currency: string;
+        };
+        /**
+         * MyActionItems
+         * @description One person's meeting action items (only that person and each meeting's organiser).
+         */
+        MyActionItems: {
+            /** Items */
+            items: {
+                [key: string]: unknown;
+            }[];
+            /** Person */
+            person?: string | null;
         };
         /** NeedsAttention */
         NeedsAttention: {
@@ -3716,6 +4470,254 @@ export type components = {
             /** Question */
             question: string;
         };
+        /**
+         * RecordAsOf
+         * @description The record as the Workbench had recorded it at a time: its values and its links
+         *     counted per kind, as this reader may read them (markings judged then and since).
+         */
+        RecordAsOf: {
+            /**
+             * Access Label
+             * @description Set when read under a full-read grant (journalled).
+             */
+            access_label?: string | null;
+            /**
+             * At
+             * @description The time read (the end of the day for a bare date).
+             */
+            at: string;
+            /** Label */
+            label: string;
+            /** Links */
+            links?: components["schemas"]["AsOfLinks"][];
+            /** Message */
+            message?: string | null;
+            /** Object Id */
+            object_id: string;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Type */
+            type: string;
+            /** Values */
+            values?: components["schemas"]["AsOfValue"][];
+        };
+        /**
+         * RecordHistory
+         * @description A record's change log as this reader may read it, newest first, a page at a time.
+         *     A change the reader may not read (a value marked beyond them then or since, a record
+         *     they cannot open) is left out and ``partial`` says so, never how many.
+         */
+        RecordHistory: {
+            /**
+             * Access Label
+             * @description Set when read under a full-read grant (journalled).
+             */
+            access_label?: string | null;
+            /** Entries */
+            entries?: components["schemas"]["HistoryEntry"][];
+            /** Label */
+            label: string;
+            /** Message */
+            message?: string | null;
+            /**
+             * Next Cursor
+             * @description Pass as cursor for older changes.
+             */
+            next_cursor?: string | null;
+            /** Object Id */
+            object_id: string;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Type */
+            type: string;
+        };
+        /**
+         * RecordPack
+         * @description The documents a customer or supplier usually asks for about one record, found around
+         *     it and its linked records as you may read them, with a drafted reply.
+         */
+        RecordPack: {
+            /** Basis */
+            basis: string;
+            /**
+             * Card Id
+             * @description The card the actions take; null when the record's id is too long for a card.
+             */
+            card_id?: string | null;
+            /** Documents */
+            documents?: components["schemas"]["RecordPackDocument"][];
+            draft: components["schemas"]["RecordPackDraft"];
+            /** Draft Missing */
+            draft_missing?: string[];
+            /** Expected */
+            expected?: string[];
+            /** Gaps */
+            gaps?: {
+                [key: string]: string;
+            }[];
+            /** Label */
+            label: string;
+            /** Links */
+            links?: components["schemas"]["PlaybookLink"][];
+            /** Missing */
+            missing?: string[];
+            /** Missing Labels */
+            missing_labels?: string[];
+            /** Object Id */
+            object_id: string;
+            /** Object Type */
+            object_type: string;
+            /** Offers */
+            offers?: components["schemas"]["CardActionOffer"][];
+            /** Records Read */
+            records_read: number;
+            /**
+             * Sent
+             * @constant
+             */
+            sent: false;
+            /**
+             * Writes
+             * @constant
+             */
+            writes: 0;
+        };
+        /** RecordPackDocument */
+        RecordPackDocument: {
+            /** Citation */
+            citation: string;
+            /** Date */
+            date?: string | null;
+            /**
+             * Family
+             * @description What the document is, from its title words (invoice, packing_slip, bol, pod, coa, order_confirmation, tracking, ...).
+             */
+            family: string;
+            /**
+             * Kind
+             * @description attachment, sharepoint_file, original, email or record.
+             */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Title */
+            title?: string | null;
+            /** Url */
+            url?: string | null;
+            /**
+             * Via
+             * @description The record it was found around (the pack's or a linked one).
+             */
+            via: string;
+        };
+        /**
+         * RecordPackDraft
+         * @description The reply to the record's party listing the documents (never sent here: it goes only
+         *     through ``/api/actions/preview`` and your confirm, ``card_id`` = ``card_id``).
+         */
+        RecordPackDraft: {
+            /**
+             * Attach
+             * @description Citations of the documents to attach when you send it.
+             */
+            attach?: string[];
+            /** Body */
+            body: string;
+            /**
+             * Channel
+             * @constant
+             */
+            channel: "email";
+            /** Party */
+            party?: string | null;
+            /**
+             * Status
+             * @constant
+             */
+            status: "draft_not_sent";
+            /** Subject */
+            subject: string;
+            to?: components["schemas"]["PlaybookAddress"] | null;
+        };
+        /** ReplyLine */
+        ReplyLine: {
+            /**
+             * Card Id
+             * @description The reply's card for ``/api/actions/*``.
+             */
+            card_id?: string | null;
+            /** Channel */
+            channel: string;
+            /**
+             * Chases
+             * @default 0
+             */
+            chases: number;
+            /** Citations */
+            citations?: string[];
+            /** Customer Tier */
+            customer_tier?: string | null;
+            /** Days */
+            days: number;
+            draft: components["schemas"]["ApprovalNudge"];
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * New Inquiry
+             * @description A first question from a domain we never mailed (a prospect): low priority, listed last.
+             * @default false
+             */
+            new_inquiry: boolean;
+            /** Object Id */
+            object_id?: string | null;
+            /** Offers */
+            offers?: components["schemas"]["CardActionOffer"][];
+            /** Rank */
+            rank?: number[];
+            /** Records Named */
+            records_named?: {
+                [key: string]: number;
+            };
+            /** Sent */
+            sent?: string | null;
+            /** Subject */
+            subject?: string | null;
+            /** Summary */
+            summary?: string | null;
+        };
+        /**
+         * ReplyTriage
+         * @description What needs your reply today: your own mail and one-to-one chats where someone asked
+         *     you something you have not answered, heaviest first (records named, the customer's
+         *     tier, repeat chases, days waited), each with a holding reply drafted. Only your own
+         *     mailbox; nothing is sent or written.
+         */
+        ReplyTriage: {
+            /** As Of */
+            as_of: string;
+            /** Lines */
+            lines?: components["schemas"]["ReplyLine"][];
+            /**
+             * Sent
+             * @constant
+             */
+            sent: 0;
+            /** Total */
+            total: number;
+            /**
+             * Writes
+             * @constant
+             */
+            writes: 0;
+        };
         /** Source */
         Source: {
             /**
@@ -4512,6 +5514,257 @@ export type components = {
             /** Unread */
             unread: number;
         };
+        /**
+         * Workload
+         * @description Who is overloaded: open threads awaiting reply, open tasks and other alerts, counted
+         *     per team; per person only your own counts and those of the teams the owner granted you.
+         *     Counts only, never message content.
+         */
+        Workload: {
+            /** Granted Teams */
+            granted_teams?: string[];
+            /** People */
+            people?: components["schemas"]["WorkloadPerson"][];
+            /** Teams */
+            teams?: components["schemas"]["WorkloadTeam"][];
+        };
+        /**
+         * WorkloadGrants
+         * @description The owner's assignment: each person's team, and the teams each manager sees per
+         *     person (Entra object ids, team codes in capitals).
+         */
+        WorkloadGrants: {
+            /** Managers */
+            managers?: {
+                [key: string]: string[];
+            };
+            /** Teams */
+            teams?: {
+                [key: string]: string;
+            };
+        };
+        /** WorkloadPerson */
+        WorkloadPerson: {
+            /** Alerts */
+            alerts: number;
+            /** Awaiting Reply */
+            awaiting_reply: number;
+            /** Person */
+            person: string;
+            /** Self */
+            self: boolean;
+            /** Tasks */
+            tasks: number;
+            /** Team */
+            team: string;
+        };
+        /** WorkloadTeam */
+        WorkloadTeam: {
+            /** Alerts */
+            alerts: number;
+            /**
+             * Awaiting Reply
+             * @description Null when fewer than three people make up the team (it would name one).
+             */
+            awaiting_reply?: number | null;
+            /**
+             * Suppressed
+             * @default false
+             */
+            suppressed: boolean;
+            /** Tasks */
+            tasks: number;
+            /** Team */
+            team: string;
+        };
+        /** WriteApprove */
+        WriteApprove: {
+            /**
+             * Acknowledge Warnings
+             * @default false
+             */
+            acknowledge_warnings: boolean;
+            /**
+             * Confirm
+             * @description True only from the person's second (Confirm) click.
+             */
+            confirm: boolean;
+            /** Preview Hash */
+            preview_hash: string;
+        };
+        /** WriteChange */
+        WriteChange: {
+            /** Changed */
+            changed: boolean;
+            /** Current */
+            current?: unknown;
+            /** Field */
+            field: string;
+            /** Proposed */
+            proposed?: unknown;
+        };
+        /** WriteExecute */
+        WriteExecute: {
+            /**
+             * Checked Bc
+             * @description The person checked BC after an unknown outcome and the entry is not there.
+             * @default false
+             */
+            checked_bc: boolean;
+            /** Idempotency Key */
+            idempotency_key: string;
+        };
+        /** WriteHistoryRow */
+        WriteHistoryRow: {
+            /** Actor */
+            actor: string;
+            /** At */
+            at: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "prepared" | "approved" | "would_write" | "written" | "failed" | "pending" | "unknown";
+        };
+        /** WriteIntentList */
+        WriteIntentList: {
+            /** Items */
+            items: components["schemas"]["WriteIntentView"][];
+        };
+        /** WriteIntentView */
+        WriteIntentView: {
+            /** Approved By */
+            approved_by?: {
+                [key: string]: unknown;
+            } | null;
+            /** At */
+            at: string;
+            /** History */
+            history?: components["schemas"]["WriteHistoryRow"][];
+            /** Intent */
+            intent: {
+                [key: string]: unknown;
+            };
+            /**
+             * Missing
+             * @description What a live write lacks.
+             */
+            missing?: string[];
+            /**
+             * Replayed
+             * @default false
+             */
+            replayed: boolean;
+            /**
+             * Request
+             * @description The exact BC API v2.0 request recorded (would write).
+             */
+            request?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "prepared" | "approved" | "would_write" | "written" | "failed" | "pending" | "unknown";
+            /** Text */
+            text: string;
+        };
+        /** WriteLine */
+        WriteLine: {
+            /** Amount */
+            amount?: string | null;
+            /** Fields */
+            fields: {
+                [key: string]: unknown;
+            };
+            /** N */
+            n: number;
+        };
+        /**
+         * WritePrepare
+         * @description An exact entry for a business system, as an autopilot or a person prepared it.
+         */
+        WritePrepare: {
+            /** Citations */
+            citations: string[];
+            /** Company Id */
+            company_id: string;
+            /**
+             * Environment
+             * @description BC environment; absent: Production.
+             */
+            environment?: string | null;
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "purchase_order_create" | "sales_order_create" | "purchase_order_line_update" | "vendor_note" | "customer_note";
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /**
+             * Precondition
+             * @description etag: the record's @odata.etag as read; party_id: the vendor or customer read.
+             */
+            precondition: {
+                [key: string]: string;
+            };
+            /** Reason */
+            reason: string;
+            /**
+             * Record Id
+             * @description The record a change or note is for; absent for a new order.
+             */
+            record_id?: string | null;
+            /**
+             * System
+             * @enum {string}
+             */
+            system: "bc" | "portal";
+        };
+        /**
+         * WritePreview
+         * @description Field by field against the record as read now; nothing is done.
+         */
+        WritePreview: {
+            /** Changes */
+            changes: components["schemas"]["WriteChange"][];
+            /** Current Etag */
+            current_etag?: string | null;
+            /** Intent */
+            intent: {
+                [key: string]: unknown;
+            };
+            /** Intent Id */
+            intent_id: string;
+            /** Label */
+            label: string;
+            /** Lines */
+            lines: components["schemas"]["WriteLine"][];
+            /** Live Missing */
+            live_missing: string[];
+            /** Preview Hash */
+            preview_hash: string;
+            /** Problems */
+            problems: string[];
+            /** Request */
+            request: {
+                [key: string]: unknown;
+            };
+            /** Undo */
+            undo: string;
+            /** Warnings */
+            warnings: components["schemas"]["WriteWarning"][];
+        };
+        /** WriteWarning */
+        WriteWarning: {
+            /** Code */
+            code: string;
+            /** Text */
+            text: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -4764,6 +6017,88 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approvals_queue_api_approvals_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalsQueue"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    record_as_of_api_as_of__object_type___object_id__get: {
+        parameters: {
+            query: {
+                /** @description A date (its end) or an ISO time with zone */
+                at: string;
+            };
+            header?: never;
+            path: {
+                object_type: string;
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordAsOf"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -5073,7 +6408,7 @@ export interface operations {
     briefing_items_api_briefing_items_get: {
         parameters: {
             query: {
-                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale";
+                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "unapplied_remittance" | "short_payment" | "statement_difference";
                 offset?: number;
                 limit?: number;
                 view?: "all" | "since_visit";
@@ -5496,6 +6831,59 @@ export interface operations {
             };
         };
     };
+    record_history_api_history__object_type___object_id__get: {
+        parameters: {
+            query?: {
+                /** @description next_cursor of the page before, for older changes */
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                object_type: string;
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordHistory"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     home_api_home_get: {
         parameters: {
             query?: never;
@@ -5512,6 +6900,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Home"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    label_changes_api_label_changes__object_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabelChanges"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    labour_api_labour_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabourPage"];
                 };
             };
             /** @description Unauthorized */
@@ -5600,6 +7057,104 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    my_action_items_api_meetings_action_items_get: {
+        parameters: {
+            query?: {
+                person?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyActionItems"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    meeting_follow_up_api_meetings_follow_up__meeting_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingFollowUp"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5759,6 +7314,85 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_pack_api_record_pack__object_type___object_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                object_type: string;
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordPack"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reply_triage_api_replies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyTriage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -6183,6 +7817,474 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workload_api_workload_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workload"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    assign_workload_grants_api_workload_grants_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkloadGrants"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkloadGrants"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    write_list_api_writes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WriteIntentList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    write_prepare_api_writes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WritePrepare"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WriteIntentView"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    write_approve_api_writes__intent_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                intent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WriteApprove"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WriteIntentView"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    write_execute_api_writes__intent_id__execute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                intent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WriteExecute"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WriteIntentView"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    write_preview_api_writes__intent_id__preview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                intent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritePreview"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

@@ -5,7 +5,8 @@
 
 import { ApiError, apiErrorFrom } from "./errors";
 import { SseParser } from "./sse";
-import type { Explore, LateList,
+import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
+  WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
   ActionPreview,
   ActionRequest,
@@ -21,6 +22,13 @@ import type { Explore, LateList,
   BriefingSeen,
   BriefingView,
   Brief,
+  RecordPack,
+  MeetingFollowUpResponse,
+  MyActionItemsResponse,
+  ApprovalsQueue,
+  LabelChanges,
+  ReplyTriage,
+  Workload,
   UpcomingMeetings,
   WatcherItemState,
   WatcherItemStateRequest,
@@ -215,6 +223,26 @@ export async function confirmAction(req: ActionConfirm): Promise<ActionResult> {
   return (await (await call("/api/actions/confirm", { method: "POST", json: req })).json()) as ActionResult;
 }
 
+/** The write entries you prepared or may approve (approve-to-write). */
+export function getWrites(signal?: AbortSignal): Promise<WriteIntentList> {
+  return getJson<WriteIntentList>("/api/writes", signal);
+}
+
+/** One write entry field by field against the record as read now; nothing is done. */
+export function previewWrite(intentId: string, signal?: AbortSignal): Promise<WritePreview> {
+  return getJson<WritePreview>(`/api/writes/${encodeURIComponent(intentId)}/preview`, signal);
+}
+
+/** Approve the previewed entry as yourself (the second click of a two-step confirm). */
+export async function approveWrite(intentId: string, req: WriteApprove): Promise<WriteIntentView> {
+  return (await (await call(`/api/writes/${encodeURIComponent(intentId)}/approve`, { method: "POST", json: req })).json()) as WriteIntentView;
+}
+
+/** Run an approved entry once: today recorded as "would write" (live writing is off). */
+export async function executeWrite(intentId: string, req: WriteExecute): Promise<WriteIntentView> {
+  return (await (await call(`/api/writes/${encodeURIComponent(intentId)}/execute`, { method: "POST", json: req })).json()) as WriteIntentView;
+}
+
 /** Each of your cards' latest action by you. */
 export function getActionStates(signal?: AbortSignal): Promise<ActionStates> {
   return getJson<ActionStates>("/api/actions/state", signal);
@@ -233,9 +261,54 @@ export function getMeetingBrief(type: string, id: string, signal?: AbortSignal):
   return getJson<Brief>(`/api/brief/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, signal);
 }
 
+/** Department and week labour hours (hr / ops-management readers only). */
+export function getLabour(signal?: AbortSignal): Promise<LabourPage> {
+  return getJson<LabourPage>("/api/labour", signal);
+}
+
 /** The weekly review of the week holding `week` (YYYY-MM-DD; default last week). */
 export function getWeeklyReview(week?: string, signal?: AbortSignal): Promise<Brief> {
   return getJson<Brief>(`/api/brief/weekly${week ? `?week=${encodeURIComponent(week)}` : ""}`, signal);
+}
+
+/** The record types a document pack is made for (``operating.document_pack.EXPECTED``). */
+export const PACK_TYPES = ["SalesOrder", "CustomerPurchaseOrder", "SalesInvoice", "Shipment", "PurchaseOrder", "SupplierInvoice", "Receipt", "Lot", "Batch"];
+
+/** The documents a party usually asks for about one record, with a drafted reply (never sent here). */
+export function getRecordPack(type: string, id: string, signal?: AbortSignal): Promise<RecordPack> {
+  return getJson<RecordPack>(`/api/record-pack/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, signal);
+}
+
+/** A recorded meeting's follow-up (only for its organiser and attendees). */
+export function getMeetingFollowUp(meetingId: string, signal?: AbortSignal): Promise<MeetingFollowUpResponse> {
+  return getJson<MeetingFollowUpResponse>(`/api/meetings/follow-up/${encodeURIComponent(meetingId)}`, signal);
+}
+
+/** My action items from recorded meetings (or one person's, for meetings I organised). */
+export function getMyActionItems(person?: string | null, signal?: AbortSignal): Promise<MyActionItemsResponse> {
+  const q = person ? `?person=${encodeURIComponent(person)}` : "";
+  return getJson<MyActionItemsResponse>(`/api/meetings/action-items${q}`, signal);
+}
+
+/** Every pending approval on your alert list, by who it waits on, with a drafted nudge each. */
+// Your own "needs my reply" list: only your mailbox and one-to-one chats; drafts are sent
+// only through a card's preview and your confirm.
+export function getReplies(signal?: AbortSignal): Promise<ReplyTriage> {
+  return getJson<ReplyTriage>("/api/replies", signal);
+}
+
+// Counts per team; per person only you and the teams the owner granted you.
+export function getWorkload(signal?: AbortSignal): Promise<Workload> {
+  return getJson<Workload>("/api/workload", signal);
+}
+
+// An item's label and artwork changes from your own alert list.
+export function getLabelChanges(objectId: string, signal?: AbortSignal): Promise<LabelChanges> {
+  return getJson<LabelChanges>(`/api/label-changes/${encodeURIComponent(objectId)}`, signal);
+}
+
+export function getApprovals(signal?: AbortSignal): Promise<ApprovalsQueue> {
+  return getJson<ApprovalsQueue>("/api/approvals", signal);
 }
 
 /** Calendar events in the next 14 days, each with its brief link. */
@@ -271,6 +344,20 @@ export function getObject(type: string, id: string, signal?: AbortSignal, quick 
 export function getExplore(type: string, id: string, signal?: AbortSignal): Promise<Explore> {
   if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
   return getJson<Explore>(`/api/explore/${type}/${encodeURIComponent(id)}`, signal);
+}
+
+/** A record's change log, newest first, a page at a time (`cursor`: the page before's
+ * `next_cursor`), as this reader may read it. */
+export function getHistory(type: string, id: string, cursor?: string | null, signal?: AbortSignal): Promise<RecordHistory> {
+  if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
+  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  return getJson<RecordHistory>(`/api/history/${type}/${encodeURIComponent(id)}${qs}`, signal);
+}
+
+/** The record as recorded at a date (its end) or an ISO time with zone. */
+export function getAsOf(type: string, id: string, at: string, signal?: AbortSignal): Promise<RecordAsOf> {
+  if (!isObjectType(type) || !id || id.length > 700 || !/^\d{4}-\d{2}-\d{2}/.test(at)) return Promise.reject(new ApiError(404, "not_found"));
+  return getJson<RecordAsOf>(`/api/as-of/${type}/${encodeURIComponent(id)}?at=${encodeURIComponent(at)}`, signal);
 }
 
 /** The slow sections of a record's page, read after its quick first read and merged in

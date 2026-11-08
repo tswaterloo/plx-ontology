@@ -289,3 +289,57 @@ class KnowledgeSourceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeptBrainCaptureTests(unittest.TestCase):
+    """The host ingest's brain source (``knowledge_source capture``): a kept store, read
+    again each turn; a principal reads only the namespaces the authority grants it; no
+    brain key is a typed block before any request."""
+
+    def run_capture(self, state, authority_file, principal, client=None, environ=None):
+        import contextlib
+        import io
+        from integrations.knowledge_source import capture_main
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = capture_main(["--state-dir", str(state), "--namespaces",
+                                 str(authority_file), "--principal", principal],
+                                client=client, environ=environ or {})
+        return code, json.loads(out.getvalue())
+
+    def test_kept_store_cardinality_grants_and_missing_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            authority_file = Path(tmp) / "namespaces.json"
+            authority_file.write_text(json.dumps({
+                "schema": "plx-knowledge-namespaces/v1", "tenant": "plx",
+                "namespaces": {"swarm/rag/*": ["svc:host"], "swarm/rag/finance": [],
+                               "swarm/rollup/company": ["staff:engineering"]}}))
+            # no key: blocked with the missing setting named, nothing sent or stored
+            code, report = self.run_capture(Path(tmp) / "nokey", authority_file, "svc:host")
+            self.assertEqual(code, 0)
+            self.assertEqual(report["requests_sent"], 0)
+            self.assertEqual(report["blocked_upstream"][0]["missing_settings"],
+                             ["BRAIN_API_KEY", "VMC_API_KEY"])
+            self.assertFalse(store_path(Path(tmp) / "nokey").exists())
+            # a principal the authority grants nothing: refused before any request
+            client, sender = brain()
+            code, report = self.run_capture(Path(tmp) / "none", authority_file,
+                                            "svc:nobody", client)
+            self.assertEqual((code, report["error"]), (1, "knowledge_namespace_denied"))
+            self.assertEqual(sender.calls, [])
+            for n in (1, 10, 60):
+                state = Path(tmp) / f"n{n}"
+                items = [item(i + 1, "swarm/rag/portal", f"Runbook {i}") for i in range(n)]
+                items += [item(500, "swarm/rag/finance", "Finance close"),
+                          item(501, "swarm/rollup/company", "Company brief")]
+                for turn in (1, 2):   # the same kept store, read again
+                    client, _ = brain(items)
+                    code, report = self.run_capture(state, authority_file, "svc:host",
+                                                    client)
+                    self.assertEqual(code, 0, report)
+                    self.assertEqual((report["kept"], report["complete"]), (n, True), n)
+                    self.assertEqual(report["withheld"], 1)   # the exact deny inside rag/*
+                    self.assertEqual(report["dropped_unrequested"], 1)
+                with CaptureStore(store_path(state), NamespaceAuthority.from_file(
+                        authority_file)) as store:
+                    self.assertEqual(store.units("brain"), ["brain:swarm/rag/portal"])

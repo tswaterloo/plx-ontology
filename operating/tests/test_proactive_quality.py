@@ -106,6 +106,28 @@ class QualityAlerts(Engine):
         self.assertEqual([(g["object_id"], g["follow_up"]["proposal"]["document"]) for g in seen],
                          [tuple(sorted((fm, portal)))])
 
+    def test_a_pair_with_a_blocked_or_deleted_copy_is_low_priority(self):
+        # A blocked or deleted record beside its live twin is most
+        # often the retired copy; still proposed, never dropped, but low priority
+        w = World()
+        live = party(w, "Customer", "portal.app_customer", "Synth Foods Inc",
+                     email="orders@synthfoods.example")
+        blocked = party(w, "Customer", "bc.customer", "SYNTH Foods Inc.",
+                        bc_email="sales@synthfoods.example", bc_blocked="All")
+        twin_a = party(w, "Customer", "fm.customer", "SYNTH Labs Inc",
+                       email="ap@synthlabs.example")
+        twin_b = party(w, "Customer", "portal.app_customer", "Synth Labs Inc",
+                       email="x@synthlabs.example")
+        self.run_rules(w, [q.DUP_RULE])
+        by = {frozenset((g["object_id"], g["follow_up"]["proposal"]["document"])): g
+              for g in self.kinds(q.DUPLICATE)}
+        retired = by[frozenset((live, blocked))]
+        self.assertEqual(retired["follow_up"]["priority"], "low")
+        self.assertIn("blocked or deleted", retired["summary"])
+        both_live = by[frozenset((twin_a, twin_b))]
+        self.assertEqual(both_live["follow_up"]["priority"], "medium")
+        self.assertNotIn("blocked or deleted", both_live["summary"])
+
     def test_duplicate_counts_per_system_pair_and_rejection_of_unknown_names(self):
         from operating.proactive_engine import _Store, _cites, _gap, _result, _Skips
 

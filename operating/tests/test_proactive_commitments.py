@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import json
+import sqlite3
 import time
 import unittest
 
@@ -17,8 +18,9 @@ from operating import proactive_commitments as pcm
 from operating import proactive_engine as pe
 from operating.tests.test_proactive_chasers import (CUSTOMER_MAIL, TextWorld, chat_people,
                                                     customer, order)
-from operating.tests.test_proactive_engine import (AS_OF, EXCLUDED_OID, OURS_OID, Engine,
+from operating.tests.test_proactive_engine import (AS_OF, EXCLUDED_OID, OURS_OID, T0, Engine,
                                                    World, admit, everyone, people)
+from ontology.store import StoreBuilder
 
 RULES = [pcm.COMMITMENTS, pcm.NEEDS_REPLY]
 OURS = "ops@synth-tenant.example"
@@ -44,6 +46,51 @@ def mail(w: World, so: str, sent: date, *, sender: str = OURS, to=(CUSTOMER_MAIL
                           "internet_message_id": f"<c{n if n is not None else w.n}@synth>"},
                 binding="graph_mail.messages", audience=f"mail:{mailbox}")
     w.link("Email.mentions_sales_order", oid, so, tier)
+    return oid
+
+
+class RecentWorld(World):
+    """A store whose mail has the projection's ``Email.received`` events (the index the
+    widened read lists recent mail by)."""
+
+    def __init__(self, *, indexed: bool = True) -> None:
+        super().__init__()
+        self.rows.update(events=[], event_objects=[])
+        self.indexed = indexed
+
+    def build(self, path):
+        builder = StoreBuilder(path)
+        for table, rows in self.rows.items():
+            builder.add(table, rows)
+        builder.set_meta("audience_keys", sorted({r["audience_key"]
+                                                   for r in self.rows["objects"]}))
+        builder.commit(built_at=T0)
+        if self.indexed:   # the Postgres store's events_by_type, on this SQLite file
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE INDEX events_by_type ON events(event_type, time)")
+        return path
+
+
+def sent(w: RecentWorld, when: date, *, so: str | None = None, sender: str = OURS,
+         to=(CUSTOMER_MAIL,), body: str = "Your samples will be ready by Monday.",
+         mailbox: str = OURS_OID, conversation: str = "r-1", n: int | None = None) -> str:
+    """A message of the recent mail, with its received event; ``so``: an order it names."""
+    oid = w.obj("Email", {"subject": "Samples", "sender": sender,
+                          "to_addresses": json.dumps(list(to)), "cc_addresses": "[]",
+                          "sent_at": f"{when.isoformat()}T15:00:00Z", "body_preview": body,
+                          "conversation_id": conversation, "mailbox": mailbox,
+                          "internet_message_id": f"<r{n if n is not None else w.n}@synth>"},
+                binding="graph_mail.messages", audience=f"mail:{mailbox}")
+    if so is not None:
+        w.link("Email.mentions_sales_order", oid, so)
+    event = f"E:{oid}"
+    w.rows["events"].append({
+        "event_id": event, "event_type": "Email.received", "time_basis": "source_recorded",
+        "time": f"{when.isoformat()}T15:00:00.000000Z", "l1_handle": f"h:{oid}",
+        "field_path": "row.received_at", "digest": "d", "lineage": "mail", "markings": "[]",
+        "recorded_at": T0})
+    w.rows["event_objects"].append({"event_id": event, "object_id": oid,
+                                    "qualifier": "subject"})
     return oid
 
 
@@ -77,6 +124,14 @@ class Commitments(Engine):
                 ("We will process the order today", "arrange", "the order", sent),
                 ("I will get it to you by Friday", "send", "what was asked",
                  date(2026, 11, 6)),
+                ("It ships on Friday.", "ship_state", "the order", date(2026, 11, 6)),
+                ("Your order is expected to ship next week", "ship_state", "the order",
+                 date(2026, 11, 13)),
+                ("It will be picked up tomorrow", "ship_state", "the order",
+                 date(2026, 11, 5)),
+                ("The samples will be ready by Monday", "ready", "samples",
+                 date(2026, 11, 9)),
+                ("ETA is Friday.", "arrive", "the order", date(2026, 11, 6)),
                 ("I will send the quote on 11/12", "send", "quote", None)):   # ambiguous
             with self.subTest(text=text):
                 found = pcm.promise(text, sent)
@@ -85,7 +140,16 @@ class Commitments(Engine):
         for text in ("We will not be able to ship by Friday.", "Can you ship by Friday?",
                      "We will need your PO before we can ship.",
                      "> We will ship by Friday\nThanks, received.",
-                     "Please find the invoice attached."):
+                     "Please find the invoice attached.", "Will it ship on Friday?",
+                     "It should arrive soon.", "What is the ETA",
+                     "Please let me know the ETA by Friday.", "We need it ready by Monday.",
+                     "Unfortunately it is not going to be ready by Monday.",
+                     "If we receive your PO today, it ships on Friday.",
+                     "We can ship by Friday if you approve the quote.",
+                     "Can we ship by Friday", "Is it possible to have it ready by Monday",
+                     "The ETA from the supplier was Friday.",
+                     "Once approved we will ship Monday.",
+                     "As soon as the COA is in, we will send it tomorrow."):
             with self.subTest(text=text):
                 self.assertIsNone(pcm.promise(text, sent))
 
@@ -137,6 +201,66 @@ class Commitments(Engine):
         self.assertEqual(by_kind[pcm.DUE]["event"]["promise"],
                          f"Confirm date by {AS_OF.isoformat()} (order SYNTH-DUE)")
         self.assertEqual({g["object_id"] for g in self.kinds(pcm.MISSED, pcm.DUE)}, {so})
+
+    def test_a_dated_promise_to_a_customer_naming_no_open_order_comes_from_recent_mail(self):
+        w = RecentWorld()
+        who = customer(w)
+        open_so = order(w, who, (AS_OF + timedelta(days=30)).isoformat(), number="SYNTH-OPEN")
+        shipped = order(w, who, day(40).isoformat(), number="SYNTH-SHIPPED", status="Shipped")
+        promised = sent(w, day(10), n=1)                         # samples ready: missed
+        sent(w, day(10), mailbox="00000000-0000-4000-8000-0000000000b2", n=1)   # its copy
+        sent(w, day(10), mailbox=EXCLUDED_OID, n=2)              # excluded mailbox
+        sent(w, day(10), to=("someone@synth-unknown.example",), n=3)   # not a customer
+        sent(w, day(10), so=shipped, body="It ships on Friday.", conversation="r-2", n=4)
+        sent(w, day(12), body="We will send the COA tomorrow.", conversation="r-3", n=5)
+        sent(w, day(11), body="Attached as promised.", conversation="r-3", n=6)   # met
+        sent(w, day(10), sender=CUSTOMER_MAIL, to=(OURS,), n=7)   # the customer's
+        sent(w, day(10), body="Thanks, noted.", conversation="r-4", n=8)   # promises nothing
+        sent(w, day(60), n=9)                                    # before the window
+        sent(w, day(10), so=open_so, body="It ships on Friday.", n=10)   # the order rule's
+        summary = self.run_rules(w)
+        self.assertEqual(summary["detectors"][pcm.COMMITMENTS], "complete")
+        gaps = self.kinds(pcm.MISSED, pcm.DUE)
+        self.assertEqual(sorted(g["object_id"] for g in gaps), sorted([promised, open_so]))
+        (gap,) = [g for g in gaps if g["object_id"] == promised]
+        monday = day(10) + timedelta(days=(0 - day(10).weekday()) % 7)
+        self.assertEqual(gap["kind"], pcm.MISSED)
+        self.assertEqual(gap["event"]["promise"], f"Have ready samples by {monday.isoformat()}")
+        self.assertEqual(gap["event"]["to"], who)
+        self.assertNotIn("Your samples", json.dumps(gap))
+        stored = json.loads(json.dumps(gap))
+        self.assertLessEqual(len(stored["event"]["promise"]), pcm.SUMMARY_CHARS)
+        counts = summary["not_evaluated"][pcm.COMMITMENTS]
+        self.assertEqual(counts.get("recent_message_not_cleared"), 1)
+        # a reader without the customer's records or the mailbox sees nothing of it
+        for hidden in (MAILBOX, "api:customers"):
+            with self.subTest(hidden=hidden):
+                self.assertEqual([g["object_id"] for g in self.kinds(
+                    pcm.MISSED, pcm.DUE, may_read=lambda a, h=hidden: a != h)
+                    if g["object_id"] == promised], [])
+
+    def test_recent_mail_past_its_time_budget_is_counted_never_judged(self):
+        w = RecentWorld()
+        customer(w)
+        sent(w, day(10), n=1)
+        budget = pcm.RECENT_SECONDS
+        pcm.RECENT_SECONDS = -1.0
+        try:
+            summary = self.run_rules(w)
+        finally:
+            pcm.RECENT_SECONDS = budget
+        self.assertEqual(self.kinds(pcm.MISSED, pcm.DUE), [])
+        self.assertEqual(summary["not_evaluated"][pcm.COMMITMENTS]
+                         .get("recent_mail_over_budget"), 1)
+
+    def test_a_store_without_the_events_time_index_does_not_read_recent_mail(self):
+        w = RecentWorld(indexed=False)   # a SQLite generation: no (event_type, time) index
+        customer(w)
+        sent(w, day(10), n=1)
+        summary = self.run_rules(w)
+        self.assertEqual(self.kinds(pcm.MISSED, pcm.DUE), [])
+        self.assertEqual(summary["not_evaluated"][pcm.COMMITMENTS]
+                         .get("recent_mail_not_read_no_index"), 1)
 
     def test_without_the_people_exclusion_both_rules_are_blocked(self):
         w = World()
@@ -269,7 +393,7 @@ class Commitments(Engine):
     def test_every_promise_and_question_is_judged_once_at_1_10_and_60(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):
-                w = World()
+                w = RecentWorld()
                 promised, asked = [], []
                 for i in range(n):
                     address = f"buyer{i}@synth-c{i}.example"
@@ -277,6 +401,7 @@ class Commitments(Engine):
                                (AS_OF + timedelta(days=30)).isoformat(), number=f"SYNTH-{i}")
                     mail(w, so, day(10), to=(address,), conversation=f"p{i}")
                     promised.append(so)
+                    promised.append(sent(w, day(10), to=(address,), conversation=f"s{i}"))
                     asked.append(mail(w, so, day(8), sender=address, to=(OURS,),
                                       body="Could you send the COA?", conversation=f"q{i}"))
                 started = time.monotonic()

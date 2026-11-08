@@ -106,10 +106,13 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   ``quality_holds`` (batches and lots on hold past their days, reject trends);
 * ``operating.proactive_cash``: ``customer_payment_behaviour`` (a customer paying slower
   than its own prior year), ``early_pay_discounts`` (a supplier discount missed) and
-  ``duplicate_payables`` (a supplier invoice or payment entered twice), finance-marked;
+  ``duplicate_payables`` (a supplier invoice or payment entered twice),
+  ``returns_and_credits`` (a customer's credit notes rising against its own year), finance-marked;
 * ``operating.proactive_stock``: ``slow_moving_stock`` and ``assembly_component_shortfall``
   (``REQUIRES_GRANT``), ``expiring_lot_stock``, ``certificate_expiry`` and
   ``freight_cost_anomaly`` (finance-marked), each ``blocked`` naming a field not served;
+  ``reorder_soon`` (forecast demand, ``operating.demand_forecast``, past on hand plus
+  inbound; ``REQUIRES_GRANT``, ``blocked`` while on hand is not served);
 * ``operating.proactive_prices``: ``price_consistency`` (a customer paying far below the
   typical price of a product, or below its cost, over the last 180 days), finance-marked;
 * ``operating.proactive_sales``: ``stale_quote`` (a Portal or Business Central quote open past
@@ -161,6 +164,7 @@ from decimal import Decimal
 import functools
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -173,6 +177,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from ontology import store as ostore
 from ontology.units import unit_token
 
+from . import active_population as active
 from . import po_status
 from . import test_records as test_records_rule
 from . import proactive_gaps as pg
@@ -187,11 +192,12 @@ VALUES_CHUNK = 500   # object ids per value read (``_Store.values``)
 SCOPE_CHUNK = 500    # object ids per scoped list or link read (an incremental pass)
 # The link scan (``_Store.links``): threads (every core unless ``SCAN_THREADS_ENV`` says),
 # rowid ranges per thread (a slow range is evened out by the others), the table size from
-# which it splits, and the link rows a run keeps for the rules after it (~1 GB).
+# which it splits, and the link rows a run keeps for the rules after it (~1.6 GB: the
+# 2026-11-08 live store's run link types hold ~3.1M rows).
 SCAN_THREADS_ENV = "PLX_PROACTIVE_SCAN_THREADS"
 LINK_PARTS_PER_THREAD = 4
 PARALLEL_LINK_ROWS = 200_000
-LINK_CACHE_ROWS = 3_000_000
+LINK_CACHE_ROWS = 4_500_000
 LINK_COLUMNS = ("link_id", "link_type", "from_object", "to_object", "tier", "markings")
 KEEP_RUNS = 100
 # The host cycle's full refresh (``after_build(scheduled=)``) starts no detector and makes
@@ -237,22 +243,50 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              # the two largest pains (``operating.proactive_chasers``): customers chasing
              # where an order is, and quality holds aging with rejects rising
              "customer_chase", "quality_holds",
+             # pains found in the mail (``operating.proactive_mail_pains``): expedites with
+             # no answer, supplier shortage notices against open orders, suppliers chasing
+             # us for payment (our chases of customers ride on ``overdue_receivable``)
+             "expedite_requests", "supplier_shortage", "payment_chase",
              # receivables and payables (``operating.proactive_cash``): customers paying
              # slower, early-pay discounts missed, supplier invoices or payments twice
              "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables",
+             "returns_and_credits",
+             # operations (``operating.proactive_stock``): stock not moving, lots expiring with
+             # stock, assembly orders short of components, certificates expiring, freight
+             # bills far above their carrier's and lane's norm
              "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall",
              "certificate_expiry", "freight_cost_anomaly",
              # what each customer pays for the same product (``operating.proactive_prices``)
              "price_consistency",
              # sales (``operating.proactive_sales``): open quotes not converted to an order
              "stale_quote",
+             # priority / fill lists customers send (``operating.business_documents``)
+             "priority_fill_unmet",
              # data quality (``operating.proactive_quality``): duplicate customers and
              # suppliers, key fields missing, twins disagreeing, sources not captured lately
              "duplicate_parties", "key_fields_missing", "twin_disagreement",
              "stale_captures",
+             # an item whose forecast demand exceeds on hand plus inbound
+             # (``operating.demand_forecast``)
+             "reorder_soon",
+             # integrity (``operating.proactive_integrity``): stock written down by hand,
+             # orders with blocked accounts, ledger batches that failed to post, recurring
+             # tasks that missed a cycle
+             "inventory_adjustment", "blocked_account_activity", "gl_posting_errors",
+             "recurring_task_missed",
+             # sheet readings (``operating.proactive_sheets``): remittances matched to open
+             # invoices, supplier statements against our payables
+             "cash_application", "statement_reconciliation",
              # promises we made, due or missed, and mail waiting on its owner's reply
              # (``operating.proactive_commitments``; one message read shared by both)
              "commitments", "needs_reply",
+             # mail threads waiting on someone (``operating.proactive_threads``; one read
+             # by the word index shared by both): approvals unanswered, chases escalating
+             "approvals_waiting", "chase_escalation",
+             # what each person owes a reply in their own mail and one-to-one chats
+             # (``operating.inbox_triage``), label and artwork changes requested, approved
+             # and done (``operating.label_changes``)
+             "inbox_triage", "label_changes",
              # unanswered vendor requests over the whole store's mail (after the late rule:
              # it judges the orders that rule finds open)
              "vendor_no_reply",
@@ -269,6 +303,10 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
 # weighing most (the briefing's first criterion); the margins' reads start with the run
 # (``_margin_head_start``), so their window is what is left of them at their turn.
 DETECTOR_SECONDS_DEFAULT = 600.0
+# How long past its window a detector is waited for before it is cut off (``_run``): its
+# reads stop at the window (the store's progress handler, ``_tick``); this bounds one that
+# does not read the store meanwhile.
+HARD_GRACE_SECONDS = 30.0
 DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     "orders_at_risk": 1500.0, "vendor_terms_unapplied": 600.0,
                     "card_rules": 900.0,
@@ -292,11 +330,16 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # bounded by the open orders' and held batches' records (index reads
                     # only); the order join is shared with the late-order rule
                     "customer_chase": 300.0, "quality_holds": 120.0,
+                    # the mail naming open orders and payables, by the link end indexes
+                    # (dates first, at most ``MAX_MESSAGES`` a rule); the order join and
+                    # the purchase-order source are shared with the late-order rules
+                    "expedite_requests": 60.0, "supplier_shortage": 60.0,
+                    "payment_chase": 60.0,
                     # the Sage AR and AP documents (122k and 73k records) read once per run
                     # on the store's threads (``proactive_cash.read_records``), shared by
                     # the three rules
                     "customer_payment_behaviour": 300.0, "early_pay_discounts": 300.0,
-                    "duplicate_payables": 300.0,
+                    "duplicate_payables": 300.0, "returns_and_credits": 300.0,
                     # operations: index reads of their record types and the links at those
                     # records only (``_Store.touching``), each well under a minute
                     "slow_moving_stock": 60.0, "expiring_lot_stock": 60.0,
@@ -305,14 +348,33 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # every posted invoice line of the last 360 days (two windows; 253 s live
                     # for one, 2026-11-08) and the purchase costs
                     # (the cost-jump rule's reads)
-                    "price_consistency": 600.0, "stale_quote": 60.0,
+                    "price_consistency": 600.0, "stale_quote": 60.0, "priority_fill_unmet": 60.0,
                     # data quality: the party, order and item records by type and their
                     # identity links by index; the capture times and one record per audience
                     # (one pass over the record table: 108 s on the whole store)
                     "duplicate_parties": 120.0, "key_fields_missing": 120.0,
                     "twin_disagreement": 300.0, "stale_captures": 240.0,
+                    # every invoice line of 3 years read once (shared with nothing else)
+                    "reorder_soon": 300.0,
+                    # integrity: one type read each (ledger 7k, GL errors 12k and batches
+                    # 47k, Planner 6k) and links at those records only, under a minute live;
+                    # the blocked accounts' orders are judged by the run's one order read
+                    # (``_customer_orders``, ``_po_source``: 146 s and 119 s cold on gen 11,
+                    # shared with the late, stock and data-quality rules)
+                    "inventory_adjustment": 60.0, "blocked_account_activity": 300.0,
+                    "gl_posting_errors": 60.0, "recurring_task_missed": 60.0,
+                    # sheet readings: the readings by index, the AR and AP documents
+                    # through the cash rules' one read (``cash:ar``, ``cash:ap``)
+                    "cash_application": 300.0, "statement_reconciliation": 300.0,
                     # the open orders' messages, dates first, read once for both
-                    "commitments": 60.0, "needs_reply": 60.0}
+                    "commitments": 60.0, "needs_reply": 60.0,
+                    # the mail the word index finds for both, read once (measured on the
+                    # gen 11 store, 2026-11-08: see proactive_threads)
+                    "approvals_waiting": 120.0, "chase_escalation": 60.0,
+                    # the window's mail by the event index (rowid ranges side by side) and
+                    # the label words (measured on the gen 11 store, 2026-11-08: 20 s and
+                    # 51 s, a loaded host)
+                    "inbox_triage": 60.0, "label_changes": 120.0}
 # Store-only detectors that run side by side on threads (each on its own store connection):
 # every set-based rule but the customer-PO scan (it reads the runtime's mirror, on the
 # run's own thread); the vendor rule after the late rule on the same thread (it reads that
@@ -320,7 +382,8 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
 THREADS_ENV = "PLX_PROACTIVE_DETECTOR_THREADS"
 MAX_DETECTOR_THREADS = 6
 # (the reply rule after the promise rule: it reads the messages that one read, ``memo``)
-CHAINED = {"vendor_no_reply": LATE_RULE, "needs_reply": "commitments"}
+CHAINED = {"vendor_no_reply": LATE_RULE, "needs_reply": "commitments",
+           "chase_escalation": "approvals_waiting"}
 # The vendor-terms check is incremental: it keeps its readings per purchase order in the
 # inbox (``event_cache``) and investigates only the ones whose mail thread changed.
 INCREMENTAL = ("vendor_terms_unapplied",)
@@ -329,6 +392,10 @@ INCREMENTAL = ("vendor_terms_unapplied",)
 CALLING = frozenset({"card_rules", "orders_at_risk", "vendor_terms_unapplied",
                      "negative_margin", "margin_erosion"})
 SET_BASED = frozenset(DETECTORS) - CALLING
+# Detectors judged on the run's own thread, never handed to a lane's runner (``_run``): the
+# tool-call rules and the customer-PO scan (the runtime's mirror and the caller's session
+# may be bound to the thread that opened them).
+ON_RUN_THREAD = CALLING | {"order_without_customer_po"}
 STATES = ("open", "acknowledged", "resolved")
 # Detectors whose claim rests on what sources do not hold (an absence), so on the run
 # principal's grant: their gaps show only to a reader granted every recorded audience.
@@ -337,9 +404,19 @@ REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor
                             "teams_unanswered_ask",
                             "customer_demand_drop", "promise_date_slip",
                             "supplier_reliability", "shipped_not_invoiced",
-                            "customer_chase", "slow_moving_stock",
+                            "customer_chase", "expedite_requests",
+                            "supplier_shortage", "slow_moving_stock",
                             "assembly_component_shortfall", "commitments", "needs_reply",
-                            "stale_quote", "key_fields_missing"})
+                            "stale_quote", "key_fields_missing",
+                            "reorder_soon",
+                            "blocked_account_activity",
+                            # resting on no reply in any copy (``proactive_threads``)
+                            "approvals_waiting", "chase_escalation",
+                            # no reply, no approval, nothing done in the thread
+                            "inbox_triage", "label_changes"})
+# Rule statuses of a host that has not set up a rule's input yet (the reading step's file):
+# not a run that missed anything, so never incomplete (``read_inbox``'s ``not_run``).
+SETUP_STATES = ("not_set_up",)
 # Gap kinds whose wording sums over the whole run (money at stake): an open one is reworded
 # only by a ``complete`` run of its detector.
 WHOLE_ONLY = frozenset({"po_impact_margin"})
@@ -450,6 +527,7 @@ class _Store:
         self._conns: list[sqlite3.Connection] = []
         self._conns_lock = threading.Lock()
         self.interrupt: Callable[[], int] | None = None
+        self.pin: Callable[[], Callable[[], int]] | None = None
         problem = ostore.format_problem(self.conn)
         if problem is not None:
             self.close()
@@ -518,8 +596,12 @@ class _Store:
             self._local.conn = conn
         return conn
 
-    def watch(self, interrupt: Callable[[], int] | None) -> None:
+    def watch(self, interrupt: Callable[[], int] | None,
+              pin: Callable[[], Callable[[], int]] | None = None) -> None:
+        """Every connection's progress handler (None: none); ``pin()``: the handler for
+        another thread reading for this one (``Budget.pinned``)."""
         self.interrupt = interrupt
+        self.pin = pin if interrupt is not None else None
         with self._conns_lock:
             conns = list(self._conns)
         for conn in conns:
@@ -542,6 +624,14 @@ class _Store:
             made = make()
             with self.link_rows.lock:
                 return self._memo.setdefault(key, made)
+
+    def interrupt_all(self) -> None:
+        """Abort whatever statement each of this store's connections is running."""
+        with self._conns_lock:
+            conns = list(self._conns)
+        for conn in conns:
+            with contextlib.suppress(Exception):
+                conn.interrupt()
 
     def close(self) -> None:
         with self._conns_lock:
@@ -727,12 +817,14 @@ class _Store:
 
             step = top // (self.threads * LINK_PARTS_PER_THREAD) + 1
             ranged = sql + f" AND {alias}.rowid >= :lo AND {alias}.rowid < :hi" + tail
+            # the asking thread's window, not the part's own thread's
+            handler = self.pin() if self.pin is not None else self.interrupt
 
             def part(lo: int) -> list[Any]:
                 conn = _connect(self.path)
                 try:
-                    if self.interrupt is not None:
-                        conn.set_progress_handler(self.interrupt, 10000)
+                    if handler is not None:
+                        conn.set_progress_handler(handler, 10000)
                     # a generation replaced under the run (Postgres is never replaced: a
                     # delta layer changes it in place, as the run's own reads see)
                     held = conn.execute("SELECT value FROM store_meta WHERE key = "
@@ -781,11 +873,24 @@ class _Store:
             # beside the inbox, ``operating.proactive_incremental``), never a whole scan
             return set(self._known_keys)
 
-        def read() -> frozenset[str]:
-            return frozenset(key for rows in self._ranged(
-                "objects", "o", "SELECT DISTINCT o.audience_key FROM objects o WHERE 1 = 1",
-                "", {}, lambda r: r[0]) for key in rows)
-        return set(self.memo("audience_keys", read))
+        return set(self.memo("audience_keys", lambda: frozenset(self.audience_firsts())))
+
+    def audience_firsts(self) -> dict[str, str]:
+        """audience key -> the smallest object id in it, over every record (removed ones
+        too), in one scan per run by object rowid ranges side by side (``_ranged``): the
+        audience keys (``audience_keys``) and the data-quality rule's one record per
+        audience (``proactive_quality.stale_captures``) read it, never a scan each."""
+        def read() -> dict[str, str]:
+            firsts: dict[str, str] = {}
+            for rows in self._ranged(
+                    "objects", "o",
+                    "SELECT o.audience_key, MIN(o.object_id) FROM objects o WHERE 1 = 1",
+                    " GROUP BY o.audience_key", {}, tuple):
+                for key, oid in rows:   # each range's smallest, the smallest of them kept
+                    if key not in firsts or oid < firsts[key]:
+                        firsts[key] = oid
+            return firsts
+        return dict(self.memo("audience_firsts", read))
 
     def scope(self) -> list[tuple[str, str, int]]:
         """(audience key, current markings, objects): the whole store the run covered,
@@ -924,6 +1029,7 @@ class _Skips(Counter):
     def __init__(self) -> None:
         super().__init__()
         self.skips: list[tuple[tuple[str, ...], tuple[Part, ...]]] = []
+        self.reasons: list[str] = []   # each skip's reason, in ``skips`` order
         self.unattributed = 0
 
     def note(self, reason: str, subjects: Sequence[str] = (),
@@ -939,6 +1045,7 @@ class _Skips(Counter):
             self.unattributed += 1
             return
         self.skips.append((tuple(sorted(set(subjects))), tuple(sorted(parts))))
+        self.reasons.append(reason)
 
 
 def _result(gaps: Iterable[dict[str, Any] | None], *, status: str = "complete",
@@ -949,8 +1056,10 @@ def _result(gaps: Iterable[dict[str, Any] | None], *, status: str = "complete",
     return {"status": status, "reasons": list(reasons),
             "gaps": [gap for gap in gaps if gap is not None],
             "not_evaluated": dict(sorted((not_evaluated or Counter()).items())),
-            "unjudged": [{"subjects": list(subjects), "cause": [list(p) for p in cause]}
-                         for subjects, cause in skips.skips] if skips is not None else [],
+            "unjudged": [{"subjects": list(subjects), "cause": [list(p) for p in cause],
+                          "reason": reason}
+                         for (subjects, cause), reason in zip(skips.skips, skips.reasons)]
+            if skips is not None else [],
             # a count without its records (a plain Counter) is attributed to nobody
             "unattributed": skips.unattributed if skips is not None else counted}
 
@@ -981,9 +1090,60 @@ def _run_link_types() -> list[str]:
         *TEST_ORDER_LINKS, *TEST_TWIN_LINKS, *RECEIPT_LINKS, *_identity_link_types(),
         *declared_qc_links(),
         pg.LINE_LINK, pg.SUPPLIER_LINK, CONFIRMATION_LINK, *so_status.twin_links(),
-        so_status.LINE_OF,
+        so_status.LINE_OF, *WORK_LINE_LINKS, *WORK_ALLOCATION,
         *so_status.FULFILLED_LINKS, *ev.LINK_TYPES,
-        *ic.LINK_TYPES, ic.LINE_SELLS, *ic.LEAD_ROUTE_TYPES, *amounts]))
+        *ic.LINK_TYPES, ic.LINE_SELLS, *ic.LEAD_ROUTE_TYPES, *amounts,
+        *_rule_link_types()]))
+
+
+# The rule modules whose detectors read links (``_Store.links``): every link type a module
+# names (``_rule_link_types``) is read in the run's one scan, never a scan of its own at its
+# detector's turn (2026-11-08 live store: each scan of the 55M-row link table 60-130 s, the
+# order-to-cash, price and data-quality rules three to four each).
+RULE_MODULES = ("proactive_business", "proactive_ops", "proactive_ceo", "proactive_chasers",
+                "proactive_cash", "proactive_stock", "proactive_prices", "proactive_sales",
+                "proactive_quality", "proactive_commitments")
+
+
+@functools.lru_cache(maxsize=1)
+def _rule_link_types() -> tuple[str, ...]:
+    """Every schema link type the rule modules name in their constants (upper-case module
+    names: a text, or texts in a tuple, list, set or mapping), in module then name order."""
+
+    from ontology.schema import load_schema
+
+    known = set(load_schema().link_types)
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            if value in known:
+                found.append(value)
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                walk(item)
+        elif isinstance(value, (set, frozenset)):
+            for item in sorted(value, key=str):
+                walk(item)
+    # imported by name, never a computed one (the HTTP egress gate reads every import)
+    from . import (proactive_business, proactive_cash, proactive_ceo, proactive_chasers,
+                   proactive_commitments, proactive_ops, proactive_prices, proactive_quality,
+                   proactive_sales, proactive_stock)
+    modules = {"proactive_business": proactive_business, "proactive_ops": proactive_ops,
+               "proactive_ceo": proactive_ceo, "proactive_chasers": proactive_chasers,
+               "proactive_cash": proactive_cash, "proactive_stock": proactive_stock,
+               "proactive_prices": proactive_prices, "proactive_sales": proactive_sales,
+               "proactive_quality": proactive_quality,
+               "proactive_commitments": proactive_commitments}
+    for name in RULE_MODULES:
+        module = modules[name]
+        for constant, value in vars(module).items():
+            if constant.isupper():
+                walk(value)
+    return tuple(dict.fromkeys(found))
 
 
 def _identity_link_types() -> tuple[str, ...]:
@@ -1254,9 +1414,16 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             skip("promises_disagree", *linked)
         else:
             counts["evaluated"] += count("evaluated")
+    stale = _historic_orders(st, as_of, {m: o for m, o in root.items()
+                                         if o in undated_reads and o not in dated_orders})
     for order, pending in undated_reads.items():
         if order in dated_orders:
             continue   # another read of this order dates it: never undated
+        if order in stale:
+            # open and undated, but nothing about it moved in the active window (a legacy
+            # back-order): counted apart, never listed as current work
+            counts["historic"] += 1
+            continue
         counts["undated"] += 1   # counted whether or not a status value is citable
         for key, rank, gap in pending:
             if gap is not None:
@@ -1273,10 +1440,11 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
     result["counts"] = {"pos": len(order_class),
                         "classes": {cls: classes.get(cls, 0) for cls in po_status.CLASSES},
                         **{key: counts.get(key, 0) for key in (
-                            "evaluated", "late", "at_risk", "unconfirmed", "undated")},
+                            "evaluated", "late", "at_risk", "unconfirmed", "undated",
+                            "historic")},
                         # orders open by any of their reads (a Portal Pending order beside
                         # its BC Draft twin is classed by the BC record, yet open here):
-                        # open_by_read = late + undated + open_other
+                        # open_by_read = late + undated + historic + open_other
                         "open_by_read": len(open_orders),
                         "open_other": len(open_orders - late_orders
                                           - (set(undated_reads) - dated_orders))}
@@ -1287,6 +1455,32 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
 _DUE_WORDS = {"requested": "its need date",
               "vendor_eta": "the supplier's confirmed date",
               "lead_time": "its lead-time due date"}
+
+
+PO_ACTIVITY = ("order_date", "portal_created_at", "fm_created_at", *active.EDIT_TIME_PROPS)
+
+
+def _historic_orders(st: _Store, as_of: date, order_of: Mapping[str, Any]) -> set[Any]:
+    """The purchase orders (of ``order_of``: record -> its order) none of whose records
+    holds a business date (order, creation or edit day; bulk import days left out) within
+    ``active.ACTIVE_DAYS`` of ``as_of`` (``active.inactive_reason``)."""
+    if not order_of:
+        return set()
+
+    def every_import_day() -> dict[Any, frozenset]:
+        held = st.values(("PurchaseOrder",), PO_ACTIVITY)
+        return active.import_days(((po_status.binding_of(oid), n), r.get("value"))
+                                  for oid, entry in held.items() for n in PO_ACTIVITY
+                                  for r in entry["props"].get(n, ()))
+    imported = st.population("po_import_days", every_import_day)
+    found = st.values(("PurchaseOrder",), PO_ACTIVITY, objects=sorted(order_of))
+    dates: dict[Any, list[date]] = defaultdict(list)
+    for oid, entry in found.items():
+        dates[order_of[oid]] += active.business_days(
+            ({"value": r.get("value"), "binding": po_status.binding_of(oid), "property": n}
+             for n in PO_ACTIVITY for r in entry["props"].get(n, ())), imported)
+    return {order for order in set(order_of.values()) if active.inactive_reason(
+        po_status.OPEN, as_of=as_of, dates=dates.get(order, ())) == active.HISTORIC}
 
 
 def _late_summary(basis: str, need: date) -> str:
@@ -1387,7 +1581,13 @@ def _systems_disagree(name: str, conflict: Mapping[str, Any], records: Iterable[
 
 LATE_SO = "late_customer_order"
 SO_NUMBERS = ("order_number", "fm_erp_code")
-SO_PROPS = (*so_status.READ_PROPS, so_status.DATE_PROP, *so_status.OWN_DAYS, *SO_NUMBERS)
+SO_PROPS = (*so_status.READ_PROPS, so_status.DATE_PROP, *so_status.OWN_DAYS, *SO_NUMBERS,
+            *active.EDIT_TIME_PROPS)
+# the dates that make an order active (``operating.active_population``): its due, order,
+# creation and edit days, each bulk import day of its source left out
+SO_ACTIVITY = (so_status.DATE_PROP, *so_status.OWN_DAYS, *active.EDIT_TIME_PROPS)
+STALE_SO = "stale_order_record"            # open past its date, nothing touched it lately
+PROBABLE_SO = "order_probably_fulfilled"   # open, but every work order for it is done
 # the records whose absence the verdict rests on (a shipment or invoice not linked, a
 # closing status not held): a reader must be granted every audience they sit in
 SO_ABSENCE_TYPES = (so_status.TYPE, "Shipment", "SalesInvoice")
@@ -1407,6 +1607,8 @@ class _OrderVerdict:
     order: Any = None
     wanted: Any = None
     reason: str | None = None
+    dates: list = dataclasses.field(default_factory=list)   # business dates (activity)
+    work: tuple = ()   # (work order id, closed) per work order made for its lines
 
 
 def _customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdict]]:
@@ -1438,8 +1640,11 @@ def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdic
         if link["to_object"] in found:
             fulfilled[link["to_object"]] = fulfilled.get(link["to_object"], False) \
                 or link["tier"] in SETTLED
-    lined = {link["to_object"] for link in st.links([so_status.LINE_OF])
-             if link["to_object"] in found}   # records holding at least one line
+    line_links = [link for link in st.links([so_status.LINE_OF])
+                  if link["to_object"] in found]
+    lined = {link["to_object"] for link in line_links}   # records holding at least one line
+    work = _work_orders(st, {link["from_object"]: link["to_object"] for link in line_links
+                             if link["tier"] in SETTLED})
     lead_twins: dict[str, set[tuple[str, str]]] = defaultdict(set)   # order -> (twin, link)
     for link in twins:
         ends = (link["from_object"], link["to_object"])
@@ -1456,6 +1661,14 @@ def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdic
             (po_status.binding_of(oid), _day(r.get("value"))) for oid, entry in held.items()
             for r in entry["props"].get(so_status.DATE_PROP, ())))
     defaults = st.population("so_default_dates", every_default)
+
+    def every_import_day() -> dict[Any, frozenset]:
+        # the days a bulk load wrote, per binding and property: never activity
+        held = st.values((so_status.TYPE,), SO_ACTIVITY) if scoped else found
+        return active.import_days(
+            ((po_status.binding_of(oid), n), r.get("value")) for oid, entry in held.items()
+            for n in SO_ACTIVITY for r in entry["props"].get(n, ()))
+    imported = st.population("so_import_days", every_import_day)
     state = {oid: so_status.record_status(entry["props"], binding=binding[oid],
                                           fulfilled=fulfilled.get(oid, False))
              for oid, entry in found.items()}
@@ -1466,6 +1679,11 @@ def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdic
             [r for m in group for n in (*so_status.READ_PROPS, so_status.DATE_PROP)
              for r in found[m]["props"].get(n, ())], *link_marks)
         verdict = _OrderVerdict(top, group, "unknown", read, link_marks)
+        verdict.dates = sorted(active.business_days(
+            ({"value": r.get("value"), "binding": binding[m], "property": n}
+             for m in group for n in SO_ACTIVITY for r in found[m]["props"].get(n, ())),
+            imported))
+        verdict.work = tuple(sorted({w for m in group for w in work.get(m, ())}))
         out.append(verdict)
         order = verdict.order = so_status.order_status(state[m] for m in group)
 
@@ -1503,6 +1721,63 @@ def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdic
         verdict.cls = "open"
         verdict.wanted = wanted()
     return found, out
+
+
+# The work orders made for an order's lines (an assembly order for the line, or allocated
+# to it), each closed when its own status says done: every one done is evidence the goods
+# were made for the order, never proof they shipped (``PROBABLE_SO``).
+WORK_LINE_LINKS = ("AssemblyOrder.for_order_line",)
+WORK_ALLOCATION = ("AssemblyOrderAllocation.allocates", "AssemblyOrderAllocation.for_order_line")
+WORK_TYPE = "AssemblyOrder"
+
+
+def _work_orders(st: _Store, line_order: Mapping[str, str]) -> dict[str, list[tuple]]:
+    """Sales order record -> its lines' work orders as ``(work order, closed)``, joined
+    by settled links only (``WORK_LINE_LINKS`` and the allocations' two links)."""
+    if not line_order:
+        return {}
+    pairs: set[tuple[str, str]] = set()   # (work order, order line)
+    for link in st.links(WORK_LINE_LINKS):
+        if link["tier"] in SETTLED and link["to_object"] in line_order:
+            pairs.add((link["from_object"], link["to_object"]))
+    allocates: dict[str, set[str]] = defaultdict(set)
+    lines_of: dict[str, set[str]] = defaultdict(set)
+    for link in st.links(WORK_ALLOCATION):
+        if link["tier"] not in SETTLED:
+            continue
+        if link["link_type"] == WORK_ALLOCATION[0]:
+            allocates[link["from_object"]].add(link["to_object"])
+        elif link["to_object"] in line_order:
+            lines_of[link["from_object"]].add(link["to_object"])
+    for allocation, lines in lines_of.items():
+        pairs |= {(w, line) for w in allocates.get(allocation, ()) for line in lines}
+    if not pairs:
+        return {}
+    status = st.values((WORK_TYPE,), ("status",), objects=sorted({w for w, _ in pairs}))
+    out: dict[str, list[tuple]] = defaultdict(list)
+    for w, line in sorted(pairs):
+        words = {so_status.word(r) for r in (status.get(w) or {"props": {}})["props"].get(
+            "status", ())} - {""}
+        out[line_order[line]].append((w, bool(words) and words <= so_status.CLOSED_WORDS))
+    return out
+
+
+def _inactive_orders(st: _Store, as_of: date) -> dict[str, str]:
+    """Every sales order record outside the active population (``active_population``):
+    record -> ``closed`` (its order is closed across every copy and linked system) or
+    ``historic`` (no business date of it within ``ACTIVE_DAYS``). The record-level rules
+    about customer orders leave these out, counted, never listed as current work."""
+    def read() -> dict[str, str]:
+        _found, verdicts = _customer_orders(st)
+        out = {}
+        for verdict in verdicts:
+            why = active.inactive_reason(
+                active.CLOSED if verdict.cls == "closed" else verdict.cls, as_of=as_of,
+                dates=verdict.dates)
+            if why is not None:
+                out.update({m: why for m in verdict.group})
+        return out
+    return st.memo(f"inactive_orders:{as_of.isoformat()}", read)
 
 
 def _absence_audiences(st: _Store, types: Sequence[str], none: str) -> list[str]:
@@ -1546,8 +1821,51 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
         counts["evaluated"] += 1
         if required >= as_of:
             continue
-        counts["late"] += 1
         late = (as_of - required).days
+        work = verdict.work
+        if work and all(done for _w, done in work):
+            # every work order made for its lines is done: the goods were made, so it has
+            # probably shipped without a closing record; said apart, ranked low, never late
+            counts["probably_fulfilled"] += 1
+            gaps.append(_required(requires, _gap(
+                PROBABLE_SO, name, min(r["object_id"] for r in wanted.governing),
+                so_status.TYPE, "probably_fulfilled",
+                summary=f"A customer order still reads open {late} day"
+                        f"{'' if late == 1 else 's'} past its required date "
+                        f"{required.isoformat()}, but every work order made for it is done: "
+                        "it has probably shipped (unconfirmed)",
+                missing="Did this order ship? If so, its status was never closed.",
+                why="Its status says open and no shipment or invoice is linked, but every "
+                    "assembly order for its lines is complete, so the open status is "
+                    "probably stale rather than the order late.",
+                priority="low", about=(so_status.TYPE, so_status.DATE_PROP),
+                groups=[_cites(wanted.governing, *link_marks),
+                        *[[cite] for cite in _cites(order.open_by, *link_marks)]],
+                extra=_cites(rows(*SO_NUMBERS), *link_marks),
+                event={"days": late, "required": required.isoformat()})))
+            continue
+        if active.inactive_reason(verdict.cls, as_of=as_of, dates=verdict.dates) \
+                == active.HISTORIC:
+            # open on paper, but nothing about it moved in the active window: a stale
+            # record to close or confirm, not a late order
+            counts["stale"] += 1
+            gaps.append(_required(requires, _gap(
+                STALE_SO, name, min(r["object_id"] for r in wanted.governing),
+                so_status.TYPE, "stale_record",
+                summary=f"A customer order reads open {late} days past its required date "
+                        f"{required.isoformat()}, and no record of it changed in the last "
+                        f"{active.ACTIVE_DAYS} days: a stale record, not a current late order",
+                missing="Is this order still open, or should its record be closed?",
+                why="Its status says open and nothing closes it, but none of its records "
+                    f"was created, edited or due in the last {active.ACTIVE_DAYS} days "
+                    "(import dates are not counted), so it is listed as a stale record.",
+                priority="low", about=(so_status.TYPE, so_status.DATE_PROP),
+                groups=[_cites(wanted.governing, *link_marks),
+                        *[[cite] for cite in _cites(order.open_by, *link_marks)]],
+                extra=_cites(rows(*SO_NUMBERS), *link_marks),
+                event={"days": late, "required": required.isoformat()})))
+            continue
+        counts["late"] += 1
         by_system: dict[str, set[str]] = defaultdict(set)
         for row in order.open_by:
             by_system[so_status.SYSTEM_OF[row["property"]]].add(str(row["value"]).strip())
@@ -1578,8 +1896,16 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
     result["counts"] = {"orders": len(verdicts),
                         "classes": {c: classes.get(c, 0)
                                     for c in ("open", "closed", "draft", "unknown")},
-                        **{k: counts.get(k, 0) for k in ("evaluated", "late", "undated")}}
+                        **{k: counts.get(k, 0) for k in ("evaluated", "late", "undated",
+                                                         "stale", "probably_fulfilled")}}
     return result
+
+
+def _required(requires: Sequence[str], gap: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``gap`` shown only to a reader granted every audience in ``requires``."""
+    if gap is not None:
+        gap["requires"] = list(requires)
+    return gap
 
 
 def _grouped(pairs: Iterable[tuple[Any, Any]]) -> dict[Any, list[Any]]:
@@ -1767,11 +2093,16 @@ def _receipt_without_qc(st: _Store, as_of: date, link_types: Sequence[str]
     return _result(gaps, not_evaluated=skipped)
 
 
-def _order_without_customer_po(st: _Store, coverage: Mapping[str, Any] | None
-                               ) -> dict[str, Any]:
+def _order_without_customer_po(st: _Store, coverage: Mapping[str, Any] | None,
+                               as_of: date | None = None) -> dict[str, Any]:
+    """A live sales order holding no customer PO. Only the active population is asked
+    (``_inactive_orders``): a closed or historic order is counted apart (``closed_order``,
+    ``historic_order``), never listed as work."""
     name = "order_without_customer_po"
     if coverage is None:
         return _result([], status="not_configured", reasons=["coverage_not_given"])
+    inactive = _inactive_orders(st, as_of) if as_of is not None else {}
+    excluded: Counter = Counter()
     completeness = coverage.get("completeness") or {}
     versions = st.versions("SalesOrder")
     exact = {v["l1_handle"]: v for v in versions}
@@ -1792,6 +2123,9 @@ def _order_without_customer_po(st: _Store, coverage: Mapping[str, Any] | None
         if any(r["value"] not in (None, "") for r in
                (held.get(found["object_id"]) or {"props": {}})["props"].get("customer_po", [])):
             continue   # the projection holds one (another source): not absent
+        if found["object_id"] in inactive:
+            excluded[inactive[found["object_id"]] + "_order"] += 1   # judged: not live work
+            continue
         gaps.append(_gap(
             "order_without_customer_po", name, found["object_id"], "SalesOrder",
             "customer_po",
@@ -1802,9 +2136,11 @@ def _order_without_customer_po(st: _Store, coverage: Mapping[str, Any] | None
             priority="medium", about=("SalesOrder", "customer_po"),
             groups=[[(found["l1_handle"], found["object_id"], _markings(found["markings"]))]]))
     status = "complete" if completeness.get("complete") is True else "truncated"
-    return _result(gaps, status=status, not_evaluated=skipped,
-                   reasons=[] if status == "complete" else list(
-                       completeness.get("reasons") or ["scan_incomplete"]))
+    result = _result(gaps, status=status, not_evaluated=skipped,
+                     reasons=[] if status == "complete" else list(
+                         completeness.get("reasons") or ["scan_incomplete"]))
+    result["counts"] = {"found": len(result["gaps"]), "excluded": dict(sorted(excluded.items()))}
+    return result
 
 
 def _expired_quote(st: _Store, as_of: date) -> dict[str, Any]:
@@ -1835,22 +2171,25 @@ def _quantity_rows(st: _Store) -> list[dict[str, Any]]:
     elif st.scoped:
         found = _scoped_quantity_rows(st)
     else:
-        found = st.conn.execute(
-        "SELECT s.src, c.field AS cell_field, lf.pos, v.object_id, o.object_type, "
-        "f.property, CASE WHEN c.field IS NULL THEN json_extract(c.value, lf.path) "
-        "ELSE c.value END AS value, k.unit, k.quantity_role, v.l1_handle, k.markings "
-        "FROM value_kinds k CROSS JOIN value_layout_fields lf ON lf.kind = k.kind "
-        "CROSS JOIN value_cells c ON c.layout = lf.layout "
-        "JOIN value_sources s ON s.src = c.src JOIN object_versions v ON v.rowid = s.ver "
-        "JOIN objects o ON o.object_id = v.object_id JOIN value_fields f ON f.field = lf.field "
-        "WHERE k.value_type = 'quantity' AND s.superseded_at IS NULL AND NOT "
-        + ostore.removed_at_sql("o.object_id")).fetchall()
+        found = st.conn.execute(_QUANTITY_SQL).fetchall()
     found = list(found)
     found.sort(key=lambda r: (r["src"], r["cell_field"] is not None, r["cell_field"] or 0,
                               r["pos"]))
     keep = ("object_id", "object_type", "property", "value", "unit", "quantity_role",
             "l1_handle", "markings")
     return [{key: row[key] for key in keep} for row in found]
+
+
+_QUANTITY_SQL = (
+    "SELECT s.src, c.field AS cell_field, lf.pos, v.object_id, o.object_type, "
+    "f.property, CASE WHEN c.field IS NULL THEN json_extract(c.value, lf.path) "
+    "ELSE c.value END AS value, k.unit, k.quantity_role, v.l1_handle, k.markings "
+    "FROM value_kinds k CROSS JOIN value_layout_fields lf ON lf.kind = k.kind "
+    "CROSS JOIN value_cells c ON c.layout = lf.layout "
+    "JOIN value_sources s ON s.src = c.src JOIN object_versions v ON v.rowid = s.ver "
+    "JOIN objects o ON o.object_id = v.object_id JOIN value_fields f ON f.field = lf.field "
+    "WHERE k.value_type = 'quantity' AND s.superseded_at IS NULL AND NOT "
+    + ostore.removed_at_sql("o.object_id"))
 
 
 def _pg_quantity_rows(st: _Store) -> list[Any]:
@@ -2929,28 +3268,41 @@ AMOUNT_OF = {"PurchaseOrder": ("total_cost", "currency"),
 def _business_steps(st: _Store, as_of: date,
                     on_hand: Sequence[tuple[str, str, str | None]] | None,
                     people: Callable[[], Any] = lambda: None,
-                    moment: datetime | None = None
+                    moment: datetime | None = None, sheets: Path | None = None
                     ) -> dict[str, Callable[[], dict[str, Any]]]:
     """The business alerts (``operating.proactive_business``) as engine steps; ``on_hand``:
-    where on hand is read (None: what the schema declares, ``declared_on_hand``)."""
+    where on hand is read (None: what the schema declares, ``declared_on_hand``);
+    ``sheets``: the sheet readings file (``proactive_sheets.readings_path``)."""
     from . import proactive_business as pb
     from . import proactive_ceo as ceo
     from . import proactive_chasers as chasers
+    from . import proactive_mail_pains as mail_pains
     from . import proactive_cash as cash
     from . import proactive_stock as stock
     from . import proactive_prices as prices
     from . import proactive_sales as sales
+    from . import business_documents as docs
     from . import proactive_quality as quality
     from . import proactive_commitments as commit
+    from . import proactive_integrity as integrity
+    from . import proactive_sheets as sheet_rules
 
     common = {"gap": _gap, "cites": _cites, "result": _result, "settled": SETTLED,
               "skips": _Skips}
     return {
-        "stock_out_risk": lambda: pb.stock_out_risk(
+        # with sheet readings served, stock reads mail: people first, fail closed
+        "stock_out_risk": lambda: (sheets is not None and sheet_rules.people_blocked(
+            people(), _result))
+        or pb.stock_out_risk(
             st, as_of, orders=lambda: _customer_orders(st), po_source=_po_source(st),
             absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
-            on_hand=on_hand, **common),
-        "overdue_receivable": lambda: pb.overdue_receivable(st, as_of, **common),
+            on_hand=on_hand, sheet_on_hand=None if sheets is None else (
+                lambda item_of, wanted, cites, skipped: sheet_rules.sheet_on_hand(
+                    st, as_of, sheets, people(), item_of, wanted, cites, skipped)),
+            **common),
+        "overdue_receivable": lambda: pb.overdue_receivable(
+            st, as_of, chases=lambda invoices: mail_pains.receivable_chases(
+                st, people(), as_of, invoices, {}), **common),
         "unit_cost_jump": lambda: pb.unit_cost_jump(st, as_of, po_source=_po_source(st),
                                                     **common),
         # the chief-executive signals (``operating.proactive_ceo``)
@@ -2980,11 +3332,25 @@ def _business_steps(st: _Store, as_of: date,
             absence=lambda types: _absence_audiences(st, types, "sales_order:none_stored"),
             **common),
         "quality_holds": lambda: chasers.quality_holds(st, as_of, **common),
+        # pains found in the mail (``operating.proactive_mail_pains``)
+        "expedite_requests": lambda: mail_pains.expedite_requests(
+            st, as_of, people=people(), orders=lambda: _customer_orders(st),
+            po_source=lambda: _po_source(st),
+            absence=lambda types: _absence_audiences(st, types, "sales_order:none_stored"),
+            **common),
+        "supplier_shortage": lambda: mail_pains.supplier_shortage(
+            st, as_of, people=people(), orders=lambda: _customer_orders(st),
+            po_source=lambda: _po_source(st),
+            absence=lambda types: _absence_audiences(st, types, "sales_order:none_stored"),
+            **common),
+        "payment_chase": lambda: mail_pains.payment_chase(st, as_of, people=people(),
+                                                          **common),
         # receivables and payables (``operating.proactive_cash``)
         "customer_payment_behaviour": lambda: cash.customer_payment_behaviour(
             st, as_of, **common),
         "early_pay_discounts": lambda: cash.early_pay_discounts(st, as_of, **common),
         "duplicate_payables": lambda: cash.duplicate_payables(st, as_of, **common),
+        "returns_and_credits": lambda: cash.returns_and_credits(st, as_of, **common),
         # operations (``operating.proactive_stock``)
         "slow_moving_stock": lambda: stock.slow_moving_stock(
             st, as_of, absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
@@ -3001,6 +3367,8 @@ def _business_steps(st: _Store, as_of: date,
         "price_consistency": lambda: prices.price_consistency(st, as_of, **common),
         # sales (``operating.proactive_sales``)
         "stale_quote": lambda: sales.stale_quote(st, as_of, **common),
+        # priority / fill lists (``operating.business_documents``)
+        "priority_fill_unmet": lambda: docs.priority_fill_unmet(st, as_of, **common),
         # data quality (``operating.proactive_quality``)
         "duplicate_parties": lambda: quality.duplicate_parties(st, as_of, **common),
         "key_fields_missing": lambda: quality.key_fields_missing(
@@ -3015,6 +3383,24 @@ def _business_steps(st: _Store, as_of: date,
             **common),
         "twin_disagreement": lambda: quality.twin_disagreement(st, as_of, **common),
         "stale_captures": lambda: quality.stale_captures(st, as_of, now=moment, **common),
+        "reorder_soon": lambda: stock.reorder_soon(
+            st, as_of, po_source=lambda: _po_source(st),
+            absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
+            on_hand=on_hand, **common),
+        # integrity (``operating.proactive_integrity``)
+        "inventory_adjustment": lambda: integrity.inventory_adjustment(st, as_of, **common),
+        "blocked_account_activity": lambda: integrity.blocked_account_activity(
+            st, as_of, order_state=_order_state(st, as_of),
+            absence=lambda types: _absence_audiences(st, types, "order:none_stored"),
+            **common),
+        "gl_posting_errors": lambda: integrity.gl_posting_errors(st, as_of, **common),
+        "recurring_task_missed": lambda: integrity.recurring_task_missed(
+            st, as_of, people=people(), **common),
+        # sheet readings (``operating.proactive_sheets``)
+        "cash_application": lambda: sheet_rules.cash_application(
+            st, as_of, people=people(), readings=sheets or Path("/nonexistent"), **common),
+        "statement_reconciliation": lambda: sheet_rules.statement_reconciliation(
+            st, as_of, people=people(), readings=sheets or Path("/nonexistent"), **common),
         # promises we made and mail waiting on a reply (``operating.proactive_commitments``)
         **{name: (lambda rule=rule: rule(
             st, as_of, people=people(), orders=lambda: _customer_orders(st),
@@ -3024,12 +3410,46 @@ def _business_steps(st: _Store, as_of: date,
                               ("needs_reply", commit.needs_reply))}}
 
 
+def _sheets(store_path: Any, given: Any) -> Path | None:
+    """The sheet readings file the run reads (``proactive_sheets.readings_path``), None
+    when there is none: the sheet rules are then ``blocked`` and stock reads no sheet."""
+    from . import proactive_sheets as sheet_rules
+    path = Path(given) if given is not None else sheet_rules.readings_path(store_path)
+    return path if path.is_file() else None
+
+
+def _order_state(st: _Store, as_of: date) -> dict[str, Callable[[], Callable[[str], Any]]]:
+    """Per order type, a reader of one order record's (cluster, status class) by the one
+    status definition of its type: customer orders from the run's one order read
+    (``_customer_orders``), purchase orders read only for the clusters asked about."""
+    def customer() -> Callable[[str], Any]:
+        state = {m: (v.top, v.cls) for v in _customer_orders(st)[1] for m in v.group}
+        return state.get
+
+    def purchase() -> Callable[[str], Any]:
+        src = _po_source(st)
+        top_of = {m: top for top, members in src.clusters.items() for m in members}
+        read: dict[str, str] = {}
+
+        def one(member: str) -> Any:
+            top = top_of.get(member)
+            if top is None:
+                return None
+            if top not in read:
+                read[top] = po_status.read(src, top, as_of).status.cls
+            return top, read[top]
+        return one
+    return {"SalesOrder": customer, "PurchaseOrder": purchase}
+
+
 def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
                sources: Mapping[str, Any] | None
                ) -> dict[str, Callable[[], dict[str, Any]]]:
     """The operations alerts (``operating.proactive_ops``) as engine steps; ``sources``:
     overrides of what the schema declares (``proactive_ops.declared_sources``)."""
     from . import proactive_ops as po
+    from . import inbox_triage, label_changes
+    from . import proactive_threads as threads
 
     given = dict(sources or {})
     common = {"gap": _gap, "cites": _cites, "result": _result, "skips": _Skips}
@@ -3050,7 +3470,15 @@ def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
         "assembly_damage_spike": lambda: po.assembly_damage_spike(
             st, as_of, settled=SETTLED, dates=given.get("damage_date"), **common),
         "teams_unanswered_ask": lambda: po.teams_unanswered_ask(
-            st, as_of, people=people(), text_props=given.get("ask_text"), **common)}
+            st, as_of, people=people(), text_props=given.get("ask_text"), **common),
+        # mail threads waiting on someone (``operating.proactive_threads``)
+        "approvals_waiting": lambda: threads.approvals_waiting(
+            st, as_of, people=people(), **common),
+        "chase_escalation": lambda: threads.chase_escalation(
+            st, as_of, people=people(), **common),
+        "inbox_triage": lambda: inbox_triage.inbox_triage(st, as_of, people=people(), **common),
+        "label_changes": lambda: label_changes.label_changes(
+            st, as_of, people=people(), **common)}
 
 
 def _event_steps(st: _Store, as_of: date, call: Callable | None,
@@ -3272,6 +3700,8 @@ CREATE TABLE IF NOT EXISTS rule_coverage (detector TEXT PRIMARY KEY,
 CREATE TABLE IF NOT EXISTS unjudged_causes (detector TEXT NOT NULL, skip INTEGER NOT NULL,
   object_id TEXT NOT NULL, markings TEXT NOT NULL, subject INTEGER NOT NULL,
   PRIMARY KEY (detector, skip, object_id, markings));
+CREATE TABLE IF NOT EXISTS unjudged_reasons (detector TEXT NOT NULL, skip INTEGER NOT NULL,
+  reason TEXT NOT NULL, PRIMARY KEY (detector, skip));
 CREATE TABLE IF NOT EXISTS gaps (gap_id TEXT PRIMARY KEY, kind TEXT NOT NULL,
   detector TEXT NOT NULL, object_id TEXT NOT NULL, object_type TEXT NOT NULL,
   summary TEXT NOT NULL, follow_up TEXT NOT NULL, priority INTEGER NOT NULL,
@@ -3467,6 +3897,55 @@ class Budget:
         rule's query stops at the deadline, not after it)."""
         return int(self.left() <= 0)
 
+    def pinned(self) -> Callable[[], int]:
+        """``interrupt`` at this thread's window, for reads it hands to other threads (a
+        link scan's or a value read's parts): they stop where the detector asking stops."""
+        until = self.until
+        end = self.deadline if until is None else min(self.deadline, until)
+        return lambda: int(self.monotonic() >= end)
+
+
+class _Task:
+    """One call handed to a ``_Runner``: ``wait`` for it, then read ``value``."""
+
+    def __init__(self, fn: Callable[..., Any], args: tuple) -> None:
+        self.fn, self.args = fn, args
+        self.value: Any = None
+        self.event = threading.Event()
+
+    def wait(self, timeout: float | None) -> bool:
+        return self.event.wait(timeout)
+
+
+class _Runner:
+    """One daemon thread running the calls handed to it in turn (a lane's detectors, so
+    they share its store connection); one given up on (``stop``) is never joined: the
+    process ends without waiting for it."""
+
+    def __init__(self) -> None:
+        import queue
+
+        self._tasks: Any = queue.SimpleQueue()
+        threading.Thread(target=self._loop, name="proactive-detector", daemon=True).start()
+
+    def _loop(self) -> None:
+        while True:
+            task = self._tasks.get()
+            if task is None:
+                return
+            try:
+                task.value = task.fn(*task.args)
+            finally:
+                task.event.set()
+
+    def submit(self, fn: Callable[..., Any], *args: Any) -> _Task:
+        task = _Task(fn, args)
+        self._tasks.put(task)
+        return task
+
+    def stop(self) -> None:
+        self._tasks.put(None)
+
 
 class _HeadStart:
     """``pool.map(task, items)`` started before its rule's turn, on a thread that only
@@ -3554,7 +4033,9 @@ def detector_threads(environ: Mapping[str, str] | None = None) -> int:
 
 
 def _lanes(order: Sequence[str], threads: int) -> list[list[str]]:
-    """None with one thread (every detector then runs in ``order`` on the run's thread)."""
+    """The store-only detectors of ``order`` as lanes run side by side (each lane's
+    detectors one after another: ``CHAINED`` after the rule it reads), slowest known first;
+    none with one thread (every detector then runs in ``order`` on the run's thread)."""
     if threads <= 1:
         return []
     side = [d for d in order if d in SET_BASED and d != "order_without_customer_po"]
@@ -3628,7 +4109,7 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         reader_may_read: Callable[[str], bool] | None = None,
         pool: Any = None, people: Any = None, threads: int | None = 1,
         detector_seconds: Mapping[str, float] | None = None,
-        scope: "Scope | None" = None) -> dict[str, Any]:
+        scope: "Scope | None" = None, sheet_readings: Any = None) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -3654,9 +4135,11 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     with a pool, the margins of the recently invoiced orders are read on it from the start
     (``_margin_head_start``), while the store-only rules run. ``threads``: the store-only
     rules run side by side on this many threads (``_lanes``; 1: one after another; None:
-    ``detector_threads()``), the tool-call rules on this thread. With a ``budget`` every
-    detector runs in its own window (``DETECTOR_SECONDS``, ``detector_seconds`` overriding
-    some), within the run's deadline; the summary's ``seconds`` holds each one's time.
+    ``detector_threads()``), the tool-call rules on this thread. Every detector runs in its
+    own window (``DETECTOR_SECONDS``, ``detector_seconds`` overriding some), within the
+    run's deadline when there is a ``budget``: a store-only one still running
+    ``HARD_GRACE_SECONDS`` past it is cut off (``truncated``, named in the summary's
+    ``cut_off``) and its lane goes on; the summary's ``seconds`` holds each one's time.
     ``scope``: an incremental pass (``Scope``, ``operating.proactive_incremental``): its
     rules read only the scope's records and keep only the gaps about their own subjects;
     only those subjects' gaps are folded and resolved (``_fold``), nothing else of the
@@ -3681,8 +4164,10 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         only = [d for d in DETECTORS if d in scope.subjects]
     st = _Store(Path(store_path), scope=None if scope is None else scope.read,
                 audience_keys=None if scope is None else scope.audience_keys)
-    if budget is not None:
-        st.watch(budget.interrupt)
+    # every detector runs in its own window, with or without a run budget: an unbounded
+    # run is one whose deadline never comes (its tool calls are not guarded)
+    window = budget if budget is not None else Budget(math.inf)
+    st.watch(window.interrupt, window.pinned)
     try:
         results: dict[str, dict[str, Any]] = {}
         seconds: dict[str, float] = {}
@@ -3694,7 +4179,10 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             # every link type the rules read, in one scan of the link table (``_Store``)
             started = time.monotonic()
             try:
-                st.prefetch_links(_run_link_types())
+                # with the run's own QC links and on-hand links, when it is handed them
+                st.prefetch_links([*_run_link_types(), *(qc_link_types or ()),
+                                   *(link for _type, _prop, link in on_hand_sources or ()
+                                     if link)])
             except sqlite3.OperationalError:
                 pass   # stopped at the deadline: each rule then stops at its own read
             seconds["link_scan"] = round(time.monotonic() - started, 1)
@@ -3707,11 +4195,12 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             "receipt_without_qc": lambda: _receipt_without_qc(
                 st, as_of, declared_qc_links() if qc_link_types is None else qc_link_types),
             "order_without_customer_po": lambda: _order_without_customer_po(
-                st, coverage() if callable(coverage) else coverage),
+                st, coverage() if callable(coverage) else coverage, as_of),
             "expired_quote": lambda: _expired_quote(st, as_of),
             **_business_steps(st, as_of, on_hand_sources,
                               people=lambda: people if people is not None
-                              else _people(Path(store_path)), moment=moment),
+                              else _people(Path(store_path)), moment=moment,
+                              sheets=_sheets(store_path, sheet_readings)),
             **_ops_steps(st, as_of, lambda: people if people is not None
                          else st.memo("ops:people", lambda: _people(Path(store_path))),
                          ops_sources),
@@ -3733,52 +4222,86 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                            else _people(Path(store_path)), margins=head)}
         windows = {**DETECTOR_SECONDS, **(detector_seconds or {})}
 
-        def judge(name: str) -> None:
-            """One detector in its own window, on this thread; never raising."""
-            if budget is not None and budget.spent():
-                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
-                return
-            refused = budget.refused_here() if budget is not None else 0
-            if budget is not None:
-                budget.open(windows.get(name, DETECTOR_SECONDS_DEFAULT))
+        def body(name: str) -> tuple[dict[str, Any], float]:
+            """One detector in its own window, on the thread it is handed to; never
+            raising: (its result, its seconds)."""
+            refused = window.refused_here()
+            window.open(windows.get(name, DETECTOR_SECONDS_DEFAULT))
             started = time.monotonic()
             st.judging(name)
             try:
-                results[name] = steps[name]()
+                result = steps[name]()
             except TimeBudgetSpent:
-                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                result = _result([], status="truncated", reasons=[TIME_BUDGET])
             except Exception as error:  # noqa: BLE001 - one detector fails alone, typed
-                if budget is not None and budget.left() <= 0 \
-                        and isinstance(error, sqlite3.OperationalError):
+                if window.left() <= 0 and isinstance(error, sqlite3.OperationalError):
                     # its query was interrupted at its window's end: cut short, not failed
-                    results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                    result = _result([], status="truncated", reasons=[TIME_BUDGET])
                 else:
-                    results[name] = _result([], status="failed",
-                                            reasons=[type(error).__name__])
+                    result = _result([], status="failed", reasons=[type(error).__name__])
             finally:
                 st.judging(None)
-                if budget is not None:
-                    budget.unshare()
-                seconds[name] = round(time.monotonic() - started, 1)
-            if budget is not None and budget.refused_here() > refused \
-                    and results[name]["status"] != "failed":
+                window.unshare()
+            if window.refused_here() > refused and result["status"] != "failed":
                 # a call it made was refused: what it found stands, never all it would find
-                results[name]["status"] = "truncated"
-                if TIME_BUDGET not in results[name]["reasons"]:
-                    results[name]["reasons"].append(TIME_BUDGET)
+                result["status"] = "truncated"
+                if TIME_BUDGET not in result["reasons"]:
+                    result["reasons"].append(TIME_BUDGET)
+            return result, round(time.monotonic() - started, 1)
+
+        def judge(name: str, runner: list) -> None:
+            """A store-only ``name`` on its lane's runner thread (``runner[0]``), waited for no longer
+            than its window (and the run's deadline) and ``HARD_GRACE_SECONDS``: one that
+            does not end by then (a loop that never reads the store) is ``truncated``, its
+            thread left to end alone (its result never read) and the lane goes on on a new
+            thread, so no detector holds up the ones after it."""
+            if budget is not None and budget.spent():
+                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                return
+            started = time.monotonic()
+            limit = min(windows.get(name, DETECTOR_SECONDS_DEFAULT),
+                        max(0.0, window.deadline - window.monotonic()))
+            if name in ON_RUN_THREAD:
+                # on the run's own thread (the caller's session and the runtime's mirror
+                # may be bound to it): every tool call and pool map is refused past the
+                # window (``Budget.guard``, ``Budget.pooled``; an investigation is handed
+                # its time left) and every store read interrupted at it
+                results[name], seconds[name] = body(name)
+                return
+            done = runner[0].submit(body, name)
+            if done.wait(None if math.isinf(limit) else limit + HARD_GRACE_SECONDS):
+                results[name], seconds[name] = done.value or (
+                    _result([], status="failed", reasons=["detector_thread_ended"]),
+                    round(time.monotonic() - started, 1))
+            else:
+                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                seconds[name] = round(time.monotonic() - started, 1)
+                runner[0].stop()
+                runner[0] = _Runner()
+                abandoned.append(name)
+
+        abandoned: list[str] = []
+        runners: list[list] = []
+
+        def runner_() -> list:
+            made = [_Runner()]
+            runners.append(made)
+            return made
 
         lanes = _lanes(order, detector_threads() if threads is None else threads)
         try:
             if lanes:
-                from concurrent.futures import ThreadPoolExecutor
-
                 def lane(names: Sequence[str]) -> None:
+                    mine = runner_()
                     for name in names:
-                        judge(name)
+                        judge(name, mine)
                 side = [d for names in lanes for d in names]
                 width = min(len(lanes), detector_threads() if threads is None else threads)
+                own = runner_()
+                from concurrent.futures import ThreadPoolExecutor
+
                 with ThreadPoolExecutor(max_workers=width,
-                                        thread_name_prefix="proactive-detector") as threads_:
+                                        thread_name_prefix="proactive-lane") as threads_:
                     running = {name: future for names in lanes
                                for future in [threads_.submit(lane, names)] for name in names}
                     for name in order:
@@ -3786,15 +4309,21 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                             continue
                         if name == "orders_at_risk" and LATE_RULE in running:
                             running[LATE_RULE].result()   # it asks the late POs first
-                        judge(name)
+                        judge(name, own)
                     for future in set(running.values()):
                         future.result()
             else:
+                own = runner_()
                 for name in order:
-                    judge(name)
+                    judge(name, own)
         finally:
             if head is not None:
                 head.stop()   # its rule did not run (the time ran out): no read goes on
+            for made in runners:
+                made[0].stop()
+            if abandoned:
+                # a cut-off detector's statement still running stops now, never reads on
+                st.interrupt_all()
         if budget is not None:
             budget.release()   # the amounts run in the reserve, still inside the bound
         if scope is not None:
@@ -3843,6 +4372,8 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                 gaps = {gid: gap for gid, gap in gaps.items() if gap["detector"] in results}
             summary = _summary(results, gaps, held)
             summary["seconds"] = seconds   # each detector's run time (counts and enums only)
+            if abandoned:
+                summary["cut_off"] = sorted(abandoned)   # past their hard window
             if moved:
                 summary["population_moved"] = moved
                 summary["populations_moved"] = sorted({
@@ -4100,6 +4631,10 @@ def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
         # last run's: a reader is told the count of those it may read whose whole cause it
         # may read (``read_inbox``), never of the others.
         conn.execute("DELETE FROM unjudged_causes WHERE detector = ?", (name,))
+        conn.execute("DELETE FROM unjudged_reasons WHERE detector = ?", (name,))
+        conn.executemany("INSERT OR IGNORE INTO unjudged_reasons VALUES (?, ?, ?)",
+                         [(name, n, str(skip.get("reason") or "not_judged"))
+                          for n, skip in enumerate(result.get("unjudged") or ())])
         conn.executemany(
             "INSERT OR IGNORE INTO unjudged_causes VALUES (?, ?, ?, ?, ?)",
             [(name, n, object_id, markings, int(object_id in skip["subjects"]))
@@ -4340,7 +4875,7 @@ def _owned(follow_up: Any, kind: str, reader: Any) -> bool:
     return owned_by(follow_up if isinstance(follow_up, Mapping) else {}, kind, reader)
 
 
-_OWNER_KINDS = frozenset({"needs_my_reply"})   # ``proactive_commitments.OWNER_KINDS``
+_OWNER_KINDS = frozenset({"needs_my_reply", "reply_owed"})   # ``proactive_commitments.OWNER_KINDS``
 
 
 def _has_requires(conn: sqlite3.Connection) -> bool:
@@ -4526,6 +5061,18 @@ def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
             "c.detector = u.detector AND c.skip = u.skip AND NOT (c.markings IN (SELECT "
             "value FROM json_each(:marks)) AND " + _OBJECT_VISIBLE.format(o="c.object_id")
             + ")) GROUP BY u.detector", params)}
+    by_reason: dict[str, dict[str, int]] = defaultdict(dict)
+    if {"unjudged_causes", "unjudged_reasons"} <= tables:
+        # the same count per reason ("cannot check: 12 records lack order lines"), over
+        # the same skips this reader may read the whole cause of
+        for name, reason, n in conn.execute(
+                "SELECT u.detector, r.reason, count(DISTINCT u.object_id) FROM unjudged_causes u "
+                "JOIN unjudged_reasons r ON r.detector = u.detector AND r.skip = u.skip "
+                "WHERE u.subject = 1 AND NOT EXISTS (SELECT 1 FROM unjudged_causes c WHERE "
+                "c.detector = u.detector AND c.skip = u.skip AND NOT (c.markings IN (SELECT "
+                "value FROM json_each(:marks)) AND " + _OBJECT_VISIBLE.format(o="c.object_id")
+                + ")) GROUP BY u.detector, r.reason", params):
+            by_reason[name][reason] = n
     counted = {row[0]: row[1] for row in conn.execute(
         "SELECT detector, not_evaluated FROM detector_runs")}
     said = {row[0]: row[1] for row in conn.execute(
@@ -4546,14 +5093,18 @@ def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
         except (ValueError, TypeError):
             reasons = []    # unreadable: no reason is said, never a made-up one
         out.append({"rule": name, "status": detectors.get(name, "not_run"),
-                    "not_evaluated": shown, "reasons": reasons})
+                    "not_evaluated": shown, "reasons": reasons,
+                    # per reason, only when the whole count is known for this reader
+                    "not_evaluated_by_reason": dict(sorted(by_reason.get(name, {}).items()))
+                    if shown else {}})
     return out
 
 
 def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str], bool],
                held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
                states: Sequence[str] = ("open", "acknowledged"),
-               limit: int = MAX_SHOWN, kinds: Sequence[str] | None = None) -> dict[str, Any]:
+               limit: int = MAX_SHOWN, kinds: Sequence[str] | None = None,
+               today: date | None = None, since: str | None = None) -> dict[str, Any]:
     """The gaps one reader may see, trimmed: every late order first (longest late first), then
     by priority; what the last run
     covered of what this reader may read. ``may_read(audience_key)``, ``held`` (the
@@ -4562,8 +5113,19 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     is true only when every rule ran to the end; ``not_run`` names each rule that did not
     (not configured on this schedule, blocked, or never run), so no reader takes an
     inbox some rules never looked at for a clean result. ``kinds``: only gaps of these
-    kinds are read (the briefing's events), so other kinds never use up ``limit``."""
+    kinds are read (the briefing's events), so other kinds never use up ``limit``.
+
+    A rule whose findings are not of the served data and deployed code (``refreshing``)
+    or whose last run failed keeps its last good findings on the list, each marked
+    (``carried``: why, and when it was last checked; a failed rule's failure time), never
+    shown as current and never hidden all at once (a code change would otherwise empty
+    the briefing until the next pass). Relative wording ("12 days past", "in 3 days") is
+    counted to ``today`` (default the business day now) when read, never frozen at the
+    run (``_relative``).
+    ``since``: only gaps first seen at or after this ISO moment, newest first (an alert
+    rule's new findings: an older backlog never uses up ``limit``)."""
     path = Path(inbox)
+    today = _today() if today is None else today
     if not path.is_file():
         return {"status": "not_scheduled", "gaps": [], "scanned": 0, "truncated": False,
                 "max_objects": None, "unscanned": None, "unread": {}, "complete": False,
@@ -4590,6 +5152,11 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
         runs = conn.execute("SELECT detector, status, reasons, not_evaluated, run_at FROM "
                             "detector_runs ORDER BY detector").fetchall()
         detectors = {row["detector"]: row["status"] for row in runs}
+        failed_at = {row["detector"]: row["run_at"] for row in runs
+                     if row["status"] == "failed"}
+        # the rules whose last good findings are carried, marked, until a run of the
+        # deployed code over the served data replaces them
+        carried_rules = (set(behind) | older) & set(detectors)
         # each rule's last run (a full, 4-hourly, calling or incremental pass): its time
         run_at = {row["detector"]: row["run_at"] for row in runs
                   if isinstance(row["run_at"], str)}
@@ -4630,8 +5197,10 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 "SELECT g.*, (SELECT at FROM acks a WHERE a.gap_id = g.gap_id AND a.reader = "
                 ":reader) AS acked FROM gaps g WHERE g.state IN (SELECT value FROM "
                 "json_each(:states)) AND (:kinds IS NULL OR g.kind IN (SELECT value FROM "
-                "json_each(:kinds))) AND " + _OBJECT_VISIBLE.format(o="g.object_id")
-                + " ORDER BY json_extract(g.follow_up, '$.days_late') IS NULL, "
+                "json_each(:kinds))) AND (:since IS NULL OR julianday(g.first_seen) >= "
+                "julianday(:since)) AND " + _OBJECT_VISIBLE.format(o="g.object_id")
+                + " ORDER BY CASE WHEN :since IS NOT NULL THEN julianday(g.first_seen) END "
+                "DESC, json_extract(g.follow_up, '$.days_late') IS NULL, "
                 "json_extract(g.follow_up, '$.days_late') DESC, "
                 # a list of near-expiry lots alone: soonest expiry first, so a page cut
                 # short still holds every lot expiring before its last one
@@ -4639,14 +5208,15 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 "g.priority, g.last_seen DESC, g.gap_id LIMIT :page OFFSET :offset",
                 {**params, "reader": reader, "states": global_states, "page": page,
                  "soonest": kinds is not None and list(kinds) == ["lot_near_expiry"],
-                 "offset": offset,
+                 "offset": offset, "since": since,
                  "kinds": None if kinds is None else json.dumps(list(kinds))}).fetchall()
             if not rows:
                 break
             offset += len(rows)
             # a gap found over older data than the store served now is never shown: the
             # record page reads the served data, so the two would disagree
-            rows = [row for row in rows if _of_served(row, current)]
+            rows = [row for row in rows if _of_served(row, current) or (
+                row["detector"] in carried_rules and row["state"] == "open")]
             for row, citations in _visible(conn, rows, params, decide):
                 state = ("resolved" if row["state"] == "resolved"
                          else "acknowledged" if row["acked"] else "open")
@@ -4662,13 +5232,15 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                     # never a second item (each was decided visible to this reader)
                     if order["rank"] < held[0]:
                         index = next(i for i, g in enumerate(shown) if g is held[1])
-                        shown[index] = entry = _shown(row, citations, state, follow_up, allowed, readable)
+                        shown[index] = entry = _shown(row, citations, state, follow_up, allowed, readable, today=today,
+                                   carried=_carried(row, carried_rules, older, failed_at))
                         orders[order["key"]] = (order["rank"], entry)
                     continue
                 if len(shown) >= limit:
                     more = True
                     break
-                entry = _shown(row, citations, state, follow_up, allowed, readable)
+                entry = _shown(row, citations, state, follow_up, allowed, readable, today=today,
+                                   carried=_carried(row, carried_rules, older, failed_at))
                 shown.append(entry)
                 if isinstance(order, dict):
                     orders[order["key"]] = (order["rank"], entry)
@@ -4677,13 +5249,20 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     truncated = any(status == "truncated" for status in detectors.values())
     # A rule that did not run (not configured on this schedule, blocked on a source, or
     # with no row at all) looked for nothing: the read is never complete while one remains.
+    # a rule whose input this host has not set up yet (``SETUP_STATES``: the sheet readings
+    # before the reading step runs here) is a setup state, named in ``detectors``, never a
+    # rule that looked and missed: the read stays complete
     not_run = {name: detectors.get(name, "not_run") for name in DETECTORS
-               if detectors.get(name) not in ("complete", "truncated", "failed")}
+               if detectors.get(name) not in ("complete", "truncated", "failed",
+                                              *SETUP_STATES)}
     # the rules whose findings are of older data than the store served now: theirs are not
     # shown until they run over it (the scheduled refresh), and the read says so
     refreshing = sorted(name for name in behind if name in detectors)
     checked = sorted(at for name in refreshing if isinstance(at := behind[name], str))
     return {"status": "read", "as_of": last["as_of"] if last else None,
+            # each failed rule's failure time: its findings shown are its last good ones
+            "failed_at": dict(sorted(failed_at.items())),
+            "carried": sum(1 for g in shown if g.get("carried")),
             "run_at": last["run_at"] if last else None,
             "stale": bool(refreshing) or (bool(last) and (digest[0] if digest else None)
                                           != last["store_digest"]),
@@ -4709,13 +5288,83 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             "gaps": shown, "more": more, "limit": limit}
 
 
+def _today() -> date:
+    """The business day a read counts relative wording to (``read_inbox``)."""
+    return po_status.business_today()
+
+
+def _carried(row: Mapping[str, Any], carried_rules: set[str], older: set[str],
+             failed_at: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Why a shown finding is not current (None: it is): its rule's last run failed
+    (``check_failed``, with the failure time), its rule ran older code (``older_code``) or
+    over older data (``older_data``); with the time it was last found."""
+    name = row["detector"]
+    if name not in carried_rules and name not in failed_at:
+        return None
+    reason = ("check_failed" if name in failed_at else "older_code" if name in older
+              else "older_data")
+    return {"reason": reason, "last_checked": row["last_seen"],
+            **({"check_failed_at": failed_at[name]} if name in failed_at else {})}
+
+
+CARRIED_WORDS = {"check_failed": "check failed at {failed}; last checked {checked}",
+                 "older_code": "not rechecked since the rules changed; last checked {checked}",
+                 "older_data": "not rechecked on the newest data; last checked {checked}"}
+# A count of days in a finding's words, and which way it moves as days pass: "in 3 days"
+# counts down, "12 days past/late/overdue/ago/old" counts up; any other count is left.
+_RELATIVE = re.compile(r"\b(?P<in>in )?(?P<n>\d+) (?P<unit>days?)\b(?P<after> (?:past|late|"
+                       r"overdue|ago|old|behind|since|without)\b)?")
+
+
+def _relative(summary: str, event: Any, days_late: Any, found_day: date | None,
+              today: date) -> tuple[str, Any, Any]:
+    """``summary``'s day counts (and ``event['days']``, ``days_late``) moved from the day
+    the run found them (``found_day``) to ``today``: only a count equal to the finding's
+    own days, so a stated term ("30 days") is never touched."""
+    if found_day is None or today <= found_day or not isinstance(summary, str):
+        return summary, event, days_late
+    shift = (today - found_day).days
+    known = {v for v in ((event or {}).get("days") if isinstance(event, dict) else None,
+                         days_late) if isinstance(v, int)}
+    moved: dict[str, int] = {}
+
+    def move(match: re.Match) -> str:
+        n = int(match["n"])
+        if n not in known or not (match["in"] or match["after"]):
+            return match[0]
+        new = n - shift if match["in"] else n + shift
+        moved["down" if match["in"] else "up"] = new
+        if match["in"] and new <= 0:
+            return "today" if new == 0 else "by now"
+        return f"{match['in'] or ''}{new} day{'' if new == 1 else 's'}{match['after'] or ''}"
+    text = _RELATIVE.sub(move, summary)
+    if "up" in moved and isinstance(days_late, int):
+        days_late += shift
+    if isinstance(event, dict) and isinstance(event.get("days"), int) and moved:
+        event = {**event, "days": event["days"] + (shift if "up" in moved else -shift)}
+    return text, event, days_late
+
+
 def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
            follow_up: dict[str, Any], allowed: Iterable[str] = (),
-           audiences: Iterable[str] = ()) -> dict[str, Any]:
-    """One inbox row as its reader sees it (``follow_up`` without the order field)."""
+           audiences: Iterable[str] = (), *, today: date | None = None,
+           carried: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """One inbox row as its reader sees it (``follow_up`` without the order field): its
+    day counts as of ``today`` (``_relative``) and, when it is not current (``carried``),
+    marked so in its words."""
     days_late = follow_up.pop("days_late", None)
     event = follow_up.pop("event", None)
     summary = row["summary"]
+    if today is not None:
+        seen = _moment(row["last_seen"])
+        summary, event, days_late = _relative(
+            summary, event, days_late,
+            po_status.business_today(seen) if seen is not None else None, today)
+    if carried is not None:
+        words = CARRIED_WORDS[carried["reason"]].format(
+            checked=_at_words(carried.get("last_checked")) or "an earlier run",
+            failed=_at_words(carried.get("check_failed_at")) or "the last run")
+        summary = pg._clip(summary, pg.MAX_TEXT - len(words) - 3) + " (" + words + ")"
     caveat = follow_up.pop("promise_caveat", None)
     if caveat is not None:
         unless = caveat.get("unless") if isinstance(caveat, dict) else None
@@ -4750,6 +5399,18 @@ def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
                 # that the total was not checked against them
                 amount["lines"] = {"verdict": "not_open"} if hidden else {
                     k: v for k, v in lines.items() if k in ("verdict", "lines_sum")}
+    if isinstance(event, dict) and isinstance(event.get("chases"), dict):
+        # our payment chases of an overdue invoice (``proactive_mail_pains.chase_fold``):
+        # counted of only the messages this reader may open, never a handle shown
+        mine = [m for m in event.pop("chases").get("messages") or ()
+                if isinstance(m, dict) and m.get("handle") in set(citations)]
+        if mine:
+            last = max(m.get("sent") or "" for m in mine)
+            summary = pg._clip(f"{summary}; chased {len(mine)} time"
+                               f"{'' if len(mine) == 1 else 's'}, last on {last}")
+            event["chases"] = {"count": len(mine), "last": last,
+                               "messages": [{k: m.get(k) for k in ("id", "sent", "subject")}
+                                            for m in mine]}
     shown_by = follow_up.pop("confirmation_cites", None)
     if isinstance(shown_by, list) and not set(shown_by) & set(citations):
         follow_up.pop("confirmation", None)   # a confirmation this reader may not open
@@ -4760,10 +5421,16 @@ def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
             "object_id": row["object_id"], "object_type": row["object_type"],
             "summary": summary, "citations": citations,
             "detected_by": "rule", "state": state,
+            **({"carried": dict(carried)} if carried is not None else {}),
             "first_seen": row["first_seen"], "last_seen": row["last_seen"],
             **({"days_late": days_late} if days_late is not None else {}),
             **({"event": event} if isinstance(event, dict) and event else {}),
             "follow_up": follow_up}
+
+
+def _at_words(stamp: Any) -> str | None:
+    from .briefing import at_words
+    return at_words(stamp) if isinstance(stamp, str) else None
 
 
 def acknowledge(inbox: Any, store: Any, gap_id: str, *, reader: str,

@@ -464,6 +464,12 @@ def _tuple(value: Any) -> Any:
     return tuple(value) if isinstance(value, list) else value
 
 
+def _order(key: Any) -> tuple[bool, str]:
+    """A total order over record keys of mixed shapes (a text key beside a tuple key in
+    one source made a cycle fail with ``'<' not supported``)."""
+    return (isinstance(key, (tuple, list)), repr(key))
+
+
 # --------------------------------------------------------------------------- discovery
 
 def _first_after(conn: sqlite3.Connection, table: str, column: str, after: str) -> int:
@@ -553,7 +559,7 @@ def portal_changes(mirror: Path, base: Base, state: State, plan: "Plan") -> int:
             if was is not None and key in captured and (
                     captured[key] <= was or _restamped(conn, plan, key, was)):
                 restamped.add(key)
-        found = sorted(keys - restamped)
+        found = sorted(keys - restamped, key=_order)
         input_marks = {key: json.dumps([captured.get(key),
                                         sorted(stretches.get(key, []), key=str)])
                        for key in found}
@@ -653,7 +659,7 @@ def mail_changes(mail_db: Path, base: Base, state: State, exclusion: Any) -> int
             state.put("mail_event", newest_event)
             state.put("mail_version", last)
             state.put("mail_text_since", newest)
-            return state.add("graph_mail", sorted(kept))
+            return state.add("graph_mail", sorted(kept, key=_order))
     finally:
         conn.close()
 
@@ -730,7 +736,7 @@ def sharepoint_changes(drive: Path, lists: Path, base: Base, state: State) -> in
     with state.transaction():
         state.put("sharepoint_item", last_item)
         state.put("sharepoint_list", last_list)
-        return state.add("sharepoint", sorted(keys), _input_marks(keys, captured, stretches))
+        return state.add("sharepoint", sorted(keys, key=_order), _input_marks(keys, captured, stretches))
 
 
 _MEETING_RELATIONS = {"calendar_event": "calendarEvents", "planner_task": "plannerTasks",
@@ -784,7 +790,7 @@ def store_changes(family: str, db: Path, base: Base, state: State) -> int:
         _newest_versions(conn, stretches, captured)
         with state.transaction():
             state.put(f"{family}_capture", last)
-            return state.add(family, sorted(keys), _input_marks(keys, captured, stretches))
+            return state.add(family, sorted(keys, key=_order), _input_marks(keys, captured, stretches))
     finally:
         conn.close()
 
@@ -1489,7 +1495,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         changed = {s: state.changed(s) for s in SOURCES}
         if force_changed:
             for source, keys in force_changed.items():
-                changed[source] = sorted(set(changed.get(source, ())) | {_tuple(k) for k in keys})
+                changed[source] = sorted(set(changed.get(source, ())) | {_tuple(k) for k in keys}, key=_order)
         report["new_changes"] = added
         report["changed"] = {s: len(v) for s, v in changed.items()}
         if report.get("mail_skipped"):
@@ -1499,7 +1505,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         fresh = {s: state.changed(s, open_only=True) for s in SOURCES}
         if force_changed:
             for source, keys in force_changed.items():
-                fresh[source] = sorted(set(fresh.get(source, ())) | {_tuple(k) for k in keys})
+                fresh[source] = sorted(set(fresh.get(source, ())) | {_tuple(k) for k in keys}, key=_order)
         if report.get("mail_skipped"):
             fresh["graph_mail"] = []
         report["followed"] = {s: len(v) for s, v in fresh.items()}
@@ -1522,12 +1528,12 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             for source in SOURCES:
                 found[source] |= more[source]
                 if extra.get(source):
-                    keys = sorted(set(extra[source]))
+                    keys = sorted(set(extra[source]), key=_order)
                     if not force_changed:
                         state.add(source, keys)
-                    fresh[source] = sorted(set(fresh.get(source, ())) | set(keys))
+                    fresh[source] = sorted(set(fresh.get(source, ())) | set(keys), key=_order)
                     if source in changed:
-                        changed[source] = sorted(set(changed[source]) | set(keys))
+                        changed[source] = sorted(set(changed[source]) | set(keys), key=_order)
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
         work = delta_dir / f"work-{stamp}"
         work.mkdir(parents=True)
@@ -1602,18 +1608,18 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         sources: dict[str, Any] = {}
         with contextlib.ExitStack() as stack:
             if mail_keys:
-                mail_subset(state_dir, sub_state, sorted(mail_keys))
+                mail_subset(state_dir, sub_state, sorted(mail_keys, key=_order))
                 readings.close()
                 report["readings_seeded"] = report.get("readings_seeded", 0) + seed_readings(
                     state_dir, delta_dir, _mail_digests(sub_state))
                 sources["graph_mail"] = stack.enter_context(project.MailCaptures(
                     sub_state, internal_domains=_internal_domains(environ)))
             if records["portal_api"]:
-                mirror_subset(mirror, work / "mirror.sqlite", sorted(records["portal_api"]))
+                mirror_subset(mirror, work / "mirror.sqlite", sorted(records["portal_api"], key=_order))
                 sources["portal_api"] = stack.enter_context(
                     project.MirrorCaptures(work / "mirror.sqlite"))
             if records["sharepoint"]:
-                sharepoint_subset(state_dir, sub_state, sorted(records["sharepoint"]))
+                sharepoint_subset(state_dir, sub_state, sorted(records["sharepoint"], key=_order))
                 readings.close()
                 report["readings_seeded"] = report.get("readings_seeded", 0) + seed_readings(
                     state_dir, delta_dir, _drive_digests(sub_state))
@@ -1622,7 +1628,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 if records[family]:
                     out = sub_state / live.relative_to(state_dir)
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    store_subset(live, out, sorted(records[family]))
+                    store_subset(live, out, sorted(records[family], key=_order))
                     sources[family] = stack.enter_context(project.capture_source(family, out))
             report["records"] = {s: len(v) for s, v in records.items()}
             t = lap("subset", t)
@@ -2056,7 +2062,7 @@ def reproject_requests(state: State, base: Base, environ: Mapping[str, str],
     for source, key in records.values():
         by_source.setdefault(source, set()).add(key)
     for source, keys in by_source.items():
-        state.add(source, sorted(keys))
+        state.add(source, sorted(keys, key=_order))
     report["reproject"] = {"queued": len(ids), "records": len(records),
                            "unknown": len(ids) - len(records)}
     return len(records)

@@ -212,6 +212,7 @@ Chats need ``Chat.Read.All``: without it they stay their own blocked part
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 from dataclasses import dataclass
@@ -2547,6 +2548,46 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
 _COUNT_KEYS = tuple(_new_counts())
 
 
+RECONCILE_STATES = ("captured", "other_tenant", "not_readable", "people_excluded",
+                    "pending", "never_read")
+
+
+def chats_reconcile(store: CaptureStore, chat_ids: Sequence[Any]) -> dict[str, Any]:
+    """Every chat the census lists, by what the store holds of it (operator counts, no
+    id): ``captured`` (current messages held), ``other_tenant`` (hosted in another
+    tenant: Graph refuses its messages to this tenant's app, settled and never claimed),
+    ``not_readable`` (another settled refusal), ``people_excluded``, ``pending`` (read
+    begun, not settled yet: throttled, cut by the budget; ``pending_reasons`` by code)
+    and ``never_read``. A census count above the captured one is explained here, never a
+    silent gap."""
+    out: dict[str, Any] = {state: 0 for state in RECONCILE_STATES}
+    pending: Counter = Counter()
+    ids = [c for c in dict.fromkeys(chat_ids) if isinstance(c, str) and c]
+    holdings = store.unit_holdings(CHAT_KIND.name)
+    for chat in ids:
+        run = holdings.get(Conversation("chat", chat).unit)
+        if run is not None and run["held"]:
+            out["captured"] += 1
+            continue
+        if run is not None and run["state"] is None:
+            run = None
+        reason = str((run or {}).get("reason") or "")
+        if run is None:
+            out["never_read"] += 1
+        elif reason == OTHER_TENANT:
+            out["other_tenant"] += 1
+        elif reason.startswith(NOT_READABLE):
+            out["not_readable"] += 1
+        elif reason == PEOPLE_EXCLUDED:
+            out["people_excluded"] += 1
+        else:
+            out["pending"] += 1
+            pending[reason.split(":", 1)[0] or str((run or {}).get("state") or "open")] += 1
+    out["listed"] = len(ids)
+    out["pending_reasons"] = dict(sorted(pending.items()))
+    return out
+
+
 def _read_back(store: CaptureStore, units: Sequence[tuple[str, str]], actor: Actor
                ) -> tuple[list[str], int]:
     """(citations ``actor`` may see, items withheld from it) over ``units``."""
@@ -2813,6 +2854,12 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                          else census["channels"] > joined["channels"]),
             "channels_captured": sum(k == "channel" for k in captured.values()),
             "chats_captured": sum(k == "chat" for k in captured.values()),
+            # Every chat the census lists, by what the store holds of it: the census and
+            # the captured count differ by exactly these (chats_reconcile).
+            "chats_reconciled": chats_reconcile(
+                # no listing is kept when the people-exclusion guard refused the run
+                store, [c.get("chat_id") for c in (private or {}).get("chats") or ()
+                        if isinstance(c, Mapping)]),
             # From the client's request log: GETs naming an excluded person or a refused
             # conversation (0 is the guard's proof), and every GET it saw.
             "excluded_requested": log.excluded, "requests_logged": log.gets,

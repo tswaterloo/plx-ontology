@@ -1,0 +1,22 @@
+{
+ "vtt": "WEBVTT\n\n00:00:20.000 --> 00:00:57.000\n<v Priya Nair>Lakeshore Foods says SO 104527 arrived short two bags.</v>\n\n00:00:57.000 --> 00:01:34.000\n<v Sam Okafor>I'll check the packing list for SO 104527 today.</v>\n\n00:01:34.000 --> 00:02:11.000\n<v Priya Nair>Raj, can you message Lakeshore Foods on Teams that we're on it?</v>\n\n00:02:11.000 --> 00:02:48.000\n<v Raj Mehta>On it.</v>\n\n00:02:48.000 --> 00:03:25.000\n<v Priya Nair>Northfield Bakery asked for the bill of lading for SO 104511.</v>\n\n00:03:25.000 --> 00:04:02.000\n<v Priya Nair>I'll send the bill of lading for SO 104511 to Northfield Bakery.</v>\n\n00:04:02.000 --> 00:04:39.000\n<v Sam Okafor>Is the second truck still at risk?</v>\n\n00:04:39.000 --> 00:05:16.000\n<v Priya Nair>Probably fine.</v>\n",
+ "meeting": {
+  "id": "cs-2026-11-06",
+  "subject": "Customer service huddle",
+  "start": "2026-11-06T13:30:00Z",
+  "organizer": {
+   "name": "Priya Nair",
+   "address": "priya.nair@plx.example"
+  },
+  "attendees": [
+   {
+    "name": "Sam Okafor",
+    "address": "sam.okafor@plx.example"
+   },
+   {
+    "name": "Raj Mehta",
+    "address": "raj.mehta@plx.example"
+   }
+  ]
+ }
+}

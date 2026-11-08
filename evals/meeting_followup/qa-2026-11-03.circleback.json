@@ -1,0 +1,80 @@
+{
+ "id": "qa-2026-11-03",
+ "title": "QA review",
+ "date": "2026-11-03T15:00:00Z",
+ "organizer": {
+  "name": "Lena Hoffmann",
+  "email": "lena.hoffmann@plx.example"
+ },
+ "attendees": [
+  {
+   "name": "Lena Hoffmann",
+   "email": "lena.hoffmann@plx.example"
+  },
+  {
+   "name": "Dana Price",
+   "email": "dana.price@plx.example"
+  },
+  {
+   "name": "Sam Okafor",
+   "email": "sam.okafor@plx.example"
+  }
+ ],
+ "transcript": [
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 20,
+   "text": "Two things today: the pea protein lot and the dairy complaint."
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 57,
+   "text": "Lot L24-0912 failed moisture on retest, so there's a quality issue."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 94,
+   "text": "Agreed, we keep it on hold and ask Andean Ingredients for a replacement."
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 131,
+   "text": "I'll write to Andean Ingredients today asking for a replacement lot."
+  },
+  {
+   "speaker": "Sam Okafor",
+   "timestamp": 168,
+   "text": "I can move the held pallets to the quarantine bay this afternoon."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 205,
+   "text": "Maple Crest Dairy complained about clumping on SO 104602."
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 242,
+   "text": "Is it the same lot?"
+  },
+  {
+   "speaker": "Sam Okafor",
+   "timestamp": 279,
+   "text": "No idea, I need to check the pick records."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 316,
+   "text": "Sam, please confirm which lot went on SO 104602 by Friday."
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 353,
+   "text": "Action item: Lena to send the spec sheet for lot L24-0912 to Maple Crest Dairy."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 390,
+   "text": "Good, thanks."
+  }
+ ]
+}

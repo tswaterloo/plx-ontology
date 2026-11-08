@@ -35,7 +35,7 @@ X_ID = "0e0e0e0e-0000-4000-8000-00000000e0e1"   # the excluded person
 A, B, X = "ann.test@example-plx.com", "bob.test@example-plx.com", "xena.test@example-plx.com"
 EXTERNAL = "guest@vendor-example.com"
 GROUP = "0000cccc-0000-4000-8000-0000000000c1"
-ENV = {"PLX_EXCLUDED_PEOPLE_OIDS": X_ID,
+ENV = {"PLX_EXCLUDED_PEOPLE_OIDS": X_ID, "PLX_MEETINGS_TRANSCRIPTS_GRANTED": "1",
        "AZURE_TENANT_ID": "11111111-2222-3333-4444-555555555555",
        "AZURE_CLIENT_ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
        "AZURE_CLIENT_SECRET": "s3cr3t~AZURE~value~do-not-leak"}
@@ -86,6 +86,10 @@ class FakeGraph:
         self.tasks: dict[str, dict] = {}
         self.forbidden: list[str] = []
         self.calls: list[tuple[str, str]] = []
+        # Microsoft 365 groups: id -> (member ids, plan ids); a server page cap; 429s owed
+        self.groups: dict[str, tuple[list[str], list[str]]] = {}
+        self.page_cap = 1000
+        self.throttle: dict[str, int] = {}
         past = NOW - timedelta(days=2)
         self.event(A_ID, "EvA1", organizer=(A, "Ann Test"), attendees=[(B, "Bob Test")],
                    start=past, online=1, organizer_flag=True, subject="Weekly PO review")
@@ -148,7 +152,8 @@ class FakeGraph:
 
     def _page(self, parts, items):
         query = {k: v[0] for k, v in parse_qs(parts.query).items()}
-        top, skip = int(query.get("$top", "1000")), int(query.get("$skip", "0"))
+        top = min(int(query.get("$top", "1000")), self.page_cap)
+        skip = int(query.get("$skip", "0"))
         page = {"value": items[skip:skip + top]}
         if skip + top < len(items):
             rest = {k: v for k, v in query.items() if k != "$skip"}
@@ -166,6 +171,21 @@ class FakeGraph:
         query = {k: v[0] for k, v in parse_qs(parts.query).items()}
         if any(re.search(p, path) for p in self.forbidden):
             return j(403, {"error": {"code": "Forbidden"}})
+        for pattern, owed in list(self.throttle.items()):
+            if owed and re.search(pattern, path):
+                self.throttle[pattern] = owed - 1
+                return 429, {"Retry-After": "1"}, b'{"error": {"code": "TooManyRequests"}}'
+        if path == "/v1.0/groups":
+            assert query["$filter"] == "groupTypes/any(c:c eq 'Unified')", query
+            return self._page(parts, [{"id": g} for g in sorted(self.groups)])
+        got = re.fullmatch(r"/v1\.0/groups/([^/]+)/(members|planner/plans)", path)
+        if got and got[1] in self.groups:
+            members, plans = self.groups[got[1]]
+            if got[2] == "members":
+                return self._page(parts, [{"id": m, **({"mail": self.users[m]["mail"]}
+                                                       if m in self.users else {})}
+                                          for m in members])
+            return self._page(parts, [{"id": p} for p in plans])
         if path == "/v1.0/users":
             return self._page(parts, list(self.users.values()))
         found = re.fullmatch(r"/v1\.0/users/([^/]+)(/.*)?", path)
@@ -232,11 +252,60 @@ class MeetingsCaptureTest(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.addCleanup(self.tmp.cleanup)
 
-    def capture(self, env=ENV, **scope_overrides):
+    def capture(self, env=ENV, granted=True, **scope_overrides):
         api, transport = cm.build_api(env, sender=self.graph)
-        capture = cm.MeetingsCapture(self.store, api, audience(), CAPTURE, workers=2,
+        capture = cm.MeetingsCapture(self.store, api, audience(), CAPTURE,
+                                     transcripts_granted=granted, workers=2,
                                      clock=lambda: NOW)
         return capture.run(scope(**scope_overrides)), transport
+
+    def test_transcripts_dormant_without_the_grant(self) -> None:
+        # Until OnlineMeetingTranscript.Read.All is recorded as granted, no online-meeting
+        # or transcript request is made; the calendar is still captured.
+        report, _ = self.capture(granted=False)
+        self.assertEqual(report["transcripts"]["status"], "dormant")
+        self.assertEqual([u for m, u in self.graph.calls
+                          if "onlineMeetings" in u or "transcripts" in u], [])
+        self.assertTrue(self.rows(cm.EVENT_KIND))
+        self.assertEqual(self.rows(cm.TRANSCRIPT_KIND), {})
+
+    def test_meetings_held_from_earlier_runs_are_looked_up(self) -> None:
+        # A run reading only the calendar, then one reading only transcripts (as an
+        # incremental calendar read re-reads no unchanged event): the meetings held from
+        # the first run are looked up, with the same guards (2026-11-08: no lookup ever
+        # ran while 272 ended online meetings were held).
+        self.capture(parts=["calendar"])
+        self.assertEqual(self.graph.gets(r"onlineMeetings"), [])
+        report, _ = self.capture(parts=["transcripts"])
+        self.assertEqual(report["transcripts"]["status"], "complete",
+                         report["transcripts"]["reasons"])
+        self.assertTrue(self.graph.gets(r"onlineMeetings"))
+        self.assertEqual(len(self.rows(cm.TRANSCRIPT_KIND)), 1)
+        # never the excluded person's meetings, nor a private event's
+        self.assertEqual(self.graph.gets(r"meeting_M[234]"), [])
+        # without the grant the held meetings are not looked up either
+        self.graph.calls.clear()
+        report, _ = self.capture(granted=False, parts=["transcripts"])
+        self.assertEqual(report["transcripts"]["status"], "dormant")
+        self.assertEqual(self.graph.gets(r"onlineMeetings"), [])
+
+    def test_held_meetings_are_cleared_again_under_the_current_exclusion(self) -> None:
+        # The calendar read under a narrower exclusion, the transcripts under the current
+        # one: a meeting an attendee excluded since then is never requested or stored, and
+        # a mailbox whose owner is excluded now gives no candidate.
+        narrower = {**ENV, "PLX_EXCLUDED_PEOPLE_OIDS": "0e0e0e0e-0000-4000-8000-00000000ffff"}
+        self.capture(env=narrower, parts=["calendar"])
+        self.graph.vtt["TranscriptThree"] = VTT.replace("Bob Test", "Xena Test")
+        self.graph.calls.clear()
+        report, _ = self.capture(parts=["transcripts"])   # X excluded now
+        self.assertEqual(self.graph.gets(r"meeting_M3") + self.graph.gets(r"MeetingThree"), [])
+        self.assertNotIn("TranscriptThree", {p[2] for p in self.rows(cm.TRANSCRIPT_KIND)})
+        self.assertGreaterEqual(report["counts"]["transcripts_withheld_excluded"], 1)
+        # every mailbox owner excluded now: no candidate at all, no online-meeting request
+        self.graph.calls.clear()
+        report, _ = self.capture(env={**ENV, "PLX_EXCLUDED_PEOPLE_OIDS":
+                                      f"{X_ID},{A_ID},{B_ID}"}, parts=["transcripts"])
+        self.assertEqual(self.graph.gets(r"onlineMeetings"), [])
 
     def rows(self, kind):
         return {r.path: r.payload for unit in self.store.units(kind.name)
@@ -284,6 +353,122 @@ class MeetingsCaptureTest(unittest.TestCase):
         self.assertEqual((report["counts"]["mailboxes_open"],
                           report["counts"]["mailboxes_excluded"]), (2, 1))
         self.assertEqual(self.graph.gets(X_ID), [])
+
+    def group_plans(self, *, directory_env=None, retry=None, out_of_time=lambda: False,
+                    **scope_overrides):
+        """A planner-only run finding plans through the tenant's groups."""
+        api, transport = cm.build_api(ENV, sender=self.graph, retry=retry)
+        directory, _ = (cm.build_api(directory_env, sender=self.graph, retry=retry)
+                        if directory_env else (None, None))
+        capture = cm.MeetingsCapture(self.store, api, audience(), CAPTURE, workers=4,
+                                     clock=lambda: NOW, directory_api=directory)
+        return capture.run(scope(**{"mailboxes": [], "all_mailboxes": True,
+                                    "parts": ["planner"], "plan_groups": True,
+                                    **scope_overrides}), out_of_time=out_of_time), transport
+
+    def test_group_plans_found_and_excluded_only_groups_never_read(self) -> None:
+        self.graph.tasks.clear()          # no mailbox task names a plan: groups must
+        two, three, four = ("PlanTwo_000000000000000001", "PlanThree_0000000000000001",
+                            "PlanFour_00000000000000001")
+        for plan in (two, three, four):
+            self.graph.plans[plan] = {"title": plan, "group": GROUP}
+        only_x, mixed, refused, empty = (f"0000dddd-0000-4000-8000-00000000000{i}"
+                                         for i in range(4))
+        self.graph.groups = {GROUP: ([A_ID, B_ID], ["PlanOne_000000000000000001"]),
+                             only_x: ([X_ID], [two]),
+                             mixed: ([X_ID, B_ID], [three]),
+                             refused: ([A_ID], [four]),
+                             empty: ([], [])}
+        self.graph.forbidden = [rf"/groups/{refused}/members"]
+        report, transport = self.group_plans()
+        counts = report["counts"]
+        self.assertEqual((counts["groups_listed"], counts["groups_excluded"],
+                          counts["groups_unread"], counts["plans_from_groups"]), (5, 1, 1, 2))
+        self.assertEqual(len(report["plans"]), 2)
+        self.assertEqual(self.graph.gets(rf"/groups/{only_x}/planner"), [])
+        self.assertEqual(self.graph.gets(rf"/groups/{refused}/planner"), [])
+        self.assertEqual(self.graph.gets(r"/planner/plans/PlanTwo"), [])
+        self.assertIn("blocked:missing_permission:GroupMember.Read.All", report["reasons"])
+        # nobody's request names an excluded person; GET only (the token POST aside)
+        self.assertEqual([u for m, u in self.graph.calls if X_ID in unquote(u)], [])
+        self.assertEqual(transport.requests_sent - transport.gets_sent, 1)
+
+    def test_group_listing_with_its_own_credentials_and_paging(self) -> None:
+        directory_env = {**ENV, "PLX_MEETINGS_GRAPH_CREDENTIALS": "MICROSOFT_GRAPH",
+                         "MICROSOFT_GRAPH_TENANT_ID": ENV["AZURE_TENANT_ID"],
+                         "MICROSOFT_GRAPH_CLIENT_ID": "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
+                         "MICROSOFT_GRAPH_CLIENT_SECRET": "s3cr3t~GRAPH~value~do-not-leak"}
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                self.graph.tasks.clear()
+                self.graph.page_cap = 7
+                self.graph.groups = {f"0000eeee-0000-4000-8000-{i:012d}":
+                                     ([A_ID, X_ID] if i % 2 else [X_ID], []) for i in range(n)}
+                # one plan per mixed group; every excluded-only group's plans stay unread
+                for i, g in enumerate(sorted(self.graph.groups)):
+                    if i % 2:
+                        plan = f"PlanG{i:03d}_" + "0" * 17
+                        self.graph.groups[g][1].append(plan)
+                        self.graph.plans[plan] = {"title": plan, "group": g}
+                report, _ = self.group_plans(directory_env=directory_env,
+                                             parts=["planner"], max_plans_per_run=500)
+                c = report["counts"]
+                self.assertEqual((c["groups_listed"], c["groups_excluded"],
+                                  c["plans_from_groups"]), (n, (n + 1) // 2, n // 2))
+                self.assertEqual(len(self.graph.gets(r"/v1\.0/groups\?")), -(-n // 7))
+                self.assertNotIn("cap:group_listing", report["reasons"])
+                tokens = [u for m, u in self.graph.calls if m == "POST"]
+                self.assertEqual(len(tokens), 2)   # one token per application
+
+    def test_deny_listed_people_skip_groups_and_withhold_tasks(self) -> None:
+        hr_id, hr = "0000ffff-0000-4000-8000-0000000000f1", "hr.test@example-plx.com"
+        self.graph.users[hr_id] = user(hr_id, hr, "Hana Test")
+        only_hr, mixed = "0000dddd-0000-4000-8000-0000000000f1", GROUP
+        self.graph.groups = {only_hr: ([hr_id], ["PlanTwo_000000000000000001"]),
+                             mixed: ([A_ID, hr_id], ["PlanOne_000000000000000001"])}
+        self.graph.plans["PlanTwo_000000000000000001"] = {"title": "HR", "group": only_hr}
+        self.graph.tasks.clear()
+        self.graph.task("TaskHrAssg_00000000000001", assignees=[hr_id], title="hr assignee")
+        self.graph.task("TaskHrMade_00000000000001", assignees=[A_ID], creator=hr_id,
+                        title="hr creator")
+        self.graph.task("TaskHrDone_00000000000001", assignees=[A_ID], title="hr completer")
+        self.graph.tasks["TaskHrDone_00000000000001"]["completedBy"] = {"user": {"id": hr_id}}
+        self.graph.task("TaskAnn_00000000000000001", assignees=[A_ID], title="Chase PO100235")
+        report, _ = self.group_plans()
+        c = report["counts"]
+        self.assertEqual((c["groups_excluded"], c["plans_from_groups"], c["tasks_denied"]),
+                         (1, 1, 3))
+        self.assertEqual(self.graph.gets(rf"/groups/{only_hr}/planner"), [])
+        self.assertEqual(self.graph.gets(r"/planner/plans/PlanTwo"), [])
+        self.assertEqual(self.graph.gets(r"/planner/tasks/TaskHr"), [])
+        kept = {path[-1] for path in self.rows(cm.TASK_KIND)}
+        self.assertEqual(kept, {"TaskAnn_00000000000000001"})
+
+    def test_group_pass_stops_at_the_time_budget(self) -> None:
+        self.graph.groups = {GROUP: ([A_ID], ["PlanOne_000000000000000001"])}
+        report, _ = self.group_plans(out_of_time=lambda: True)
+        self.assertIn(cm.TIME_BUDGET, report["reasons"])
+        self.assertEqual(self.graph.gets(r"/groups"), [])
+        self.setUp()
+        self.graph.groups = {GROUP: ([A_ID], ["PlanOne_000000000000000001"]),
+                             "0000dddd-0000-4000-8000-000000000001": ([B_ID], [])}
+        report, _ = self.group_plans(
+            out_of_time=lambda: bool(self.graph.gets(r"/v1\.0/groups\?")))
+        self.assertIn(cm.TIME_BUDGET, report["reasons"])
+        self.assertEqual(len(self.graph.gets(r"/groups")), 1)   # the listing only
+        self.assertEqual(report["counts"]["plans_from_groups"], 0)
+
+    def test_throttled_group_reads_are_retried_not_dropped(self) -> None:
+        self.graph.tasks.clear()
+        self.graph.groups = {GROUP: ([A_ID, B_ID], ["PlanOne_000000000000000001"])}
+        self.graph.throttle = {r"^/v1\.0/groups$": 1, r"/planner/plans$": 1}
+        slept: list[float] = []
+        report, _ = self.group_plans(retry=graph_read.BoundedBackoff(
+            sleep=slept.append, jitter=lambda: 0.0, budget_seconds=60))
+        self.assertEqual(report["counts"]["plans_from_groups"], 1)
+        self.assertEqual(len(slept), 2)
+        self.assertEqual(self.graph.throttle, {r"^/v1\.0/groups$": 0, r"/planner/plans$": 0})
 
     def test_rows_content_and_sensitive_events(self) -> None:
         self.capture()
@@ -367,7 +552,7 @@ class MeetingsCaptureTest(unittest.TestCase):
                        .isoformat(), "endDateTime": later.isoformat()})
         self.graph.vtt["TrWeek3"] = self.graph.vtt["TrWeek2"]
         api, _ = cm.build_api(ENV, sender=self.graph)
-        cm.MeetingsCapture(self.store, api, audience(), CAPTURE, clock=lambda: later
+        cm.MeetingsCapture(self.store, api, audience(), CAPTURE, transcripts_granted=True, clock=lambda: later
                            ).run(scope(window_days_back=30))
         rows = {r["row"]["id"]: r["row"] for r in self.rows(cm.TRANSCRIPT_KIND).values()}
         self.assertEqual(rows["TrWeek3"]["subject"], "Standup next")
@@ -375,7 +560,7 @@ class MeetingsCaptureTest(unittest.TestCase):
         # a transcript no cleared occurrence holds is withheld whole
         listed.append({"id": "TrOrphan", "createdDateTime": (NOW - timedelta(days=20))
                        .isoformat()})
-        report = cm.MeetingsCapture(self.store, api, audience(), CAPTURE,
+        report = cm.MeetingsCapture(self.store, api, audience(), CAPTURE, transcripts_granted=True,
                                     clock=lambda: later + timedelta(days=2)).run(
             scope(window_days_back=30))
         self.assertNotIn("TrOrphan", {p[2] for p in self.rows(cm.TRANSCRIPT_KIND)})
@@ -402,7 +587,8 @@ class MeetingsCaptureTest(unittest.TestCase):
 
     def test_guard_unavailable_reads_nothing(self) -> None:
         env = {k: v for k, v in ENV.items() if k != "PLX_EXCLUDED_PEOPLE_OIDS"}
-        report, transport = self.capture(env=env)
+        self.graph.groups = {GROUP: ([A_ID], ["PlanOne_000000000000000001"])}
+        report, transport = self.capture(env=env, all_mailboxes=True, plan_groups=True)
         self.assertEqual(report["status"], "blocked")
         self.assertEqual(report["blocked_upstream"][0]["part"], "meetings.people_exclusion")
         self.assertEqual([c for c in self.graph.calls if c[0] == "GET"], [])
@@ -437,7 +623,7 @@ class MeetingsCaptureTest(unittest.TestCase):
                 store = cm.open_store(self.state / f"n{n}", audience())
                 self.addCleanup(store.close)
                 api, _ = cm.build_api(ENV, sender=graph)
-                report = cm.MeetingsCapture(store, api, audience(), CAPTURE, clock=lambda: NOW
+                report = cm.MeetingsCapture(store, api, audience(), CAPTURE, transcripts_granted=True, clock=lambda: NOW
                                             ).run(scope(mailboxes=[A], page_size=7,
                                                         parts=["calendar"]))
                 self.assertEqual(report["status"], "complete")
@@ -471,7 +657,9 @@ class MeetingsCaptureTest(unittest.TestCase):
         for bad in ({"schema": cm.SCOPE_SCHEMA}, {"schema": cm.SCOPE_SCHEMA, "mailboxes": [A],
                                                   "parts": ["mail"]},
                     {"schema": cm.SCOPE_SCHEMA, "mailboxes": ["not an address"]},
-                    {"schema": cm.SCOPE_SCHEMA, "mailboxes": [A], "surprise": 1}):
+                    {"schema": cm.SCOPE_SCHEMA, "mailboxes": [A], "surprise": 1},
+                    {"schema": cm.SCOPE_SCHEMA, "mailboxes": [A], "plan_groups": "yes"},
+                    {"schema": cm.SCOPE_SCHEMA, "mailboxes": [A], "directory_credentials": "BC"}):
             with self.assertRaises(cm.MeetingsCaptureError):
                 cm.MeetingsScope(bad)
         with self.assertRaises(cm.MeetingsCaptureError):

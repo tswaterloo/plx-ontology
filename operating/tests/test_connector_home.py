@@ -434,17 +434,22 @@ class HomeModeTest(Base):
                     self.assertGreaterEqual(home["returned"], 20)
                     self.assertEqual(completeness["reason"], "page_cap")
                 self.assertLessEqual(self.sent, mcp_server.MAX_RESULT_BYTES)
+                # every rule once: an entry when it did not finish cleanly, else its name
+                listed = [r["rule"] for r in home["rules"]]
+                self.assertEqual(sorted(listed + home["rules_clean"]), sorted(pe.DETECTORS))
+                self.assertFalse(any(r["status"] == "complete" and r["not_evaluated"] == 0
+                                     and not r["reasons"] for r in home["rules"]))
 
     def test_home_is_a_mode_of_plx_find_within_the_tool_budget(self):
         names = {tool["name"] for tool in TOOLS}
         self.assertIn("plx.find", names)
         self.assertNotIn("plx.home", names)
-        self.assertEqual(CONTRACTS["limits"]["max_case_host_tools"], 24)
+        budget = CONTRACTS["limits"]["max_case_host_tools"]
         from operating import agent_definitions
         definitions = agent_definitions.load()
         for agent in ("plx.agent.act", "plx.agent.investigate"):
             self.assertIn("plx.find", definitions.get(agent).tools)
-            self.assertLessEqual(len(definitions.get(agent).tools), 24)
+            self.assertLessEqual(len(definitions.get(agent).tools), budget)
 
 
 class HomeLimitsTest(unittest.TestCase):
@@ -460,6 +465,8 @@ class HomeLimitsTest(unittest.TestCase):
         self.assertEqual(set(home["gaps"]["items"]["properties"]["kind"]["enum"]), kinds)
         self.assertEqual(set(home["not_run"]["items"]["enum"]), rules)
         self.assertEqual(set(home["rules"]["items"]["properties"]["rule"]["enum"]), rules)
+        self.assertEqual(set(home["rules_clean"]["items"]["enum"]), rules)
+        self.assertGreaterEqual(home["rules_clean"]["maxItems"], len(rules))
         self.assertGreaterEqual(home["kinds"]["maxItems"], len(kinds))
         self.assertGreaterEqual(home["not_run"]["maxItems"], len(rules))
         self.assertGreaterEqual(home["rules"]["maxItems"], len(rules))

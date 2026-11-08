@@ -36,10 +36,14 @@ FAMILY_SCHEMES = {"portal_api": ("api://", "api"), "bc": ("bc://", "bc"),
                   "graph_mail": ("graph-mail://", "mail"),
                   "sharepoint": ("sharepoint://", "sharepoint"),
                   "mission_control": ("mc://", "mc"), "brain": ("brain://", "brain"),
-                  "teams": ("teams-channel://", "teams")}
-# A relation its family cites under another scheme (Teams chats: ``teams-chat://``).
+                  "teams": ("teams-channel://", "teams"),
+                  "meetings": ("calendar-event://", "meetings")}
+# A relation its family cites under another scheme (Teams chats: ``teams-chat://``; the
+# meetings capture's Planner tasks and transcripts, ``integrations/capture_meetings.py``).
 RELATION_SCHEMES = {("teams", "chatMessages"): "teams-chat://",
-                    ("teams", "chats"): "teams-chat://"}
+                    ("teams", "chats"): "teams-chat://",
+                    ("meetings", "plannerTasks"): "planner-task://",
+                    ("meetings", "meetingTranscripts"): "meeting-transcript://"}
 SYNTHETIC_PATH = "synthetic/"
 _PARSED = {"decimal_text": "12.50", "integer_text": "7", "iso_date": "2026-01-02",
            "yyyymmdd_date": "20260102", "iso_timestamp": "2026-01-02T03:04:05Z",

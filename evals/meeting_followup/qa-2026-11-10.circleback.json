@@ -1,0 +1,65 @@
+{
+ "id": "qa-2026-11-10",
+ "title": "QA review",
+ "date": "2026-11-10T15:00:00Z",
+ "organizer": {
+  "name": "Lena Hoffmann",
+  "email": "lena.hoffmann@plx.example"
+ },
+ "attendees": [
+  {
+   "name": "Lena Hoffmann",
+   "email": "lena.hoffmann@plx.example"
+  },
+  {
+   "name": "Dana Price",
+   "email": "dana.price@plx.example"
+  },
+  {
+   "name": "Marco Silva",
+   "email": "marco.silva@plx.example"
+  }
+ ],
+ "transcript": [
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 20,
+   "text": "Andean Ingredients sent the replacement COA."
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 57,
+   "text": "It's in spec, so we approved the replacement lot."
+  },
+  {
+   "speaker": "Marco Silva",
+   "timestamp": 94,
+   "text": "I'll raise a PO with Andean Ingredients for the replacement freight."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 131,
+   "text": "Lena, could you update the supplier scorecard for Andean Ingredients by end of month?"
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 168,
+   "text": "Will do."
+  },
+  {
+   "speaker": "Dana Price",
+   "timestamp": 205,
+   "text": "Is the audit still on the 20th?"
+  },
+  {
+   "speaker": "Lena Hoffmann",
+   "timestamp": 242,
+   "text": "I don't know yet."
+  },
+  {
+   "speaker": "Marco Silva",
+   "timestamp": 279,
+   "text": "Prairie Pulse might be late on samples."
+  }
+ ]
+}

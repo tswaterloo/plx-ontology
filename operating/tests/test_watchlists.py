@@ -500,3 +500,176 @@ class Routes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignalRules(unittest.TestCase):
+    """Rules over the checks' own findings, read from the engine's inbox under the
+    reader's grant (``wl.signal_alerts`` over ``pe.read_inbox``)."""
+
+    def setUp(self):
+        from operating import proactive_cash as pc
+        from operating.tests.test_proactive_cash import ap_invoice
+        self.pc, self.ap_invoice = pc, ap_invoice
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.store = self.tmp / "store.sqlite"
+        self.inbox = pe.inbox_path(self.store)
+
+    def findings(self, n: int, amount: str = "12000.00", *, start: int = 0,
+                 world: World | None = None, at: datetime = T + timedelta(hours=1)) -> World:
+        w = world or World()
+        for i in range(start, start + n):
+            self.ap_invoice(w, f"SYNTHV{i}", f"INV-{20000 + i}", 40, paid=10, amount=amount)
+            self.ap_invoice(w, f"SYNTHV{i}", f"{20000 + i}", 30, paid=5, amount=amount)
+        if self.store.exists():
+            self.store.unlink()
+        w.build(self.store)
+        pe.run(self.store, self.inbox, AS_OF, only=[self.pc.DUPLICATE_RULE], clock=lambda: at)
+        return w
+
+    def reader(self, may_read=everyone, held=("finance",), decide=no_refusals):
+        def read(kinds, since=None):
+            return pe.read_inbox(self.inbox, self.store, reader="plx:ops", may_read=may_read,
+                                 held=frozenset(held), decide=decide, kinds=list(kinds),
+                                 since=since, limit=wl.SIGNALS_SHOWN)["gaps"]
+        return read
+
+    def rule(self, text: str, held=("finance",), at: datetime = T) -> dict:
+        got = wl.compile_rule(text, vocab(), set(held))
+        return {"rule_id": "r_" + "0" * 16, "text": text, "spec": got["spec"],
+                "at": at.isoformat(), "state": "active"}
+
+    def test_plain_words_compile_to_a_signal_rule_shown_back_and_validated(self):
+        got = wl.compile_rule("Tell me when a duplicate supplier invoice over $10k is found",
+                              vocab(), {"finance"})
+        self.assertEqual(got["spec"], {"schema": wl.RULE_SCHEMA, "signal": {
+            "kinds": ["duplicate_supplier_invoice"], "min_amount": "10000"}})
+        self.assertEqual(got["markings"], ["finance"])
+        self.assertIn("Supplier invoice entered twice, for 10000", got["description"])
+        # the record grammar still reads a record rule
+        order = wl.compile_rule("tell me when any order over $50k slips", vocab(), {"finance"})
+        self.assertEqual(order["spec"]["subject"], "SalesOrder")
+        with self.assertRaises(wl.RuleRefused) as refused:
+            wl.compile_rule("alert me on customer credits rising", vocab(), set())
+        self.assertIn("only readers cleared for finance", refused.exception.problems[0])
+        good = {"schema": wl.RULE_SCHEMA, "signal": {"kinds": ["duplicate_supplier_invoice"]}}
+        for spec, reason in (
+                ({**good, "sql": "DROP TABLE rules"}, "cannot hold 'sql'"),
+                ({**good, "signal": {"kinds": ["__import__('os')"]}}, "not a kind of finding"),
+                ({**good, "signal": {"kinds": ["duplicate_supplier_invoice"],
+                                     "where": "1=1"}}, "cannot hold 'where'"),
+                ({**good, "signal": {"kinds": ["duplicate_supplier_invoice"],
+                                     "min_amount": 1e3}}, "plain number"),
+                ({**good, "signal": {"kinds": ["duplicate_supplier_invoice"],
+                                     "currency": "CAD"}}, "on an amount only"),
+                ({**good, "signal": {"kinds": ["duplicate_supplier_invoice"],
+                                     "priority": "critical"}}, "high, medium or low"),
+                ({**good, "signal": {"kinds": []}}, "1 to 5 kinds"),
+                ({**good, "signal": "duplicate_supplier_invoice"}, "names the findings")):
+            with self.subTest(reason=reason):
+                with self.assertRaises(wl.RuleRefused) as refused:
+                    wl.validate(spec, vocab(), {"finance"})
+                self.assertIn(reason, " ".join(refused.exception.problems))
+
+    def test_new_findings_alert_once_each_at_1_10_60_and_older_ones_never(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.findings(n)
+                rule = self.rule("tell me when a duplicate supplier invoice over 10000 CAD "
+                                 "is found")
+                started = time.monotonic()
+                got = wl.signal_alerts([rule], self.reader())
+                self.assertLess(time.monotonic() - started, 60)
+                self.assertEqual(len(got), n)
+                self.assertEqual(len({a["alert_id"] for a in got}), n)
+                self.assertTrue(all(a["finding"]["kind"] == "duplicate_supplier_invoice"
+                                    for a in got))
+                later = self.rule("tell me when a duplicate supplier invoice is found",
+                                  at=T + timedelta(days=1))
+                self.assertEqual(wl.signal_alerts([later], self.reader()), [])
+                higher = self.rule("tell me when a duplicate supplier invoice over 20000 "
+                                   "CAD is found")
+                self.assertEqual(wl.signal_alerts([higher], self.reader()), [])
+                self.inbox.unlink()
+                self.store.unlink()
+
+    def test_a_new_finding_alerts_behind_a_backlog_larger_than_the_read_bound(self):
+        backlog = wl.SIGNALS_SHOWN + 5
+        w = self.findings(backlog)                       # first seen T + 1h
+        rules = [self.rule("tell me when a duplicate supplier invoice is found",
+                           at=T + timedelta(hours=2)),
+                 {**self.rule("alert me on customer credits rising"),
+                  "rule_id": "r_" + "1" * 16}]
+        self.assertEqual(wl.signal_alerts(rules, self.reader()), [])
+        self.findings(1, start=backlog, world=w, at=T + timedelta(hours=3))
+        reads = []
+
+        def counted(kinds, since=None):
+            reads.append((tuple(kinds), since))
+            return self.reader()(kinds, since)
+        got = wl.signal_alerts(rules, counted)
+        self.assertEqual(len(got), 1)
+        self.assertIn(f"SYNTHV{backlog}", got[0]["finding"]["summary"])
+        # one inbox read for every rule of the reader, since the oldest rule
+        self.assertEqual(reads, [(("customer_credits_rising", "duplicate_supplier_invoice"),
+                                  T.isoformat())])
+
+    def test_a_record_rule_whose_value_says_signal_is_still_judged(self):
+        spec = {"schema": wl.RULE_SCHEMA, "subject": "SalesOrder",
+                "when": [{"property": "status", "op": "becomes", "value": "signal"}]}
+        path = self.tmp / "w.sqlite"
+        wl.WatchStore(path).add_rule(OWNER, "status becomes signal",
+                                     wl.validate(spec, vocab(), {"finance"}), "d")
+        World().build(self.store)
+        st = pe._Store(self.store)
+        try:
+            self.assertEqual(wl.evaluate(st, path, [], clock=lambda: T)["rules"], 1)
+        finally:
+            st.close()
+
+    def test_a_restricted_reader_and_a_failing_people_exclusion_see_nothing(self):
+        self.findings(3)
+        rule = self.rule("tell me when a duplicate supplier invoice over 10000 is found")
+        self.assertEqual(len(wl.signal_alerts([rule], self.reader())), 3)
+        # no finance held, or the Sage documents' audience not granted: nothing
+        self.assertEqual(wl.signal_alerts([rule], self.reader(held=())), [])
+        self.assertEqual(wl.signal_alerts([rule], self.reader(
+            may_read=lambda a: not a.startswith("api:sage."))), [])
+        # the per-item decision (the people exclusion) refuses every handle, or cannot
+        # decide at all: nothing is shown (fail closed)
+        self.assertEqual(wl.signal_alerts([rule], self.reader(
+            decide=lambda hs: {h: "person_excluded" for h in hs})), [])
+
+        def broken(_handles):
+            raise RuntimeError("people directory unavailable")
+        self.assertEqual(wl.signal_alerts([rule], self.reader(decide=broken)), [])
+        # an amount floor on a finding whose figure is not shown never matches
+        hidden = [{**g, "event": {}} for g in self.reader()(["duplicate_supplier_invoice"])]
+        self.assertEqual(wl.signal_alerts([rule], lambda _k, _s: hidden), [])
+
+    def test_the_api_keeps_shows_and_marks_a_signal_rule_as_its_owner(self):
+        self.findings(2)
+        ctx = watch.WatchContext(OWNER, self.tmp / "w.sqlite", everyone,
+                                 frozenset({"finance"}), no_refusals, lambda _ids: {},
+                                 self.reader())
+        draft = watch.compile_rule(ctx, "alert me on duplicate supplier invoices")
+        with unittest.mock.patch.object(wl, "_now", lambda clock=None: T.isoformat()):
+            kept = watch.create_rule(ctx, draft.text, draft.spec, draft.digest)
+        self.assertEqual(kept.watching_since, kept.at)
+        shown = watch.state(ctx)
+        self.assertEqual(len(shown.alerts), 2)
+        self.assertEqual(shown.unread, 2)
+        self.assertTrue(shown.alerts[0].sentence.startswith("Supplier SYNTHV"))
+        watch.mark_read(ctx, [a.alert_id for a in shown.alerts])
+        self.assertEqual(watch.state(ctx).unread, 0)
+        other = watch.WatchContext(OTHER, ctx.path, everyone, frozenset({"finance"}),
+                                   no_refusals, lambda _ids: {}, self.reader())
+        self.assertEqual(watch.state(other).alerts, [])
+        # the pass never judges a signal rule as a record rule
+        st = pe._Store(self.store)
+        try:
+            self.assertEqual(wl.evaluate(st, ctx.path, [], clock=lambda: T)["rules"], 0)
+        finally:
+            st.close()
+        watch.delete_rule(ctx, kept.rule_id)
+        self.assertEqual(watch.state(ctx).alerts, [])

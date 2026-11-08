@@ -12,8 +12,12 @@ overriding any of them):
 
 * ``delta_last_cycle``: minutes since the last finished delta cycle (``CURRENT.json``).
 * ``delta_cycle_runtime``: minutes the running delta cycle has run (its ``work-*`` dir).
-* ``capture:<source>``: minutes since each configured capture source was last read
-  (``host/host.sqlite`` ``source_state``); a source with ``stale_since`` is a breach.
+* ``capture:<source>``: minutes since each configured capture source last succeeded
+  (``host/host.sqlite`` ``source_state``); a breach past twice its normal turn (interval
+  plus run budget, ``host/serve-health.json`` ``turn_seconds``; else ``capture_minutes``)
+  or with ``stale_since``.
+* ``ingest_start``: the host's ``serve`` refused to start (bad config, state dir) at least
+  ``ingest_start_failures`` times in a row with no start after: a unit in a restart loop.
 * ``pg_follow``: delta layers Postgres has not applied; more than the bound behind, any
   layer pending with no apply for ``pg_follow_stall_minutes`` (stalled), or a different
   generation, is a breach.
@@ -41,12 +45,13 @@ import sys
 import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Optional
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 DEFAULT_TARGETS: dict[str, float] = {
     "delta_last_cycle_minutes": 15,
     "delta_cycle_runtime_minutes": 30,
     "capture_minutes": 360,
+    "ingest_start_failures": 3,
     "pg_follow_behind_layers": 6,
     "pg_follow_stall_minutes": 30,
     "proactive_last_pass_minutes": 180,
@@ -155,14 +160,79 @@ def capture_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[C
             conn.close()
     except sqlite3.Error:
         return [_check("capture", None, t["capture_minutes"], None, "min", "ledger unreadable")]
+    turns = serve_health(state).get("turn_seconds") or {}
     out = []
     for source, captured, stale_since in rows:
         age = _minutes(now, _parse(captured))
-        bound = t["capture_minutes"]
+        turn = turns.get(source) if isinstance(turns, dict) else None
+        bound = (round(2 * float(turn) / 60, 1) if isinstance(turn, (int, float))
+                 and not isinstance(turn, bool) and turn > 0 else t["capture_minutes"])
         out.append(_check(f"capture:{source}", age, bound,
                           age is None or age > bound or bool(stale_since), "min",
-                          f"stale since {stale_since}" if stale_since else ""))
+                          f"stale since {stale_since}" if stale_since else
+                          ("no success for twice its normal interval"
+                           if age is not None and age > bound else "")))
     return out
+
+
+def serve_health(state: Path) -> dict[str, Any]:
+    """``host/serve-health.json`` (``operating.host.record_serve_start``), {} unreadable."""
+    try:
+        held = json.loads((state / "host" / "serve-health.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return held if isinstance(held, dict) else {}
+
+
+def start_check(state: Path, t: Mapping[str, float]) -> Optional[Check]:
+    """The host's serve refusing to start again and again (a unit's restart loop)."""
+    held = serve_health(state)
+    if not held:
+        return None
+    failures = [f for f in held.get("failures") or [] if isinstance(f, dict)]
+    bound = t["ingest_start_failures"]
+    last = failures[-1] if failures else {}
+    detail = (f"refused {len(failures)} times since the last start, last "
+              f"{last.get('at')} ({last.get('error')})" if failures else "")
+    return _check("ingest_start", len(failures), bound, len(failures) >= bound, "starts",
+                  detail)
+
+
+def config_keys_check(state: Path) -> Optional[Check]:
+    """Config keys the running host ignored (unknown to its code: a typo such as
+    ``ingest.build`` for ``ingest.builds``, or a newer checkout's setting): a breach, so
+    the setting that did not take effect is on Home, never only in a log line."""
+    held = serve_health(state)
+    if not held:
+        return None
+    warned = [str(w) for w in held.get("config_warnings") or []]
+    return _check("config_keys_ignored", len(warned), 0, bool(warned), "keys",
+                  ", ".join(warned[:8]))
+
+
+def capture_alarm(report: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """The Home health line from a ``collect`` report: the capture sources past twice their
+    normal interval and a start loop, or None when captures are healthy."""
+    stalled = [c for c in report.get("checks") or []
+               if str(c.get("name", "")).startswith("capture:") and c.get("state") == "breach"]
+    loop = next((c for c in report.get("checks") or [] if c.get("name") == "ingest_start"
+                 and c.get("state") == "breach"), None)
+    ignored = next((c for c in report.get("checks") or [] if c.get("name") ==
+                    "config_keys_ignored" and c.get("state") == "breach"), None)
+    if not stalled and loop is None and ignored is None:
+        return None
+    names = [c["name"].split(":", 1)[1] for c in stalled]
+    ages = [c["value"] for c in stalled if isinstance(c.get("value"), (int, float))]
+    parts = []
+    if names:
+        hours = round(max(ages) / 60) if ages else None
+        parts.append("captures not refreshed: " + ", ".join(names)
+                     + (f" (oldest {hours} h)" if hours is not None else ""))
+    if loop is not None:
+        parts.append("capture service keeps failing to start")
+    if ignored is not None:
+        parts.append("capture settings not applied: " + ignored["detail"])
+    return {"stalled": names, "start_loop": loop is not None, "line": "; ".join(parts)}
 
 
 def pg_check(state: Path, now: datetime, t: Mapping[str, float],
@@ -236,6 +306,9 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
     checks: list[Check] = []
     checks += delta_checks(state, now, t)
     checks += capture_checks(state, now, t)
+    for extra in (start_check(state, t), config_keys_check(state)):
+        if extra is not None:
+            checks.append(extra)
     checks.append(pg_check(state, now, t, pg_dsn))
     checks.append(_age_check(
         "proactive_last_pass", now,
@@ -302,6 +375,13 @@ class CachedHealth:
             return self._value
 
 
+class _NoRedirect(HTTPRedirectHandler):
+    """The health probe reads the Workbench API it is pointed at, never a redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise OSError(f"health endpoint redirected ({code}); not followed")
+
+
 def _lines(report: Mapping[str, Any]) -> Iterable[str]:
     for c in report["checks"]:
         value = "-" if c["value"] is None else c["value"]
@@ -325,7 +405,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p95, api_down = None, None
     if args.api:
         try:
-            with urlopen(args.api.rstrip("/") + "/api/health", timeout=10) as resp:
+            request = Request(args.api.rstrip("/") + "/api/health", method="GET")
+            with build_opener(_NoRedirect()).open(request, timeout=10) as resp:
                 body = json.loads(resp.read().decode())
             p95 = next((c.get("value") for c in (body.get("ops") or {}).get("checks", [])
                         if c.get("name") == "api_page_p95"), None)

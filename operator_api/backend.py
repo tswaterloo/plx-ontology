@@ -64,7 +64,9 @@ from . import models as m
 from . import presentation
 from . import proposals
 from .actions import ActionsMixin
+from .write_intents_api import WriteIntentsMixin
 from .briefs import BriefsMixin
+from operating import labour_hours
 from .watch import WatchMixin
 from .auth import Reader
 from .test_records import hidden_words
@@ -868,7 +870,7 @@ class _Watched:
 
 # ---- the backend ---------------------------------------------------------------------
 
-class WorkspaceBackend(BriefsMixin, ActionsMixin, WatchMixin):
+class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, WatchMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,
     one shared bounded queue), so one Ask never holds up another reader's page."""
@@ -1584,8 +1586,12 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WatchMixin):
             label += "; some figures are refreshing"   # which artifacts: in derived_code
         if label and derived is not None and derived.flagged and not derived.stale:
             label += "; some summaries will refresh on their own schedule"
+        alarm = capture_alarm_status(self.state_dir)
+        if label and alarm is not None:
+            label += "; " + alarm.line
         return m.Freshness(as_of=as_of, label=label, sources=sources, truth=truth,
-                           build_wait=waits, documents=documents, derived_code=derived)
+                           build_wait=waits, documents=documents, derived_code=derived,
+                           capture_alarm=alarm)
 
     # ---- sources ------------------------------------------------------------------------
 
@@ -1746,7 +1752,12 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WatchMixin):
         # the model's reading picks a ready answer; the phrase rules only without a reading
         shortcut = ask_shortcut(request) if reading is None else read_shortcut(request,
                                                                                reading)
-        if shortcut == "late_list":
+        if labour_hours.serves(intent):
+            # Labour hours are answered from the hr-marked aggregates alone, for a reader
+            # holding hr or ops-management; never by the agent, so no time sheet reaches a
+            # model.
+            answer = self._labour_ask(reader, request, conversation, ms, intent)
+        elif shortcut == "late_list":
             answer = yield from self._late_ask(reader, request, conversation, ms)
         elif shortcut == "at_risk":
             # customer orders a late PO holds up, from the reader's own chain findings;
@@ -1895,6 +1906,18 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WatchMixin):
             with view._request():
                 return at_risk_answer(self, view, request, inbox, conversation, ms)
         return job
+
+    def _labour_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
+                    ms: Callable[[], int], question: str) -> m.AnswerPayload:
+        """A labour-hours question (``operating.labour_hours.answer``): the aggregates the
+        reader may see, or a decline; no model call."""
+        from .briefs import labour_answer_of
+        said = labour_answer_of(self.state_dir, reader, question)
+        return m.AnswerPayload(
+            answer_id=secrets.token_hex(12), question=request.question,
+            outcome=said["outcome"],
+            direct_answer=said["text"], hidden=m.Hidden(count=0, by_owner=[], message=None),
+            freshness=m.Freshness(), conversation_id=conversation, latency_ms=ms())
 
     def _fast_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
                   ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
@@ -3441,6 +3464,34 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WatchMixin):
                 return explorer.explore(view, oid, open_url=object_url)
         return self.reads.run(reader, read, timeout=READ_TIMEOUT_SECONDS)
 
+    def record_history(self, reader: Reader, object_type: str, object_id: str,
+                       cursor: Optional[str] = None) -> m.RecordHistory:
+        """The record's change log, a page at a time, as this reader reads it
+        (``operator_api.history``). KeyError when it is not a record they may read;
+        ValueError for a cursor that is not this record's."""
+        from . import history
+
+        def read(view: Any) -> m.RecordHistory:
+            with view._request():
+                oid = page_oid(self, view, object_type, object_id)
+                return history.history(view, oid, cursor, open_url=object_url)
+        out = self.reads.run(reader, read, timeout=READ_TIMEOUT_SECONDS)
+        return self._labelled(reader, out, "/api/history")
+
+    def record_as_of(self, reader: Reader, object_type: str, object_id: str,
+                     at: str) -> m.RecordAsOf:
+        """The record as recorded at ``at`` (a date or an ISO time), as this reader reads
+        it (``operator_api.history.as_of``). KeyError when it is not a record they may
+        read then."""
+        from . import history
+
+        def read(view: Any) -> m.RecordAsOf:
+            with view._request():
+                oid = page_oid(self, view, object_type, object_id)
+                return history.as_of(view, oid, at)
+        out = self.reads.run(reader, read, timeout=READ_TIMEOUT_SECONDS)
+        return self._labelled(reader, out, "/api/as-of")
+
     def object_section(self, reader: Reader, object_type: str, object_id: str,
                        section: str) -> m.ObjectSection:
         """One section of the record's page (``object_section``), read on the section
@@ -3766,6 +3817,7 @@ def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
         subject_label=labels.get(oid) or f"{kind} record",
         counterpart=counterpart,
         summary=str(item.get("summary") or "")[:300],
+        carried=carried_words(item.get("carried")),
         why=str(item["why"])[:600] if item.get("why") else None,
         next_action=next_action,
         amount=m.Money(amount=amount["value"], currency=amount["currency"])
@@ -3932,9 +3984,25 @@ def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, diges
             "event_type", "label", "status", "words", "found_live", "first_found")})
                for t in found.get("types") or ()],
         today=str(found.get("today") or bf.today_line(found)),
+        carried=int(found.get("carried") or 0),
+        data_notes=[str(n.get("words"))[:300] for n in found.get("data_notes") or ()
+                    if isinstance(n, Mapping)][:20],
         digest_preview=digest, test_records_hidden=hidden_words(tests_hidden),
         yours=int(found.get("yours") or 0),
         involvement=involvement_state(found.get("involvement")))
+
+
+def carried_words(carried: Any) -> Optional[str]:
+    """A carried briefing item's words (``proactive_engine.CARRIED_WORDS``); None when
+    the item is current."""
+    from operating import briefing as bf
+    from operating.proactive_engine import CARRIED_WORDS
+
+    if not isinstance(carried, Mapping) or carried.get("reason") not in CARRIED_WORDS:
+        return None
+    return CARRIED_WORDS[carried["reason"]].format(
+        checked=bf.at_words(carried.get("last_checked")) or "an earlier run",
+        failed=bf.at_words(carried.get("check_failed_at")) or "the last run")
 
 
 def involvement_state(found: Any) -> str:
@@ -3974,6 +4042,25 @@ def _instant(value: Optional[str]) -> Optional[datetime]:
     except ValueError:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def capture_alarm_status(state_dir: Any) -> Optional[m.CaptureAlarm]:
+    """The stale-capture alarm over the served state dir (``operating.ops_health``'s capture
+    and start checks); None with no state dir, nothing stalled, or an unreadable ledger."""
+    if not state_dir:
+        return None
+    from operating import ops_health
+    try:
+        state = Path(state_dir)
+        now = datetime.now(timezone.utc)
+        t = ops_health.targets()
+        checks = ops_health.capture_checks(state, now, t)
+        extra = [c for c in (ops_health.start_check(state, t),
+                             ops_health.config_keys_check(state)) if c is not None]
+        alarm = ops_health.capture_alarm({"checks": checks + extra})
+    except Exception:  # noqa: BLE001 - a health line never breaks a page
+        return None
+    return None if alarm is None else m.CaptureAlarm(**alarm)
 
 
 def _freshness_entries(raw: Any) -> Optional[list[dict[str, Any]]]:
@@ -7490,6 +7577,7 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
     facts = []
     values = [v for v in card.get("values") or () if isinstance(v, Mapping)]
     currency = presentation.record_currency(values)
+    imported = page_import_days(backend, oid, kind, values)
     for value in values:
         handle = citation_handle(value.get("citation"))
         shown = plain(value.get("value"))
@@ -7498,7 +7586,10 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
             continue
         name = presentation.field_label(prop)
         shown = presentation.value_words(prop, shown, currency)
-        facts.append(m.Fact(text=f"{name}: {shown}",
+        bulk = prop in imported
+        facts.append(m.Fact(text=f"{name}: {shown}" + (
+            " (import date: the day a bulk load wrote this record, not a business date; "
+            "another system's copy may hold the real one)" if bulk else ""),
                             sources=[backend._source(view, handle, fields={prop: shown})],
                             check="read_from_record"))
         if len(facts) >= MAX_FACTS:
@@ -7572,6 +7663,9 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
         said, facts, absent = sales_order_view(
             label, values, customers + [r for r in related if r.type != "Customer"], facts,
             currency)
+        state = order_state(backend, view, oid)
+        if state is not None:
+            facts.insert(0, state)
         summary = said if summary == kind else summary   # an answer's own words stand
         not_found = absent + not_found
         said_absent = fulfilment_absence(page, links)
@@ -7583,6 +7677,93 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
                         links=links, not_found=dedupe_not_found(not_found)[:10], conflicts=conflicts[:6],
                         hidden=None,
                         freshness=backend.freshness(page, handles=page_handles(facts)))
+
+
+MAX_ORDER_COPIES = 6
+
+
+def order_state(backend: Any, view: Any, oid: str) -> Optional[m.Fact]:
+    """The customer order's one state across its records (``sales_order_status``): this
+    record and its settled identity copies in every system (the Sage order a FileMaker
+    order is entered as, a BC posted copy), each by its own status word or code, and a
+    settled shipment or invoice linked to any of them; read as the reader, so a copy it may
+    not open says nothing. The same definition the late-order rule uses, so the record's
+    pages and the briefing never disagree. None when nothing could be read."""
+    from operating import sales_order_status as so
+
+    members = [oid]
+    try:
+        for link in so.twin_links():
+            for direction in ("forward", "reverse"):
+                got = view._call("plx.around", {
+                    "from": oid, "tier_floor": "verified", "limit": MAX_ORDER_COPIES,
+                    "path": [{"link_type": link, "direction": direction}]}) or {}
+                members += [o["object_id"] for o in got.get("objects") or ()
+                            if isinstance(o, Mapping) and isinstance(o.get("object_id"), str)
+                            and o["object_id"] not in members]
+        states, handles, closing = [], [], []
+        for member in members[:MAX_ORDER_COPIES]:
+            own: list[str] = []
+            card = view._call("plx.object", {"object_id": member,
+                                             "properties": list(so.READ_PROPS)}) or {}
+            props: dict[str, list] = {}
+            for value in card.get("values") or ():
+                if isinstance(value, Mapping) and value.get("property") in so.READ_PROPS:
+                    props.setdefault(value["property"], []).append(plain(value.get("value")))
+                    handle = citation_handle(value.get("citation"))
+                    if isinstance(handle, str):
+                        own.append(handle)
+            handles += own
+            fulfilled = False
+            for link in so.FULFILLED_LINKS:
+                got = view._call("plx.around", {
+                    "from": member, "tier_floor": "verified", "limit": 1,
+                    "path": [{"link_type": link, "direction": "reverse"}]}) or {}
+                fulfilled = fulfilled or bool(got.get("objects"))
+            states.append(so.record_status(props, binding=member.split(":")[1]
+                                           if member.count(":") >= 2 else None,
+                                           fulfilled=fulfilled))
+            if states[-1].cls == so.CLOSED:
+                closing += own   # the record that closes the order is what is cited
+    except Exception:  # noqa: BLE001 - a read that fails states nothing, the page stands
+        return None
+    if not handles:
+        return None
+    order = so.order_status(states)
+    words = {so.CLOSED: "closed (shipped, invoiced, completed or cancelled in at least one of "
+                        "its records)",
+             so.OPEN: "open in every record that states a status",
+             so.DRAFT: "a draft, not yet placed",
+             so.UNKNOWN: "not decided: a record's status is missing or not one the rules "
+                         "read"}[order.cls]
+    copies = len(states)
+    return m.Fact(text=f"Order state across its {copies} record{'' if copies == 1 else 's'}: "
+                       f"{words}",
+                  sources=[backend._source(view, h) for h in dict.fromkeys(
+                      closing if order.cls == so.CLOSED and closing else handles)][:4],
+                  check="read_from_record")
+
+
+def page_import_days(backend: Any, oid: str, kind: str,
+                     values: Sequence[Mapping[str, Any]]) -> set[str]:
+    """The page's date properties (``active_population.PAGE_DATE_PROPS``) whose value is a
+    bulk import day of this record's source (many of its records share that load day):
+    marked on the page and never said as the record's business date."""
+    from operating import active_population as active
+    from operating.po_status import binding_of
+
+    store = getattr(backend, "store_path", None)
+    wanted = [v for v in values if str(v.get("property")) in active.PAGE_DATE_PROPS]
+    if store is None or not wanted or kind not in ("PurchaseOrder", "SalesOrder"):
+        return set()
+    try:
+        days = active.store_import_days(store, kind)
+    except Exception:  # noqa: BLE001 - an unreadable store marks nothing, the page stands
+        return set()
+    binding = binding_of(oid) or ""
+    return {str(v.get("property")) for v in wanted
+            if active.day_of(plain(v.get("value"))) in days.get(
+                (binding, str(v.get("property"))), frozenset())}
 
 
 def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
@@ -7614,7 +7795,9 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
         r"[^:]+:\s*0+(?:\.0+)?(?:\s*[A-Z]{3})?", f.text))]
     ordered = by_name.get("order_date")
     parts = [f"Customer order {label}" + (f" for {name}" if name else "")]
-    if isinstance(ordered, str) and re.match(r"\d{4}-\d{2}-\d{2}", ordered):
+    if isinstance(ordered, str) and re.match(r"\d{4}-\d{2}-\d{2}", ordered) \
+            and not any("import date" in f.text for f in facts
+                        if f.text.startswith(presentation.field_label("order_date"))):
         parts.append(f"ordered {ordered[:10]}")
     if shown is not None:
         parts.append(f"total {shown.amount} {shown.currency}")

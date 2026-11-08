@@ -1,0 +1,79 @@
+{
+ "ho-ops-2026-11-16": {
+  "actions": [
+   {
+    "line": 2,
+    "owner": "priya.nair@plx.example",
+    "records": []
+   },
+   {
+    "line": 7,
+    "owner": "marco.silva@plx.example",
+    "records": []
+   },
+   {
+    "line": 8,
+    "owner": "dana.price@plx.example",
+    "records": []
+   }
+  ],
+  "hr": false
+ },
+ "ho-plan-2026-11-19": {
+  "actions": [
+   {
+    "line": 1,
+    "owner": "marco.silva@plx.example",
+    "records": []
+   },
+   {
+    "line": 3,
+    "owner": "dana.price@plx.example",
+    "records": []
+   }
+  ],
+  "hr": false
+ },
+ "ho-qa-2026-11-17": {
+  "actions": [
+   {
+    "line": 3,
+    "owner": "lena.hoffmann@plx.example",
+    "records": [
+     "Lot:L24-0912",
+     "Supplier:S2"
+    ]
+   },
+   {
+    "line": 4,
+    "owner": "sam.okafor@plx.example",
+    "records": []
+   },
+   {
+    "line": 5,
+    "owner": "lena.hoffmann@plx.example",
+    "records": []
+   }
+  ],
+  "hr": false
+ },
+ "ho-sales-2026-11-18": {
+  "actions": [
+   {
+    "line": 3,
+    "owner": "priya.nair@plx.example",
+    "records": [
+     "Customer:C2"
+    ]
+   },
+   {
+    "line": 5,
+    "owner": "raj.mehta@plx.example",
+    "records": [
+     "Customer:C1"
+    ]
+   }
+  ],
+  "hr": false
+ }
+}

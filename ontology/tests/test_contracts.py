@@ -77,7 +77,8 @@ class ContractsAreWellFormed(unittest.TestCase):
     def test_tool_set_and_limits(self):
         self.assertEqual(set(TOOLS["tools"]), DECIDED_TOOLS)
         limits = TOOLS["limits"]
-        self.assertEqual(limits["max_case_host_tools"], 24)
+        self.assertEqual(limits["max_case_host_tools"], 32)
+        self.assertEqual(limits["max_listing_bytes"], 64000)
         self.assertEqual(limits["max_hops"], 3)
         for name, tool in TOOLS["tools"].items():
             with self.subTest(tool=name):

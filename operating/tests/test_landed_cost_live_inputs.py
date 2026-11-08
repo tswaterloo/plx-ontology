@@ -225,7 +225,9 @@ class InvestigateActualsTest(unittest.TestCase):
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
-            table, rows=oi.citation_rows(world.FixtureWorld.runtime), scope=oi.read_scope(base),
+            table, rows=oi.citation_rows(world.FixtureWorld.runtime,
+                                         policy.held_markings if held else None),
+            scope=oi.read_scope(base),
             held_markings=(lambda actor: policy.held_markings(actor)) if held else None,
             landed_actuals=provider))
         return table

@@ -293,7 +293,9 @@ class HomeRuleCoverageTests(unittest.TestCase):
 
     def rules(self, host):
         found = self.base.find(host, {"query": "What needs my attention?", "limit": 50})
-        return found, {rule["rule"]: rule for rule in found["home"]["rules"]}
+        clean = {name: {"rule": name, "status": "complete", "not_evaluated": 0, "reasons": []}
+                 for name in found["home"].get("rules_clean") or ()}
+        return found, {**clean, **{rule["rule"]: rule for rule in found["home"]["rules"]}}
 
     def test_each_rule_says_what_it_left_unjudged_of_what_the_reader_may_read(self):
         world, ids = self.home.seeded(receipt_markings='["quality_controlled"]')

@@ -15,6 +15,17 @@ plain words, and gets alerts in their own inbox when what they watch changes.
   ``compile_text`` is a deterministic grammar; a model (``model=``, the existing
   ``claude -p`` path) may propose a spec at creation time only, which goes through the
   same ``validate``. The detector loop never calls a model.
+* **Signal rules** over the detectors' own findings ("tell me when a duplicate supplier
+  invoice over $10k is found", "alert me on customer credits rising"): a spec
+  ``{"schema", "signal": {"kinds", "min_amount"?, "currency"?, "priority"?}}`` naming
+  declared finding kinds (``signal_kinds``: the briefing's kinds, matched by their own
+  names and labels, never a phrase list), an amount floor on the finding's own cited
+  figure and a lowest priority. Nothing is evaluated for it in a pass: it is read from
+  the engine's inbox at the moment its owner looks (``signal_alerts``), under their grant
+  (``proactive_engine.read_inbox``: audiences, markings and the people exclusion per
+  citation), bounded by ``SIGNALS_SHOWN``, findings first seen since the rule was made
+  only. A finding whose figure the reader may not open never meets an amount floor
+  (fail closed); a rule over a finance kind or an amount needs ``finance`` held.
 
 Per-person state (follows, rules, alerts, read marks) lives in our own file beside the
 served store (``watch_path``), never in a source system. ``evaluate`` runs inside the
@@ -63,6 +74,9 @@ RULE_BASELINE_CAP = 600_000  # a rule over a type with more records: refused at 
 BASELINE_SECONDS = 20.0      # a pass's time for new rules' first look, all rules together
 BASELINE_PAGE = 5000         # records read per step of a first look
 ALERTS_SHOWN = 200
+MAX_SIGNAL_KINDS = 5
+SIGNALS_SHOWN = 200          # newest findings since a reader's oldest signal rule, per look
+PRIORITIES = ("high", "medium", "low")
 CHUNK = 500
 
 CHANGE_OPS = ("changed", "later", "earlier", "increased", "decreased", "becomes")
@@ -179,6 +193,8 @@ def validate(spec: Any, vocab: Vocabulary, held: Iterable[str] | None) -> dict[s
         raise RuleRefused(["The rule holds something that is not plain data."]) from None
     if size > MAX_SPEC_BYTES:
         raise RuleRefused(["The rule is too long."])
+    if "signal" in spec:
+        return _validate_signal(spec, held)
     extra = sorted(set(spec) - {"schema", "subject", "when", "count"})
     if extra:
         raise RuleRefused([f"A rule cannot hold '{k}'." for k in extra[:5]])
@@ -296,7 +312,78 @@ def validate(spec: Any, vocab: Vocabulary, held: Iterable[str] | None) -> dict[s
     return out
 
 
+def signal_kinds() -> dict[str, dict[str, Any]]:
+    """Every finding kind the engine raises that a signal rule may name: kind -> its label
+    (the briefing's) and whether its figures are finance-marked (its playbook's)."""
+    from . import alert_playbooks, briefing
+    return {kind: {"label": briefing.EVENT_TYPES[name]["label"],
+                   "finance": bool((alert_playbooks.PLAYBOOKS.get(kind) or {}).get("finance"))}
+            for kind, name in briefing.TYPE_OF_KIND.items() if name in briefing.EVENT_TYPES}
+
+
+def _validate_signal(spec: Mapping[str, Any], held: Iterable[str] | None) -> dict[str, Any]:
+    extra = sorted(set(spec) - {"schema", "signal"})
+    if extra:
+        raise RuleRefused([f"A rule cannot hold '{k}'." for k in extra[:5]])
+    if spec.get("schema") != RULE_SCHEMA:
+        raise RuleRefused([f"The rule must be a {RULE_SCHEMA} spec."])
+    signal = spec.get("signal")
+    if not isinstance(signal, Mapping):
+        raise RuleRefused(["A signal rule names the findings to watch."])
+    extra = sorted(set(signal) - {"kinds", "min_amount", "currency", "priority"})
+    if extra:
+        raise RuleRefused([f"A signal rule cannot hold '{k}'." for k in extra[:5]])
+    known = signal_kinds()
+    kinds = signal.get("kinds")
+    problems: list[str] = []
+    if not isinstance(kinds, list) or not 1 <= len(kinds) <= MAX_SIGNAL_KINDS \
+            or not all(isinstance(k, str) for k in kinds):
+        raise RuleRefused([f"A signal rule names 1 to {MAX_SIGNAL_KINDS} kinds of finding."])
+    for k in kinds:
+        if k not in known:
+            problems.append(f"'{k[:60]}' is not a kind of finding the checks raise.")
+    out: dict[str, Any] = {"kinds": sorted(dict.fromkeys(kinds))}
+    if "min_amount" in signal:
+        number = _decimal(signal.get("min_amount"))
+        if number is None or number < 0:
+            problems.append("The amount needs a plain number under a trillion (such as "
+                            "50000).")
+        else:
+            out["min_amount"] = str(number)
+    if "currency" in signal:
+        currency = signal.get("currency")
+        if "min_amount" not in signal or not (isinstance(currency, str)
+                                              and _CURRENCY.match(currency)):
+            problems.append("A currency is a 3-letter code on an amount only.")
+        else:
+            out["currency"] = currency
+    if "priority" in signal:
+        if signal.get("priority") not in PRIORITIES:
+            problems.append("A priority is high, medium or low.")
+        else:
+            out["priority"] = signal["priority"]
+    if problems:
+        raise RuleRefused(problems)
+    norm = {"schema": RULE_SCHEMA, "signal": out}
+    if held is not None:
+        from ontology import store_ddl
+        if signal_markings(norm) and "finance" not in set(store_ddl.with_implied(held)):
+            raise RuleRefused(["This rule reads finance figures (" + ", ".join(
+                out["kinds"]) + "); only readers cleared for finance may set it."])
+    return norm
+
+
+def signal_markings(spec: Mapping[str, Any]) -> list[str]:
+    signal = spec.get("signal") or {}
+    known = signal_kinds()
+    finance = "min_amount" in signal or any(
+        (known.get(k) or {}).get("finance") for k in signal.get("kinds") or ())
+    return ["finance"] if finance else []
+
+
 def spec_markings(spec: Mapping[str, Any], vocab: Vocabulary) -> list[str]:
+    if "signal" in spec:
+        return signal_markings(spec)
     props = vocab.types.get(spec["subject"]) or {}
     return sorted(set().union(*(props[c["property"]][1] for c in spec["when"]
                                 if c["property"] in props)))
@@ -311,6 +398,18 @@ def _words(type_id: str) -> str:
 
 
 def describe(spec: Mapping[str, Any], vocab: Vocabulary | None = None) -> str:
+    if "signal" in spec:
+        signal, known = spec["signal"], signal_kinds()
+        names = [known.get(k, {}).get("label", k) for k in signal["kinds"]]
+        text = "Alert me when a check raises a new finding: " + "; ".join(names)
+        if "min_amount" in signal:
+            text += f", for {signal['min_amount']}" + (
+                f" {signal['currency']}" if "currency" in signal else
+                " in the finding's own currency") + " or more"
+        if signal.get("priority") and signal["priority"] != "low":
+            text += f", {signal['priority']} priority" + (
+                " only" if signal["priority"] == "high" else " or higher")
+        return text + "."
     """The compiled rule in plain words: what the person confirms."""
     noun = _words(spec["subject"])
     parts = []
@@ -404,6 +503,9 @@ def compile_text(text: str, vocab: Vocabulary) -> dict[str, Any]:
     if len(text) > MAX_TEXT:
         raise RuleRefused([f"Keep the rule under {MAX_TEXT} characters."])
     low = " " + re.sub(r"\s+", " ", text.lower()) + " "
+    signal = _signal_text(low)
+    if signal is not None:
+        return signal
     nouns = _noun_types(low, vocab)
     if not nouns:
         raise RuleRefused(["Name the kind of record the rule is about (an order, a PO, a "
@@ -475,6 +577,113 @@ def compile_text(text: str, vocab: Vocabulary) -> dict[str, Any]:
     return spec
 
 
+def _stem(word: str) -> str:
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") \
+        else word
+
+
+def _signal_text(low: str) -> dict[str, Any] | None:
+    """A signal spec when the words name finding kinds by their own name or label (the
+    longest names first; a word inside a longer matched name is not matched again)."""
+    words = " " + " ".join(_stem(w) for w in re.findall(r"[a-z0-9$.,]+", low)) + " "
+    names: list[tuple[str, str]] = []
+    for kind, info in signal_kinds().items():
+        for name in {kind.replace("_", " "), re.sub(r"[^a-z0-9 ]", " ", info["label"].lower())}:
+            stems = " ".join(_stem(w) for w in name.split())
+            if len(stems.split()) >= 2:
+                names.append((stems, kind))
+    found: list[str] = []
+    for name, kind in sorted(names, key=lambda n: (-len(n[0]), n[1])):
+        if f" {name} " in words and kind not in found:
+            found.append(kind)
+            words = words.replace(f" {name} ", " | ")
+    if not found:
+        return None
+    signal: dict[str, Any] = {"kinds": found[:MAX_SIGNAL_KINDS + 1]}
+    amount = re.search(r"\b(over|above|more than|greater than|at least)\s+([a-z]{0,3}\$|[€£])?"
+                       r"\s?(\d[\d,]*(?:\.\d+)?)\s?(k|m|thousand|million)?\b\s?([a-z]{3})?", low)
+    if amount:
+        number = Decimal(amount.group(3).replace(",", ""))
+        number *= {"k": 1000, "thousand": 1000, "m": 1_000_000,
+                   "million": 1_000_000}.get(amount.group(4) or "", 1)
+        signal["min_amount"] = str(int(number) if number % 1 == 0 else number.normalize())
+        marks = ((amount.group(2) or "") + " " + (amount.group(5) or "")).strip()
+        for mark, code in _CURRENCY_MARKS:
+            if mark in marks.split() or marks.startswith(mark):
+                signal["currency"] = code
+                break
+    level = re.search(r"\b(high|medium)[- ]priority\b|\b(urgent)\b", low)
+    if level:
+        signal["priority"] = "high" if level.group(2) else level.group(1)
+    return {"schema": RULE_SCHEMA, "signal": signal}
+
+
+def _moment(text: Any) -> datetime:
+    """An ISO moment (``Z`` or an offset; none: UTC); a bad one raises ``ValueError``."""
+    moment = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def signal_alerts(rules: Iterable[Mapping[str, Any]],
+                  findings: Callable[[Sequence[str], str], Sequence[Mapping[str, Any]]],
+                  read: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """The alerts of a reader's signal rules, read now: ``findings(kinds, since)`` is the
+    reader's own inbox read under their grant (``proactive_engine.read_inbox``), newest
+    first and only findings first seen at or after ``since`` (an older backlog never uses
+    up its bound), so a finding they may not see, or whose figure they may not open, is
+    never here. One read serves every rule (the union of their kinds, since the oldest
+    rule); each rule keeps its own kinds found since it was made. Fails closed: a read
+    that fails shows nothing."""
+    read = set(read)
+    live = []
+    for rule in rules:
+        spec = rule.get("spec") or {}
+        signal = spec.get("signal") if isinstance(spec, Mapping) else None
+        if isinstance(signal, Mapping) and rule.get("state", "active") == "active":
+            try:
+                live.append((rule, signal, _moment(rule["at"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+    if not live:
+        return []
+    kinds = sorted({k for _r, signal, _at in live for k in signal.get("kinds") or ()})
+    oldest = min(at for _r, _s, at in live)
+    try:
+        gaps = list(findings(kinds, oldest.isoformat()))
+    except Exception:  # noqa: BLE001 - an inbox that cannot be read shows nothing
+        return []
+    out: list[dict[str, Any]] = []
+    for rule, signal, made in live:
+        floor = _decimal(signal["min_amount"]) if "min_amount" in signal else None
+        lowest = PRIORITIES.index(signal.get("priority") or "low")
+        for g in gaps:
+            try:
+                if g["kind"] not in signal["kinds"] or _moment(g["first_seen"]) < made:
+                    continue
+                fu = g.get("follow_up") or {}
+                if PRIORITIES.index(fu.get("priority") or g.get("priority") or "low") > lowest:
+                    continue
+                if floor is not None:
+                    amount = (g.get("event") or fu.get("event") or {}).get("amount")
+                    value = _decimal(str(amount.get("value"))) if isinstance(amount, Mapping) \
+                        else None
+                    if value is None or abs(value) < floor or (
+                            "currency" in signal and amount.get("currency") != signal["currency"]):
+                        continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            alert_id = "s_" + hashlib.sha256(f"{rule['rule_id']}|{g['id']}".encode()
+                                             ).hexdigest()[:16]
+            ref = {"object_id": g["object_id"], "type": g.get("object_type"), "label": None}
+            out.append({"alert_id": alert_id, "at": str(g["first_seen"]), "origin": "rule",
+                        "kind": "rule", "about": ref, "record": ref, "link_type": None,
+                        "changes": [], "rule_id": rule["rule_id"], "rule_text": rule["text"],
+                        "counted": None, "read": alert_id in read,
+                        "finding": {"kind": g["kind"], "summary": g.get("summary") or ""}})
+    out.sort(key=lambda a: (a["at"], a["alert_id"]), reverse=True)
+    return out
+
+
 def compile_rule(text: str, vocab: Vocabulary, held: Iterable[str] | None, *,
                  model: Callable[[str, Mapping[str, Any]], Any] | None = None
                  ) -> dict[str, Any]:
@@ -516,6 +725,8 @@ CREATE TABLE IF NOT EXISTS alerts (alert_id TEXT PRIMARY KEY, reader TEXT NOT NU
   object_id TEXT NOT NULL, body TEXT NOT NULL, gates TEXT NOT NULL, at TEXT NOT NULL,
   read_at TEXT);
 CREATE INDEX IF NOT EXISTS alerts_reader ON alerts (reader, at);
+CREATE TABLE IF NOT EXISTS signal_reads (reader TEXT NOT NULL, alert_id TEXT NOT NULL,
+  at TEXT NOT NULL, PRIMARY KEY (reader, alert_id));
 """
 
 
@@ -587,10 +798,10 @@ class WatchStore:
                                 (reader,)).fetchone()[0]
             if have >= MAX_RULES_PER_READER:
                 raise RuleRefused([f"You have {MAX_RULES_PER_READER} rules already."])
-            conn.execute("INSERT INTO rules (rule_id, reader, text, spec, description, at) "
-                         "VALUES (?, ?, ?, ?, ?, ?)",
+            conn.execute("INSERT INTO rules (rule_id, reader, text, spec, description, at, "
+                         "baseline_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                          (rule_id, reader, text[:MAX_TEXT], json.dumps(spec, sort_keys=True),
-                          description, at))
+                          description, at, at if "signal" in spec else None))
         return {"rule_id": rule_id, "text": text[:MAX_TEXT], "spec": dict(spec),
                 "description": description, "at": at, "state": "active"}
 
@@ -609,10 +820,19 @@ class WatchStore:
                 "SELECT rule_id, text, spec, description, at, baseline_at, state, note "
                 "FROM rules WHERE reader = ? ORDER BY at DESC", (reader,))]
 
+    def signal_reads(self, reader: str) -> set[str]:
+        with closing(_connect(self.path)) as conn:
+            return {r[0] for r in conn.execute(
+                "SELECT alert_id FROM signal_reads WHERE reader = ?", (reader,))}
+
     def mark_read(self, reader: str, alert_ids: Sequence[str]) -> int:
         ids = [a for a in alert_ids if isinstance(a, str) and len(a) <= 80][:500]
         with closing(_connect(self.path)) as conn:
-            return conn.execute(
+            signals = [a for a in ids if re.fullmatch(r"s_[0-9a-f]{16}", a)]
+            marked = sum(conn.execute(
+                "INSERT OR IGNORE INTO signal_reads (reader, alert_id, at) VALUES (?, ?, ?)",
+                (reader, a, _now(self.clock))).rowcount for a in signals)
+            return marked + conn.execute(
                 "UPDATE alerts SET read_at = ? WHERE reader = ? AND read_at IS NULL AND "
                 "alert_id IN (SELECT value FROM json_each(?))",
                 (_now(self.clock), reader, json.dumps(ids))).rowcount
@@ -836,7 +1056,8 @@ def evaluate(st: Any, path: Any, moved: Iterable[str], *,
     moved = set(moved)
     with closing(_connect(path)) as conn:
         follows = [dict(r) for r in conn.execute("SELECT * FROM follows")]
-        rules = [dict(r) for r in conn.execute("SELECT * FROM rules WHERE state = 'active'")]
+        rules = [dict(r) for r in conn.execute("SELECT * FROM rules WHERE state = 'active'")
+                 if "signal" not in json.loads(r["spec"])]   # signal rules: read when looked at
         out.update(follows=len(follows), rules=len(rules))
         if not follows and not rules:
             return {**out, "state": "idle"}
@@ -1243,6 +1464,8 @@ def trim(rows: Iterable[Mapping[str, Any]], may_read: Callable[[str], bool],
 
 def sentence(alert: Mapping[str, Any]) -> str:
     """One plain line for an alert as shown."""
+    if alert.get("finding"):
+        return alert["finding"]["summary"].rstrip(".") + "."
     about = alert["about"].get("label") or alert["about"]["object_id"]
     record = alert["record"].get("label") or alert["record"]["object_id"]
     noun = _words(alert["record"].get("type") or "record")

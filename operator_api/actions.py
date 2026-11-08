@@ -111,6 +111,28 @@ class ActionsMixin:
             if built is None:
                 raise UserFacing("not_found", "That alert is no longer on your list.", 404)
             return ap.card(built)
+        if card_id.startswith("reply:"):
+            built = self.reply_card_of(reader, card_id)
+            if built is None:
+                raise UserFacing("not_found", "That message is no longer on your list.", 404)
+            return built
+        if card_id.startswith("nudge:"):
+            built = self.nudge_card_of(reader, card_id)
+            if built is None:
+                raise UserFacing("not_found", "That approval is no longer on your list.", 404)
+            return built
+        if card_id.startswith("pack:"):
+            # a record's document pack, rebuilt now as this reader's own (never the request's)
+            built = self.record_pack_dict(reader, card_id[len("pack:"):])
+            if built is None:
+                raise UserFacing("not_found", "That record is not one you can open.", 404)
+            return built["card"]
+        if card_id.startswith("meeting:"):
+            # a meeting action item's draft, rebuilt now from a follow-up this reader may see
+            built = self.meeting_card(reader, card_id)
+            if built is None:
+                raise UserFacing("not_found", "That meeting is not one you attended.", 404)
+            return built
         found = self.suggestions(reader)
         card = ca.card_dict(found.items, card_id) if found.status == "read" else None
         if card is None:

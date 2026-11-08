@@ -4,7 +4,7 @@ import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, MessageCircle } fro
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { BRIEF_TYPES, getActionStates, getObject, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
+import { BRIEF_TYPES, PACK_TYPES, getActionStates, getObject, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { custodyOf } from "@/lib/custody";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
@@ -18,11 +18,14 @@ import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin 
 import { CustodyRail } from "./custody-rail";
 import { EtaCard } from "./eta-confirmed";
 import { History } from "./history";
+import { LabelChangesSection } from "./label-changes";
 import { LinkExplorer } from "./link-explorer";
+import { RecordHistory } from "./record-history";
 import { EvidenceTrailCard, trailNextAction } from "./evidence-trail";
 import { ImpactCard } from "./impact-panel";
 import { FollowButton } from "./follow-button";
 import { ProposalCards } from "./proposal-cards";
+import { WritePanel } from "./write-panel";
 import { DraftSheet, SuggestionActions } from "./record/next-step";
 import { Bars, dayOf, Fact, Figure, Glyph, LinkRow, MoreButton, OrderLine, Progress, Property, SectionTitle } from "./record/parts";
 import { EvidenceDrawer, SourceChip, SourceChips } from "./source-chip";
@@ -715,6 +718,7 @@ function NextStep({
           <SuggestionActions card={card} state={cardState} onDone={onDone} />
         </div>
       )}
+      <div className="mt-4"><WritePanel match={[obj.object_id ?? "", card?.id ?? ""]} /></div>
       {proposals.length > 0 &&
         (card?.draft ? (
           <div className="mt-4">
@@ -873,6 +877,9 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState(false);
   const [conflictsOpen, setConflictsOpen] = useState(false);
+  // the page's tab: the record now, or its change history (a new record opens on now)
+  const [tab, setTab] = useState<"overview" | "history">("overview");
+  useEffect(() => setTab("overview"), [type, id]);
   // The sections still being read, and those that could not be read.
   const [pending, setPending] = useState<ReadonlySet<SectionName>>(new Set());
   const [sectionStale, setSectionStale] = useState<string | null>(null);
@@ -1065,7 +1072,17 @@ if (c.signal.aborted) return;
           data-testid="prepare-brief"
         >
           <CalendarClock strokeWidth={2} aria-hidden />
-          <span className="max-sm:sr-only">Prepare</span>
+          <span className="max-sm:sr-only">Prep</span>
+        </Link>
+      )}
+      {PACK_TYPES.includes(type) && (
+        <Link
+          href={`/pack/${encodeURIComponent(type)}/${encodeURIComponent(obj.object_id)}`}
+          className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] [&_svg]:size-[15px]"
+          title="Gather the documents a customer or supplier asks for, with a drafted reply"
+          data-testid="record-pack"
+        >
+          <span>Documents</span>
         </Link>
       )}
     </>
@@ -1192,9 +1209,43 @@ if (c.signal.aborted) return;
     return t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
   });
 
+  const tabs = (
+    <div role="tablist" aria-label="Record views" className="-mt-3 flex gap-1 border-b border-border text-[13px]" data-testid="record-tabs">
+      {(["overview", "history"] as const).map((t) => (
+        <button
+          key={t}
+          type="button"
+          role="tab"
+          aria-selected={tab === t}
+          onClick={() => setTab(t)}
+          className={cn("-mb-px cursor-pointer border-b-2 px-2.5 py-1.5", tab === t ? "border-fg text-fg" : "border-transparent text-muted hover:text-fg")}
+          data-testid={`tab-${t}`}
+        >
+          {t === "overview" ? "Overview" : "History"}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (tab === "history")
+    return (
+      <Frame
+        crumb={<Crumb type={obj.type} title={head.title} />}
+        actions={actions}
+        main={
+          <>
+            {header}
+            {tabs}
+            <RecordHistory type={obj.type} id={obj.object_id} />
+          </>
+        }
+      />
+    );
+
   const main = (
     <>
       {header}
+      {tabs}
       {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
       {figures}
       <KindSections obj={obj} />
@@ -1236,6 +1287,7 @@ if (c.signal.aborted) return;
       {(isCustomer || isSalesOrder) && <History events={obj.timeline ?? []} linked={obj.linked ?? []} partial={hiddenSome(obj)} />}
       <ImpactCard type={obj.type} id={obj.object_id} />
       <Linked items={obj.linked ?? []} />
+      {obj.type === "Product" && <LabelChangesSection objectId={obj.object_id} />}
       <LinkExplorer type={obj.type} id={obj.object_id} label={head.title} />
       {notOnRecord.length > 0 && (
         <section data-testid="not-found">

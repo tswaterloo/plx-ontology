@@ -666,8 +666,14 @@ class AgendaTool:
     """``plx.agenda`` over a dispatch ``call(name, arguments, actor)``."""
 
     def __init__(self, call: Callable[..., Mapping[str, Any]], schema: Any,
-                 directory: Path = AGENDA_DIR) -> None:
+                 directory: Path = AGENDA_DIR,
+                 held_markings: Callable[[Any], Any] | None = None,
+                 aggregate: Callable[[Any, Any], Mapping[str, Any]] | None = None,
+                 follow_ups: Path | str | None = None) -> None:
         self.dispatch, self.schema, self.directory = call, schema, directory
+        self.follow_ups = follow_ups
+        self.people: Any = None   # None: the host's people exclusion (re-checked per read)
+        self.held_markings, self.aggregate = held_markings, aggregate
         self._agendas: dict[str, Agenda] | None = None
 
     def agendas(self) -> dict[str, Agenda]:
@@ -680,6 +686,13 @@ class AgendaTool:
             else ["arguments must be an object"]
         if problems:
             return {"error": {"code": "invalid_input", "message": problems[0][:300]}}
+        if sum(k in arguments for k in ("agenda", "brief", "follow_up")) != 1:
+            return {"error": {"code": "invalid_input",
+                              "message": "give exactly one of agenda, brief or follow_up"}}
+        if "follow_up" in arguments:
+            return self.follow_up(arguments["follow_up"], actor)
+        if "brief" in arguments:
+            return self.brief(arguments, actor)
         try:
             agendas = self.agendas()
         except (AgendaSpecError, OSError, ValueError) as exc:
@@ -700,13 +713,71 @@ class AgendaTool:
                         limit=arguments.get("limit", DEFAULT_LIMIT))
 
 
-def register(table: dict[str, dict[str, Any]], schema: Any) -> AgendaTool:
+    def follow_up(self, question: str, actor: Any) -> dict[str, Any]:
+        """The Ask skill over meeting follow-ups (``operating.meeting_followup.ask``): only
+        follow-ups of meetings the actor attended or organised, an hr-marked one only with
+        the hr marking; nothing without the actor's markings or a follow-up store."""
+        from . import meeting_followup as mf
+        if self.held_markings is None or self.follow_ups is None:
+            return {"error": {"code": "follow_up_not_served",
+                              "message": "this host keeps no meeting follow-ups"}}
+        try:
+            held = frozenset(self.held_markings(actor))
+        except Exception:  # noqa: BLE001 - an undecidable reader reads nothing
+            return {"error": {"code": "follow_up_not_served",
+                              "message": "the reader's markings could not be read"}}
+        viewer = mf.Viewer.of(getattr(actor, "principals", ()), held)
+        return mf.ask(mf.FollowUps(self.follow_ups, self.people), viewer, question)
+
+    def brief(self, arguments: Mapping[str, Any], actor: Any) -> dict[str, Any]:
+        """The meeting prep brief of a customer, supplier, calendar event or meeting, or
+        ('weekly') the weekly ops review, read through this table's primitives as the actor
+        (``operating.briefs``). The alert list is not read here (its sections say they
+        could not be read); without the actor's held markings nothing is read."""
+        from . import briefs as br
+        if self.held_markings is None:
+            return {"error": {"code": "brief_not_served",
+                              "message": "this host serves no brief (no reader markings)"}}
+        try:
+            held = frozenset(self.held_markings(actor))
+        except Exception:  # noqa: BLE001 - an undecidable reader reads nothing
+            return {"error": {"code": "brief_not_served",
+                              "message": "the reader's markings could not be read"}}
+
+        def call(name: str, args: Mapping[str, Any]) -> Mapping[str, Any]:
+            try:
+                if name == "plx.aggregate" and self.aggregate is not None:
+                    return self.aggregate(dict(args), actor)
+                return self.dispatch(name, dict(args), actor)
+            except KeyError:   # a tool this table does not serve: a gap, never a crash
+                return {"error": {"code": "tool_not_configured", "message": name}}
+        target = arguments["brief"]
+        try:
+            if target == "weekly":
+                week = dt.date.fromisoformat(arguments["week"]) if "week" in arguments \
+                    else None
+                return br.weekly_review(call, held, None, week=week, people=br.env_people())
+            if "week" in arguments:
+                return {"error": {"code": "invalid_input",
+                                  "message": "week goes with brief 'weekly' only"}}
+            return br.meeting_brief(call, held, None, target, people=br.env_people())
+        except br.BriefRefused as exc:
+            return {"error": {"code": "brief_refused", "message": str(exc)[:200]}}
+        except ValueError as exc:
+            return {"error": {"code": "invalid_input", "message": str(exc)[:200]}}
+
+
+def register(table: dict[str, dict[str, Any]], schema: Any,
+             held_markings: Callable[[Any], Any] | None = None,
+             aggregate: Callable[[Any, Any], Mapping[str, Any]] | None = None,
+             follow_ups: Path | str | None = None) -> AgendaTool:
     """Serve ``plx.agenda`` in a host tool table (``ontology_host.tool_table``): its reads
     are that table's ``plx.find``/``plx.object``/``plx.around`` handlers, so it runs for the
     actor the host passes (employee-gated) under the policy the host decided for the call,
     as ``plx.investigate`` does."""
     tool = AgendaTool(lambda name, arguments, actor: table[name]["handler"](arguments, actor),
-                      schema)
+                      schema, held_markings=held_markings, aggregate=aggregate,
+                      follow_ups=follow_ups)
     if TOOL_NAME in table:
         raise ValueError(f"tool already registered: {TOOL_NAME}")
     table[TOOL_NAME] = dict(TOOL, handler=tool.call)

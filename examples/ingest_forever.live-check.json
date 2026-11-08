@@ -52,5 +52,8 @@
   "max_task_reads": 25,
   "operator_email_default": "cos@petrasoap.com",
   "timeout_seconds": 240
+ },
+ "brain": {
+  "namespaces": "knowledge_namespaces.ingest.json"
  }
 }

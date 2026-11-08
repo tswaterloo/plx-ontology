@@ -1055,8 +1055,8 @@ class ScanAndProactiveTests(unittest.TestCase):
         # a later run that did not finish (its sum may be a part) keeps the money wording
         real = pe._orders_at_risk
 
-        def partial(*args):
-            found = real(*args)
+        def partial(*args, **kwargs):
+            found = real(*args, **kwargs)
             for gap in found["gaps"]:
                 if gap["kind"] == "po_impact_margin":
                     gap["summary"] = "affects 1 sales order, 535.00 CAD margin at stake"

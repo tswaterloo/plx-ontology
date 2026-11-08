@@ -1439,6 +1439,61 @@ class StoreReader:
         the reader may read."""
         return removals_at(self.conn, object_ids, at)
 
+    def versions_of(self, object_id: str) -> list[sqlite3.Row]:
+        """Every captured version of one record, oldest first (no visibility: the caller,
+        ``ontology_tools_history``, judges each version for its reader)."""
+        return list(self.conn.execute(
+            "SELECT object_id, l1_handle, lineage, markings, recorded_at, superseded_at "
+            "FROM object_versions WHERE object_id = ? ORDER BY recorded_at", (object_id,)))
+
+    def removal_spans(self, object_id: str) -> list[tuple[str, str | None, str | None]]:
+        """(basis, since, until) of each stretch the record's source did not hold it
+        (``ontology.store.removals_at``'s rows: its removals, else its missing mark)."""
+        return [(row[0], row[1], row[2]) for row in self.conn.execute(
+            "SELECT COALESCE(rm.basis, 'missing_from_source'), "
+            "COALESCE(rm.since, mo.missing_from_source_since), rm.until FROM objects mo "
+            "LEFT JOIN object_removals rm ON rm.object_id = mo.object_id "
+            "WHERE mo.object_id = ? AND COALESCE(rm.since, mo.missing_from_source_since) "
+            "IS NOT NULL", (object_id,))]
+
+    def link_history(self, scope: _Scope, object_id: str, column: str, after: Any,
+                     rank: int, limit: int) -> list[sqlite3.Row]:
+        """Up to ``limit`` links with an end at ``object_id`` whose ``column``
+        (recorded_at: added, superseded_at: removed) is at or before the scope's time and
+        before the history position ``after`` (its time, then rank, then link id; None:
+        from the newest), newest first, with markings this reader holds. The other end
+        and the tier's reader view are the caller's to judge."""
+        if column not in ("recorded_at", "superseded_at"):
+            raise ValueError(column)
+        where = ""
+        params = scope.params(id=object_id, limit=limit)
+        if after is not None:
+            params.update(t=after.text, lid=after.key)
+            if rank < after.rank:
+                where = f"AND julianday(l.{column}) <= julianday(:t) "
+            elif rank > after.rank:
+                where = f"AND julianday(l.{column}) < julianday(:t) "
+            else:
+                where = (f"AND (julianday(l.{column}) < julianday(:t) OR "
+                         f"(julianday(l.{column}) = julianday(:t) AND l.link_id < :lid)) ")
+        return list(self.conn.execute(
+            "SELECT l.link_id, l.link_type, l.from_object, l.to_object, l.tier, "
+            "l.binding_kind, l.reason, l.evidence_handles, l.recorded_at, l.superseded_at "
+            "FROM links l "
+            "WHERE (l.from_object = :id OR l.to_object = :id) "
+            f"AND l.{column} IS NOT NULL AND julianday(l.{column}) <= julianday(:at) "
+            "AND l.markings IN (SELECT value FROM json_each(:marks)) " + where
+            + f"ORDER BY julianday(l.{column}) DESC, l.link_id DESC LIMIT :limit", params))
+
+    def marked_links(self, scope: _Scope, object_id: str) -> bool:
+        """Whether a link with an end at ``object_id``, recorded by the scope's time,
+        carries markings this reader does not hold (``link_history`` leaves it out)."""
+        return self.conn.execute(
+            "SELECT 1 FROM links l WHERE (l.from_object = :id OR l.to_object = :id) "
+            "AND julianday(l.recorded_at) <= julianday(:at) "
+            "AND l.markings NOT IN (SELECT value FROM json_each(:marks)) LIMIT 1",
+            scope.params(id=object_id)).fetchone() is not None
+
     def objects(self, object_ids: Sequence[str]) -> dict[str, sqlite3.Row]:
         return {row["object_id"]: row for row in self.conn.execute(
             "SELECT * FROM objects WHERE object_id IN (SELECT value FROM json_each(?))",
@@ -5630,6 +5685,11 @@ class OntologyTools:
     # ------------------------------------------------------------------ plx.object
 
     def _object(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
+        if arguments.get("history"):   # its change log (operating.ontology_tools_history)
+            from operating.ontology_tools_history import object_history
+            return object_history(self, arguments, actor)
+        if arguments.get("cursor") is not None:
+            raise ToolError("invalid_input", "cursor pages a history (history: true)")
         at = self._as_known_at(arguments)
         scope = self._scope(actor, at)
         store_meta = self._store_meta()
@@ -5660,11 +5720,21 @@ class OntologyTools:
         unreadable: set[str] = set()
         stored = self.store.scoped_currency(scope, self.store.values([object_id]))
         first_seen: dict[tuple[str, str], Any] = {}   # when each shown value was first seen
+        # A marking a property's latest value carries applies to its earlier values too
+        # (an as_known_at read never reads around a later marking, as for an object).
+        latest: dict[str, tuple[Any, tuple[str, ...]]] = {}
+        for row in stored:
+            when = _parse_time(row["recorded_at"])
+            held_by = latest.get(row["property"])
+            if held_by is None or (when is not None and (held_by[0] is None
+                                                         or when > held_by[0])):
+                latest[row["property"]] = (when, _markings(row["markings"]))
         for row in stored:
             if wanted is not None and row["property"] not in wanted:
                 continue
             known = _known_at(row, at)
-            held = scope.holds(_markings(row["markings"]))
+            held = scope.holds(_markings(row["markings"])) and scope.holds(
+                latest[row["property"]][1])
             if known is None:
                 if held:
                     unreadable.add(row["property"])

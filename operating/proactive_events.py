@@ -1439,6 +1439,26 @@ def read_margin(call: Callable, root: str) -> Any:
     return order
 
 
+# An order line's item named as a sample or a no-charge line (any system's wording).
+FREE_ITEM = re.compile(r"(?i)\b(?:samples?|no[ -]?charge|n/c|f\.?o\.?c\.?|free of charge)\b")
+
+
+def free_lines(lines: Sequence[Any]) -> tuple[list[Any], Decimal | None]:
+    """An order's free lines (invoiced at zero with nothing credited, or an item named a
+    sample or no charge) and the margin of the others (None: a priced line's margin is
+    not known, so no loss is judged on the priced lines alone)."""
+    free = [line for line in lines
+            if (line.revenue is not None and line.revenue == 0
+                and not (line.credited or line.credit_amount))
+            or (isinstance(line.item, str) and FREE_ITEM.search(line.item))]
+    if not free:
+        return [], None
+    priced = [line for line in lines if not any(line is f for f in free)]
+    if not priced or any(line.margin is None for line in priced):
+        return free, None
+    return free, sum((line.margin for line in priced), Decimal(0))
+
+
 def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
                     cites: Callable, result: Callable, bound: int = CALL_BOUND,
                     pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None,
@@ -1484,6 +1504,47 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
             skipped["margin_not_decided"] += 1
             continue
         if order.margin >= 0:
+            continue
+        free, priced_margin = free_lines(order.lines)
+        if free and priced_margin is not None:
+            # zero-price, sample or no-charge lines cost their items but lose no sale: the
+            # loss is judged on the priced lines alone, the free goods are said apart
+            free_cost = sum((line.cost or Decimal(0) for line in free), Decimal(0))
+            handles = sorted({h for line in order.lines for h in (
+                *line.invoice_handles, *line.ledger_handles) if isinstance(h, str)})
+            rows = {r["l1_handle"]: r for r in st.versions(handles=handles)}
+            if not handles or set(handles) - set(rows):
+                skipped["figures_not_stored"] += 1
+                continue
+            subject = st.versions(objects=[root])
+            marks = _value_markings(st, {rows[h]["object_id"] for h in handles})
+            groups = [cites(subject)] + [cites([rows[h]], *marks.get(h, ())) for h in handles]
+            if priced_margin >= 0:
+                gaps.append(gap(
+                    "free_goods_lines", "negative_margin", root, "SalesOrder", "free_goods",
+                    summary=f"Free goods on an order: {len(free)} zero-price or sample "
+                            f"line{'' if len(free) == 1 else 's'} cost {free_cost} "
+                            f"{order.currency}; its priced lines made {priced_margin} "
+                            f"{order.currency}",
+                    missing="Whether these lines were meant to ship at no charge",
+                    why="The order's margin is negative only because of lines invoiced at "
+                        "zero (or marked sample or no charge); its priced lines are not "
+                        "a loss.",
+                    priority="low", about=("SalesOrder", "margin"), groups=groups))
+                continue
+            loss = -priced_margin
+            gaps.append(gap(
+                "negative_margin", "negative_margin", root, "SalesOrder", "margin",
+                summary=f"Lost {loss} {order.currency} on item cost of its priced lines "
+                        f"({len(free)} free or sample line{'' if len(free) == 1 else 's'} "
+                        f"left out, item cost {free_cost} {order.currency})",
+                missing="Why the priced lines' item cost exceeds their invoiced revenue",
+                why="Margin on item cost only, over the lines sold at a price: zero-price, "
+                    "sample and no-charge lines are left out of the loss (each figure "
+                    "cited).",
+                priority="high", about=("SalesOrder", "margin"), groups=groups,
+                event={"amount": {"value": str(loss), "currency": order.currency,
+                                  "basis": "loss"}}))
             continue
         # nothing invoiced net of credits: a no-charge order (a sample, a replacement, a
         # fully credited invoice) costs its items but loses no sale; its own kind, no loss

@@ -440,13 +440,26 @@ class InvestigateEstimateTests(unittest.TestCase):
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
-            table, rows=oi.citation_rows(self.runtime), scope=oi.read_scope(base),
+            table, rows=oi.citation_rows(self.runtime, policy.held_markings),
+            scope=oi.read_scope(base),
             assumptions=assumptions))
         result = table["plx.investigate"]["handler"](
             {"family": "landed_cost", "root": {"identifier": "PO300001"}, "as_known_at": AT},
             self.actor)
         self.assertEqual(validate(result, CONTRACTS["tools"]["plx.investigate"]["output"],
                                   root=CONTRACTS), [])
+        # The answer is paged by its byte cap: read every page, as a reader would.
+        cursor, pages = result["completeness"].get("next_cursor"), 1
+        while cursor:
+            page = table["plx.investigate"]["handler"](
+                {"family": "landed_cost", "root": {"identifier": "PO300001"},
+                 "as_known_at": AT, "cursor": cursor}, self.actor)
+            self.assertEqual(validate(page, CONTRACTS["tools"]["plx.investigate"]["output"],
+                                      root=CONTRACTS), [])
+            result["answer"] += page["answer"]
+            result["gaps"] += [g for g in page["gaps"] if g not in result["gaps"]]
+            cursor, pages = page["completeness"].get("next_cursor"), pages + 1
+            self.assertLess(pages, 50)
         return result
 
     def test_the_open_po_estimate_and_a_reader_without_money_visibility(self):
@@ -584,12 +597,13 @@ class LongOpenOrderPagingTests(unittest.TestCase):
         table: dict = {}
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
-        oi.register(table, oi.InvestigateTools(table, rows=oi.citation_rows(runtime),
+        oi.register(table, oi.InvestigateTools(table, rows=oi.citation_rows(runtime,
+                                                                            policy.held_markings),
                                                scope=oi.read_scope(base)))
         actor = Actor(script.TENANT, frozenset(who))
         args = {"family": "landed_cost", "root": {"identifier": "PO300001"}, "as_known_at": AT}
         seen: dict[str, int] = {}
-        cursor, pages = None, 0
+        cursor, pages, gaps = None, 0, []
         while True:
             page = table["plx.investigate"]["handler"](
                 {**args, **({"cursor": cursor} if cursor else {})}, actor)
@@ -598,7 +612,7 @@ class LongOpenOrderPagingTests(unittest.TestCase):
                                       root=CONTRACTS), [])
             self.assertLessEqual(ot._envelope_bytes(page), base.limits["max_result_bytes"])
             pages += 1
-            gaps = page["gaps"]
+            gaps += page["gaps"]   # a gap is named on the page it arose on
             for entry in page["answer"]:
                 seen[entry["name"]] = seen.get(entry["name"], 0) + 1
             cursor = page["completeness"].get("next_cursor")

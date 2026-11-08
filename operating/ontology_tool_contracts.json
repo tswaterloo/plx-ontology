@@ -5,13 +5,463 @@
   "limits": {
     "max_result_bytes": 48000,
     "max_description_chars": 600,
-    "max_case_host_tools": 24,
+    "max_case_host_tools": 32,
+    "max_listing_bytes": 64000,
     "max_hops": 3,
     "max_page": 50,
     "max_untrusted_text_chars": 20000
   },
   "envelope_rule": "Every field carrying text read from a source is an untrusted_text envelope ($defs/untrusted_text). Typed values (numbers as Decimal text, dates, normalized identifiers, enums) come only from deterministic parsers.",
   "$defs": {
+    "demand_forecast_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "plx.aggregate mode demand_forecast (operating/demand_forecast.py): invoiced quantities per item, or per customer and item, forecast 3 months or 13 weeks ahead with intervals and a holdout error, from lines this reader may read; revenue for a finance reader only; reorder: forecast past on hand plus inbound.",
+      "required": [
+        "mode",
+        "format",
+        "as_of",
+        "bucket",
+        "by",
+        "horizon",
+        "through",
+        "series",
+        "not_forecast",
+        "holdout",
+        "complete",
+        "evidence",
+        "basis"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "demand_forecast"
+          ]
+        },
+        "format": {
+          "enum": [
+            "plx-demand-forecast/v1"
+          ]
+        },
+        "as_of": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "bucket": {
+          "enum": [
+            "month",
+            "week"
+          ]
+        },
+        "by": {
+          "enum": [
+            "item",
+            "customer_item"
+          ]
+        },
+        "horizon": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 13
+        },
+        "through": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "series": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "item",
+              "unit",
+              "method",
+              "history",
+              "lead_periods",
+              "forecast",
+              "forecast_total",
+              "low_80_total",
+              "holdout",
+              "citations"
+            ],
+            "properties": {
+              "item": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "object_id",
+                  "code"
+                ],
+                "properties": {
+                  "object_id": {"$ref": "#/$defs/object_id"},
+                  "code": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9 ./#_-]{0,64}$"
+                  }
+                }
+              },
+              "customer": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "object_id",
+                  "number"
+                ],
+                "properties": {
+                  "object_id": {"anyOf": [{"$ref": "#/$defs/object_id"}, {"type": "null"}]},
+                  "number": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9 ./#_-]{0,64}$"
+                  }
+                }
+              },
+              "unit": {"$ref": "#/$defs/unit"},
+              "method": {
+                "enum": [
+                  "seasonal_naive_trend",
+                  "exponential_smoothing"
+                ]
+              },
+              "alpha": {
+                "type": "string",
+                "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+              },
+              "history": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "from",
+                  "to",
+                  "periods",
+                  "total"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "pattern": "^[0-9]{4}-[0-9]{2}(-[0-9]{2})?$"
+                  },
+                  "to": {
+                    "type": "string",
+                    "pattern": "^[0-9]{4}-[0-9]{2}(-[0-9]{2})?$"
+                  },
+                  "periods": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "total": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                  }
+                }
+              },
+              "lead_periods": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "forecast": {
+                "type": "array",
+                "maxItems": 13,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "period",
+                    "quantity",
+                    "low_80",
+                    "high_80",
+                    "low_95",
+                    "high_95"
+                  ],
+                  "properties": {
+                    "period": {
+                      "type": "string",
+                      "pattern": "^[0-9]{4}-[0-9]{2}(-[0-9]{2})?$"
+                    },
+                    "quantity": {
+                      "type": "string",
+                      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                    },
+                    "low_80": {
+                      "type": "string",
+                      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                    },
+                    "high_80": {
+                      "type": "string",
+                      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                    },
+                    "low_95": {
+                      "type": "string",
+                      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                    },
+                    "high_95": {
+                      "type": "string",
+                      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                    }
+                  }
+                }
+              },
+              "forecast_total": {
+                "type": "string",
+                "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+              },
+              "low_80_total": {
+                "type": "string",
+                "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+              },
+              "holdout": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "periods",
+                      "method",
+                      "mae",
+                      "wape",
+                      "bias",
+                      "naive_mae",
+                      "within_80"
+                    ],
+                    "properties": {
+                      "periods": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "method": {
+                        "enum": [
+                          "seasonal_naive_trend",
+                          "exponential_smoothing"
+                        ]
+                      },
+                      "mae": {
+                        "type": "string",
+                        "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                      },
+                      "wape": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                      },
+                      "bias": {
+                        "type": "string",
+                        "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                      },
+                      "naive_mae": {
+                        "type": "string",
+                        "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                      },
+                      "within_80": {
+                        "type": "string",
+                        "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                      }
+                    }
+                  }
+                ]
+              },
+              "revenue": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "currency",
+                    "amount"
+                  ],
+                  "properties": {
+                    "currency": {
+                      "type": "string",
+                      "pattern": "^[A-Z]{3}$"
+                    },
+                    "amount": {
+                      "type": "string",
+                      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                    }
+                  }
+                }
+              },
+              "revenue_complete": {
+                "type": "boolean"
+              },
+              "reorder": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "complete",
+                      "not_evaluated",
+                      "blocked"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                  },
+                  "on_hand": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                  },
+                  "inbound_by_end": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                  },
+                  "reorder_soon": {
+                    "type": "boolean"
+                  },
+                  "short": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                  }
+                }
+              },
+              "citations": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "$ref": "#/$defs/handle"
+                }
+              }
+            }
+          }
+        },
+        "series_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "next_cursor": {
+          "type": "string",
+          "pattern": "^df[0-9]{1,6}$"
+        },
+        "not_forecast": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxProperties": 20
+        },
+        "holdout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "series",
+            "median_wape",
+            "median_naive_wape",
+            "beats_naive",
+            "median_bias_share",
+            "within_80"
+          ],
+          "properties": {
+            "series": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "median_wape": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+            },
+            "median_naive_wape": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+            },
+            "beats_naive": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+            },
+            "median_bias_share": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+            },
+            "within_80": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+            }
+          }
+        },
+        "reorder": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reasons",
+            "waiting_on"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "complete",
+                "blocked"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,95}$"
+              }
+            },
+            "waiting_on": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9 ]{1,80}$"
+              }
+            }
+          }
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "enum": [
+            "store"
+          ]
+        },
+        "basis": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "not_counted": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxProperties": 20
+        }
+      }
+    },
     "who_knows_answer": {
       "type": "object", "additionalProperties": false,
       "description": "plx.aggregate mode who_knows (operating/who_knows.py): per person of ours the reader may see, message counts about customers, suppliers and items, and open threads waiting on their reply. Counts only.",
@@ -697,6 +1147,26 @@
             "tools"
           ]
         }
+      }
+    },
+    "business_documents_answer": {
+      "type": "object", "additionalProperties": false,
+      "description": "plx.aggregate mode business_documents (operating/business_documents.py): rows read from customer and supplier sheets and documents for this reader, each citing its records (and sheet cell); a row shows only when every cited record is readable and its markings (finance on prices) are held. draft true: answer_bank rows pre-fill a draft, never sent.",
+      "required": ["mode", "format", "view", "rows", "counts", "withheld_counts", "complete", "draft"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["business_documents"]},
+        "format": {"type": "string", "enum": ["plx-business-documents/v1"]},
+        "view": {"type": "string", "enum": ["forecasts", "forecast_accuracy", "priority_fill", "price_sheets", "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback"]},
+        "rows": {"type": "array", "maxItems": 200, "items": {"type": "object", "required": ["cites"], "properties": {"cites": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["object_id"], "properties": {"object_id": {"$ref": "#/$defs/object_id"}}}}, "markings": {"type": "array", "items": {"type": "string", "enum": ["finance", "l5", "pii", "purchasing_prices", "quality_controlled"]}}}}},
+        "counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "withheld_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "complete": {"type": "boolean"},
+        "draft": {"type": "boolean"},
+        "seconds": {"type": "number", "minimum": 0},
+        "withheld": {"type": "string", "enum": ["people_exclusion_unavailable"]},
+        "trend": {"type": "array", "maxItems": 50, "items": {"type": "object"}},
+        "reported_by_trend": {"type": "array", "maxItems": 50, "items": {"type": "object"}},
+        "totals": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
       }
     },
     "cash_forecast_answer": {
@@ -3753,7 +4223,7 @@
   },
   "tools": {
     "plx.schema": {
-      "description": "The ontology map: object, link, event and action types with properties (value type, unit, quantity role, markings, availability), plx.process graphs (root type, stages, whether an unnamed call picks it) and the schema digest every answer cites. Filter by object type or section; page via completeness.next_cursor until null. Without object_type: served and partial types only (with links, events, actions); a not_served type only when named.",
+      "description": "The ontology map: object, link, event and action types with properties (value type, unit, quantity role, markings, availability), plx.process graphs (root type, stages, the default) and the schema digest answers cite. Filter by object type or section; page via completeness.next_cursor. Without object_type: served and partial types; a not_served type only when named.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -4019,7 +4489,7 @@
       }
     },
     "plx.find": {
-      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; aliases included) or filter objects of one type (undeclared property: unknown_property, naming valid ones). An exact unique match returns it; several return ranked candidates with key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists its holders as lead candidates (reference_match). Returns a set handle; object_type alone pages it; a portfolio question ranks by its plan.",
+      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice, aliases) or filter objects of one type (undeclared property: unknown_property, naming valid ones). One exact match returns it; several return ranked candidates (key, binding, reason), never a winner. A query its own eq filter repeats on a reference property lists its holders as lead candidates (reference_match). Returns a set handle; object_type alone pages it; a portfolio question ranks by its plan.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -4244,6 +4714,7 @@
                   "complete",
                   "not_run",
                   "rules",
+                  "rules_clean",
                   "scanned",
                   "unrecognized",
                   "returned",
@@ -4311,10 +4782,14 @@
                         "tell_before_they_ask",
                         "quality_hold_aging",
                         "reject_trend",
+                        "expedite_unanswered",
+                        "supplier_shortage_open_orders",
+                        "supplier_chasing_payment",
                         "customer_paying_slower",
                         "early_pay_discount_missed",
                         "duplicate_supplier_invoice",
                         "duplicate_supplier_payment",
+                        "customer_credits_rising",
                         "price_below_typical",
                         "price_below_cost",
                         "customer_price_drop",
@@ -4330,6 +4805,12 @@
                         "commitment_due",
                         "commitment_missed",
                         "needs_my_reply",
+                        "reply_owed",
+                        "label_change_unapproved",
+                        "label_change_stale",
+                        "label_change_tracked",
+                        "approval_waiting",
+                        "chase_escalating",
                         "slow_moving_stock",
                         "expiring_lot_stock",
                         "assembly_blocked_by_component",
@@ -4339,10 +4820,19 @@
                         "duplicate_party_candidate",
                         "key_field_missing",
                         "twins_disagree",
-                        "source_stale"
+                        "source_stale",
+                        "reorder_soon",
+                        "inventory_adjustment",
+                        "blocked_account_activity",
+                        "gl_posting_errors",
+                        "recurring_task_missed",
+                        "priority_order_unfilled",
+                        "unapplied_remittance",
+                        "short_payment",
+                        "statement_difference"
                       ]
                     },
-                    "maxItems": 85
+                    "maxItems": 86
                   },
                   "as_of": {
                     "type": [
@@ -4406,6 +4896,9 @@
                         "recurring_component_damage",
                         "customer_chase",
                         "quality_holds",
+                        "expedite_requests",
+                        "supplier_shortage",
+                        "payment_chase",
                         "customer_payment_behaviour",
                         "early_pay_discounts",
                         "duplicate_payables",
@@ -4420,6 +4913,8 @@
                         "teams_unanswered_ask",
                         "commitments",
                         "needs_reply",
+                        "approvals_waiting",
+                        "chase_escalation",
                         "slow_moving_stock",
                         "expiring_lot_stock",
                         "assembly_component_shortfall",
@@ -4429,14 +4924,26 @@
                         "duplicate_parties",
                         "key_fields_missing",
                         "twin_disagreement",
-                        "stale_captures"
+                        "stale_captures",
+                        "reorder_soon",
+                        "inventory_adjustment",
+                        "blocked_account_activity",
+                        "gl_posting_errors",
+                        "recurring_task_missed",
+                        "returns_and_credits",
+                        "priority_fill_unmet",
+                        "inbox_triage",
+                        "label_changes",
+                        "cash_application",
+                        "statement_reconciliation"
                       ]
                     },
-                    "maxItems": 69
+                    "maxItems": 70
                   },
+                  "rules_clean": {"type": "array", "maxItems": 69, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "cash_application", "statement_reconciliation"]}},
                   "rules": {
                     "type": "array",
-                    "description": "Every rule, its last run's status and not_evaluated: the records this reader may read the rule left unjudged, of the skips whose whole cause it may read (null: unknown). A rule not run or with not_evaluated other than 0 makes the home result incomplete (reason rule_not_evaluated): an empty kind is then not 'none'.",
+                    "description": "The rules that did not finish cleanly (rules_clean names the rest), each with its last run's status and not_evaluated: the records this reader may read the rule left unjudged, of the skips whose whole cause it may read (null: unknown). A rule not run or with not_evaluated other than 0 makes the home result incomplete (reason rule_not_evaluated): an empty kind is then not 'none'.",
                     "items": {
                       "type": "object",
                       "additionalProperties": false,
@@ -4479,6 +4986,9 @@
                             "recurring_component_damage",
                             "customer_chase",
                             "quality_holds",
+                            "expedite_requests",
+                            "supplier_shortage",
+                            "payment_chase",
                             "customer_payment_behaviour",
                             "early_pay_discounts",
                             "duplicate_payables",
@@ -4493,6 +5003,8 @@
                             "teams_unanswered_ask",
                             "commitments",
                             "needs_reply",
+                            "approvals_waiting",
+                            "chase_escalation",
                             "slow_moving_stock",
                             "expiring_lot_stock",
                             "assembly_component_shortfall",
@@ -4502,7 +5014,18 @@
                             "duplicate_parties",
                             "key_fields_missing",
                             "twin_disagreement",
-                            "stale_captures"
+                            "stale_captures",
+                            "reorder_soon",
+                            "inventory_adjustment",
+                            "blocked_account_activity",
+                            "gl_posting_errors",
+                            "recurring_task_missed",
+                            "returns_and_credits",
+                            "priority_fill_unmet",
+                            "inbox_triage",
+                            "label_changes",
+                            "cash_application",
+                            "statement_reconciliation"
                           ]
                         },
                         "status": {
@@ -4514,7 +5037,8 @@
                             "blocked",
                             "not_configured",
                             "not_run",
-                            "unknown"
+                            "unknown",
+                            "not_set_up"
                           ]
                         },
                         "not_evaluated": {
@@ -4638,10 +5162,14 @@
                             "tell_before_they_ask",
                             "quality_hold_aging",
                             "reject_trend",
+                            "expedite_unanswered",
+                            "supplier_shortage_open_orders",
+                            "supplier_chasing_payment",
                             "customer_paying_slower",
                             "early_pay_discount_missed",
                             "duplicate_supplier_invoice",
                             "duplicate_supplier_payment",
+                            "customer_credits_rising",
                             "price_below_typical",
                             "price_below_cost",
                             "customer_price_drop",
@@ -4657,6 +5185,12 @@
                             "commitment_due",
                             "commitment_missed",
                             "needs_my_reply",
+                            "reply_owed",
+                            "label_change_unapproved",
+                            "label_change_stale",
+                            "label_change_tracked",
+                            "approval_waiting",
+                            "chase_escalating",
                             "slow_moving_stock",
                             "expiring_lot_stock",
                             "assembly_blocked_by_component",
@@ -4666,7 +5200,16 @@
                             "duplicate_party_candidate",
                             "key_field_missing",
                             "twins_disagree",
-                            "source_stale"
+                            "source_stale",
+                            "reorder_soon",
+                            "inventory_adjustment",
+                            "blocked_account_activity",
+                            "gl_posting_errors",
+                            "recurring_task_missed",
+                            "priority_order_unfilled",
+                            "unapplied_remittance",
+                            "short_payment",
+                            "statement_difference"
                           ]
                         },
                         "priority": {
@@ -5047,7 +5590,7 @@
       }
     },
     "plx.object": {
-      "description": "One object: per-source property values with lineage and citations (never merged), conflicts between sources, identity edges with tiers, and linked counts per link type. Values the reader may not see are withheld before anything is counted.",
+      "description": "One object: per-source values with lineage and citations (never merged), conflicts, identity edges with tiers, linked counts per link type; as_known_at: as recorded then. history: its change log (values, links, removals; when, source), newest first; cursor pages. Unreadable values are withheld before counting.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -5075,6 +5618,12 @@
               "concise",
               "detailed"
             ]
+          },
+          "history": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "type": "string", "minLength": 1, "maxLength": 512
           }
         },
         "required": [
@@ -5083,6 +5632,170 @@
       },
       "output": {
         "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "history: true. Each historical value is shown only where its own markings, its property's latest markings and its version are this reader's; a hidden change is said in withheld, never counted.",
+            "required": [
+              "object",
+              "history",
+              "gaps",
+              "completeness",
+              "meta"
+            ],
+            "properties": {
+              "object": {
+                "$ref": "#/$defs/object_ref"
+              },
+              "history": {
+                "type": "array",
+                "maxItems": 25,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "at",
+                    "kind"
+                  ],
+                  "properties": {
+                    "at": {
+                      "type": "string",
+                      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{3})?Z$"
+                    },
+                    "kind": {
+                      "enum": [
+                        "first_recorded",
+                        "changed",
+                        "link_added",
+                        "link_removed",
+                        "removed_from_source",
+                        "restored"
+                      ]
+                    },
+                    "source": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "l1_handle",
+                        "lineage"
+                      ],
+                      "description": "The captured version the change was read from: who or which system wrote it.",
+                      "properties": {
+                        "l1_handle": {
+                          "$ref": "#/$defs/handle"
+                        },
+                        "lineage": {
+                          "$ref": "#/$defs/lineage"
+                        },
+                        "binding_id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*$",
+                          "maxLength": 128
+                        },
+                        "system": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                        }
+                      }
+                    },
+                    "changes": {
+                      "type": "array",
+                      "maxItems": 40,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "property",
+                          "before",
+                          "after"
+                        ],
+                        "properties": {
+                          "property": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                          },
+                          "before": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/value"
+                            },
+                            "maxItems": 10
+                          },
+                          "after": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/value"
+                            },
+                            "maxItems": 10
+                          },
+                          "more_values": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "more_changes": {
+                      "type": "boolean"
+                    },
+                    "basis": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                      "description": "A removal's basis, e.g. missing_from_source."
+                    },
+                    "link": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "link_type",
+                        "direction",
+                        "tier",
+                        "other"
+                      ],
+                      "properties": {
+                        "link_type": {
+                          "type": "string",
+                          "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+                        },
+                        "direction": {
+                          "enum": [
+                            "forward",
+                            "reverse"
+                          ]
+                        },
+                        "tier": {
+                          "$ref": "#/$defs/tier"
+                        },
+                        "basis": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                          "description": "How the link was made (binding kind)."
+                        },
+                        "other": {
+                          "$ref": "#/$defs/object_ref"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "gaps": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/gap"
+                },
+                "maxItems": 50
+              },
+              "withheld": {
+                "$ref": "#/$defs/withheld"
+              },
+              "completeness": {
+                "$ref": "#/$defs/completeness"
+              },
+              "meta": {
+                "$ref": "#/$defs/meta"
+              }
+            }
+          },
           {
             "type": "object",
             "additionalProperties": false,
@@ -5280,7 +5993,7 @@
       }
     },
     "plx.around": {
-      "description": "Walk 1-3 declared link types from an object/set (tier floor, filters): a set handle, per-hop counts by tier, top edges and objects; exact_count when every member is listed. To count or total a walk, use plx.query. What if (delay, stock-out, lost customer, price change): mode what_if. Why is an order late or unprofitable: mode why.",
+      "description": "Walk 1-3 declared link types from an object/set (tier floor, filters): set handle, per-hop counts by tier, top edges and objects; exact_count when all members are listed. To count or total a walk: plx.query. What if (delay, stock-out, lost customer, price change): mode what_if. Why is an order late or unprofitable: mode why.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -5294,7 +6007,7 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "description": "A declared link type and direction, or a link's navigation name on the hop's start type (name forward, reverse_name reverse; e.g. mentioned_in_email). An undeclared name is refused (undeclared_link), one naming several links too (ambiguous_link).",
+              "description": "A declared link type and direction, or a link's navigation name on the hop's start type (name forward, reverse_name reverse; e.g. mentioned_in_email); an undeclared name is refused (undeclared_link), an ambiguous one too.",
               "properties": {
                 "link_type": {
                   "type": "string",
@@ -5589,7 +6302,7 @@
       }
     },
     "plx.timeline": {
-      "description": "Business events for an object or set, ordered, each with its time basis (source date, planned, capture window, document) and citation. Times with incompatible bases are reported as conflicts, not ordered against each other.",
+      "description": "Business events for an object or set, ordered, each with its time basis (source date, planned, capture window, document) and citation. Times of incompatible bases are conflicts, never ordered.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -5791,13 +6504,15 @@
       }
     },
     "plx.aggregate": {
-      "description": "Decimal count/sum/min/max of a set or object_type, filtered, by 1-2 group properties, readable rows only; >20 groups: summary + cursor. Refuses mixed roles/units/currencies, unknowns, fan-out sums, unreviewed N:M hops. Totals carry markings. Modes: cash_forecast; margin_variance (variance {subject,from,to,baseline_from,baseline_to}); quote_conversion; cross_sell (+customer); who_knows (+person).",
+      "description": "Decimal count/sum/min/max of a set or object_type, filtered, grouped by 1-2 properties; readable rows only; >20 groups: summary+cursor. Refuses mixed roles/units/currencies, unknowns, fan-out sums, unreviewed N:M hops. Totals carry markings. Modes: cash_forecast; demand_forecast(bucket; group_by customer); business_documents(+view,customer,question); margin_variance(variance{subject,from,to,baseline_from,baseline_to}); quote_conversion; cross_sell(+customer); who_knows(+person).",
       "read_only": true,
       "input": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "mode": {"enum": ["cash_forecast", "margin_variance", "quote_conversion", "cross_sell", "who_knows"]},
+          "mode": {"enum": ["cash_forecast", "demand_forecast", "margin_variance", "quote_conversion", "cross_sell", "who_knows", "business_documents"]},
+          "view": {"type": "string"},
+          "question": {"type": "string"},
           "person": {"type": "string"},
           "variance": {"type": "object"},
           "customer": {"type": "string", "maxLength": 700},
@@ -5894,7 +6609,7 @@
               "week",
               "day"
             ],
-            "description": "A date's period"
+            "description": "Date period"
           },
           "having": {
             "type": "object",
@@ -5944,8 +6659,10 @@
       "output": {
         "oneOf": [
         {"$ref": "#/$defs/cash_forecast_answer"},
+        {"$ref": "#/$defs/demand_forecast_answer"},
         {"$ref": "#/$defs/sales_answer"},
         {"$ref": "#/$defs/who_knows_answer"},
+        {"$ref": "#/$defs/business_documents_answer"},
         {"$ref": "#/$defs/margin_variance_answer"},
           {
             "type": "object",
@@ -6171,7 +6888,7 @@
       }
     },
     "plx.process": {
-      "description": "Process conformance for a root or set: stages present (cited), missing (typed reason), out of order, quantity checks across roles (three-way match), variant frequency; for one root: next stage, overdue stages, document-vs-record conflicts and each unreached stage's blockers in other processes. Processes (plx.schema lists them): purchase_to_invoice, po_delivery_window, sales_order_lifecycle, manufacturing_order, ao_packet; default: the root's.",
+      "description": "Process conformance for a root or set: stages present (cited), missing (typed reason), out of order, quantity checks across roles (three-way match), variant frequency; for one root: next stage, overdue stages, document-vs-record conflicts, each unreached stage's blockers in other processes. Processes (plx.schema lists them): purchase_to_invoice, po_delivery_window, sales_order_lifecycle, manufacturing_order, ao_packet; default: the root's.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7292,7 +8009,7 @@
       }
     },
     "plx.identity": {
-      "description": "Why (and why not) records are the same business object: identity edges with tier, compared features, fixed weights and review decisions, plus near-miss records that failed and the feature that failed. Anchors (orders, POs, AOs, invoices) are never auto-merged.",
+      "description": "Why (and why not) records are one business object: identity edges with tier, compared features, fixed weights and review decisions, plus near-misses and the feature that failed them. Anchors (orders, POs, AOs, invoices) never auto-merge.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7388,7 +8105,7 @@
       }
     },
     "plx.documents": {
-      "description": "Text search of mail, SharePoint, originals and Teams (sources) the employee may read, newest first, optionally around an object. Slow (up to a minute): read records and their links first; search for what they lack. Untrusted text. States what was searched.",
+      "description": "Text search of mail, SharePoint, originals and Teams (sources) the employee may read, newest first, optionally around an object. Slow (to a minute): read records and links first; search for what they lack. Untrusted text. States what was searched.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7754,7 +8471,7 @@
       }
     },
     "plx.read": {
-      "description": "Resolve a citation for this employee: a source row (typed values, untrusted text), a mail or document body, or one page of an original or captured PDF (cited as #page=<n>); says when changed, withheld or unresolvable. text_offset pages long text until text_window.next_offset is null (sha256: whole text); column_offset pages a wide row. Live mail gives cite_as, the pinned citation. find on a message also searches its attachments' text (attachment_matches).",
+      "description": "Resolve a citation for this employee: a source row (typed values, untrusted text), a mail or document body, or one page of an original or captured PDF (#page=<n>); says if changed, withheld or unresolvable. text_offset pages long text until text_window.next_offset is null (sha256: whole text); column_offset pages a wide row. Live mail gives cite_as (pinned citation). find on a message also searches its attachments' text (attachment_matches).",
       "read_only": true,
       "input": {
         "type": "object",
@@ -8372,7 +9089,7 @@
       }
     },
     "plx.investigate": {
-      "description": "Run the declarative plan for a question family (ontology/plans/<family>.json), or an inline plan when none fits, from a root. Returns the chain, cited values, gaps, conflicts and computed answerability, with procedure id and digest. Unknown family: no_plan; refused plan: plan_<problem> with a hint. A large answer is paged: pass completeness.next_cursor as cursor. follow_ups {case_id}: a host with a follow-up recorder (a listed writer) records the gaps that ask a person as case follow-ups (nothing sent); other hosts refuse it.",
+      "description": "Run the declarative plan for a question family, or an inline plan when none fits, from a root. Returns the chain, cited values, gaps, conflicts and computed answerability, with procedure id and digest. Unknown family: no_plan; refused plan: plan_<problem> with a hint. A large answer is paged: pass completeness.next_cursor as cursor. follow_ups {case_id}: a host with a follow-up recorder records the gaps that ask a person as case follow-ups (nothing sent); other hosts refuse it.",
       "read_only": false,
       "input": {
         "type": "object",
@@ -9096,7 +9813,7 @@
       }
     },
     "plx.query": {
-      "description": "One read from records, codes (a sheet's items), an entity (all systems), a set, or all of an object_type its where selects; traverse links hop by hop or {\"to\": a type} (each route walked, counted); measures by a property or linked record's (group_path), a date by period (bucket), windowed; having keeps groups by value. Past 20 groups: summary; cursor pages; groups cite inputs. rows: what is reached; per_code: each code alone. Use for every count, total, date range over a link set; a record's mail or channel's Teams latest/earliest is measures max/min on sent_at or created_at.",
+      "description": "One read from records, codes (a sheet's items), an entity (all systems), a set, or all of an object_type its where selects; traverse links hop by hop or {\"to\": a type} (each route walked, counted); measures by a property or linked record's (group_path), a date by period (bucket), windowed; having keeps groups by value. Past 20 groups: summary; cursor pages; groups cite inputs. rows: what is reached; per_code: each code alone. Use for every count, total, date range over links; latest/earliest mail of a record or Teams of a channel: max/min of sent_at or created_at.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -10189,18 +10906,25 @@
       }
     },
     "plx.agenda": {
-      "description": "A recurring meeting's agenda from cited records since the last meeting: open projects and status, changes, blockers, decisions and owners, each line cited; missing sources and values are named gaps. agenda: the spec id (ontology/agendas). scope: per lane, the exact values its spec names (a chat id, a list id, an MC bucket). since: ISO instant with offset; absent: the previous agenda's posting. offset/limit page the lines. Read-only.",
+      "description": "A recurring meeting's agenda from cited records since the last meeting: open projects, changes, blockers, decisions, owners; each line cited, gaps named. agenda: spec id (ontology/agendas). scope: per lane, its spec's values (else default_scope). since: ISO instant; absent: the previous agenda's posting. offset/limit page. Or brief: a Customer, Supplier, CalendarEvent or Meeting id gives its meeting prep brief; 'weekly' (+week date) the weekly ops review. Or follow_up: 'what did we decide about X' or \"what's open from Monday's ops meeting\" over the reader's meeting follow-ups. Read-only.",
       "read_only": true,
       "input": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "agenda"
-        ],
         "properties": {
           "agenda": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "follow_up": {"type": "string", "minLength": 8, "maxLength": 300},
+          "brief": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 300
+          },
+          "week": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
           },
           "since": {
             "type": "string",
@@ -10232,6 +10956,13 @@
       },
       "output": {
         "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["schema", "kind", "sections", "gaps"],
+            "description": "A meeting prep brief or the weekly ops review (operating/briefs.py): every row and figure cites its sources, read as the asking reader.",
+            "properties": {"schema": {"type": "string", "enum": ["plx-meeting-brief/v1", "plx-weekly-review/v1"]}}
+          },
           {
             "type": "object",
             "additionalProperties": true,
@@ -10567,7 +11298,7 @@
       }
     },
     "plx.review": {
-      "description": "Record a person's review decision in the Workbench store (accept or reject a declared link, an identifier alias, an allocation of a supply's quantity to a demand over a many-to-many link, a confirmation or a correction of a number, quantity, money or date value (cited by an existing page or a span; shown beside the source value), or retract a review), or list a record's reviews. Document kinds: use plx.document_fields. Author: the signed-in employee; agent sessions are refused. Evidence must be the current versions reviewed. No business system is written.",
+      "description": "Record a person's review decision in the Workbench store (accept or reject a declared link, an identifier alias, a supply-to-demand quantity allocation over a many-to-many link, a confirmation or correction of a number, quantity, money or date value (cited by an existing page or span; shown beside the source value), or retract a review), or list a record's reviews. Document kinds: use plx.document_fields. Author: the signed-in employee; agents are refused. Evidence: the current versions reviewed. No business write.",
       "read_only": false,
       "input": {
         "type": "object",
@@ -11236,7 +11967,7 @@
       }
     },
     "plx.playbook_propose": {
-      "description": "Propose a new version of a published case playbook (operating.semantic_proposals). content: the full definition, a later version of a current playbook id that loads with the playbook directory and uses no retired tool; file: its new file name. evidence: case ids or citations this session can read now (each is re-read). Any session may propose; a proposal is a record only: it changes nothing until a principal other than the proposer evaluates it on the host's frozen cases and a human steward adopts it. No business write.",
+      "description": "Propose a new version of a published case playbook. content: the full definition, a later version of a current playbook id that loads with the playbook directory and uses no retired tool; file: its new file name. evidence: case ids or citations this session can read now (each re-read). Any session may propose; a proposal is only a record: nothing changes until a principal other than the proposer evaluates it on the host's frozen cases and a human steward adopts it. No business write.",
       "read_only": false,
       "input": {
         "type": "object",
@@ -11316,7 +12047,7 @@
       }
     },
     "plx.playbook_evaluate": {
-      "description": "Evaluate a playbook proposal: playbook_eval.case_runner scores every frozen case under the current and the proposed version, reading each case as this session (in every case's audience); the comparison is stored with its reports. Evaluator: a service or employee session, no agent principal, none of the proposer's. A regression is recorded and blocks that edit for good. A case read only in part is unscored and blocks adoption; one no reader can read is unscorable (unscorable_reasons) and left out. No business write.",
+      "description": "Evaluate a playbook proposal: playbook_eval.case_runner scores each frozen case under the current and proposed version, read as this session (in each case's audience); the comparison is stored with its reports. Evaluator: a service or employee session; no agent, not the proposer's. A regression is recorded and blocks that edit for good. A case read only in part is unscored and blocks adoption; one no reader can read is unscorable (unscorable_reasons), left out. No business write.",
       "read_only": false,
       "input": {
         "type": "object",
@@ -11446,7 +12177,7 @@
       }
     },
     "plx.playbook_adopt": {
-      "description": "Adopt an evaluated playbook proposal (mode request) or read its state and this session's last answer (mode status). request sends the PERSON a form (MCP elicitation): only a configured human steward whose client declared elicitation, never the proposer or an evaluator; the person's answer adopts after every rule is re-checked, into the host's state-directory overlay (never shipped code). adoption_not_recorded: nothing changed, retry; adoption_not_completed: the next form completes it. Agents are refused. No business write.",
+      "description": "Adopt an evaluated playbook proposal (mode request) or read its state and this session's last answer (mode status). request sends a form (MCP elicitation) to a PERSON: only a configured human steward whose client declared elicitation, never the proposer or an evaluator; their answer adopts once every rule is re-checked, into the host's state-directory overlay (never shipped code). adoption_not_recorded: nothing changed, retry; adoption_not_completed: the next form completes it. Agents are refused. No business write.",
       "read_only": false,
       "input": {
         "type": "object",

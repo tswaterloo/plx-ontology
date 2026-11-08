@@ -692,7 +692,8 @@ class ObjectWorkspace:
             return explain(self._workspace(object_id))
 
     def gap_inbox(self, *, inbox: Any = None, limit: int | None = None,
-                  kinds: Sequence[str] | None = None) -> dict[str, Any]:
+                  kinds: Sequence[str] | None = None,
+                  states: Sequence[str] | None = None) -> dict[str, Any]:
         """The gaps the scheduled engine found (``operating.proactive_engine``: set-based
         rules over the whole projection store, persisted in the inbox beside it), trimmed
         for this reader: a gap shows only when its subject and a citation of each of its
@@ -700,7 +701,9 @@ class ObjectWorkspace:
         and pass the per-item decision. Each carries a proposed follow-up only a person
         sends. No grant (an API-only reader) or no store: ``not_configured``. ``inbox``:
         another inbox file over this store (the flagship script's one-off run); default:
-        the one beside the store. ``kinds``: only gaps of these kinds (the same trim)."""
+        the one beside the store. ``kinds``: only gaps of these kinds (the same trim).
+        ``states``: the gap states read (default open and acknowledged; the weekly review
+        adds resolved, trimmed the same way)."""
         from operating import proactive_engine
 
         with self._request():
@@ -715,7 +718,8 @@ class ObjectWorkspace:
                 reader=proactive_engine.reader_key(self.actor), may_read=may_read,
                 held=held, decide=self.access.decide,
                 **({"limit": limit} if limit is not None else {}),
-                **({"kinds": list(kinds)} if kinds is not None else {}))
+                **({"kinds": list(kinds)} if kinds is not None else {}),
+                **({"states": list(states)} if states is not None else {}))
             return {**base, **found}
 
     def briefing(self, *, inbox: Any = None, since_visit: bool = False) -> dict[str, Any]:

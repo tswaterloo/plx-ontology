@@ -1,0 +1,8 @@
+{
+  "format": "plx-labour-grants/v1",
+  "description": "Labour hours from the emailed time sheets are department and week totals only, marked hr. A reader sees them (the Labour page, the overtime alert, labour answers) only when holding one of these grants. The owner assigns principals in the host's grants file named by PLX_LABOUR_GRANTS_FILE ({\"hr\": [\"user:<oid>\"], \"ops-management\": [...]}); these definitions grant nobody.",
+  "grants": [
+    {"grant": "hr", "principals": [], "description": "People and HR staff: department and week labour hours, overtime and headcount-days."},
+    {"grant": "ops-management", "principals": [], "description": "Operations and plant management: the same labour aggregates, for staffing and overtime decisions."}
+  ]
+}

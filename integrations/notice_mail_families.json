@@ -1,0 +1,608 @@
+{
+  "schema": "plx-notice-mail-families/v1",
+  "note": "Declared parsers for SaaS notification mail we already hold (integrations/notice_mail.py). One entry per sender family: the sender domains it owns, the record type it yields, the markings a reader must hold, its kinds (first match over subject then text wins) and its fields (each a list of patterns with one capture group; the first pattern that matches wins, `many` keeps every distinct match). A record is kept only when every `required` field was found. `links` names the identifier kind each field resolves through (plx.find's one grammar), never a per-message rule. No sender address, customer, case or person is named here.",
+  "date_formats": [
+    "%m/%d/%Y",
+    "%m/%d/%y",
+    "%Y-%m-%d",
+    "%B %d, %Y",
+    "%b %d, %Y",
+    "%A, %B %d, %Y",
+    "%a, %b %d, %Y",
+    "%d %B %Y",
+    "%d %b %Y",
+    "%A, %m/%d/%Y",
+    "%a, %m/%d/%Y"
+  ],
+  "families": [
+    {
+      "id": "carrier_ups",
+      "record_type": "CarrierNotice",
+      "carrier": "UPS",
+      "senders": [
+        "(^|\\.)ups\\.com$"
+      ],
+      "markings": [],
+      "kinds": [
+        {
+          "kind": "billing",
+          "any": [
+            "billing online",
+            "\\binvoice\\(?s?\\)?\\b",
+            "billing statement",
+            "demand for payment",
+            "past due",
+            "statement (number|of account)"
+          ]
+        },
+        {
+          "kind": "delivered",
+          "any": [
+            "\\bdelivered\\b(?! by)(?!.{0,20}\\bby\\b)",
+            "has been delivered",
+            "was delivered"
+          ]
+        },
+        {
+          "kind": "exception",
+          "any": [
+            "\\bexception\\b",
+            "\\bdelay(ed)?\\b",
+            "unable to deliver",
+            "delivery attempt"
+          ]
+        },
+        {
+          "kind": "out_for_delivery",
+          "any": [
+            "out for delivery"
+          ]
+        },
+        {
+          "kind": "scheduled",
+          "any": [
+            "scheduled for delivery",
+            "estimated delivery",
+            "expected delivery",
+            "on the way",
+            "in transit",
+            "is coming"
+          ]
+        },
+        {
+          "kind": "shipped",
+          "any": [
+            "ship notification",
+            "shipment notification",
+            "pickup confirmation"
+          ]
+        },
+        {
+          "kind": "label_created",
+          "any": [
+            "label (has been )?created",
+            "shipment ready",
+            "ship notification",
+            "shipment details"
+          ]
+        }
+      ],
+      "fields": {
+        "tracking_numbers": {
+          "type": "tracking_ups",
+          "many": true,
+          "patterns": [
+            "\\b(1Z[0-9A-Z]{16})\\b"
+          ]
+        },
+        "scheduled_delivery": {
+          "type": "date",
+          "patterns": [
+            "(?:scheduled|estimated|expected)(?: delivery)?(?: date)?\\s*:?\\s*((?:[A-Z][a-z]+,\\s*)?(?:[A-Z][a-z]+ \\d{1,2}, \\d{4}|\\d{1,2}/\\d{1,2}/\\d{2,4}))"
+          ]
+        },
+        "delivered_on": {
+          "type": "date",
+          "patterns": [
+            "delivered(?: on)?\\s*:?\\s*((?:[A-Z][a-z]+,\\s*)?(?:[A-Z][a-z]+ \\d{1,2}, \\d{4}|\\d{1,2}/\\d{1,2}/\\d{2,4}))"
+          ]
+        },
+        "shipped_on": {
+          "type": "date",
+          "patterns": [
+            "(?:ship(?:ped)?|pickup)(?: on| date)?\\s*:?\\s*((?:[A-Z][a-z]+,\\s*)?(?:[A-Z][a-z]+ \\d{1,2}, \\d{4}|\\d{1,2}/\\d{1,2}/\\d{2,4}))"
+          ]
+        },
+        "references": {
+          "type": "reference",
+          "many": true,
+          "patterns": [
+            "(?:reference|ref\\.?|purchase order|p\\.?o\\.?|order)(?: number| no\\.?| #)?(?: \\d)?\\s*[:#]\\s*([A-Za-z0-9][A-Za-z0-9/_-]{2,29})"
+          ]
+        }
+      },
+      "required": [
+        "tracking_numbers"
+      ],
+      "links": {
+        "tracking_numbers": "tracking_number",
+        "references": "reference"
+      },
+      "skip_replies": true
+    },
+    {
+      "id": "carrier_fedex",
+      "record_type": "CarrierNotice",
+      "carrier": "FedEx",
+      "senders": [
+        "(^|\\.)fedex\\.com$"
+      ],
+      "markings": [],
+      "kinds": "@carrier_ups",
+      "fields": {
+        "tracking_numbers": {
+          "type": "tracking_fedex",
+          "many": true,
+          "patterns": [
+            "(?:tracking|track)(?: number| no\\.?| #| id)?\\s*:?\\s*(\\d{12}|\\d{15}|\\d{20}|\\d{22})\\b",
+            "\\b(\\d{12})\\b(?=[^\\n]{0,40}\\b(?:ship|deliver|track))"
+          ]
+        },
+        "scheduled_delivery": "@carrier_ups",
+        "delivered_on": "@carrier_ups",
+        "shipped_on": "@carrier_ups",
+        "references": "@carrier_ups"
+      },
+      "required": [
+        "tracking_numbers"
+      ],
+      "links": {
+        "tracking_numbers": "tracking_number",
+        "references": "reference"
+      },
+      "skip_replies": true
+    },
+    {
+      "id": "carrier_dhl",
+      "record_type": "CarrierNotice",
+      "carrier": "DHL",
+      "senders": [
+        "(^|\\.)dhl\\.(com|ca|de)$"
+      ],
+      "markings": [],
+      "kinds": "@carrier_ups",
+      "fields": {
+        "tracking_numbers": {
+          "type": "tracking_dhl",
+          "many": true,
+          "patterns": [
+            "(?:waybill|tracking|shipment)(?: number| no\\.?| #| id)?\\s*:?\\s*(\\d{10})\\b",
+            "(?:waybill|tracking|shipment)(?: number| no\\.?| #| id)?\\s*:?\\s*(JJD\\d{10,20}|JVGL\\d{10,20})\\b"
+          ]
+        },
+        "scheduled_delivery": "@carrier_ups",
+        "delivered_on": "@carrier_ups",
+        "shipped_on": "@carrier_ups",
+        "references": "@carrier_ups"
+      },
+      "required": [
+        "tracking_numbers"
+      ],
+      "links": {
+        "tracking_numbers": "tracking_number",
+        "references": "reference"
+      },
+      "skip_replies": true
+    },
+    {
+      "id": "payments",
+      "record_type": "PaymentNotice",
+      "senders": [
+        "apspayments\\.com$",
+        "(^|\\.)aps(fees|payments)?\\.\\w+$",
+        "(^|\\.)intuit\\.com$",
+        "billtrust\\.com$"
+      ],
+      "markings": [
+        "finance"
+      ],
+      "kinds": [
+        {
+          "kind": "invoice_received",
+          "any": [
+            "^(reminder: )?invoice\\b.{0,30}\\bfrom\\b",
+            "your invoice from",
+            "new invoices? available",
+            "invoice\\(s\\)"
+          ]
+        },
+        {
+          "kind": "payment_failed",
+          "any": [
+            "\\b(declined|failed|returned|unsuccessful|chargeback)\\b"
+          ]
+        },
+        {
+          "kind": "settlement",
+          "any": [
+            "settlement report"
+          ]
+        },
+        {
+          "kind": "refund",
+          "any": [
+            "\\brefund(ed)?\\b"
+          ]
+        },
+        {
+          "kind": "payment_received",
+          "any": [
+            "payment (has been )?(received|processed|approved|successful|confirmation)",
+            "you('ve| have) (been paid|received a payment)",
+            "\\bremittance\\b",
+            "paid (in full|invoice)",
+            "deposit"
+          ]
+        },
+        {
+          "kind": "invoice_sent",
+          "any": [
+            "\\binvoice\\b.{0,40}\\b(sent|available|due|new)\\b",
+            "\\bnew invoice\\b",
+            "\\bstatement\\b"
+          ]
+        }
+      ],
+      "fields": {
+        "invoice_numbers": {
+          "type": "code",
+          "many": true,
+          "patterns": [
+            "invoice\\s+#?\\s*([A-Za-z0-9][A-Za-z0-9-]{2,19})\\s+from\\b",
+            "invoice(?: number| no\\.?| #| id)?\\s*[:#]\\s*([A-Za-z0-9][A-Za-z0-9-]{2,19})",
+            "\\binv[-# ]?(\\d{4,12})\\b"
+          ]
+        },
+        "amount": {
+          "type": "money",
+          "patterns": [
+            "(?:amount|total|payment|paid)(?: paid| due| amount| received)?\\s*:?\\s*((?:CAD|USD|C\\$|US\\$|\\$)\\s?-?[\\d,]+\\.\\d{2}(?:\\s?(?:CAD|USD))?)",
+            "((?:CAD|USD|C\\$|US\\$|\\$)\\s?[\\d,]+\\.\\d{2}(?:\\s?(?:CAD|USD))?)"
+          ]
+        },
+        "payer": {
+          "type": "text",
+          "patterns": [
+            "(?:from|customer|payer|paid by)\\s*:\\s*([A-Z][\\w&.,' -]{2,60}?)\\s*(?:\\n|$)"
+          ]
+        },
+        "references": "@carrier_ups"
+      },
+      "required": [
+        "amount"
+      ],
+      "links": {
+        "invoice_numbers": "invoice_number",
+        "references": "reference",
+        "payer": "customer_name"
+      },
+      "skip_replies": true
+    },
+    {
+      "id": "zendesk",
+      "record_type": "SupportTicket",
+      "senders": [
+        "zendesk\\.com$"
+      ],
+      "markings": [],
+      "kinds": [
+        {
+          "kind": "digest",
+          "any": [
+            "suspended ticket"
+          ]
+        },
+        {
+          "kind": "solved",
+          "any": [
+            "\\bsolved\\b",
+            "\\bclosed\\b"
+          ]
+        },
+        {
+          "kind": "updated",
+          "any": [
+            "\\bupdated?\\b",
+            "\\bcomment\\b",
+            "\\bre:",
+            "\\breply\\b"
+          ]
+        },
+        {
+          "kind": "created",
+          "any": [
+            "\\bnew ticket\\b",
+            "\\breceived\\b",
+            "\\bcreated\\b",
+            "\\bassigned\\b",
+            "."
+          ]
+        }
+      ],
+      "fields": {
+        "ticket_id": {
+          "type": "code",
+          "patterns": [
+            "(?:ticket|request)\\s*#\\s*(\\d{1,9})\\b",
+            "\\[[^\\]]*?#(\\d{1,9})\\]",
+            "#(\\d{2,9})\\b"
+          ]
+        },
+        "status": {
+          "type": "text",
+          "patterns": [
+            "status\\s*:\\s*(new|open|pending|on-hold|solved|closed)\\b"
+          ]
+        },
+        "references": "@carrier_ups"
+      },
+      "required": [
+        "ticket_id"
+      ],
+      "links": {
+        "references": "reference"
+      }
+    },
+    {
+      "id": "netstock",
+      "record_type": "ReplenishmentNotice",
+      "senders": [
+        "(^|\\.)netstock\\.\\w+$"
+      ],
+      "markings": [],
+      "kinds": [
+        {
+          "kind": "no_data",
+          "any": [
+            "no data received"
+          ]
+        },
+        {
+          "kind": "batch_finished",
+          "any": [
+            "batch finished"
+          ]
+        },
+        {
+          "kind": "batch_started",
+          "any": [
+            "batch started"
+          ]
+        },
+        {
+          "kind": "forecast",
+          "any": [
+            "\\bforecast\\b",
+            "\\bdemand\\b"
+          ]
+        },
+        {
+          "kind": "replenishment",
+          "any": [
+            "\\breplenish",
+            "\\border(s)? (plan|proposal|recommend)",
+            "\\bpurchase (plan|proposal)",
+            "\\breorder\\b"
+          ]
+        },
+        {
+          "kind": "exception",
+          "any": [
+            "\\bexception",
+            "\\bstock-?out",
+            "\\bexcess\\b",
+            "\\balert\\b"
+          ]
+        },
+        {
+          "kind": "report",
+          "any": [
+            "."
+          ]
+        }
+      ],
+      "fields": {
+        "items": {
+          "type": "code",
+          "many": true,
+          "patterns": [
+            "(?:item|sku|product)(?: code| no\\.?| #)?\\s*:\\s*([A-Za-z0-9][A-Za-z0-9._/-]{2,29})"
+          ]
+        },
+        "report_name": {
+          "type": "text",
+          "patterns": [
+            "^\\s*(?:report|subject)\\s*:\\s*(.{3,80})$"
+          ]
+        }
+      },
+      "required": [],
+      "links": {
+        "items": "item_code"
+      }
+    },
+    {
+      "id": "edi",
+      "record_type": "EdiNotice",
+      "senders": [
+        "edisoft\\.\\w+$",
+        "commercehub\\.com$"
+      ],
+      "markings": [],
+      "kinds": [
+        {
+          "kind": "support_ticket",
+          "record_type": "SupportTicket",
+          "any": [
+            "your ticket has been",
+            "^\\s*\\[\\d{3,9}\\]",
+            "\\bticket\\b"
+          ]
+        },
+        {
+          "kind": "asn",
+          "any": [
+            "\\b856\\b",
+            "\\basn\\b",
+            "advance ship",
+            "ship notice"
+          ]
+        },
+        {
+          "kind": "invoice",
+          "any": [
+            "\\b810\\b",
+            "\\binvoice\\b"
+          ]
+        },
+        {
+          "kind": "acknowledgement",
+          "any": [
+            "\\b855\\b",
+            "\\b997\\b",
+            "acknowledg"
+          ]
+        },
+        {
+          "kind": "error",
+          "any": [
+            "\\berror\\b",
+            "\\bfailed\\b",
+            "\\brejected\\b"
+          ]
+        },
+        {
+          "kind": "order",
+          "any": [
+            "\\b850\\b",
+            "purchase order (received|notification)",
+            "new (purchase )?order"
+          ]
+        }
+      ],
+      "fields": {
+        "po_numbers": {
+          "type": "code",
+          "many": true,
+          "patterns": [
+            "(?:p\\.?o\\.?|purchase order)(?: number| no\\.?| #)?\\s*[:#]\\s*([A-Za-z0-9][A-Za-z0-9-]{2,24})"
+          ]
+        },
+        "document_type": {
+          "type": "code",
+          "patterns": [
+            "\\b(850|855|856|810|997|846|860|940|945)\\b"
+          ]
+        },
+        "trading_partner": {
+          "type": "text",
+          "patterns": [
+            "(?:trading partner|partner|retailer|customer)\\s*:\\s*([A-Z][\\w&.,' -]{2,60}?)\\s*(?:\\n|$)"
+          ]
+        },
+        "ticket_id": {
+          "type": "code",
+          "patterns": [
+            "^\\s*\\[(\\d{3,9})\\]"
+          ]
+        }
+      },
+      "required": [],
+      "links": {
+        "po_numbers": "customer_po",
+        "trading_partner": "customer_name"
+      },
+      "skip_replies": true
+    },
+    {
+      "id": "concur",
+      "record_type": "ExpenseNotice",
+      "senders": [
+        "concur(solutions)?\\.com$"
+      ],
+      "markings": [
+        "finance",
+        "pii"
+      ],
+      "kinds": [
+        {
+          "kind": "remittance",
+          "any": [
+            "remittance"
+          ]
+        },
+        {
+          "kind": "invoice_received",
+          "any": [
+            "auto reply invoice"
+          ]
+        },
+        {
+          "kind": "statement_received",
+          "any": [
+            "auto reply statement"
+          ]
+        },
+        {
+          "kind": "sent_back",
+          "any": [
+            "sent back",
+            "returned",
+            "rejected"
+          ]
+        },
+        {
+          "kind": "approved",
+          "any": [
+            "\\bapproved\\b"
+          ]
+        },
+        {
+          "kind": "submitted",
+          "any": [
+            "\\bsubmitted\\b",
+            "pending (your )?approval",
+            "awaiting approval"
+          ]
+        },
+        {
+          "kind": "notice",
+          "any": [
+            "."
+          ]
+        }
+      ],
+      "fields": {
+        "report_name": {
+          "type": "text",
+          "patterns": [
+            "report(?: name)?\\s*:\\s*(.{3,80}?)\\s*(?:\\n|$)"
+          ]
+        },
+        "amount": "@payments",
+        "invoice_numbers": {
+          "type": "code",
+          "many": true,
+          "patterns": [
+            "\\binvoice\\s+(IN\\d{3,12})\\b",
+            "\\b(IN\\d{4,12})\\b"
+          ]
+        }
+      },
+      "required": [],
+      "links": {
+        "invoice_numbers": "invoice_number"
+      }
+    }
+  ]
+}

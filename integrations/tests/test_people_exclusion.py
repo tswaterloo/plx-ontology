@@ -273,6 +273,109 @@ class MailGuardTests(unittest.TestCase):
         self.assertNotIn(ta.CEO_UPN, json.dumps(listed).lower())
 
 
+    def test_a_recorded_tenant_listing_decides_addresses_offline_and_keeps_excluded_closed(self):
+        """A capture run records the listing its guard was bound with; an offline reader
+        then decides a colleague's address no captured mailbox holds, while an excluded
+        person's address and anything the listing does not hold stay undecided, and the
+        store holds nothing of the excluded person."""
+        import sqlite3
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+        colleague = "12345678-aaaa-bbbb-cccc-00000000000c"
+        self.graph.users[colleague] = {"id": colleague, "userPrincipalName": "c.person@example-plx.com",
+                                       "mail": "c.person@example-plx.com", "proxyAddresses": []}
+        self.graph.put(tm.BOX_A, "MSG-1", "CK-1")
+        scope = tm.CaptureScope([{"address": tm.UPN_A, "folders": ["inbox"]}], window_days=90,
+                                internal_domains=["example-plx.com"], allowlist=tm.SYNTHETIC)
+        self.capture(ENV_EXCLUDING_B).run(scope)
+        state = Path(self.tmp.name) / "state"
+        with sqlite3.connect(self.store.path) as db:
+            rows = db.execute("SELECT address, object_id, kind FROM tenant_listing").fetchall()
+        self.assertTrue(rows)
+        self.assertFalse({EXCLUDED_UPN.lower(), EXCLUDED} & {v for r in rows for v in r if v})
+        offline = people_exclusion.PeopleExclusion.from_env(ENV_EXCLUDING_B)
+        with self.assertRaises(ExclusionUnavailable):
+            offline.is_excluded("c.person@example-plx.com")     # nothing attached: undecided
+        held = people_exclusion.with_directory(offline, state)
+        self.assertFalse(held.is_excluded("c.person@example-plx.com"))
+        self.assertFalse(held.is_excluded(tm.UPN_A))
+        for address in (EXCLUDED_UPN.upper(), "all-staff@example-plx.com"):  # no groups read
+            with self.subTest(undecided=True):
+                self.assertFalse(held.decides(address))
+                with self.assertRaises(ExclusionUnavailable):
+                    held.is_excluded(address)
+        # Excluded after the listing was read: their listed address is excluded.
+        later = people_exclusion.with_directory(people_exclusion.PeopleExclusion(
+            [EXCLUDED, colleague]), state)
+        self.assertTrue(later.is_excluded("c.person@example-plx.com"))
+        # Past the age bound the listing decides nothing again (fail closed).
+        aged = datetime.now(timezone.utc) + people_exclusion.DIRECTORY_MAX_AGE + timedelta(days=1)
+        real = people_exclusion.mail_capture_listing
+        with mock.patch.object(people_exclusion, "mail_capture_listing",
+                               lambda d: real(d, now=aged)), \
+                mock.patch.object(people_exclusion, "mail_capture_directory", lambda d: None):
+            stale = people_exclusion.with_directory(
+                people_exclusion.PeopleExclusion.from_env(ENV_EXCLUDING_B), state)
+        with self.assertRaises(ExclusionUnavailable):
+            stale.is_excluded("c.person@example-plx.com")
+
+    def test_only_a_listed_user_or_group_address_is_decided_offline(self):
+        """Every other form of an excluded person's address stays undecided offline; a
+        group's address clears; the recorded rows hold nothing of the excluded person."""
+        colleague = "12345678-aaaa-bbbb-cccc-00000000000c"
+        users = [{"id": tm.BOX_A, "userPrincipalName": tm.UPN_A,
+                  "proxyAddresses": ["smtp:shared@example-plx.com"]},
+                 {"id": colleague, "userPrincipalName": "c@example-plx.com",
+                  "proxyAddresses": ["smtp:shared@example-plx.com"]},
+                 {"id": EXCLUDED, "userPrincipalName": "b.person@example-plx.com",
+                  "mail": EXCLUDED_UPN, "proxyAddresses": ["smtp:b.alias@example-plx.com"]}]
+        groups = [{"id": "g1", "mail": "all-staff@example-plx.com",
+                   "proxyAddresses": ["SMTP:everyone@example-plx.com"]}]
+
+        class Api:
+            def __init__(self, refuse_groups=False):
+                self.refuse_groups = refuse_groups
+
+            def get_pages(self, url, **_kwargs):
+                if "/v1.0/groups" in url:
+                    if self.refuse_groups:
+                        raise RuntimeError("403")
+                    return groups, {"complete": True}
+                return users, {"complete": True}
+
+        def offline(api):
+            guard = PeopleExclusion([EXCLUDED])
+            guard.bind(api)
+            guard.list_groups(api)
+            _at, rows = people_exclusion.tenant_listing_rows(guard)
+            held = PeopleExclusion([EXCLUDED])
+            held.attach_listing(rows)
+            return held, rows
+
+        held, rows = offline(Api())
+        stored = {v.lower() for r in rows for v in r if isinstance(v, str)}
+        self.assertFalse({EXCLUDED, EXCLUDED_UPN.lower(), "b.person@example-plx.com",
+                          "b.alias@example-plx.com"} & stored)
+        self.assertFalse(held.is_excluded("ALL-STAFF@example-plx.com"))   # a group clears
+        self.assertFalse(held.is_excluded("everyone@example-plx.com"))
+        self.assertFalse(held.is_excluded("c@example-plx.com"))
+        for value in (EXCLUDED_UPN, "b.person@example-plx.com", "b.alias@example-plx.com",
+                      "b.person+orders@example-plx.com",          # plus-address
+                      "b.other-alias@example-plx.com",            # unlisted tenant alias
+                      "/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Recipients/cn=bperson",
+                      "B Person",                                 # display name
+                      "b.person@personal-mail.example",           # external personal
+                      "gone.user@example-plx.com",                # a deleted user's
+                      "shared@example-plx.com"):                  # two holders
+            with self.subTest(form=value[:12]):
+                self.assertFalse(held.decides(value))
+                with self.assertRaises(ExclusionUnavailable):
+                    held.is_excluded(value)
+        refused, _rows = offline(Api(refuse_groups=True))   # no groups read: none clear
+        with self.assertRaises(ExclusionUnavailable):
+            refused.is_excluded("all-staff@example-plx.com")
+        self.assertIsNone(people_exclusion.tenant_listing_rows(PeopleExclusion([EXCLUDED])))
+
 class TeamsGuardTests(unittest.TestCase):
     """capture_teams uses the same guard. Chats are read over the fake only: no Teams
     chat is ever read live by this module."""

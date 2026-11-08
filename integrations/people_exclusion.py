@@ -17,8 +17,18 @@ Addresses: a scope names mailboxes and chat members by address, but the guard is
 by object ID. ``bind(api)`` reads the whole tenant directory once (``GET /users``, a
 listing that names nobody) and learns the excluded people's addresses, UPNs and
 OneDrive paths. A failed or truncated listing leaves the guard unresolved, so every
-address-named read fails closed too. Nothing here prints, logs or returns an excluded
-object ID or address: errors, reprs and reports carry codes and counts only.
+address-named read fails closed too.
+
+Offline (no listing this process): ``with_directory`` attaches what the mail capture
+recorded, read-only. The captured mailboxes' own identities map their addresses to object
+ids; the tenant listing the capture's last bound guard recorded (``tenant_listing_rows``,
+``mail_capture_listing``) adds the addresses of every listed user the exclusion did not
+name (each with its object id) and of every group the directory lists. An address is
+decided only by membership there: a user's by that user's object id (excluded if the list
+names it now), a group's as no person's; any other address (an alias, a plus-address, an
+address of a deleted or excluded user, a display name) stays undecided (withheld). Nothing
+about an excluded person is recorded, and a listing older than ``DIRECTORY_MAX_AGE``
+decides nothing.
 """
 
 from __future__ import annotations
@@ -185,6 +195,17 @@ class PeopleExclusion:
         # path -> object id of every user it lists; None: not loaded.
         self._directory: dict[str, str] | None = None
         self._directory_onedrive: dict[str, str] = {}
+        # The last complete directory listing ``bind`` read: (oid, UPN, SMTP addresses) of
+        # every user, and when; None until bound (``tenant_listing_rows`` records it).
+        self._listing: list[tuple[str, str | None, list[str]]] | None = None
+        self._listing_at: datetime | None = None
+        # The group addresses of the last complete groups listing (``list_groups``);
+        # None: not read.
+        self._groups: frozenset[str] | None = None
+        # A recorded tenant listing (``attach_listing``): address -> object id of each
+        # cleared listed user, and the group addresses; None: not loaded.
+        self._tenant: dict[str, str] | None = None
+        self._tenant_groups: frozenset[str] = frozenset()
         self.dropped = 0
 
     def __repr__(self) -> str:
@@ -267,21 +288,26 @@ class PeopleExclusion:
             self._bind_failed = True
             raise ExclusionUnavailable("excluded_people_unresolved")
         addresses, onedrive = set(), set()
+        listing: list[tuple[str, str | None, list[str]]] = []
         for user in users:
-            oid = user.get("id")
-            if not is_object_id(oid) or oid.lower() not in self._ids:
+            oid = user.get("id") if isinstance(user, Mapping) else None
+            if not is_object_id(oid):
                 continue
             upn, mail = user.get("userPrincipalName"), user.get("mail")
-            for value in (upn, mail):
-                if isinstance(value, str) and value:
-                    addresses.add(value.lower())
-            for proxy in user.get("proxyAddresses") or ():
-                if isinstance(proxy, str) and proxy.lower().startswith("smtp:"):
-                    addresses.add(proxy[5:].lower())
+            held = [value.strip().lower() for value in (upn, mail)
+                    if isinstance(value, str) and value.strip()]
+            held += [proxy[5:].strip().lower() for proxy in user.get("proxyAddresses") or ()
+                     if isinstance(proxy, str) and proxy.lower().startswith("smtp:")]
+            listing.append((oid.lower(), upn.strip().lower() if isinstance(upn, str)
+                            and upn.strip() else None, held))
+            if oid.lower() not in self._ids:
+                continue
+            addresses.update(held)
             if isinstance(upn, str) and upn:
                 onedrive.add(onedrive_path(upn))
         self._addresses = frozenset(addresses)
         self._onedrive = frozenset(onedrive)
+        self._listing, self._listing_at = listing, datetime.now(timezone.utc)
         self._bound = True
 
     def attach_directory(self, users: Iterable[tuple[Any, Any, Iterable[Any]]]) -> None:
@@ -316,15 +342,83 @@ class PeopleExclusion:
             onedrive.pop(key, None)
         self._directory, self._directory_onedrive = addresses, onedrive
 
+    def list_groups(self, api: Any) -> None:
+        """Read the directory's groups' addresses (``GET /groups``, mail and SMTP proxy
+        addresses, every page) once bound, so a recorded listing can clear a group or
+        distribution list. A failed or truncated listing records no group (their
+        addresses then stay undecided offline); it never makes the guard unavailable."""
+        self.require_bound()
+        url = grammar.url("graph.groups", {"$select": "id,mail,proxyAddresses",
+                                            "$top": "999"})
+        try:
+            groups, completeness = api.get_pages(url, max_pages=50, max_items=20000)
+        except Exception:  # noqa: BLE001 - no groups: nothing is cleared by them
+            self._groups = None
+            return
+        if not completeness.get("complete"):
+            self._groups = None
+            return
+        found = set()
+        for group in groups:
+            if not isinstance(group, Mapping):
+                continue
+            mail = group.get("mail")
+            if isinstance(mail, str) and "@" in mail:
+                found.add(mail.strip().lower())
+            found.update(proxy[5:].strip().lower() for proxy in group.get("proxyAddresses") or ()
+                         if isinstance(proxy, str) and proxy.lower().startswith("smtp:"))
+        self._groups = frozenset(found)
+
+    def attach_listing(self, rows: Iterable[tuple[Any, Any, Any]]) -> None:
+        """Decide addresses offline from a recorded tenant listing (``tenant_listing_rows``):
+        ``rows`` is (address, object id, kind) with kind ``user`` (a cleared listed user's
+        address and id) or ``group`` (a group's address, no id). An address is decided only
+        by membership: a user's by its id, a group's as no person's. An address held twice
+        or malformed decides nothing; any other address stays undecided. Replaces any
+        listing attached before; known domains are unchanged (a listing names guests too)."""
+        users: dict[str, str] = {}
+        groups: set[str] = set()
+        seen: set[str] = set()
+        clashes: set[str] = set()
+        for address, oid, kind in rows:
+            if not isinstance(address, str) or "@" not in address:
+                continue
+            address = address.strip().lower()
+            if address in seen:
+                clashes.add(address)
+            seen.add(address)
+            if kind == "user" and is_object_id(oid):
+                users[address] = oid.lower()
+            elif kind == "group" and oid is None:
+                groups.add(address)
+            else:
+                clashes.add(address)
+        for address in clashes:
+            users.pop(address, None)
+            groups.discard(address)
+        self._tenant, self._tenant_groups = users, frozenset(groups)
+
     def known_domains(self) -> frozenset[str]:
         """The mail domains the tenant's directory (attached or bound) holds addresses in:
         an address there is a tenant person's and must be decided, never assumed external."""
         held = set(self._directory or ()) | set(self._addresses)
         return frozenset(a.rsplit("@", 1)[1] for a in held if "@" in a)
 
+    def object_id_of(self, address: Any) -> str | None:
+        """The object id the attached directory maps ``address`` to (one user), else None."""
+        if self._directory is None or not isinstance(address, str):
+            return None
+        return self._directory.get(address.strip().lower())
+
     @property
     def directory_loaded(self) -> bool:
-        return self._directory is not None
+        """A captured directory or recorded tenant listing is attached (it decides what
+        it maps)."""
+        return self._directory is not None or self._tenant is not None
+
+    def _listing_decides(self, lowered: str) -> bool:
+        return self._tenant is not None and (lowered in self._tenant
+                                             or lowered in self._tenant_groups)
 
     def decides(self, value: Any) -> bool:
         """Whether ``is_excluded`` can decide ``value`` now (an object id; an address once
@@ -333,7 +427,8 @@ class PeopleExclusion:
             return False
         lowered = value.strip().lower()
         return is_object_id(lowered) or self._bound or (
-            self._directory is not None and lowered in self._directory)
+            self._directory is not None and lowered in self._directory) \
+            or self._listing_decides(lowered)
 
     # ---------------------------------------------------------------- checks
 
@@ -350,9 +445,16 @@ class PeopleExclusion:
         if self._bound:
             return lowered in self._addresses
         oid = None if self._directory is None else self._directory.get(lowered)
+        if oid is not None and oid in self._ids:
+            return True
+        if self._listing_decides(lowered):
+            # A cleared user's address: excluded when the list names that user now; a
+            # group's address is no person's.
+            held = self._tenant.get(lowered)
+            return held is not None and held in self._ids
         if oid is None:
             raise ExclusionUnavailable("excluded_people_unresolved")
-        return oid in self._ids
+        return False
 
     def excluded(self, identities: Iterable[Any]) -> bool:
         return any(self.is_excluded(value) for value in identities)
@@ -484,17 +586,80 @@ def mail_capture_directory(state_dir: Any, *, now: datetime | None = None
         return None
 
 
+def tenant_listing_rows(guard: PeopleExclusion
+                        ) -> tuple[str, list[tuple[str, str | None, str]]] | None:
+    """(read at, rows) of the complete listing ``guard`` was bound with, to record offline
+    (``attach_listing``): (address, object id, ``user``) for each address of a listed user
+    the exclusion does not name, and (address, None, ``group``) for each address of the
+    groups listing (``list_groups``, when read). An address an excluded user holds, or that
+    two entries hold, is left out (undecided offline): nothing about an excluded person is
+    recorded. None when the guard is not bound or unavailable."""
+    if not isinstance(guard, PeopleExclusion) or guard.unavailable or not guard.bound \
+            or guard._listing is None or guard._listing_at is None:
+        return None
+    entries: list[tuple[str, str | None, str]] = []
+    withheld: set[str] = set(guard._addresses)
+    for oid, _upn, held in guard._listing:
+        if oid in guard._ids:
+            withheld.update(held)
+            continue
+        entries.extend((address, oid, "user") for address in set(held))
+    entries.extend((address, None, "group") for address in guard._groups or ())
+    count: dict[str, int] = {}
+    for address, _oid, _kind in entries:
+        count[address] = count.get(address, 0) + 1
+    rows = sorted(e for e in entries if count[e[0]] == 1 and e[0] not in withheld)
+    at = guard._listing_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return at, rows
+
+
+def mail_capture_listing(state_dir: Any, *, now: datetime | None = None
+                         ) -> list[tuple[str, str | None, str]] | None:
+    """The rows of the tenant listing the mail capture under ``state_dir`` recorded
+    (``tenant_listing_rows``), read-only, when it was read within ``DIRECTORY_MAX_AGE`` of
+    ``now``; None when there is none, it cannot be read, or it is older (decides nothing)."""
+    import sqlite3
+    if state_dir is None:
+        return None
+    path = Path(state_dir) / "mail-capture" / "capture.db"
+    if not path.is_file():
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        try:
+            db.execute("BEGIN")   # one snapshot: the rows and their read time
+            found = db.execute("SELECT value FROM meta WHERE key='tenant_listing_at'"
+                               ).fetchone()
+            if found is None:
+                return None
+            at = datetime.fromisoformat(str(found[0]).replace("Z", "+00:00"))
+            if at.tzinfo is None or not now - DIRECTORY_MAX_AGE <= at <= now:
+                return None
+            rows = db.execute("SELECT address, object_id, kind FROM tenant_listing").fetchall()
+        finally:
+            db.close()
+    except (sqlite3.Error, ValueError, TypeError, OSError):
+        return None
+    return rows or None
+
+
 def with_directory(guard: Any, state_dir: Any) -> Any:
-    """A copy of ``guard`` (a ``PeopleExclusion``) with the mail capture's directory under
-    ``state_dir`` attached, when it is unbound and has none; else ``guard`` itself."""
+    """A copy of ``guard`` (a ``PeopleExclusion``) with what the mail capture under
+    ``state_dir`` recorded attached (its mailboxes' directory; its last tenant listing),
+    when it is unbound and has none; else ``guard`` itself."""
     import copy
     if not isinstance(guard, PeopleExclusion) or guard.bound or guard.directory_loaded:
         return guard
     users = mail_capture_directory(state_dir)
-    if users is None:
+    listing = mail_capture_listing(state_dir)
+    if users is None and listing is None:
         return guard
     held = copy.copy(guard)
-    held.attach_directory(users)
+    if users is not None:
+        held.attach_directory(users)
+    if listing is not None:
+        held.attach_listing(listing)
     return held
 
 

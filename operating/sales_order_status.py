@@ -12,9 +12,10 @@ read by its own system's status word (the vocabularies differ):
   (``FULFILLED_LINKS``: fulfilled at least in part, never claimed open past its date);
 * an open word of its own system (``OPEN_WORDS``) is **open**; the Portal's DRAFT is
   **draft** (an order not yet placed: neither open nor closed);
-* any other word, a record holding no status, and a Sage record by its COMPLETE code
-  (``SAGE_CODE``: its values are not documented here, a Sage record is closed only by the
-  shipments and invoices linked to it) is **unknown**, with its reason.
+* a Sage record is read by its COMPLETE code (``SAGE_CODE``, ``SAGE_WORDS``: ``1`` and
+  ``2`` still to ship, ``3`` to ``5`` complete; read from the data), so a FileMaker order whose Sage order
+  (``SalesOrder.erp_order``, an identity link) is complete is closed;
+* any other word or code and a record holding no status is **unknown**, with its reason.
 
 The order (``order_status``) is closed when ANY record of it is closed (a stale Open
 record beside a Closed twin is closed), else unknown when any is unknown (never guessed
@@ -64,6 +65,11 @@ OPEN_WORDS = {"status": frozenset({"open", "confirmed", "in production", "ready"
               "fm_status": frozenset({"open"}),
               "bc_status": frozenset({"draft", "in review", "open"})}
 DRAFT_WORDS = {"status": frozenset({"draft"})}
+# Sage OE ``complete`` codes (``oe_order_header.complete``), read from the data: ``5`` sits
+# on nearly every header with a linked Sage shipment and invoice, ``3`` on completed quotes,
+# ``4`` complete and included; ``1`` and ``2`` on orders still active (``2``: partly
+# shipped or not yet). Any other code is unmapped (unknown, never guessed).
+SAGE_WORDS = {"1": OPEN, "2": OPEN, "3": CLOSED, "4": CLOSED, "5": CLOSED}
 FULFILLED_LINKS = ("Shipment.ships", "SalesInvoice.bills")
 DATE_PROP = "required_date"
 OWN_DAYS = ("order_date", "portal_created_at", "fm_created_at")
@@ -104,23 +110,26 @@ def record_status(values: Mapping[str, Sequence[Any]], *, binding: str | None = 
         return Status(CLOSED)
     if any(word(v) == "true" for v in values.get(SHIPPED_FLAG, ()) or ()):
         return Status(CLOSED)
-    items = [(prop, v) for prop in STATUS_PROPS for v in values.get(prop, ()) or ()
-             if word(v)]
+    items = [(prop, v) for prop in (*STATUS_PROPS, SAGE_CODE) for v in values.get(prop, ())
+             or () if word(v)]
     if not items:
-        return Status(UNKNOWN, STATUS_UNMAPPED if any(
-            word(v) for v in values.get(SAGE_CODE, ()) or ()) else STATUS_MISSING)
-    classes = set()
-    for prop, value in items:
-        said = word(value)
-        classes.add(CLOSED if said in CLOSED_WORDS else OPEN if said in OPEN_WORDS[prop]
-                    else DRAFT if said in DRAFT_WORDS.get(prop, ()) else UNKNOWN)
+        return Status(UNKNOWN, STATUS_MISSING)
+    classes = [_class(prop, value) for prop, value in items]
     if CLOSED in classes:
         return Status(CLOSED)
     if UNKNOWN in classes:
         return Status(UNKNOWN, STATUS_UNMAPPED)
     if OPEN in classes:
-        return Status(OPEN, open_by=tuple(v for p, v in items if word(v) in OPEN_WORDS[p]))
+        return Status(OPEN, open_by=tuple(v for (p, v), c in zip(items, classes) if c == OPEN))
     return Status(DRAFT)
+
+
+def _class(prop: str, value: Any) -> str:
+    said = word(value)
+    if prop == SAGE_CODE:
+        return SAGE_WORDS.get(said, UNKNOWN)
+    return (CLOSED if said in CLOSED_WORDS else OPEN if said in OPEN_WORDS[prop]
+            else DRAFT if said in DRAFT_WORDS.get(prop, ()) else UNKNOWN)
 
 
 def order_status(records: Iterable[Status]) -> Status:
@@ -143,6 +152,8 @@ def spellings(prop: str) -> frozenset[str]:
     """The stored spellings of ``prop``'s open words an exact-match filter asks for (the
     Portal writes UPPER_SNAKE codes and the legacy Title-case "Open")."""
     out: set[str] = set()
+    if prop == SAGE_CODE:
+        return frozenset(code for code, cls in SAGE_WORDS.items() if cls == OPEN)
     for said in OPEN_WORDS.get(prop, ()):
         out |= {said.upper().replace(" ", "_"), said.title(), said, said.upper()}
     return frozenset(out)

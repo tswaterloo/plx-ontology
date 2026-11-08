@@ -30,6 +30,11 @@ source serves leaves it ``blocked`` with ``not_served_<Type>__<property>`` reaso
   same carrier's and lane's other bills in one currency over ``FREIGHT_TRAILING_DAYS`` (at
   least ``FREIGHT_MIN_HISTORY``), ``FREIGHT_RATIO`` or more above it, billed within
   ``FREIGHT_RECENT_DAYS``. Every citation carries ``finance``.
+* ``reorder_soon``: an item whose forecast demand over the next ``operating.demand_forecast``
+  horizon (3 months, from invoiced quantities of the last 3 years, twins once) exceeds what
+  is on hand (an ``ON_HAND`` source) plus what open purchase orders bring in by the
+  horizon's end, in one unit; high when even the forecast's 80% low bound exceeds it. The
+  claim rests on no other inbound order being recorded: ``REQUIRES_GRANT``.
 
 Fixture runs are ``isolated-fixture``; no rule names a record, a customer or an item.
 """
@@ -53,12 +58,16 @@ ASSEMBLY_RULE = "assembly_component_shortfall"
 CERT_RULE = "certificate_expiry"
 FREIGHT_RULE = "freight_cost_anomaly"
 RULES = (SLOW_RULE, LOT_RULE, ASSEMBLY_RULE, CERT_RULE, FREIGHT_RULE)
+REORDER_RULE = "reorder_soon"     # its own window: it reads 3 years of invoice lines
 SLOW = "slow_moving_stock"
 LOT_EXPIRING = "expiring_lot_stock"
 ASSEMBLY_SHORT = "assembly_blocked_by_component"
 CERT_EXPIRING = "certificate_expiring"
 FREIGHT_HIGH = "freight_cost_anomaly"
+REORDER = "reorder_soon"
 KINDS = (SLOW, LOT_EXPIRING, ASSEMBLY_SHORT, CERT_EXPIRING, FREIGHT_HIGH)
+REORDER_BUCKET = "month"
+REORDER_HISTORY_CITED = 6           # the latest invoice lines cited as the forecast's basis
 FINANCE = pb.FINANCE
 NOT_SERVED = "not_served_"   # + Type__property: a reason word the tool contracts carry
 
@@ -901,6 +910,98 @@ def freight_cost_anomaly(st: Any, as_of: date, *, gap: Callable, cites: Callable
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts.get(k, 0) for k in ("evaluated", "amount_not_stated", "copies",
                                                     "thin_history", "anomalies")}
+    return out
+
+
+# --------------------------------------------------------------------------- reorder soon
+
+def reorder_soon(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Callable,
+                 settled: Sequence[str], skips: Callable, po_source: Callable,
+                 absence: Callable,
+                 on_hand: Sequence[tuple[str, str, str | None]] | None = None
+                 ) -> dict[str, Any]:
+    from . import demand_forecast as df
+
+    sources, missing = _sources(on_hand)
+    if not sources:
+        return _blocked(result, missing)
+    skipped = skips()
+    counts: Counter = Counter()
+    book = df.history(st, as_of, settled)
+    bucket = REORDER_BUCKET
+    through = date.fromisoformat(book["through"]) if book.get("through") else None
+    series: dict[tuple, dict[int, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    latest: dict[tuple, list] = defaultdict(list)
+    for line in book["lines"]:
+        key = (line.item, line.unit)
+        series[key][df.period(line.day, bucket)] += line.qty
+        latest[key].append(line)
+    units_of: dict[str, set[str]] = defaultdict(set)
+    for item, unit in series:
+        units_of[item].add(unit)
+    state = df.reorder_state(st, as_of, set(units_of), settled, on_hand=sources,
+                             po_source=po_source)
+    end = df.horizon_end(as_of, bucket)
+    last = df.last_complete(through, as_of, bucket) if through else None
+    requires = absence(["SalesInvoice", "SalesInvoiceLine", "PurchaseOrder",
+                        "PurchaseOrderLine", *(t for t, _p, _v in sources)])
+    gaps = []
+    for (item, unit), per in sorted(series.items()):
+        pb._tick(st)
+        cause = [(item, "[]")]
+        if len(units_of[item]) > 1:
+            skipped.note("unit_mismatch", [item], cause)
+            continue
+        got = df.forecast_series(per, last, as_of, bucket)
+        if isinstance(got, str):
+            skipped.note(got, [item], cause)
+            continue
+        counts["forecast"] += 1
+        supply = df.supply_by(state, item, unit, end)
+        if isinstance(supply, str):
+            skipped.note(supply, [item], cause)
+            continue
+        counts["items"] += 1
+        need = Decimal(got["forecast_total"])
+        have = supply["on_hand"] + supply["inbound"]
+        if need <= have:
+            continue
+        counts["reorder_soon"] += 1
+        short = need - have
+        hold = got["_holdout"]
+        wape = (df._q(hold["abs_error"] / hold["actual"]) if hold and hold["actual"]
+                else None)
+        method = got["method"].replace("_", " ")
+        orders = supply["orders"]
+        history_lines = sorted(latest[(item, unit)], key=lambda l: (l.day, l.records[0]),
+                               reverse=True)[:REORDER_HISTORY_CITED]
+        history_groups = [[c for c in line.handles] for line in history_lines]
+        made = gap(
+            REORDER, REORDER_RULE, item, ITEM, "reorder",
+            summary=f"Reorder soon: forecast demand of {got['forecast_total']} {unit} over "
+                    f"the next {df.HORIZON[bucket]} months ({method}"
+                    + (f", holdout error {int(Decimal(wape) * 100)}%" if wape else "")
+                    + f") exceeds on hand {pb._text(supply['on_hand'])} {unit} plus "
+                    f"{pb._text(supply['inbound'])} {unit} due in on {_plural(len(orders), 'open purchase order')} "
+                    f"by {end.isoformat()}, {pb._text(short)} {unit} short",
+            missing="Should more be bought now, and how much, before the forecast demand "
+                    "uses up what is on hand and on order?",
+            why="Invoiced demand of the last 3 years, projected over the next 3 months, "
+                "needs more of the item than is on hand plus what open purchase orders "
+                "bring in by then (every quantity cited, one unit).",
+            priority="high" if Decimal(got["low_80_total"]) > have else "medium",
+            about=(ITEM, "on_hand"),
+            groups=[*supply["groups"], *history_groups],
+            event={"forecast": got["forecast_total"], "supply": pb._text(have),
+                   "shortfall": pb._text(short), "unit": unit, "short_by": end.isoformat(),
+                   "method": got["method"], "inbound": orders,
+                   **({"holdout_wape": wape} if wape else {})})
+        if made is not None:
+            made["requires"] = requires
+        gaps.append(made)
+    out = result(gaps, not_evaluated=skipped)
+    out["counts"] = {"series": len(series), "forecast": counts["forecast"],
+                     "items": counts["items"], "reorder_soon": counts["reorder_soon"]}
     return out
 
 

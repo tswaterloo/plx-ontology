@@ -11,6 +11,7 @@ import { formatDate, formatMoney, objectHref, plural, readable, safeHref } from 
 import type { Status } from "@/lib/status";
 import type { ActionResult, ProactiveSuggestion, SuggestionDraft, SuggestionEta, Suggestions } from "@/lib/types";
 import { CardActions } from "./card-actions";
+import { WritePanel } from "./write-panel";
 import { SourceChip } from "./source-chip";
 import { OpenRing, StatusGlyph } from "./ui/glyphs";
 import { LoadProblem, StaleNote } from "./ui/notice";
@@ -174,6 +175,7 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
         {open && (
           <div className="space-y-4 pt-1" data-testid="suggestion-detail">
             {onDone && <CardActions card={s} onDone={onDone} state={state} />}
+            {onDone && <WritePanel match={[s.id, s.subject?.object_id ?? ""]} />}
             {s.eta && (
               <p className="text-[13px] leading-5">
                 <span className="text-muted">Supplier date </span>

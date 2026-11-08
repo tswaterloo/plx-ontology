@@ -171,7 +171,22 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
                                    schema=schema if schema is not None else tools.schema)
     # plx.agenda: a meeting's agenda read through this same table (operating/meeting_agenda.py).
     from . import meeting_agenda
-    meeting_agenda.register(table, schema if schema is not None else tools.schema)
+    # its brief option reads the meeting prep brief / weekly review as the caller
+    answers: list[Any] = []
+
+    def aggregate(arguments: Any, actor: Any) -> Mapping[str, Any]:
+        # plx.aggregate is served beside the table (as plx.query reads it), over the same
+        # OntologyTools and the policy the host set on it for this call
+        from .ontology_tools_aggregate import AggregateTools
+        if not answers:
+            answers.append(AggregateTools(tools))
+        return answers[0].call("plx.aggregate", arguments, actor)
+    meeting_agenda.register(table, schema if schema is not None else tools.schema,
+                            held_markings=lambda actor: tools.policy.held_markings(actor),
+                            aggregate=aggregate,
+                            follow_ups=getattr(runtime, "state_dir", None)
+                            if isinstance(getattr(runtime, "state_dir", None), (str, Path))
+                            else None)
     # plx.changes: what changed since a time, over this table's store and read policy.
     from . import ontology_tools_changes
     ontology_tools_changes.register(table, tools, prime=True)
@@ -191,19 +206,30 @@ def aggregate_modes(table: Mapping[str, dict[str, Any]], tools: OntologyTools, *
     read in the background from now too; ``margin_variance``: a margin change split into
     price, material cost, returns/credits and mix from the checked order margins, read
     through ``table`` as the caller; ``who_knows``: per person, what they correspond about
-    and what waits on them, counts only, people exclusion first. Each wraps the one before: a call naming its mode is
-    its own, any other goes on, and one naming no known mode is refused."""
-    from . import cash_forecast, margin_variance, proactive_sales, who_knows
+    and what waits on them, counts only, people exclusion first; ``demand_forecast``:
+    invoiced quantities forecast per item, its history read on the first question of a
+    day; ``business_documents``: what customers and suppliers send in sheets and documents
+    (``operating.business_documents``), people exclusion first. Each wraps the one before:
+    a call naming its mode is its own, any other goes on, and one naming no known mode is
+    refused."""
+    from . import (business_documents, cash_forecast, demand_forecast, margin_variance,
+                   proactive_sales, who_knows)
 
     def unknown(arguments: Any, actor: Any) -> dict[str, Any]:
-        return _error("invalid_input", "mode must be cash_forecast, margin_variance, "
-                      "quote_conversion, cross_sell or who_knows")
+        return _error("invalid_input", "mode must be cash_forecast, demand_forecast, "
+                      "margin_variance, quote_conversion, cross_sell, who_knows or "
+                      "business_documents")
     modes: dict[str, dict[str, Any]] = {"plx.aggregate": {"name": "plx.aggregate",
                                                           "handler": unknown}}
     cash_forecast.register(modes, tools, prime=prime, other_modes=True)
     proactive_sales.register(modes, tools, prime=prime)
     margin_variance.register(modes, tools, calls=table)
     who_knows.register(modes, tools)
+    # demand_forecast: invoiced quantities per item (or customer and item) forecast 3 months
+    # or 13 weeks ahead (operating/demand_forecast.py); its history is read on the first
+    # question of a day, never at start.
+    demand_forecast.register(modes, tools)
+    business_documents.register(modes, tools)
     return modes
 
 

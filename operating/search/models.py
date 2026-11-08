@@ -141,6 +141,9 @@ class OnnxReranker:
     def _load(self) -> tuple[Any, Any]:
         with self._lock:
             if self._session is None:
+                # onnxruntime posts OneDS telemetry to Microsoft from native code unless
+                # this is set before its import; overridden, never defaulted (as doc_convert).
+                os.environ["ORT_DISABLE_TELEMETRY"] = "1"
                 import onnxruntime as ort
                 from transformers import AutoTokenizer
                 options = ort.SessionOptions()

@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { BellRing, Bookmark, CalendarCheck2, CalendarClock, ChartColumnBig, Clock3, History, Inbox, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Search, TriangleAlert, type LucideIcon } from "lucide-react";
+import { BellRing, Bookmark, CalendarCheck2, CalendarClock, ChartColumnBig, Clock3, History, Inbox, ListChecks, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Reply, Search, Users, TriangleAlert, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -178,6 +178,10 @@ const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean }[] =
   { href: "/briefing", label: "Briefing", icon: CalendarCheck2 },
   { href: "/prepare", label: "Prepare", icon: CalendarClock },
   { href: "/weekly", label: "Weekly review", icon: ChartColumnBig },
+  { href: "/approvals", label: "Approvals", icon: ListChecks },
+  { href: "/replies", label: "My replies", icon: Reply },
+  { href: "/workload", label: "Workload", icon: Users },
+  { href: "/labour", label: "Labour", icon: Users },
   { href: "/ask", label: "Ask", icon: MessageCircle },
   { href: "/rules", label: "Watching", icon: BellRing },
   { href: "/actions", label: "Action log", icon: History },
@@ -559,7 +563,7 @@ function TabBar() {
   const path = usePathname();
   const home = useHome();
   const late = lateOf(home);
-  const tabs = NAV.filter((n) => !["/actions", "/feedback", "/prepare", "/weekly"].includes(n.href));
+  const tabs = NAV.filter((n) => !["/actions", "/feedback", "/prepare", "/weekly", "/approvals", "/labour"].includes(n.href));
   return (
     <nav
       aria-label="Main"

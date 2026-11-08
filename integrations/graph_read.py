@@ -249,6 +249,9 @@ class GraphMailReader:
         names nobody); ``ExclusionUnavailable`` when it cannot be."""
         self.people.require()
         self.people.bind(self._api)
+        # The groups' addresses, recorded with the listing so offline a distribution list
+        # is decided as no person's (a refusal records none: they stay undecided).
+        self.people.list_groups(self._api)
 
     def _excluded_party(self, raw: Mapping[str, Any]) -> str | None:
         """``sender`` when an excluded person sent the message, ``recipient`` when one is

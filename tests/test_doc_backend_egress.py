@@ -31,6 +31,9 @@ from integrations import doc_convert
 ROOT = Path(__file__).resolve().parents[1]
 STACK = ("markitdown", "magika", "onnxruntime")
 IMPORT_SITE = "integrations/doc_convert.py"
+# The search reranker runs its own local ONNX model: it may import onnxruntime itself, and
+# only on the line after turning its telemetry off (test below).
+RERANK_SITE = "operating/search/models.py"
 # onnxruntime 1.31 uploads ~8.5 s after the first session; wait past that.
 UPLOAD_WINDOW_SECONDS = 15
 PROXY_VARIABLES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
@@ -119,7 +122,15 @@ class DocumentBackendEgressTest(unittest.TestCase):
             if relative.as_posix() != IMPORT_SITE:
                 offenders += _stack_imports(path.read_text(encoding="utf-8"),
                                             relative.as_posix())
-        self.assertEqual(offenders, [])
+        rerank = (ROOT / RERANK_SITE).read_text(encoding="utf-8").splitlines()
+        allowed = [hit for hit in offenders if hit.startswith(RERANK_SITE + ":")
+                   and hit.endswith(":onnxruntime")]
+        for hit in allowed:
+            line = int(hit.split(":")[1])
+            self.assertEqual(rerank[line - 2].strip(), 'os.environ["ORT_DISABLE_TELEMETRY"] = "1"',
+                             hit)
+        self.assertEqual(len(allowed), 1, offenders)
+        self.assertEqual([hit for hit in offenders if hit not in allowed], [])
         site = (ROOT / IMPORT_SITE).read_text(encoding="utf-8")
         self.assertEqual([hit.split(":")[-1] for hit in _stack_imports(site, IMPORT_SITE)],
                          ["markitdown"])

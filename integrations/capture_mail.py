@@ -636,6 +636,15 @@ CREATE TABLE IF NOT EXISTS mailbox_directory (
     department TEXT,
     listed_at TEXT NOT NULL
 );
+-- The last complete tenant listing the run's people guard was bound with (replaced whole
+-- each run; ``people_exclusion.tenant_listing_rows``): each address of a listed user the
+-- exclusion does not name with its object id (kind user), and each group address (kind
+-- group). Nothing about an excluded person. Its read time is meta ``tenant_listing_at``.
+CREATE TABLE IF NOT EXISTS tenant_listing (
+    address TEXT PRIMARY KEY,
+    object_id TEXT,
+    kind TEXT NOT NULL
+);
 """
 # Every folder of a mailbox (``folders`` all): ids and Graph's item count of the latest
 # listing (``GraphMailReader.list_folders``), re-listed after FOLDER_RELIST_SECONDS.
@@ -1853,6 +1862,24 @@ class MailCaptureStore:
         return len(rows)
 
     # ---------------------------------------------------------------- exclusion
+
+    def record_tenant_listing(self, people: Any) -> int:
+        """Replace the recorded tenant listing with the one ``people`` (a bound guard)
+        was bound with, so an offline reader decides by it (``people_exclusion.
+        with_directory``); the number of rows, 0 when the guard holds no complete listing
+        (the earlier one stays, aging out by its read time)."""
+        from . import people_exclusion as pe
+        found = pe.tenant_listing_rows(people) if isinstance(people, PeopleExclusion) \
+            else None
+        if found is None or not found[1]:
+            return 0
+        at, rows = found
+        with self.db:
+            self.db.execute("DELETE FROM tenant_listing")
+            self.db.executemany("INSERT INTO tenant_listing VALUES (?,?,?)", rows)
+            self.db.execute("INSERT INTO meta VALUES ('tenant_listing_at', ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (at,))
+        return len(rows)
 
     def record_directory(self, departments: Mapping[str, Any]) -> None:
         """The directory department (any JSON value) of each mailbox a directory-wide
@@ -5266,6 +5293,8 @@ class MailCapture:
             if self.store.people is None:
                 self.store.people = people
             purged = self.store.purge_withheld(people)
+            # The listing the guard was just bound with, for offline readers.
+            self.store.record_tenant_listing(people)
         targets: list[tuple[str, tuple[str, ...]]] = list(scope.mailboxes)
         directory_status = None
         excluded = 0

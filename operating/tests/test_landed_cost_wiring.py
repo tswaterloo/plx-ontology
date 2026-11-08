@@ -436,7 +436,8 @@ class ProjectedWiringTest(unittest.TestCase):
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
-            table, rows=oi.citation_rows(self.runtime), scope=oi.read_scope(base)))
+            table, rows=oi.citation_rows(self.runtime, policy.held_markings),
+            scope=oi.read_scope(base)))
         return table["plx.investigate"]["handler"](
             {"family": "landed_cost", "root": {"identifier": number},
              "as_known_at": "2099-01-02T04:00:00Z"}, Actor("plx", frozenset(who)))

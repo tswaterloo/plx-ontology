@@ -132,5 +132,31 @@ class HealthRouteTest(unittest.TestCase):
             self.assertIn("delta_last_cycle", body["ops"]["breaches"])
 
 
+
+class StaleCaptureAlarmTest(unittest.TestCase):
+    """A capture source that has not succeeded for twice its normal turn is a breach and
+    the Home health line names it; within twice its turn it is fine."""
+
+    def test_twice_the_normal_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_state(Path(tmp), capture="2030-01-02T11:00:00Z")   # 60 min ago
+            health = root / "host" / "serve-health.json"
+            for turn, expected in ((1500, "breach"), (3600, "ok"), (True, "ok")):
+                health.write_text(json.dumps({"turn_seconds": {"mail": turn}}))
+                report = ops_health.collect(root, now=NOW, environ={}, include_api=False)
+                self.assertEqual(states(report)["capture:mail"], expected, turn)
+                alarm = ops_health.capture_alarm(report)
+                if expected == "breach":
+                    self.assertEqual(alarm["stalled"], ["mail"])
+                    self.assertIn("captures not refreshed: mail", alarm["line"])
+                else:
+                    self.assertIsNone(alarm)
+            # a corrupt record falls back to the fixed bound, never a crash
+            health.write_text("{not json")
+            report = ops_health.collect(root, now=NOW, environ={}, include_api=False)
+            self.assertEqual(states(report)["capture:mail"], "ok")
+            self.assertNotIn("ingest_start", states(report))
+
+
 if __name__ == "__main__":
     unittest.main()

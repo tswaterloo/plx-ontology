@@ -1,0 +1,22 @@
+{
+ "vtt": "WEBVTT\n\n00:00:20.000 --> 00:00:57.000\n<v Marco Silva>Pricing on starch moved again.</v>\n\n00:00:57.000 --> 00:01:34.000\n<v Raj Mehta>Lakeshore Foods wants to lock pricing for Q1.</v>\n\n00:01:34.000 --> 00:02:11.000\n<v Dana Price>We're going with a three month lock for Lakeshore Foods.</v>\n\n00:02:11.000 --> 00:02:48.000\n<v Raj Mehta>I'll send Lakeshore Foods the Q1 price letter by Friday.</v>\n\n00:02:48.000 --> 00:03:25.000\n<v Marco Silva>Andean Ingredients is running late on PO100903.</v>\n\n00:03:25.000 --> 00:04:02.000\n<v Dana Price>Marco, can you chase Andean Ingredients on PO100903 today?</v>\n\n00:04:02.000 --> 00:04:39.000\n<v Marco Silva>Yep.</v>\n\n00:04:39.000 --> 00:05:16.000\n<v Marco Silva>I think freight is up again too.</v>\n\n00:05:16.000 --> 00:05:53.000\n<v Dana Price>We need to review the freight contract.</v>\n\n00:05:53.000 --> 00:06:30.000\n<v Raj Mehta>I'll take that.</v>\n\n00:06:30.000 --> 00:07:07.000\n<v Marco Silva>Prairie wants to quote us on pulses.</v>\n\n00:07:07.000 --> 00:07:44.000\n<v Dana Price>Okay, bye.</v>\n",
+ "meeting": {
+  "id": "buy-2026-11-04",
+  "subject": "Purchasing sync",
+  "start": "2026-11-04T13:00:00Z",
+  "organizer": {
+   "name": "Marco Silva",
+   "address": "marco.silva@plx.example"
+  },
+  "attendees": [
+   {
+    "name": "Dana Price",
+    "address": "dana.price@plx.example"
+   },
+   {
+    "name": "Raj Mehta",
+    "address": "raj.mehta@plx.example"
+   }
+  ]
+ }
+}

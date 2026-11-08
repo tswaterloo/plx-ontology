@@ -5,11 +5,12 @@ import { useCallback, useEffect, useState } from "react";
 import { LoadProblem } from "@/components/ui/notice";
 import { Toolbar } from "@/components/ui/toolbar";
 import { compileRule, createRule, deleteRule, getWatchlist, markAlertsRead, setFollowing } from "@/lib/api";
+import { ruleParams } from "@/lib/rule-params";
 import { ApiError, plainError } from "@/lib/errors";
 import { formatDateTime, objectHref, typeLabel } from "@/lib/format";
 import type { WatchAlert, Watchlist, WatchRuleDraft } from "@/lib/types";
 
-const EXAMPLES = ["Tell me when any order over $50k slips", "Alert me if a supplier is late twice in a month"];
+const EXAMPLES = ["Tell me when any order over $50k slips", "Alert me if a supplier is late twice in a month", "Tell me when a duplicate supplier invoice over $10k is found"];
 
 function said(err: unknown): string {
   return err instanceof ApiError && err.detail && err.status < 500 ? err.detail : plainError(err);
@@ -117,6 +118,11 @@ export default function RulesPage() {
           {draft && (
             <div className="space-y-2 rounded-lg border border-[var(--border,#ddd)] p-3">
               <p className="text-[13px] font-medium">{draft.description}</p>
+              <dl aria-label="What this rule checks" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px]">
+                {ruleParams(draft.spec).map((p) => (
+                  <div key={p.name} className="contents"><dt className="text-muted">{p.name}</dt><dd>{p.value}</dd></div>
+                ))}
+              </dl>
               {draft.markings.length > 0 && <p className="text-[12px] text-muted">Reads {draft.markings.join(", ")} figures: only people cleared for them can set it or see its alerts.</p>}
               <div className="flex gap-2">
                 <button type="button" disabled={busy} onClick={confirm} className="h-8 rounded-lg bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-3 text-[13px] font-medium cursor-pointer">

@@ -363,16 +363,20 @@ class HostConfig:
             raise HostError("host_config_invalid")
         self.ingest = None
         self.capture_sources: Mapping[str, Any] = {}
+        # Keys this code does not know, ignored (``config_warnings``): a newer checkout's
+        # setting in a shared config warns and never stops the host (2026-11-07: one
+        # forward ``ingest`` key held captures in a 23 h restart loop).
+        self.config_warnings: list[str] = []
         if "ingest" in document:
             try:
-                self.ingest = ingest_forever.ingest_settings(document["ingest"])
+                self.ingest = ingest_forever.ingest_settings(document["ingest"],
+                                                             self.config_warnings)
             except ingest_forever.IngestError:
                 raise HostError("host_config_invalid:ingest") from None
             self.capture_sources = (ingest_forever.SOURCES if capture_sources is None
                                     else capture_sources)
         names = tuple(self.capture_sources) if self.ingest is not None else SOURCES
-        if set(document) - _CONFIG_KEYS - set(names):
-            raise HostError("host_config_invalid")
+        self.config_warnings.extend(sorted(map(str, set(document) - _CONFIG_KEYS - set(names))))
         self.tenant = document.get("tenant", "plx")
         self.principal = document.get("capture_principal", DEFAULT_PRINCIPAL)
         if not isinstance(self.tenant, str) or not isinstance(self.principal, str):
@@ -436,7 +440,11 @@ class HostConfig:
             budgets = () if not isinstance(entry, Mapping) else (
                 *(() if entry.get("budget_seconds") is None else (entry["budget_seconds"],)),
                 entry.get("census_budget_seconds", CENSUS_BUDGET_SECONDS))
-            if not isinstance(entry, Mapping) or set(entry) - _SOURCE_KEYS[name] or any(
+            if isinstance(entry, Mapping) and set(entry) - _SOURCE_KEYS[name]:
+                self.config_warnings.extend(f"{name}.{key}" for key in
+                                            sorted(map(str, set(entry) - _SOURCE_KEYS[name])))
+                entry = {k: v for k, v in entry.items() if k in _SOURCE_KEYS[name]}
+            if not isinstance(entry, Mapping) or any(
                     isinstance(budget, bool) or not isinstance(budget, (int, float))
                     or not 0 < budget < float("inf")   # 0 never reads; NaN, inf never end
                     for budget in budgets):
@@ -464,13 +472,15 @@ class HostConfig:
 
         defaults = {"live_audience": self.capture_audience,
                     "audience": self.mirror_audience, "tenant": self.tenant,
-                    "principal": self.principal}
+                    "principal": self.principal,
+                    # the brain capture reads under the host's namespace authority
+                    "namespaces": self.knowledge_namespaces}
         for name, spec in self.capture_sources.items():
             if name not in document:
                 continue
             try:
                 self.sources[name] = ingest_forever.section_options(
-                    spec, document[name], base, defaults)
+                    spec, document[name], base, defaults, self.config_warnings, name)
             except ingest_forever.IngestError:
                 raise HostError(f"host_config_invalid:{name}") from None
         if not self.sources:
@@ -3618,6 +3628,11 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                 raise HostError("state_dir_ephemeral")
         if getattr(args, "sources", None) is not None:
             config = config.only(args.sources.split(","))
+        if config is not None and config.config_warnings:
+            print(json.dumps({"warning": "host_config_keys_ignored",
+                              "keys": sorted(config.config_warnings)}), file=sys.stderr)
+        if args.command == "serve":
+            record_serve_start(state_dir, config=config, now=(clock or _utc)())
         host = Host(args.state_dir, config, environ=environ, sender=sender,
                     workbench_fetch=workbench_fetch, portal_options=portal_options,
                     clock=clock, sleep=sleep, monotonic=monotonic, disk_free=disk_free)
@@ -3679,9 +3694,75 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
             finally:
                 host.stop.set()
     except HostError as error:
+        if args.command == "serve" and args.state_dir is not None:
+            record_serve_start(args.state_dir, error=error.code, now=(clock or _utc)())
         print(json.dumps({"error": error.code}), file=sys.stderr)
         return 2
     return 0
+
+
+SERVE_HEALTH_FILE = "serve-health.json"   # under <state>/host; read by ops_health
+SERVE_HEALTH_SCHEMA = "plx-serve-health/v1"
+_SERVE_FAILURES_KEPT = 50
+
+
+def capture_turns(config: "HostConfig") -> dict[str, float]:
+    """Source -> seconds of one normal capture turn: its re-run interval (ingest mode: the
+    section's ``min_interval_seconds``; cycle mode: the host's ``interval_seconds``) plus
+    the time one capture may take (``budget_seconds``, else ``timeout_seconds``, else the
+    ingest default) plus the grace. The stale-capture alarm (``ops_health``) fires when a
+    source has not succeeded for twice this."""
+    from . import ingest_forever as ingest
+    out: dict[str, float] = {}
+    for name, section in sorted(config.sources.items()):
+        if config.ingest is not None:
+            interval = section.get("min_interval_seconds", ingest.DEFAULT_MIN_INTERVAL_SECONDS)
+            grace = config.ingest["grace_seconds"]
+        else:
+            interval, grace = config.interval_seconds, 0
+        run = (section.get("budget_seconds") or section.get("timeout_seconds")
+               or ingest.DEFAULT_TIMEOUT_SECONDS)
+        out[name] = float(interval) + float(run) + float(grace)
+    return out
+
+
+def record_serve_start(state_dir: Path, *, now: datetime, config: "HostConfig | None" = None,
+                       error: str | None = None) -> None:
+    """Keep ``<state>/host/serve-health.json``: each ``serve`` start, refused (``error``,
+    a code) or started (each source's normal turn, the ignored config keys). A unit
+    restarting on a refused start shows as a run of failures with no start after them
+    (``ops_health`` ``ingest_start``). Codes and numbers only; never raises."""
+    try:
+        path = Path(state_dir) / "host" / SERVE_HEALTH_FILE
+        try:
+            held = json.loads(path.read_text("utf-8"))
+            if not isinstance(held, dict) or held.get("schema") != SERVE_HEALTH_SCHEMA:
+                held = {}
+        except (OSError, ValueError):
+            held = {}
+        if error is not None and not path.parent.is_dir():
+            return   # never the first write into a directory no host has set up
+        failures = [f for f in held.get("failures") or [] if isinstance(f, dict)]
+        record: dict[str, Any] = {"schema": SERVE_HEALTH_SCHEMA,
+                                  "started_at": held.get("started_at"),
+                                  "turn_seconds": held.get("turn_seconds") or {},
+                                  "config_warnings": held.get("config_warnings") or [],
+                                  "failures": failures}
+        if error is not None:
+            record["failures"] = (failures + [{"at": _iso(now), "error": str(error)}]
+                                  )[-_SERVE_FAILURES_KEPT:]
+        else:
+            record["started_at"] = _iso(now)
+            record["failures"] = []
+            if config is not None:
+                record["turn_seconds"] = capture_turns(config)
+                record["config_warnings"] = list(config.config_warnings)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(record, sort_keys=True), "utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return
 
 
 __all__ = ["CONFIG_SCHEMA", "Host", "HostConfig", "HostError", "build_projection",

@@ -34,6 +34,7 @@ const briefing: Briefing = {
   counts_exact: true,
   since_visit: false,
   acknowledged: 0,
+  carried: 0,
   new_since_visit: 1,
   other_teams: 3,
   hidden: 2,

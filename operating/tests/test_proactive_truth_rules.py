@@ -35,6 +35,33 @@ class DateProvenanceTest(Engine):
         self.assertEqual(kinds[real], "unconfirmed_po")
 
 
+class ActivePopulationTest(Engine):
+    def test_an_undated_order_nothing_touched_in_the_active_window_is_not_listed(self):
+        """A legacy back-order (open, undated, ordered and last edited long ago) is counted
+        historic, never listed as current work; a recent undated order still is; a bulk
+        load's edit stamp is no activity."""
+        w = World()
+
+        def undated(**values):
+            order = w.obj("PurchaseOrder", {"status": "Pending", **values}, binding=PORTAL)
+            w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                "ordered_quantity": ("10", "ea"),
+                "received_quantity": ("0", "ea", "received")}), order)
+            return order
+        legacy = undated(order_date="2025-02-10")
+        recent = undated(order_date="2026-09-01")
+        for _ in range(12):   # a migration stamped every record's edit time on one day
+            w.obj("PurchaseOrder", {"status": "Closed", "portal_updated_at":
+                                    "2026-09-30T03:00:00Z"}, binding=PORTAL)
+        loaded = undated(order_date="2025-01-15", portal_updated_at="2026-09-30T04:00:00Z")
+        summary = self.run_engine(w)
+        kinds = {g["object_id"]: g["kind"] for g in self.read(limit=1000)["gaps"]}
+        self.assertEqual(kinds.get(recent), pe.UNDATED_KIND)
+        self.assertNotIn(legacy, kinds)
+        self.assertNotIn(loaded, kinds)
+        self.assertEqual(summary["po_lateness"]["historic"], 2)
+
+
 class FileMakerReceiptTest(Engine):
     def fm_order(self, w: World, word: str, *, receipt: bool, header: str = "B.Order"
                  ) -> tuple[str, str | None]:

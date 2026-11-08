@@ -99,6 +99,7 @@ URLLIB_FILES = {
     "integrations/live_source_guard.py",
     "operating/messages_planner.py",
     "operating/embed_sender.py",
+    "operating/ops_health.py",
 }
 BANNED_MODULES = {
     "http.client", "httplib", "requests", "httpx", "aiohttp", "urllib3", "socket",

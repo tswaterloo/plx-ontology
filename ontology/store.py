@@ -152,14 +152,25 @@ LATEST_SQL = "'9999-12-31T23:59:59.999Z'"
 _REMOVALS_FROM = "objects mo LEFT JOIN object_removals rm ON rm.object_id = mo.object_id"
 
 
+_LATEST_JULIAN = float(sqlite3.connect(":memory:").execute(
+    f"SELECT julianday({LATEST_SQL})").fetchone()[0])
 _SINCE = "COALESCE(rm.since, mo.missing_from_source_since)"
+
+
+def _julian_of(at_sql: str) -> str:
+    """``julianday(at_sql)``; for the constant latest-knowledge time the number itself, so
+    a scan over many rows (on Postgres ``julianday`` is a regex-parsing SQL function run
+    per row, 25M links in the proactive pass) never parses a constant again."""
+    if at_sql == LATEST_SQL:
+        return repr(_LATEST_JULIAN)
+    return f"julianday({at_sql})"
 
 
 def _in_force(at_sql: str) -> str:
     # A start or end time SQLite cannot parse is a removal of unknown time: in force at
     # every T and never ended (fail closed: never read as held).
-    return (f"{_SINCE} IS NOT NULL AND COALESCE(julianday({_SINCE}) <= julianday({at_sql}), 1) "
-            f"AND (rm.until IS NULL OR COALESCE(julianday(rm.until) > julianday({at_sql}), 1))")
+    return (f"{_SINCE} IS NOT NULL AND COALESCE(julianday({_SINCE}) <= {_julian_of(at_sql)}, 1) "
+            f"AND (rm.until IS NULL OR COALESCE(julianday(rm.until) > {_julian_of(at_sql)}, 1))")
 
 
 def removed_at_sql(object_sql: str, at_sql: str = LATEST_SQL) -> str:

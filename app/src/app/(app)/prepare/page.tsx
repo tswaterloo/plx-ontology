@@ -31,7 +31,7 @@ export default function PreparePage() {
       {!list ? (
         <Skeleton className="h-40 w-full" />
       ) : list.meetings.length === 0 ? (
-        <p className="text-[13px] text-muted">No upcoming meeting you may read. A customer or supplier page has a Prepare button too.</p>
+        <p className="text-[13px] text-muted">No upcoming meeting you may read. A customer, supplier or calendar event page has a Prep button too.</p>
       ) : (
         <ul className="divide-y divide-border" data-testid="upcoming-meetings">
           {list.meetings.map((e) => (
@@ -40,6 +40,9 @@ export default function PreparePage() {
                 {e.object.label}
               </Link>
               <span className="flex items-center gap-3 text-muted">
+                <Link href={safeHref(e.brief_url) ?? "/prepare"} className="rounded-md px-2 py-0.5 text-[12px] font-medium text-fg hover:bg-hover" data-testid="prep-link">
+                  Prep
+                </Link>
                 {formatDateTime(e.start)}
                 <SourceChips sources={e.sources} max={1} />
               </span>

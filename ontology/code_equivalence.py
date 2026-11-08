@@ -277,8 +277,13 @@ READER_CHANGES: Mapping[tuple[str, str], tuple[str | None, str | None]] = {
         None, "9db222d2a91b78a19a93c0d87d1401919985a1dd80d1d43e82c931c27cf58237"),
     ("integrations.people_exclusion", "PeopleExcluded"): (
         None, "218fc9847330031c5a338e7cd0e0f1fd744d3b2989e6d9b4700824025859f7c5"),
+    # The guard keeps the listing it was bound with, reads the groups' addresses and
+    # decides addresses offline by membership in a recorded tenant listing:
+    # the projector's guard (from the
+    # environment, never bound, no listing attached) decides as before, so the rows are the
+    # same.
     ("integrations.people_exclusion", "PeopleExclusion"): (
-        None, "0862c17f9d270fa1a523becd99cc7ad85cc6e2344510b83f56fbcde26c3837ab"),
+        None, "870bd662f3a186a0540bc38e5e85e4cd34af7855675bb19d97a93917e0dc8378"),
     ("integrations.people_exclusion", "SCHEMA"): (
         None, "e38887565bfb85f369e8efc5855d813508d5d5db1430779a6bfc8c8651172773"),
     ("integrations.people_exclusion", "_DIRECTORY_SELECT"): (

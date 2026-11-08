@@ -9,6 +9,7 @@ world of ``case.customer_po_missing`` (fake Workbench, fake drive; network refus
 from __future__ import annotations
 
 import contextlib
+from contextlib import closing
 from decimal import Decimal
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -262,6 +263,10 @@ class Engine(unittest.TestCase):
         self.dir = Path(tmp.name)
         self.store = self.dir / "store.sqlite"
         self.inbox = pe.inbox_path(self.store)
+        # a read counts relative days to the business day; the fixtures' day is AS_OF
+        today = mock.patch.object(pe, "_today", return_value=AS_OF)
+        today.start()
+        self.addCleanup(today.stop)
 
     def run_engine(self, world: World, coverage=None, *, at=None, **options) -> dict:
         world.build(self.store)
@@ -331,7 +336,7 @@ class DetectorTest(Engine):
         self.assertEqual(summary["po_lateness"], {
             "pos": 16, "classes": {"open": 9, "closed": 4, "draft": 1, "unknown": 2},
             "evaluated": 6, "late": 4, "at_risk": 1, "unconfirmed": 2, "undated": 1,
-            "open_by_read": 9, "open_other": 4})
+            "historic": 0, "open_by_read": 9, "open_other": 4})
         self.assertEqual(summary["not_evaluated"]["po_receipt_quantity_mismatch"],
                          {"receipt_link_unsettled": 1, "sources_unreconciled": 1,
                           "unit_differs": 1})
@@ -698,6 +703,16 @@ class InboxTest(Engine):
         self.assertIn("unconfirmed_po", {g["kind"] for g in shown["gaps"]})
         self.assertEqual(shown["unread"], {"late_or_unconfirmed_po_failed": 1})
         self.assertTrue(shown["truncated"])
+        # its findings are the last good run's, never current: each says the check failed
+        # and when, and when it was last checked
+        mine = [g for g in shown["gaps"] if g["kind"] == "unconfirmed_po"]
+        self.assertTrue(mine)
+        for gap in mine:
+            self.assertEqual(gap["carried"]["reason"], "check_failed")
+            self.assertIn("check failed at 2026-10-19 2:00 AM ET", gap["summary"])
+        self.assertEqual(set(shown["failed_at"]), {"late_or_unconfirmed_po"})
+        self.assertNotIn("carried", next(g for g in shown["gaps"]
+                                         if g["kind"] == "expired_quote"))
 
     def test_a_scheduled_run_with_rules_that_did_not_run_is_never_read_as_clean(self):
         # The store-only hook runs without the mirror coverage and without a card caller:
@@ -719,6 +734,7 @@ class InboxTest(Engine):
                                             "stock_out_risk": "blocked",
                                             "slow_moving_stock": "blocked",
                                             "expiring_lot_stock": "blocked",
+                                            "reorder_soon": "blocked",
                                             # nor an assembly order start date
                                             "assembly_component_shortfall": "blocked",
                                             # no MC task or production due date declared
@@ -729,6 +745,13 @@ class InboxTest(Engine):
                                             "customer_chase": "blocked",
                                             "commitments": "blocked",
                                             "needs_reply": "blocked",
+                                            "expedite_requests": "blocked",
+                                            "supplier_shortage": "blocked",
+                                            "payment_chase": "blocked",
+                                            "approvals_waiting": "blocked",
+                                            "chase_escalation": "blocked",
+                                            "inbox_triage": "blocked",
+                                            "label_changes": "blocked",
                                             "vendor_terms_unapplied": "not_configured",
                                             "negative_margin": "not_configured"})
         # every rule run: each one the schema serves is complete, and the read is complete
@@ -745,7 +768,13 @@ class InboxTest(Engine):
         self.assertEqual(set(full["detectors"]), set(pe.DETECTORS))
         self.assertEqual((full["complete"], full["not_run"], full["truncated"]),
                          (False, schema_blocked, False), full["detectors"])
-        self.assertEqual({d for d, state in full["detectors"].items() if state != "complete"},
+        # the sheet rules wait for the reading step: a setup state, never incomplete
+        self.assertEqual({d: s for d, s in full["detectors"].items()
+                          if s in pe.SETUP_STATES},
+                         {"cash_application": "not_set_up",
+                          "statement_reconciliation": "not_set_up"})
+        self.assertEqual({d for d, state in full["detectors"].items()
+                          if state not in ("complete", *pe.SETUP_STATES)},
                          set(schema_blocked))
         # a rule the inbox holds no row for (a run before it existed) did not run either
         with contextlib.closing(sqlite3.connect(self.inbox)) as conn, conn:
@@ -814,6 +843,83 @@ class InboxTest(Engine):
         self.assertEqual({k: v for k, v in slow["detectors"].items() if k != "expired_quote"},
                          {k: v for k, v in serial["detectors"].items() if k != "expired_quote"})
         self.assertLess(slow["seconds"]["expired_quote"], 30)
+
+    def test_the_ranged_audience_scan_reads_what_one_query_reads(self):
+        """The run's one audience scan (``_Store.audience_firsts``), split into rowid ranges
+        side by side, holds every audience key and its smallest record exactly as one
+        GROUP BY over the record table does; the audience keys are its keys."""
+        world, _ids = seeded()
+        world.build(self.store)
+        with closing(sqlite3.connect(self.store)) as conn:
+            whole = dict(conn.execute(
+                "SELECT audience_key, MIN(object_id) FROM objects GROUP BY audience_key"))
+        self.assertGreater(len(whole), 1)
+        for threads in (1, 4):
+            with mock.patch.object(pe, "PARALLEL_LINK_ROWS", 1), \
+                    mock.patch.object(pe, "LINK_PARTS_PER_THREAD", 3):
+                st = pe._Store(self.store, threads=threads)
+                try:
+                    self.assertEqual(st.audience_firsts(), whole)
+                    self.assertEqual(st.audience_keys(), set(whole))
+                finally:
+                    st.close()
+
+    def test_a_full_run_scans_the_link_table_once_and_finds_the_same_gaps(self):
+        """Every link type a detector reads is in the run's one up-front scan
+        (``_run_link_types``): no detector scans the link table again at its turn (each scan
+        is a minute or more on the live store; the price, order-to-cash and data-quality
+        rules each scanned it again). The gaps are the ones each rule finds reading its own
+        links (an ``only`` run, no up-front scan)."""
+        world, ids = seeded()
+        scans: list[list[str]] = []
+        real = pe._Store._scan_links
+
+        def counted(st, types):
+            scans.append(list(types))
+            return real(st, types)
+        with mock.patch.object(pe._Store, "_scan_links", counted):
+            whole = self.run_engine(world, ids["coverage"], threads=1)
+        self.assertEqual(len(scans), 1, [sorted(t) for t in scans[1:]])
+        found = sorted(json.dumps(g, sort_keys=True) for g in self.read()["gaps"])
+        for name in ("price_consistency", "shipped_not_invoiced",
+                     "duplicate_customer_order", "recurring_component_damage"):
+            self.assertEqual(whole["detectors"][name], "complete", name)
+        for path in Path(self.inbox).parent.glob(Path(self.inbox).name + "*"):
+            path.unlink()
+        with mock.patch.object(pe, "_run_link_types", lambda: []):
+            own = self.run_engine(world, ids["coverage"], threads=1)
+        self.assertEqual({k: own[k] for k in ("detectors", "gaps_found", "gaps_by_kind")},
+                         {k: whole[k] for k in ("detectors", "gaps_found", "gaps_by_kind")})
+        self.assertEqual(sorted(json.dumps(g, sort_keys=True) for g in self.read()["gaps"]),
+                         found)
+
+    def test_a_detector_that_never_reads_the_store_is_cut_off_at_its_window(self):
+        """Every detector has a hard window, with or without a run budget: one stuck in a
+        loop that reads nothing (no query to interrupt) is ``truncated`` at its window and
+        the grace after it, its lane goes on, and every other detector ends as it would."""
+        world, ids = seeded()
+        serial = self.run_engine(world, ids["coverage"], threads=1)
+        release = threading.Event()
+
+        def stuck(_st, _as_of):
+            release.wait(60)   # never reads the store; ends only when the test lets it
+            return pe._result([])
+        try:
+            for threads in (1, 4):
+                with mock.patch.object(pe, "_expired_quote", stuck), \
+                        mock.patch.object(pe, "HARD_GRACE_SECONDS", 0.2):
+                    started = time.monotonic()
+                    cut = self.run_engine(world, ids["coverage"], threads=threads,
+                                          detector_seconds={"expired_quote": 0.3})
+                    self.assertLess(time.monotonic() - started, 30)
+                self.assertEqual(cut["detectors"]["expired_quote"], "truncated")
+                self.assertEqual(cut["detector_reasons"]["expired_quote"], [pe.TIME_BUDGET])
+                self.assertEqual(cut["cut_off"], ["expired_quote"])
+                self.assertEqual(
+                    {k: v for k, v in cut["detectors"].items() if k != "expired_quote"},
+                    {k: v for k, v in serial["detectors"].items() if k != "expired_quote"})
+        finally:
+            release.set()
 
     def test_the_document_cards_are_read_on_the_pool_as_one_by_one(self):
         """``card_rules`` with the run's pool asks the same cards as its serial reads, all at
@@ -901,7 +1007,7 @@ class ServedGenerationTest(Engine):
     def late_ids(self, found: dict) -> set[str]:
         return {g["object_id"] for g in found["gaps"] if g["kind"] == "unconfirmed_po"}
 
-    def test_a_new_generation_hides_older_findings_until_the_engine_runs_over_it(self):
+    def test_a_new_generation_marks_older_findings_until_the_engine_runs_over_it(self):
         from operating import briefing as bf
         world, ids = seeded()
         first = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
@@ -916,7 +1022,10 @@ class ServedGenerationTest(Engine):
         world.build(self.store)
         self.assertTrue(pe.served_behind(self.store))
         stale = self.read()
-        self.assertEqual(stale["gaps"], [])           # nothing of the older data is listed
+        # the older data's findings stay listed, each marked as not rechecked (never as
+        # current, never all hidden)
+        self.assertIn(ids["unconfirmed"], self.late_ids(stale))
+        self.assertTrue(all(g["carried"]["reason"] == "older_data" for g in stale["gaps"]))
         self.assertTrue(stale["stale"])
         self.assertFalse(stale["complete"])
         self.assertIn("late_or_unconfirmed_po", stale["refreshing"])
@@ -924,9 +1033,12 @@ class ServedGenerationTest(Engine):
         brief = bf.read(self.inbox, self.store, reader="plx:ops", may_read=everyone,
                         held=ALL_MARKINGS, decide=admit,
                         routing=bf.Routing(basis="fixture", everything=True))
-        self.assertEqual((brief["count"], brief["refreshing"] != [], brief["checked_on"]),
-                         (0, True, first.isoformat()))
-        self.assertTrue(brief["today"].startswith("Checking against the latest data."))
+        self.assertEqual((brief["refreshing"] != [], brief["checked_on"]),
+                         (True, first.isoformat()))
+        self.assertGreater(brief["count"], 0)
+        self.assertEqual(brief["carried"], len(brief["items"]))
+        self.assertTrue(all(i["carried"]["reason"] == "older_data" for i in brief["items"]))
+        self.assertIn("from an earlier check", brief["today"])
         self.assertIn("last checked 2026-10-19", brief["today"])
         self.assertNotIn("Nothing", brief["today"])
         # the engine runs over the served generation: the list is current again, and the
@@ -944,12 +1056,16 @@ class ServedGenerationTest(Engine):
         first = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
         self.run_engine(world, ids["coverage"], at=first)
         world.obj("ForwarderQuote", {"valid_until": "2026-02-01"})   # new data: new digest
-        # the late rule fails over the new data: its older gaps stay stored, never listed
+        # the late rule fails over the new data: its older gaps are listed marked as the
+        # last good check's (never as current, never all hidden)
         with mock.patch.object(pe, "_late_or_unconfirmed_po",
                                side_effect=RuntimeError("SYNTH")):
             self.run_engine(world, ids["coverage"], at=first + timedelta(hours=1))
         shown = self.read()
-        self.assertEqual(self.late_ids(shown), set())
+        carried = [g for g in shown["gaps"] if g["object_id"] in self.late_ids(shown)]
+        self.assertIn(ids["unconfirmed"], self.late_ids(shown))
+        self.assertTrue(carried and all(g["carried"]["reason"] == "check_failed"
+                                        for g in carried))
         # the vendor-mail rule judges the orders the late rule finds open: it waits too
         self.assertEqual(shown["refreshing"], ["late_or_unconfirmed_po", "vendor_no_reply"])
         self.assertIn("expired_quote", {g["kind"] for g in shown["gaps"]})
@@ -962,9 +1078,14 @@ class ServedGenerationTest(Engine):
         self.run_engine(world, ids["coverage"])
         with sqlite3.connect(self.inbox) as conn:   # as an earlier engine wrote it
             conn.execute("DELETE FROM meta WHERE key LIKE 'generation:%'")
-        # an earlier engine's findings are never shown as the deployed code's
+        # an earlier engine's findings are never shown as the deployed code's: shown
+        # marked as not rechecked since the rules changed, so the list is never emptied
         found = self.read()
-        self.assertNotIn(ids["unconfirmed"], self.late_ids(found))
+        self.assertIn(ids["unconfirmed"], self.late_ids(found))
+        self.assertTrue(found["gaps"] and all(
+            g["carried"]["reason"] == "older_code" for g in found["gaps"]))
+        self.assertTrue(all("not rechecked since the rules changed" in g["summary"]
+                            for g in found["gaps"]))
         self.assertTrue(found["older_code"] and found["stale"])
         # the deployed engine's run records its code: listed again
         self.run_engine(world, ids["coverage"])
@@ -972,7 +1093,9 @@ class ServedGenerationTest(Engine):
         world.obj("ForwarderQuote", {"valid_until": "2026-02-01"})
         world.build(self.store)
         found = self.read()
-        self.assertEqual((found["gaps"], found["stale"]), ([], True))
+        self.assertTrue(found["stale"])
+        self.assertTrue(found["gaps"] and all(
+            g["carried"]["reason"] == "older_data" for g in found["gaps"]))
         with sqlite3.connect(self.inbox) as conn:   # an unreadable record: of no known data
             conn.execute("INSERT OR REPLACE INTO meta VALUES ('generation:expired_quote', '{')")
         self.assertIn("expired_quote", self.read()["refreshing"])
@@ -1090,7 +1213,7 @@ class PoLatenessTest(Engine):
         self.assertEqual(summary["po_lateness"], {
             "pos": 4, "classes": {"open": 3, "closed": 1, "draft": 0, "unknown": 0},
             "evaluated": 3, "late": 1, "at_risk": 1, "unconfirmed": 0, "undated": 0,
-            "open_by_read": 3, "open_other": 2})
+            "historic": 0, "open_by_read": 3, "open_other": 2})
 
     def test_complete_closes_with_its_remainder_cancelled_and_sage_only_is_not_open(self):
         # Ross: a Complete header is closed whatever was received, the

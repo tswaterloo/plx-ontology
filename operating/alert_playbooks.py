@@ -42,7 +42,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 SCHEMA = "plx-alert-playbook/v1"
 CARD_PREFIX = "pb-"
@@ -179,6 +179,15 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "change": {"text": "Buy {shortfall} {unit} more of item {item} (or raise an inbound "
                            "order), needed by {first_short}.", "field": "Quantity",
                    "value": "shortfall"}},
+    "reorder_soon": {
+        "about": "inbound",
+        "ask": "We expect to need more soon: could purchase order {n} arrive earlier, and "
+               "how much more could you supply by {short_by}?",
+        "owner": "Item {item}: forecast demand is {shortfall} {unit} more than on hand plus "
+                 "inbound by {short_by}.",
+        "change": {"text": "Raise a purchase order for {shortfall} {unit} of item {item}, "
+                           "needed by {short_by}.", "field": "Quantity",
+                   "value": "shortfall"}},
     "overdue_receivable": {
         "about": "subject",
         "ask": "Invoice {n} for {amount} is {days} days past due. Please let us know when "
@@ -242,6 +251,15 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n} keeps being damaged: find the cause.", "change": None},
     "customer_chasing_order": {"about": "subject", "ask": None,
         "owner": "{n} has asked again about an order: reply with a firm date.", "change": None},
+    "expedite_unanswered": {"about": "subject", "ask": None,
+        "owner": "{n} was asked to be expedited and nobody answered: confirm a date.",
+        "change": None},
+    "supplier_shortage_open_orders": {"about": "subject", "ask": None,
+        "owner": "{n}: the supplier announced a shortage or delay that hits open orders: "
+                 "re-plan and tell the customers.", "change": None},
+    "supplier_chasing_payment": {"about": "subject", "finance": True, "ask": None,
+        "owner": "The supplier is chasing payment of {n}: pay it or give a date.",
+        "change": None},
     "tell_before_they_ask": {"about": "subject", "ask": None,
         "owner": "{n}: tell the customer about the slip before they ask.", "change": None},
     "quality_hold_aging": {"about": "subject", "ask": None,
@@ -256,6 +274,8 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n}: an early-pay discount was missed: check payment timing.", "change": None},
     "duplicate_supplier_invoice": {"about": "subject", "finance": True, "ask": None,
         "owner": "{n} looks entered twice: check before paying.", "change": None},
+    "customer_credits_rising": {"about": "subject", "finance": True, "ask": None,
+        "owner": "{n}: credits and returns are rising: review the account.", "change": None},
     "duplicate_supplier_payment": {"about": "subject", "finance": True, "ask": None,
         "owner": "{n} looks paid twice: ask the supplier for a refund or credit.", "change": None},
     "aged_receivable_worsening": {"about": "subject", "finance": True, "ask": None,
@@ -282,6 +302,24 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n}: a promise we made was missed: tell the customer.", "change": None},
     "needs_my_reply": {"about": "subject", "ask": None,
         "owner": "{n} is waiting on your reply.", "change": None},
+    "reply_owed": {"about": "subject", "ask": None,
+        "owner": "{n} is waiting on your reply.", "change": None},
+    # the briefing's label_change type (both kinds below): what the record still lacks
+    "label_change": {"about": "subject", "ask": None,
+        "owner": "{n}: a label or artwork change has no approval recorded or is not done: "
+                 "record who approved it, or make it and tell the requester.", "change": None},
+    "label_change_unapproved": {"about": "subject", "ask": None,
+        "owner": "{n}: a label or artwork change has no approval recorded.", "change": None},
+    "label_change_stale": {"about": "subject", "ask": None,
+        "owner": "{n}: a label or artwork change requested is not done.", "change": None},
+    # mail threads waiting on someone (``operating.proactive_threads``): the nudge and the
+    # holding reply are drafted per item by ``proactive_threads`` (never the thread's text)
+    "approval_waiting": {"about": "subject", "ask": None,
+        "owner": "An approval asked {days} business days ago has no answer: decide it or "
+                 "say who should.", "change": None},
+    "chase_escalating": {"about": "subject", "ask": None,
+        "owner": "A thread was chased again and again with no answer for {days} days: "
+                 "answer it today or say who owns it.", "change": None},
     # operations (``operating.proactive_stock``): stock and freight figures are finance-marked
     "slow_moving_stock": {"about": "subject", "finance": True, "ask": None,
         "owner": "{n} has stopped moving: decide whether to sell it off, use it, return it "
@@ -308,6 +346,10 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
     "price_below_cost": {"about": "subject", "finance": True, "ask": None,
         "owner": "{n} is priced below cost: reprice the next order.", "change": None},
     # sales (``operating.proactive_sales``): the quote's value is finance-marked
+    # priority / fill lists (``operating.business_documents``)
+    "priority_order_unfilled": {"about": "subject", "finance": False, "ask": None,
+        "owner": "{n} is on the customer's priority list but late or unscheduled: set a "
+                 "ship date and tell the customer.", "change": None},
     "stale_quote": {"about": "subject", "finance": True, "ask": None,
         "owner": "{n} is open with no order: follow up with the customer, or close it.",
         "change": None},
@@ -321,6 +363,23 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n}: the systems disagree: correct the wrong one.", "change": None},
     "source_stale": {"about": "subject", "ask": None,
         "owner": "{n} was not updated lately: check its capture.", "change": None},
+    # integrity (``operating.proactive_integrity``): every one finance-marked but the tasks
+    "inventory_adjustment": {"about": "subject", "finance": True, "ask": None,
+        "owner": "{n} was written down by hand: find out why.", "change": None},
+    "blocked_account_activity": {"about": "subject", "finance": True, "ask": None,
+        "owner": "{n} is blocked and has open orders: hold them or lift the block.",
+        "change": None},
+    "gl_posting_errors": {"about": "subject", "finance": True, "ask": None,
+        "owner": "{n} failed to post: correct and post it before close.", "change": None},
+    "recurring_task_missed": {"about": "subject", "ask": None,
+        "owner": "{n} missed its cycle: check it was done.", "change": None},
+    # sheet readings (``operating.proactive_sheets``): finance-marked
+    "unapplied_remittance": {"about": "subject", "finance": True, "ask": None,
+        "owner": "{n} was paid by remittance: apply the payment.", "change": None},
+    "short_payment": {"about": "subject", "finance": True, "ask": None,
+        "owner": "{n} was paid short: find out why.", "change": None},
+    "statement_difference": {"about": "subject", "finance": True, "ask": None,
+        "owner": "{n} differs from the supplier's statement: reconcile it.", "change": None},
     "watcher_attention": {"about": "subject", "ask": None, "owner": None, "change": None},
 }
 # The figures a finance-marked alert type states: only for a reader holding ``finance``.
@@ -461,11 +520,45 @@ def _binding(oid: str) -> str:
     return parts[1] if len(parts) == 3 else ""
 
 
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _company_names(path: str) -> Mapping[str, Mapping[str, str]]:
+    """environment -> company id (lower case) -> the company's name, from a books file."""
+    try:
+        names = json.loads((REPO / path).read_text()).get("names") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {str(env).lower(): {str(k).lower(): str(v) for k, v in (ids or {}).items()}
+            for env, ids in names.items() if isinstance(ids, Mapping)}
+
+
+def _in_company(base: str, spec: Mapping[str, Any], handle: str | None) -> str | None:
+    """``base`` with its company query parameter set to the company the record's cited
+    ``handle`` is of (``spec``: the system's company block). None when the handle names no
+    company the books file knows: the base's own company is never assumed."""
+    match = re.match(str(spec.get("handle_pattern") or "^$"), handle or "")
+    if match is None:
+        return None
+    name = _company_names(str(spec.get("names_file") or "")).get(
+        match.group("environment").lower(), {}).get(match.group("company").lower())
+    param = str(spec.get("query_param") or "")
+    if not name or not param:
+        return None
+    parts = urlsplit(base)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != param]
+    query.append((param, name))
+    return urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
+
+
 def source_links(oid: str, number: str | None, config: Mapping[str, Any],
-                 environ: Mapping[str, str]) -> list[dict[str, Any]]:
+                 environ: Mapping[str, str], handle: str | None = None
+                 ) -> list[dict[str, Any]]:
     """The record's page in its source system, from the configured patterns: the system its
     binding is of, its page for the record type, and a base URL the environment holds
-    (never a guessed host). Otherwise one row saying why there is no link."""
+    (never a guessed host). A system with a ``company`` block opens the record in the
+    company its cited number's ``handle`` is of. Otherwise one row saying why there is no
+    link."""
     binding = _binding(oid)
     for system, spec in (config.get("systems") or {}).items():
         if not isinstance(spec, Mapping) or not any(
@@ -480,6 +573,11 @@ def source_links(oid: str, number: str | None, config: Mapping[str, Any],
         if not base.startswith("https://"):
             return [{"system": name, "url": None, "status": "not_configured",
                      "reason": f"{spec.get('base_env')} is not set"}]
+        if isinstance(spec.get("company"), Mapping):
+            base = _in_company(base, spec["company"], handle) or ""
+            if not base:
+                return [{"system": name, "url": None, "status": "not_configured",
+                         "reason": f"the record's {name} company is not known"}]
         key = oid.split(":", 2)[2] if oid.count(":") >= 2 else ""
         if "{number}" in pattern and not number:
             return [{"system": name, "url": None, "status": "not_configured",
@@ -681,12 +779,14 @@ def build(gap: Mapping[str, Any], event_type: str, *,
     # (c) deep links
     record_page = f"/object/{quote(otype, safe='')}/{quote(oid, safe='')}"
     deep = [{"system": "Workbench", "url": record_page, "status": "ready", "reason": None}]
-    deep += source_links(oid, own[0] if own else None, links, environ)
+    deep += source_links(oid, own[0] if own else None, links, environ,
+                         own[1] if own else None)
     if about and about != oid:
         number = reader.number(about)
         deep.append({"system": "Workbench", "url": f"/object/{quote(_type_of(about), safe='')}"
                      f"/{quote(about, safe='')}", "status": "ready", "reason": None})
-        deep += source_links(about, number[0] if number else None, links, environ)
+        deep += source_links(about, number[0] if number else None, links, environ,
+                             number[1] if number else None)
     gid = str(gap.get("id") or "")
     return {"schema": SCHEMA, "id": CARD_PREFIX + gid, "alert_id": gid,
             "event_type": event_type, "kind": gap.get("kind"), "object_id": oid,

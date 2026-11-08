@@ -27,8 +27,27 @@ one in BC are never merged by name.
   payment: the invoice numbers it pays) are the same or similar (``similar_numbers``: the
   same once punctuation, case and leading zeros go; one inside the other with only letters
   around it; two adjacent characters swapped; the same digits, five or more). Numbers
-  that differ in a digit are a series (rent, a loan), never a duplicate. A credit note
-  for the supplier and the amount in the window means it was reversed: not raised.
+  that differ in a digit are a series (rent, a loan), never a duplicate. Two invoices of
+  one supplier and amount under different numbers, dated within ``SAME_AMOUNT_DAYS``, are
+  raised (``match``: ``amount_and_po``, low priority) only when both bill the same
+  purchase order; a repeat charge (``RECURRING_MIN`` or more invoices of that amount in
+  the lookback: rent, a lease, a subscription) is counted ``recurring``, and a pair with
+  nothing else in common (two deliveries of one standard order look alike) is counted
+  ``same_amount_unanchored``, never raised. A credit note for the supplier and the
+  amount in the window means it was reversed: not raised. One system at a time: BC and
+  Sage name a supplier by their own codes (none shared on gen 11) and share no invoice
+  number and amount (measured 0 pairs), and the Portal serves Sage's own tables.
+* ``returns_and_credits`` (``customer_credits_rising``): per customer (a system's own code)
+  and currency, the credit notes (Sage AR documents of the credit kind, BC sales credit
+  memos) dated in the trailing ``CREDIT_RECENT_DAYS`` against the invoices dated then: at
+  least ``CREDIT_MIN`` credits worth ``CREDIT_SHARE`` or more of what was invoiced, and
+  ``CREDIT_RISE`` times or more the customer's own share over the ``CREDIT_PRIOR_DAYS``
+  before (a customer with no invoices then has no baseline: counted, never raised). Every
+  credit and invoice summed is its own cited group. What the captured fields do not allow
+  is counted, never guessed: Sage credit notes carry no item and no invoice they apply to
+  (no per-item return rate), no return or RMA document is served (Portal sales returns,
+  BC return orders), and a return mail thread is tied to no credit (the credited order
+  numbers match no served order number), so threads are not counted here.
 * ``forecast_book``: what the forecast (``operating.cash_forecast``, ``plx.aggregate`` mode ``cash_forecast``)
   buckets: open receivables at their due date moved by the customer's own lateness, open
   payables at their due date, and open purchase orders (the one status definition,
@@ -53,12 +72,14 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 PAYMENT_RULE = "customer_payment_behaviour"
 DISCOUNT_RULE = "early_pay_discounts"
 DUPLICATE_RULE = "duplicate_payables"
-RULES = (PAYMENT_RULE, DISCOUNT_RULE, DUPLICATE_RULE)
+CREDITS_RULE = "returns_and_credits"
+RULES = (PAYMENT_RULE, DISCOUNT_RULE, DUPLICATE_RULE, CREDITS_RULE)
 SLOWER = "customer_paying_slower"
 DISCOUNT_MISSED = "early_pay_discount_missed"
 DUP_INVOICE = "duplicate_supplier_invoice"
 DUP_PAYMENT = "duplicate_supplier_payment"
-KINDS = (SLOWER, DISCOUNT_MISSED, DUP_INVOICE, DUP_PAYMENT)
+CREDITS_RISING = "customer_credits_rising"
+KINDS = (SLOWER, DISCOUNT_MISSED, DUP_INVOICE, DUP_PAYMENT, CREDITS_RISING)
 FINANCE = '["finance"]'
 
 RECENT_DAYS = 90
@@ -73,6 +94,14 @@ DISCOUNT_LOOKBACK_DAYS = 90
 DUPLICATE_INVOICE_DAYS = 45
 DUPLICATE_PAYMENT_DAYS = 14
 DUPLICATE_LOOKBACK_DAYS = 365   # pairs whose later document is older are history
+SAME_AMOUNT_DAYS = 7       # different numbers, the same amount and PO: dated this close
+RECURRING_MIN = 3          # invoices of one amount in the lookback: a repeat charge (rent)
+CREDIT_RECENT_DAYS = 90    # the returns window; the customer's own baseline: the year before
+CREDIT_PRIOR_DAYS = 365
+CREDIT_MIN = 2             # credit notes in the window
+CREDIT_SHARE = Decimal("0.10")   # credited over invoiced in the window, one currency
+CREDIT_RISE = Decimal(2)   # times the customer's own share the year before
+CREDIT_HIGH_SHARE = Decimal("0.25")
 LATENESS_MIN = 3           # paid invoices a customer's lateness needs before it moves a date
 READ_CHUNK = 4000
 
@@ -127,6 +156,11 @@ AP_SOURCES = (
     Docs("bc", "PurchaseInvoice", "bc.", "vendor_number", "vendor_invoice_number",
          "invoice_date", "due_date", "total_amount", "remaining_amount", "currency",
          status="status", po_ref="order_number"),
+)
+# credit notes kept apart from the receivables (Sage's sit in its AR documents, kind 3)
+CREDIT_SOURCES = (
+    Docs("bc", "SalesCreditMemo", "bc.", "customer_number", "bc_number", "credit_memo_date",
+         "due_date", "total_amount", "total_amount", "currency_code", status="status"),
 )
 OPEN_WORDS = frozenset({"open"})
 PAID_WORDS = frozenset({"paid", "closed"})
@@ -594,6 +628,7 @@ def duplicate_payables(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         _duplicate_payments(st, as_of, spec, gaps, counts, skipped, gap, cites)
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts.get(k, 0) for k in ("invoices", "payments", "reversed",
+                                                   "recurring", "same_amount_unanchored",
                                                    "duplicate_invoices",
                                                    "duplicate_payments",
                                                    "no_reference")}
@@ -630,9 +665,27 @@ def _duplicate_invoices(st, as_of, spec, docs, gaps, counts, skipped, gap, cites
         _tick(st)
         if len(members) < 2:
             continue
+        # a charge the supplier bills again and again (rent, a lease, a subscription, a
+        # standing order): RECURRING_MIN or more invoices of this amount in the lookback
+        repeats = sum(1 for d in members if since <= d.doc_date <= as_of) >= RECURRING_MIN
         for a, b in _pairs(members, lambda d: d.doc_date, DUPLICATE_INVOICE_DAYS):
-            if b.doc_date < since or not similar_numbers(a.number, b.number):
+            if b.doc_date < since:
                 continue
+            if similar_numbers(a.number, b.number):
+                match = "number"
+            elif (b.doc_date - a.doc_date).days > SAME_AMOUNT_DAYS:
+                continue
+            elif repeats:
+                counts["recurring"] += 1
+                continue
+            elif not (a.po_ref and a.po_ref == b.po_ref and spec.po_ref in a.rows
+                      and spec.po_ref in b.rows):
+                # the same amount within days but nothing else in common: two deliveries
+                # of one standard order look the same, so it is counted, never raised
+                counts["same_amount_unanchored"] += 1
+                continue
+            else:
+                match = "amount_and_po"
             if any(a.doc_date <= c <= b.doc_date + timedelta(days=DUPLICATE_INVOICE_DAYS)
                    for c in credits.get(key, ())):
                 counts["reversed"] += 1
@@ -641,26 +694,35 @@ def _duplicate_invoices(st, as_of, spec, docs, gaps, counts, skipped, gap, cites
             both_paid = a.paid is True and b.paid is True
             first, second = sorted((a, b), key=lambda d: d.oid)
             cur = a.rows.get("_currency")
+            props = (spec.amount, spec.number, spec.doc_date, spec.party) + (
+                (spec.po_ref,) if match == "amount_and_po" else ())
             made = gap(
                 DUP_INVOICE, DUPLICATE_RULE, second.oid, spec.type, first.oid,
                 summary=f"Supplier {a.party} invoices {a.number} ({a.doc_date.isoformat()}) "
                         f"and {b.number} ({b.doc_date.isoformat()}) are both "
                         f"{_text(a.amount)} {a.currency}"
+                        + (f" for purchase order {a.po_ref}" if match == "amount_and_po"
+                           else "")
                         + (" and both were paid" if both_paid else ""),
                 missing="Is this one invoice entered twice? If so, which one is cancelled "
                         "(and, if both were paid, ask the supplier for the money back)?",
                 why="One supplier, the same amount and currency, dated "
-                    f"{(b.doc_date - a.doc_date).days} days apart, with the same or a "
-                    "similar invoice number (each cited); no credit note for that amount "
-                    "follows.",
-                priority="high" if both_paid else "medium",
+                    f"{(b.doc_date - a.doc_date).days} days apart, "
+                    + ("with the same or a similar invoice number"
+                       if match == "number" else
+                       "billing the same purchase order under two invoice numbers")
+                    + " (each cited); no credit note for that amount follows"
+                    + ("" if match == "number" else
+                       ", and the supplier bills this amount rarely (not a repeat charge)")
+                    + ".",
+                priority="high" if both_paid else "medium" if match == "number" else "low",
                 about=(spec.type, spec.amount),
-                groups=[cites(d.cite(spec.amount, spec.number, spec.doc_date, spec.party),
-                              FINANCE) for d in (a, b)] + ([cites([cur], FINANCE)] if cur
-                                                           else []),
+                groups=[cites(d.cite(*props), FINANCE) for d in (a, b)]
+                + ([cites([cur], FINANCE)] if cur else []),
                 event={"days": (b.doc_date - a.doc_date).days,
                        "amount": _amount(a, spec.amount, cites, "invoice_amount"),
-                       "documents": [first.oid, second.oid], "both_paid": both_paid})
+                       "documents": [first.oid, second.oid], "both_paid": both_paid},
+                match=match)
             gaps.append(made)
 
 
@@ -767,6 +829,93 @@ def _duplicate_payments(st, as_of, spec, gaps, counts, skipped, gap, cites) -> N
                                                or [(None, None, '["unreadable"]')])[0][2]},
                        "documents": [first.oid, second.oid]})
             gaps.append(made)
+
+
+# --------------------------------------------------------------------------- returns
+
+def credit_docs(st: Any) -> dict[str, list[Doc]]:
+    """The credit sources' documents (the receivables' own, Sage's credit notes among them,
+    are ``ar_docs``: read once per run, shared with the payment rule)."""
+    return st.memo("cash:credits", lambda: {s.system + ":" + s.type: read_docs(st, s)
+                                            for s in CREDIT_SOURCES})
+
+
+def returns_and_credits(st: Any, as_of: date, *, gap: Callable, cites: Callable,
+                        result: Callable, settled: Sequence[str], skips: Callable
+                        ) -> dict[str, Any]:
+    skipped = skips()
+    counts: Counter = Counter()
+    recent_from = as_of - timedelta(days=CREDIT_RECENT_DAYS)
+    prior_from = recent_from - timedelta(days=CREDIT_PRIOR_DAYS)
+    # (system, party, currency) -> [recent, prior] -> kind -> [(document, its source)]
+    books: dict[tuple, list[dict[str, list]]] = defaultdict(
+        lambda: [{"credit": [], "invoice": []}, {"credit": [], "invoice": []}])
+    every = AR_SOURCES + CREDIT_SOURCES
+    for key, docs in [*ar_docs(st).items(), *credit_docs(st).items()]:
+        spec = _spec(every, key)
+        credit_source = spec in CREDIT_SOURCES
+        for doc in docs:
+            kind = ("credit" if doc.kind == "invoice" else "other") if credit_source \
+                else doc.kind
+            if kind not in ("credit", "invoice") or doc.doc_date is None \
+                    or doc.amount is None or not doc.party or doc.doc_date > as_of \
+                    or doc.doc_date <= prior_from:
+                continue
+            counts[kind + "s"] += 1
+            if doc.currency is None:
+                skipped.note("currency_unknown", [doc.oid], [(doc.oid, FINANCE)])
+                continue
+            if kind == "invoice" and doc.amount <= 0:
+                continue
+            window = 0 if doc.doc_date > recent_from else 1
+            books[(doc.system, doc.party, doc.currency)][window][kind].append((doc, spec))
+    gaps: list = []
+    total = lambda pairs: sum((abs(d.amount) for d, _ in pairs), Decimal(0))  # noqa: E731
+    for (system, party, currency), (recent, prior) in sorted(books.items()):
+        _tick(st)
+        if len(recent["credit"]) < CREDIT_MIN:
+            continue
+        credited, invoiced = total(recent["credit"]), total(recent["invoice"])
+        before_c, before_i = total(prior["credit"]), total(prior["invoice"])
+        if invoiced <= 0:
+            counts["no_recent_invoices"] += 1
+            continue
+        if before_i <= 0:
+            counts["no_baseline"] += 1
+            continue
+        share, before = credited / invoiced, before_c / before_i
+        if share < CREDIT_SHARE or share < CREDIT_RISE * before:
+            continue
+        counts["customers_raised"] += 1
+        anchor, spec = min(recent["credit"], key=lambda x: x[0].oid)
+        pct = (share * 100).quantize(Decimal("0.1"))
+        was = (before * 100).quantize(Decimal("0.1"))
+        made = gap(
+            CREDITS_RISING, CREDITS_RULE, anchor.oid, spec.type, f"{system}:{party}:{currency}",
+            summary=f"Customer {party} ({system}) got {len(recent['credit'])} credit notes "
+                    f"worth {_text(credited)} {currency} in the last {CREDIT_RECENT_DAYS} "
+                    f"days: {pct}% of the {_text(invoiced)} {currency} invoiced, against "
+                    f"{was}% in the {CREDIT_PRIOR_DAYS} days before",
+            missing="Why is this customer getting more credits than before (returns, "
+                    "damage, pricing errors)? Is one product or shipment behind them?",
+            why=f"Credit notes over invoices for one customer and currency in the last "
+                f"{CREDIT_RECENT_DAYS} days against the {CREDIT_PRIOR_DAYS} days before; "
+                "each credit and invoice summed is cited.",
+            priority="high" if share >= CREDIT_HIGH_SHARE else "medium",
+            about=(spec.type, spec.amount),
+            groups=[cites(d.cite(sp.amount, sp.number, sp.doc_date, sp.party), FINANCE)
+                    for w in (recent, prior) for k in ("credit", "invoice")
+                    for d, sp in w[k]],
+            event={"amount": {**_amount(anchor, spec.amount, cites, "credited_in_window"),
+                              "value": _text(credited)},
+                   "party": {"system": system, "code": party},
+                   "credits": len(recent["credit"])})
+        gaps.append(made)
+    out = result(gaps, not_evaluated=skipped)
+    out["counts"] = {k: counts.get(k, 0) for k in ("credits", "invoices", "no_baseline",
+                                                   "no_recent_invoices",
+                                                   "customers_raised")}
+    return out
 
 
 # --------------------------------------------------------------------------- forecast book
@@ -949,8 +1098,9 @@ def _purchase_orders(st: Any, as_of: date, po_source: Any, ap: Mapping[str, list
                              [*members, *(d.oid for d in against)]))
 
 
-__all__ = ["AP_SOURCES", "AR_SOURCES", "DISCOUNT_MISSED", "DISCOUNT_RULE", "DUPLICATE_RULE",
-           "DUP_INVOICE", "DUP_PAYMENT", "Docs", "Entry", "KINDS", "PAYMENT_RULE",
-           "PAYMENT_SOURCES", "Payments", "RULES", "SLOWER", "customer_payment_behaviour",
-           "duplicate_payables", "early_pay_discounts", "forecast_book", "lateness",
-           "parse_day", "read_docs", "similar_numbers"]
+__all__ = ["AP_SOURCES", "AR_SOURCES", "CREDITS_RISING", "CREDITS_RULE", "CREDIT_SOURCES",
+           "DISCOUNT_MISSED", "DISCOUNT_RULE", "DUPLICATE_RULE", "DUP_INVOICE", "DUP_PAYMENT",
+           "Docs", "Entry", "KINDS", "PAYMENT_RULE", "PAYMENT_SOURCES", "Payments", "RULES",
+           "SLOWER", "customer_payment_behaviour", "duplicate_payables", "early_pay_discounts",
+           "forecast_book", "lateness", "parse_day", "read_docs", "returns_and_credits",
+           "similar_numbers"]

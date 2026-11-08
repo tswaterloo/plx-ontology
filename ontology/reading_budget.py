@@ -166,14 +166,12 @@ def warm() -> None:
     never lands in what a reader remembers for the process: the MarkItDown probe
     (``doc_convert._import_backend``, cached even when its import was cut short) and the
     PDF library's import."""
-    import importlib
     from integrations import doc_convert
     doc_convert.installed_backend()
-    for name in WARM_MODULES:
-        try:
-            importlib.import_module(name)
-        except Exception:  # noqa: BLE001 - not installed: the readers fall back as ever
-            pass
+    try:
+        import pypdf  # noqa: F401 - WARM_MODULES, imported by name for the egress scan
+    except Exception:  # noqa: BLE001 - not installed: the readers fall back as ever
+        pass
 
 
 def _settle() -> None:

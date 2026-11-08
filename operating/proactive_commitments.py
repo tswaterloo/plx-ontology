@@ -7,9 +7,20 @@
   meeting's notes: a calendar event's text or a meeting transcript, organised by one of
   ours) whose own text (quoted history removed) says a promise (``promise``: a phrase
   family ``ship``, ``send``, ``confirm``, ``arrange`` or ``to_follow``, first person and future: "we will
-  ship by Friday", "I'll send the COA tomorrow", "PO to follow next week") about an OPEN
-  customer order it names by a mention link (to one of the order's ``SalesOrder`` records
-  or to the customer PO it references). The due date is parsed from the promise's
+  ship by Friday", "I'll send the COA tomorrow", "PO to follow next week"; or the order's
+  own state said without "we", never in a question or request: ``ship_state`` "ships on
+  Friday", "expected to ship next week", ``ready`` "ready by Monday", ``arrive`` "ETA
+  Friday", "should arrive Thursday", dated only) about an OPEN customer order it names by
+  a mention link (to one of the order's ``SalesOrder`` records or to the customer PO it
+  references), or, in our recent mail (``_Population._read_recent``), to a customer (a
+  recipient's address or private domain on a customer record) or naming an order or
+  customer PO that is not open; such a promise is the message's own alert, met by a later
+  message of ours in its conversation or, a shipping promise naming an order, by that order
+  no longer being open, and it is a lead unless its recipients name one customer.
+  Families chosen by counts over our outbound customer mail (2026-11-08, 90 days, counts
+  only): "will ship", "ships on/by", "ready by", "picked up", "ETA" and "should arrive"
+  matched; bare "tomorrow"/"next week" (a date, not a promise), "follow up" (mostly our
+  chasing) and French or Spanish phrases (none found) are not families. The due date is parsed from the promise's
   sentence relative to the message's own date (``due_date``: today, tomorrow, a weekday,
   this or next week, end of the month, in N (business) days, a written date); none
   parsed: the promise is tracked (``undated``) and never alerted. Met by a later record:
@@ -44,7 +55,10 @@
 Both rules read the same bounded population (``_population``, read once per run): the
 open customer orders (the late-order rule's join, ``orders``), the mention links touching
 their records and their customer POs (by the link table's end indexes), and the messages
-those links name, ``sent_at`` first and the rest only of messages inside the window.
+those links name, ``sent_at`` first and the rest only of messages inside the window; then
+our recent outbound mail to customers (listed by the ``Email.received`` events' type and
+time index, newest first, within ``RECENT_SECONDS``; the rest counted unread). A later
+message of ours among them answers an inbound message of its conversation.
 People first, fail closed (``people``: ``operating.chunking.permissions.Exclusion``): with
 the guard unavailable or no tenant domain known both rules are ``blocked``; a message in a
 mailbox, chat or calendar the exclusion does not clear is dropped unread; a message one of
@@ -66,12 +80,14 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 import json
 import re
+import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .proactive_business import _tick
-from .proactive_chasers import (AUTOMATED, CUSTOMER_PO, MENTIONS_CPO, PUBLIC_MAIL,
-                                SETTLED_MENTION, SO, _FORWARD, _OID, _REPLY, _addr,
-                                _customers, _instant, _order_facts, _row, _touch, _words)
+from .proactive_chasers import (AUTOMATED, CUSTOMER_MAIL, CUSTOMER_PO, CUSTOMER_TWINS,
+                                MENTIONS_CPO, PUBLIC_MAIL, SETTLED_MENTION, SO, _FORWARD,
+                                _OID, _REPLY, _addr, _customers, _instant, _order_facts,
+                                _row, _touch, _words)
 
 COMMITMENTS = "commitments"
 NEEDS_REPLY = "needs_reply"
@@ -79,7 +95,7 @@ DUE = "commitment_due"
 MISSED = "commitment_missed"
 NEEDS_MY_REPLY = "needs_my_reply"
 RULES = (COMMITMENTS, NEEDS_REPLY)
-OWNER_KINDS = frozenset({NEEDS_MY_REPLY})   # shown to the owner of the mail only
+OWNER_KINDS = frozenset({NEEDS_MY_REPLY, "reply_owed"})   # + ``inbox_triage.KIND``   # shown to the owner of the mail only
 
 PROMISE_DAYS = 45          # promises made within this many days of the run's day
 DUE_DAYS = 1               # due today or tomorrow: "due"
@@ -89,6 +105,12 @@ REPLY_BUSINESS_DAYS = 2    # waiting this many business days or more
 SUMMARY_CHARS = 80
 SUBJECT_CHARS = 60
 MAX_NAMED_ORDERS = 4       # a message naming more orders is a report, not about one
+# Our recent mail beyond the open orders (``_Population._read_recent``): listed by the
+# events' (type, time) index, read newest first within this many seconds; the rest is
+# counted unread (``recent_mail_over_budget``), never judged.
+RECENT_EVENT = "Email.received"
+RECENT_SECONDS = 30.0
+RECENT_CHUNK = 2000
 
 SOURCE_TYPES = ("Email", "TeamsChatMessage", "TeamsChannelMessage", "CalendarEvent",
                 "MeetingTranscript")
@@ -134,8 +156,37 @@ PROMISE_FAMILIES = {
     "to_follow": re.compile(r"\b(?:po|p\.o\.|purchase\s+order|invoice|coa|c\s+of\s+a|tracking|"
                             r"confirmation|paperwork|documents?|docs|details|quote|pricing|"
                             r"samples?)\s+(?:to|will)\s+follow\b", re.I),
+    # measured on our outbound customer mail (counts only, 2026-11-08): the order's own
+    # state said without "we": "ships on Friday", "will be shipped", "expected to ship",
+    # "ready by Monday", "picked up tomorrow", "should arrive", "ETA Friday" (dated only)
+    "ship_state": re.compile(r"\b(?:ships?|shipping|goes\s+out|going\s+out|leaves|leaving)\s+"
+                             r"(?:out\s+)?(?:on|by|today|tomorrow|this|next|early|first\s+thing)\b"
+                             r"|\b(?:will|shall|should)\s+be\s+(?:shipped|shipping|dispatched|"
+                             r"picked\s+up|going\s+out|on\s+(?:its|the)\s+way)\b"
+                             r"|\bexpect(?:ed|ing)?\s+to\s+(?:ship|leave|go\s+out|be\s+"
+                             r"(?:shipped|ready|picked\s+up))\b"
+                             r"|\b(?:be\s+)?picked\s+up\s+(?:on|by|today|tomorrow|this|next)\b",
+                             re.I),
+    "ready": re.compile(r"\b(?:ready|available)\s+(?:by|on|for\s+(?:pick\s*-?\s*up|"
+                        r"shipment|shipping)|to\s+(?:ship|go|be\s+picked\s+up))\b"
+                        r"|\b(?:we|i)\s*(?:'ll|’ll|\s+will)\s+have\s+(?:it|this|them|that|the\s+"
+                        r"\w+|your\s+\w+)\s+(?:ready|done|finished|completed)\b", re.I),
+    "arrive": re.compile(r"\b(?:should|will)\s+(?:arrive|be\s+delivered|reach\s+you|be\s+"
+                         r"there|land)\b|\beta\b", re.I),
 }
+# Families that are a promise only with a date in their sentence ("the ETA is Friday"; a
+# bare "ETA" or "should arrive" is a status, never tracked).
+NEEDS_DATE = frozenset({"arrive"})
+# Families with no first person: a sentence that asks or requests is never one of them.
+UNSPOKEN = frozenset({"ship_state", "ready", "arrive"})
 _NEGATED = re.compile(r"\b(?:not|never|n't|unable|cannot)\b", re.I)
+# A sentence that is conditional, opens as a question or speaks of the past is no promise:
+# "if we receive your PO today, it ships Friday", "can we ship by Friday", "the ETA from
+# the supplier was Friday".
+_NOT_A_PROMISE = re.compile(
+    r"\b(?:if|once|as\s+soon\s+as|provided|providing|assuming|unless|when\s+we\s+receive)\b"
+    r"|^\W*(?:can|could|would|will|shall|should|may|might|is|are|do|does|did)\b"
+    r"|\b(?:was|were|had)\b", re.I)
 # What was promised: one word of a fixed vocabulary (the summary never carries message text)
 WHAT = (("COA", r"\bcoa\b|certificate\s+of\s+analysis|\bc\s+of\s+a\b"),
         ("SDS", r"\b(?:m?sds|safety\s+data\s+sheet)\b"),
@@ -150,9 +201,11 @@ WHAT = (("COA", r"\bcoa\b|certificate\s+of\s+analysis|\bc\s+of\s+a\b"),
         ("documents", r"\b(?:documents?|docs|paperwork|bill\s+of\s+lading|bol|packing\s+slip)\b"),
         ("date", r"\b(?:eta|date|delivery\s+date|ship\s+date)\b"))
 DEFAULT_WHAT = {"ship": "the order", "send": "what was asked", "confirm": "an update",
-                "arrange": "the order", "to_follow": "documents"}
+                "arrange": "the order", "to_follow": "documents", "ship_state": "the order",
+                "ready": "the order", "arrive": "the order"}
 VERB = {"ship": "Ship", "send": "Send", "confirm": "Confirm", "arrange": "Arrange",
-        "to_follow": "Send"}
+        "to_follow": "Send", "ship_state": "Ship", "ready": "Have ready", "arrive": "Deliver"}
+SHIP_FAMILIES = frozenset({"ship", "ship_state", "ready", "arrive"})
 
 # What an inbound message asking something of us says (own text, any case).
 ASKS = re.compile(r"\?|\b(?:can|could|would|will)\s+you\b|\bplease\s+(?:send|confirm|advise|"
@@ -284,18 +337,30 @@ def promise(text: Any, sent: date) -> dict[str, Any] | None:
     text itself."""
     own = _own(text)
     for sentence in _SENTENCE.findall(own):
+        if sentence.rstrip().endswith("?") or _NOT_A_PROMISE.search(sentence):
+            continue   # a question, a condition or the past promises nothing
         for family, pattern in PROMISE_FAMILIES.items():
             found = pattern.search(sentence)
             if not found:
                 continue
-            if _NEGATED.search(sentence[max(0, found.start() - 12):found.end()]):
-                continue   # "we will not be able to ship": no promise
+            reach = 0 if family in UNSPOKEN else max(0, found.start() - 12)
+            if _NEGATED.search(sentence[reach:found.end()]):
+                continue   # "we will not be able to ship by Friday": no promise
+            if family in UNSPOKEN and ASKS.search(sentence):
+                continue   # "please let me know the ETA by Friday": a request, not ours
             tail = sentence[found.start():]
-            what = next((word for word, rx in WHAT if re.search(rx, tail, re.I)),
+            # what: after the verb ("we will send the COA"), or, a family with no first
+            # person, its subject before it too ("the samples will be ready")
+            said = sentence if family in UNSPOKEN else tail
+            what = next((word for word, rx in WHAT if re.search(rx, said, re.I)),
                         DEFAULT_WHAT[family])
+            if family == "arrive" and what == "date":
+                what = DEFAULT_WHAT[family]   # "the ETA is Friday": the order arrives
             due, basis = due_date(tail, sent)
             if due is None:
                 due, basis = due_date(sentence, sent)
+            if due is None and family in NEEDS_DATE:
+                continue
             return {"family": family, "what": what, "due": due, "due_basis": basis}
     return None
 
@@ -371,7 +436,11 @@ class _Population:
         self.messages: dict[str, dict[str, Any]] = {}
         self.named: dict[str, set[str]] = defaultdict(set)
         self.settled_mention: dict[tuple[str, str], bool] = {}
+        self.recent = 0              # our recent mail read beyond the open orders
+        self.names_order: set[str] = set()   # ... that names a (not open) customer order
+        self.audience_of: dict[str, str] = {}   # customer cluster -> its record's audience
         self._read()
+        self._read_recent()
 
     def internal(self, address: str) -> bool:
         domain = address.rsplit("@", 1)[1] if "@" in address else ""
@@ -431,6 +500,106 @@ class _Population:
                     message["version"] = handles[oid]
                     self.messages[oid] = message
 
+    def _read_recent(self) -> None:
+        """Our outbound mail of the last ``PROMISE_DAYS`` days that names no open order but
+        goes to a customer (a recipient address, or private domain, a customer record
+        states) or names a customer order or customer PO: listed by the events' (type, time)
+        index, newest first; cleared as the order population is (mailbox first, then every
+        person of ours on it); the sender, recipients and links read first and the rest
+        only of the messages kept. Read within ``RECENT_SECONDS``; what is left unread is
+        counted, never judged. No events table, or no (event_type, time) index (a SQLite
+        generation): nothing read, counted (``recent_mail_not_read_no_index``)."""
+        st, started = self.st, time.monotonic()
+        since = (self.as_of - timedelta(days=PROMISE_DAYS)).isoformat()
+        if not _events_time_index(st.conn):
+            # no (event_type, time) index (a SQLite generation): listing recent mail would
+            # read every event, so the wide scope is not read, and says so
+            self.skipped["recent_mail_not_read_no_index"] += 1
+            return
+        ids: list[str] = []
+        listed: set[str] = set()
+        try:
+            cursor = st.conn.execute(
+                "SELECT eo.object_id FROM events e JOIN event_objects eo ON eo.event_id = "
+                "e.event_id WHERE e.event_type = ? AND e.time >= ? AND e.superseded_at IS "
+                "NULL ORDER BY e.time DESC", (RECENT_EVENT, since))
+            for n, row in enumerate(cursor):   # streamed newest first, the budget checked
+                if n % 1000 == 0 and time.monotonic() - started > RECENT_SECONDS:
+                    self.skipped["recent_mail_over_budget"] += 1   # listing cut short
+                    break
+                oid = row[0]
+                if oid not in listed:
+                    listed.add(oid)
+                    if str(oid).startswith("Email:") and oid not in self.named:
+                        ids.append(oid)
+        except Exception:  # noqa: BLE001 - no events table in this store: not read
+            self.skipped["recent_mail_unlisted"] += 1
+            return
+        if not ids:
+            return
+        book, clusters = _customer_book(st, self.settled)
+        names = (*[t for t in MENTIONS if t.startswith("Email.")],
+                 *[t for t in MENTIONS_PO if t.startswith("Email.")])
+        kept: dict[str, set[str]] = {}
+        audience: dict[str, str] = {}
+        for start in range(0, len(ids), RECENT_CHUNK):
+            if time.monotonic() - started > RECENT_SECONDS:
+                self.skipped["recent_mail_over_budget"] += len(ids) - start
+                break
+            part = ids[start:start + RECENT_CHUNK]
+            _tick(st)
+            heard = dict(self._audiences(part))
+            cleared = {key: bool(self.people.unit_clear(key)) for key in set(heard.values())}
+            mine = [o for o in part if cleared.get(heard.get(o))]
+            self.skipped["recent_message_not_cleared"] += len(part) - len(mine)
+            part = mine
+            values = st.values(["Email"], ("sender", "to_addresses", "cc_addresses"),
+                               objects=part)
+            ours = {}
+            for oid, entry in values.items():
+                sender = _addr(_words(entry, "sender"))
+                if "@" not in sender or not self.internal(sender) or AUTOMATED.search(sender):
+                    continue
+                outside = [a for a in (_addresses(_words(entry, "to_addresses"))
+                                       + _addresses(_words(entry, "cc_addresses")))
+                           if not self.internal(a)]
+                if outside:
+                    # the customers a recipient's own address is on; none: its domain's
+                    ours[oid] = ({clusters[c] for a in outside for c in book.get(a, ())}
+                                 or {clusters[c] for a in outside
+                                     for c in book.get(a.rsplit("@", 1)[1], ())})
+            named = {link["from_object"] for link in _touch(st, ours, names,
+                                                            end="from_object")}
+            for oid, customers in ours.items():
+                if customers or oid in named:
+                    kept[oid] = customers
+                    if oid in named:
+                        self.names_order.add(oid)
+                    audience[oid] = heard[oid]
+        if not kept:
+            return
+        seen = {m["dedupe"] for m in self.messages.values()}
+        ids = sorted(kept)
+        when = st.values(["Email"], (*WHEN["Email"], *PROPS["Email"]), objects=ids)
+        handles = {v["object_id"]: v for v in st.versions(objects=ids)}
+        whos = {c for cs in kept.values() for c in cs}
+        self.audience_of.update(dict(self._audiences(sorted(whos))))
+        for oid in ids:
+            _tick(st)
+            entry = when.get(oid) or {}
+            at = _instant(_words(entry, *WHEN["Email"]))
+            if oid not in handles or at is None:
+                continue
+            message = self._message(oid, "Email", entry, at, None)
+            if message is None or message["dedupe"] in seen:
+                continue   # not cleared (counted), or a copy of a message read already
+            seen.add(message["dedupe"])
+            message.update(audience=audience[oid], handle=handles[oid]["l1_handle"],
+                           version=handles[oid], customers=sorted(kept[oid]), recent=True,
+                           names_order=oid in self.names_order)
+            self.messages[oid] = message
+            self.recent += 1
+
     def _name(self, link: Mapping[str, Any], orders: Iterable[str]) -> None:
         for order in orders:
             self.named[link["from_object"]].add(order)
@@ -454,7 +623,7 @@ class _Population:
         base = {"id": oid, "type": kind, "at": at, "day": at.date(),
                 "subject": ("" if subject == "None" else subject)[:SUBJECT_CHARS],
                 "forward": bool(_FORWARD.match(subject)), "reply": bool(_REPLY.match(subject)),
-                "named": sorted(self.named[oid])}
+                "named": sorted(self.named.get(oid, ()))}
         if kind == "Email":
             sender = _addr(_words(entry, "sender"))
             to = _addresses(_words(entry, "to_addresses"))
@@ -508,6 +677,51 @@ class _Population:
                 "to": [], "cc": [], "automated": False, "dedupe": oid,
                 "text": text if text is not None else (_words(entry, "body_preview") or ""),
                 "subject_text": subject}
+
+
+def _events_time_index(conn: Any) -> bool:
+    """Whether the store indexes events by (event_type, time): SQLite by its index list,
+    Postgres by its catalog; unknown: False (the wide read is then not made)."""
+    import sqlite3
+
+    try:
+        if isinstance(conn, sqlite3.Connection):
+            for index in conn.execute("PRAGMA index_list('events')").fetchall():
+                columns = [r[2] for r in conn.execute(
+                    f"PRAGMA index_info('{str(index[1]).replace(chr(39), '')}')")]
+                if columns[:2] == ["event_type", "time"]:
+                    return True
+            return False
+        return conn.execute(
+            "SELECT 1 FROM pg_indexes WHERE tablename = 'events' AND indexdef LIKE "
+            "'%(event_type, \"time\")%'").fetchone() is not None
+    except Exception:  # noqa: BLE001 - catalog unreadable: no index known
+        return False
+
+
+def _customer_book(st: Any, settled: Sequence[str]
+                   ) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """Every customer record's addresses and private domains -> the records stating them,
+    and each record -> its cluster (settled twins)."""
+    from . import po_status
+
+    values = st.values(["Customer"], CUSTOMER_MAIL)
+    twins = [(l["from_object"], l["to_object"]) for l in _touch(st, set(values),
+                                                                [CUSTOMER_TWINS])
+             if l["tier"] in settled]
+    root = po_status.clusters(twins, set(values) | {e for p in twins for e in p})
+    book: dict[str, set[str]] = defaultdict(set)
+    for oid, entry in values.items():
+        for rows in (entry.get("props") or {}).values():
+            for r in rows:
+                for part in re.split(r"[;,\s]+", str(r.get("value") or "")):
+                    address = _addr(part)
+                    if "@" in address:
+                        book[address].add(oid)
+                        domain = address.rsplit("@", 1)[1]
+                        if domain not in PUBLIC_MAIL:
+                            book[domain].add(oid)
+    return book, {oid: root.get(oid, oid) for oid in values}
 
 
 def _texts(st: Any, handles: Mapping[str, str]) -> dict[str, str]:
@@ -580,10 +794,13 @@ def commitments(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
     said_in: dict[str, dict[str, Any] | None] = {
         oid: promise(m["text"], m["day"]) for oid, m in pop.messages.items() if m["ours"]}
     ours_by_order: dict[str, list[datetime]] = defaultdict(list)
+    ours_by_thread: dict[str, list[datetime]] = defaultdict(list)   # conversation -> times
     for oid, m in pop.messages.items():
         if m["ours"] and m["channel"] in ("mail", "teams") and said_in.get(oid) is None:
             for order in m["named"]:
                 ours_by_order[order].append(m["at"])
+            if m["channel"] == "mail" and m.get("conversation"):
+                ours_by_thread[m["conversation"]].append(m["at"])
     found: dict[tuple[str, str], tuple[dict, dict]] = {}   # (order, dedupe) -> promise
     for oid in sorted(pop.messages):
         _tick(st)
@@ -605,6 +822,8 @@ def commitments(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
             skipped["internal_only"] += 1
             continue
         counts["promises"] += 1
+        if m.get("recent"):
+            found[("", m["dedupe"])] = (m, said)   # names no open order (deduplicated)
         for order in m["named"]:
             key = (order, m["dedupe"])
             if key not in found or m["id"] < found[key][0]["id"]:
@@ -616,8 +835,18 @@ def commitments(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         if due is None:
             counts["undated"] += 1
             continue
+        if not order:
+            made = _recent_promise(st, as_of, pop, m, said, ours_by_thread, counts, gap=gap,
+                                   cites=cites)
+            if made is None:
+                continue
+            if made is False:
+                skipped["promise_uncited"] += 1
+                continue
+            gaps.append(made)
+            continue
         later = [at for at in ours_by_order.get(order, ()) if at > m["at"]]
-        if said["family"] != "ship" and later:
+        if said["family"] not in SHIP_FAMILIES and later:
             counts["met"] += 1   # a later message of ours names the order
             continue
         days = (due - as_of).days
@@ -652,7 +881,7 @@ def commitments(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
                  "no later shipment, invoice or message of ours about the order is recorded "
                  "(the message and the order's status cited)."),
             priority=("low" if lead else "high" if days < 0 and (
-                said["family"] == "ship" or days <= -3) else "medium"),
+                said["family"] in SHIP_FAMILIES or days <= -3) else "medium"),
             about=(SO, "status"),
             groups=[*facts["groups"], _cite_message(st, cites, m)],
             event={"days": -days if days < 0 else days, "orders_affected": 1,
@@ -667,9 +896,67 @@ def commitments(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         gaps.append(made)
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {"open_orders": len(pop.open), "messages_read": len(pop.messages),
+                     "recent_mail_read": pop.recent,
                      **{k: counts[k] for k in ("promises", "undated", "met", "not_due_yet",
-                                               "stale", DUE, MISSED)}}
+                                               "stale", DUE, MISSED, "no_open_order")}}
     return out
+
+
+def _recent_promise(st: Any, as_of: date, pop: _Population, m: Mapping[str, Any],
+                    said: Mapping[str, Any], ours_by_thread: Mapping[str, list[datetime]],
+                    counts: Counter, *, gap: Callable, cites: Callable
+                    ) -> dict[str, Any] | None | bool:
+    """A dated promise in our recent mail to a customer that names no open order (the
+    message is the alert's record): met by a later message of ours in its conversation
+    that promises nothing again, or, a shipping promise, by the order it names no longer
+    being open. None: not raised (counted); False: uncited."""
+    due = said["due"]
+    if said["family"] in SHIP_FAMILIES and m.get("names_order"):
+        counts["met"] += 1   # the order it names left the open orders (shipped or closed)
+        return None
+    if any(at > m["at"] for at in ours_by_thread.get(m.get("conversation") or "", ())):
+        counts["met"] += 1
+        return None
+    days = (due - as_of).days
+    if days > DUE_DAYS:
+        counts["not_due_yet"] += 1
+        return None
+    if days < -MISSED_DAYS:
+        counts["stale"] += 1
+        return None
+    kind = MISSED if days < 0 else DUE
+    customers = m.get("customers") or []
+    who = customers[0] if len(customers) == 1 else None
+    lead = who is None
+    summary_text = _summary(said, None)
+    when = (f"was due {due.isoformat()}, {-days} day(s) ago" if days < 0
+            else "is due today" if days == 0 else f"is due {due.isoformat()}")
+    made = gap(
+        kind, COMMITMENTS, m["id"], "Email", f"promise|{m['dedupe']}",
+        summary=("Lead, not firm: " if lead else "") + f"We promised: {summary_text}; it "
+                f"{when} and is not met",
+        missing=("Do what was promised or tell the customer the new date (nothing is "
+                 "sent until you send it)"),
+        why=(f"A message of ours to a customer sent {m['day'].isoformat()} promises it (a "
+             f"promise phrase in our own text, the date read from it: {said['due_basis']}) "
+             "and names no open order; no later message of ours in its conversation is "
+             "recorded (the message cited)."),
+        priority=("low" if lead else "high" if days < 0 and (
+            said["family"] in SHIP_FAMILIES or days <= -3) else "medium"),
+        about=("Email", "promise"), groups=[_cite_message(st, cites, m)],
+        event={"days": -days if days < 0 else days, "orders_affected": 0,
+               "due": due.isoformat(), "promise": summary_text, "family": said["family"],
+               "promised_by": m["sender"], "to": who, "messages": [_shown(m)]},
+        due_basis=said["due_basis"])
+    if made is None:
+        return False
+    counts[kind] += 1
+    counts["no_open_order"] += 1
+    made["requires"] = sorted({m["audience"], *([pop.audience_of[who]]
+                                                 if who in pop.audience_of else [])})
+    if who is not None and who not in pop.audience_of:
+        made["follow_up"]["event"]["to"] = None   # a customer whose record's audience is unknown: unnamed
+    return made
 
 
 # --------------------------------------------------------------------------- needs my reply

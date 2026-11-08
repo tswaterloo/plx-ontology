@@ -1,0 +1,26 @@
+{
+ "vtt": "WEBVTT\n\n00:00:20.000 --> 00:00:57.000\n<v Dana Price>Let's look at December.</v>\n\n00:00:57.000 --> 00:01:34.000\n<v Raj Mehta>Northfield Bakery forecast is up twenty percent.</v>\n\n00:01:34.000 --> 00:02:11.000\n<v Marco Silva>Then I'll order another 10,000 kg of item TAP-2200 from Gulf Coast Starch next week.</v>\n\n00:02:11.000 --> 00:02:48.000\n<v Sam Okafor>We'll need more racking for that.</v>\n\n00:02:48.000 --> 00:03:25.000\n<v Dana Price>Sam, could you get three quotes for racking by next Friday?</v>\n\n00:03:25.000 --> 00:04:02.000\n<v Sam Okafor>Sure.</v>\n\n00:04:02.000 --> 00:04:39.000\n<v Raj Mehta>I'll confirm the December volumes with Northfield Bakery tomorrow.</v>\n\n00:04:39.000 --> 00:05:16.000\n<v Dana Price>We agreed December orders close on the 15th.</v>\n\n00:05:16.000 --> 00:05:53.000\n<v Marco Silva>There's a risk the port strike delays containers.</v>\n",
+ "meeting": {
+  "id": "plan-2026-11-07",
+  "subject": "Planning",
+  "start": "2026-11-07T14:00:00Z",
+  "organizer": {
+   "name": "Dana Price",
+   "address": "dana.price@plx.example"
+  },
+  "attendees": [
+   {
+    "name": "Marco Silva",
+    "address": "marco.silva@plx.example"
+   },
+   {
+    "name": "Sam Okafor",
+    "address": "sam.okafor@plx.example"
+   },
+   {
+    "name": "Raj Mehta",
+    "address": "raj.mehta@plx.example"
+   }
+  ]
+ }
+}

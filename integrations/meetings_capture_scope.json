@@ -1,9 +1,15 @@
 {
  "schema": "plx-meetings-capture-scope/v1",
- "note": "Meetings capture (integrations/capture_meetings.py): the calendar, the Planner tasks and the Teams meeting transcripts of every member mailbox of the tenant directory, listed through the guarded, paged GET /users, except every excluded person (PLX_EXCLUDED_PEOPLE_OIDS / PLX_EXCLUDED_PEOPLE_FILE; unset or empty, the run refuses before any request) and the mail capture's HR / payroll deny list (directory_scope). Calendar window: a year back to 90 days ahead. An event, task or transcript naming an excluded person is withheld whole (counted, never stored). Read with the admin application (PLX_MEETINGS_GRAPH_CREDENTIALS, default AZURE), GET only. No person, address or object id is named here.",
+ "note": "Meetings capture (integrations/capture_meetings.py): the calendar, the Planner tasks and the Teams meeting transcripts of every member mailbox of the tenant directory, listed through the guarded, paged GET /users, except every excluded person (PLX_EXCLUDED_PEOPLE_OIDS / PLX_EXCLUDED_PEOPLE_FILE; unset or empty, the run refuses before any request) and the mail capture's HR / payroll deny list (directory_scope). Calendar window: a year back to 90 days ahead. An event, task or transcript naming an excluded person is withheld whole (counted, never stored). Read with the admin application (PLX_MEETINGS_GRAPH_CREDENTIALS, default AZURE), GET only. Planner plans are also found through every Microsoft 365 group (plan_groups; owner relaying Vince's OK 2026-11-08): the groups and their members are listed with the directory application (directory_credentials, which holds GroupMember.Read.All; the admin application answers 403 to /groups), a group whose members are all excluded people is skipped, and one whose members cannot be listed is skipped whole. No person, address or object id is named here.",
  "all_mailboxes": true,
  "directory_scope": "mail_all_mailboxes_scope.json",
- "parts": ["calendar", "planner", "transcripts"],
+ "parts": [
+  "calendar",
+  "planner",
+  "transcripts"
+ ],
+ "plan_groups": true,
+ "directory_credentials": "MICROSOFT_GRAPH",
  "window_days_back": 365,
  "window_days_ahead": 90,
  "page_size": 100,

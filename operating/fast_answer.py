@@ -2565,6 +2565,42 @@ def _keyed_only(obj: Mapping[str, Any]) -> bool:
     return isinstance(origin, Mapping) and origin.get("field_path") == "row.id" \
         and bool(re.fullmatch(r"\d+", str(plain(display) or "").strip()))
 MAX_CHANGES = 10
+# A list that pages on is counted exactly by reading its remaining pages: at most this
+# many (each MAX_CHANGES records); past that the answer says the list goes on, uncounted.
+MAX_CHANGE_PAGES = 60
+
+
+def _changed_numbers(reads: Reads, arguments: Mapping[str, Any],
+                     first: Mapping[str, Any]) -> Optional[dict[str, str]]:
+    """Every changed or new record of the whole listing (``first`` and the pages after
+    it) as its own number (normalized) -> the citation of that number; one number held by
+    copies in two systems is one record, as a person counts orders. None when the count
+    cannot be exact: a page cap reached, a page cut short with no cursor, records withheld
+    from this reader, or a listed record whose number is not its cited display."""
+    numbers: dict[str, str] = {}
+    result, pages = first, 0
+    while True:
+        if _withheld(result):
+            return None
+        for change in result.get("changes") or ():
+            if change.get("kind") not in ("changed", "first_captured"):
+                continue
+            obj = change.get("object") or {}
+            display = obj.get("display")
+            origin = display.get("origin") if isinstance(display, Mapping) else None
+            if _keyed_only(obj) or not isinstance(origin, Mapping) \
+                    or not isinstance(origin.get("citation"), str) \
+                    or origin["citation"] not in reads.seen or not _norm_id(display):
+                return None
+            numbers.setdefault(_norm_id(display), origin["citation"])
+        completeness = result.get("completeness") or {}
+        cursor = completeness.get("next_cursor")
+        if not cursor:
+            return None if completeness.get("truncated") else numbers
+        pages += 1
+        if pages > MAX_CHANGE_PAGES:
+            return None
+        result = reads.call("plx.changes", {**arguments, "cursor": cursor})
 
 
 def changes(reads: Reads, ask: Ask, draft: Draft) -> None:
@@ -2600,9 +2636,22 @@ def changes(reads: Reads, ask: Ask, draft: Draft) -> None:
     when = ask.since_said or "the time you asked"
     if not listed:
         raise Unanswerable("nothing_cited")   # an empty list: the agent says it
-    draft.sentences.append(
-        f"{noun.capitalize()}s changed or new since {when}: " + "; ".join(listed)
-        + (" (the list goes on)." if more else "."))
+    counted = _changed_numbers(reads, arguments, result) if more else None
+    if counted is not None:
+        # the whole listing read: the count is exact, the list its newest records
+        from .answer_gate import MAX_CITATIONS_PER_CLAIM
+        draft.values.append({"name": "changed_count", "value": str(len(counted)),
+                             "calculation": {"op": "count", "inputs": [
+                                 {"l1_handle": h} for h in counted.values()][
+                                     :MAX_CITATIONS_PER_CLAIM]}})
+        draft.sentences.append(
+            f"{len(counted)} {noun}s changed or are new since {when}; the "
+            f"{len(listed)} most recent: " + "; ".join(listed) + ".")
+        more = False
+    else:
+        draft.sentences.append(
+            f"{noun.capitalize()}s changed or new since {when}: " + "; ".join(listed)
+            + (" (the list goes on)." if more else "."))
     if more:
         draft.gaps.append({"state": "unknown", "reason": "list_paged",
                            "subject": f"more {noun}s changed than listed"})

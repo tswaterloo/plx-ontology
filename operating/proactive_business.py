@@ -15,8 +15,10 @@ converted, never summed across units or currencies):
   are). Where the orders due by a date need more than that, ONE gap per item names the
   shortfall, the orders hit and the inbound orders counted. On hand is read from the
   sources the schema declares (``ON_HAND``: a record's own on-hand quantity, or the lots
-  of an item, each lot its own figure); while none is declared the rule is ``blocked``
-  (``on_hand_not_served``), never a clean "nothing short". Each order and purchase order
+  of an item, each lot its own figure), and for an item no record states it, the latest
+  fresh hand-kept on-hand sheet (``proactive_sheets.sheet_on_hand``, its day in the event);
+  while neither is served the rule is ``blocked`` (``on_hand_not_served``), never a clean
+  "nothing short". Each order and purchase order
   is read on ONE record of its identity cluster (BC first, else the least record id), so
   a copy in another system never counts twice. Quantities in more than one unit, or one
   without a unit, leave the item ``not_evaluated``. The claim rests on no other inbound
@@ -319,12 +321,15 @@ def inbound_flows(st: Any, po_source: Any, as_of: date, wanted_items: set,
 def stock_out_risk(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                    result: Callable, settled: Sequence[str], skips: Callable,
                    orders: Callable, po_source: Any, absence: Callable,
-                   on_hand: Sequence[tuple[str, str, str | None]] | None = None
-                   ) -> dict[str, Any]:
+                   on_hand: Sequence[tuple[str, str, str | None]] | None = None,
+                   sheet_on_hand: Callable | None = None) -> dict[str, Any]:
+    """``sheet_on_hand(item_of, items, cites, skipped)``: item -> (quantity, unit, cite
+    group, day) read from the hand-kept on-hand sheets (``proactive_sheets.sheet_on_hand``),
+    used for an item no declared source states; None: no sheets are read."""
     from . import po_status
 
     sources = declared_on_hand() if on_hand is None else tuple(on_hand)
-    if not sources:
+    if not sources and sheet_on_hand is None:
         return result([], status="blocked", reasons=["on_hand_not_served"])
     skipped = skips()
     found, verdicts = orders()
@@ -416,6 +421,16 @@ def stock_out_risk(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 book.on_hand.append((qty, unit_token(row.get("unit")),
                                      cites([row], tie["markings"])))
 
+    # the hand-kept sheets: an item no record states its stock for, at its latest fresh
+    # reading (the sheet's own unit; its day in the event)
+    sheet_days: dict[str, str] = {}
+    if sheet_on_hand is not None:
+        wanted = {top for top, book in books.items()
+                  if book.demand and not book.on_hand and not book.broken}
+        for top, (qty, unit, group, day) in sheet_on_hand(item_of, wanted, cites,
+                                                          skipped).items():
+            books[top].on_hand.append((qty, unit_token(unit) if unit else None, group))
+            sheet_days[top] = day.isoformat()
     requires = absence([*STOCK_ABSENCE_TYPES, *(t for t, _p, _v in sources)])
     gaps = []
     counts: Counter = Counter()
@@ -485,7 +500,8 @@ def stock_out_risk(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                    "unit": unit, "short_by": worst_day.isoformat(),
                    "first_short": first_short.isoformat(),
                    "orders_hit": orders_hit,
-                   "inbound": sorted({f.subject for f in counted})})
+                   "inbound": sorted({f.subject for f in counted}),
+                   **({"on_hand_sheet_day": sheet_days[item]} if item in sheet_days else {})})
         if made is not None:
             made["requires"] = requires
         gaps.append(made)
@@ -503,8 +519,14 @@ def so_item_ends(*maps: Mapping[str, Mapping[str, Any]]) -> set[str]:
 # --------------------------------------------------------------------------- receivables
 
 def overdue_receivable(st: Any, as_of: date, *, gap: Callable, cites: Callable,
-                       result: Callable, settled: Sequence[str], skips: Callable
+                       result: Callable, settled: Sequence[str], skips: Callable,
+                       chases: Callable[[Mapping[str, str]], Any] | None = None
                        ) -> dict[str, Any]:
+    """An open invoice past its due date with a balance left. ``chases``: invoice record ->
+    cluster in, cluster -> our payment chases of it out (``proactive_mail_pains.
+    receivable_chases``; None: the people guard is unavailable, nothing folded); each
+    overdue invoice's chases ride on its alert as optional citations, so a reader is told
+    "chased N times, last on ..." of only the chases it may open."""
     from . import po_status
 
     skipped = skips()
@@ -578,15 +600,32 @@ def overdue_receivable(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             groups=[cites([left_row], FINANCE), cites([due_row], FINANCE),
                     cites([status], FINANCE), *([party] if party else [])],
             extra=cites(props.get("invoice_number") or [], FINANCE),
-            event={"days": days, "amount": {
+            event={"days": days, "invoice_key": top, "amount": {
                 "value": _text(left), "currency": currency, "basis": "remaining_amount",
                 "handle": left_row["l1_handle"], "currency_handle": left_row["l1_handle"],
                 "markings": (cites([left_row], FINANCE) or [(None, None, '["unreadable"]')])[0][2]}})
         gaps.append(made)
+    if chases is not None and gaps:
+        from .proactive_mail_pains import chase_fold
+        overdue = {g["follow_up"]["event"]["invoice_key"] for g in gaps if g}
+        chased = chases({m: top for top in overdue for m in members[top]})
+        if chased is None:
+            counts["chases_not_read"] = len(gaps)
+        for made in filter(None, gaps):
+            found = (chased or {}).get(made["follow_up"]["event"]["invoice_key"])
+            if found:
+                extra, event = chase_fold(st, cites, found)
+                if extra:
+                    made["extra"] = list(dict.fromkeys([*made["extra"], *extra]))
+                    made["follow_up"]["event"]["chases"] = event
+                    counts["chased"] += 1
+    for made in filter(None, gaps):
+        made["follow_up"]["event"].pop("invoice_key", None)
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {"invoices": len(members), **{k: counts.get(k, 0) for k in
                                                   ("evaluated", "overdue", "closed",
-                                                   "unposted")}}
+                                                   "unposted", "chased",
+                                                   "chases_not_read")}}
     return out
 
 

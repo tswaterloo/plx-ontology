@@ -1,0 +1,26 @@
+{
+ "vtt": "WEBVTT\n\n00:00:20.000 --> 00:00:57.000\n<v Dana Price>Morning. So, um, where are we with Maple Crest Dairy?</v>\n\n00:00:57.000 --> 00:01:34.000\n<v Priya Nair>They called twice about SO 104602, honestly they're pretty upset.</v>\n\n00:01:34.000 --> 00:02:11.000\n<v Dana Price>Right. Priya, would you send them an update with the new ship date today?</v>\n\n00:02:11.000 --> 00:02:48.000\n<v Priya Nair>Yeah.</v>\n\n00:02:48.000 --> 00:03:25.000\n<v Sam Okafor>The truck for SO 104602 is booked for Wednesday, should be fine.</v>\n\n00:03:25.000 --> 00:04:02.000\n<v Marco Silva>Gulf Coast Starch pushed PO100871 by a week.</v>\n\n00:04:02.000 --> 00:04:39.000\n<v Dana Price>Ugh. Can someone ask Gulf Coast Starch whether they can split the shipment?</v>\n\n00:04:39.000 --> 00:05:16.000\n<v Marco Silva>I can ask them this afternoon.</v>\n\n00:05:16.000 --> 00:05:53.000\n<v Dana Price>And I'll let Raj know so sales stops promising December.</v>\n\n00:05:53.000 --> 00:06:30.000\n<v Sam Okafor>Also we should probably clean up the cold room at some point.</v>\n\n00:06:30.000 --> 00:07:07.000\n<v Dana Price>Okay, that's it.</v>\n",
+ "meeting": {
+  "id": "ho-ops-2026-11-16",
+  "subject": "Ops weekly",
+  "start": "2026-11-16T14:00:00Z",
+  "organizer": {
+   "name": "Dana Price",
+   "address": "dana.price@plx.example"
+  },
+  "attendees": [
+   {
+    "name": "Marco Silva",
+    "address": "marco.silva@plx.example"
+   },
+   {
+    "name": "Priya Nair",
+    "address": "priya.nair@plx.example"
+   },
+   {
+    "name": "Sam Okafor",
+    "address": "sam.okafor@plx.example"
+   }
+  ]
+ }
+}
