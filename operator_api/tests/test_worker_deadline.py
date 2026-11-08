@@ -73,22 +73,63 @@ class SessionSlotsTests(unittest.TestCase):
     for memory starts once memory frees, without any release."""
 
     def test_admission_follows_the_memory_available_now(self):
-        free = [be.ASK_MEMORY_FLOOR_GB + 2.0]     # room for one session only
-        slots = be.SessionSlots(4, available=lambda: free[0])
+        clock = [1000.0]
+        # room above the floor for one session growing to its peak, not two
+        free = [be.ASK_SESSION_FLOOR_GB + 1.5 * be.ASK_SESSION_GB]
+        slots = be.SessionSlots(4, available=lambda: free[0], clock=lambda: clock[0])
         slots.POLL_SECONDS = 0.02
         self.assertTrue(slots.acquire(blocking=False))     # the first: always
-        self.assertFalse(slots.acquire(blocking=False))    # a second does not fit now
+        self.assertFalse(slots.acquire(blocking=False))    # the first is still growing
         started = time.monotonic()
         self.assertFalse(slots.acquire(timeout=0.1))       # waits, then gives up
         self.assertGreaterEqual(time.monotonic() - started, 0.09)
+        # the running session's memory is already out of MemAvailable: once it is past
+        # its ramp, the same memory admits the next one (counted twice, it refused it)
+        clock[0] += be.ASK_SESSION_RAMP_SECONDS
+        self.assertTrue(slots.acquire(blocking=False))
         threading.Timer(0.1, lambda: free.__setitem__(0, 40.0)).start()
         self.assertTrue(slots.acquire(timeout=5))          # memory freed: admitted
         self.assertTrue(slots.acquire(blocking=False))
-        self.assertTrue(slots.acquire(blocking=False))
-        self.assertFalse(slots.acquire(blocking=False))    # never past the most asked
+        self.assertFalse(slots.acquire(blocking=False))    # never past the most
         slots.release()
         self.assertTrue(slots.acquire(blocking=False))
-        # unknown memory: the request stands
+        # under the floor nothing but a first session starts
+        low = be.SessionSlots(4, available=lambda: be.ASK_SESSION_FLOOR_GB - 1)
+        self.assertTrue(low.acquire(blocking=False))
+        clock[0] += 1000
+        self.assertFalse(low.acquire(blocking=False))
+        # unknown memory: admitted up to the most
         unknown = be.SessionSlots(2, available=lambda: None)
         self.assertTrue(unknown.acquire(blocking=False) and unknown.acquire(blocking=False))
         self.assertFalse(unknown.acquire(blocking=False))
+
+    def test_waiting_questions_queue_in_order_and_are_told_their_place(self):
+        """2026-11-08 graded run: asks waiting for a session were refused as busy after
+        their wait. They queue first come, first served, each told how many are ahead,
+        and each starts when a session ends."""
+        slots = be.SessionSlots(1, available=lambda: 64.0)
+        slots.POLL_SECONDS = 0.02
+        self.assertTrue(slots.acquire(blocking=False))
+        order, told = [], {}
+
+        def ask(name):
+            def report(ahead, waited):
+                told.setdefault(name, []).append(ahead)
+            self.assertTrue(slots.acquire(timeout=10, report=report))
+            order.append(name)
+
+        first = threading.Thread(target=ask, args=("first",))
+        first.start()
+        while slots.waiting() < 1:
+            time.sleep(0.01)
+        second = threading.Thread(target=ask, args=("second",))
+        second.start()
+        while slots.waiting() < 2:
+            time.sleep(0.01)
+        self.assertEqual(told, {"first": [0], "second": [1]})
+        slots.release()
+        first.join(5)
+        self.assertEqual(order, ["first"])
+        slots.release()
+        second.join(5)
+        self.assertEqual(order, ["first", "second"])

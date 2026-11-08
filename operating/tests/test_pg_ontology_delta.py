@@ -311,12 +311,16 @@ class DeltaToPostgresTests(unittest.TestCase):
         tt._LOADED.clear()
         self.assertFalse(opened()._kept_facts(*tt._store_identity(opened().store.conn),
                                               families))   # nothing kept for this version
-        # the layer's file gone: nothing folded
-        self.assertFalse(tt.catch_up_pg_facts(self.dsn, tempfile.mkdtemp()))
+        # Postgres's record of the layer's objects short and its file gone: nothing
+        # folded (the version is read in full)
+        with mock.patch.object(tt, "_recorded_owned", return_value=None):
+            self.assertFalse(tt.catch_up_pg_facts(self.dsn, tempfile.mkdtemp()))
+        # the layer's file gone (a host without the delta folder, Postgres alone): its
+        # objects are read from Postgres's record of the apply, never the whole store
         host = opened()
-        with mock.patch.object(tt.TraverseTools, "prime",
+        with mock.patch.object(tt, "_read_pg_facts_parallel",
                                side_effect=AssertionError("read the store whole")):
-            host._pg_prime_reader(families, layer.parent)
+            host._pg_prime_reader(families, None)
         tt._LOADED.clear()
         later = opened()
         self.assertTrue(later.prime_lazily(families))   # loaded at once, no scan
@@ -406,6 +410,36 @@ class DeltaToPostgresTests(unittest.TestCase):
 
         composed = slice_of(False)
         self.assertEqual(slice_of(True), composed)
+        # read side by side over one snapshot, each kind cut into key ranges: the same
+        # facts as one reader reading them one after another
+        whole = PgStoreReader.open(self.dsn, only=False, text_store=base)
+        self.addCleanup(whole.close)
+        serial = tt.TraverseTools(ot.OntologyTools(whole, ot.ReadPolicy("plx", {})))
+        families = ("graph-mail", "portal")
+        with whole.lock:
+            expected = {key: tt._fact_value(serial, key) for key in tt._fact_keys(families)}
+        cuts = {"link": [None, "L3", "L7", None], "object": [None, "N", "S", None],
+                "event": [None, "e", None]}
+        with mock.patch.object(tt, "_pg_key_bounds",
+                               side_effect=lambda cur, kind, pieces: cuts[kind]):
+            identity, parallel = tt._read_pg_facts_parallel(
+                self.dsn, families, text_store=base, workers=3)
+        self.assertEqual(set(parallel), set(expected))
+        for key, value in expected.items():
+            self.assertEqual(parallel[key], value, key)
+        self.assertEqual(parallel[("slices", "link")], composed)
+        # a layer's objects' links read by index (from or to them) give the composed
+        # read's slice of those links
+        # and one type's links by its index give the composed read's slice of that type
+        with whole.lock:
+            by_index = serial._read_slice_rows("link", ["a", "zz-none"])
+            typed = {name: serial._read_slices("link", name) for name in composed}
+            whole.slice_rows = lambda kind, schemes, **kw: None
+            by_view = serial._read_slice_rows("link", ["a", "zz-none"])
+        self.assertEqual(by_index, by_view)
+        for name, value in composed.items():
+            self.assertEqual(typed[name], {name: value}, name)
+        self.assertEqual(set(by_index), {"A.b", "C.d", "E.f"})   # the inserted links
         self.assertEqual(set(composed["A.b"][1]), {"graph-mail://m/1", "sharepoint://s/2",
                                                    "sharepoint://lit/9"})
         # an object skeleton and a surplus slot give nothing; an escaped literal (read

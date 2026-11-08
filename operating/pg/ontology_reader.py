@@ -243,35 +243,65 @@ _LINK_END = ("MAX(CASE WHEN l.superseded_at IS NULL THEN '~' "
              "ELSE ontology.sq_l9_time(l.superseded_at) END)")
 _ODD_TEXT = r"""text ~ '["\\\x01-\x1f]'"""
 # each part's latest end per (name, markings, gated) read by the workers that read it
-LINK_SLICE_SQL = (
-    "SELECT name, markings, gated, MAX(until) FROM ("
-    # every row's markings
-    f"SELECT l.link_type AS name, l.markings, NULL AS gated, {_LINK_END} AS until "
-    "FROM ontology.link_rows l GROUP BY 1, 2 "
-    "UNION ALL "
-    # the gated handles of a row not read by join, as before
-    "SELECT l.link_type, l.markings, ontology.sq_l9_gated(%(schemes)s::text[], "
-    "coalesce(l.evidence_handles, ontology.link_text(l.evidence_id, l.slots, 1, l.ek))), "
-    f"{_LINK_END} FROM ontology.link_rows l "
-    f"LEFT JOIN ({_LINK_SKELETONS}) k ON k.id = l.evidence_id "
-    "WHERE l.evidence_id IS NULL OR k.ok IS NOT TRUE "
-    "OR k.holes <> cardinality(l.slots[1:l.ek]) OR l.link_id = ANY(%(odd)s::text[]) "
-    "GROUP BY 1, 2, 3 "
-    "UNION ALL "
-    # a plain packed row's gated slot texts
-    f"SELECT l.link_type, l.markings, to_json(ARRAY[t.text])::text, {_LINK_END} "
-    f"FROM ontology.link_rows l JOIN ({_LINK_SKELETONS}) k ON k.id = l.evidence_id "
-    "AND k.ok AND k.holes = cardinality(l.slots[1:l.ek]) "
-    "CROSS JOIN LATERAL unnest(l.slots[1:l.ek]) u(id) "
-    "JOIN ontology.link_texts t ON t.id = u.id AND strpos(t.text, '://') > 0 "
-    "AND split_part(t.text, '://', 1) = ANY(%(schemes)s::text[]) "
-    "WHERE NOT l.link_id = ANY(%(odd)s::text[]) GROUP BY 1, 2, 3 "
-    "UNION ALL "
-    # a plain packed row's skeleton's gated literals
-    f"SELECT l.link_type, l.markings, k.lit, {_LINK_END} "
-    f"FROM ontology.link_rows l JOIN ({_LINK_SKELETONS}) k ON k.id = l.evidence_id "
-    "AND k.ok AND k.holes = cardinality(l.slots[1:l.ek]) AND k.lit IS NOT NULL "
-    "WHERE NOT l.link_id = ANY(%(odd)s::text[]) GROUP BY 1, 2, 3) r GROUP BY 1, 2, 3")
+# each part's latest end per (name, markings, gated) read by the workers that read it
+def link_slice_sql(ranged: bool = False, owned: bool = False, typed: bool = False) -> str:
+    """``LINK_SLICE_SQL``; ``ranged``: of the links whose id lies in
+    [``%(lo)s``, ``%(hi)s``) alone (either end NULL: open), byte order (``COLLATE "C"``,
+    the order of ``link_rows_by_id``), so a full read splits into parts read side by
+    side (``ontology_tools_traverse._read_pg_facts_parallel``); ``owned``: of the links
+    from or to the objects ``%(owned)s`` alone, by their indexes (a delta layer's
+    objects, ``ontology_tools_traverse.catch_up_pg_facts``)."""
+    part = ("" if not ranged else
+            " AND (%(lo)s::text IS NULL OR l.link_id COLLATE \"C\" >= %(lo)s) "
+            "AND (%(hi)s::text IS NULL OR l.link_id COLLATE \"C\" < %(hi)s)")
+    rows, lead = "ontology.link_rows", ""
+    if typed:
+        # one link type's rows by its index (``link_rows_by_type``): a host reading the
+        # slice of the types a call needs before the whole one is kept
+        rows = "lr"
+        lead = ("WITH lr AS MATERIALIZED (SELECT * FROM ontology.link_rows "
+                "WHERE link_type = %(name)s) ")
+    elif owned:
+        # the objects' links read once by the from and the to index (left to the planner,
+        # an OR over thousands of ids scanned all 25M rows, four times)
+        rows = "lr"
+        lead = ("WITH lr AS MATERIALIZED (SELECT * FROM ontology.link_rows "
+                "WHERE from_object = ANY(%(owned)s::text[]) UNION ALL "
+                "SELECT * FROM ontology.link_rows WHERE to_object = ANY(%(owned)s::text[]) "
+                "AND NOT from_object = ANY(%(owned)s::text[])) ")
+    return lead + (
+        "SELECT name, markings, gated, MAX(until) FROM ("
+        # every row's markings
+        f"SELECT l.link_type AS name, l.markings, NULL AS gated, {_LINK_END} AS until "
+        f"FROM {rows} l WHERE TRUE{part} GROUP BY 1, 2 "
+        "UNION ALL "
+        # the gated handles of a row not read by join, as before
+        "SELECT l.link_type, l.markings, ontology.sq_l9_gated(%(schemes)s::text[], "
+        "coalesce(l.evidence_handles, ontology.link_text(l.evidence_id, l.slots, 1, l.ek))), "
+        f"{_LINK_END} FROM {rows} l "
+        f"LEFT JOIN ({_LINK_SKELETONS}) k ON k.id = l.evidence_id "
+        "WHERE (l.evidence_id IS NULL OR k.ok IS NOT TRUE "
+        f"OR k.holes <> cardinality(l.slots[1:l.ek]) OR l.link_id = ANY(%(odd)s::text[])){part} "
+        "GROUP BY 1, 2, 3 "
+        "UNION ALL "
+        # a plain packed row's gated slot texts
+        f"SELECT l.link_type, l.markings, to_json(ARRAY[t.text])::text, {_LINK_END} "
+        f"FROM {rows} l JOIN ({_LINK_SKELETONS}) k ON k.id = l.evidence_id "
+        "AND k.ok AND k.holes = cardinality(l.slots[1:l.ek]) "
+        "CROSS JOIN LATERAL unnest(l.slots[1:l.ek]) u(id) "
+        "JOIN ontology.link_texts t ON t.id = u.id AND strpos(t.text, '://') > 0 "
+        "AND split_part(t.text, '://', 1) = ANY(%(schemes)s::text[]) "
+        f"WHERE NOT l.link_id = ANY(%(odd)s::text[]){part} GROUP BY 1, 2, 3 "
+        "UNION ALL "
+        # a plain packed row's skeleton's gated literals
+        f"SELECT l.link_type, l.markings, k.lit, {_LINK_END} "
+        f"FROM {rows} l JOIN ({_LINK_SKELETONS}) k ON k.id = l.evidence_id "
+        "AND k.ok AND k.holes = cardinality(l.slots[1:l.ek]) AND k.lit IS NOT NULL "
+        f"WHERE NOT l.link_id = ANY(%(odd)s::text[]){part} GROUP BY 1, 2, 3) r GROUP BY 1, 2, 3")
+
+
+# each part's latest end per (name, markings, gated) read by the workers that read it
+LINK_SLICE_SQL = link_slice_sql()
 # The links one of whose evidence slots is an odd text (read as before); more odd texts
 # than this and the slice is read the generic way.
 LINK_ODD_SQL = (
@@ -281,6 +311,14 @@ LINK_ODD_ROWS_SQL = (
     "SELECT coalesce(array_agg(link_id), '{}') FROM ontology.link_rows "
     "WHERE evidence_id IS NOT NULL AND slots[1:ek] && %(texts)s::bigint[]")
 LINK_ODD_CAP = 1000
+# ``LINK_ODD_ROWS_SQL`` among the links from or to the objects ``%(owned)s`` alone, by their
+# indexes and the slot texts' key (the whole-table pattern scan took minutes per layer).
+LINK_ODD_OWNED_SQL = (
+    "SELECT coalesce(array_agg(DISTINCT l.link_id), '{}') FROM ontology.link_rows l "
+    "CROSS JOIN LATERAL unnest(l.slots[1:l.ek]) u(id) "
+    f"JOIN ontology.link_texts t ON t.id = u.id AND t.{_ODD_TEXT} "
+    "WHERE l.evidence_id IS NOT NULL AND (l.from_object = ANY(%(owned)s::text[]) "
+    "OR l.to_object = ANY(%(owned)s::text[]))")
 # A word match's value row: SQLite joins the cell rowid; here the cell's key, so the value
 # row is one index probe (``row_no`` is computed).
 VALUE_WORD_JOIN = ("value_text f JOIN object_values_numbered v "
@@ -789,11 +827,10 @@ class PgStoreReader(StoreReader):
         """``TraverseTools.cell_span``'s query when the word index is read here."""
         return CELL_SPAN_SQL if self.words_loaded() else None
 
-    def slice_rows(self, kind: str, schemes: Sequence[str]) -> list[tuple] | None:
-        """``TraverseTools._slices``' rows of ``kind`` read natively (``LINK_SLICE_SQL``:
-        links only); None: read them the generic way."""
-        if kind != "link":
-            return None
+    def link_odd(self) -> list[str] | None:
+        """The links one of whose evidence slots is an odd text (``LINK_ODD_SQL``), read
+        the generic way inside the native link slice; None: more than ``LINK_ODD_CAP``,
+        the slice is read the generic way."""
         with self.conn._lock, self.conn._pg.cursor() as cur:
             cur.execute(LINK_ODD_SQL, {"cap": LINK_ODD_CAP + 1})
             texts = cur.fetchone()[0] or []
@@ -805,12 +842,48 @@ class PgStoreReader(StoreReader):
                 odd = list(cur.fetchone()[0] or [])
                 if len(odd) > LINK_ODD_CAP:
                     return None
+            return odd
+
+    def slice_rows(self, kind: str, schemes: Sequence[str], *,
+                   key_range: tuple[str | None, str | None] | None = None,
+                   odd: Sequence[str] | None = None,
+                   objects: Sequence[str] | None = None,
+                   name: str | None = None) -> list[tuple] | None:
+        """``TraverseTools._slices``' rows of ``kind`` read natively (``LINK_SLICE_SQL``:
+        links only); None: read them the generic way. ``key_range``: (lo, hi) of the link
+        ids read (``link_slice_sql``); ``odd``: ``link_odd`` read once for every part;
+        ``objects``: of the links from or to these objects alone; ``name``: of the links
+        of this type alone."""
+        if kind != "link":
+            return None
+        if odd is None and objects is not None:
+            with self.conn._lock, self.conn._pg.cursor() as cur:
+                cur.execute(LINK_ODD_OWNED_SQL, {"owned": list(objects)})
+                odd = list(cur.fetchone()[0] or [])
+            if len(odd) > LINK_ODD_CAP:
+                return None
+        if odd is None:
+            odd = self.link_odd()
+            if odd is None:
+                return None
+        with self.conn._lock, self.conn._pg.cursor() as cur:
             # each part aggregated by the workers that read it (the count lets them), and
             # the gated slot texts joined by hash: estimated a few thousand rows, the
             # planner probed millions of them one at a time
             with self.conn._pg.transaction():
-                cur.execute("SET LOCAL enable_nestloop = off")
-                cur.execute(LINK_SLICE_SQL, {"schemes": sorted(schemes), "odd": odd})
+                if objects is None and name is None:
+                    cur.execute("SET LOCAL enable_nestloop = off")
+                elif objects is not None:   # a few objects' links: by index, nested
+                    cur.execute("SET LOCAL enable_seqscan = off")
+                params: dict[str, Any] = {"schemes": sorted(schemes), "odd": list(odd)}
+                if key_range is not None:
+                    params.update(lo=key_range[0], hi=key_range[1])
+                if objects is not None:
+                    params["owned"] = list(objects)
+                if name is not None:
+                    params["name"] = name
+                cur.execute(link_slice_sql(key_range is not None, objects is not None,
+                                           name is not None and objects is None), params)
                 return cur.fetchall()
 
     def text_matches(self, scope: Any, words: str, typed_properties: Sequence[str] | None,

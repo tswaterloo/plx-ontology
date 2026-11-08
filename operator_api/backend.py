@@ -165,50 +165,97 @@ def looked_up(found: Any) -> Optional[dict[str, Any]]:
     return {"mentions": mentions, "entities": isinstance(found.get("entities"), list)}
 
 
+# One agent session at its peak beside what already runs: its tool host (about 1 GB
+# resident once its facts are kept and its heap trimmed, ``ontology_tools_traverse``),
+# helpers and the model CLI. Memory the running sessions hold is already out of
+# MemAvailable, so only sessions too young to have reached their peak are reserved for.
+ASK_SESSION_GB = 3.0
+ASK_SESSION_FLOOR_GB = 8.0        # no further session starts with less available
+ASK_SESSION_RAMP_SECONDS = 90.0   # a session admitted this recently is still growing
+# Sessions at once at most: the CPUs a session's model CLI and host share, not memory.
+ASK_SESSIONS_MOST = max(4, (os.cpu_count() or 8) // 2)
+# How often a question waiting for a session is told where it stands.
+ASK_WAIT_REPORT_SECONDS = 10.0
+
+
 class SessionSlots:
-    """The agent sessions an API runs at once: up to ``most``, a second or later one only
-    while the memory available then holds another session above the floor
-    (``ask_worker_count`` asked at that moment). Decided at each admission, never once at
-    start-up: measured 2026-11-07, an API started at a moment of 17 GB available kept one
-    session slot all day, and four readers' questions waited 70-110 s each for it (14 of
-    the graded hard set's 28 answers stopped at the time limit) while 30 GB stood free.
-    The first session is always admitted. ``available``: MemAvailable in GB (tests)."""
+    """The agent sessions an API runs at once, admitted by memory at each admission: the
+    first always; another while the memory available now, above
+    ``ASK_SESSION_FLOOR_GB``, holds one more session plus every session admitted in the
+    last ``ASK_SESSION_RAMP_SECONDS`` (not yet at its peak), never past ``most``. The
+    sessions already running are not counted again: their memory is already out of
+    MemAvailable (counted twice, 13 GB available admitted one session at a time and the
+    2026-11-08 graded asks were refused as busy after their wait). Waiting questions are
+    admitted first come, first served, and each is told how many wait ahead of it.
+    ``available``: MemAvailable in GB (tests)."""
 
     POLL_SECONDS = 1.0
 
     def __init__(self, most: int,
-                 available: Callable[[], Optional[float]] = lambda: memory_available_gb()
-                 ) -> None:
+                 available: Callable[[], Optional[float]] = lambda: memory_available_gb(),
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.most = max(1, int(most))
         self.held = 0
         self._available = available
+        self._clock = clock
+        self._admitted: list[float] = []
+        self._queue: list[object] = []
         self._cond = threading.Condition()
 
     def _admits(self) -> bool:
         if self.held >= self.most:
             return False
-        return self.held == 0 or ask_worker_count(self.held + 1, self._available()) \
-            > self.held
-
-    def acquire(self, blocking: bool = True, timeout: Optional[float] = None) -> bool:
-        ends = None if timeout is None else time.monotonic() + max(0.0, timeout)
-        with self._cond:
-            while not self._admits():
-                if not blocking:
-                    return False
-                left = None if ends is None else ends - time.monotonic()
-                if left is not None and left <= 0:
-                    return False
-                # memory frees without a release: look again each POLL_SECONDS
-                self._cond.wait(self.POLL_SECONDS if left is None
-                                else min(self.POLL_SECONDS, left))
-            self.held += 1
+        if self.held == 0:
             return True
+        free = self._available()
+        if free is None:
+            return True
+        now = self._clock()
+        self._admitted = [t for t in self._admitted if now - t < ASK_SESSION_RAMP_SECONDS]
+        return free - ASK_SESSION_FLOOR_GB >= ASK_SESSION_GB * (1 + len(self._admitted))
+
+    def waiting(self) -> int:
+        """Questions waiting for a session now."""
+        with self._cond:
+            return len(self._queue)
+
+    def acquire(self, blocking: bool = True, timeout: Optional[float] = None,
+                report: Optional[Callable[[int, float], None]] = None) -> bool:
+        """A session slot; False when none was free within ``timeout`` (``blocking``
+        False: at once). ``report(ahead, waited_seconds)``: called when the wait starts and
+        every ``ASK_WAIT_REPORT_SECONDS`` while it lasts."""
+        started = time.monotonic()
+        ends = None if timeout is None else started + max(0.0, timeout)
+        ticket = object()
+        told = None
+        with self._cond:
+            self._queue.append(ticket)
+            try:
+                while self._queue[0] is not ticket or not self._admits():
+                    if not blocking:
+                        return False
+                    now = time.monotonic()
+                    left = None if ends is None else ends - now
+                    if left is not None and left <= 0:
+                        return False
+                    if report is not None and (told is None
+                                               or now - told >= ASK_WAIT_REPORT_SECONDS):
+                        told = now
+                        report(self._queue.index(ticket), now - started)
+                    # memory frees without a release: look again each POLL_SECONDS
+                    self._cond.wait(self.POLL_SECONDS if left is None
+                                    else min(self.POLL_SECONDS, left))
+                self.held += 1
+                self._admitted.append(self._clock())
+                return True
+            finally:
+                self._queue.remove(ticket)
+                self._cond.notify_all()
 
     def release(self) -> None:
         with self._cond:
             self.held = max(0, self.held - 1)
-            self._cond.notify()
+            self._cond.notify_all()
 
 
 def memory_available_gb(meminfo: Path = Path("/proc/meminfo")) -> Optional[float]:
@@ -224,7 +271,7 @@ def memory_available_gb(meminfo: Path = Path("/proc/meminfo")) -> Optional[float
 # on one shared queue, so one slow read (a briefing read again after a visit, a cold
 # list) never holds up another reader's or another route's kept answer.
 READ_WORKERS = 3
-MAX_QUEUED_ASKS = 8
+MAX_QUEUED_ASKS = 64   # pre-reads queued before an Ask is refused at once
 READ_TIMEOUT_SECONDS = 60
 PREREAD_FAILURES: dict[str, int] = {}     # failed pre-reads by exception type, this process
 _PREREAD_LOCK = threading.Lock()
@@ -304,7 +351,9 @@ ORIGINAL_READ_WAIT = 5.0       # seconds a read waits for a slot before it is bu
 # gates) where the app's runtime may have no gate for them: a claim the host passed on
 # one stays, and it opens through that host.
 HOST_READ_SCHEMES = ("original://", "sharepoint://")
-AGENT_QUEUE_SECONDS = 120   # how long an Ask waits for a free agent session
+# How long an Ask waits, queued with its place shown, for a free agent session: the
+# whole answer budget (120 s refused the graded asks of 2026-11-08 as busy).
+AGENT_QUEUE_SECONDS = ASK_TIMEOUT_SECONDS
 AGENT_FALLBACK = ("Note: the full, checked investigation could not start just now, so "
                   "this is the quicker answer. ")
 DEFAULT_DATA_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) \
@@ -2261,11 +2310,15 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, WatchMixin)
                     session.set_result(None)   # the person picks the record first
                     return
                 brief += source_line()
-                if not self._sessions.acquire(blocking=False):
-                    status("searching", "Waiting for a free agent; other questions are "
-                                        "running")
-                    if not self._sessions.acquire(timeout=AGENT_QUEUE_SECONDS):
-                        raise errors.ASK_BUSY
+                def queued(ahead: int, waited: float) -> None:
+                    status("searching", "Waiting for a free agent: "
+                           + (f"{ahead} question{'s' if ahead != 1 else ''} ahead of yours"
+                              if ahead else "yours is next")
+                           + (f", {int(waited)} s so far" if waited >= 1 else ""))
+
+                # queued, never refused, within the answer's own time budget
+                if not self._sessions.acquire(timeout=AGENT_QUEUE_SECONDS, report=queued):
+                    raise errors.ASK_BUSY
                 try:
                     status("searching", "Finding the records your question is about")
                     roots = [root for root in (pre.get("found") or {}).get("roots") or ()
@@ -8267,9 +8320,8 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                    understand=optional_understanding(),
                                    ask_served=bool(args.ask),
                                    # sessions admitted by the memory available
-                                   # at each one (``SessionSlots``), up to the request
-                                   agent_ask=agent, agent_sessions=max(
-                                       1, min(args.ask_workers, ASK_WORKERS_MOST)),
+                                   # at each one (``SessionSlots``), not a count
+                                   agent_ask=agent, agent_sessions=ASK_SESSIONS_MOST,
                                    front_door=front_door,
                                    keep_pages=live and getattr(args, "keep_pages", 1) == 1)
         resolver = ctx.get("resolver")
