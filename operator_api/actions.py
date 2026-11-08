@@ -116,6 +116,11 @@ class ActionsMixin:
             if built is None:
                 raise UserFacing("not_found", "That message is no longer on your list.", 404)
             return built
+        if card_id.startswith("rd:"):
+            built = self.rd_card_of(reader, card_id)
+            if built is None:
+                raise UserFacing("not_found", "That project is no longer on your board.", 404)
+            return built
         if card_id.startswith("nudge:"):
             built = self.nudge_card_of(reader, card_id)
             if built is None:

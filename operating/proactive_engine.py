@@ -287,6 +287,8 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              # (``operating.inbox_triage``), label and artwork changes requested, approved
              # and done (``operating.label_changes``)
              "inbox_triage", "label_changes",
+             # R&D and sample projects per customer (``operating.rd_projects``)
+             "rd_projects",
              # unanswered vendor requests over the whole store's mail (after the late rule:
              # it judges the orders that rule finds open)
              "vendor_no_reply",
@@ -374,7 +376,8 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # the window's mail by the event index (rowid ranges side by side) and
                     # the label words (measured on the gen 11 store, 2026-11-08: 20 s and
                     # 51 s, a loaded host)
-                    "inbox_triage": 60.0, "label_changes": 120.0}
+                    "inbox_triage": 60.0, "label_changes": 120.0,
+                    "rd_projects": 120.0}
 # Store-only detectors that run side by side on threads (each on its own store connection):
 # every set-based rule but the customer-PO scan (it reads the runtime's mirror, on the
 # run's own thread); the vendor rule after the late rule on the same thread (it reads that
@@ -413,7 +416,9 @@ REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor
                             # resting on no reply in any copy (``proactive_threads``)
                             "approvals_waiting", "chase_escalation",
                             # no reply, no approval, nothing done in the thread
-                            "inbox_triage", "label_changes"})
+                            "inbox_triage", "label_changes",
+                            # no later activity in any thread of the project
+                            "rd_projects"})
 # Rule statuses of a host that has not set up a rule's input yet (the reading step's file):
 # not a run that missed anything, so never incomplete (``read_inbox``'s ``not_run``).
 SETUP_STATES = ("not_set_up",)
@@ -3448,7 +3453,7 @@ def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
     """The operations alerts (``operating.proactive_ops``) as engine steps; ``sources``:
     overrides of what the schema declares (``proactive_ops.declared_sources``)."""
     from . import proactive_ops as po
-    from . import inbox_triage, label_changes
+    from . import inbox_triage, label_changes, rd_projects
     from . import proactive_threads as threads
 
     given = dict(sources or {})
@@ -3478,7 +3483,8 @@ def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
             st, as_of, people=people(), **common),
         "inbox_triage": lambda: inbox_triage.inbox_triage(st, as_of, people=people(), **common),
         "label_changes": lambda: label_changes.label_changes(
-            st, as_of, people=people(), **common)}
+            st, as_of, people=people(), **common),
+        "rd_projects": lambda: rd_projects.rd_projects(st, as_of, people=people(), **common)}
 
 
 def _event_steps(st: _Store, as_of: date, call: Callable | None,

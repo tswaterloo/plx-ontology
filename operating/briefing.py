@@ -276,6 +276,11 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                      "label": "Label or artwork change", "departments": (
                          "ARTWORK", "QA", "QC", "QUALITY", "PROD", "SALES", "ACCTMGMT"),
                      "check": ("label_changes",), "hidden": "none"},
+    # an R&D or sample project with no activity for days (``operating.rd_projects``); its
+    # lines are the board's, never the briefing's
+    "rd_project": {"kinds": ("rd_project_idle",), "label": "R&D or sample project idle",
+                   "departments": ("RND", "QUALITY", "QA", "QC", "SALES", "ACCTMGMT", "CS"),
+                   "check": ("rd_projects",), "hidden": "none"},
     # mail threads waiting on someone (``operating.proactive_threads``): resting on no later
     # reply being recorded (``requires``: every audience of the conversation's copies)
     "approval_waiting": {"kinds": ("approval_waiting",), "label": "Approval waiting",
@@ -615,6 +620,8 @@ NEXT_ACTIONS = {
                        "reply_or_hand_off"),
     "label_change": ("Record who approved the change, or make it and tell the requester.",
                      "label_change_follow_up"),
+    "rd_project": ("Send the customer a status update, or close the project.",
+                   "rd_project_follow_up"),
     "approval_waiting": ("Decide the approval, or send the approver the drafted nudge "
                          "(nothing is sent until you send it).", "approval_nudge"),
     "chase_escalating": ("Find who owns the answer, send the chaser a holding reply with "
@@ -1492,6 +1499,8 @@ TODAY_WORDS = {
     "approval_waiting": ("approval", "approvals", "went unanswered", "waiting"),
     "label_change": ("label or artwork change", "label or artwork changes",
                      "is not approved or not done", "open"),
+    "rd_project": ("R&D or sample project", "R&D or sample projects",
+                   "has had no activity for days", "idle"),
     "chase_escalating": ("thread", "threads", "was chased again and again", "escalating"),
     "quality_hold_aging": ("held batch or lot", "held batches and lots",
                            "stayed on hold too long", "on hold too long"),

@@ -358,6 +358,21 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         your own and the teams the owner granted you. Counts only."""
         return backend.workload(who)
 
+    @app.get("/api/owner/workload", response_model=m.OwnerWorkload, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def owner_workload(who: Reader = Depends(reader)) -> m.OwnerWorkload:
+        """Per person: open threads awaiting reply, open tasks, alerts and closed alerts.
+        Owner only (403 for every other reader); counts only, never message content."""
+        return backend.owner_workload(who)
+
+    @app.get("/api/rd-projects", response_model=m.RdBoard, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def rd_board(who: Reader = Depends(reader)) -> m.RdBoard:
+        """R&D and sample projects per customer from the threads and records you may open:
+        status, last activity, owner and who each waits on, with a drafted status update.
+        Nothing is sent."""
+        return backend.rd_board(who)
+
     @app.post("/api/workload/grants", response_model=m.WorkloadGrants, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
                          422: {"model": m.ErrorResponse}})

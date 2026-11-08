@@ -752,6 +752,7 @@ class InboxTest(Engine):
                                             "chase_escalation": "blocked",
                                             "inbox_triage": "blocked",
                                             "label_changes": "blocked",
+                                            "rd_projects": "blocked",
                                             "vendor_terms_unapplied": "not_configured",
                                             "negative_margin": "not_configured"})
         # every rule run: each one the schema serves is complete, and the read is complete

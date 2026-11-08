@@ -835,6 +835,7 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "commitment_due", "commitment_missed", "needs_my_reply", "reply_owed",
               "approval_waiting", "chase_escalating",
               "label_change_unapproved", "label_change_stale", "label_change_tracked",
+              "rd_project_line", "rd_project_idle",
               "slow_moving_stock", "expiring_lot_stock", "assembly_blocked_by_component",
               "certificate_expiring", "freight_cost_anomaly", "stale_quote", "priority_order_unfilled",
               "duplicate_party_candidate", "key_field_missing", "twins_disagree",

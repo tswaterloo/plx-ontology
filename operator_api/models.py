@@ -1453,7 +1453,7 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "key_field_missing", "twins_disagree", "source_stale",
                     "reorder_soon",
                     "inventory_adjustment", "blocked_account_activity", "gl_posting_errors",
-                    "recurring_task_missed", "label_change",
+                    "recurring_task_missed", "label_change", "rd_project",
                     "unapplied_remittance", "short_payment", "statement_difference"]
 
 
@@ -2170,6 +2170,74 @@ class WorkloadGrants(_Model):
     person (Entra object ids, team codes in capitals)."""
     teams: dict[str, str] = Field(default_factory=dict)
     managers: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class RdLine(_Model):
+    id: str
+    state: Literal["waiting_on_us", "waiting_on_customer", "update_received", "closed"]
+    last_on: Optional[str] = None
+    messages_n: int = 0
+    subject: Optional[str] = None
+    citations: list[str] = Field(default_factory=list)
+
+
+class RdProject(_Model):
+    id: str
+    customer: Optional[str] = Field(None, description="The customer's record handle (open it "
+                                    "to read the name); null when the threads' mail is linked "
+                                    "to no single customer.")
+    party: Optional[str] = Field(None, description="Then the one outside domain of the "
+                                 "threads (a customer or a supplier: not known which).")
+    kind: Literal["stability_test", "formulation_change", "sample_request", "coa"]
+    status: Literal["waiting_on_us", "waiting_on_customer", "update_received", "closed"]
+    last_on: Optional[str] = None
+    days: int
+    idle: bool
+    owner: Optional[str] = Field(None, description="The person of ours who wrote most (an "
+                                 "Entra object id), never a name or an address.")
+    owner_is_you: bool = False
+    waiting_on: Optional[Literal["us", "customer"]] = None
+    items: list[str] = Field(default_factory=list)
+    lines: list[RdLine] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    draft: Optional[ApprovalNudge] = Field(None, description="A drafted status update to the "
+                                           "customer, worded from kind, state and dates only.")
+    card_id: Optional[str] = Field(None, description="The update's card for ``/api/actions/*``.")
+    offers: list[CardActionOffer] = Field(default_factory=list)
+
+
+class RdBoard(_Model):
+    """R&D and sample projects per customer (sample requests, formulation changes, stability
+    tests, certificates of analysis), built only from the threads and records you may open.
+    Each project: status, last activity, owner and who it waits on, with a drafted status
+    update (sent only through the card's preview and your confirm)."""
+    as_of: str
+    idle_after_days: int
+    total: int
+    idle: int
+    projects: list[RdProject] = Field(default_factory=list)
+    sent: Literal[0]
+    writes: Literal[0]
+
+
+class OwnerWorkloadPerson(_Model):
+    person: str = Field(description="An Entra object id, never a name or an address.")
+    team: str
+    awaiting_reply: int
+    tasks: int
+    alerts: int
+    alerts_closed: int = Field(description="Alerts owned by the person that closed in the "
+                               "window (a count: nothing says who closed them).")
+
+
+class OwnerWorkload(_Model):
+    """Per person, for the owner only: open threads awaiting reply, open tasks, alerts and
+    closed alerts. Counts only, never message content; people the exclusion does not clear
+    never appear. Covers mail, Teams and tasks only: floor and lab work is not seen, so
+    these figures undercount it."""
+    window_days: int
+    people: list[OwnerWorkloadPerson] = Field(default_factory=list)
+    note: str
 
 
 class LabelChange(_Model):

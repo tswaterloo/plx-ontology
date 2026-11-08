@@ -847,3 +847,62 @@ def workload(rows: Iterable[Mapping[str, Any]], *, reader: Iterable[str],
                         **{k: person[oid][k] for k in ("awaiting_reply", "tasks", "alerts")}}
                        for oid in sorted(shown)],
             "granted_teams": sorted(held)}
+
+
+# --------------------------------------------------------------------------- owner workload
+
+OWNER_WINDOW_DAYS = 28
+OWNER_NOTE = ("Covers mail, Teams and tasks only. Floor and lab work, phone and paper are not "
+              "seen, so these figures undercount that work and are not a measure of effort.")
+
+
+def closed_rows(inbox: Any, since: str) -> list[dict[str, Any]]:
+    """The owners of the alerts resolved on or after ``since`` (an ISO date; the run's inbox,
+    read only): no summary, no citation, no message id leaves here."""
+    import sqlite3
+    path = Path(inbox)
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        rows = []
+        for kind, follow_up in conn.execute(
+                "SELECT kind, follow_up FROM gaps WHERE state = 'resolved' AND resolved_at >= ?",
+                (since,)):
+            try:
+                fu = json.loads(follow_up)
+            except ValueError:
+                fu = {}
+            owner = fu.get("owner") if isinstance(fu, Mapping) else None
+            rows.append({"kind": kind, "owner": owner.lower() if isinstance(owner, str) else None})
+        return rows
+    finally:
+        conn.close()
+
+
+def owner_workload(rows: Iterable[Mapping[str, Any]], closed: Iterable[Mapping[str, Any]], *,
+                   grants: Mapping[str, Any], owner_kinds: Iterable[str],
+                   excluded: Callable[[str], bool]) -> dict[str, Any]:
+    """Every cleared person's open threads awaiting reply, open tasks, other alerts and the
+    alerts of theirs closed in the window: counts only (the owner-only view: the caller
+    refuses every other reader before this runs). A person the people exclusion does not clear
+    (``excluded``: fail closed) is never listed, whatever their counts."""
+    owner_kinds = frozenset(owner_kinds)
+    teams_of = dict(grants.get("teams") or {})
+    person: dict[str, Counter] = defaultdict(Counter)
+    for row in rows:
+        owner = row.get("owner")
+        if not owner or excluded(owner):
+            continue
+        kind = row.get("kind")
+        person[owner]["awaiting_reply" if kind in owner_kinds else
+                      "tasks" if kind in TASK_KINDS else "alerts"] += 1
+    for row in closed:
+        owner = row.get("owner")
+        if owner and not excluded(owner):
+            person[owner]["alerts_closed"] += 1
+    return {"window_days": OWNER_WINDOW_DAYS, "note": OWNER_NOTE,
+            "people": [{"person": oid, "team": teams_of.get(oid, NOT_ASSIGNED),
+                        **{k: person[oid][k] for k in ("awaiting_reply", "tasks", "alerts",
+                                                       "alerts_closed")}}
+                       for oid in sorted(person)]}

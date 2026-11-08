@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { BellRing, Bookmark, CalendarCheck2, CalendarClock, ChartColumnBig, Clock3, History, Inbox, ListChecks, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Reply, Search, Users, TriangleAlert, type LucideIcon } from "lucide-react";
+import { BellRing, Bookmark, CalendarCheck2, CalendarClock, ChartColumnBig, Clock3, FlaskConical, History, Inbox, ListChecks, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Reply, Search, Users, TriangleAlert, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -180,6 +180,7 @@ const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean }[] =
   { href: "/weekly", label: "Weekly review", icon: ChartColumnBig },
   { href: "/approvals", label: "Approvals", icon: ListChecks },
   { href: "/replies", label: "My replies", icon: Reply },
+  { href: "/rd-projects", label: "R&D projects", icon: FlaskConical },
   { href: "/workload", label: "Workload", icon: Users },
   { href: "/labour", label: "Labour", icon: Users },
   { href: "/ask", label: "Ask", icon: MessageCircle },

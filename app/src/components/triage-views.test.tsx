@@ -1,8 +1,9 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { LabelChanges, ReplyTriage, Workload } from "@/lib/types";
+import type { OwnerWorkload, RdBoard, LabelChanges, ReplyTriage, Workload } from "@/lib/types";
 import { ReplyList } from "./reply-list";
-import { WorkloadView } from "./workload-view";
+import { OwnerWorkloadView, WorkloadView } from "./workload-view";
+import { RdBoardView } from "./rd-board";
 import { LabelChangesView } from "./label-changes";
 
 const draft = { channel: "email" as const, to: [{ address: "buyer@synth.example" }], subject: "Re: Order 1",
@@ -44,5 +45,26 @@ describe("my replies, workload and label changes", () => {
     expect(screen.getByText(/no approval recorded/)).toBeTruthy();
     rerender(<LabelChangesView data={{ ...data, total: 0, changes: [] }} />);
     expect(container.querySelector("[data-testid=label-changes]")).toBeNull();
+  });
+
+  it("shows the owner's per-person table with the coverage note", () => {
+    const data: OwnerWorkload = { window_days: 28, note: "Covers mail, Teams and tasks only. Floor and lab work are not seen, so these figures undercount that work.", people: [
+      { person: "oid-1", team: "SALES", awaiting_reply: 3, tasks: 1, alerts: 2, alerts_closed: 4 }] };
+    render(<OwnerWorkloadView data={data} />);
+    expect(screen.getByTestId("owner-workload-note").textContent).toMatch(/undercount/);
+    expect(screen.getByText("oid-1")).toBeTruthy();
+  });
+
+  it("lists R&D projects with status, idle mark and a draft that is not sent", () => {
+    const board: RdBoard = { as_of: "2026-11-08", idle_after_days: 5, total: 1, idle: 1, sent: 0, writes: 0, projects: [
+      { id: "p1", customer: "Customer:1", kind: "sample_request", status: "waiting_on_us", last_on: "2026-11-01", days: 5,
+        idle: true, owner: "oid-1", owner_is_you: false, waiting_on: "us", items: [], lines: [
+          { id: "g1", state: "waiting_on_us", last_on: "2026-11-01", messages_n: 2, subject: "Sample 1", citations: [] }],
+        citations: [], draft, offers: [] }] };
+    render(<RdBoardView board={board} />);
+    expect(screen.getAllByTestId("rd-project")).toHaveLength(1);
+    expect(screen.getByTestId("rd-idle")).toBeTruthy();
+    expect(screen.getByText(/Waiting on us/, { selector: "div" })).toBeTruthy();
+    expect(screen.getByText(/Nothing is sent until you confirm it/)).toBeTruthy();
   });
 });

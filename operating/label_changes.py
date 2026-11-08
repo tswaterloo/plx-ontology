@@ -191,13 +191,22 @@ def population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
 
 
 def _population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
-    since = as_of - timedelta(days=WINDOW_DAYS)
+    return mail_population(st, as_of, people, WORD_GROUPS, WINDOW_DAYS, teams=True)
+
+
+def mail_population(st: Any, as_of: date, people: Any, word_groups: Sequence[str],
+                    window_days: int, teams: bool = False) -> dict[str, Any]:
+    """The window's mail whose subject or text holds any word group, then every message of
+    their conversations, read only from audiences the exclusion clears (``teams``: the label
+    words' Teams chats too)."""
+    since = as_of - timedelta(days=window_days)
     # the word groups and the Teams read side by side (each thread on its own connection)
-    with ThreadPoolExecutor(len(WORD_GROUPS) + 1) as pool:
-        teams_job = pool.submit(_teams_rows, st, since, people)
+    with ThreadPoolExecutor(len(word_groups) + 1) as pool:
+        teams_job = pool.submit(_teams_rows, st, since, people) if teams else None
         found = list(pool.map(lambda words: pt._word_ids(st, words, pt.TEXT_PROPS),
-                              WORD_GROUPS))
-        teams, teams_audience, teams_inside, teams_dropped = teams_job.result()
+                              word_groups))
+        teams_rows, teams_audience, teams_inside, teams_dropped = (
+            teams_job.result() if teams_job else ({}, {}, set(), 0))
     indexed = all(f is not None for f in found)
     seeds = set().union(*found) if indexed else None
     if indexed:
@@ -227,7 +236,7 @@ def _population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
     clear = {k: bool(people.unit_clear(k)) for k in set(audience.values())}
     kept = {o: r for o, r in rows.items() if o in audience and clear[audience[o]]}
     return {"rows": kept, "audience": audience, "members": members, "inside": inside,
-            "teams": teams, "teams_audience": teams_audience, "teams_inside": teams_inside,
+            "teams": teams_rows, "teams_audience": teams_audience, "teams_inside": teams_inside,
             "indexed": indexed,
             "dropped_unread": len(rows) - len(kept) + teams_dropped}
 

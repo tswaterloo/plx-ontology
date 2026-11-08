@@ -29,6 +29,8 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   LabelChanges,
   ReplyTriage,
   Workload,
+  OwnerWorkload,
+  RdBoard,
   UpcomingMeetings,
   WatcherItemState,
   WatcherItemStateRequest,
@@ -300,6 +302,16 @@ export function getReplies(signal?: AbortSignal): Promise<ReplyTriage> {
 // Counts per team; per person only you and the teams the owner granted you.
 export function getWorkload(signal?: AbortSignal): Promise<Workload> {
   return getJson<Workload>("/api/workload", signal);
+}
+
+// Per-person counts: the owner only (any other reader gets a 403).
+export function getOwnerWorkload(signal?: AbortSignal): Promise<OwnerWorkload> {
+  return getJson<OwnerWorkload>("/api/owner/workload", signal);
+}
+
+// R&D and sample projects per customer, from the threads and records you may open.
+export function getRdBoard(signal?: AbortSignal): Promise<RdBoard> {
+  return getJson<RdBoard>("/api/rd-projects", signal);
 }
 
 // An item's label and artwork changes from your own alert list.

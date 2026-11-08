@@ -4809,6 +4809,8 @@
                         "label_change_unapproved",
                         "label_change_stale",
                         "label_change_tracked",
+                        "rd_project_line",
+                        "rd_project_idle",
                         "approval_waiting",
                         "chase_escalating",
                         "slow_moving_stock",
@@ -4934,13 +4936,14 @@
                         "priority_fill_unmet",
                         "inbox_triage",
                         "label_changes",
+                        "rd_projects",
                         "cash_application",
                         "statement_reconciliation"
                       ]
                     },
                     "maxItems": 70
                   },
-                  "rules_clean": {"type": "array", "maxItems": 69, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "cash_application", "statement_reconciliation"]}},
+                  "rules_clean": {"type": "array", "maxItems": 70, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "rd_projects", "cash_application", "statement_reconciliation"]}},
                   "rules": {
                     "type": "array",
                     "description": "The rules that did not finish cleanly (rules_clean names the rest), each with its last run's status and not_evaluated: the records this reader may read the rule left unjudged, of the skips whose whole cause it may read (null: unknown). A rule not run or with not_evaluated other than 0 makes the home result incomplete (reason rule_not_evaluated): an empty kind is then not 'none'.",
@@ -5024,6 +5027,7 @@
                             "priority_fill_unmet",
                             "inbox_triage",
                             "label_changes",
+                            "rd_projects",
                             "cash_application",
                             "statement_reconciliation"
                           ]
@@ -5059,7 +5063,7 @@
                         }
                       }
                     },
-                    "maxItems": 69
+                    "maxItems": 70
                   },
                   "scanned": {
                     "type": "integer",
@@ -5189,6 +5193,8 @@
                             "label_change_unapproved",
                             "label_change_stale",
                             "label_change_tracked",
+                            "rd_project_line",
+                            "rd_project_idle",
                             "approval_waiting",
                             "chase_escalating",
                             "slow_moving_stock",

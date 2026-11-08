@@ -312,6 +312,15 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n}: a label or artwork change has no approval recorded.", "change": None},
     "label_change_stale": {"about": "subject", "ask": None,
         "owner": "{n}: a label or artwork change requested is not done.", "change": None},
+    # R&D and sample projects (``operating.rd_projects``): the board's idle alert
+    "rd_project": {"about": "subject", "ask": None,
+        "owner": "{n}: an R&D or sample project has had no activity: send the customer a "
+                 "status update or close it.", "change": None},
+    "rd_project_idle": {"about": "subject", "ask": None,
+        "owner": "{n}: an R&D or sample project has had no activity: send the customer a "
+                 "status update or close it.", "change": None},
+    "rd_project_line": {"about": "subject", "ask": None,
+        "owner": "{n}: an R&D or sample thread is tracked on the board.", "change": None},
     # mail threads waiting on someone (``operating.proactive_threads``): the nudge and the
     # holding reply are drafted per item by ``proactive_threads`` (never the thread's text)
     "approval_waiting": {"about": "subject", "ask": None,

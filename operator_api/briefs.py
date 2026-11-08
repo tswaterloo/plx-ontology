@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 import os
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import quote
 
 from operating import briefs as br
@@ -337,6 +337,39 @@ def replies_of(view: Any, today: Optional[date] = None) -> Optional[dict[str, An
     return it.triage(found.get("gaps") or (), today or date.today())
 
 
+RD_CARD = "rd:"
+
+
+def rd_card(project: Mapping[str, Any], today: date) -> Optional[dict[str, Any]]:
+    """A project's drafted status update as a card ``ActionDesk`` accepts (sent only through
+    its preview and the reader's confirm); addressed to the customer's last address in the
+    project's own threads, cited by their last message."""
+    from operating import rd_projects as rd
+    draft = rd.status_draft(project, today)
+    cites = [c for c in project.get("citations") or () if isinstance(c, str)]
+    to = [t["address"] for t in draft["to"] if t.get("address")]
+    card_id = RD_CARD + str(project["id"])
+    if not to or not cites or len(card_id) > 200:
+        return None
+    return {"id": card_id, "headline": draft["subject"][:300],
+            "subject": {"label": draft["subject"][:200]}, "action": {"text": ""},
+            "draft": {"channel": "email", "to": {"address": to[0], "source": cites[0]},
+                      "subject": draft["subject"], "body": draft["body"], "facts": []},
+            "teams_draft": None, "playbook": True}
+
+
+def rd_board_of(view: Any, me: Iterable[str], today: Optional[date] = None
+                ) -> Optional[dict[str, Any]]:
+    """The reader's R&D board from their own trimmed alert list and, per item, the records
+    each line names, decided as this reader (a workspace without decisions shows nothing)."""
+    from operating import rd_projects as rd
+    found = view.gap_inbox(kinds=list(rd.KINDS), limit=bf_max())
+    if not isinstance(found, Mapping) or found.get("status") != "read":
+        return None
+    return rd.board(found.get("gaps") or (), today or date.today(), decide=_decide(view),
+                    me=me)
+
+
 def label_changes_of(view: Any, object_id: str) -> Optional[dict[str, Any]]:
     from operating import label_changes as lc
     found = view.gap_inbox(kinds=list(lc.KINDS), limit=bf_max())
@@ -467,6 +500,77 @@ class BriefsMixin:
         if raw is None:
             raise UserFacing("not_found", "Your alert list could not be read.", 404)
         return m.LabelChanges(**raw)
+
+    @staticmethod
+    def _my_oids(reader: Reader) -> frozenset[str]:
+        from operating.proactive_commitments import owner_ids
+        principals = ",".join(sorted(getattr(reader.session, "principals", ()) or ()))
+        return frozenset(owner_ids(principals))
+
+    def rd_board(self, reader: Reader) -> m.RdBoard:
+        today = date.today()
+        mine = self._my_oids(reader)
+        raw = self._brief_run(reader, lambda view: rd_board_of(view, mine, today))
+        if raw is None:
+            raise UserFacing("not_found", "Your alert list could not be read.", 404)
+        projects = []
+        for project in raw["projects"]:
+            card = rd_card(project, today)
+            from operating import rd_projects as rd
+            if card is not None:
+                project["card_id"] = card["id"]
+                project["offers"] = ca.offers(card)
+                project["draft"] = {**rd.status_draft(project, today), "to": [
+                    {"address": card["draft"]["to"]["address"]}]}
+            project.pop("contact", None)   # the address leaves only inside the draft
+            projects.append(project)
+        raw["projects"] = projects
+        return m.RdBoard(**{k: v for k, v in raw.items() if k not in ("schema",)})
+
+    def rd_card_of(self, reader: Reader, card_id: str) -> Optional[dict[str, Any]]:
+        """The status-update card ``card_id`` rebuilt from this reader's own board."""
+        today = date.today()
+        mine = self._my_oids(reader)
+        raw = self._brief_run(reader, lambda view: rd_board_of(view, mine, today))
+        for project in (raw or {}).get("projects") or ():
+            card = rd_card(project, today)
+            if card is not None and card["id"] == card_id:
+                return card
+        return None
+
+    def _is_owner(self, reader: Reader) -> bool:
+        """The owner-open reader (``ReadPolicy.unrestricted``), decided from the signed-in
+        session by the access layer; nothing in a request can claim it."""
+        def owner(view: Any) -> bool:
+            try:
+                with view._request():
+                    _gated, policy = view.access.reader_policy()
+                return bool(getattr(policy, "unrestricted", False))
+            except Exception:  # noqa: BLE001 - an undecidable reader is not the owner
+                return False
+        try:
+            return bool(self._brief_run(reader, owner))
+        except UserFacing:
+            return False
+
+    def owner_workload(self, reader: Reader) -> m.OwnerWorkload:
+        """Per person counts, for the owner-open reader only (403 for anyone else, a manager
+        grant included); the people exclusion fails closed."""
+        from operating import inbox_triage as it
+        from operating import proactive_engine as pe
+        from operating.proactive_commitments import OWNER_KINDS
+        if not self._is_owner(reader):
+            raise UserFacing("forbidden", "Only the owner sees the workload of each person.",
+                             403)
+        grants = self._workload_grants()
+        store = getattr(self, "store_path", None)
+        inbox = pe.inbox_path(store) if store else None
+        since = (date.today() - timedelta(days=it.OWNER_WINDOW_DAYS)).isoformat()
+        raw = it.owner_workload(
+            it.open_rows(inbox) if inbox else [], it.closed_rows(inbox, since) if inbox else [],
+            grants=grants.load() if grants else {"teams": {}, "managers": {}},
+            owner_kinds=OWNER_KINDS, excluded=it.excluded_by(br.env_people()))
+        return m.OwnerWorkload(**raw)
 
     def _workload_grants(self) -> Any:
         from operating import inbox_triage as it

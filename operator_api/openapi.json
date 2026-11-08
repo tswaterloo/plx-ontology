@@ -2242,6 +2242,7 @@
               "gl_posting_errors",
               "recurring_task_missed",
               "label_change",
+              "rd_project",
               "unapplied_remittance",
               "short_payment",
               "statement_difference"
@@ -2386,6 +2387,7 @@
               "gl_posting_errors",
               "recurring_task_missed",
               "label_change",
+              "rd_project",
               "unapplied_remittance",
               "short_payment",
               "statement_difference"
@@ -2577,6 +2579,7 @@
               "gl_posting_errors",
               "recurring_task_missed",
               "label_change",
+              "rd_project",
               "unapplied_remittance",
               "short_payment",
               "statement_difference"
@@ -2812,6 +2815,7 @@
               "gl_posting_errors",
               "recurring_task_missed",
               "label_change",
+              "rd_project",
               "unapplied_remittance",
               "short_payment",
               "statement_difference"
@@ -7631,6 +7635,74 @@
         "title": "OrderRow",
         "type": "object"
       },
+      "OwnerWorkload": {
+        "additionalProperties": false,
+        "description": "Per person, for the owner only: open threads awaiting reply, open tasks, alerts and\nclosed alerts. Counts only, never message content; people the exclusion does not clear\nnever appear. Covers mail, Teams and tasks only: floor and lab work is not seen, so\nthese figures undercount it.",
+        "properties": {
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/OwnerWorkloadPerson"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "window_days": {
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_days",
+          "note"
+        ],
+        "title": "OwnerWorkload",
+        "type": "object"
+      },
+      "OwnerWorkloadPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "alerts": {
+            "title": "Alerts",
+            "type": "integer"
+          },
+          "alerts_closed": {
+            "description": "Alerts owned by the person that closed in the window (a count: nothing says who closed them).",
+            "title": "Alerts Closed",
+            "type": "integer"
+          },
+          "awaiting_reply": {
+            "title": "Awaiting Reply",
+            "type": "integer"
+          },
+          "person": {
+            "description": "An Entra object id, never a name or an address.",
+            "title": "Person",
+            "type": "string"
+          },
+          "tasks": {
+            "title": "Tasks",
+            "type": "integer"
+          },
+          "team": {
+            "title": "Team",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "team",
+          "awaiting_reply",
+          "tasks",
+          "alerts",
+          "alerts_closed"
+        ],
+        "title": "OwnerWorkloadPerson",
+        "type": "object"
+      },
       "Person": {
         "additionalProperties": false,
         "properties": {
@@ -8886,6 +8958,278 @@
           "why"
         ],
         "title": "ProposedChange",
+        "type": "object"
+      },
+      "RdBoard": {
+        "additionalProperties": false,
+        "description": "R&D and sample projects per customer (sample requests, formulation changes, stability\ntests, certificates of analysis), built only from the threads and records you may open.\nEach project: status, last activity, owner and who it waits on, with a drafted status\nupdate (sent only through the card's preview and your confirm).",
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "idle": {
+            "title": "Idle",
+            "type": "integer"
+          },
+          "idle_after_days": {
+            "title": "Idle After Days",
+            "type": "integer"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/RdProject"
+            },
+            "title": "Projects",
+            "type": "array"
+          },
+          "sent": {
+            "const": 0,
+            "title": "Sent",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "writes": {
+            "const": 0,
+            "title": "Writes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "as_of",
+          "idle_after_days",
+          "total",
+          "idle",
+          "sent",
+          "writes"
+        ],
+        "title": "RdBoard",
+        "type": "object"
+      },
+      "RdLine": {
+        "additionalProperties": false,
+        "properties": {
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last On"
+          },
+          "messages_n": {
+            "default": 0,
+            "title": "Messages N",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "waiting_on_us",
+              "waiting_on_customer",
+              "update_received",
+              "closed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "title": "RdLine",
+        "type": "object"
+      },
+      "RdProject": {
+        "additionalProperties": false,
+        "properties": {
+          "card_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The update's card for ``/api/actions/*``.",
+            "title": "Card Id"
+          },
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "customer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The customer's record handle (open it to read the name); null when the threads' mail is linked to no single customer.",
+            "title": "Customer"
+          },
+          "days": {
+            "title": "Days",
+            "type": "integer"
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalNudge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A drafted status update to the customer, worded from kind, state and dates only."
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idle": {
+            "title": "Idle",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "stability_test",
+              "formulation_change",
+              "sample_request",
+              "coa"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last On"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/RdLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/CardActionOffer"
+            },
+            "title": "Offers",
+            "type": "array"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The person of ours who wrote most (an Entra object id), never a name or an address.",
+            "title": "Owner"
+          },
+          "owner_is_you": {
+            "default": false,
+            "title": "Owner Is You",
+            "type": "boolean"
+          },
+          "party": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Then the one outside domain of the threads (a customer or a supplier: not known which).",
+            "title": "Party"
+          },
+          "status": {
+            "enum": [
+              "waiting_on_us",
+              "waiting_on_customer",
+              "update_received",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "enum": [
+                  "us",
+                  "customer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting On"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "days",
+          "idle"
+        ],
+        "title": "RdProject",
         "type": "object"
       },
       "RecentQuestion": {
@@ -12918,6 +13262,7 @@
                 "gl_posting_errors",
                 "recurring_task_missed",
                 "label_change",
+                "rd_project",
                 "unapplied_remittance",
                 "short_payment",
                 "statement_difference"
@@ -14346,6 +14691,80 @@
         "summary": "Object Page",
         "tags": [
           "object"
+        ]
+      }
+    },
+    "/api/owner/workload": {
+      "get": {
+        "description": "Per person: open threads awaiting reply, open tasks, alerts and closed alerts.\nOwner only (403 for every other reader); counts only, never message content.",
+        "operationId": "owner_workload_api_owner_workload_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerWorkload"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "summary": "Owner Workload",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/rd-projects": {
+      "get": {
+        "description": "R&D and sample projects per customer from the threads and records you may open:\nstatus, last activity, owner and who each waits on, with a drafted status update.\nNothing is sent.",
+        "operationId": "rd_board_api_rd_projects_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RdBoard"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Rd Board",
+        "tags": [
+          "actions"
         ]
       }
     },
