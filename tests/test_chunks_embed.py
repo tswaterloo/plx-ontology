@@ -804,6 +804,30 @@ class FixtureChunkerTests(unittest.TestCase):
         self.addCleanup(conn.close)
         self.assertEqual(withheld_messages(conn, excl), {"Email:ex", "Attachment:A1"})
 
+    def test_withheld_senders_scale_linearly_and_two_disagreeing_senders_withhold(self):
+        from operating.chunking.projection import withheld_messages
+        box = "12345678-aaaa-bbbb-cccc-0000000000dd"
+        directory = {}
+        for n in range(60):
+            sender = f"p{n}@example-plx.com"
+            directory[sender] = EXCLUDED if n % 2 else STAFF
+            self.email(f"Email:m{n}", box, f"Message {n} about carton deliveries this week.",
+                       sender=sender)
+            handle = f"graph-mail://{box}/Email:m{n}@1#attachment=A{n}"
+            self.fx.obj(f"Attachment:A{n}", "Attachment", f"mail:{box}", handle=handle,
+                        kind="attachment", values={"name": ("x.pdf", "[]")})
+            self.fx.link(f"Attachment:A{n}", f"Email:m{n}", "Attachment.attached_to")
+        # a second current sender value on a cleared message: not every value clears
+        self.fx.conn.execute("INSERT INTO object_values VALUES (?,?,?,?,NULL,?,?,?)",
+                             ("Email:m0", "sender", "p1@example-plx.com", "[]", "h",
+                              "row.sender", "text"))
+        self.fx.done()
+        conn = open_ro(self.path)
+        self.addCleanup(conn.close)
+        got = withheld_messages(conn, exclusion(directory=directory))
+        odd = {n for n in range(60) if n % 2} | {0}
+        self.assertEqual(got, {f"Email:m{n}" for n in odd} | {f"Attachment:A{n}" for n in odd})
+
     def test_latest_version_tie_takes_every_tied_marking_and_sender_fails_closed(self):
         box = "12345678-aaaa-bbbb-cccc-0000000000bb"
         self.email("Email:t", box, "A message whose versions tie on their recorded time.")
@@ -1391,6 +1415,44 @@ class PostgresTests(unittest.TestCase):
         again = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion())
         self.assertEqual((again["already_indexed"], again["other_versions_deleted"]), (1, 1))
         self.assertEqual(self.handles(), ["mc://live/tasks/T-1@3"])
+
+    def test_a_large_layer_stops_at_its_deadline_and_resumes_after_its_last_slice(self):
+        from operating.embed import follow as fl
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        layer = Path(tmp.name) / "delta-1.sqlite"
+        fx = Fixture(layer)
+        fx.conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+        for n in (1, 2, 3):
+            h = f"mc://live/tasks/T-{n}@1"
+            fx.obj(f"MCTask:T-{n}", "MCTask", "mc:live/tasks/PRJ-X", kind="mc_task", handle=h,
+                   text={"row.description": (h, f"Task {n} waits on the carton supplier.")})
+            fx.conn.execute("INSERT INTO delta_owned VALUES (?)", (f"MCTask:T-{n}",))
+        fx.done()
+        saved = []
+        ticks = iter([0.0, 5.0])        # slice 1 starts in time, slice 2 after the deadline
+        with mock.patch.object(fl, "SLICE", 2), \
+                mock.patch.object(fl, "_clock", lambda: next(ticks)):
+            first = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion(), deadline=1.0,
+                                  save=lambda p: saved.append(dict(p)))
+        self.assertEqual(first["partial"], {"slices_done": 1, "slices": 2})
+        self.assertNotIn("entities", first)
+        self.assertEqual(saved[-1], {"done": 1})
+        self.assertEqual(sorted(r[0] for r in self.conn.execute(
+            "SELECT DISTINCT object_id FROM search.chunks")), ["MCTask:T-1", "MCTask:T-2"])
+        # the next run resumes after slice 1: T-3 only, nothing chunked twice
+        with mock.patch.object(fl, "SLICE", 2):
+            second = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion(),
+                                   progress=dict(saved[-1]))
+        self.assertNotIn("partial", second)
+        self.assertEqual((second["chunks"], second["already_indexed"]), (1, 0))
+        self.assertEqual(self.conn.execute(
+            "SELECT count(DISTINCT object_id) FROM search.chunks").fetchone()[0], 3)
+        # a run killed inside slice 2 left T-3 in part: that slice is not skipped as held
+        with mock.patch.object(fl, "SLICE", 2):
+            third = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion(),
+                                  progress={"done": 1, "started": 1})
+        self.assertEqual((third["chunks"], third["already_indexed"]), (1, 0))
 
     def test_sender_purge_removes_an_excluded_senders_rows_in_any_unit(self):
         writer = self.st.ChunkWriter(self.conn)

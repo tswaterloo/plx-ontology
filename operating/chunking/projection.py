@@ -251,7 +251,7 @@ class ProjectionChunker:
         for start in range(0, len(objects), 500):
             for row in self.conn.execute(
                     "SELECT object_id, value FROM object_values WHERE object_id IN (SELECT "
-                    "value FROM json_each(?)) AND property IN ('received_at', 'sent_at') "
+                    "value FROM json_each(?)) AND +property IN ('received_at', 'sent_at') "
                     "AND superseded_at IS NULL", (_json_ids(objects[start:start + 500]),)):
                 value = str(row["value"] or "")
                 if value and value > dated.get(row["object_id"], ""):
@@ -327,7 +327,7 @@ class ProjectionChunker:
         for row in self.conn.execute(
                 "SELECT object_id, property, value, markings FROM object_values WHERE "
                 "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
-                "AND property IN (SELECT value FROM json_each(?))",
+                "AND +property IN (SELECT value FROM json_each(?))",
                 (_json_ids(object_ids), json.dumps(_META))):
             out[row["object_id"]].setdefault(row["property"], (row["value"], row["markings"]))
         return out
@@ -782,6 +782,21 @@ _MESSAGES = {"Email": "sender", "TeamsChatMessage": "from", "TeamsChannelMessage
 _CARRIED = ("Attachment.attached_to", "ContainerMember.in_attachment", "ContainerMember.in_file")
 
 
+def _sender_clear(who: Any, prop: str, exclusion: Exclusion) -> bool:
+    """True when the exclusion clears one sender value (a Teams ``from`` is JSON; an
+    application or bot without an id is cleared)."""
+    if prop == "from":
+        try:
+            data = json.loads(who) if isinstance(who, str) else {}
+        except ValueError:
+            data = {}
+        data = data if isinstance(data, Mapping) else {}
+        if str(data.get("kind") or "") in ("application", "bot") and not data.get("id"):
+            return True
+        who = data.get("id")
+    return isinstance(who, str) and bool(who.strip()) and bool(exclusion.identity_clear(who))
+
+
 def withheld_messages(conn: sqlite3.Connection, exclusion: Exclusion) -> set[str]:
     """Object ids of every mail or Teams message whose sender the exclusion does not clear
     (excluded, undecidable, absent), and of the attachments and container members carried
@@ -789,27 +804,24 @@ def withheld_messages(conn: sqlite3.Connection, exclusion: Exclusion) -> set[str
     store before writing, so an excluded sender's message never stays in a colleague's
     mailbox or chat (``purge_withheld``). Values are read at any marking: this decides
     only what is removed."""
-    cleared: set[str] = set()
+    # Set-based: one pass over each type's objects and one over the sender property's
+    # cells. A per-message lookup through the ``object_values`` view is planned from the
+    # property's whole layout (every sender cell per message), quadratic in the messages:
+    # a 335k-object delta layer never finished it within an hour.
     every: set[str] = set()
+    verdict: dict[str, bool] = {}
     for object_type, prop in _MESSAGES.items():
-        for row in conn.execute(
-                "SELECT o.object_id, (SELECT v.value FROM object_values v WHERE v.object_id = "
-                "o.object_id AND v.property = ? AND v.superseded_at IS NULL LIMIT 1) AS who "
-                "FROM objects o WHERE o.object_type = ?", (prop, object_type)):
-            every.add(row["object_id"])
-            who = row["who"]
-            if prop == "from":
-                try:
-                    data = json.loads(who) if isinstance(who, str) else {}
-                except ValueError:
-                    data = {}
-                data = data if isinstance(data, Mapping) else {}
-                if str(data.get("kind") or "") in ("application", "bot") and not data.get("id"):
-                    cleared.add(row["object_id"])
-                    continue
-                who = data.get("id")
-            if isinstance(who, str) and who.strip() and exclusion.identity_clear(who):
-                cleared.add(row["object_id"])
+        ids = {row[0] for row in conn.execute(
+            "SELECT object_id FROM objects WHERE object_type = ?", (object_type,))}
+        every |= ids
+        for oid, who in conn.execute(
+                "SELECT object_id, value FROM object_values WHERE property = ? "
+                "AND superseded_at IS NULL", (prop,)):
+            if oid not in ids:
+                continue
+            # every current sender value must clear (two disagreeing values: withheld)
+            verdict[oid] = verdict.get(oid, True) and _sender_clear(who, prop, exclusion)
+    cleared = {oid for oid, ok in verdict.items() if ok}
     withheld = every - cleared
     frontier = set(withheld)
     while frontier:

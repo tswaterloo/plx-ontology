@@ -58,7 +58,7 @@ def produce(state: Path, projection: Path, exclusion: Any, counts: Counts,
     records = RecordChunker(conn, exclusion, counts)
     record_kinds = [k for k in kinds if k in {"portal_text", "bc_text", "record_text", "mc_task"}]
     if record_kinds:
-        for chunk in records.record_chunks(record_kinds, per_kind):
+        for chunk in records.record_chunks(record_kinds, per_kind, objects=objects):
             if objects is None or chunk.object_id in objects:
                 yield chunk
     if objects is not None or until is not None:

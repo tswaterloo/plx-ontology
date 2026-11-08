@@ -40,7 +40,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from operating.chunking import KINDS, Chunk
 from operating.chunking.entities import entities, participants
@@ -126,30 +126,34 @@ def generation_pass(args: argparse.Namespace, store: Path) -> dict[str, Any]:
         keep_index=True, order="recent", workers=args.workers))
 
 
-def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any) -> dict[str, Any]:
-    """Index one row-delta layer's own objects (step 2)."""
-    started = time.monotonic()
+_clock = time.monotonic  # the deadline's clock (a test steps it)
+SLICE = 20_000          # a layer's own objects indexed per slice (resumable unit)
+PARALLEL_MIN = 2_000    # a slice this large is chunked in processes side by side
+
+
+def layer_shard(task: tuple[dict[str, Any], int, int]) -> dict[str, Any]:
+    """One process's share (``shard`` i of n) of one slice of a layer: its documents'
+    chunks written over its own connection. The people exclusion is loaded here as in the
+    parent; a process that cannot load it writes nothing and fails the run."""
+    job, index, total = task
+    state = Path(job["state"])
+    exclusion = _exclusion(state, dict(job["values"]))
+    if exclusion.unavailable and PERSON_KINDS & set(KINDS):
+        raise RuntimeError(f"people_exclusion_unavailable:{exclusion.unavailable}")
+    conn = st.connect(job["dsn"])
     try:
-        source = open_ro(layer)
-        owned = frozenset(r[0] for r in source.execute("SELECT object_id FROM delta_owned"))
-        current = dict(source.execute(
-            "SELECT v.object_id, v.l1_handle FROM object_versions v JOIN delta_owned d ON "
-            "d.object_id = v.object_id WHERE v.superseded_at IS NULL").fetchall())
-    except sqlite3.Error:
-        return {"skipped": "not_a_delta_layer"}
-    # An object whose current version the index already holds is not chunked again: an
-    # hourly fold re-lists every change since the generation.
-    held = set(conn.execute(
-        "SELECT DISTINCT object_id, split_part(source_handle, '#', 1) FROM search.chunks "
-        "WHERE object_id = ANY(%s)", (sorted(owned),)).fetchall())
-    conn.commit()
-    indexed = {oid for oid, handle in held if current.get(oid) == handle}
-    owned_all, owned = owned, frozenset(owned - indexed)
-    # one version per object: an object held at its current version keeps no other
-    other_versions = st.delete_other_versions(conn, {oid: current[oid] for oid in indexed})
+        return _slice_chunks(conn, state, Path(job["layer"]), exclusion,
+                             frozenset(job["objects"]), (index, total) if total > 1 else None)
+    finally:
+        conn.close()
+
+
+def _slice_chunks(conn: Any, state: Path, layer: Path, exclusion: Any,
+                  objects: frozenset[str], shard: tuple[int, int] | None) -> dict[str, Any]:
+    """Chunk and write the documents and records of ``objects`` (this shard's share):
+    the chunk ids written, the (object, kind) pairs produced, the withheld units."""
     counts = Counts()
     writer = st.ChunkWriter(conn, unit_of=lambda key: unit_row(key, exclusion))
-    withheld = withheld_messages(source, exclusion)
     produced: set[tuple[str, str]] = set()
 
     def noted(chunks: Iterator[Chunk]) -> Iterator[Chunk]:
@@ -159,24 +163,112 @@ def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any) -> dict[str,
             yield chunk
 
     tally = _Tally(None)
-    tally.take(noted(produce(state, layer, exclusion, counts, KINDS, None, objects=owned)),
-               writer)
+    tally.take(noted(produce(state, layer, exclusion, counts, KINDS, None, shard=shard,
+                             objects=objects)), writer)
+    return {"seen": tally.seen, "produced": sorted(produced),
+            "written": [writer.inserted, writer.updated, writer.unchanged],
+            "withheld": sorted(counts.withheld),
+            "skipped": dict(counts.as_dict().get("skipped") or {})}
+
+
+def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any, *,
+               deadline: float | None = None, progress: dict[str, Any] | None = None,
+               workers: int = 1, values: dict[str, str] | None = None,
+               dsn: str | None = None,
+               save: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+    """Index one row-delta layer's own objects (step 2), ``SLICE`` objects at a time in
+    their sorted order. ``deadline`` (``time.monotonic()``): no slice starts after it and
+    the report says ``partial`` with the slices done; ``progress`` (the cursor's record
+    for this layer: ``done`` slices, ``started`` the slice a stopped run was in) resumes
+    after the last slice done; ``save`` records it as each slice starts and ends. A slice of ``PARALLEL_MIN`` objects or more is chunked in
+    ``workers`` processes (``values``/``dsn`` for theirs)."""
+    started = time.monotonic()
+    try:
+        source = open_ro(layer)
+        owned_all = sorted(r[0] for r in source.execute("SELECT object_id FROM delta_owned"))
+        current = dict(source.execute(
+            "SELECT v.object_id, v.l1_handle FROM object_versions v JOIN delta_owned d ON "
+            "d.object_id = v.object_id WHERE v.superseded_at IS NULL").fetchall())
+    except sqlite3.Error:
+        return {"skipped": "not_a_delta_layer"}
+    progress = progress if progress is not None else {}
+    done = int(progress.get("done") or 0)
+    interrupted = progress.get("started")
+    # An excluded sender's message (and what it carries) leaves the store before anything
+    # of the layer is written, so a stopped run never leaves it searchable.
     report: dict[str, Any] = {
-        "owned": len(owned_all), "already_indexed": len(indexed),
-        "other_versions_deleted": other_versions, "chunks": len(tally.seen), "inserted": writer.inserted,
-        "updated": writer.updated, "unchanged": writer.unchanged,
-        "replaced_deleted": st.delete_replaced(conn, produced, tally.seen),
-        "withheld_units_deleted": writer.delete_units(counts.withheld),
-        "sender_rows_purged": st.purge_objects(conn, withheld)}
-    ecounts = Counts()
-    records = [e for e in entities(source, ecounts, exclusion=exclusion)
-               if e.object_id in owned_all]
-    people = list(participants(source, ecounts, exclusion=exclusion)) if owned else []
-    for start in range(0, max(len(records), len(people)), WRITE_BATCH):
-        writer.write_entities(records[start:start + WRITE_BATCH])
-        writer.write_entities(people[start:start + WRITE_BATCH], new_only=True)
-    report["entities"] = {"records": len(records), "people_seen": len(people)}
-    report["skipped"] = dict(counts.as_dict().get("skipped") or {})
+        "owned": len(owned_all), "already_indexed": 0, "other_versions_deleted": 0,
+        "chunks": 0, "inserted": 0, "updated": 0, "unchanged": 0, "replaced_deleted": 0,
+        "withheld_units_deleted": 0,
+        "sender_rows_purged": st.purge_objects(conn, withheld_messages(source, exclusion))}
+    skipped: dict[str, int] = {}
+    slices = [owned_all[i:i + SLICE] for i in range(0, len(owned_all), SLICE)]
+    for number in range(done, len(slices)):
+        if deadline is not None and _clock() >= deadline:
+            report["partial"] = {"slices_done": number, "slices": len(slices)}
+            break
+        part = slices[number]
+        progress["started"] = number
+        if save:
+            save(progress)
+        # An object whose current version the index already holds is not chunked again: an
+        # hourly fold re-lists every change since the generation. Not in a slice a run was
+        # stopped inside: an object it wrote in part would look held.
+        held = set() if interrupted == number else set(conn.execute(
+            "SELECT DISTINCT object_id, split_part(source_handle, '#', 1) FROM search.chunks "
+            "WHERE object_id = ANY(%s)", (part,)).fetchall())
+        conn.commit()
+        indexed = {oid for oid, handle in held if current.get(oid) == handle}
+        objects = frozenset(part) - indexed
+        report["already_indexed"] += len(indexed)
+        # one version per object: an object held at its current version keeps no other
+        report["other_versions_deleted"] += st.delete_other_versions(
+            conn, {oid: current[oid] for oid in indexed})
+        n = max(1, workers) if len(objects) >= PARALLEL_MIN and values is not None else 1
+        if not objects:
+            parts: list[dict[str, Any]] = []
+        elif n == 1:
+            parts = [_slice_chunks(conn, state, layer, exclusion, objects, None)]
+        else:
+            from concurrent.futures import ProcessPoolExecutor
+            import multiprocessing as mp
+            job = {"state": str(state), "layer": str(layer), "values": dict(values or {}),
+                   "dsn": dsn or (values or {}).get("PLX_PG_DSN") or config.DEFAULT_DSN,
+                   "objects": sorted(objects)}
+            with ProcessPoolExecutor(n, mp_context=mp.get_context("spawn")) as pool:
+                parts = list(pool.map(layer_shard, [(job, i, n) for i in range(n)]))
+        seen = [cid for p in parts for cid in p["seen"]]
+        produced = {tuple(pair) for p in parts for pair in p["produced"]}
+        report["chunks"] += len(seen)
+        for p in parts:
+            report["inserted"] += p["written"][0]
+            report["updated"] += p["written"][1]
+            report["unchanged"] += p["written"][2]
+            for key, value in p["skipped"].items():
+                skipped[key] = skipped.get(key, 0) + value
+        report["replaced_deleted"] += st.delete_replaced(conn, produced, seen)
+        writer = st.ChunkWriter(conn, unit_of=lambda key: unit_row(key, exclusion))
+        report["withheld_units_deleted"] += writer.delete_units(
+            {u for p in parts for u in p["withheld"]})
+        progress["done"] = number + 1
+        progress.pop("started", None)
+        interrupted = None
+        if save:
+            save(progress)
+    if "partial" not in report:
+        # entities once the layer's every slice is in: its records and new people
+        ecounts = Counts()
+        owned_set = frozenset(owned_all)
+        records = [e for e in entities(source, ecounts, exclusion=exclusion)
+                   if e.object_id in owned_set]
+        people = list(participants(source, ecounts, exclusion=exclusion)) if owned_all \
+            else []
+        writer = st.ChunkWriter(conn, unit_of=lambda key: unit_row(key, exclusion))
+        for start in range(0, max(len(records), len(people)), WRITE_BATCH):
+            writer.write_entities(records[start:start + WRITE_BATCH])
+            writer.write_entities(people[start:start + WRITE_BATCH], new_only=True)
+        report["entities"] = {"records": len(records), "people_seen": len(people)}
+    report["skipped"] = skipped
     report["seconds"] = round(time.monotonic() - started, 1)
     return report
 
@@ -295,6 +387,7 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
             # deleted as stale comes back and an older one beside it goes
             cursor = dict(cursor, generation=now_served["generation"],
                           digest=now_served["digest"], layers=[], after_pass=pass_done)
+            cursor.pop("partial", None)
             save_cursor(cursor_path, cursor)
         conn = st.connect(values.get("PLX_PG_DSN") or config.DEFAULT_DSN)
         st.require_schema(conn)
@@ -302,15 +395,33 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
         indexed = [p for p in cursor.get("layers") or [] if p in layers]
         report["layers"] = {}
         started = time.monotonic()
+        deadline = started + args.layer_seconds if args.layer_seconds else None
+        # a layer a run stopped inside resumes after its last slice done
+        partial = cursor.get("partial") if isinstance(cursor.get("partial"), dict) else {}
+
+        def save(progress: dict[str, Any], layer: str) -> None:
+            cursor["partial"] = dict(progress, layer=layer)
+            save_cursor(cursor_path, cursor)
+
         for layer in layers:
             if layer in indexed or not Path(layer).is_file():
                 continue
-            if args.layer_seconds and time.monotonic() - started > args.layer_seconds:
+            if deadline is not None and time.monotonic() >= deadline:
                 report["layers_left"] = len([x for x in layers if x not in indexed])
                 break
-            report["layers"][Path(layer).name] = layer_pass(conn, state, Path(layer), exclusion)
+            progress = {k: v for k, v in partial.items() if k != "layer"} \
+                if partial.get("layer") == layer else {}
+            result = layer_pass(conn, state, Path(layer), exclusion, deadline=deadline,
+                                progress=progress, workers=args.chunk_workers, values=values,
+                                save=lambda p, layer=layer: save(p, layer))
+            report["layers"][Path(layer).name] = result
+            if result.get("partial"):
+                report["layers_left"] = len([x for x in layers if x not in indexed])
+                break
             indexed.append(layer)
             cursor["layers"] = indexed
+            cursor.pop("partial", None)
+            partial = {}
             save_cursor(cursor_path, cursor)
         report["layers_behind"] = len([x for x in layers if x not in indexed])
         wrote = any(layer.get("inserted") or layer.get("updated")

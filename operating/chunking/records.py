@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import AbstractSet, Any, Iterator, Mapping, Sequence
 
 from . import MIN_BODY, Chunk, make_chunk
 from . import headers as hd
@@ -54,8 +54,10 @@ class RecordChunker(ProjectionChunker):
         super().__init__(*args, **kw)
         self.config = dict(config or load_config())
 
-    def record_chunks(self, kinds: Sequence[str] | None = None, limit: int | None = None
-                      ) -> Iterator[Chunk]:
+    def record_chunks(self, kinds: Sequence[str] | None = None, limit: int | None = None,
+                      objects: AbstractSet[str] | None = None) -> Iterator[Chunk]:
+        """Record chunks of ``kinds``; ``objects``: only these records are read (a delta
+        layer's own), the others are passed over unread."""
         produced = 0
         fields: Mapping[str, Sequence[str]] = self.config["fields"]
         min_chars = int(self.config.get("min_chars", 20))
@@ -70,6 +72,10 @@ class RecordChunker(ProjectionChunker):
                 if not rows:
                     break
                 after = rows[-1]["object_id"]
+                if objects is not None:
+                    rows = [r for r in rows if r["object_id"] in objects]
+                    if not rows:
+                        continue
                 for chunk in self._records(rows, list(props), min_chars, share):
                     if kinds is not None and chunk.kind not in kinds:
                         continue
@@ -92,7 +98,7 @@ class RecordChunker(ProjectionChunker):
         for row in self.conn.execute(
                 "SELECT object_id, property, value, markings, l1_handle, field_path, value_type "
                 "FROM object_values WHERE object_id IN (SELECT value FROM json_each(?)) "
-                "AND superseded_at IS NULL AND property IN (SELECT value FROM json_each(?)) "
+                "AND superseded_at IS NULL AND +property IN (SELECT value FROM json_each(?)) "
                 "ORDER BY object_id, property", (json.dumps(ids), json.dumps(props))):
             if isinstance(row["value"], str) and wordy(row["value"], min_chars, share):
                 texts.setdefault(row["object_id"], []).append(row)

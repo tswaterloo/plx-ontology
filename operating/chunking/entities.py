@@ -144,7 +144,7 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
             for r in conn.execute(
                     "SELECT object_id, property, value, markings FROM object_values WHERE "
                     "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
-                    "AND property IN (SELECT value FROM json_each(?))",
+                    "AND +property IN (SELECT value FROM json_each(?))",
                     (ids, json.dumps(list(name_props) + list(ATTRIBUTE_PROPS)
                                      + list(_PERSON_KEYS) + list(code_props)
                                      + [prop for prop, _value in kind_props]))):
@@ -442,7 +442,7 @@ def participants(conn: Any, counts: Counts | None = None, exclusion: Any = None,
             for r in conn.execute(
                     "SELECT object_id, property, value, markings FROM object_values WHERE "
                     "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
-                    "AND property IN (SELECT value FROM json_each(?))",
+                    "AND +property IN (SELECT value FROM json_each(?))",
                     (json.dumps([r["object_id"] for r in rows]), json.dumps([*props, when]))):
                 values.setdefault(r["object_id"], {})[r["property"]] = (r["value"],
                                                                         r["markings"])
