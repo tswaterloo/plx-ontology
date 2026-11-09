@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 from typing import Any
 from urllib.parse import quote
 
@@ -133,7 +134,22 @@ class FakeHost:
         return {"ok": False, "error": "tool_refused"}
 
     def mcp_server(self) -> dict[str, Any]:
-        return {"command": "python3", "args": ["-m", "operating.mcp_server"]}
+        # a stdio MCP server that starts and answers (an injected session's tools are
+        # attached before it starts, ``agent_session.HostGate.host_ready``)
+        return {"command": sys.executable, "args": ["-c", STUB_MCP_SERVER]}
+
+
+# The fake host's MCP server: answers initialize, lists no tool, returns {} to the rest.
+STUB_MCP_SERVER = (
+    "import json, sys\n"
+    "for line in sys.stdin:\n"
+    "    m = json.loads(line)\n"
+    "    if 'id' not in m:\n"
+    "        continue\n"
+    "    r = ({'protocolVersion': m['params']['protocolVersion'], 'capabilities': "
+    "{'tools': {}}, 'serverInfo': {'name': 'fake', 'version': '1'}}"
+    " if m.get('method') == 'initialize' else {})\n"
+    "    print(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': r}), flush=True)\n")
 
 
 def scripted(answer: dict[str, Any], *, propose: bool = False):

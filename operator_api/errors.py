@@ -15,3 +15,8 @@ ASK_BUSY = UserFacing("busy", "The Workbench is answering several questions righ
 ASK_TIMEOUT = UserFacing("timeout", "That question took too long to answer. Try a narrower "
                                     "question, or name the record.", 504)
 BUSY = UserFacing("busy", "The Workbench is busy right now. Try again in a moment.", 503)
+# The Ask's research tools did not start in time (``agent_session.ToolsUnattached``):
+# nothing is answered without them.
+ASK_TOOLS_STARTING = UserFacing("busy", "The Workbench is busy starting its research "
+                                        "tools, so it did not answer without them. "
+                                        "Try again in a minute.", 503)

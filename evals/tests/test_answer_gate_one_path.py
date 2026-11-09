@@ -750,11 +750,11 @@ class OneGateTests(unittest.TestCase):
                 "q").run("Answer the question.", host)
         self.assertEqual(seen["gate"], ("answered", []))
 
-    def test_a_host_that_never_answers_its_early_initialize_reads_after_the_client(self):
-        # The host's early start (``EarlyStart``) gets no initialize answer: the first
-        # reads are made once the client has initialized (the gate's prelude), the task
-        # still reaches the session with them, and the session's gate passes a claim
-        # citing one. Nothing waits past LIST_SECONDS for the host's silence.
+    def test_a_host_that_never_answers_its_early_initialize_is_never_answered_without(self):
+        # The host's early start (``EarlyStart``) gets no initialize answer: the session
+        # waits for it at most HOST_READY_SECONDS, then Claude Code is never started
+        # without its tools (2026-11-08: past Claude Code's start-up check it answered
+        # blind); the Ask is refused as busy (``ToolsUnattached``), never a reply.
         from unittest import mock
         from operating import agent_session, session_prefetch
         host = self.host()
@@ -775,18 +775,19 @@ class OneGateTests(unittest.TestCase):
         started = time.monotonic()
         with mock.patch.object(host, "mcp_server", deaf), \
                 mock.patch.object(agent_session, "LIST_SECONDS", 2.0), \
+                mock.patch.object(agent_session, "HOST_READY_SECONDS", 2.0), \
                 mock.patch.object(session_prefetch, "first_reads",
                                   lambda question, looked=None: [("plx.find", seen["query"])]), \
                 mock.patch.object(session_prefetch, "follow_reads", lambda done: []):
-            transcript = runner.record(
-                self.item, runner.ClaudeCodeAgent(
-                    spawn=self.gated_session(seen, connect_first=True), max_turns=8),
-                host, evidence_label="injected-transport", run_pin=self.pin_for(self.item))
+            with self.assertRaises(agent_session.ToolsUnattached) as raised:
+                runner.record(
+                    self.item, runner.ClaudeCodeAgent(
+                        spawn=self.gated_session(seen, connect_first=True), max_turns=8),
+                    host, evidence_label="injected-transport",
+                    run_pin=self.pin_for(self.item))
+        self.assertEqual(raised.exception.code, agent_session.HOST_NOT_READY)
         self.assertLess(time.monotonic() - started, 60)
-        self.assertEqual(seen["gates"], ["answered"])
-        first = transcript["events"][0]
-        self.assertEqual((first["name"], first["arguments"], first["prefetched"]),
-                         ("plx.find", seen["query"], True))
+        self.assertNotIn("gates", seen)   # Claude Code never started
 
     def test_a_readers_next_session_takes_their_started_host_and_no_one_elses(self):
         # After a session, the reader's host is started again (``HostSpares``); the

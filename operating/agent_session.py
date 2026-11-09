@@ -23,6 +23,7 @@ import argparse
 import copy
 from dataclasses import dataclass, field
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -1467,6 +1468,8 @@ class EarlyStart:
         self.held: list[str] = []
         self.ids: set[str] = set()
         self.done = threading.Event()
+        # set once ``initialize`` has its answer or gave up (``HostGate.host_ready``)
+        self.initialized = threading.Event()
         self.init_result: Any = None
         self._n = 0
         threading.Thread(target=self._read, daemon=True).start()
@@ -1518,6 +1521,12 @@ class EarlyStart:
         return None
 
     def initialize(self, seconds: float) -> bool:
+        try:
+            return self._initialize(seconds)
+        finally:
+            self.initialized.set()
+
+    def _initialize(self, seconds: float) -> bool:
         from operating.mcp_server import PROTOCOL_VERSION
         self.ids.add(json.dumps(self.INIT_ID))
         if not self._send({"jsonrpc": "2.0", "id": self.INIT_ID, "method": "initialize",
@@ -1783,6 +1792,80 @@ def spare_key(host: Any, command: Sequence[str], cwd: Any, env: Mapping[str, str
                        sorted(kept.items())], sort_keys=True, default=str)
 
 
+# Why a session's tools did not attach (``ToolsUnattached``): its host's process ended
+# before it answered its initialize; its host still had not answered it after
+# ``HOST_READY_SECONDS``; Claude Code started without the plx server connected.
+HOST_STOPPED = "host_stopped"
+HOST_NOT_READY = "host_not_ready"
+CLIENT_UNATTACHED = "client_unattached"
+# How long a session waits, before Claude Code starts, for its host to answer its own
+# initialize (``HostGate.host_ready``): the host opens its stores first (minutes on a
+# loaded machine, 2026-11-08). The wait is outside the session's own clock, which starts
+# when Claude Code does, so Claude Code's start-up check (``MCP_TIMEOUT``) and its time
+# limit never spend it (past ``MCP_TIMEOUT`` it ran with no plx tool and answered blind).
+HOST_READY_SECONDS = 240.0
+# How long a host whose output ended may take to exit (``HostGate.host_ready``).
+HOST_GONE_SECONDS = 2.0
+# How many times a session is started (a fresh host each time) when its tools did not
+# attach and a new start can help (``ToolsUnattached.retry``).
+ATTACH_ATTEMPTS = 2
+
+
+class ToolsUnattached(RuntimeError):
+    """An Ask's session could not get its plx tools (``reason``: ``HOST_STOPPED``,
+    ``HOST_NOT_READY`` or ``CLIENT_UNATTACHED``): no answer is written without them;
+    the caller says the Workbench is busy and to ask again. ``code``: the reason."""
+
+    def __init__(self, reason: str, *, retry: bool = False) -> None:
+        super().__init__(reason)
+        self.code = reason
+        self.retry = retry
+
+
+class AttachCheck:
+    """Watches a session's stream (``stop`` of a spawn) for Claude Code's start-up line
+    (``system``/``init``): true there when the plx server is not ``connected`` or none of
+    its tools is listed, so the session is stopped before its first turn rather than
+    answering with no tool (``failed``). Fails closed: a start-up line that does not
+    show the server connected is a failure. A stream with no start-up line (a scripted
+    transport) is not judged."""
+
+    def __init__(self, server: str = "plx") -> None:
+        self.server = server
+        self.prefix = f"mcp__{_normal(server)}__"
+        self.seen = False
+        self.failed = False
+
+    def __call__(self, line: str) -> bool:
+        if self.seen:
+            return self.failed
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return False
+        if not isinstance(message, dict) or message.get("type") != "system" \
+                or message.get("subtype") != "init":
+            return False
+        self.seen = True
+        servers = message.get("mcp_servers")
+        tools = message.get("tools")
+        connected = isinstance(servers, list) and any(
+            isinstance(entry, Mapping) and entry.get("name") == self.server
+            and entry.get("status") == "connected" for entry in servers)
+        listed = isinstance(tools, list) and any(
+            isinstance(name, str) and name.startswith(self.prefix) for name in tools)
+        self.failed = not (connected and listed)
+        return self.failed
+
+    def scan(self, stdout: str) -> bool:
+        """``failed`` for a transport that cannot stop at the line (the whole output)."""
+        for line in stdout.splitlines():
+            if self.seen:
+                break
+            self(line)
+        return self.failed
+
+
 # Tools that read the client's own MCP capabilities or identity (sampling, elicitation):
 # a session allowed one is never started early (``EarlyStart``), so the host learns
 # them from the client itself.
@@ -1811,7 +1894,8 @@ class HostGate:
                  child: "subprocess.Popen | None" = None,
                  pool: "HostPool | None" = None, question: str | None = None,
                  quiet: Sequence[tuple[str, Mapping[str, Any]]] = (),
-                 entities: Sequence[Mapping[str, Any]] | None = None) -> None:
+                 entities: Sequence[Mapping[str, Any]] | None = None,
+                 ready: bool = False) -> None:
         import queue
         # the things the question names as the app resolved them (``serve_gate``), or None
         self.entities = None if entities is None else list(entities)
@@ -1852,13 +1936,36 @@ class HostGate:
             _host_process(command, env, cwd, own_group=True)
         # The first reads start with the host, before Claude Code has connected
         # (``EarlyStart``), unless the session may call a tool bound to its client.
-        self._early = EarlyStart(self._child) if self.prefetch \
+        # ``ready``: the host is initialized early even with no first reads, so its
+        # session can wait for it before Claude Code starts (``host_ready``).
+        self._ready = ready
+        self._early = EarlyStart(self._child) if (self.prefetch or ready) \
             and not _client_bound(self.allowed) else None
         if self._early is not None:
             threading.Thread(target=self._start_early, daemon=True).start()
         self._thread = threading.Thread(target=self._serve, daemon=True, args=(
             list(allowed), command, env, cwd, log, timing, budget, budget_log))
         self._thread.start()
+
+    def host_ready(self, seconds: float) -> str | None:
+        """Wait at most ``seconds`` for the host's own initialize (``EarlyStart``): None
+        once the host answered it (Claude Code's initialize is then answered at once),
+        else why not: ``HOST_STOPPED`` (the host process ended: a fresh one may start)
+        or ``HOST_NOT_READY`` (still starting). A gate that started no host early is
+        not waited for (None): Claude Code's own start-up check decides
+        (``AttachCheck``)."""
+        early = self._early
+        if early is None:
+            return None
+        early.initialized.wait(seconds)
+        if early.init_result is not None:
+            return None
+        if early.initialized.is_set():
+            try:   # an ended output is an ending process: its exit is a moment away
+                self._child.wait(HOST_GONE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        return HOST_STOPPED if self._child.poll() is not None else HOST_NOT_READY
 
     def client(self) -> dict[str, Any]:
         """The MCP server entry the agent's Claude Code starts: ``connect`` to this gate."""
@@ -2003,7 +2110,8 @@ class HostGate:
         start (``prelude``)."""
         early = self._early
         try:
-            if early.initialize(LIST_SECONDS):
+            if early.initialize(max(LIST_SECONDS, HOST_READY_SECONDS) if self._ready
+                                else LIST_SECONDS):
                 self._prelude(early.request)
         finally:
             early.done.set()
@@ -2466,6 +2574,22 @@ class ClaudeCodeAgent:
         return argv + self.extra_args
 
     def run(self, prompt: str, host: Host) -> AgentRun:
+        """One session with its plx tools attached, or ``ToolsUnattached``: a session
+        whose host ended before it answered is started again with a fresh host, at most
+        ``ATTACH_ATTEMPTS`` times; one whose host is still starting after
+        ``HOST_READY_SECONDS`` is not (a fresh host would start from nothing)."""
+        for attempt in range(1, ATTACH_ATTEMPTS + 1):
+            try:
+                return self._run_attached(prompt, host)
+            except ToolsUnattached as gone:
+                # counts and the reason only
+                logging.getLogger("operating.agent_session").warning(json.dumps(
+                    {"tools_unattached": gone.code, "attempt": attempt}))
+                if not gone.retry or attempt == ATTACH_ATTEMPTS:
+                    raise ToolsUnattached(gone.code) from None
+        raise ToolsUnattached(HOST_NOT_READY)   # not reached: ATTACH_ATTEMPTS >= 1
+
+    def _run_attached(self, prompt: str, host: Host) -> AgentRun:
         tools = host.tools()
         catalog = [tool["name"] for tool in tools]
         allowed, refused = allowed_tools(tools, case_tools=self.case_tools,
@@ -2549,11 +2673,21 @@ class ClaudeCodeAgent:
                     follow=self.follow_reads if feeds else None,
                     quiet=self.quiet_reads if feeds else (),
                     child=None if spare is None else spare.child, pool=pool,
-                    question=self.asked, entities=self.question_entities)
+                    question=self.asked, entities=self.question_entities,
+                    # a real session waits for its host before Claude Code starts
+                    ready=bool(getattr(self.spawn, "feeds", False)))
             except BaseException:
                 if spare is not None:
                     spare.stop()
                 raise
+
+            def abandon(reason: str) -> None:
+                """No session without tools: the host (and helpers) this session took
+                are stopped, never handed to another, and ``ToolsUnattached`` raised
+                (``gate.finish`` stops the gate's own on the way out)."""
+                for started in [*held, *taken]:
+                    started.stop()
+                raise ToolsUnattached(reason, retry=reason != HOST_NOT_READY)
             feeds = feeds and bool(gate.prefetch)
             config.write_text(json.dumps({"mcpServers": {"plx": gate.client()}}),
                               encoding="utf-8")
@@ -2561,7 +2695,21 @@ class ClaudeCodeAgent:
             session.mkdir()
             timed_out, submission, submitted = False, None, None
             ends = GateEnd() if self.end_at_gate and ANSWER_GATE_TOOL in allowed else None
+            attach = AttachCheck() if allowed else None
             try:
+                waited_at = time.time()
+                not_ready = gate.host_ready(HOST_READY_SECONDS)
+                if not_ready is not None:
+                    abandon(not_ready)
+                waited = time.time() - waited_at
+                if waited >= 1:
+                    # the session's clock starts when Claude Code does: the time its
+                    # host took to start is not taken from its research or its calls
+                    # (nor counted again by ``feed``, which measures from ``started``)
+                    _shift_clock(budget, waited, deadline, calls_file, spare)
+                    if deadline is not None:
+                        deadline += waited
+                    started += waited
                 try:
                     argv = self.argv(prompt, str(config), allowed, refused)
                     options: dict[str, Any] = {}
@@ -2583,8 +2731,9 @@ class ClaudeCodeAgent:
                                 helper.set_deadline(moved)
                             return task
                         options["feed"] = feed
-                    if ends is not None and getattr(self.spawn, "stops", False):
-                        options["stop"] = ends
+                    if getattr(self.spawn, "stops", False) and (
+                            ends is not None or attach is not None):
+                        options["stop"] = _either(attach, ends)
                     spawned = (argv, str(session), {**agent_environment(os.environ),
                                                     "MCP_TIMEOUT": str(MCP_STARTUP_MS)},
                                self.timeout)
@@ -2592,8 +2741,12 @@ class ClaudeCodeAgent:
                         code, stdout = self.spawn(*spawned, **options)
                     else:
                         code, stdout = self.spawn(*spawned)
-                        if ends is not None:
+                        if attach is not None:
+                            attach.scan(stdout)
+                        if ends is not None and not (attach and attach.failed):
                             stdout = ends.cut(stdout)
+                    if attach is not None and attach.failed:
+                        abandon(CLIENT_UNATTACHED)
                     if ends is not None and ends.ended:
                         code = 0
                 except subprocess.TimeoutExpired as expired:
@@ -2866,6 +3019,16 @@ PREFETCH_HEADING = (
 
 # Seconds a moved session clock keeps clear of the session process's own time limit.
 SHIFT_MARGIN_SECONDS = 5.0
+
+
+def _either(*stops: "Callable[[str], bool] | None") -> Callable[[str], bool]:
+    """One ``stop`` of a spawn from several: every one sees each line (each keeps its
+    own state), true once any is."""
+    kept = [stop for stop in stops if stop is not None]
+
+    def stop(line: str) -> bool:
+        return any([check(line) for check in kept])
+    return stop
 
 
 def _shift_clock(budget: "deep.Budget | None", waited: float, calls_end: float | None,

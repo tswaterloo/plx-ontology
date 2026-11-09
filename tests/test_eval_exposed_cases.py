@@ -272,7 +272,9 @@ class StubClaude:
 
     def __init__(self, root: Path, final_text: str | None, exit_code: int = 0):
         self.path = root / "claude-stub"
-        lines = [{"type": "system", "subtype": "init", "model": "stub"}]
+        lines = [{"type": "system", "subtype": "init", "model": "stub",
+                  "mcp_servers": [{"name": "plx", "status": "connected"}],
+                  "tools": ["mcp__plx__plx_find"]}]
         if final_text is not None:
             lines.append({"type": "result", "subtype": "success", "is_error": False,
                           "result": final_text, "num_turns": 1,

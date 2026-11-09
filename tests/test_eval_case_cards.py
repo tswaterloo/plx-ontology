@@ -114,7 +114,9 @@ def spawned(final: dict, calls: list):
 
     def spawn(argv, cwd, env, timeout):
         calls.append(argv)
-        lines = [{"type": "system", "subtype": "init", "model": "injected"},
+        lines = [{"type": "system", "subtype": "init", "model": "injected",
+                  "mcp_servers": [{"name": "plx", "status": "connected"}],
+                  "tools": ["mcp__plx__plx_find"]},
                  {"type": "result", "subtype": "success", "result": fx.final_text(final),
                   "usage": {"input_tokens": 1, "output_tokens": 1}}]
         return 0, "\n".join(json.dumps(line) for line in lines) + "\n"

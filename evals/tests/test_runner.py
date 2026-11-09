@@ -1299,8 +1299,11 @@ class CaseHostInjectedTransportTests(Temp):
 
 
 def _stream(final_text, calls=(), *, model="claude-real-agent-test"):
-    """A Claude Code stream-json session: ``calls`` are (tool, arguments, result, is_error)."""
-    lines = [{"type": "system", "subtype": "init", "model": model}]
+    """A Claude Code stream-json session (its plx server connected at start-up): ``calls``
+    are (tool, arguments, result, is_error)."""
+    lines = [{"type": "system", "subtype": "init", "model": model,
+               "mcp_servers": [{"name": "plx", "status": "connected"}],
+               "tools": ["mcp__plx__plx_find"]}]
     for index, (name, arguments, result, is_error) in enumerate(calls):
         lines.append({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": f"t{index}", "name": runner.mcp_tool_name(name),

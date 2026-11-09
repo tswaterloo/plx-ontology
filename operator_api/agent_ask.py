@@ -464,7 +464,12 @@ class AgentAsk:
             # the Ask resolved records the question names (the brief's roots): a text
             # search waits for the agent's first record read
             agent.records_named = bool(re.search(r'" names (?:one |the record)', context))
-            run = runner.gated_run(agent, prompt, host, question)
+            try:
+                run = runner.gated_run(agent, prompt, host, question)
+            except runner.ToolsUnattached:
+                # never an answer written without the plx tools: busy, ask again
+                from .errors import ASK_TOOLS_STARTING
+                raise ASK_TOOLS_STARTING from None
         finally:
             close = getattr(host, "close", None)
             if close is not None:
