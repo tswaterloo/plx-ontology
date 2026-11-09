@@ -71,6 +71,8 @@ def schema_of(checkout: Path) -> dict[str, Any]:
 class PgRecords(Store):
     """``evals.graph_walks.Records`` over the Postgres ontology, read-only."""
 
+    NAME_BATCH = 5000
+
     def __init__(self, conn: Any, guard: Any, own: frozenset[str],
                  skipped_boxes: Sequence[str]) -> None:   # noqa: D107 - no SQLite store
         self.conn = conn
@@ -80,6 +82,7 @@ class PgRecords(Store):
         self.skipped_boxes = {b.casefold() for b in skipped_boxes if b}
         self._names: dict[str, dict[str, list[str]] | None] = {}
         self._cleared: dict[str, bool] = {}
+        self._fields: list[int] | None = None
 
     def _all(self, sql: str, args: Sequence[Any]) -> list[tuple]:
         with self.conn.cursor() as cur:
@@ -116,13 +119,27 @@ class PgRecords(Store):
         return [(a, b) for a, b in out if not gw.mirror_type(gw.object_type(b))]
 
     def rows(self, ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+        """The records' current values (``object_values`` rows), read key by key: their
+        versions, those versions' current value sources, those sources' cells. Through
+        the view the planner misjudged a record's versions (385 for 11,200) and scanned
+        all value sources (126 s for 200 records on the served store, 11-09)."""
         out: dict[str, list[dict[str, Any]]] = {}
         for chunk in self._chunks(ids, 200):
-            for oid, prop, vtype, value, unit, currency, marks in self._all(
-                    "SELECT object_id, property, value_type, value, unit, currency, markings "
-                    "FROM ontology.object_values WHERE object_id = ANY(%s) AND "
-                    "superseded_at IS NULL", (chunk,)):
-                out.setdefault(oid, []).append(
+            owner = dict(self._all("SELECT ver, object_id FROM ontology.object_versions "
+                                   "WHERE object_id = ANY(%s)", (chunk,)))
+            if not owner:
+                continue
+            of_src = {src: owner[ver] for src, ver in self._all(
+                "SELECT src, ver FROM ontology.value_sources WHERE ver = ANY(%s) AND "
+                "superseded_at IS NULL", (sorted(owner),))}
+            if not of_src:
+                continue
+            for src, prop, vtype, value, unit, currency, marks in self._all(
+                    "SELECT c.src, f.property, k.value_type, c.value, k.unit, c.currency, "
+                    "k.markings FROM ontology.value_cells c JOIN ontology.value_fields f ON "
+                    "f.field = c.field JOIN ontology.value_kinds k ON k.kind = c.kind WHERE "
+                    "c.src = ANY(%s) ORDER BY c.src, c.field", (sorted(of_src),)):
+                out.setdefault(of_src[src], []).append(
                     {"property": prop, "value_type": vtype, "value": value, "unit": unit,
                      "currency": currency, "markings": marks})
         return out
@@ -136,22 +153,49 @@ class PgRecords(Store):
                 out[oid] = (handle, marks)
         return out
 
+    def _name_fields(self) -> list[int]:
+        """The value fields of every ``NAME_PROPS`` property (read once)."""
+        if self._fields is None:
+            self._fields = [r[0] for r in self._all(
+                "SELECT field FROM ontology.value_fields WHERE property = ANY(%s) "
+                "ORDER BY field", (list(gw.NAME_PROPS),))]
+        return self._fields
+
     def lookup(self, object_type: str, label: str) -> list[str] | None:
+        """``Store.lookup`` on Postgres: the type's name index is read once, ``NAME_BATCH``
+        records a statement in object id order (the ``objects`` key, then each record's
+        current value cells of the name fields by the version and cell keys), so no
+        statement walks a whole type through the ``object_values`` view: that walk ran
+        past the statement timeout on the served store (11-08, 499 s)."""
         if object_type not in self._names:
+            low, high = object_type + ":", object_type + ";"
             count = self._all("SELECT count(*) FROM (SELECT 1 FROM ontology.objects WHERE "
-                              "object_type = %s LIMIT %s) t",
-                              (object_type, self.MAX_NAMED + 1))[0][0]
+                              "object_id > %s AND object_id < %s LIMIT %s) t",
+                              (low, high, self.MAX_NAMED + 1))[0][0]
             if count > self.MAX_NAMED:
                 self._names[object_type] = None
             else:
                 index: dict[str, list[str]] = {}
-                for oid, value in self._all(
-                        "SELECT object_id, value FROM ontology.object_values WHERE object_id "
-                        ">= %s AND object_id < %s AND property = ANY(%s) AND superseded_at "
-                        "IS NULL", (object_type + ":", object_type + ";", list(gw.NAME_PROPS))):
-                    text = " ".join(str(value or "").split()).casefold()
-                    if text:
-                        index.setdefault(text, []).append(oid)
+                fields, last = self._name_fields(), low
+                while fields:
+                    ids = [r[0] for r in self._all(
+                        "SELECT object_id FROM ontology.objects WHERE object_id > %s AND "
+                        "object_id < %s ORDER BY object_id LIMIT %s",
+                        (last, high, self.NAME_BATCH))]
+                    if not ids:
+                        break
+                    for oid, value in self._all(
+                            "SELECT v.object_id, c.value FROM ontology.object_versions v "
+                            "JOIN ontology.value_sources s ON s.ver = v.ver AND "
+                            "s.superseded_at IS NULL JOIN ontology.value_cells c ON "
+                            "c.src = s.src AND c.field = ANY(%s) WHERE v.object_id = ANY(%s)",
+                            (fields, ids)):
+                        text = " ".join(str(value or "").split()).casefold()
+                        if text:
+                            index.setdefault(text, []).append(oid)
+                    last = ids[-1]
+                    if len(ids) < self.NAME_BATCH:
+                        break
                 self._names[object_type] = index
         index = self._names[object_type]
         if index is None:
@@ -173,13 +217,25 @@ def _compose_part(args: tuple) -> tuple[list, dict]:
         conn.close()
 
 
+def deal(links: Sequence[Any], workers: int) -> list[list[str]]:
+    """The link kind ids in ``workers`` parts, every kind of one from-type in one part
+    (largest type first, to the part holding fewest kinds)."""
+    by_type: dict[str, list[str]] = {}
+    for link in links:
+        by_type.setdefault(link.source, []).append(link.id)
+    parts: list[list[str]] = [[] for _ in range(max(1, workers))]
+    for _type, ids in sorted(by_type.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        min(parts, key=len).extend(sorted(ids))
+    return [sorted(p) for p in parts]
+
+
 def compose_parallel(dsn: str, state: Path, environ: Mapping[str, str], schema: Mapping,
                      seed: int, as_of: Any, workers: int) -> tuple[list, dict, dict]:
-    """``evals.link_coverage.compose`` over ``workers`` processes (link kinds dealt
-    round robin); the same questions as one process."""
+    """``evals.link_coverage.compose`` over ``workers`` processes; the same questions as
+    one process (each link kind draws from its own stream). Link kinds are dealt by type
+    (``deal``), so a type's name index is read by one worker, not by each."""
     from concurrent.futures import ProcessPoolExecutor
-    ids = sorted(l.id for l in lc.link_types(schema["link_types"]))
-    parts = [ids[k::max(1, workers)] for k in range(max(1, workers))]
+    parts = deal(lc.link_types(schema["link_types"]), workers)
     questions, dropped, counts = [], {}, {}
     env = dict(environ)
     with ProcessPoolExecutor(max_workers=max(1, workers)) as pool:

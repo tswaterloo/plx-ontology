@@ -276,5 +276,104 @@ class LinkCoverageTest(unittest.TestCase):
             cli.check_schema({}, "sha256:19ec2a62aa", None)
 
 
+class PgLookupTest(unittest.TestCase):
+    """The build's name index on Postgres (``PgRecords.lookup``) over a throwaway database
+    of the served layout: each statement reads at most ``NAME_BATCH`` records by key, and
+    the index is the type's current names, whole, at one, ten and sixty records."""
+
+    @classmethod
+    def setUpClass(cls):
+        from operating.tests import pg_testdb
+        cls.pg_testdb = pg_testdb
+        cls.name, cls.dsn = pg_testdb.create_db()
+        import psycopg
+        folder = Path(__file__).resolve().parents[2] / "operating" / "pg" / "migrations"
+        with psycopg.connect(cls.dsn, autocommit=True) as pg:
+            for migration in sorted(folder.glob("00*.sql")):
+                if migration.name >= "0006":
+                    pg.execute(migration.read_text(encoding="utf-8"))
+            pg.execute("INSERT INTO ontology.value_fields VALUES (1, 'name', 'row.name'), "
+                       "(2, 'display_name', 'row.label'), (3, 'memo', 'row.memo')")
+            pg.execute("INSERT INTO ontology.value_kinds (kind, value_type, parser, markings) "
+                       "VALUES (1, 'text', 'trim', '[]')")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.pg_testdb.drop_db(cls.name)
+
+    def load(self, kind: str, names: Sequence[str]) -> list[str]:
+        import psycopg
+        ids = []
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            n = pg.execute("SELECT count(*) FROM ontology.object_versions").fetchone()[0]
+            for i, name in enumerate(names):
+                oid_, ver = f'{kind}:b:{{"id":{i}}}', n + i + 1
+                ids.append(oid_)
+                pg.execute("INSERT INTO ontology.objects (object_id, object_type, binding_id, "
+                           "native_key, audience_key, first_recorded_at) VALUES "
+                           "(%s, %s, 'b', %s, 'a', 't')", (oid_, kind, str(i)))
+                pg.execute("INSERT INTO ontology.object_versions VALUES "
+                           "(%s, %s, 'h', 'd', 'l', '[]', 't', NULL)", (ver, oid_))
+                # the current names (a name and a display name), an older superseded name,
+                # and a memo that is no name
+                pg.execute("INSERT INTO ontology.value_sources (src, ver, binding_id, "
+                           "recorded_at, superseded_at) VALUES (%s, %s, 'b', 't', NULL), "
+                           "(%s, %s, 'b', 't', 't2')", (2 * ver, ver, 2 * ver + 1, ver))
+                pg.execute("INSERT INTO ontology.value_cells (src, field, kind, value) VALUES "
+                           "(%s, 1, 1, %s), (%s, 2, 1, %s), (%s, 3, 1, 'Memo'), "
+                           "(%s, 1, 1, 'Old name')",
+                           (2 * ver, name, 2 * ver, f"Label {kind} {i}", 2 * ver,
+                            2 * ver + 1))
+        return ids
+
+    def test_names_and_values_read_in_bounded_batches_by_key(self):
+        from scripts import eval_link_coverage as cli
+        self.load("Thingy", ["Name 0"])   # sorts past the range of type Thing
+        for n in (1, 10, 60):
+            kind = f"Thing{n}"
+            ids = self.load(kind, [f"Name {i}" for i in range(n)] + ["  name   0 "])
+            conn = cli.connect(self.dsn)
+            self.addCleanup(conn.close)
+            records = cli.PgRecords(conn, None, frozenset(), [])
+            records.NAME_BATCH = 4
+            seen = []
+            real = records._all
+            records._all = lambda sql, args: seen.append((sql, args)) or real(sql, args)
+            for i in range(n):
+                want = sorted([ids[i], ids[-1]]) if i == 0 else [ids[i]]
+                self.assertEqual(records.lookup(kind, f"  NAME {i}"), want, (n, i))
+                self.assertEqual(records.lookup(kind, f"label {kind} {i}"), [ids[i]])
+            self.assertEqual(records.lookup(kind, "Old name"), [])
+            self.assertEqual(records.lookup(kind, "Memo"), [])
+            self.assertEqual(records.lookup("Thingy", "Name 0"), ['Thingy:b:{"id":0}'])
+            reads = [a for sql, a in seen if "value_cells" in sql]
+            # every record of the type (n and the spaced twin) and the one Thingy, once
+            self.assertEqual(sum(len(a[1]) for a in reads), n + 2, n)
+            self.assertTrue(all(len(a[1]) <= 4 for a in reads), n)
+            self.assertFalse([sql for sql, _a in seen if "object_values" in sql])
+            # the records' values, read key by key, are the view's current rows
+            got = records.rows(ids)
+            with conn.cursor() as cur:
+                cur.execute("SELECT object_id, property, value_type, value, unit, currency, "
+                            "markings FROM ontology.object_values WHERE object_id = ANY(%s) "
+                            "AND superseded_at IS NULL", (ids,))
+                view = sorted(cur.fetchall())
+            self.assertEqual(sorted((o, *r.values()) for o, rs in got.items() for r in rs),
+                             view)
+            self.assertEqual(len(view), 3 * (n + 1))
+            records.MAX_NAMED, records._names = n, {}
+            self.assertIsNone(records.lookup(kind, "Name 0"))
+
+    def test_link_kinds_of_one_type_go_to_one_worker(self):
+        from scripts import eval_link_coverage as cli
+        links = lc.link_types(RAW)
+        parts = cli.deal(links, 3)
+        self.assertEqual(sorted(i for p in parts for i in p), sorted(l.id for l in links))
+        owner = {i: k for k, p in enumerate(parts) for i in p}
+        for link in links:
+            same = [l.id for l in links if l.source == link.source]
+            self.assertEqual({owner[i] for i in same}, {owner[link.id]}, link.source)
+
+
 if __name__ == "__main__":
     unittest.main()
