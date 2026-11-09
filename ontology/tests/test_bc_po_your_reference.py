@@ -486,8 +486,11 @@ class YourReferenceLinkTests(unittest.TestCase):
                                                     "tier_floor": "corroborated"}, actor)
                 self.assertEqual({o["object_id"] for o in firm.get("objects", ())},
                                  {po("bc", 1)} if tier == "corroborated" else set())
-                around = traverse.call("plx.around", {"from": po("api", 1), "path": path,
-                                                      "tier_floor": "lead"}, actor)
+                # Since 11-07 a record reached only by a lead link is set apart
+                # (possibly_related); the lead reader reads it there.
+                around = tt.with_leads(traverse.call(
+                    "plx.around", {"from": po("api", 1), "path": path, "tier_floor": "lead"},
+                    actor))
                 self.assertEqual({o["object_id"] for o in around.get("objects", ())},
                                  {po("bc", 1)})
                 [edge] = around["edges"]

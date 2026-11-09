@@ -21,7 +21,7 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 set +e
 PATH="$PLX_VENV/bin:$PATH" nice -n 5 python3 "$wt/tools/main_ci.py" --repo "$wt" \
   --workers "${PLX_SUITE_WORKERS:-$(nproc)}" --slots --min-free-gb "${PLX_SUITE_MIN_FREE_GB:-10}" \
-  --timings "$out/timings.json" --report "$out/suite-$stamp.json" > "$out/suite-$stamp.txt" 2>&1
+  --typecheck --timings "$out/timings.json" --report "$out/suite-$stamp.json" > "$out/suite-$stamp.txt" 2>&1
 code=$?
 set -e
 ln -sfn "suite-$stamp.txt" "$out/latest.txt"; ln -sfn "suite-$stamp.json" "$out/latest.json"

@@ -1530,7 +1530,9 @@ class PortalColumnsTests(CaptureCase):
         around = tt.TraverseTools(base).call("plx.around", {
             "from": p2, "path": [{"link_type": "SharePointFile.mentions_purchase_order",
                                   "direction": "reverse"}], "tier_floor": "lead"}, EMPLOYEE)
-        self.assertEqual({o["object_id"] for o in around["objects"]}, {file_object("01FILEB")})
+        # mention leads are set apart (possibly_related, 11-07)
+        self.assertEqual({o["object_id"] for o in tt.with_leads(around)["objects"]},
+                         {file_object("01FILEB")})
         for actor in (EMPLOYEE, OUTSIDER):
             self.assertIsNone(self.store.resolve(self.handle("01FILEC"), actor,
                                                  reader_audience()))

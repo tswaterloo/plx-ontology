@@ -55,7 +55,7 @@ class MeetingsProjectionTests(unittest.TestCase):
 
     def links(self, link_type: str) -> list[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT o.object_type, o.audience_key, t.object_type AS to_type, l.reason "
+            "SELECT o.object_type, o.audience_key, t.object_type AS to_type, l.reason, l.tier "
             "FROM links l JOIN objects o ON o.object_id = l.from_object "
             "JOIN objects t ON t.object_id = l.to_object WHERE l.link_type = ?",
             (link_type,)).fetchall()
@@ -76,7 +76,11 @@ class MeetingsProjectionTests(unittest.TestCase):
         self.assertEqual(len(self.links("MeetingTranscript.of_meeting")), 1)
         for link_type in ("MeetingTranscript.mentions_purchase_order",
                           "PlannerTask.mentions_purchase_order"):
-            [row] = self.links(link_type)
+            # The mention step's lead, and the corroborated twin the unique_mentions step
+            # (ontology/mention_firm.py) writes beside an exact one-record mention.
+            [row] = [r for r in self.links(link_type) if r["tier"] == "lead"]
+            self.assertLessEqual({r["tier"] for r in self.links(link_type)},
+                                 {"lead", "corroborated"})
             self.assertEqual(row["to_type"], "PurchaseOrder")
             self.assertIn("identifier_mention", row["reason"])
         self.assertEqual(self.built["post_project"]["mentions"]["counts"]["undeclared_target"],

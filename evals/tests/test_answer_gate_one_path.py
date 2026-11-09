@@ -698,7 +698,11 @@ class OneGateTests(unittest.TestCase):
                 "Answer the question.", host)
         note = seen["first"][deep.BUDGET_KEY]
         self.assertTrue(note[deep.CONTINUE_KEY])
-        self.assertEqual(note["open"], ["the order's delivery date"])
+        # The unknown first; the session searched no mail, so the gate also asks for a mail
+        # search before the part is stated unknown (bc90c7dcd5).
+        self.assertEqual(note["open"][0], "the order's delivery date")
+        self.assertEqual(len(note["open"]), 2, note["open"])
+        self.assertIn("no mail was searched", note["open"][1])
         self.assertEqual(_plain(seen["first"]["instruction"]), note["next"])
         self.assertFalse(seen["ended_early"])
         self.assertEqual(seen["second"]["outcome"], "answered")

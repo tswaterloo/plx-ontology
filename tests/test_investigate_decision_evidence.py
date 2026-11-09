@@ -35,6 +35,7 @@ from operating.case_runtime import CaseRuntime, LiveReaders
 from operating import ontology_tools as ot
 from operating import ontology_tools_investigate as oi
 from operating import ontology_tools_traverse as tt
+from operating.ontology_tools_traverse import with_leads
 
 CONTRACTS = ot.load_contracts()
 OUTPUT = CONTRACTS["tools"]["plx.investigate"]["output"]
@@ -371,7 +372,7 @@ class DecisionEvidenceTests(unittest.TestCase):
             actor)
         self.assertEqual(validate(out, CONTRACTS["tools"]["plx.around"]["output"],
                                   root=CONTRACTS), [], out)
-        return [e for e in out["edges"] if "review" in e]
+        return [e for e in with_leads(out)["edges"] if "review" in e]
 
     def test_around_serves_a_review_only_to_a_reader_of_everything_it_cites(self):
         [edge] = self.around_reviews(QUOTE, FULL)
@@ -433,9 +434,12 @@ class DecisionEvidenceTests(unittest.TestCase):
             {"link": "mentioned_in_mc_task"},
             {"link_type": "MCTaskEvent.event_of", "direction": "reverse"}]}, FULL)
         self.assertEqual(validate(out, output, root=CONTRACTS), [], out)
+        # A mention is a lead: each hop counts solid links only (0) and the records it
+        # reaches are the lead set beside the answer.
         self.assertEqual([(h["link_type"], h["direction"], h["count"]) for h in out["hops"]],
-                         [("MCTask.mentions_quote", "reverse", 1),
-                          ("MCTaskEvent.event_of", "reverse", 1)])
+                         [("MCTask.mentions_quote", "reverse", 0),
+                          ("MCTaskEvent.event_of", "reverse", 0)])
+        self.assertEqual(len(with_leads(out)["objects"]), 1, out)
         refused = {
             "undeclared_link": [{"link": "mentioned_in_nowhere"}],
             # A name the previous hop's type does not declare is not looked up elsewhere.

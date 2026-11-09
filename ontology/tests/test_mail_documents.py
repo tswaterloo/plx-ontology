@@ -643,20 +643,22 @@ class MailDocumentsTests(unittest.TestCase):
             "from": self.email("MSG-1"), "path": [{"link_type": LINK,
                                                     "direction": "forward"}],
             "tier_floor": "lead"}, READER_A))
-        reached = {o["object_id"] for o in around["objects"]}
+        # a record reached only by a lead mention is set apart (possibly_related, 11-07)
+        reached = {o["object_id"] for o in tt.with_leads(around)["objects"]}
         self.assertIn(p1, reached)
         self.assertIn(self.object_id(
             "PurchaseOrder:portal.app_purchase_order:{\"id\":\"p2\"}"), reached)
         back = self.ok("plx.around", traverse.call("plx.around", {
             "from": p1, "path": [{"link_type": LINK, "direction": "reverse"}],
             "tier_floor": "lead"}, READER_A))
-        self.assertEqual({o["object_id"] for o in back["objects"]}, {self.email("MSG-1")})
+        self.assertEqual({o["object_id"] for o in tt.with_leads(back)["objects"]},
+                         {self.email("MSG-1")})
 
     def mention_edges(self, traverse, root):
         out = self.ok("plx.around", traverse.call("plx.around", {
             "from": root, "path": [{"link_type": LINK, "direction": "forward"}],
             "tier_floor": "lead", "response_format": "detailed"}, READER_A))
-        return {e["to"]: e for e in out["edges"]}
+        return {e["to"]: e for e in tt.with_leads(out)["edges"]}
 
     def test_ambiguity_is_decided_per_reader_from_visible_candidates_only(self):
         # MSG-2 names PO100236, held by Portal PO p3 and
@@ -904,7 +906,7 @@ class MentionCorroborationTests(unittest.TestCase):
             around = traverse.call("plx.around", {
                 "from": p1, "path": [{"link_type": LINK, "direction": "reverse"}],
                 "tier_floor": "lead", "response_format": "detailed"}, READER_A)
-            [edge] = [e for e in around["edges"] if e["from"] == confirm]
+            [edge] = [e for e in tt.with_leads(around)["edges"] if e["from"] == confirm]
             obj = base.call("plx.object", {"object_id": p1}, READER_A)
             [count] = [c for c in obj["linked_counts"] if c["link_type"] == LINK]
             return edge, count["tiers"]

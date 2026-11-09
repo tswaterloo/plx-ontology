@@ -72,6 +72,7 @@ from operating.tests.test_host import HTTP_500, INIT, Lines, Router, call
 from operating.cases import WITHHELD
 from operating.tests.test_session_identity import (OID_A, OID_B, RULES, SECRET, Fixture,
                                                    identity_files, user_row)
+from operating.ontology_tools_traverse import with_leads
 
 SVC = "svc:workbench-host"
 OPS = "staff:operations"
@@ -474,8 +475,9 @@ class AcceptanceJourney(unittest.TestCase):
             self.around(3, PO_ID, "PackingSlip.for_purchase_order", tier_floor="lead"),
             self.around(4, PO_ID, "SupplierConfirmation.confirms")])
         answers = {request: self.ok(replies[request]) for request in (2, 3, 4)}
-        (confirmation,) = answers[2]["objects"]
-        (slip,) = answers[3]["objects"]
+        # Lead documents are set apart (possibly_related): read beside the listing.
+        (confirmation,) = with_leads(answers[2])["objects"]
+        (slip,) = with_leads(answers[3])["objects"]
         # A machine-read document is a lead: never traversed at the default tier floor.
         self.assertEqual(answers[4]["objects"], [])
         self.assertEqual({e["tier"] for a in (answers[2], answers[3]) for e in a["edges"]},
@@ -574,7 +576,7 @@ class AcceptanceJourney(unittest.TestCase):
             mails = tool("plx.around", {"from": PO_ID, "path": [
                 {"link_type": "Email.mentions_purchase_order", "direction": "reverse"}],
                 "tier_floor": "lead"})
-            (mail,) = mails["objects"]
+            (mail,) = with_leads(mails)["objects"]
             subject = self.values(tool("plx.object", {"object_id": mail["object_id"]}))
             return {"mode": "record", "decision": "alias", "subject": PO_ID,
                     "alias": {"identifier_kind": "vendor_confirmation",
@@ -778,9 +780,9 @@ class AcceptanceJourney(unittest.TestCase):
         case_id, intent_id = parked["case_id"], parked["intent"]["intent_id"]
 
         def confirm_slip(tool):   # the person confirms the machine-read slip's link
-            (slip,) = tool("plx.around", {"from": PO_ID, "path": [
+            (slip,) = with_leads(tool("plx.around", {"from": PO_ID, "path": [
                 {"link_type": "PackingSlip.for_purchase_order", "direction": "reverse"}],
-                "tier_floor": "lead"})["objects"]
+                "tier_floor": "lead"}))["objects"]
             quantity = self.values(tool("plx.object", {"object_id": slip["object_id"]}))
             return {"mode": "record", "decision": "accept_link", "subject": slip["object_id"],
                     "target": PO_ID, "link_type": "PackingSlip.for_purchase_order",

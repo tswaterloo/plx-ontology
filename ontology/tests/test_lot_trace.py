@@ -407,7 +407,8 @@ class CertificateToReceiptTrace(unittest.TestCase):
         out = tools.call("plx.around", {"from": start, "path": [{"link": n} for n in links],
                                         "tier_floor": "lead"}, actor)
         self.assertNotIn("error", out, json.dumps(out)[:1500])
-        return {o["object_id"] for o in out["objects"]}
+        # records reached only by lead links are set apart (possibly_related, 11-07)
+        return {o["object_id"] for o in tt.with_leads(out)["objects"]}
 
     def test_a_certificate_traces_its_supplier_lot_to_supplier_po_and_product(self):
         tools = self.traverse()

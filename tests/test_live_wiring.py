@@ -410,6 +410,32 @@ class FixtureWorldProbeTests(unittest.TestCase):
         self.assertEqual(document["mention_denied_leaks"], 0)
         self.assertNotIn("FXCPO", json.dumps(document))
 
+    def test_mail_leak_count_reads_the_lead_set_for_mail_only(self):
+        """A mail-withheld reader's lead set: another PO it may open (a key-joined
+        same-record lead) is no mail leak; any mail record, edge or reached count is."""
+        from scripts.ontology_projection_probe import mail_served
+        po_a, po_b = "CustomerPurchaseOrder:a", "CustomerPurchaseOrder:b"
+        mail = "Email:graph-mail.m1"
+        po_lead = {"objects": [], "edges": [], "hops": [{"count": 0}],
+                   "possibly_related": {"set": "set:x", "count": 1, "objects": [
+                       {"object_id": po_b}], "edges": [{"from": po_b, "to": po_a}]}}
+        self.assertEqual(mail_served(po_lead, "CustomerPurchaseOrder.same_record_as"), 0)
+        # the same lead, but a mail record among what it shows
+        mixed = json.loads(json.dumps(po_lead))
+        mixed["possibly_related"]["objects"].append({"object_id": mail})
+        self.assertEqual(mail_served(mixed, "CustomerPurchaseOrder.same_record_as"), 1)
+        # over a mail link, the lead count alone is a leak (its records may be unshown)
+        counted = {"objects": [], "edges": [], "hops": [{"count": 0}],
+                   "possibly_related": {"set": "set:y", "count": 3, "objects": []}}
+        self.assertEqual(mail_served(counted, "Email.mentions_customer_purchase_order"), 3)
+        solid = {"objects": [{"object_id": mail}], "edges": [{"from": mail, "to": po_a}],
+                 "hops": [{"count": 1}]}
+        self.assertEqual(mail_served(solid, "Email.mentions_customer_purchase_order"), 3)
+        # fails closed: an unknown lead shape, an unnamed link type, an id-less record
+        self.assertGreater(mail_served({"possibly_related": ["?"]}, "X.y"), 0)
+        self.assertEqual(mail_served(counted, "mentions"), 3)
+        self.assertEqual(mail_served({"objects": [{}], "edges": [], "hops": []}, "X.y"), 1)
+
 
 class PortalOutageProbeTests(unittest.TestCase):
     """The Portal answers 500 on every route; the traverse and

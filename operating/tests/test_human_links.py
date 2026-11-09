@@ -25,6 +25,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from operating.ontology_tools_traverse import with_leads
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "tests") not in sys.path:
@@ -218,7 +219,7 @@ class HumanLinkCaseTests(unittest.TestCase):
         around = call("plx.around", {"from": po, "path": [
             {"link_type": "SupplierConfirmation.confirms", "direction": "reverse"}],
             "tier_floor": "lead", "response_format": "detailed"})
-        [edge] = around["edges"]
+        [edge] = with_leads(around)["edges"]
         self.assertEqual(edge["review"], {
             "review_id": recorded["review_id"], "decision": "accept_link",
             "reviewed_by": author, "reviewed_at": recorded["recorded_at"],

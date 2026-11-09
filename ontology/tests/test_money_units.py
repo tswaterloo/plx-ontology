@@ -349,6 +349,11 @@ def loader_errors(edit) -> list[str]:
         if p.stem == "orders":
             edit(doc)
         docs.append((f"domains/{p.stem}.json", doc))
+    # Domains link to generated types (people.json names the Teams message types), so the
+    # generated files compile beside them, as load_schema does.
+    for p in sorted((DOMAINS.parent / "generated").glob("*.json")):
+        if not p.name.startswith("_"):
+            docs.append((f"generated/{p.name}", json.loads(p.read_text(encoding="utf-8"))))
     try:
         schema.compile_documents(docs, catalog=CATALOG)
     except schema.SchemaLoadError as exc:

@@ -1058,7 +1058,9 @@ class QualityPacketTests(unittest.TestCase):
                          ["objects"], [])   # a lead is never traversed by default
         found = self.ok("plx.around", traverse.call("plx.around", {**step, "tier_floor": "lead"},
                                                     READER))
-        self.assertEqual([o["object_id"] for o in found["objects"]], [self.packet()])
+        # reached by a lead link only: set apart (possibly_related, 11-07)
+        self.assertEqual([o["object_id"] for o in tt.with_leads(found)["objects"]],
+                         [self.packet()])
         out = self.ok("plx.object", tools.call("plx.object", {"object_id": AO}, READER))
         conflicts = {c["subject"]: c for c in out["conflicts"]}
         P = "AssemblyOrderPacket"

@@ -97,7 +97,15 @@ def _reached(served: Any, reader: Any, start: str, path: tuple[str, ...]) -> int
                                      "path": [{"link": name} for name in path]}, reader)
     if "error" in out:
         return None
-    return len(out["objects"])
+    return len(_with_leads(out)["objects"])
+
+
+def _with_leads(answer: Any) -> Any:
+    """``answer`` with the records plx.around sets apart as reached only by lead links
+    (possibly_related, since 11-07): the trace walks at the lead floor, and a leak through
+    a lead link is a leak."""
+    from operating.ontology_tools_traverse import with_leads
+    return with_leads(answer)
 
 
 def _line_source(object_id: str) -> str:
@@ -123,9 +131,9 @@ class _Walk:
         """(objects reached, (link type, cause) when none is)."""
         key = (start, link)
         if key not in self._steps:
-            out = self.served.call("plx.around", {
+            out = _with_leads(self.served.call("plx.around", {
                 "from": start, "limit": 50, "tier_floor": "lead", "path": [{"link": link}]},
-                self.reader)
+                self.reader))
             link_type = f"{start.split(':', 1)[0]}.{link}"
             if "error" in out:
                 self._steps[key] = ((), (link_type, "unknown"))
@@ -262,9 +270,9 @@ def _measure(conn: sqlite3.Connection, host: Any, reader: Any, other: Any,
     with host.served_tools(reader) as served:
         walk = _Walk(served, reader, conn, schema)
         for certificate in certificates:
-            first = served.call("plx.around", {
+            first = _with_leads(served.call("plx.around", {
                 "from": certificate, "limit": 50, "tier_floor": "lead",
-                "path": [{"link": "for_receipt_line"}]}, reader)
+                "path": [{"link": "for_receipt_line"}]}, reader))
             if "error" in first:
                 out["certificates_withheld"] += 1
                 continue

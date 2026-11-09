@@ -295,14 +295,21 @@ class LiveProbe(unittest.TestCase):
                          ("session_projection_unavailable", False))
 
 
+# A placeholder lot number (N/A, NA, NONE, -, any case) binds no Lot at all (4a760b4923).
+PLACEHOLDER_LOT_WHERE = json.dumps([
+    {"path": "lotnoqc", "op": "present"},
+    {"path": "lotnoqc", "op": "not_in", "value": [
+        "NA", "Na", "nA", "na", "N/A", "N/a", "n/A", "n/a", "NONE", "None", "none", "-"]}])
+
+
 class LotOnReceiptLines(unittest.TestCase):
     def test_lot_is_served_from_the_receipt_lines_that_carry_a_supplier_lot(self):
         compiled = schema.load_schema()
         lot = compiled.object_types["Lot"]
         self.assertEqual(lot["availability"]["state"], "partial")
         self.assertEqual({(b["relation"], json.dumps(b["where"])) for b in lot["bindings"]}, {
-            (RM, '[{"path": "lotnoqc", "op": "present"}]'),
-            (PK, '[{"path": "lotnoqc", "op": "present"}]'),
+            (RM, PLACEHOLDER_LOT_WHERE),
+            (PK, PLACEHOLDER_LOT_WHERE),
             (GOLD, '[{"path": "supplier_lot_number", "op": "present"}]')})
         (number,) = [p for p in lot["properties"] if p["name"] == "lot_number"]
         self.assertEqual((number["value_type"], number["identifier_kind"]),
@@ -361,11 +368,11 @@ class LotOnReceiptLines(unittest.TestCase):
                                        "receipt_lines_linked": n, "lots": n,
                                        "lots_without_number": 0})
 
-    def test_a_placeholder_lot_is_a_lot_without_a_number_never_linked_as_one(self):
+    def test_a_placeholder_lot_is_no_lot_and_never_linked(self):
         compiled, conn, _t = build(self, {RM: [raw(1, "N/A"), raw(2, "REAL-1")]})
         lot = identity_spine.summarize(conn, compiled, ("portal_api",))["lot"]
         self.assertEqual((lot["lots"], lot["lots_without_number"], lot["receipt_lines_linked"],
-                          lot["receipt_lines_with_supplier_lot"]), (2, 1, 1, 1))
+                          lot["receipt_lines_with_supplier_lot"]), (1, 0, 1, 1))
 
 
 if __name__ == "__main__":

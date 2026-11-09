@@ -41,7 +41,7 @@ from scripts import source_registry
 from ontology.core import Actor
 from ontology.project import CapturedRecord, build_store
 from operating import ontology_tools as ot
-from operating.ontology_tools_traverse import TraverseTools
+from operating.ontology_tools_traverse import TraverseTools, with_leads
 
 T = "2026-10-01T00:00:00+00:00"
 KEYS = {"sage.ic_item_uom": "_sage_pk", "sage.ic_item": "itemno"}
@@ -270,8 +270,10 @@ class BoundRelationsProject(unittest.TestCase):
                 # Portal-native quotes are never authority (R1): their values never win and
                 # a link joining them to other records reads as a lead; the Portal's own
                 # foreign key from a quote's line to its quote is that key, a link.
-                out = self.call("plx.around", **{"from": QUOTE, "tier_floor": "lead", "path": [
-                    {"link_type": link_type, "direction": direction}]})
+                # a record reached only by a lead link is set apart (possibly_related)
+                out = with_leads(self.call("plx.around", **{
+                    "from": QUOTE, "tier_floor": "lead",
+                    "path": [{"link_type": link_type, "direction": direction}]}))
                 self.assertEqual([o["object_id"] for o in out["objects"]], [expected])
                 (edge,) = out["edges"]
                 self.assertEqual(edge["tier"], tier)

@@ -29,6 +29,7 @@ from operating import ontology_tools as ot
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_process as op
 from operating import ontology_tools_traverse as tt
+from operating.ontology_tools_traverse import with_leads
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = json.loads((ROOT / "operating/ontology_tool_contracts.json").read_text("utf-8"))
@@ -153,8 +154,9 @@ class Tools:
         """The tier plx.around serves on the edge from ``start`` to ``far``, asked at the
         weakest floor that still shows a lead, and whether the default floor counts it."""
         hop = {"from": start, "path": [{"link_type": link_type, "direction": direction}]}
-        shown = self._valid("plx.around", self.around_tools.call(
-            "plx.around", dict(hop, tier_floor="lead"), STAFF))
+        # A lead edge is set apart (possibly_related); with_leads reads it beside the rest.
+        shown = with_leads(self._valid("plx.around", self.around_tools.call(
+            "plx.around", dict(hop, tier_floor="lead"), STAFF)))
         [edge] = [e for e in shown["edges"] if {e["from"], e["to"]} == {start, far}]
         default = self._valid("plx.around", self.around_tools.call("plx.around", hop, STAFF))
         counted = far in [o["object_id"] for o in default["objects"]]

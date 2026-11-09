@@ -350,7 +350,8 @@ class PoIdentityFirmTests(unittest.TestCase):
 
     def test_the_build_steps_run_the_twin_step_after_reviews(self):
         steps = build_steps.post_project(self.dir / "state", "plx")
-        self.assertIs(steps["twins"], ids.twin_step)
+        # each step is wrapped to name itself on a failure (build_steps._named)
+        self.assertIs(steps["twins"].__wrapped__, ids.twin_step)
         # ``build_store`` runs the steps in name order; twins reads the reviewed links.
         order = sorted(steps)
         self.assertLess(order.index("reviews"), order.index("twins"))
@@ -384,9 +385,10 @@ class PoIdentityFirmTests(unittest.TestCase):
         path = [{"link_type": TWIN, "direction": "forward"}]
         for actor, firm in ((FULL, True), (NO_SUPPLIER, False), (NO_FINANCE, False)):
             with self.subTest(actor=sorted(actor.principals)):
-                at = {floor: {o["object_id"] for o in traverse.call("plx.around", {
-                    "from": po("api", 1), "path": path, "tier_floor": floor}, actor)
-                    .get("objects", ())} for floor in ("corroborated", "lead")}
+                # a record reached only by a lead link is set apart (possibly_related)
+                at = {floor: {o["object_id"] for o in tt.with_leads(traverse.call(
+                    "plx.around", {"from": po("api", 1), "path": path, "tier_floor": floor},
+                    actor)).get("objects", ())} for floor in ("corroborated", "lead")}
                 self.assertEqual(at["corroborated"], {po("bc", 1)} if firm else set())
                 self.assertEqual(at["lead"], {po("bc", 1)})   # the lead is there for all
                 outputs = [traverse.call("plx.around", {"from": po("api", 1), "path": path,

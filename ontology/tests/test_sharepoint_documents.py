@@ -164,7 +164,8 @@ class SharePointDocumentsTests(unittest.TestCase):
         around = self.ok("plx.around", traverse.call("plx.around", {
             "from": p1, "path": [{"link_type": LINK, "direction": "reverse"}],
             "tier_floor": "lead"}, QUALITY))
-        self.assertEqual({o["object_id"] for o in around["objects"]},
+        # mention leads are set apart (possibly_related, 11-07)
+        self.assertEqual({o["object_id"] for o in tt.with_leads(around)["objects"]},
                          {self.file_object("01FILEA"), self.file_object("01FILEB")})
 
     def test_an_employee_without_access_sees_neither_the_file_nor_its_mention(self):
@@ -176,8 +177,10 @@ class SharePointDocumentsTests(unittest.TestCase):
         back = self.ok("plx.around", traverse.call("plx.around", {
             "from": p1, "path": [{"link_type": LINK, "direction": "reverse"}],
             "tier_floor": "lead"}, EMPLOYEE))
-        self.assertEqual({o["object_id"] for o in back["objects"]},
+        # the lead set too holds only the file this reader may read
+        self.assertEqual({o["object_id"] for o in tt.with_leads(back)["objects"]},
                          {self.file_object("01FILEB")})
+        self.assertNotIn(packet, json.dumps(back))
         docs = evidence.call("plx.documents", {"object_id": p1, "sources": ["sharepoint"]},
                              EMPLOYEE)
         self.assertNotIn(packet, json.dumps(docs))

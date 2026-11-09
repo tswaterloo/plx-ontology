@@ -1362,6 +1362,40 @@ def removal_checks(host: Any, store: str, *, sample: int = REMOVAL_SAMPLE,
             "removal_links_ended": ended, "removal_links_open": still}
 
 
+MAIL_TYPES = frozenset({"Email", "Attachment"})
+
+
+def mail_served(answer: Mapping[str, Any], link_type: str) -> int:
+    """What a one-hop reverse ``plx.around`` answer over ``link_type`` serves of mail:
+    mail records listed (the answer's and its lead set's), edges touching one, and the
+    counts of what the hop reaches when that is a mail type (its solid count and its lead
+    set's, which name no type of their own). A lead set over a link between two records
+    the reader may read (a key-joined same-record lead) serves no mail and counts none.
+    A link type naming no type, or an answer this reading does not know, counts as mail."""
+    from operating.ontology_tools_traverse import with_leads
+
+    source = link_type.split(".", 1)[0] if "." in link_type else ""
+    reaches_mail = not source or source in MAIL_TYPES
+    apart = answer.get("possibly_related")
+    if apart is not None and not isinstance(apart, Mapping):
+        return 1
+    apart = apart or {}
+    out = with_leads(answer)
+
+    def is_mail(object_id: Any) -> bool:
+        return not isinstance(object_id, str) or object_id.split(":", 1)[0] in MAIL_TYPES
+
+    served = sum(1 for o in out.get("objects") or ()
+                 if not isinstance(o, Mapping) or is_mail(o.get("object_id")))
+    served += sum(1 for e in out.get("edges") or ()
+                  if not isinstance(e, Mapping) or is_mail(e.get("from")) or is_mail(e.get("to")))
+    if reaches_mail:
+        hops = out.get("hops") or ()
+        served += (hops[0].get("count") or 0) if hops else 0
+        served += apart.get("count") or 0
+    return served
+
+
 def mail_mention_checks(host: Any, store: str, *, withheld: str = MAIL_WITHHELD_PRINCIPAL,
                         sample: int = 200) -> dict[str, Any]:
     """Counts of projected mail documents and stored mention links, and what the served
@@ -1371,7 +1405,7 @@ def mail_mention_checks(host: Any, store: str, *, withheld: str = MAIL_WITHHELD_
     the mail: mention links the reader is served, linked objects ``withheld`` is served,
     and every mention link, document and reached count ``withheld`` gets (leaks)."""
     from ontology.types import Actor
-    from operating.ontology_tools_traverse import TIER_ORDER
+    from operating.ontology_tools_traverse import TIER_ORDER, with_leads
 
     conn = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
     try:
@@ -1393,13 +1427,14 @@ def mail_mention_checks(host: Any, store: str, *, withheld: str = MAIL_WITHHELD_
         for object_id, link_type in pairs:
             arguments = {"from": object_id, "limit": 50, "tier_floor": TIER_ORDER[-1],
                          "path": [{"link_type": link_type, "direction": "reverse"}]}
-            out = served.call("plx.around", arguments, reader)
+            # Records reached only by lead links are set apart (possibly_related, since
+            # 11-07); every tier is counted, so the lead set is read too.
+            out = with_leads(served.call("plx.around", arguments, reader))
             visible += len(out.get("edges") or ())
             out = served.call("plx.around", arguments, other)
             if "error" not in out:
                 seen.add(object_id)
-                leaks += (len(out["edges"]) + len(out["objects"])
-                          + (out["hops"][0]["count"] or 0))
+                leaks += mail_served(out, link_type)
     return {"email_objects": types.get("Email", 0),
             "attachment_objects": types.get("Attachment", 0),
             "mention_objects_probed": len({object_id for object_id, _ in pairs}),

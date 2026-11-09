@@ -161,8 +161,13 @@ class ContainerMemberTests(unittest.TestCase):
                                  (key,)).fetchone()[0]
 
     def links(self, object_id, link_type=MEMBER_LINK):
-        return self.conn.execute("SELECT to_object, reason FROM links WHERE link_type = ? AND "
-                                 "from_object = ?", (link_type, object_id)).fetchall()
+        """The mention step's own (lead) links. Since 11-07 the unique_mentions step
+        (ontology/mention_firm.py) writes a corroborated link beside a mention of a number
+        exactly one record holds, so a member names p3 twice: once per tier."""
+        return [r for r in self.conn.execute(
+            "SELECT to_object, reason, tier FROM links WHERE link_type = ? AND from_object = ?",
+            (link_type, object_id)).fetchall()
+            if link_type != MEMBER_LINK or r["tier"] == "lead"]
 
     def test_zip_attachment_members_are_cited_documents_and_unread_parts_are_gaps(self):
         self.assertEqual(self.built["post_project"]["mentions"]["counts"]["undeclared_target"],
@@ -233,10 +238,12 @@ class ContainerMemberTests(unittest.TestCase):
         # an attachment) is a member read for its own text too (gap-0d37a104a3db); with
         # no file name it is shown as <Subject>.eml.
         p1 = self.po("p1")
-        rows = self.conn.execute("SELECT link_type, from_object FROM links WHERE to_object = ?",
-                                 (p1,)).fetchall()
+        rows = self.conn.execute("SELECT link_type, from_object, tier FROM links "
+                                 "WHERE to_object = ?", (p1,)).fetchall()
         cited = sorted((r["link_type"], r["from_object"]) for r in rows
-                       if "MSG-E" in r["from_object"])   # this message's objects only
+                       if "MSG-E" in r["from_object"]   # this message's objects only
+                       # the mention step's links (unique_mentions' firm twins aside)
+                       and (r["link_type"] != MEMBER_LINK or r["tier"] == "lead"))
         expected, confirmations = [], set()
         for aid, conf, nested, deep, carried in (
                 ("ATT-E", "conf-e.txt", "inner.msg", "deep-m.txt", "Fwd.eml"),
@@ -316,7 +323,9 @@ class ContainerMemberTests(unittest.TestCase):
                     {"link_type": MEMBER_LINK, "direction": "reverse"}],
                     "tier_floor": "lead"}, actor)
                 outputs.append(around)
-                reached = {o["object_id"] for o in around.get("objects", [])}
+                # a record reached only by a lead link is set apart (possibly_related)
+                reached = {o["object_id"] for o in
+                           tg.tt.with_leads(around).get("objects", [])}
                 self.assertEqual(bool(reached & set(members)), visible, actor)
                 self.assertNotIn(private, reached, actor)
                 outputs.append(evidence.call("plx.documents", {"object_id": root}, actor))

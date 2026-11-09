@@ -34,6 +34,7 @@ from ontology.mentions import Document, TextField
 from ontology.types import Actor
 from operating import ontology_tools as ot
 from operating.case_mail_scope import MailScope
+from operating.ontology_tools_traverse import with_leads
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = json.loads((ROOT / "operating/ontology_tool_contracts.json").read_text("utf-8"))
@@ -688,7 +689,7 @@ class ReferenceAliasTests(unittest.TestCase):
                 "path": [{"link_type": "Email.mentions_purchase_order",
                           "direction": "reverse"}],
                 "tier_floor": "lead", "response_format": "detailed"}, READER_A)
-            [found] = [e for e in around["edges"] if e["from"] == p1["from_object"]]
+            [found] = [e for e in with_leads(around)["edges"] if e["from"] == p1["from_object"]]
             return {f["feature"] for f in found["reason"]}
 
         self.assertIn(mentions.REFERENCE_ALIAS_LEAD, edge("api:*"))

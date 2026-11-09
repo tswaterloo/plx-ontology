@@ -47,8 +47,10 @@ class MigrationTest(unittest.TestCase):
 
     def test_migrate_is_idempotent_and_matches_the_contract(self) -> None:
         values = {"embed_model": "BAAI/bge-m3", "embed_dim": 1024}
-        both = ["0001_search", "0002_units_generation", "0003_entity_alias_index",
-                "0004_dup_group_index", "0005_header_trgm_index"]
+        # Every declared migration, read from the directory: a new migration file is
+        # covered without editing this list, and an unreadable directory is no pass.
+        both = [name for _, name, _ in migrate.migration_files()]
+        self.assertIn("0001_search", both)
         self.assertEqual(migrate.migrate(self.conn, values=values), both)
         self.assertEqual(migrate.migrate(self.conn, values=values), [])
         state = migrate.status(self.conn)

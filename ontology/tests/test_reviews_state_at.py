@@ -28,7 +28,7 @@ from ontology.project import CapturedRecord, build_store
 from operating import case_mail
 from operating import ontology_tools as ot
 from operating import ontology_tools_review as rt
-from operating.ontology_tools_traverse import TraverseTools
+from operating.ontology_tools_traverse import TraverseTools, with_leads
 from operating.tests.test_case_mail import PERSON, PURCHASING, CaseMailTestCase
 from tests.test_ontology_tools_review import CONTRACTS, OID_A, Static, employee_session
 
@@ -140,8 +140,10 @@ class EveryReaderTests(CaseMailTestCase):
         status = rt.ReviewTools(base, self.reviews, session=session).call(
             "plx.review", {"mode": "status", "subject": review["subject"]}, session.actor)
         [shown] = [r for r in status["reviews"] if r["review_id"] == review["review_id"]]
-        around = TraverseTools(base).call("plx.around", {"from": review["subject"], "path": [
-            {"link_type": LINK, "direction": "forward"}], "tier_floor": "lead"}, session.actor)
+        # a record reached only by a lead link is set apart (possibly_related, 11-07)
+        around = with_leads(TraverseTools(base).call("plx.around", {
+            "from": review["subject"], "path": [{"link_type": LINK, "direction": "forward"}],
+            "tier_floor": "lead"}, session.actor))
         return {"state_at": rv.state_at(self.reviews.history("plx", review["subject"]),
                                         current.get, identity=rv.version_identity(conn)
                                         )[review["review_id"]],

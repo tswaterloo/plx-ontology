@@ -31,6 +31,7 @@ from ontology.project import MailCaptures, build_store
 from ontology.schema import load_schema
 from ontology.tests.test_po_identity_firm import Source, bc_po
 from scripts import po_twin_probe
+from operating.ontology_tools_traverse import with_leads
 
 NOW = dt.datetime(2026, 10, 2, 12, tzinfo=dt.timezone.utc)
 SCHEMA = load_schema()
@@ -404,7 +405,7 @@ class StoredFmNumberFirmTests(unittest.TestCase):
                 "from": row["to_object"],
                 "path": [{"link_type": po_twin_probe.MAIL_LINK, "direction": "reverse"}],
                 "tier_floor": "lead", "response_format": "detailed"}, READER_A)
-            [found] = [e for e in around["edges"] if e["from"] == row["from_object"]]
+            [found] = [e for e in with_leads(around)["edges"] if e["from"] == row["from_object"]]
             counts = base.call("plx.object", {"object_id": row["to_object"]}, READER_A)
             [count] = [c for c in counts["linked_counts"]
                        if c["link_type"] == po_twin_probe.MAIL_LINK]
