@@ -495,7 +495,7 @@ export function SourceLoader({
         disabled={more}
         className="inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] disabled:opacity-60 cursor-pointer"
       >
-        {more ? "Loading…" : "Show more"}
+        {more ? "Loading" : "Show more"}
       </button>
       <span className="h-px flex-1 bg-border" aria-hidden />
     </div>

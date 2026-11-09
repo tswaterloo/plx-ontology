@@ -57,6 +57,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology import store as ostore
 
+from . import drafts
+from .copy_gate import say_date
 from .proactive_business import _tick
 from .proactive_chasers import AUTOMATED, PUBLIC_MAIL, _FORWARD, _REPLY, _addr, _instant
 
@@ -830,7 +832,8 @@ def chase_escalation(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         return blocked
     if os.environ.get(CHASE_FLAG) != "1":
         # off by default: hand-checked precision 80% on gen 11 (2026-11-08), below the 90%
-        # bar; the polite sales and newsletter follow-ups it still raises read like chases
+        # bar (``operating/alert_kinds.json``); the polite sales and newsletter follow-ups it
+        # still raises read like chases
         return result([], reasons=["off_by_default"])
     domains = _domains(people)
     pop = population(st, as_of, people)
@@ -992,15 +995,19 @@ def nudge_draft(item: Mapping[str, Any]) -> dict[str, Any]:
     """A nudge to the approver, worded from the alert's own enum facts and date only; a
     draft: nothing is sent (the card's preview and confirm are the only way out)."""
     event = item.get("event") if isinstance(item.get("event"), Mapping) else {}
-    asked = event.get("asked_on") or "earlier"
+    asked = event.get("asked_on")
     family = str(event.get("family") or "other").replace("_", " ")
     what = "an approval" if family == "other" else f"a {family} approval"
     to = [a for a in event.get("waiting_on") or () if isinstance(a, str)][:3]
-    body = (f"Hello,\n\nA reminder about {what} requested on {asked}. Could you approve it, "
-            "or tell me what is missing or who should decide?\n\nThank you.")
+    when = f"on {say_date(asked)}" if isinstance(asked, str) and asked else "earlier"
+    draft = drafts.compose("approval_nudge", [
+        f"Can you approve {what} I asked for {when}, or tell me what is missing or who "
+        "should decide?"], subject="Approval waiting", facts=[("asked_on", asked)]
+        if asked else (), specific=False)
     return {"channel": "email" if item.get("kind") == APPROVAL_KIND else "teams",
-            "to": [{"address": a} for a in to], "subject": "Reminder: approval waiting",
-            "body": body, "status": "draft_not_sent", "sent": False}
+            "to": [{"address": a} for a in to], "subject": "Approval waiting",
+            "body": draft["body"] or "", "copy_check": draft["copy_check"],
+            "status": "draft_not_sent", "sent": False}
 
 
 def approvals_queue(gaps: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any]:

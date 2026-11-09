@@ -83,6 +83,7 @@ import re
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from .copy_gate import count as _count, say_date as _say
 from .proactive_business import _tick
 from .proactive_chasers import (AUTOMATED, CUSTOMER_MAIL, CUSTOMER_PO, CUSTOMER_TWINS,
                                 MENTIONS_CPO, PUBLIC_MAIL, SETTLED_MENTION, SO, _FORWARD,
@@ -868,8 +869,8 @@ def commitments(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         lead = not (to_customer and pop.settled_mention.get((m["id"], order)))
         summary_text = _summary(said, number)
         counts[kind] += 1
-        when = (f"was due {due.isoformat()}, {-days} day(s) ago" if days < 0
-                else "is due today" if days == 0 else f"is due {due.isoformat()}")
+        when = (f"was due {_say(due)}, {_count(-days, 'day')} ago" if days < 0
+                else "is due today" if days == 0 else f"is due {_say(due)}")
         made = gap(
             kind, COMMITMENTS, order, SO, f"promise|{m['dedupe']}",
             summary=("Lead, not firm: " if lead else "") + f"We promised: {summary_text}; it "
@@ -929,8 +930,8 @@ def _recent_promise(st: Any, as_of: date, pop: _Population, m: Mapping[str, Any]
     who = customers[0] if len(customers) == 1 else None
     lead = who is None
     summary_text = _summary(said, None)
-    when = (f"was due {due.isoformat()}, {-days} day(s) ago" if days < 0
-            else "is due today" if days == 0 else f"is due {due.isoformat()}")
+    when = (f"was due {_say(due)}, {_count(-days, 'day')} ago" if days < 0
+            else "is due today" if days == 0 else f"is due {_say(due)}")
     made = gap(
         kind, COMMITMENTS, m["id"], "Email", f"promise|{m['dedupe']}",
         summary=("Lead, not firm: " if lead else "") + f"We promised: {summary_text}; it "
@@ -1054,10 +1055,10 @@ def needs_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         made = gap(
             NEEDS_MY_REPLY, NEEDS_REPLY, m["id"], "Email" if m["channel"] == "mail" else m["type"],
             f"reply|{owner}",
-            summary=(f"Waiting on your reply {waited} business day(s): a "
-                     f"{'message' if m['channel'] == 'mail' else 'Teams message'} of "
-                     f"{m['day'].isoformat()} asks you something about order(s) "
-                     + ", ".join(numbers[:3])
+            summary=(f"{', '.join(numbers[:3])}: "
+                     f"{'a message' if m['channel'] == 'mail' else 'a Teams message'} of "
+                     f"{_say(m['day'])} waits on your reply, "
+                     f"{_count(waited, 'business day')}"
                      + (f"; {len(overdue)} past the requested date" if overdue else "")),
             missing="Reply to it, or hand it to who should (nothing is sent until you send it)",
             why=("Addressed to you, its own text asks a question or a request, and no later "

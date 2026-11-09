@@ -88,6 +88,9 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import alert_kinds, copy_gate
+from .copy_gate import say_date
+
 SCHEMA = "plx-briefing/v2"
 TOP_ITEMS = 7        # shown one by one; the rest are grouped by type with their counts
 MAX_ITEMS = 2000     # the ranked items a briefing holds (each group pages through them)
@@ -119,11 +122,11 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                    "departments": ("PROC",), "check": ("late_or_unconfirmed_po",)},
     "eta_slipped": {"kinds": ("eta_slipped",), "label": "Delivery date slipped",
                     "departments": ("PROC", "OPS"), "check": ("eta_slipped",)},
-    "vendor_no_reply": {"kinds": ("vendor_no_reply",), "label": "Vendor has not replied",
+    "vendor_no_reply": {"kinds": ("vendor_no_reply",), "label": "Supplier has not replied",
                         "departments": ("PROC",), "check": ("vendor_no_reply",),
                         "hidden": "none"},
     "vendor_terms_unapplied": {"kinds": ("vendor_terms_unapplied",),
-                               "label": "Vendor terms not applied",
+                               "label": "Supplier terms not applied",
                                "departments": ("PROC",), "check": ("vendor_terms_unapplied",),
                                "hidden": "none"},
     "negative_margin": {"kinds": ("negative_margin",), "label": "Order lost money on item cost",
@@ -181,11 +184,11 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                              "departments": ("OPS", "PROD", "PROC", "SALES", "WH"),
                              "check": ("planner_task_overdue",), "hidden": "none"},
     "aged_receivable_worsening": {"kinds": ("aged_receivable_worsening",),
-                                  "label": "Customer balance ageing worse",
+                                  "label": "Customer balance older",
                                   "departments": ("FIN", "ACCTMGMT"),
                                   "check": ("aged_balance_worsening",), "hidden": "none"},
     "aged_payable_worsening": {"kinds": ("aged_payable_worsening",),
-                               "label": "Vendor balance ageing worse",
+                               "label": "Supplier balance older",
                                "departments": ("FIN", "PROC"),
                                "check": ("aged_balance_worsening",), "hidden": "none"},
     "production_late": {"kinds": ("production_late",), "label": "Production past due",
@@ -228,7 +231,7 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                                  "departments": ("SALES", "ACCTMGMT", "OPS"),
                                  "check": ("duplicate_customer_order",)},
     "recurring_component_damage": {"kinds": ("recurring_component_damage",),
-                                   "label": "Item damaged again and again in assembly",
+                                   "label": "Item damaged repeatedly in assembly",
                                    "departments": ("QUALITY", "QA", "QC", "PROC", "OPS"),
                                    "check": ("recurring_component_damage",)},
     # the two largest pains (``operating.proactive_chasers``): a customer chasing where an
@@ -287,12 +290,12 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                          "departments": ("FIN", "PROC", "SALES", "QUALITY", "OPS",
                                          "ACCTMGMT", "PROD", "WH"),
                          "check": ("approvals_waiting",), "hidden": "none"},
-    "chase_escalating": {"kinds": ("chase_escalating",), "label": "Chased again and again",
+    "chase_escalating": {"kinds": ("chase_escalating",), "label": "Chased repeatedly",
                          "departments": ("SALES", "ACCTMGMT", "CS", "OPS", "PROC", "FIN",
                                          "WH", "QUALITY"),
                          "check": ("chase_escalation",), "hidden": "none"},
     "quality_hold_aging": {"kinds": ("quality_hold_aging",),
-                           "label": "Quality hold getting old",
+                           "label": "Quality hold open too long",
                            "departments": ("QUALITY", "QA", "QC", "OPS"),
                            "check": ("quality_holds",)},
     "reject_trend": {"kinds": ("reject_trend",), "label": "Rejects rising",
@@ -413,7 +416,7 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
     # only while its switch is on (``optional``: the type and its check are listed only
     # when the check reports a run): routed by the departments the item names, and never
     # counted for a reader who may not open it (it may rest on mail)
-    "watcher_attention": {"kinds": ("watcher_attention",), "label": "Flagged from new changes",
+    "watcher_attention": {"kinds": ("watcher_attention",), "label": "Watcher finding",
                           "departments": (), "check": ("ai_watcher",), "hidden": "none",
                           "optional": True},
 }
@@ -435,8 +438,8 @@ COUNTDOWN_HORIZON = 30
 # The checks behind the event types, in words, as the briefing names them.
 CHECK_WORDS = {"late_or_unconfirmed_po": "late purchase orders",
                "eta_slipped": "slipped delivery dates",
-               "vendor_no_reply": "vendor replies",
-               "vendor_terms_unapplied": "vendor terms in replies",
+               "vendor_no_reply": "supplier replies",
+               "vendor_terms_unapplied": "supplier terms in replies",
                "negative_margin": "order margins",
                "lot_attention": "lots near expiry and quality holds",
                "accepted_quote_no_order": "accepted quotes",
@@ -471,7 +474,7 @@ CHECK_WORDS = {"late_or_unconfirmed_po": "late purchase orders",
 REASON_WORDS = {"time_budget": "time ran out", "event_bound": "only the most recent were read",
                 "impact_bound": "only the first ones were followed",
                 "card_bound": "only the first ones were read",
-                "read_apart": "the rest wait for the vendor-mail pass"}
+                "read_apart": "the rest wait for the supplier-mail pass"}
 
 # Why a rule could not judge some records, in plain words ("cannot check: 12 records lack
 # order lines"); a reason not listed is said by its own name, never dropped.
@@ -484,7 +487,7 @@ UNJUDGED_WORDS = {"no_order_lines": "lack order lines",
                   "no_need_date": "hold no due date",
                   "need_date_disputed": "hold two different due dates",
                   "fulfilment_unsettled": "have a shipment or invoice not yet confirmed as theirs",
-                  "closed_in_unsettled_twin": "may be closed in an unconfirmed copy",
+                  "closed_in_unsettled_twin": "closed only in an unconfirmed copy",
                   "date_unparseable": "hold a date that cannot be read",
                   "not_projected": "are not in the records yet"}
 
@@ -526,9 +529,9 @@ NEXT_ACTIONS = {
     "eta_slipped": ("Check whether the new date still meets the orders this purchase order "
                     "supplies, and agree a recovery with the supplier if not.",
                     "date_moved_check_orders"),
-    "vendor_no_reply": ("Follow up with the vendor on the cited request (nothing is sent "
+    "vendor_no_reply": ("Follow up with the supplier on the cited request (nothing is sent "
                         "until you send it).", "no_reply_follow_up"),
-    "vendor_terms_unapplied": ("Review the vendor's offered term and, if it is right, enter "
+    "vendor_terms_unapplied": ("Review the supplier's offered term and, if it is right, enter "
                                "it in the Portal (nothing is written here).",
                                "terms_review_and_enter"),
     "negative_margin": ("Open the order's cost lines to see which item lost money, then "
@@ -561,8 +564,8 @@ NEXT_ACTIONS = {
     "aged_receivable_worsening": ("Review the customer's overdue invoices and agree a "
                                   "payment plan or credit hold with their account owner.",
                                   "aged_ar_review"),
-    "aged_payable_worsening": ("Check which vendor bills are overdue and why, and schedule "
-                               "payment or raise the dispute with the vendor.",
+    "aged_payable_worsening": ("Check which supplier bills are overdue and why, and schedule "
+                               "payment or raise the dispute with the supplier.",
                                "aged_ap_review"),
     "production_late": ("Ask production for a finish date and tell the owners of the "
                         "customer orders that wait on it.", "production_new_date"),
@@ -1190,7 +1193,7 @@ def _hidden(hidden: Mapping[str, int] | None, routing: Routing) -> dict[str, int
 
 def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, int] | None,
           last_visit: str | None, limit: int = MAX_ITEMS, since_visit: bool = False,
-          involved: Any = None) -> dict[str, Any]:
+          involved: Any = None, enabled: Iterable[str] = ()) -> dict[str, Any]:
     """One reader's briefing from its own trimmed inbox read (``read_inbox``, open and
     acknowledged) and the counts of events it may not see (``hidden_counts``): every
     routed item ranked (``items``, the first ``TOP_ITEMS`` shown one by one), the groups
@@ -1216,6 +1219,10 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
     visible: list[Item] = []
     for n, gap in enumerate(inbox.get("gaps") or ()):
         if gap.get("state", "open") not in ("open", "acknowledged"):
+            continue
+        # a type the registry keeps off never reaches a briefing, its digest or its counts
+        # (the AI watcher's items are merged in after the inbox read, so checked here too)
+        if gap.get("kind") in alert_kinds.off_gap_kinds(enabled):
             continue
         item = _item(gap, n, last_visit, run_at)
         if item is not None:
@@ -1268,6 +1275,10 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
     found = {"schema": SCHEMA, "status": "read", "as_of": inbox.get("as_of"), "run_at": run_at,
             "rank_basis": basis, "routing": _routing_out(routing),
             "count": len(ordered), "top": min(TOP_ITEMS, len(ordered)), "items": shown,
+            # My work holds the home kinds only (at most ``TOP_ITEMS``); the rest wait in
+            # Watching ("14 more in Watching")
+            "home_count": sum(1 for i in ordered if alert_kinds.home(i.event_type)),
+            "watching_count": sum(1 for i in ordered if not alert_kinds.home(i.event_type)),
             "groups": groups, "more": len(ordered) > limit,
             # the read stopped at ``MAX_READ``: the counts are "at least"
             "counts_exact": not inbox.get("more"),
@@ -1295,7 +1306,8 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
 
 def read(inbox: Any, store: Any, *, reader: str, may_read: Any, held: Iterable[str],
          decide: Any, routing: Routing, limit: int = MAX_ITEMS,
-         since_visit: bool = False, involved: Any = None) -> dict[str, Any]:
+         since_visit: bool = False, involved: Any = None,
+         enabled: Iterable[str] = ()) -> dict[str, Any]:
     """One reader's briefing from the inbox beside ``store``: its open and acknowledged
     events only (other gap kinds never use up the read), the events routed to it that it
     may not see as counts, and its last visit; the reader's grant is ``may_read``/
@@ -1306,14 +1318,14 @@ def read(inbox: Any, store: Any, *, reader: str, may_read: Any, held: Iterable[s
 
     found = pe.read_inbox(inbox, store, reader=reader, may_read=may_read, held=held,
                           decide=decide, states=("open", "acknowledged"), limit=MAX_READ,
-                          kinds=EVENT_KINDS)
+                          kinds=EVENT_KINDS, enabled=enabled)
     # the AI watcher's open items this reader may see, only while its switch is on
     found = ai_watcher.merge_briefing(found, Path(store), may_read=may_read, held=held,
                                       decide=decide, reader=reader)
     hidden = pe.hidden_counts(inbox, store, kinds=EVENT_KINDS, may_read=may_read, held=held,
                               decide=decide) if found.get("status") == "read" else None
     return build(found, routing=routing, hidden=hidden, last_visit=pe.last_visit(inbox, reader),
-                 limit=limit, since_visit=since_visit, involved=involved)
+                 limit=limit, since_visit=since_visit, involved=involved, enabled=enabled)
 
 
 def _routing_out(routing: Routing) -> dict[str, Any]:
@@ -1374,12 +1386,20 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
     links = {k: list(event[k]) if isinstance(event[k], (list, tuple)) else event[k]
              for k in ("pos", "orders", "required", "material", "due", "line_promised")
              if isinstance(event.get(k), (str, list, tuple))}
+    summary = gap.get("summary")
     return {"rank": n, "id": gap.get("id"), "event_type": item.event_type,
             "label": spec["label"], "kind": gap.get("kind"),
+            # the registry (``alert_kinds``): its merged kind, on by default, on My work
+            "alert_kind": alert_kinds.kind_of(item.event_type),
+            "default_on": alert_kinds.default_on(item.event_type),
+            "home": alert_kinds.home(item.event_type),
+            # the slop gate's verdict on the summary as written (counted, never hidden)
+            "copy_check": copy_gate.check(summary, surface="summary")
+            if isinstance(summary, str) else None,
             # its type found by a recorded run over this data, else fixture
             "evidence": "live" if found else "fixture-only",
             "object_id": gap.get("object_id"), "object_type": gap.get("object_type"),
-            "summary": gap.get("summary"), "why": follow_up.get("why"),
+            "summary": summary, "why": follow_up.get("why"),
             "next_action": {"text": text, "rule": rule, "suggestion_only": True},
             "facts": facts, "departments": item.departments,
             "citations": list(gap.get("citations") or ()),
@@ -1438,9 +1458,9 @@ TODAY_WORDS = {
     "po_due": ("PO", "POs", "fell due today unconfirmed", "due today, unconfirmed"),
     "po_undated": ("open PO", "open POs", "with no due date", "with no due date"),
     "eta_slipped": ("delivery date", "delivery dates", "slipped", "slipped"),
-    "vendor_no_reply": ("vendor request", "vendor requests", "without a reply",
+    "vendor_no_reply": ("supplier request", "supplier requests", "without a reply",
                         "without a reply"),
-    "vendor_terms_unapplied": ("vendor term", "vendor terms", "not applied", "not applied"),
+    "vendor_terms_unapplied": ("supplier term", "supplier terms", "not applied", "not applied"),
     "negative_margin": ("order", "orders", "lost money on item cost",
                         "lost money on item cost"),
     "lot_near_expiry": ("lot", "lots", "came near expiry", "near expiry"),
@@ -1464,9 +1484,9 @@ TODAY_WORDS = {
     "mc_approval_pending": ("approval", "approvals", "is waiting", "waiting"),
     "planner_task_overdue": ("Planner task", "Planner tasks", "went overdue", "overdue"),
     "aged_receivable_worsening": ("customer balance", "customer balances", "aged worse",
-                                  "ageing worse"),
-    "aged_payable_worsening": ("vendor balance", "vendor balances", "aged worse",
-                               "ageing worse"),
+                                  "older"),
+    "aged_payable_worsening": ("supplier balance", "supplier balances", "aged worse",
+                               "older"),
     "production_late": ("production record", "production records", "went past due",
                         "past due"),
     "assembly_damage_spike": ("item", "items", "had a damage spike", "with a damage spike"),
@@ -1501,7 +1521,7 @@ TODAY_WORDS = {
                      "is not approved or not done", "open"),
     "rd_project": ("R&D or sample project", "R&D or sample projects",
                    "has had no activity for days", "idle"),
-    "chase_escalating": ("thread", "threads", "was chased again and again", "escalating"),
+    "chase_escalating": ("thread", "threads", "was chased repeatedly", "escalating"),
     "quality_hold_aging": ("held batch or lot", "held batches and lots",
                            "stayed on hold too long", "on hold too long"),
     "reject_trend": ("reject trend", "reject trends", "started rising", "rising"),
@@ -1523,7 +1543,7 @@ TODAY_WORDS = {
     "certificate_expiring": ("certificate", "certificates", "came near expiry",
                              "near expiry"),
     "duplicate_party_candidate": ("customer or supplier", "customers or suppliers",
-                                  "may be entered twice", "entered twice"),
+                                  "entered twice, to confirm", "entered twice"),
     "key_field_missing": ("record", "records", "is missing a key field",
                           "missing a key field"),
     "twins_disagree": ("record", "records", "has systems disagreeing", "disagreeing"),
@@ -1599,7 +1619,7 @@ def today_line(briefing: Mapping[str, Any]) -> str:
     behind = (" Some checks are re-running on the latest data"
               + (f" (last checked {at_words(briefing['checked_on']) or str(briefing['checked_on'])[:10]})"
                  if briefing.get("checked_on") else "")
-              + ", so more may show shortly.") if briefing.get("refreshing") else ""
+              + ": more can follow.") if briefing.get("refreshing") else ""
     if carried:
         behind += (f" {carried} item{' is' if carried == 1 else 's are'} from an earlier "
                    "check, marked with when it was last checked.")
@@ -1628,16 +1648,19 @@ def digest_text(briefing: Mapping[str, Any], *, first_name: str,
     built from the briefing's own words and cited facts: the top items one by one, the
     rest as counts by type, the checks not made whole, the hidden counts. Never sent."""
     labels = labels or {}
-    name = " ".join(str(first_name or "").split())[:60] or "there"
+    name = " ".join(str(first_name or "").split())[:60]
+    # the drafts' voice (``drafts``): "Hi <first name>," or no greeting
+    hello = f"Hi {name},\n\n" if name else ""
     if briefing.get("status") != "read":
-        return (f"Hello {name},\n\nYour briefing is not available yet: the watch list has "
+        return (f"{hello}Your briefing is not available yet: the watch list has "
                 "not run on the current data.\n\n(Preview only: nothing is sent.)")
     count = int(briefing.get("count") or 0)
-    lines = [f"Hello {name},", "", f"Today in one line: {today_line(briefing)}", ""]
+    lines = ([f"Hi {name},", ""] if name else []) + [today_line(briefing), ""]
     as_of = briefing.get("as_of")
     noun = "item needs" if count == 1 else "items need"
     at_least = "" if briefing.get("counts_exact", True) else "at least "
-    head = f"{at_least}{count} {noun} your attention" + (f" as of {as_of}" if as_of else "")
+    head = f"{at_least}{count} {noun} your attention" + (f" as of {say_date(as_of)}"
+                                                         if as_of else "")
     head = head[0].upper() + head[1:]
     new = int(briefing.get("new_since_visit") or 0)
     if briefing.get("last_visit"):

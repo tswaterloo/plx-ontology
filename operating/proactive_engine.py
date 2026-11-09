@@ -177,6 +177,8 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from ontology import store as ostore
 from ontology.units import unit_token
 
+from . import alert_kinds, copy_gate, drafts
+from .copy_gate import say_date
 from . import active_population as active
 from . import po_status
 from . import test_records as test_records_rule
@@ -2585,25 +2587,33 @@ def late_order_draft(lines: Sequence[Mapping[str, Any]], facts: Mapping[str, Any
     if number is not None:
         fact("order_number", number[0], number[1])
         order_text, subject = (f"purchase order {number[0]}",
-                               f"Please confirm the delivery date for purchase order {number[0]}")
+                               f"{number[0]}: please confirm the delivery date")
     else:
         order_text, subject = ("our purchase order (its number is not readable here)",
-                               "Please confirm the delivery date for our purchase order")
+                               "Our purchase order: please confirm the delivery date")
     due = facts.get("due")
     if confirmed is not None:
         fact("confirmed_delivery_date", confirmed[0], confirmed[1])
-        basis = (f"Your confirmation gives the delivery date {confirmed[0]}, and these lines "
+        basis = (f"Your confirmation gives the delivery date {say_date(confirmed[0])}, and these lines "
                  "are not fully received:\n")
     elif due is not None:
         fact("due_date", due[0], due[2], basis=due[1])
         words = {"requested": "our requested date", "vendor_eta": "your confirmed date",
                  "lead_time": "the order's lead time, due"}[due[1]]
-        basis = f"These lines are past {words} {due[0]} and not fully received:\n"
+        basis = f"These lines are past {words} {say_date(due[0])} and not fully received:\n"
     else:
         basis = "These lines are past our expected date and not fully received:\n"
-    head = (f"{DRAFT_LABEL}\nTo: {to_text}\nSubject: {subject}\n\nHello,\n\n"
-            f"Please confirm the delivery date for {order_text}. {basis}")
-    tail = "\nPlease reply with the date each line will be delivered."
+    # one composer (``drafts``): the sender's voice (no greeting name for a firm, no fixed
+    # sign-off) and the copy gate; the late lines follow as record lines
+    ask = f"Can you confirm the delivery date for {order_text}?"
+    composed = drafts.compose(
+        "supplier_date_ask", [ask, basis.rstrip("\n").rstrip(":") + ":"],
+        subject=subject[:60], specific=False,
+        facts=[("n", number[0] if number else None)]
+        + [(f["fact"], f["value"]) for f in listed])
+    opening = (composed["body"] or ask) + "\n"
+    head = f"{DRAFT_LABEL}\nTo: {to_text}\nSubject: {subject}\n\n{opening}"
+    tail = ""
     ordered = sorted(lines, key=lambda line: (line["day"], str(line.get("line_id"))))
     body, shown = "", 0
     for line in ordered[:MAX_DRAFT_LINES]:
@@ -2617,7 +2627,7 @@ def late_order_draft(lines: Sequence[Mapping[str, Any]], facts: Mapping[str, Any
         if confirmed is None and due is None:
             day = line["day"].isoformat()
             fact("expected_receipt", day, line["date_handle"], line_id=line_id)
-            when = f"our expected date {day}, "
+            when = f"our expected date {say_date(day)}, "
         (q_o, u_o, h_o), (q_r, u_r, h_r) = line["ordered"], line["received"]
         fact("ordered_quantity", format(q_o.normalize(), "f"), h_o, line_id=line_id, unit=u_o)
         fact("received_quantity", format(q_r.normalize(), "f"), h_r, line_id=line_id, unit=u_r)
@@ -2632,8 +2642,9 @@ def late_order_draft(lines: Sequence[Mapping[str, Any]], facts: Mapping[str, Any
         shown += 1
     if shown < len(ordered):
         body += f"- and {len(ordered) - shown} more late lines, not listed here\n"
+    copy_check = copy_gate.check(opening + body, surface="draft_body")
     return {"label": DRAFT_LABEL, "status": DRAFT_STATUS, "sent": False, "to": to,
-            "subject": pg._clip(subject, 200), "text": pg._clip(head + body + tail,
+            "copy_check": copy_check, "subject": pg._clip(subject, 200), "text": pg._clip((head + body + tail).rstrip("\n"),
                                                                  MAX_DRAFT_TEXT),
             "date_basis": "confirmed" if confirmed is not None else
             ("due" if due is not None else "expected"),
@@ -2847,7 +2858,7 @@ def _reader_judges_lateness(st: _Store, may_read: Callable[[str], bool] | None) 
 # a promise sits in (or when the run's own reader could not see every promise), that a
 # later promise it cannot see may exist.
 PROMISE_CAVEAT = "later_promise_may_exist"
-PROMISE_CAVEAT_TEXT = " (a later promise you cannot see may exist)"
+PROMISE_CAVEAT_TEXT = " (a later promise could sit in mail you cannot open)"
 
 
 def _promise_audiences(st: _Store) -> list[str]:
@@ -5111,7 +5122,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                states: Sequence[str] = ("open", "acknowledged"),
                limit: int = MAX_SHOWN, kinds: Sequence[str] | None = None,
                today: date | None = None, since: str | None = None,
-               all_owners: bool = False) -> dict[str, Any]:
+               all_owners: bool = False, include_off: bool = False,
+               enabled: Iterable[str] = ()) -> dict[str, Any]:
     """The gaps one reader may see, trimmed: every late order first (longest late first), then
     by priority; what the last run
     covered of what this reader may read. ``may_read(audience_key)``, ``held`` (the
@@ -5134,6 +5146,17 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     ``all_owners``: a person's own-mail kinds are listed whoever owns them (everything else
     about the trim is unchanged); only the owner-only workload drill-down sets it, after its
     route has refused every other reader."""
+
+    # an alert type the registry keeps off (``alert_kinds``) yields nothing to a reader
+    # unless they switched it on; only a page that lists it on purpose reads it
+    # (``include_off``: the Late POs page's at-risk panel)
+    off_kinds: list[str] = []
+    if not include_off:
+        off = alert_kinds.off_gap_kinds(enabled)
+        if kinds is not None:
+            kinds = [k for k in kinds if k not in off] or ["\x00none"]
+        off_kinds = sorted(off)
+
     path = Path(inbox)
     today = _today() if today is None else today
     if not path.is_file():
@@ -5207,7 +5230,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 "SELECT g.*, (SELECT at FROM acks a WHERE a.gap_id = g.gap_id AND a.reader = "
                 ":reader) AS acked FROM gaps g WHERE g.state IN (SELECT value FROM "
                 "json_each(:states)) AND (:kinds IS NULL OR g.kind IN (SELECT value FROM "
-                "json_each(:kinds))) AND (:since IS NULL OR julianday(g.first_seen) >= "
+                "json_each(:kinds))) AND g.kind NOT IN (SELECT value FROM json_each(:off)) "
+                "AND (:since IS NULL OR julianday(g.first_seen) >= "
                 "julianday(:since)) AND " + _OBJECT_VISIBLE.format(o="g.object_id")
                 + " ORDER BY CASE WHEN :since IS NOT NULL THEN julianday(g.first_seen) END "
                 "DESC, json_extract(g.follow_up, '$.days_late') IS NULL, "
@@ -5219,7 +5243,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 {**params, "reader": reader, "states": global_states, "page": page,
                  "soonest": kinds is not None and list(kinds) == ["lot_near_expiry"],
                  "offset": offset, "since": since,
-                 "kinds": None if kinds is None else json.dumps(list(kinds))}).fetchall()
+                 "kinds": None if kinds is None else json.dumps(list(kinds)),
+                 "off": json.dumps(off_kinds)}).fetchall()
             if not rows:
                 break
             offset += len(rows)
@@ -5472,6 +5497,8 @@ def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
                   decide: Callable[[Sequence[str]], Mapping[str, Any]]) -> dict[str, int]:
     """Per kind, the open gaps this reader may NOT see (its subject, a citation group or a
     required grant withheld): a count, never an id, a subject or a summary. No inbox: {}."""
+    off = alert_kinds.off_gap_kinds()   # an off type is never counted to a reader either
+    kinds = [k for k in kinds if k not in off]
     path = Path(inbox)
     if not path.is_file():
         return {}

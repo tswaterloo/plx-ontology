@@ -56,7 +56,7 @@ const BY_STATUS: Record<number, string> = {
   504: BY_CODE.timeout,
 };
 
-export const GENERIC_ERROR = "Something went wrong on our side. Try again; if it keeps happening, tell the Workbench team.";
+export const GENERIC_ERROR = "The Workbench server failed on this request. Try again; if it keeps happening, tell the Workbench team.";
 
 const INCIDENT = /\bincident ([0-9a-f]{6,16})\b/;
 

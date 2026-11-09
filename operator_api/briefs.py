@@ -42,7 +42,7 @@ def _ref(object_id: Optional[str], label: Optional[str] = None) -> Optional[m.Ob
 
 
 def brief_url(object_id: str) -> str:
-    return f"/brief/{quote(br.type_of(object_id), safe='')}/{quote(object_id, safe='')}"
+    return f"/meetings/brief/{quote(br.type_of(object_id), safe='')}/{quote(object_id, safe='')}"
 
 
 def brief_model(raw: Mapping[str, Any]) -> m.Brief:

@@ -1457,6 +1457,53 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "unapplied_remittance", "short_payment", "statement_difference"]
 
 
+class CopyFinding(_Model):
+    rule: str
+    start: int
+    end: int
+    detail: str
+    part: Optional[str] = None
+
+
+class CopyCheck(_Model):
+    """The slop gate's verdict on a drafted text (``operating.copy_gate``)."""
+    ok: bool
+    findings: list[CopyFinding] = Field(default_factory=list)
+
+
+class AlertPrecision(_Model):
+    value: float = Field(ge=0, le=1)
+    checked: int = Field(ge=0, description="Live items hand-checked.")
+    on: str = Field(description="Day of the check.")
+    source: str
+    commit: Optional[str] = None
+    note: Optional[str] = None
+
+
+class AlertKind(_Model):
+    kind: str
+    label: str
+    surface: Literal["alert", "data_health", "weekly"]
+
+
+class AlertType(_Model):
+    type: str
+    kind: str
+    label: str
+    precision: Optional[AlertPrecision] = None
+    actionable: bool
+    default: Literal["on", "off"]
+    home: bool
+    roles: list[str] = Field(default_factory=list)
+
+
+class AlertKinds(_Model):
+    """The alert registry (operating/alert_kinds.json)."""
+    rule: str
+    kinds: list[AlertKind]
+    types: list[AlertType]
+
+
 class BriefingItem(_Model):
     """One event routed to this reader, as its own grant shows it."""
     rank: int = Field(ge=1)
@@ -1505,6 +1552,12 @@ class BriefingItem(_Model):
     acknowledged: bool = False
     new_since_visit: bool
     new_this_generation: bool
+    alert_kind: Optional[str] = Field(None, description="The registry kind it merges into "
+                                      "(operating/alert_kinds.json).")
+    default_on: bool = Field(False, json_schema_extra=_optional,
+                             description="On by default (measured >= 90% on 15+).")
+    home: bool = Field(False, json_schema_extra=_optional, description="Shown on My work.")
+    copy_check: Optional[CopyCheck] = None
     first_seen: Optional[str] = None
     open_url: str
     sources: list[Source] = Field(default_factory=list)
@@ -1552,6 +1605,10 @@ class Briefing(_Model):
     late_total: Optional[int] = Field(None, ge=0, description="Late purchase orders: Home's "
                                                               "count and rule.")
     other_teams: int = Field(ge=0, description="Events you may see routed to other teams.")
+    home_count: int = Field(0, ge=0, json_schema_extra=_optional,
+                            description="Items whose kind reaches My work.")
+    watching_count: int = Field(0, ge=0, json_schema_extra=_optional,
+                                description="Items left to Watching.")
     hidden: Optional[int] = Field(None, ge=0, description="Events for your teams in places "
                                                           "you can't open: counted, never "
                                                           "named.")
@@ -1776,6 +1833,7 @@ class SuggestionDraft(_Model):
     to: DraftTo
     subject: str
     body: str
+    copy_check: Optional[CopyCheck] = None
     facts: list[DraftFact] = Field(default_factory=list, description="Each stated fact "
                                                                      "and its source.")
     review: Optional[str] = None
@@ -1933,6 +1991,7 @@ class PlaybookEmail(_Model):
     subject: str
     body: str
     status: Literal["draft_not_sent"]
+    copy_check: Optional[CopyCheck] = None
 
 
 class PlaybookOwner(_Model):
@@ -2020,6 +2079,7 @@ class RecordPackDraft(_Model):
     subject: str
     body: str
     status: Literal["draft_not_sent"]
+    copy_check: Optional[CopyCheck] = None
     attach: list[str] = Field(default_factory=list, description="Citations of the documents "
                               "to attach when you send it.")
 
@@ -2066,6 +2126,7 @@ class ApprovalNudge(_Model):
     subject: str
     body: str
     status: Literal["draft_not_sent"]
+    copy_check: Optional[CopyCheck] = None
     sent: Literal[False]
 
 

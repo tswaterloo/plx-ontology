@@ -708,6 +708,66 @@
         "title": "ActionsLog",
         "type": "object"
       },
+      "AlertKind": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "surface": {
+            "enum": [
+              "alert",
+              "data_health",
+              "weekly"
+            ],
+            "title": "Surface",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "surface"
+        ],
+        "title": "AlertKind",
+        "type": "object"
+      },
+      "AlertKinds": {
+        "additionalProperties": false,
+        "description": "The alert registry (operating/alert_kinds.json).",
+        "properties": {
+          "kinds": {
+            "items": {
+              "$ref": "#/components/schemas/AlertKind"
+            },
+            "title": "Kinds",
+            "type": "array"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "types": {
+            "items": {
+              "$ref": "#/components/schemas/AlertType"
+            },
+            "title": "Types",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rule",
+          "kinds",
+          "types"
+        ],
+        "title": "AlertKinds",
+        "type": "object"
+      },
       "AlertPlaybook": {
         "additionalProperties": false,
         "description": "One alert's ready-to-use next steps (``operating.alert_playbooks``), worded from its\nown cited sources as you read them. Nothing is sent or written by reading it.",
@@ -859,6 +919,122 @@
           "writes"
         ],
         "title": "AlertPlaybook",
+        "type": "object"
+      },
+      "AlertPrecision": {
+        "additionalProperties": false,
+        "properties": {
+          "checked": {
+            "description": "Live items hand-checked.",
+            "minimum": 0.0,
+            "title": "Checked",
+            "type": "integer"
+          },
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "on": {
+            "description": "Day of the check.",
+            "title": "On",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "value",
+          "checked",
+          "on",
+          "source"
+        ],
+        "title": "AlertPrecision",
+        "type": "object"
+      },
+      "AlertType": {
+        "additionalProperties": false,
+        "properties": {
+          "actionable": {
+            "title": "Actionable",
+            "type": "boolean"
+          },
+          "default": {
+            "enum": [
+              "on",
+              "off"
+            ],
+            "title": "Default",
+            "type": "string"
+          },
+          "home": {
+            "title": "Home",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "precision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertPrecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "kind",
+          "label",
+          "actionable",
+          "default",
+          "home"
+        ],
+        "title": "AlertType",
         "type": "object"
       },
       "AnswerPayload": {
@@ -1190,6 +1366,16 @@
             ],
             "title": "Channel",
             "type": "string"
+          },
+          "copy_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CopyCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "sent": {
             "const": false,
@@ -1971,6 +2157,12 @@
             "title": "Hidden By Type",
             "type": "object"
           },
+          "home_count": {
+            "description": "Items whose kind reaches My work.",
+            "minimum": 0.0,
+            "title": "Home Count",
+            "type": "integer"
+          },
           "involvement": {
             "default": "no_identity",
             "description": "Whether your involvement was checked for every item ('partly_checked': some were not, they rank as not yours), or you have no identity on record.",
@@ -2095,6 +2287,12 @@
             },
             "title": "Types",
             "type": "array"
+          },
+          "watching_count": {
+            "description": "Items left to Watching.",
+            "minimum": 0.0,
+            "title": "Watching Count",
+            "type": "integer"
           },
           "yours": {
             "default": 0,
@@ -2430,6 +2628,18 @@
             "title": "Acknowledged",
             "type": "boolean"
           },
+          "alert_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The registry kind it merges into (operating/alert_kinds.json).",
+            "title": "Alert Kind"
+          },
           "amount": {
             "anyOf": [
               {
@@ -2483,6 +2693,16 @@
             "description": "Set when this item is from an earlier or failed check, never current: e.g. 'check failed at 2026-11-07 2:00 PM ET; last checked 2026-11-06 2:00 PM ET'. Null: found by the latest check.",
             "title": "Carried"
           },
+          "copy_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CopyCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "counterpart": {
             "anyOf": [
               {
@@ -2506,6 +2726,11 @@
             ],
             "description": "Days late, slipped, waiting or to expiry, between cited dates.",
             "title": "Days"
+          },
+          "default_on": {
+            "description": "On by default (measured >= 90% on 15+).",
+            "title": "Default On",
+            "type": "boolean"
           },
           "event_type": {
             "enum": [
@@ -2607,6 +2832,11 @@
               }
             ],
             "title": "First Seen"
+          },
+          "home": {
+            "description": "Shown on My work.",
+            "title": "Home",
+            "type": "boolean"
           },
           "id": {
             "title": "Id",
@@ -3115,6 +3345,68 @@
           "why"
         ],
         "title": "ConflictValue",
+        "type": "object"
+      },
+      "CopyCheck": {
+        "additionalProperties": false,
+        "description": "The slop gate's verdict on a drafted text (``operating.copy_gate``).",
+        "properties": {
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/CopyFinding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "CopyCheck",
+        "type": "object"
+      },
+      "CopyFinding": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "part": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Part"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule",
+          "start",
+          "end",
+          "detail"
+        ],
+        "title": "CopyFinding",
         "type": "object"
       },
       "CostBreakdown": {
@@ -8024,6 +8316,16 @@
             "title": "Channel",
             "type": "string"
           },
+          "copy_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CopyCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "party": {
             "anyOf": [
               {
@@ -9775,6 +10077,16 @@
             "title": "Channel",
             "type": "string"
           },
+          "copy_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CopyCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "party": {
             "anyOf": [
               {
@@ -10392,6 +10704,16 @@
             ],
             "title": "Channel",
             "type": "string"
+          },
+          "copy_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CopyCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "facts": {
             "description": "Each stated fact and its source.",
@@ -12724,6 +13046,38 @@
         "summary": "Action States",
         "tags": [
           "actions"
+        ]
+      }
+    },
+    "/api/alert-kinds": {
+      "get": {
+        "description": "The alert registry: every alert type with its measured precision, its kind,\nwhether it is on by default and whether it reaches My work (Watching lists it).",
+        "operationId": "alert_kinds_registry_api_alert_kinds_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertKinds"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Alert Kinds Registry",
+        "tags": [
+          "briefing"
         ]
       }
     },

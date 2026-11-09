@@ -1,5 +1,8 @@
 "use client";
 
+import { Pending } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { AlertKindsSection } from "@/components/watching/alert-kinds";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { LoadProblem } from "@/components/ui/notice";
@@ -32,7 +35,7 @@ function AlertRow({ a }: { a: WatchAlert }) {
 }
 
 /** Watching: the records you follow, your alert rules in plain words and your alerts. */
-export default function RulesPage() {
+export default function WatchingPage() {
   const [data, setData] = useState<Watchlist | null>(null);
   const [problem, setProblem] = useState<unknown>(null);
   const [text, setText] = useState("");
@@ -87,7 +90,10 @@ export default function RulesPage() {
       />
       <div className="mx-auto w-full max-w-3xl space-y-10 overflow-y-auto px-6 py-8">
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
-        {data && !data.configured && <p className="text-[13px] text-muted">Watchlists are not switched on on this server.</p>}
+        {!data && !problem && <Pending label="Reading your rules" />}
+        {data && !data.configured && <EmptyState title="Watchlists are off on this server." />}
+
+        <AlertKindsSection />
 
         <section aria-labelledby="new-rule" className="space-y-3">
           <h2 id="new-rule" className="text-[15px] font-semibold">New alert rule</h2>
@@ -136,15 +142,15 @@ export default function RulesPage() {
           )}
         </section>
 
-        <section aria-labelledby="alerts" className="space-y-1">
-          <h2 id="alerts" className="text-[15px] font-semibold">Your alerts</h2>
-          {data && data.alerts.length === 0 && <p className="text-[13px] text-muted">Nothing yet. Alerts arrive within minutes of a change.</p>}
+        <section aria-labelledby="rule-alerts" className="space-y-1">
+          <h2 id="rule-alerts" className="text-[15px] font-semibold">From your rules</h2>
+          {data && data.alerts.length === 0 && <EmptyState title="No alerts." />}
           <ul className="divide-y divide-[var(--border,#eee)]">{(data?.alerts ?? []).map((a) => <AlertRow key={a.alert_id} a={a} />)}</ul>
         </section>
 
         <section aria-labelledby="rules" className="space-y-1">
           <h2 id="rules" className="text-[15px] font-semibold">Your rules</h2>
-          {data && data.rules.length === 0 && <p className="text-[13px] text-muted">No rules yet.</p>}
+          {data && data.rules.length === 0 && <EmptyState title="No rules yet." />}
           <ul className="divide-y divide-[var(--border,#eee)]">
             {(data?.rules ?? []).map((r) => (
               <li key={r.rule_id} className="flex items-start gap-3 py-2.5">

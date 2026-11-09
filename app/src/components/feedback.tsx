@@ -150,7 +150,7 @@ export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: s
           </div>
           <div>
             <label htmlFor={expectedId} className="mb-1.5 block text-[12px] text-muted">
-              The right answer is… <span className="text-faint">(optional)</span>
+              The right answer is <span className="text-faint">(optional)</span>
             </label>
             <input
               id={expectedId}

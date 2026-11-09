@@ -19,7 +19,8 @@ describe("my replies, workload and label changes", () => {
     expect(screen.getAllByTestId("reply-line")).toHaveLength(2);
     expect(screen.getByText(/asked 3 times/)).toBeTruthy();
     expect(screen.getByText("New inquiry")).toBeTruthy();
-    expect(screen.getByText(/Nothing is sent until you confirm it/)).toBeTruthy();
+    // the confirm step is said once, on the send preview, not on every list
+    expect(screen.queryByText(/Nothing is sent until you confirm it/)).toBeNull();
   });
 
   it("shows team counts and per-person rows only when served", () => {

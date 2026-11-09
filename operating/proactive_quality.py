@@ -359,11 +359,11 @@ def duplicate_parties(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             retired = any(_flag_active(found[x]["props"])[0] == "done" for x in (a, b))
             counts["blocked_copy"] += retired
             made = gap(DUPLICATE, DUP_RULE, a, object_type, b,
-                       summary=f"Two {noun} records {where} may be one {noun}: "
+                       summary=f"Two {noun} records {where} look like one {noun}: "
                                f"{_text(name_a)} and {_text(name_b)} "
                                f"(score {score}: {', '.join(basis)})"
-                               + ("; one of them is blocked or deleted, likely the retired "
-                                  "copy" if retired else ""),
+                               + ("; one of them is blocked or deleted, so it is the retired "
+                                  "copy if they match" if retired else ""),
                        missing=f"Are these the same {noun}? Confirm or reject the link in "
                                "the record's workspace; nothing is linked until a person "
                                "confirms.",
@@ -697,7 +697,7 @@ def stale_captures(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         words = SOURCE_WORDS.get(source, source.replace("_", " "))
         made = gap(STALE, STALE_RULE, row[0], row[0].split(":", 1)[0], source,
                    summary=f"{words} was last captured {captured.isoformat()[:16]} UTC, "
-                           f"{_plural(whole, 'hour')} ago: what it shows may be out of date",
+                           f"{_plural(whole, 'hour')} ago: newer changes are not in it",
                    missing=f"Is the {words} capture running? Check its last run.",
                    why=f"The newest capture of this source is {hours} hours or more old.",
                    priority="high" if whole >= STALE_HIGH_HOURS else "medium",

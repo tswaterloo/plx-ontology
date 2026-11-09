@@ -28,6 +28,9 @@ from __future__ import annotations
 import re
 from typing import Iterable, Optional, Sequence
 
+from operating import drafts
+from operating.copy_gate import say_date
+
 from . import models as m
 
 DAY = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
@@ -216,27 +219,34 @@ def _chase(trail: m.PoTrail, page: Optional[m.ObjectPage]) -> m.Proposal:
     if confirmed:
         figures.append(_figure("Vendor's last confirmed date", confirmed[0], confirmed[1]))
 
-    said = [f"Hello{' ' + name if name else ''},", ""]
     ours = f"Our {po}" if re.match(r"PO\b", po) else f"Our purchase order {po}"
-    late = f"{ours} was due on {due_day}" if due_day else f"{ours} is past its due date"
-    said.append(late + " and has not been received in full.")
-    if lines:
-        said += ["", "Still open:"] + [f"- {text}" for text, _ in lines]
+    late = (f"{ours} was due on {say_date(due_day)}" if due_day
+            else f"{ours} is past its due date")
+    said = [late + " and has not been received in full.",
+            "Can you confirm the date these items will ship?"]
     if confirmed:
-        said += ["", f"Your last confirmed delivery date was {confirmed[0]}."]
+        said.append(f"Your last confirmed delivery date was {say_date(confirmed[0])}.")
     if message and message_day:
-        said += ["", f"Your last message about it was on {message_day}"
-                     + (f' ("{topic}").' if topic else ".")]
+        said.append(f"Your last message about it was on {say_date(message_day)}"
+                    + (f' ("{topic}").' if topic else "."))
     elif not confirmed:
-        said += ["", "We have no message from you about this order on record."]
-    said += ["", "Please confirm the date these items will ship.", "", "Thank you,"]
+        said.append("We have no message from you about this order on record.")
+    # one composer, the sender's voice: "Hi <first name>," for a named contact
+    draft = drafts.compose("supplier_date_ask", said, subject=f"{po}: please confirm the "
+                           "ship date", person=name, required=2,
+                           facts=[("n", po), ("due", due_day), ("message", message_day),
+                                  ("topic", topic)]
+                           + ([("confirmed", confirmed[0])] if confirmed else []),
+                           lines=[text for text, _ in lines], specific=False)
     return m.Proposal(
         id=f"vendor_chase:{trail.subject.object_id}", kind="vendor_chase",
         title=f"Chase {vendor.value if vendor else 'the vendor'} for {po}",
         subject=trail.subject, to=to, to_name=name,
         contact_note=(f"Address {where}." if to else NO_CONTACT.format(who="vendor")),
         email_subject=f"{po}: please confirm the ship date",
-        body="\n".join(said), figures=figures, missing=missing)
+        body=draft["body"] or "", figures=figures,
+        missing=missing + ([] if draft["body"] else
+                           ["The drafted message did not pass the copy check"]))
 
 
 # --------------------------------------------------------------------------- record update
@@ -298,19 +308,19 @@ def _heads_up(trail: m.EvidenceTrail) -> list[m.Proposal]:
                 dates.append(confirmed[0])
                 figures.append(_figure("Supplier's confirmed date", confirmed[0],
                                        confirmed[1]))
-        said = ["Hello,", "",
-                f"A short update on your order {order.label}: "
+        said = [f"A short update on your order {order.label}: "
                 f"{_listed(list(dict.fromkeys(items)))} for it "
-                f"{'is' if len(set(items)) == 1 else 'are'} delayed at our supplier."]
+                f"{'is' if len(set(items)) == 1 else 'are'} delayed at our supplier.",
+                "We will confirm the new date for your order once we have it."]
         if dates:
-            said.append(f"Our supplier's latest confirmed date is {max(dates)}.")
-        said += ["We will confirm the new date for your order as soon as we have it.", "",
-                 "Thank you,"]
+            said.insert(1, f"Our supplier's latest confirmed date is {say_date(max(dates))}.")
+        draft = drafts.compose("customer_delay_notice", said, required=1,
+                               subject=f"{order.label}: update", specific=False)
         out.append(m.Proposal(
             id=f"customer_heads_up:{order.object_id}", kind="customer_heads_up",
             title=f"Heads-up to the customer on {order.label}", subject=order,
             contact_note=NO_CONTACT.format(who="customer"),
-            email_subject=f"Update on your order {order.label}", body="\n".join(said),
+            email_subject=f"{order.label}: update", body=draft["body"] or "",
             figures=figures,
             missing=["The customer's contact address"]
             + ([] if dates else ["A confirmed date from the supplier"])))

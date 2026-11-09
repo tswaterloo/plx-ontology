@@ -1949,7 +1949,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, WatchMixin)
         None: a named order or customer with no such finding (the agent path answers)."""
         def job(view: Any) -> Optional[m.AnswerPayload]:
             try:
-                inbox = view.gap_inbox(limit=LATE_COUNT_LIMIT, kinds=AT_RISK_KINDS)
+                inbox = view.gap_inbox(limit=LATE_COUNT_LIMIT, kinds=AT_RISK_KINDS, include_off=True)
             except TypeError:   # a workspace that reads no kinds: every gap, one page
                 inbox = view.gap_inbox()
             with view._request():
@@ -4742,7 +4742,7 @@ def at_risk_gaps(view: Any) -> Optional[list[Mapping[str, Any]]]:
     """The reader's ``order_at_risk`` and ``po_impact`` gaps, read by their kinds (past the
     inbox's first page); None for a workspace that cannot read by kind."""
     try:
-        got = view.gap_inbox(limit=LATE_COUNT_LIMIT, kinds=AT_RISK_KINDS)
+        got = view.gap_inbox(limit=LATE_COUNT_LIMIT, kinds=AT_RISK_KINDS, include_off=True)
     except TypeError:
         return None
     return [g for g in got.get("gaps") or () if isinstance(g, Mapping)]

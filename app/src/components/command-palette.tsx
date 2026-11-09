@@ -29,9 +29,10 @@ type Item =
 const PLACES: { label: string; href: string; hint: string; words: string }[] = [
   { label: "Today", href: "/", hint: "Late POs and what to chase", words: "today home front page briefing" },
   { label: "Late POs", href: "/late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
-  { label: "Briefing", href: "/briefing", hint: "Everything open, ranked", words: "briefing alerts attention" },
+  { label: "Watching", href: "/watching", hint: "Every alert, rules and data health", words: "watching briefing alerts rules attention" },
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
-  { label: "Action log", href: "/actions", hint: "Emails sent and tasks logged", words: "actions log journal" },
+  { label: "R&D projects", href: "/rd-projects", hint: "Sample and R&D projects, idle first", words: "rd r&d samples projects lab" },
+  { label: "Activity", href: "/activity", hint: "What was sent, approved and logged", words: "activity actions log journal" },
 ];
 
 const PaletteCtx = createContext<{ open: () => void }>({ open: () => undefined });

@@ -10,6 +10,7 @@ SYNTHETIC records and handles only; evidence label: isolated-fixture.
 from __future__ import annotations
 
 from datetime import date
+from operating.copy_gate import say_date
 import json
 from pathlib import Path
 import unittest
@@ -120,7 +121,10 @@ class EveryAlertType(unittest.TestCase):
         self.assertEqual(email["to"]["address"], "rep@supplier.example")
         self.assertEqual(email["party"], "supplier")
         self.assertIn("PO-SYNTH-1", email["body"])
-        self.assertTrue(email["body"].startswith("Hello Synth Supplies,"))
+        # the party is a firm: no greeting name and no fixed sign-off (the sender's voice)
+        self.assertFalse(email["body"].startswith(("Hello", "Hi Synth")))
+        self.assertFalse(email["body"].rstrip().endswith("Thank you."))
+        self.assertTrue(email["copy_check"]["ok"])
         self.assertEqual(found["teams"]["owner"]["name"], "Bea Buyer")
         self.assertIn("Bea Buyer: Purchase order PO-SYNTH-1 is late", found["teams"]["body"])
         self.assertTrue(found["change"]["do_this"].startswith("In BC: "))
@@ -155,10 +159,10 @@ class EveryAlertType(unittest.TestCase):
         found = build(g, world())
         self.assertEqual(found["change"]["value"], "40")
         self.assertIn("Buy 40 kg more of item ITEM-SYNTH", found["change"]["do_this"])
-        self.assertIn("needed by 2026-11-01", found["change"]["do_this"])
+        self.assertIn(f"needed by {say_date('2026-11-01')}", found["change"]["do_this"])
         self.assertEqual(found["email"]["to"]["address"], "rep@supplier.example")
         self.assertIn("PO-SYNTH-1", found["email"]["body"])
-        self.assertIn("2026-11-01", found["email"]["body"])
+        self.assertIn(f"{say_date('2026-11-01')}", found["email"]["body"])
 
     def test_cost_jump_asks_the_supplier_of_the_latest_order(self):
         g = gap("unit_cost_jump", ITEM, change_pct="38.5", latest_order=PO, orders=[])
@@ -171,10 +175,10 @@ class EveryAlertType(unittest.TestCase):
         found = build(gap("late_customer_order", SO, days=4, required="2026-10-30"), world())
         self.assertEqual(found["email"]["party"], "customer")
         self.assertEqual(found["email"]["to"]["address"], "ap@customer.example")
-        self.assertIn("2026-10-30", found["email"]["body"])
+        self.assertIn(f"{say_date('2026-10-30')}", found["email"]["body"])
         found = build(gap("po_impact", PO, days=3, orders_affected=2), world())
         self.assertEqual(found["email"]["party"], "supplier")
-        self.assertIn("holding up 2 of our customer orders", found["email"]["body"])
+        self.assertIn("holding up 2 customer orders", found["email"]["body"])
 
 
 class Markings(unittest.TestCase):
@@ -309,7 +313,7 @@ class AsCard(unittest.TestCase):
         shown = d.preview(card, "send_email", None, ctx())
         self.assertEqual(shown["problems"], [])
         self.assertEqual(shown["payload"]["to"], ["rep@supplier.example"])
-        self.assertIn("2026-10-20", shown["payload"]["body"])
+        self.assertIn(f"{say_date('2026-10-20')}", shown["payload"]["body"])
         edited = d.preview(card, "send_email", {"body": shown["payload"]["body"]
                                                 + " Ship 500 by 2026-12-01."}, ctx())
         self.assertTrue(any("Not backed by a citation" in p for p in edited["problems"]))

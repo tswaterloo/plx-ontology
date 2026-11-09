@@ -296,10 +296,8 @@ export default function FeedbackPage() {
         </ul>
       ) : entries.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center" data-testid="feedback-empty">
-          <p className="text-[13px] font-medium">No feedback here</p>
-          <p className="mt-1 max-w-[320px] text-[12px] leading-[18px] text-muted">
-            Rate an answer, mark a briefing item, or press F anywhere to tell us about a page, a record or the app.
-          </p>
+          <p className="text-[13px] font-medium">No feedback.</p>
+          <p className="mt-1 max-w-[320px] text-[12px] leading-[18px] text-muted">Press F on any page to send a note.</p>
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">

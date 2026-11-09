@@ -1,0 +1,72 @@
+{
+  "schema": "plx-copy-rules/v1",
+  "about": "Product copy rules shared by operating/copy_gate.py and app/src/lib/copy.test.ts. Surfaces: ui (app strings), summary (an alert's one line), why (an alert's reason), teams (a Teams note), draft_subject, draft_body (an outgoing mail). A rule applies to a surface when the surface or its group is listed: draft covers draft_subject and draft_body, summary covers why and teams.",
+  "banned_phrases": [
+    {"pattern": "I hope this (?:email |message )?finds you well", "reason": "filler opener", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "I hope you(?: are|'re) (?:well|doing well)", "reason": "filler opener", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "great question", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "delve", "reason": "AI vocabulary", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "seamless(?:ly)?", "reason": "AI vocabulary", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "leverag(?:e|es|ed|ing)", "reason": "AI vocabulary", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "robust", "reason": "AI vocabulary", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "it'?s important to note", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "worth noting", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "ensur(?:e|es|ed|ing)", "reason": "AI vocabulary", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "streamlin(?:e|es|ed|ing)", "reason": "AI vocabulary", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "empower(?:s|ed|ing)?", "reason": "AI vocabulary", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "utiliz(?:e|es|ed|ing)", "reason": "say use", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "in order to", "reason": "say to", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "don'?t hesitate", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "feel free to", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "reach(?:ing)? out", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "touch(?:ing)? base", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "circl(?:e|ing) back", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "at your earliest convenience", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "just wanted to", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "I wanted to", "reason": "filler", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "kindly", "reason": "stock phrase", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "please be advised", "reason": "stock phrase", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "thank you for your patience", "reason": "stock phrase", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "thank you for (?:your message|checking|accepting)", "reason": "template opener", "applies": ["summary", "draft"]},
+    {"pattern": "best regards", "reason": "not the sender's sign-off", "applies": ["draft"]},
+    {"pattern": "as (?:discussed|you know|cited)", "reason": "claims a context the record does not show", "applies": ["summary", "draft"]},
+    {"pattern": "we apologi[sz]e for the delay", "reason": "claims a context the record does not show", "applies": ["summary", "draft"]},
+    {"pattern": "key facts", "reason": "AI section label", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "insights", "reason": "AI section label", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "next steps", "reason": "AI section label", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "let me", "reason": "the software speaking", "applies": ["ui", "summary"]},
+    {"pattern": "oops", "reason": "chatty", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "something went wrong", "reason": "say what failed", "applies": ["ui", "summary", "draft"]},
+    {"pattern": "sorry", "reason": "no apologies in the UI", "applies": ["ui", "summary"]},
+    {"pattern": "again and again", "reason": "give the count", "applies": ["ui", "summary"]},
+    {"pattern": "flagged from new changes", "reason": "says nothing", "applies": ["ui", "summary"]},
+    {"pattern": "ageing worse|getting old", "reason": "one word for age: older", "applies": ["ui", "summary"]}
+  ],
+  "banned_chars": [
+    {"char": "—", "reason": "em dash", "applies": ["ui", "summary", "draft"]},
+    {"char": "→", "reason": "arrow", "applies": ["ui", "summary", "draft"]},
+    {"char": "✓", "reason": "check mark", "applies": ["ui", "summary", "draft"]},
+    {"char": "✗", "reason": "cross mark", "applies": ["ui", "summary", "draft"]},
+    {"char": "…", "reason": "ellipsis character", "applies": ["ui", "summary", "draft"]},
+    {"char": "!", "reason": "exclamation mark", "applies": ["ui", "summary", "draft"]}
+  ],
+  "hedges": ["may", "might", "likely", "possibly", "appears", "seems", "perhaps", "potentially"],
+  "limits": {
+    "summary_chars": 140,
+    "why_sentences": 2,
+    "teams_words": 40,
+    "draft_lines": 6,
+    "draft_words": 47,
+    "subject_chars": 60
+  },
+  "terms": [
+    {"pattern": "vendors?", "use": "supplier", "applies": ["ui", "summary"]}
+  ],
+  "voice": {
+    "about": "Company profile from 4,000 external staff messages, 2026-11-08 (statistics only): body words p25 11, p50 23, p75 47; greeting 'Hi <first name>,' 36.8%, none 36.7%; no sign-off phrase 62.9%.",
+    "greetings": ["hi", "none"],
+    "signoffs": ["none"],
+    "p50_words": 23,
+    "p75_words": 47
+  }
+}

@@ -6,24 +6,26 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HiddenNotice } from "@/components/answer-parts";
 import { loadHome, loadLate, MobileAccount, MobileSearch } from "@/components/shell";
+import { ReplyList } from "@/components/reply-list";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
+import { Pending } from "@/components/ui/skeleton";
 import { AgeRing, OpenRing } from "@/components/ui/glyphs";
 import { Monogram } from "@/components/ui/monogram";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { isPutAway } from "@/lib/actions";
-import { getActionStates, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
+import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
 import { headline, refreshingLine, staleLine, yourMorning } from "@/lib/home";
-import type { ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
+import type { ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const TZ = "America/Toronto";
 
 /** "{thing} didn't load. Try again." with the incident kept for the Reference line. */
 function didntLoad(thing: string, err: unknown): string {
   const msg = plainError(err);
-  if (/^Something went wrong on our side/.test(msg)) {
+  if (/^The Workbench server failed/.test(msg)) {
     const inc = /incident ([0-9a-f]+)/.exec(msg)?.[1];
     return `Couldn't load ${thing}. Try again.${inc ? ` (incident ${inc})` : ""}`;
   }
@@ -33,6 +35,50 @@ function didntLoad(thing: string, err: unknown): string {
 /** The list's groups, most urgent first; a kind the app doesn't know sorts before "no due date". */
 const ORDER = ["po_late", "negative_margin", "customer_order_at_risk", "po_due", "eta_slipped", "vendor_no_reply", "vendor_terms_unapplied", "quantity_mismatch", "lot_on_hold", "lot_near_expiry", "quote_accepted_no_order"];
 const SHORT_GROUP: Record<string, string> = { po_late: "Late", po_undated: "No date", po_due: "Due soon" };
+/** My work's chips: what the reader does about an item. */
+const VERBS = [
+  { verb: "reply", label: "Reply" },
+  { verb: "approve", label: "Approve" },
+  { verb: "chase", label: "Chase" },
+  { verb: "decide", label: "Decide" },
+] as const;
+const VERB_OF_KIND: Record<string, string> = {
+  reply_owed: "reply",
+  approval_waiting: "approve",
+  label_change: "approve",
+  late_po: "chase",
+  waiting_on_them: "chase",
+  customer_chasing: "chase",
+};
+function verbOf(g: { type: string; rows: QueueRow[] }): string {
+  if (g.type === "po_late" || g.type === "po_due" || g.type === "po_undated") return "chase";
+  const kind = g.rows.find((r) => r.item?.alert_kind)?.item?.alert_kind;
+  return (kind && VERB_OF_KIND[kind]) || "decide";
+}
+
+/**
+ * Prepared work: drafts an autopilot made for you, each one click to approve. The
+ * autopilot engine fills it; with nothing prepared it shows nothing, so My work stays one
+ * list.
+ */
+function PreparedWork({ items }: { items: { id: string; title: string; href: string }[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section aria-label="Prepared for you" className="px-5 pt-3" data-testid="prepared-work">
+      <h2 className="text-[12px] font-medium text-muted">Prepared for you</h2>
+      <ul className="mt-1 space-y-1">
+        {items.map((i) => (
+          <li key={i.id}>
+            <Link href={i.href} className="text-[13px] hover:underline">
+              {i.title}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 const rankOf = (t: string) => (t === "po_undated" ? 999 : ORDER.indexOf(t) === -1 ? 500 : ORDER.indexOf(t));
 
 function lateRow(p: LatePo, suggestion?: ProactiveSuggestion, item?: BriefingItem): QueueRow {
@@ -166,7 +212,15 @@ function Today() {
   const supplier = params.get("supplier");
   const [states, setStates] = useState<Record<string, ActionResult>>({});
   const [pages, setPages] = useState<Record<string, { items: BriefingItem[]; more: boolean; total: number }>>({});
-  const [filter, setFilter] = useState<string>("all");
+  const [filter, setFilter] = useState<string>(params.get("view") === "reply" ? "reply" : "all");
+  // the Reply chip's list: your own mail and chats waiting on your answer (inbox triage)
+  const [replies, setReplies] = useState<ReplyTriage | null>(null);
+  const [repliesError, setRepliesError] = useState<unknown>(null);
+  useEffect(() => {
+    const c = new AbortController();
+    getReplies(c.signal).then(setReplies, (e) => !c.signal.aborted && setRepliesError(e));
+    return () => c.abort();
+  }, []);
   const [picked, setPicked] = useState<string | null>(params.get("sel"));
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -229,13 +283,17 @@ function Today() {
       const rows = [...lateList].sort((a, b) => (b.days_late ?? -1) - (a.days_late ?? -1)).map((p) => lateRow(p, bySubject.get(p.object_id), itemBy.get(p.object_id)));
       out.push({ type: "po_late", label: "Late", count: na?.late_total ?? rows.length, rows, more: false });
     }
+    // My work holds only the kinds the alert registry sends home (measured >= 90% on 15+
+    // and actionable); everything else waits in Watching
+    const homeOnly = briefing?.status === "read" && typeof briefing.home_count === "number";
     for (const g of briefing?.status === "read" ? (briefing.groups ?? []) : []) {
       if (g.event_type === "po_late") continue;
       const seen = new Set<string>();
       const rows = [...top.filter((i) => i.event_type === g.event_type), ...(pages[g.event_type]?.items ?? [])]
+        .filter((i) => !homeOnly || i.home)
         .filter((i) => (seen.has(i.id) ? false : (seen.add(i.id), true)))
         .map((i) => itemRow(i, bySubject.get(i.object_id)));
-      if (rows.length) out.push({ type: g.event_type, label: SHORT_GROUP[g.event_type] ?? g.label, count: g.count, rows, more: rows.length < g.count });
+      if (rows.length) out.push({ type: g.event_type, label: SHORT_GROUP[g.event_type] ?? g.label, count: homeOnly ? rows.length : g.count, rows, more: !homeOnly && rows.length < g.count });
     }
     return out.sort((a, b) => rankOf(a.type) - rankOf(b.type));
   }, [briefing, late, home, suggestions, pages]);
@@ -243,7 +301,7 @@ function Today() {
   const bySupplier = supplier
     ? groups.map((g) => ({ ...g, rows: g.rows.filter((r) => r.counterpart === supplier) })).filter((g) => g.rows.length).map((g) => ({ ...g, count: g.rows.length, more: false }))
     : groups;
-  const visible = filter === "all" ? bySupplier : bySupplier.filter((g) => g.type === filter);
+  const visible = filter === "all" ? bySupplier : bySupplier.filter((g) => verbOf(g) === filter);
   const flat = useMemo(() => visible.flatMap((g) => g.rows), [visible]);
   const selectedKey = picked ?? (desktop ? flat[0]?.key ?? null : null);
   const selected = flat.find((r) => r.key === selectedKey) ?? groups.flatMap((g) => g.rows).find((r) => r.key === selectedKey) ?? null;
@@ -310,9 +368,9 @@ function Today() {
   const showDetail = !desktop && !!picked && !!selected;
 
   const tabs =
-    bySupplier.length > 1 ? (
+    bySupplier.length > 1 || (replies?.total ?? 0) > 0 ? (
       <div className="flex h-full min-w-0 gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
-        {[{ type: "all", label: "All", count: supplier ? bySupplier.reduce((n, g) => n + g.count, 0) : total }, ...bySupplier].map((g) => (
+        {[{ type: "all", label: "All", count: bySupplier.reduce((n, g) => n + g.count, 0) }, ...VERBS.map((v) => ({ type: v.verb, label: v.label, count: v.verb === "reply" && replies ? replies.total : bySupplier.filter((g) => verbOf(g) === v.verb).reduce((n, g) => n + g.count, 0) })).filter((v) => v.count > 0)].map((g) => (
           <button
             key={g.type}
             type="button"
@@ -339,7 +397,7 @@ function Today() {
     >
       {/* desktop toolbar: the title and the tabs on the line every pane's toolbar shares */}
       <header className="hidden h-[52px] shrink-0 items-stretch gap-5 border-b border-border px-5 lg:flex" data-testid="home-header">
-        <h1 className="self-center text-[15px] font-semibold tracking-[-0.015em]">Today</h1>
+        <h1 className="self-center text-[15px] font-semibold tracking-[-0.015em]">My work</h1>
         {tabs}
       </header>
       {/* phone: large title, as an iPhone app opens */}
@@ -348,7 +406,7 @@ function Today() {
           <MobileSearch />
           <MobileAccount />
         </div>
-        <h1 className="px-5 text-[30px] leading-9 font-bold tracking-[-0.025em]">Today</h1>
+        <h1 className="px-5 text-[30px] leading-9 font-bold tracking-[-0.025em]">My work</h1>
       </header>
       {/* the day and what is late: the phone's line under its title; said to screen readers on a desktop */}
       <p className="px-5 text-[13px] text-muted lg:sr-only" data-testid="headline">
@@ -384,12 +442,17 @@ function Today() {
             ))}
           </div>
         )}
+        <PreparedWork items={[]} />
         {error ? (
           <div className="p-4">
             <LoadProblem message={error} busy={busy} onRetry={() => load(true)} />
           </div>
         ) : loading ? (
           <ListSkeleton />
+        ) : filter === "reply" ? (
+          <div className="px-5 pt-3" data-testid="my-replies">
+            {repliesError ? <LoadProblem message={plainError(repliesError)} busy={noticeKind(repliesError) === "busy"} onRetry={() => window.location.reload()} /> : replies ? <ReplyList triage={replies} /> : <Pending label="Reading your inbox" />}
+          </div>
         ) : groups.length === 0 ? (
           <div className="px-5 py-10 text-[13px] text-muted">
             {briefingError ? (
@@ -433,8 +496,8 @@ function Today() {
           ))
         )}
         {briefing?.status === "read" && briefing.count > 0 && groups.length > 0 && (
-          <Link href="/briefing" className="mx-5 mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-muted hover:text-fg" data-testid="see-all">
-            All {briefing.count} in Briefing
+          <Link href="/watching#alerts" className="mx-5 mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-muted hover:text-fg" data-testid="see-all">
+            {typeof briefing.watching_count === "number" ? `${briefing.watching_count} more in Watching` : `All ${briefing.count} in Watching`}
             <ChevronRight className="size-3.5" aria-hidden />
           </Link>
         )}

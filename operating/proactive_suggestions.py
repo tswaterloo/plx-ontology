@@ -44,6 +44,9 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import drafts
+from .copy_gate import count, say_date
+
 SCHEMA = "plx-suggestions/v1"
 TOP = 12                 # suggestions composed one by one
 MAX_DRAFT_LINES = 8      # item lines a draft lists (the rest counted)
@@ -213,36 +216,40 @@ def vendor_draft(*, po_number: str, supplier: str | None, need_date: str | None,
               "source": contact.get("source")}
     else:
         to = {"name": supplier, "address": None,
-              "basis": "No vendor contact address in the records and mail you can open: "
-                       "add the vendor's address before sending."}
+              "basis": "No supplier contact address in the records and mail you can open: "
+                       "add the supplier's address before sending."}
     if eta.get("answer") == "yes" and eta.get("when"):
-        subject = f"{po_number}: your confirmed delivery date {eta['when']} has passed"
+        subject = f"{po_number}: your confirmed delivery date has passed"
         opening = (f"You confirmed delivery of our purchase order {po_number} for "
-                   f"{eta['when']}. We have not received it in full yet.")
+                   f"{say_date(eta['when'])}. We have not received it in full yet.")
     else:
         subject = f"{po_number}: please confirm the delivery date"
         opening = (f"Our purchase order {po_number} "
-                   + _DUE_SAID.get(need_basis, _DUE_SAID["requested"]).format(need_date)
+                   + _DUE_SAID.get(need_basis, _DUE_SAID["requested"]).format(
+                       say_date(need_date))
                    if need_date else f"Our purchase order {po_number} is open")
         opening += (" and is not yet received in full." if need_date else ".")
-        if eta.get("answer") == "no":
-            opening += " We do not have a delivery confirmation from you on file."
-        elif eta.get("answer") == "conflicting":
-            opening += " The delivery dates we have from you disagree."
-    body = [f"Hello{' ' + supplier if supplier else ''},", "", opening]
+    status = None
+    if not (eta.get("answer") == "yes" and eta.get("when")):
+        status = {"no": "We have no delivery confirmation from you on file.",
+                  "conflicting": "The delivery dates we have from you disagree."
+                  }.get(str(eta.get("answer")))
+    # one composer, the sender's voice: the supplier is a firm, never the greeting's name
+    parts = [opening, "Can you confirm a delivery date for each open item, or say if any "
+                      "part cannot ship?"] + ([status] if status else [])
     if last_message:
-        body += ["", f"Following up on your message of {last_message['at']}."]
-    if lines:
-        body += ["", "Open items:"]
-        for row in lines[:MAX_DRAFT_LINES]:
-            body.append(f"- {row['text']}")
-        if len(lines) > MAX_DRAFT_LINES:
-            body.append(f"- and {len(lines) - MAX_DRAFT_LINES} more open lines")
-    body += ["", "Please reply with a confirmed delivery date for each open item, or tell us "
-                 "now if any part cannot ship.", "", "Thank you,"]
+        parts.append(f"This follows your message of {say_date(last_message['at'])}.")
+    listed = [str(row["text"]) for row in lines[:MAX_DRAFT_LINES]]
+    if len(lines) > MAX_DRAFT_LINES:
+        listed.append(f"and {count(len(lines) - MAX_DRAFT_LINES, 'more open line')}")
+    draft = drafts.compose("supplier_date_ask", parts, subject=subject[:200], required=2,
+                           facts=[("n", po_number), ("need_date", need_date),
+                                  ("eta", eta.get("when")),
+                                  ("last_message", (last_message or {}).get("at"))],
+                           lines=listed)
     return {"status": DRAFT_STATUS, "sent": False, "channel": "email", "audience": "vendor",
-            "to": to, "subject": subject[:200], "body": "\n".join(body)[:2000],
-            "facts": list(cited)}
+            "to": to, "subject": subject[:200], "body": (draft["body"] or "")[:2000],
+            "copy_check": draft["copy_check"], "facts": list(cited)}
 
 
 def customer_draft(*, order_label: str, required: str | None, eta: Mapping[str, Any] | None,
@@ -250,19 +257,22 @@ def customer_draft(*, order_label: str, required: str | None, eta: Mapping[str, 
     """An update the account owner may send the customer about an order a late purchase
     order puts at risk; it names no supplier, price or internal record (never sent)."""
     when = (eta or {}).get("when") if (eta or {}).get("answer") == "yes" else None
-    lines = ["Hello,", "",
-             f"An update on your order {order_label}"
-             + (f", which you need by {required}." if required else "."),
-             "", "One of the materials for it is arriving later than planned"
-             + (f"; our supplier has confirmed delivery for {when}." if when else "."),
-             "We will confirm a revised ship date as soon as we have it, and we can discuss "
-             "a partial shipment if that helps.", "", "Thank you for your patience,"]
+    parts = [f"An update on your order {order_label}"
+             + (f", which you need by {say_date(required)}:" if required else ":")
+             + " one of the materials for it is arriving later than planned"
+             + (f", now due {say_date(when)}." if when else "."),
+             "We will confirm a revised ship date once we have it.",
+             "If a partial shipment helps, tell us."]
+    draft = drafts.compose("customer_delay_notice", parts, subject=f"{order_label}: update",
+                           facts=[("n", order_label), ("required", required),
+                                  ("eta", when)], required=2)
     return {"status": DRAFT_STATUS, "sent": False, "channel": "email", "audience": "customer",
             "to": {"name": None, "address": None,
                    "basis": "The customer's contact is not in the records you can open: the "
                             "account owner sends this."},
-            "subject": f"Update on your order {order_label}"[:200],
-            "body": "\n".join(lines)[:2000], "facts": list(cited),
+            "subject": f"{order_label}: update"[:200],
+            "body": (draft["body"] or "")[:2000], "copy_check": draft["copy_check"],
+            "facts": list(cited),
             "review": "Confirm the new date with Purchasing before sending."}
 
 
@@ -402,7 +412,8 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
             missing.append(f"{n} more {'step sits' if n == 1 else 'steps sit'} in places "
                            "you can't open.")
         if po.get("may_hide_more"):
-            missing.append("Mail or files you can't open may hold a later vendor message.")
+            missing.append("Mail or files you can't open could hold a later supplier "
+                           "message.")
     elif otype == "PurchaseOrder":
         missing.append("The purchase order's trail (confirmations, messages) was not read "
                        "in time; open the order for it.")

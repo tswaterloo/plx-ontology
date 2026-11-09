@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
+from operating.copy_gate import say_date
 import json
 import sqlite3
 from pathlib import Path
@@ -196,7 +197,7 @@ class DetectorTest(Case):
         # a reader without mailbox b is told a later promise may exist, never which mailbox
         (caveated,) = self.events(may_read=lambda key: key != "mail:box-b")["eta_slipped"]
         self.assertTrue(caveated["summary"].endswith(
-            "(a later promise you cannot see may exist)"))
+            "(a later promise could sit in mail you cannot open)"))
         self.assertEqual(caveated["event"]["caveat"], "later_promise_may_exist")
         self.assertNotIn("box-b", json.dumps(caveated))
         # nor does a reader of neither the line nor a confirmation see the event
@@ -1260,8 +1261,8 @@ class DetectorTest(Case):
         self.assertEqual(build["detector_reasons"]["vendor_terms_unapplied"], ["read_apart"])
         checks = {c["check"]: c for c in self.brief(EVERYTHING)["checks"]}
         # each check says when it last ran, to the minute in US Eastern
-        self.assertEqual(checks["vendor_terms_unapplied"]["words"], "vendor terms in replies: "
-                         "partly checked this run (the rest wait for the vendor-mail pass) "
+        self.assertEqual(checks["vendor_terms_unapplied"]["words"], "supplier terms in replies: "
+                         "partly checked this run (the rest wait for the supplier-mail pass) "
                          f"(last run {bf.at_words(MOMENT.isoformat())})")
         self.assertTrue(checks["vendor_terms_unapplied"]["last_run"])
         with closing(sqlite3.connect(self.inbox)) as conn:
@@ -1808,7 +1809,7 @@ class BriefingTest(Case):
         self.assertNotIn("vendor has not replied", text.lower())
         types = {t["event_type"]: t for t in out["types"]}
         self.assertIsNone(types["vendor_no_reply"]["found_live"])
-        self.assertIn("Vendor replies: not checked this run.", text)
+        self.assertIn("Supplier replies: not checked this run.", text)
 
     def test_digest_preview_text(self):
         w, ids = self.world()
@@ -1816,8 +1817,8 @@ class BriefingTest(Case):
         out = self.brief(PROC)
         text = bf.digest_text(out, first_name="Synth Person", labels={ids["big"]: "PO SYNTH-9"})
         self.assertTrue(text.startswith(
-            "Hello Synth Person,\n\nToday in one line: In the latest check: 4 delivery "
-            "dates slipped.\n\n4 items need your attention as of 2026-10-19."))
+            "Hi Synth Person,\n\nIn the latest check: 4 delivery "
+            f"dates slipped.\n\n4 items need your attention as of {say_date('2026-10-19')}."))
         self.assertIn("1. Delivery date slipped: PO SYNTH-9", text)
         self.assertIn("(9000.00 USD order total)", text)
         self.assertIn("Next: Check whether the new date", text)
@@ -1924,7 +1925,7 @@ class BriefingTest(Case):
         self.assertEqual(out["today"], "In the latest check: 1 customer order now at risk "
                                        "from late POs; 3 POs went late.")
         self.assertTrue(bf.digest_text(out, first_name="S").startswith(
-            "Hello S,\n\nToday in one line: In the latest check: 1 customer order"))
+            "Hi S,\n\nIn the latest check: 1 customer order"))
         visit = bf.build(inbox, routing=EVERYTHING, hidden={}, last_visit="2026-11-02")
         self.assertEqual(visit["today"], "Nothing new since your last visit; still open: "
                          "1 customer order at risk from late POs; 3 POs late; 2 lots near "
@@ -1970,3 +1971,21 @@ class BriefingTest(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# These tests exercise the briefing's mechanics (ranking, routing, grouping, hidden counts,
+# the digest) over every event type, including the ones the alert registry keeps off by
+# default; that off types reach no reader is tested in test_alert_kinds.OffMeansNothing and
+# test_proactive_threads.
+_ALL_ON = None
+
+
+def setUpModule() -> None:
+    global _ALL_ON
+    from unittest import mock
+    _ALL_ON = mock.patch("operating.alert_kinds.off_gap_kinds", return_value=frozenset())
+    _ALL_ON.start()
+
+
+def tearDownModule() -> None:
+    _ALL_ON.stop()

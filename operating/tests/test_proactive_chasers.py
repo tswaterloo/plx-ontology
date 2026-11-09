@@ -8,6 +8,7 @@ isolated-fixture.
 from __future__ import annotations
 
 from datetime import timedelta
+from operating.copy_gate import say_date
 import json
 import sqlite3
 import time
@@ -175,7 +176,7 @@ class ChaseAndHolds(Engine):
         self.assertNotIn("Still waiting", text)
         draft = gap["follow_up"]["draft"]
         self.assertFalse(draft["sent"])
-        self.assertIn("order SYNTH-SO-1", draft["body"])
+        self.assertIn("Order SYNTH-SO-1", draft["body"])
         self.assertIn("SYNTH-ITEM: 10 ea ordered, 4 shipped, 6 still open.", draft["body"])
         self.assertIn("It has not shipped yet.", draft["body"])
         self.assertNotIn("777", draft["body"])
@@ -261,8 +262,8 @@ class ChaseAndHolds(Engine):
         self.run_rules(w)
         (gap,) = self.kinds(pc.TELL_FIRST)
         self.assertEqual(gap["object_id"], due)
-        self.assertEqual(gap["summary"], f"Order SYNTH-DUE is due {day(-2)} and not ready to "
-                                         "ship; this customer chased 1 time(s) in the last "
+        self.assertEqual(gap["summary"], f"Order SYNTH-DUE is due {say_date(day(-2))} and not ready to "
+                                         "ship; this customer chased 1 time in the last "
                                          "180 days")
         self.assertIn("draft", gap["follow_up"])
         # a reader who may not open the earlier chase's mailbox never sees the list entry
@@ -278,7 +279,7 @@ class ChaseAndHolds(Engine):
         order(w, who, day(-2), number="SYNTH-DUE")
         self.run_rules(w)
         (gap,) = self.kinds(pc.TELL_FIRST)
-        self.assertIn("chased 4 time(s)", gap["summary"])
+        self.assertIn("chased 4 times", gap["summary"])
         self.assertEqual([m["sent"] for m in gap["event"]["messages"]],
                          [day(60), day(50), day(40)])        # the latest three, by date
         self.assertEqual(self.kinds(pc.TELL_FIRST, may_read=lambda a: a != OTHER_BOX), [])
@@ -312,7 +313,7 @@ class ChaseAndHolds(Engine):
         by = {g["object_id"]: g for g in gaps}
         self.assertEqual(by[waited]["summary"],
                          "Batch BC-SYNTH-1 of SYNTH-BULK, 600 kg on On-Hold 40 days (counted "
-                         "from its earliest allocated order); 1 open order(s) wait on it "
+                         "from its earliest allocated order); 1 open order waits on it "
                          "(SO-BC-SYNTH-1)")
         self.assertEqual(by[waited]["follow_up"]["priority"], "high")
         self.assertEqual(by[waited]["event"]["orders_affected"], 1)

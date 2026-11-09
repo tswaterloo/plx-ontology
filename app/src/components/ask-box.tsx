@@ -523,7 +523,7 @@ export function AskBox({
       </ul>
       {searching && !open && (
         <p className={cn(pop, "px-3.5 py-2.5 text-[12px] text-muted", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
-          Searching…
+          Searching
         </p>
       )}
       {empty && !open && (

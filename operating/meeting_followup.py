@@ -57,6 +57,9 @@ import re
 import tempfile
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from . import drafts
+from .copy_gate import say_date
+
 from integrations import meeting_transcripts as mt
 
 SCHEMA = "plx-meeting-followup/v1"
@@ -588,13 +591,21 @@ def prepare(meeting: Mapping[str, Any], action: Mapping[str, Any], call: Call | 
         if to is None:
             why.append("no recipient address you may read is recorded; add one before "
                        "sending")
-        body = (f"Hello,\n\nFollowing up from {meeting.get('title') or 'our meeting'} on "
-                f"{str(meeting.get('start'))[:10]}: {title}\n\nThank you.")
+        # one composer, the sender's voice; a draft that fails the copy check is not shipped
+        day = str(meeting.get("start") or "")[:10] or None
+        drafted = drafts.compose("meeting_followup", [
+            f"Following up from {meeting.get('title') or 'our meeting'}"
+            + (f" on {say_date(day)}" if day else "") + f": {title}"],
+            subject=f"Follow-up: {meeting.get('title') or 'meeting'}"[:60],
+            facts=[("day", day), ("action", title)], specific=False)
+        body = drafted["body"] or ""
+        if not drafted["body"]:
+            why.append("the drafted message did not pass the copy check")
         card = {"id": "meeting:" + action["id"], "headline": title,
                 "subject": {"label": title}, "action": {"text": title},
                 "draft": {"channel": "email", "to": to,
                           "subject": f"Follow-up: {meeting.get('title') or 'meeting'}"[:200],
-                          "body": body, "facts": []},
+                          "body": body, "copy_check": drafted["copy_check"], "facts": []},
                 "teams_draft": {"body": f"Following up from {meeting.get('title')}: {title}"},
                 "playbook": True}
         return {**base, "channel": plan.get("channel", "email"), "card": card,

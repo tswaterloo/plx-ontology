@@ -68,6 +68,8 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ontology import store as ostore
 
+from . import drafts
+from .copy_gate import count, say_date
 from . import proactive_threads as pt
 from .proactive_business import _tick
 from .proactive_chasers import PUBLIC_MAIL, _FORWARD, _REPLY, _addr, _instant
@@ -583,8 +585,8 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
         party = pt._party(m.sender, domains) if m.channel == "mail" else "a colleague"
         what = "message" if m.channel == "mail" else "Teams message"
         records = ", ".join(f"{n} {k}" for k, n in sorted(w["records"].items()))
-        summary = (f"Waiting on your reply {waited} business day(s): a {what} of "
-                   f"{m.at.date().isoformat()} from {party} asks you something"
+        summary = (f"A {what} of {say_date(m.at.date())} from {party} waits on your reply, "
+                   f"{count(waited, 'business day')}"
                    + (f" ({records} named)" if records else "")
                    + (f"; asked {chases[(owner, ident)] + 1} times" if chases[(owner, ident)]
                       else ""))
@@ -643,16 +645,22 @@ def reply_draft(item: Mapping[str, Any], today: date) -> dict[str, Any]:
     way out)."""
     event = item.get("event") if isinstance(item.get("event"), Mapping) else {}
     message = next(iter(event.get("messages") or ()), {}) or {}
-    asked = message.get("sent") or "earlier"
+    asked = message.get("sent")
     subject = str(message.get("subject") or "").strip()
     to = event.get("asked_by")
-    body = (f"Hello,\n\nThank you for your message of {asked}. I am looking into it and will "
-            f"come back to you by {_next_business_day(today).isoformat()}.\n\nBest regards")
+    # one composer, the sender's voice: no stock opener, no fixed sign-off, dates in words
+    back = _next_business_day(today)
+    draft = drafts.compose("holding_reply", [
+        f"I'm looking into your message{' of ' + say_date(asked, today) if asked else ''} "
+        f"and will come back to you by {say_date(back, today)}."], subject="Re: your message",
+        facts=[("asked", asked), ("back", back.isoformat())], specific=False, today=today)
+    body = draft["body"] or ""
     return {"channel": "email" if message.get("channel", "mail") == "mail" else "teams",
             "to": [{"address": to}] if isinstance(to, str) and "@" in to else [],
             "subject": (subject if re.match(r"(?i)^re\s*:", subject) else
                         f"Re: {subject}" if subject else "Re: your message"),
-            "body": body, "status": "draft_not_sent", "sent": False}
+            "body": body, "copy_check": draft["copy_check"], "status": "draft_not_sent",
+            "sent": False}
 
 
 def triage(gaps: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any]:

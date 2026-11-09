@@ -86,6 +86,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/alert-kinds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Alert Kinds Registry
+         * @description The alert registry: every alert type with its measured precision, its kind,
+         *     whether it is on by default and whether it reaches My work (Watching lists it).
+         */
+        get: operations["alert_kinds_registry_api_alert_kinds_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/alerts/{alert_id}/playbook": {
         parameters: {
             query?: never;
@@ -1444,6 +1465,30 @@ export type components = {
             /** Rows */
             rows?: components["schemas"]["ActionLogRow"][];
         };
+        /** AlertKind */
+        AlertKind: {
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /**
+             * Surface
+             * @enum {string}
+             */
+            surface: "alert" | "data_health" | "weekly";
+        };
+        /**
+         * AlertKinds
+         * @description The alert registry (operating/alert_kinds.json).
+         */
+        AlertKinds: {
+            /** Kinds */
+            kinds: components["schemas"]["AlertKind"][];
+            /** Rule */
+            rule: string;
+            /** Types */
+            types: components["schemas"]["AlertType"][];
+        };
         /**
          * AlertPlaybook
          * @description One alert's ready-to-use next steps (``operating.alert_playbooks``), worded from its
@@ -1492,6 +1537,48 @@ export type components = {
              * @constant
              */
             writes: 0;
+        };
+        /** AlertPrecision */
+        AlertPrecision: {
+            /**
+             * Checked
+             * @description Live items hand-checked.
+             */
+            checked: number;
+            /** Commit */
+            commit?: string | null;
+            /** Note */
+            note?: string | null;
+            /**
+             * On
+             * @description Day of the check.
+             */
+            on: string;
+            /** Source */
+            source: string;
+            /** Value */
+            value: number;
+        };
+        /** AlertType */
+        AlertType: {
+            /** Actionable */
+            actionable: boolean;
+            /**
+             * Default
+             * @enum {string}
+             */
+            default: "on" | "off";
+            /** Home */
+            home: boolean;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            precision?: components["schemas"]["AlertPrecision"] | null;
+            /** Roles */
+            roles?: string[];
+            /** Type */
+            type: string;
         };
         /** AnswerPayload */
         AnswerPayload: {
@@ -1612,6 +1699,7 @@ export type components = {
              * @enum {string}
              */
             channel: "email" | "teams";
+            copy_check?: components["schemas"]["CopyCheck"] | null;
             /**
              * Sent
              * @constant
@@ -1934,6 +2022,11 @@ export type components = {
                 [key: string]: number;
             };
             /**
+             * Home Count
+             * @description Items whose kind reaches My work.
+             */
+            home_count?: number;
+            /**
              * Involvement
              * @description Whether your involvement was checked for every item ('partly_checked': some were not, they rank as not yours), or you have no identity on record.
              * @default no_identity
@@ -2003,6 +2096,11 @@ export type components = {
             today: string;
             /** Types */
             types?: components["schemas"]["BriefingEventType"][];
+            /**
+             * Watching Count
+             * @description Items left to Watching.
+             */
+            watching_count?: number;
             /**
              * Yours
              * @description Items about records you are involved in; they are ranked first.
@@ -2095,6 +2193,11 @@ export type components = {
              * @default false
              */
             acknowledged: boolean;
+            /**
+             * Alert Kind
+             * @description The registry kind it merges into (operating/alert_kinds.json).
+             */
+            alert_kind?: string | null;
             /** @description Money involved: a cited figure this reader may open; null otherwise. When amount_suspect is set it is NOT a fact: show the reason, never the figure. */
             amount?: components["schemas"]["Money"] | null;
             /**
@@ -2118,6 +2221,7 @@ export type components = {
              * @description Set when this item is from an earlier or failed check, never current: e.g. 'check failed at 2026-11-07 2:00 PM ET; last checked 2026-11-06 2:00 PM ET'. Null: found by the latest check.
              */
             carried?: string | null;
+            copy_check?: components["schemas"]["CopyCheck"] | null;
             /**
              * Counterpart
              * @description A purchase order's supplier as this reader reads it (one supplier only); null when not readable or not a PO.
@@ -2128,6 +2232,11 @@ export type components = {
              * @description Days late, slipped, waiting or to expiry, between cited dates.
              */
             days?: number | null;
+            /**
+             * Default On
+             * @description On by default (measured >= 90% on 15+).
+             */
+            default_on?: boolean;
             /**
              * Event Type
              * @enum {string}
@@ -2142,6 +2251,11 @@ export type components = {
             evidence: "live" | "fixture-only";
             /** First Seen */
             first_seen?: string | null;
+            /**
+             * Home
+             * @description Shown on My work.
+             */
+            home?: boolean;
             /** Id */
             id: string;
             /**
@@ -2329,6 +2443,29 @@ export type components = {
             value: string;
             /** Why */
             why: string;
+        };
+        /**
+         * CopyCheck
+         * @description The slop gate's verdict on a drafted text (``operating.copy_gate``).
+         */
+        CopyCheck: {
+            /** Findings */
+            findings?: components["schemas"]["CopyFinding"][];
+            /** Ok */
+            ok: boolean;
+        };
+        /** CopyFinding */
+        CopyFinding: {
+            /** Detail */
+            detail: string;
+            /** End */
+            end: number;
+            /** Part */
+            part?: string | null;
+            /** Rule */
+            rule: string;
+            /** Start */
+            start: number;
         };
         /** CostBreakdown */
         CostBreakdown: {
@@ -4186,6 +4323,7 @@ export type components = {
              * @constant
              */
             channel: "email";
+            copy_check?: components["schemas"]["CopyCheck"] | null;
             /** Party */
             party?: string | null;
             /**
@@ -4896,6 +5034,7 @@ export type components = {
              * @constant
              */
             channel: "email";
+            copy_check?: components["schemas"]["CopyCheck"] | null;
             /** Party */
             party?: string | null;
             /**
@@ -5147,6 +5286,7 @@ export type components = {
              * @enum {string}
              */
             channel: "email" | "internal_note";
+            copy_check?: components["schemas"]["CopyCheck"] | null;
             /**
              * Facts
              * @description Each stated fact and its source.
@@ -6221,6 +6361,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActionStates"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    alert_kinds_registry_api_alert_kinds_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertKinds"];
                 };
             };
             /** @description Unauthorized */

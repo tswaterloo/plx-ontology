@@ -120,7 +120,7 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
   );
 }
 
-/** A card's headline as the rest of the app says it: "PO 106001 is 134 days late", never "106001 is…" or "PO100095 is…". */
+/** A card's headline as the rest of the app says it: "PO 106001 is 134 days late", never "106001 is" or "PO100095 is". */
 export function suggestionHeadline(s: Pick<ProactiveSuggestion, "headline" | "subject">): string {
   const h = readable(s.headline).replace(/\b(PO|SO)(?=\d{3,}\b)/g, "$1 ");
   return /^PurchaseOrder$/.test(s.subject.type) && /^\d{4,}\b/.test(h) ? `PO ${h}` : h;
@@ -289,7 +289,7 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
               </button>
             )}
             {data.more > 0 && (
-              <Link href="/briefing" className="text-muted hover:text-fg">
+              <Link href="/watching" className="text-muted hover:text-fg">
                 {plural(data.more, "more record")} in the briefing
               </Link>
             )}
@@ -299,7 +299,8 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
       {data && (
         <div className="mt-3 space-y-1 text-[12px] text-muted">
           {extra && <p data-testid="suggestions-collapsed">{extra}</p>}
-          <p>{data.note === SERVER_NOTE ? "Nothing is sent until you confirm it." : data.note}</p>
+          {/* the confirm step is said once, on the send preview */}
+          {data.note && data.note !== SERVER_NOTE && <p>{data.note}</p>}
         </div>
       )}
     </section>

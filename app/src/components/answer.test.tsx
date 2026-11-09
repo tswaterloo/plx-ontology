@@ -294,7 +294,7 @@ describe("AnswerCard", () => {
   });
 
   it("marks the early verdict as not confirmed when the answer errors or is stopped", () => {
-    for (const error of ["Something went wrong on our side. Try again.", "Stopped. Ask again whenever you're ready."]) {
+    for (const error of ["The Workbench server failed on this request. Try again.", "Stopped. Ask again whenever you're ready."]) {
       const { unmount } = render(<AnswerCard turn={{ id: "t", question: "q", phase: "error", streamed: "", steps: [], verdict: "PO 90412 is 12 days late.", error }} />);
       const shown = screen.getByTestId("direct-answer");
       expect(shown).toHaveTextContent(/^Early reading, not confirmed/);
@@ -475,7 +475,7 @@ describe("Feedback", () => {
     render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer }} />);
     await userEvent.click(screen.getByRole("button", { name: "Yes, this answer was right" }));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Something went wrong on our side");
+    expect(alert).toHaveTextContent("The Workbench server failed on this request");
     expect(alert).not.toHaveTextContent("Traceback");
   });
 });

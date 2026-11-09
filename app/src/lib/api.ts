@@ -23,6 +23,7 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   BriefingView,
   Brief,
   RecordPack,
+  AlertKinds,
   MeetingFollowUpResponse,
   MyActionItemsResponse,
   ApprovalsQueue,
@@ -295,6 +296,11 @@ export function getMyActionItems(person?: string | null, signal?: AbortSignal): 
 }
 
 /** Every pending approval on your alert list, by who it waits on, with a drafted nudge each. */
+/** The alert registry: each alert type's measured precision, kind and default. */
+export function getAlertKinds(signal?: AbortSignal): Promise<AlertKinds> {
+  return getJson<AlertKinds>("/api/alert-kinds", signal);
+}
+
 // Your own "needs my reply" list: only your mailbox and one-to-one chats; drafts are sent
 // only through a card's preview and your confirm.
 export function getReplies(signal?: AbortSignal): Promise<ReplyTriage> {

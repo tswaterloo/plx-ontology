@@ -3,7 +3,8 @@
 import { notFound, useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { BriefView } from "@/components/brief-view";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Pending } from "@/components/ui/skeleton";
+import { Toolbar } from "@/components/ui/toolbar";
 import { LoadProblem } from "@/components/ui/notice";
 import { BRIEF_TYPES, getMeetingBrief } from "@/lib/api";
 import { noticeKind, plainError } from "@/lib/errors";
@@ -16,13 +17,6 @@ function safeDecode(s: string): string {
     return s;
   }
 }
-
-const EYEBROW: Record<string, string> = {
-  CalendarEvent: "Meeting prep",
-  Meeting: "Meeting prep",
-  Customer: "Customer brief",
-  Supplier: "Supplier brief",
-};
 
 export default function BriefPage() {
   const { type, id } = useParams<{ type: string; id: string }>();
@@ -41,7 +35,18 @@ export default function BriefPage() {
     });
     return () => ctl.abort();
   }, [type, objectId, round]);
-  if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
-  if (!brief) return <Skeleton className="h-64 w-full" />;
-  return <BriefView brief={brief} eyebrow={EYEBROW[type] ?? "Brief"} />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Toolbar title={brief?.title ?? "Brief"} parent={{ label: "Meetings", href: "/meetings" }} />
+      <div className="p-5">
+        {error ? (
+          <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
+        ) : brief ? (
+          <BriefView brief={brief} />
+        ) : (
+          <Pending label="Preparing the brief" />
+        )}
+      </div>
+    </div>
+  );
 }

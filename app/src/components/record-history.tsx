@@ -105,7 +105,7 @@ function AsOf({ type, id }: { type: string; id: string }) {
         </label>
         <input id="as-of-day" type="date" value={day} onChange={(ev) => setDay(ev.target.value)} className="rounded-lg border border-border bg-transparent px-2 py-1 text-[13px]" data-testid="as-of-day" />
         <button type="submit" disabled={busy || !day} className="cursor-pointer rounded-lg border border-border px-3 py-1 text-[13px] hover:bg-hover disabled:cursor-default disabled:opacity-50" data-testid="as-of-show">
-          {busy ? "Reading…" : "Show"}
+          {busy ? "Reading" : "Show"}
         </button>
       </form>
       {error && <p className="mt-2 text-[13px] text-muted" role="status" data-testid="as-of-error">{error}</p>}
@@ -200,7 +200,7 @@ export function RecordHistory({ type, id }: { type: string; id: string }) {
             ))}
           </ul>
         )}
-        {!error && loading && <p className="mt-2 text-[13px] text-muted" role="status">Reading changes…</p>}
+        {!error && loading && <p className="mt-2 text-[13px] text-muted" role="status">Reading changes</p>}
         {!loading && !error && entries.length === 0 && message && <p className="text-[13px] text-muted" role="status">{message}</p>}
         {partial && (
           <p className="mt-2 text-[13px] text-muted" role="status" data-testid="history-partial">

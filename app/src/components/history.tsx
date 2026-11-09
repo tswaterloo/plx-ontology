@@ -74,7 +74,7 @@ export function History({ events, linked, partial }: { events: TimelineEvent[]; 
       <SectionTitle>History</SectionTitle>
       {rows.length === 0 ? (
         <p className="text-[13px] text-muted" data-testid="history-empty">
-          {partial ? "Nothing dated is visible to you on this record. Some linked records are not visible to you." : "Nothing dated is on record for this yet."}
+          {partial ? "Nothing dated on this record. Some linked records are hidden from you." : "Nothing dated on this record."}
         </p>
       ) : (
         <>

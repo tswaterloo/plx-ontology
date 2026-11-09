@@ -122,7 +122,7 @@ export function LinkExplorer({ type, id, label }: { type: string; id: string; la
       </nav>
       <Legend />
       {error && <p className="mt-2 text-[13px] text-muted" role="status" data-testid="explorer-error">{error}</p>}
-      {!error && !data && <p className="mt-2 text-[13px] text-muted" role="status">Reading links…</p>}
+      {!error && !data && <p className="mt-2 text-[13px] text-muted" role="status">Reading links</p>}
       {data && (
         <div className="mt-2 space-y-3">
           {(data.groups ?? []).map((g) => (

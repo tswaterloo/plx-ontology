@@ -4,6 +4,7 @@ finding is either a card or counted, and nothing is ever sent."""
 
 from __future__ import annotations
 
+from operating.copy_gate import say_date
 import json
 import unittest
 
@@ -85,9 +86,10 @@ class Drafts(unittest.TestCase):
                          (False, "draft_not_sent", "vendor"))
         self.assertEqual(d["to"]["address"], "v@acme.example")
         self.assertIn("Rose oil: ordered 5 kg, received 0 kg", d["body"])
-        self.assertIn("2026-07-14", d["body"])          # the need date of the finding
-        self.assertIn("message of 2026-10-01", d["body"])
-        self.assertIn("We do not have a delivery confirmation from you on file.", d["body"])
+        self.assertIn(f"{say_date('2026-07-14')}", d["body"])          # the need date of the finding
+        # the body stays within the staff's p75 length; the last message is cited beside it
+        self.assertTrue(d["copy_check"]["ok"], d["copy_check"])
+        self.assertIn("We have no delivery confirmation from you on file.", d["body"])
         self.assertEqual(cleared["eta"]["answer"], "no")
         self.assertNotIn(SECRET, json.dumps(cleared))  # a message's words never appear
         self.assertTrue(all(f["citation"] for f in d["facts"]))
@@ -121,7 +123,7 @@ class Drafts(unittest.TestCase):
         out = card([item(1, summary="An open purchase order")], trails={PO: po},
                    late_drafts={PO: draft})["suggestions"][0]
         body = out["draft"]["body"]
-        self.assertIn("Our purchase order 4820 was due by 2026-08-01, your confirmed date",
+        self.assertIn(f"Our purchase order 4820 was due by {say_date('2026-08-01')}, your confirmed date",
                       body)
         self.assertNotIn("was needed by 2026-07-14", body)
         self.assertNotIn("confirmation from you on file", body)
@@ -148,7 +150,8 @@ class Drafts(unittest.TestCase):
         out = card([item(1)], trails={PO: trail(eta)})["suggestions"][0]
         self.assertEqual((out["eta"]["answer"], out["eta"]["when"], out["eta"]["in_mail"]),
                          ("yes", "2026-09-01", True))
-        self.assertIn("confirmed delivery date 2026-09-01 has passed", out["draft"]["subject"])
+        self.assertIn("confirmed delivery date has passed", out["draft"]["subject"])
+        self.assertIn(f"{say_date('2026-09-01')}", out["draft"]["body"])
         self.assertEqual(out["confidence"]["level"], "high")
 
     def test_customer_update_names_no_supplier_or_price(self):
@@ -166,7 +169,7 @@ class Drafts(unittest.TestCase):
                            {"fact": "supplier", "value": "Acme Oils", "citation": H}]}})
         cards = {c["kind"]: c for c in out["suggestions"]}
         cust = cards["customer_update"]
-        self.assertIn("2026-09-04", cust["draft"]["body"])
+        self.assertIn(f"{say_date('2026-09-04')}", cust["draft"]["body"])
         self.assertEqual(cust["draft"]["audience"], "customer")
         for leak in ("Acme", "PO100", "50000", "CAD"):
             self.assertNotIn(leak, cust["draft"]["body"] + cust["draft"]["subject"])

@@ -258,7 +258,8 @@ FOLLOW_UP_FIELDS = frozenset({"object_id", "missing", "why", "who_can_answer", "
 # from the store and records its own wording on the case, never sent, approved or sent to MC.
 FOLLOW_UP_DRAFT_FIELDS = frozenset({"label", "status", "sent", "to", "subject", "text",
                                     "date_basis", "facts", "citations", "lines_late",
-                                    "lines_listed", "unresolved", "internal_notes"})
+                                    "lines_listed", "unresolved", "internal_notes",
+                                    "copy_check"})
 MAX_FOLLOW_UP_DRAFT = 2000
 MAX_FOLLOW_UP_DRAFT_CITATIONS = 100
 RECORD_FIELDS = frozenset({"family", "root", "case_id"})
@@ -694,7 +695,7 @@ class ObjectWorkspace:
     def gap_inbox(self, *, inbox: Any = None, limit: int | None = None,
                   kinds: Sequence[str] | None = None,
                   states: Sequence[str] | None = None,
-                  all_owners: bool = False) -> dict[str, Any]:
+                  all_owners: bool = False, include_off: bool = False) -> dict[str, Any]:
         """The gaps the scheduled engine found (``operating.proactive_engine``: set-based
         rules over the whole projection store, persisted in the inbox beside it), trimmed
         for this reader: a gap shows only when its subject and a citation of each of its
@@ -721,7 +722,10 @@ class ObjectWorkspace:
                 **({"limit": limit} if limit is not None else {}),
                 **({"kinds": list(kinds)} if kinds is not None else {}),
                 **({"states": list(states)} if states is not None else {}),
-                **({"all_owners": True} if all_owners else {}))
+                **({"all_owners": True} if all_owners else {}),
+                # only a page that lists off alert types on purpose (Late POs' at-risk
+                # panel) reads them; every other read leaves them out (``alert_kinds``)
+                **({"include_off": True} if include_off else {}))
             return {**base, **found}
 
     def briefing(self, *, inbox: Any = None, since_visit: bool = False) -> dict[str, Any]:

@@ -505,7 +505,7 @@ def vendor_sentence(found: Any) -> tuple[str, str | None, str | None] | None:
                             if state != "late" else
                             " (per line: the line furthest past its own promised date).")
     if found.get("complete") is False:
-        text = text[:-1] + " (a later promise you cannot see may exist)."
+        text = text[:-1] + " (a later promise could sit in mail you cannot open)."
     return head + text, on, handle
 
 

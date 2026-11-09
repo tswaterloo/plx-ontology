@@ -424,8 +424,8 @@ class VendorTermsTests(unittest.TestCase):
         self.assertEqual(first["basis"], [base.email_id(MAIL["Q4"])])
         self.assertIn("a person of ours", " ".join(first["steps"]))
         draft = named["follow_up_1_draft"]
-        self.assertIn("following up on our message of 2026-10-10 (subject as cited) about "
-                      "purchase order PO100234", draft["value"])
+        self.assertIn("Following up on my message of Sat 10 Oct 2026 about purchase order "
+                      "PO100234", draft["value"])
         self.assertIn("never sent", draft["steps"][0])
         self.assert_no_excluded(out)
 

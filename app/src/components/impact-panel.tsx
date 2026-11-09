@@ -123,7 +123,7 @@ export function ImpactCard({ type, id }: { type: string; id: string }) {
           </>
         )}
         <button type="button" className="rounded border px-2 py-1 hover:bg-muted/10 disabled:opacity-50" onClick={run} disabled={busy}>
-          {busy ? "Walking links…" : why ? "Find causes" : "Show impact"}
+          {busy ? "Walking links" : why ? "Find causes" : "Show impact"}
         </button>
       </div>
       {error && <p className="mt-2 text-[13px] text-red-700">{error}</p>}
@@ -163,7 +163,7 @@ export function ImpactBody({ panel: raw }: { panel: Panel }) {
       {panel.mode === "what_if" && (
         <div>
           <p className="text-muted">
-            {panel.orders_total === 0 ? "No open customer order is reached through links you can read." : `${panel.orders_total} customer order${panel.orders_total === 1 ? "" : "s"} reached${panel.change ? `, ${panel.change}` : ""}.`}
+            {panel.orders_total === 0 ? "No open customer orders reached." : `${panel.orders_total} customer order${panel.orders_total === 1 ? "" : "s"} reached${panel.change ? `, ${panel.change}` : ""}.`}
           </p>
           <ul className="mt-1 space-y-1">
             {panel.orders.map((o) => (
@@ -192,7 +192,7 @@ export function ImpactBody({ panel: raw }: { panel: Panel }) {
       )}
       {panel.mode === "why" && (
         <ul className="space-y-1.5">
-          {panel.causes.length === 0 && <li className="text-muted">No cause is visible in the linked records you can read.</li>}
+          {panel.causes.length === 0 && <li className="text-muted">No cause found in the linked records.</li>}
           {panel.causes.map((c, i) => (
             <li key={i}>
               <span className="font-medium">{CAUSE_WORDS[c.cause]}</span>

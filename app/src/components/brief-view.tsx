@@ -111,7 +111,7 @@ export function BriefSectionView({ section }: { section: BriefSection }) {
 }
 
 /** One brief (meeting prep or weekly review): its sections, parties and how it was read. */
-export function BriefView({ brief, eyebrow }: { brief: Brief; eyebrow: string }) {
+export function BriefView({ brief }: { brief: Brief; eyebrow?: string }) {
   const subject = brief.subject;
   const parties = brief.parties ?? [];
   const possible = brief.possible_parties ?? [];
@@ -121,7 +121,6 @@ export function BriefView({ brief, eyebrow }: { brief: Brief; eyebrow: string })
   return (
     <div className="space-y-4" data-testid="brief">
       <PageHeader
-        eyebrow={eyebrow}
         title={brief.title}
         sub={
           (brief.when ? `${formatDate(brief.when)} · read ${formatDate(brief.as_of)}` : `Read ${formatDate(brief.as_of)}`) +
@@ -158,7 +157,7 @@ export function BriefView({ brief, eyebrow }: { brief: Brief; eyebrow: string })
               {possible.map((p, i) => (
                 <span key={p.object_id}>
                   {i > 0 && ", "}
-                  <Link className="hover:underline" href={`/brief/${encodeURIComponent(p.type)}/${encodeURIComponent(p.object_id)}`}>
+                  <Link className="hover:underline" href={`/meetings/brief/${encodeURIComponent(p.type)}/${encodeURIComponent(p.object_id)}`}>
                     {p.label}
                   </Link>
                 </span>

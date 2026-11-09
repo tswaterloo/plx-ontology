@@ -147,12 +147,12 @@ test("demo walk: briefing, late PO, order at risk, margin, Ask", async ({ page }
   expect(asOf, "Today states no data date").toBeTruthy();
   await shot(page, "today");
 
-  // 2. The proactive briefing, in full.
+  // 2. Every alert kind, in Watching: what is on, what is off and why.
   await page.getByTestId("see-all").click();
-  await expect(page).toHaveURL(/\/briefing/);
-  await expect(page.locator('[data-testid="briefing-item"], [data-testid="briefing-row"]').first()).toBeVisible({ timeout: PAGE_TIMEOUT });
-  await expectClean(page, "briefing");
-  await shot(page, "briefing");
+  await expect(page).toHaveURL(/\/watching/);
+  await expect(page.getByTestId("alert-kinds")).toBeVisible({ timeout: PAGE_TIMEOUT });
+  await expectClean(page, "watching");
+  await shot(page, "watching");
 
   // 3. Late orders, from the Today tile.
   await page.goto("/");

@@ -1,5 +1,6 @@
 "use client";
 
+import { DocumentsSection } from "@/components/record/documents";
 import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -101,7 +102,7 @@ function Crumb({ type, title }: { type: string; title?: string | null }) {
 /** The page's shape while it gathers: the header from the link's label at once, then a step line. */
 function ObjectSkeleton({ type, label }: { type: string; label?: string | null }) {
   const t = useElapsed(true);
-  const step = t < 8 ? "Reading Business Central…" : t < 20 ? "Searching mail and files…" : "Linking receipts and emails…";
+  const step = t < 8 ? "Reading Business Central" : t < 20 ? "Searching mail and files" : "Linking receipts and emails";
   return (
     <Frame
       crumb={<Crumb type={type} title={label} />}
@@ -112,7 +113,7 @@ function ObjectSkeleton({ type, label }: { type: string; label?: string | null }
             <div className="min-w-0 space-y-2 pt-0.5">
               {label ? <h1 className="break-words text-[24px] leading-[30px] font-semibold tracking-[-0.025em]">{label}</h1> : <div className="skeleton h-7 w-56" />}
               <p className="text-[13px] leading-5 text-muted" data-pending="">
-                {t < 3 ? "Loading the record…" : step}
+                {t < 3 ? "Loading the record" : step}
               </p>
             </div>
           </header>
@@ -1066,7 +1067,7 @@ if (c.signal.aborted) return;
       </Link>
       {BRIEF_TYPES.includes(type) && (
         <Link
-          href={`/brief/${encodeURIComponent(type)}/${encodeURIComponent(obj.object_id)}`}
+          href={`/meetings/brief/${encodeURIComponent(type)}/${encodeURIComponent(obj.object_id)}`}
           className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] [&_svg]:size-[15px]"
           title="Prepare a meeting brief"
           data-testid="prepare-brief"
@@ -1077,7 +1078,7 @@ if (c.signal.aborted) return;
       )}
       {PACK_TYPES.includes(type) && (
         <Link
-          href={`/pack/${encodeURIComponent(type)}/${encodeURIComponent(obj.object_id)}`}
+          href="#documents"
           className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] [&_svg]:size-[15px]"
           title="Gather the documents a customer or supplier asks for, with a drafted reply"
           data-testid="record-pack"
@@ -1286,6 +1287,7 @@ if (c.signal.aborted) return;
       <FulfilmentCard sections={links.fulfilment} />
       {(isCustomer || isSalesOrder) && <History events={obj.timeline ?? []} linked={obj.linked ?? []} partial={hiddenSome(obj)} />}
       <ImpactCard type={obj.type} id={obj.object_id} />
+      {PACK_TYPES.includes(obj.type) && <DocumentsSection type={obj.type} id={obj.object_id} />}
       <Linked items={obj.linked ?? []} />
       {obj.type === "Product" && <LabelChangesSection objectId={obj.object_id} />}
       <LinkExplorer type={obj.type} id={obj.object_id} label={head.title} />

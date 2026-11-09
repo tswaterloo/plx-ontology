@@ -21,9 +21,9 @@ describe("history", () => {
 
   it("empty and partial states are plain words without a count", () => {
     const { rerender } = render(<History events={[]} linked={[]} />);
-    expect(screen.getByTestId("history-empty").textContent).toBe("Nothing dated is on record for this yet.");
+    expect(screen.getByTestId("history-empty").textContent).toBe("Nothing dated on this record.");
     rerender(<History events={[]} linked={[]} partial />);
-    expect(screen.getByTestId("history-empty").textContent).toContain("Some linked records are not visible to you");
+    expect(screen.getByTestId("history-empty").textContent).toContain("Some linked records are hidden from you");
     rerender(<History events={ev} linked={[]} partial />);
     expect(screen.getByText(/may not be everything/)).toBeTruthy();
   });

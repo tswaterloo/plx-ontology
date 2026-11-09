@@ -43,6 +43,6 @@ describe("brief view", () => {
   it("lists lead-tier parties apart, linking to their own brief", () => {
     render(<BriefView brief={brief({ kind: "meeting", parties: [], possible_parties: [{ object_id: "Supplier:x:1", type: "Supplier", label: "Lead Co", open_url: "/object/Supplier/x" }] })} eyebrow="Meeting prep" />);
     expect(screen.getByText(/matched by email domain only/)).toBeTruthy();
-    expect(screen.getByText("Lead Co").getAttribute("href")).toBe("/brief/Supplier/Supplier%3Ax%3A1");
+    expect(screen.getByText("Lead Co").getAttribute("href")).toBe("/meetings/brief/Supplier/Supplier%3Ax%3A1");
   });
 });

@@ -27,7 +27,7 @@ export function AlertPlaybookPanel({ alertId }: { alertId: string }) {
     return () => ctl.abort();
   }, [alertId]);
   if (failed) return <p role="alert" className="text-[12px] text-fg">{failed}</p>;
-  if (!book) return <p className="text-[12px] text-muted">Preparing next steps…</p>;
+  if (!book) return <p className="text-[12px] text-muted">Preparing what to do</p>;
   const chip = state ? actionChip(state, false) : null;
   const card = { id: book.id, subject: { label: book.summary ?? "Alert" }, actions: book.offers };
   return (

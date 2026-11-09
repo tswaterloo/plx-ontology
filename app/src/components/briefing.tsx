@@ -167,7 +167,7 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
               aria-expanded={open}
               className={cn("relative z-10 shrink-0 hover:text-fg cursor-pointer", !open && "lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100")}
             >
-              {open ? "Hide" : item.trail ? "Evidence & next steps" : "Next steps"}
+              {open ? "Hide" : item.trail ? "Evidence and what to do" : "What to do"}
             </button>
             {watcher && (
               <span className="relative z-10 flex shrink-0 items-baseline gap-2.5">
@@ -259,7 +259,7 @@ function Group({ group, top, view, loadItems, byId }: { group: BriefingGroup; to
           {error && <span className="shrink-0 text-[12px] text-muted">{error}</span>}
           {canMore && (
             <button type="button" onClick={() => page(0)} disabled={busy} className="ml-auto shrink-0 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-60 cursor-pointer">
-              {busy ? "Loading…" : `Show ${left} more`}
+              {busy ? "Loading" : `Show ${left} more`}
             </button>
           )}
         </div>
@@ -297,7 +297,7 @@ function Group({ group, top, view, loadItems, byId }: { group: BriefingGroup; to
           disabled={busy}
           className="mx-5 mt-1 mb-3 inline-flex h-7 items-center gap-1 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-60 cursor-pointer"
         >
-          {busy ? "Loading…" : `Show ${left} more`}
+          {busy ? "Loading" : `Show ${left} more`}
         </button>
       )}
     </section>

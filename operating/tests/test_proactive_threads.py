@@ -9,6 +9,7 @@ isolated-fixture.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from operating import proactive_engine as pe
 import json
 import time
 import unittest
@@ -126,9 +127,27 @@ class Threads(Engine):
                                       result=pe._result, skips=pe._Skips, people=people())
         self.assertEqual((out["gaps"], out["reasons"]), ([], ["off_by_default"]))
 
+
     def run_rules(self, w: World, **options) -> dict:
         options.setdefault("people", people())
         return self.run_engine(w, only=RULES, **options)
+
+    def test_an_off_alert_type_reaches_no_reader_unless_they_switch_it_on(self):
+        # approval_waiting is off in the registry (27% wrong when last measured): the rule
+        # runs and stores its gaps, but a reader's inbox read (briefing, digest, agent
+        # tools, alerts) returns none of them and counts none as hidden
+        w, _ = self.approval_world()
+        self.run_rules(w)
+        self.assertTrue(self.kinds(pt.APPROVAL_KIND))                       # the rule ran
+        self.assertEqual(self.read(kinds=[pt.APPROVAL_KIND], include_off=False)["gaps"], [])
+        self.assertFalse(any(g["kind"] == pt.APPROVAL_KIND
+                             for g in self.read(include_off=False, limit=1000)["gaps"]))
+        switched = self.read(kinds=[pt.APPROVAL_KIND], include_off=False,
+                             enabled=["approval_waiting"])["gaps"]
+        self.assertTrue(switched)
+        hidden = pe.hidden_counts(self.inbox, self.store, kinds=[pt.APPROVAL_KIND],
+                                  may_read=lambda key: False, held=(), decide=lambda c: {})
+        self.assertEqual(hidden.get(pt.APPROVAL_KIND, 0), 0)
 
     def kinds(self, *kinds: str, **read) -> list[dict]:
         return self.read(kinds=list(kinds), limit=1000, **read)["gaps"]

@@ -129,7 +129,7 @@ class PoTrailTests(unittest.TestCase):
         self.assertEqual(vendor["title"],
                          "Against the vendor's promise (not our due date): late, open on "
                          "2099-02-01, 4 days past the vendor's promised 2099-01-28 (a later "
-                         "promise you cannot see may exist).")
+                         "promise could sit in mail you cannot open).")
         self.assertEqual((vendor["handle"], vendor["check"]),
                          (rev["handle"], "computed_from_cited_records"))
         self.assertEqual(trail["vendor_verdict"], vendor["title"])

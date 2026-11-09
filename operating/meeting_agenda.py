@@ -62,6 +62,7 @@ from typing import Any, Callable, Mapping, Sequence
 from ontology.json_contract import validate
 from ontology.project import object_id_of
 
+from .copy_gate import count as _count
 from .cited_reads import CitedReads, Record, gap, json_of, text_of
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -351,7 +352,7 @@ class _Assembly:
                   "title_cited_only": "unknown"}
         for (lane, code), objects in sorted(self.lane_gaps.items()):
             self.reads.add(gap(code, states[code], lane,
-                               f"{len(objects)} line(s) of lane {lane} lack it"))
+                               f"{_count(len(objects), 'line')} of lane {lane} lack it"))
         return self.lines
 
 

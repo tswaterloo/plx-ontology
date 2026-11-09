@@ -258,7 +258,7 @@ class QualityAlerts(Engine):
         self.assertEqual(summary["detectors"][q.STALE_RULE], "complete")
         (gap,) = self.kinds(q.STALE)
         self.assertEqual(gap["summary"], "Business Central was last captured 2026-10-10T06:00 "
-                         "UTC, 216 hours ago: what it shows may be out of date")
+                         "UTC, 216 hours ago: newer changes are not in it")
         self.assertEqual(gap["follow_up"]["priority"], "high")
         self.assertEqual(summary["not_evaluated"][q.STALE_RULE], {"capture_time_unknown": 1})
         self.assertEqual(self.kinds(q.STALE, may_read=lambda k: k == "api:orders"), [])

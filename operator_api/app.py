@@ -53,7 +53,7 @@ MESSAGES = {
     "origin_refused": "This request came from a page the Workbench does not trust.",
     "not_served": "That part of the Workbench isn't switched on here yet.",
     "forbidden": "Only the owner and the admins can do that.",
-    "internal": "Something went wrong on our side. Try again; if it keeps happening, "
+    "internal": "The Workbench server failed on this request. Try again; if it keeps happening, "
                 "quote incident {incident}.",
 }
 
@@ -342,6 +342,14 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         approver, Mission Control approvals), by who it waits on and how long, each with a
         drafted nudge. Nothing is sent."""
         return backend.approvals_queue(who)
+
+    @app.get("/api/alert-kinds", response_model=m.AlertKinds, tags=["briefing"],
+             responses={401: {"model": m.ErrorResponse}})
+    def alert_kinds_registry(who: Reader = Depends(reader)) -> m.AlertKinds:
+        """The alert registry: every alert type with its measured precision, its kind,
+        whether it is on by default and whether it reaches My work (Watching lists it)."""
+        from operating import alert_kinds
+        return m.AlertKinds(**alert_kinds.public())
 
     @app.get("/api/replies", response_model=m.ReplyTriage, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})

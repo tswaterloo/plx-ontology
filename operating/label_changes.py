@@ -52,6 +52,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology import store as ostore
 
+from .copy_gate import count, say_date
 from . import proactive_threads as pt
 from .proactive_business import _tick
 from .proactive_chasers import _FORWARD, _REPLY, _addr, _instant
@@ -389,9 +390,9 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
             if step is not None and step[1] in rows:
                 groups.append(pt._cites_of(cites, rows, [step[1]], props))
         what = {UNAPPROVED: "was changed with no approval recorded",
-                STALE: f"is not done after {waited} business day(s)",
+                STALE: f"is not done after {count(waited, 'business day')}",
                 TRACKED: f"is {state}"}[kind]
-        summary = (f"A label or artwork change requested {r['at'].date().isoformat()} "
+        summary = (f"A label or artwork change requested {say_date(r['at'].date())} "
                    f"({'mail' if r['channel'] == 'mail' else 'Teams'}) {what}"
                    + ("" if items else "; no item named"))
         made = gap(

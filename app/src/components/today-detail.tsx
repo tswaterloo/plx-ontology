@@ -272,7 +272,7 @@ function Actions({ card, state, onDone }: { card: ProactiveSuggestion; state?: A
           )}
           data-testid={`action-${o.kind}`}
         >
-          {o.kind === "send_email" ? "Review and send…" : o.label}
+          {o.kind === "send_email" ? "Review and send" : o.label}
         </button>
       ))}
       {more.length + narrow.length > 0 && (

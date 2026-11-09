@@ -123,7 +123,7 @@ function SignIn() {
                     className="flex h-10 w-full items-center justify-center gap-2.5 rounded-lg bg-bg dark:bg-surface-2 text-[13px] font-medium text-fg shadow-sm ring-1 ring-border-strong hover:bg-surface disabled:cursor-not-allowed disabled:opacity-55 cursor-pointer"
                   >
                     <MicrosoftMark />
-                    {busy && entra ? "Signing in…" : "Sign in with Microsoft"}
+                    {busy && entra ? "Signing in" : "Sign in with Microsoft"}
                   </button>
                   <p className="text-center text-[12px] leading-4 text-muted">
                     {entra ? "Your PLX work account. You see only what your role allows." : "Microsoft sign-in is off on this demo server."}

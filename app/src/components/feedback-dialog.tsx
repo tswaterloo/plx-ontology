@@ -32,7 +32,7 @@ export function recordOfPage(path: string, params?: URLSearchParams | null): { o
 
 /** The lists the app has: feedback on one is about the list. */
 function isList(path: string): boolean {
-  return path === "/" || path === "/late" || path === "/briefing" || path === "/actions" || path === "/feedback";
+  return path === "/" || path === "/late" || path === "/watching" || path === "/activity" || path === "/feedback";
 }
 
 const KINDS: { kind: NoteKind; label: string }[] = [
@@ -150,7 +150,7 @@ function FeedbackSheet({ onClose }: { onClose: () => void }) {
       {state === "sent" ? (
         <div role="status" className="space-y-2 pt-6 text-center" data-testid="feedback-sent">
           <Check className="mx-auto size-5 text-accent" strokeWidth={2.2} aria-hidden />
-          <p className="text-[13px] font-medium">Thanks. The owner reviews every note.</p>
+          <p className="text-[13px] font-medium">Sent to the owner.</p>
           <p className="text-[12px] text-muted">
             <Link href="/feedback" onClick={onClose} className="font-medium text-fg hover:underline">
               See your feedback

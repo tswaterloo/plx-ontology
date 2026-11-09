@@ -28,9 +28,13 @@ def page_of(trail: m.PoTrail, *, kind="PurchaseOrder", lines=(), facts=()) -> m.
 
 def grounded(test: unittest.TestCase, proposal: m.Proposal) -> None:
     """Every date and number the draft states is one of its cited figures."""
-    cited = " ".join(f.value for f in proposal.figures if f.source is not None)
-    labels = " ".join(f.value for f in proposal.figures)
+    from operating.copy_gate import say_date
+    # a cited date is written "Thu 15 Jan 2099" in the draft
+    cited = " ".join(f"{f.value} {say_date(f.value)}" for f in proposal.figures
+                     if f.source is not None)
+    labels = " ".join(f"{f.value} {say_date(f.value)}" for f in proposal.figures)
     for said in FIGURE.findall(proposal.body or ""):
+        said = said.rstrip(".,")
         test.assertTrue(said in cited or said in labels, f"{said!r} is not a cited figure")
     test.assertFalse(proposal.sent)
 
@@ -44,9 +48,15 @@ class ProposalBoundaryTests(unittest.TestCase):
         chase = got[0]
         self.assertEqual((chase.kind, chase.to, chase.to_name),
                          ("vendor_chase", "bob@vendor.example", "Bob"))
-        for said in ("PO 1", "2099-01-15", "ITEM-1: 18 KG", "2099-01-25", "SECRET-SUBJECT",
-                     "2099-01-28", "confirm the date these items will ship"):
+        for said in ("PO 1", "Thu 15 Jan 2099", "ITEM-1: 18 KG", "Wed 28 Jan 2099",
+                     "confirm the date these items will ship"):
             self.assertIn(said, chase.body)
+        # the body stays within the staff's p75 length: the last message is a cited figure
+        # beside the draft rather than a sixth sentence in it
+        self.assertLessEqual(len(chase.body.split("\n- ")[0].split()), 50)
+        shown = json.dumps([f.model_dump() for f in chase.figures])
+        for said in ("2099-01-25", "SECRET-SUBJECT"):
+            self.assertIn(said, shown)
         self.assertEqual(chase.missing, [])
         grounded(self, chase)
         # the confirmed date is read from a BC record, not a vendor message: no update

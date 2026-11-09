@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import quote
 
 from . import alert_playbooks as ap
+from . import drafts
 
 SCHEMA = "plx-record-pack/v1"
 MAX_DOCS = 50          # documents one source read lists (plx.documents' page)
@@ -346,14 +347,18 @@ def _draft(reader: Any, oid: str, otype: str, own: tuple[str, str] | None,
     for key in order:
         for row in found.get(key, ()):
             lines.append(f"- {row['label']}: {row['title']}")
-    body = (f"Hello{' ' + name if name else ''},\n\n"
-            + (f"Please find the documents for {number}:\n" + "\n".join(lines) + "\n"
-               if lines else f"We are gathering the documents for {number}.\n")
-            + (f"\nTo follow: {', '.join(LABELS[k] for k in missing)}.\n" if missing else "")
-            + "\nThank you.")
+    # one composer, the sender's voice: the party is a firm, never the greeting's name
+    parts = ([f"Here are the documents for {number}."] if lines
+             else [f"We are gathering the documents for {number}."])
+    if missing:
+        parts.append(f"To follow: {', '.join(LABELS[k] for k in missing)}.")
+    draft = drafts.compose("document_pack_reply", parts, subject=f"{number}: documents",
+                           facts=[("record", number)], lines=[ln[2:] for ln in lines])
+    if draft["body"] is None:
+        why.append("the drafted reply did not pass the copy check")
     email = {"channel": "email", "party": role, "to": to,
-             "subject": f"Documents for {number}"[:200], "status": "draft_not_sent",
-             "body": body, "attach": [row["citation"] for key in order
+             "subject": f"{number}: documents"[:200], "status": "draft_not_sent",
+             "body": draft["body"] or "", "copy_check": draft["copy_check"], "attach": [row["citation"] for key in order
                                       for row in found.get(key, ()) if row["kind"] != "record"]}
     return {"id": "pack:" + oid,
             "summary": f"Documents for {number}"[:200], "email": email, "teams": None,

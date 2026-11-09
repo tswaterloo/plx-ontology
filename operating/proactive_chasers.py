@@ -63,6 +63,9 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology.units import unit_token
 
+from .copy_gate import count as _count, say_date as _say
+from . import drafts
+from .copy_gate import say_date
 from .proactive_business import _day, _dec, _one, _text, _tick
 
 CHASE = "customer_chase"
@@ -486,9 +489,9 @@ def customer_chase(st: Any, as_of: date, *, gap: Callable, cites: Callable, resu
                                    else ""),
             missing="Send the customer the order's status (drafted from the order's records; "
                     "nothing is sent until you send it) and tell the account's rep",
-            why=f"{len(unique)} inbound message(s) ask where the order is (a chase phrase in "
+            why=f"{_count(len(unique), 'inbound message')} ask where the order is (a chase phrase in "
                 f"their own text) and name it by a mention link"
-                + (f"; its requested date {verdict.wanted.day.isoformat()} has passed"
+                + (f"; its requested date {_say(verdict.wanted.day)} has passed"
                    if late else "") + " (each message and the order's status cited).",
             priority=("high" if late or len(unique) >= 3 else "medium") if not is_lead
             else "low",
@@ -507,7 +510,7 @@ def customer_chase(st: Any, as_of: date, *, gap: Callable, cites: Callable, resu
         made["follow_up"]["draft"] = _status_draft(facts, as_of)
         made["follow_up"]["notify"] = {"role": "account_rep", "status": "draft_not_sent",
                                        "text": f"The customer chased order {number} "
-                                               f"{len(unique)} time(s); the status reply "
+                                               f"{_count(len(unique), 'time')}; the status reply "
                                                "is drafted on the alert."}
         gaps.append(made)
     for verdict in due_soon:
@@ -526,8 +529,8 @@ def customer_chase(st: Any, as_of: date, *, gap: Callable, cites: Callable, resu
         due = verdict.wanted.day
         made = gap(
             TELL_FIRST, CHASE, verdict.top, SO, f"due|{due.isoformat()}",
-            summary=f"Order {number} is due {due.isoformat()} and not ready to ship; this "
-                    f"customer chased {len(before)} time(s) in the "
+            summary=f"Order {number} is due {_say(due)} and not ready to ship; this "
+                    f"customer chased {_count(len(before), 'time')} in the "
                     f"last {CHASE_HISTORY_DAYS} days",
             missing="Tell the customer the order's status before they ask (drafted; nothing "
                     "is sent until you send it)",
@@ -658,9 +661,9 @@ def _order_facts(st: Any, found: Mapping[str, Any], verdict: Any,
 def _status_draft(facts: Mapping[str, Any], as_of: date) -> dict[str, Any]:
     """The status reply a person may copy, edit and send: cited values only."""
     number = facts["number"] or "your order"
-    body = [f"Thank you for checking on order {number}."]
-    if facts["status"]:
-        body.append(f"Its status is {facts['status']}.")
+    body = [f"Order {number} is {facts['status']}." if facts["status"]
+            else f"Here is where order {number} stands."]
+    listed = []
     for line in facts["lines"][:8]:
         what = line["item"] or "an item"
         parts = [f"{line['ordered']} {line['unit']} ordered"] if line["ordered"] else []
@@ -668,7 +671,7 @@ def _status_draft(facts: Mapping[str, Any], as_of: date) -> dict[str, Any]:
             parts.append(f"{line['shipped']} shipped")
         if line["open"] is not None:
             parts.append(f"{line['open']} still open")
-        body.append(f"- {what}: {', '.join(parts)}.")
+        listed.append(f"{what}: {', '.join(parts)}.")
     ship = facts.get("shipment") or {}
     if ship:
         said = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(ship.items()))
@@ -677,14 +680,18 @@ def _status_draft(facts: Mapping[str, Any], as_of: date) -> dict[str, Any]:
         body.append("It has not shipped yet.")
     due = facts.get("due")
     if due is not None:
-        body.append(f"The requested date is {due.isoformat()}"
+        body.append(f"The requested date is {say_date(due)}"
                     + (" and has passed; we will confirm a new date." if due < as_of else "."))
     if facts.get("holds"):
         body.append("It is waiting on a quality check of " + ", ".join(facts["holds"][:3])
                     + " before it can ship.")
+    # one composer, the sender's voice (no stock opener, no fixed sign-off)
+    draft = drafts.compose("customer_status", body, subject=f"Order {number}: status",
+                           lines=listed, specific=False)
     return {"kind": "customer_status_reply", "status": "draft_not_sent", "sent": False,
             "to": "customer", "subject": f"Order {number}: status",
-            "body": "\n".join(body), "citations": facts["handles"]}
+            "body": draft["body"] or "", "copy_check": draft["copy_check"],
+            "citations": facts["handles"]}
 
 
 # --------------------------------------------------------------------------- quality holds
@@ -823,7 +830,7 @@ def quality_holds(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
         what = f" of {item_row['value']}" if item_row else ""
         amount = (f", {_text(_dec(qty['value']))} {unit_token(qty.get('unit')) or 'units'}"
                   if qty and _dec(qty["value"]) is not None else "")
-        waits = (f"; {n_open} open order(s) wait on it"
+        waits = (f"; {_count(n_open, 'open order')} wait{'s' if n_open == 1 else ''} on it"
                  + (f" ({', '.join(str(r['value']) for r in numbers[:3] if r)})"
                     if any(numbers) else "") if n_open else "")
         basis = "its earliest allocated order" if kind == "batch" else "its receipt"

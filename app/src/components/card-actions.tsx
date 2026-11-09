@@ -309,7 +309,7 @@ export function ActionDialog({
         {!preview ? (
           !error && (
             <div className="space-y-2.5" aria-busy="true">
-              <p className="sr-only">Loading preview…</p>
+              <p className="sr-only">Loading preview</p>
               <div className="h-[300px] rounded-xl bg-bg shadow-lift" />
             </div>
           )

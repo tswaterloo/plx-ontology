@@ -114,20 +114,19 @@ function Empty() {
           </div>
         ))}
       </div>
-      <p className="mt-6 text-[13px] font-medium">No actions yet</p>
-      <p className="mt-1 max-w-[300px] text-[12px] leading-[18px] text-muted">Emails you send and tasks you log from Today are kept here.</p>
+      <p className="mt-6 text-[13px] font-medium">Nothing sent, approved or logged yet.</p>
       <Link
         href="/"
         className="mt-4 inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]"
       >
-        Open Today
+        Open My work
       </Link>
     </div>
   );
 }
 
 /** Your actions journal: every action you confirmed, newest first (append-only on the server). */
-export default function ActionsPage() {
+export default function ActivityPage() {
   const [rows, setRows] = useState<ActionLogRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
@@ -156,7 +155,7 @@ export default function ActionsPage() {
       <Toolbar
         title={
           <>
-            Action log
+            Activity
             {rows && rows.length > 0 && <span className="ml-2 text-[13px] font-normal tracking-normal tabular-nums text-faint">{rows.length}</span>}
           </>
         }
@@ -167,7 +166,7 @@ export default function ActionsPage() {
           <LoadProblem message={error} onRetry={load} />
         </div>
       ) : !rows ? (
-        <ul className="space-y-1 px-2 pt-3 sm:px-3" aria-busy="true" aria-label="Loading the log">
+        <ul className="space-y-1 px-2 pt-3 sm:px-3" aria-busy="true" aria-label="Loading activity">
           {Array.from({ length: 7 }).map((_, i) => (
             <li key={i} className="flex items-center gap-3 px-3 py-2.5">
               <span className="skeleton size-8 rounded-[9px]" />

@@ -63,6 +63,7 @@ from datetime import date, timedelta
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from .copy_gate import count as _count, say_date as _say
 from .proactive_business import FINANCE, _one, _tick
 from .proactive_chasers import (AUTOMATED, CUSTOMER_PO, PUBLIC_MAIL, SETTLED_MENTION, SO,
                                 _FORWARD, _REPLY, _addr, _instant, _touch, _words)
@@ -470,11 +471,12 @@ def expedite_requests(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         made = gap(
             EXPEDITE_KIND, EXPEDITE, top, otype, f"expedite|{asks[0]['day'].isoformat()}",
             summary=("Lead, not firm: " if lead else "") + f"Expedite on {noun} "
-                    f"{number or top}: {who} {len(asks)} time(s), first {days} days ago, "
-                    f"last on {asks[-1]['day'].isoformat()}; no answer and not {done}",
+                    f"{number or top}: {who} {_count(len(asks), 'time')}, first "
+                    f"{_count(days, 'day')} ago, last on {_say(asks[-1]['day'])}; no answer "
+                    f"and not {done}",
             missing=(f"Answer the expedite: confirm the date the {noun} will be {done}, or "
                      "chase the other side"),
-            why=(f"{len(asks)} message(s) ask to expedite, rush or hurry it in their own text "
+            why=(f"{_count(len(asks), 'message')} ask to expedite, rush or hurry it in their own text "
                  f"(not a question or a condition) and name the {noun} by a mention link; "
                  f"no later message from the other side answers in their conversation or "
                  f"naming it, and the {noun} is still open (each message cited)."),
@@ -617,7 +619,7 @@ def supplier_shortage(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                        else ""),
             missing="Confirm the supplier's new date or quantity and re-plan or tell the "
                     "customers of the orders that depend on it",
-            why=(f"{len(found_notices)} inbound message(s) from outside announce a shortage, "
+            why=(f"{_count(len(found_notices), 'inbound message')} from outside announce a shortage, "
                  "allocation, delay or longer lead time in their own text (not a question or "
                  "a condition) and name this open purchase order by a mention link; the open "
                  "customer orders are tied to it "
@@ -729,11 +731,11 @@ def payment_chase(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         made = gap(
             PAYABLE_KIND, PAYMENT, record, otype, f"payable_chase|{found[0]['day'].isoformat()}",
             summary=("Lead, not firm: " if lead else "") + f"Supplier chased us for payment "
-                    f"of {number or 'a payable'} {len(found)} time(s), last on "
-                    f"{last['day'].isoformat()}",
+                    f"of {number or 'a payable'} {_count(len(found), 'time')}, last on "
+                    f"{_say(last['day'])}",
             missing="Check whether it is paid, and if not, when it will be; answer the "
                     "supplier",
-            why=(f"{len(found)} inbound message(s) from outside chase payment in their own "
+            why=(f"{_count(len(found), 'inbound message')} from outside chase payment in their own "
                  "text (not a question or a condition) and name this payable by a mention "
                  "link; its system does not say it is paid (each message cited)."),
             priority="low" if lead else ("high" if len(found) >= 3 else "medium"),

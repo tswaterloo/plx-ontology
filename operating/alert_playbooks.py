@@ -44,6 +44,11 @@ import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+from . import drafts
+from .copy_gate import count, say_date, sentences
+
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
 SCHEMA = "plx-alert-playbook/v1"
 CARD_PREFIX = "pb-"
 LINKS_FILE = Path(__file__).resolve().parents[1] / "ontology" / "source_links.json"
@@ -130,8 +135,8 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
                    "field": "Status", "value": None}},
     "quote_accepted_no_order": {
         "about": "subject",
-        "ask": "Thank you for accepting quote {n}. Please send your purchase order so we can "
-               "schedule it.",
+        "ask": "Quote {n} is accepted on our side. Can you send the purchase order so we can "
+               "schedule it?",
         "owner": "Quote {n} was accepted {days} days ago and has no order.",
         "change": {"text": "Create the sales order from quote {n} once the customer's "
                            "purchase order arrives.", "field": "Make Order", "value": None}},
@@ -146,18 +151,17 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
                    "value": "yes"}},
     "customer_order_at_risk": {
         "about": "subject",
-        "ask": "Order {n} may be delayed: material for it is late. We will confirm a new "
-               "date as soon as we have it.",
-        "owner": "Order {n} is at risk from late purchase order(s) {pos}.",
-        "change": {"text": "Expedite purchase order(s) {pos} for order {n}, or agree a later "
+        "ask": "Order {n} will ship later than planned: material for it is late. We will "
+               "confirm a new date once we have it.",
+        "owner": "Late material holds up order {n}: {pos}.",
+        "change": {"text": "Expedite {pos} for order {n}, or agree a later "
                            "shipment date.", "field": "Expected Receipt Date",
                    "value": "required"},
         # the late purchase order itself (its impact on the customer orders it holds up)
         "by_type": {"PurchaseOrder": {
-            "ask": "Purchase order {n} is holding up {orders} of our customer orders. Can any "
-                   "of it ship sooner? Please confirm the earliest date.",
-            "owner": "Late purchase order {n} holds up {orders} customer order(s): please "
-                     "expedite it.",
+            "ask": "Purchase order {n} is holding up {orders_said}. Can any of it ship "
+                   "sooner? Please confirm the earliest date.",
+            "owner": "Late purchase order {n} holds up {orders_said}: please expedite it.",
             "change": {"text": "Expedite purchase order {n}; once the supplier confirms, set "
                                "its expected receipt date.", "field": "Expected Receipt Date",
                        "value": None}}}},
@@ -174,8 +178,7 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "about": "inbound",
         "ask": "We need purchase order {n} sooner: please confirm whether it can arrive by "
                "{first_short}, and how much more you could supply.",
-        "owner": "Item {item} is {shortfall} {unit} short by {short_by} for {orders} open "
-                 "customer order(s).",
+        "owner": "Item {item} is {shortfall} {unit} short by {short_by} for {orders_said}.",
         "change": {"text": "Buy {shortfall} {unit} more of item {item} (or raise an inbound "
                            "order), needed by {first_short}.", "field": "Quantity",
                    "value": "shortfall"}},
@@ -327,7 +330,7 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "An approval asked {days} business days ago has no answer: decide it or "
                  "say who should.", "change": None},
     "chase_escalating": {"about": "subject", "ask": None,
-        "owner": "A thread was chased again and again with no answer for {days} days: "
+        "owner": "A thread was chased repeatedly with no answer for {days} days: "
                  "answer it today or say who owns it.", "change": None},
     # operations (``operating.proactive_stock``): stock and freight figures are finance-marked
     "slow_moving_stock": {"about": "subject", "finance": True, "ask": None,
@@ -604,7 +607,10 @@ def _fill(template: str | None, words: Mapping[str, str]) -> str | None:
     if not template:
         return None
     try:
-        return template.format_map(_Strict(words))
+        # a date is written "Wed 12 Nov" in anything a person reads, never ISO
+        return template.format_map(_Strict({k: say_date(v) if isinstance(v, str)
+                                             and _ISO_DAY.fullmatch(v) else v
+                                             for k, v in words.items()}))
     except KeyError:
         return None
 
@@ -673,6 +679,7 @@ def build(gap: Mapping[str, Any], event_type: str, *,
         words["unit"] = _text(event["unit"]) or ""
     if isinstance(event.get("orders_affected"), int):
         words["orders"] = str(event["orders_affected"])
+        words["orders_said"] = count(event["orders_affected"], "customer order")
     amount = event.get("amount")
     # a figure: only when the reader's trimmed alert still carries it AND, when it names
     # its citation, the reader holds that citation's markings
@@ -741,10 +748,19 @@ def build(gap: Mapping[str, Any], event_type: str, *,
             else:
                 subject = f"{'Order' if role == 'customer' else 'Purchase order'} " \
                           f"{words.get('n', '')}".strip()
-            greeting = f"Hello {words['party']},\n\n" if "party" in words else "Hello,\n\n"
-            plays["email"] = {"channel": "email", "party": role, "to": to,
-                              "subject": subject, "status": "draft_not_sent",
-                              "body": f"{greeting}{body}\n\nThank you."}
+            # one composer, the sender's voice: the party is a firm, so no greeting name
+            draft = drafts.compose("playbook_ask", sentences(body), subject=subject,
+                                   facts=[(f["fact"], f["value"]) for f in facts]
+                                   + [(k, v) for k, v in words.items()],
+                                   # a note about the party's account names no one record
+                                   specific=_type_of(about) not in PARTY_ADDRESSES
+                                   and "{n}" in str(spec["ask"]))
+            if draft["body"] is None:   # never a failing draft: the alert shows, no draft
+                missing.append("the drafted message did not pass the copy check")
+            else:
+                plays["email"] = {"channel": "email", "party": role, "to": to,
+                                  "subject": subject, "status": "draft_not_sent",
+                                  "body": draft["body"], "copy_check": draft["copy_check"]}
     # (b) the internal owner's Teams note
     if spec and spec.get("owner"):
         note = _fill(spec["owner"], words)

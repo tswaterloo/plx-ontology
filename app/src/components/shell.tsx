@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { BellRing, Bookmark, CalendarCheck2, CalendarClock, ChartColumnBig, Clock3, FlaskConical, History, Inbox, ListChecks, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Reply, Search, Users, TriangleAlert, type LucideIcon } from "lucide-react";
+import { BellRing, Bookmark, CalendarClock, Clock3, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -172,22 +172,30 @@ function lateOf(home: HomeResponse | null): number | null {
   return na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
 }
 
-const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean }[] = [
-  { href: "/", label: "Today", icon: Inbox },
+/** The seven places. Team shows only to a reader with a team grant; Feedback triage is in
+ * the account menu. */
+export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean; grant?: boolean }[] = [
+  { href: "/", label: "My work", icon: Inbox },
   { href: "/late", label: "Late POs", icon: Clock3, late: true },
-  { href: "/briefing", label: "Briefing", icon: CalendarCheck2 },
-  { href: "/prepare", label: "Prepare", icon: CalendarClock },
-  { href: "/weekly", label: "Weekly review", icon: ChartColumnBig },
-  { href: "/approvals", label: "Approvals", icon: ListChecks },
-  { href: "/replies", label: "My replies", icon: Reply },
-  { href: "/rd-projects", label: "R&D projects", icon: FlaskConical },
-  { href: "/workload", label: "Workload", icon: Users },
-  { href: "/labour", label: "Labour", icon: Users },
+  { href: "/meetings", label: "Meetings", icon: CalendarClock },
+  { href: "/team", label: "Team", icon: Users, grant: true },
   { href: "/ask", label: "Ask", icon: MessageCircle },
-  { href: "/rules", label: "Watching", icon: BellRing },
-  { href: "/actions", label: "Action log", icon: History },
-  { href: "/feedback", label: "Feedback", icon: MessageSquareText },
+  { href: "/watching", label: "Watching", icon: BellRing },
+  { href: "/activity", label: "Activity", icon: History },
 ];
+
+/** Whether this reader sees Team: a declared full-read grant or the owner. */
+export function hasTeamGrant(me: { access_label?: string | null; feedback_admin?: boolean } | null | undefined): boolean {
+  return !!(me && (me.access_label || me.feedback_admin));
+}
+
+/** The nav this reader sees. */
+export function navFor(me: Parameters<typeof hasTeamGrant>[0]) {
+  return NAV.filter((n) => !n.grant || hasTeamGrant(me));
+}
+
+/** Phone tabs: My work, Late POs, Ask, Meetings, then More for the rest. */
+export const TABS = ["/", "/late", "/ask", "/meetings"];
 
 function isOn(path: string, href: string) {
   return href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
@@ -398,13 +406,15 @@ function Sidebar() {
   const { open } = useCommandPalette();
   const { shortcut } = useShortcut();
   const late = lateOf(home);
+  const { state } = useAuth();
+  const nav = navFor(state.status === "signed-in" ? state.me : null);
   const recent = (home?.recent_questions ?? []).filter(
     (r, i, all) => all.findIndex((x) => x.question.trim().toLowerCase() === r.question.trim().toLowerCase()) === i,
   );
   return (
     <aside className="hidden w-[60px] shrink-0 flex-col border-r border-border bg-sidebar lg:flex xl:w-[240px]" aria-label="Sidebar">
       <div className="flex h-[52px] shrink-0 items-center justify-center xl:justify-start xl:px-5">
-        <Link href="/" aria-label="PLX Workbench, Today">
+        <Link href="/" aria-label="PLX Workbench, My work">
           <Logo className="max-xl:[&>span:last-child]:hidden" />
         </Link>
       </div>
@@ -428,7 +438,7 @@ function Sidebar() {
       </div>
       <nav aria-label="Main" className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
         <div className="space-y-0.5">
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <NavItem key={n.href} href={n.href} label={n.label} count={n.late ? late : undefined} />
           ))}
         </div>
@@ -564,14 +574,18 @@ function TabBar() {
   const path = usePathname();
   const home = useHome();
   const late = lateOf(home);
-  const tabs = NAV.filter((n) => !["/actions", "/feedback", "/prepare", "/weekly", "/approvals", "/labour"].includes(n.href));
+  const { state } = useAuth();
+  const nav = navFor(state.status === "signed-in" ? state.me : null);
+  const tabs = TABS.map((href) => NAV.find((n) => n.href === href)!);
+  const rest = nav.filter((n) => !TABS.includes(n.href));
+  const moreOn = rest.some((n) => isOn(path, n.href));
   return (
     <nav
       aria-label="Main"
       className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-[color-mix(in_srgb,var(--bg-subtle)_88%,transparent)] pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
       data-testid="tab-bar"
     >
-      <div className="mx-auto grid h-[52px] max-w-md grid-cols-4">
+      <div className="mx-auto grid h-[52px] max-w-md grid-cols-5">
         {tabs.map(({ href, label, icon: Icon, late: showLate }) => {
           const on = isOn(path, href);
           return (
@@ -582,6 +596,24 @@ function TabBar() {
             </Link>
           );
         })}
+        <Menu.Root>
+          <Menu.Trigger aria-label="More" className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium cursor-pointer", moreOn ? "text-accent" : "text-muted")} data-testid="tab-more">
+            <MoreHorizontal className="size-[22px]" strokeWidth={moreOn ? 2 : 1.7} aria-hidden />
+            More
+          </Menu.Trigger>
+          <Menu.Portal>
+            <Menu.Content side="top" align="end" sideOffset={8} className="z-50 w-48 rounded-xl bg-raised p-1.5 shadow-pop">
+              {rest.map(({ href, label, icon: Icon }) => (
+                <Menu.Item key={href} asChild>
+                  <Link href={href} className="flex items-center gap-2.5 rounded-md px-2 py-2 text-row outline-none data-[highlighted]:bg-hover">
+                    <Icon className="size-4 text-muted" aria-hidden />
+                    {label}
+                  </Link>
+                </Menu.Item>
+              ))}
+            </Menu.Content>
+          </Menu.Portal>
+        </Menu.Root>
       </div>
     </nav>
   );
@@ -622,7 +654,7 @@ function MobileTitleBar() {
   if (path === "/" || TOOLBAR_PAGES.some((p) => path === p || path.startsWith(`${p}/`))) return null;
   return (
     <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-[color-mix(in_srgb,var(--bg-subtle)_88%,transparent)] px-4 backdrop-blur-xl lg:hidden">
-      <Link href="/" aria-label="Today">
+      <Link href="/" aria-label="My work">
         <Logo />
       </Link>
       <div className="flex-1" />
@@ -633,7 +665,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-const TOOLBAR_PAGES: string[] = ["/late", "/briefing", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/actions", "/feedback", "/rules"];
+const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching"];
 
 function ShellSkeleton() {
   return (

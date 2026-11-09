@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { CardActions } from "@/components/card-actions";
+import { EmptyState } from "@/components/ui/empty-state";
 import { plural } from "@/lib/format";
 import type { ActionResult, ReplyLine, ReplyTriage } from "@/lib/types";
 
@@ -14,11 +15,8 @@ export function ReplyList({ triage }: { triage: ReplyTriage }) {
   const lines = triage.lines ?? [];
   return (
     <div className="space-y-4" data-testid="reply-triage">
-      <h1 className="text-lg font-semibold">My replies</h1>
-      <p className="text-[13px] text-muted">
-        {plural(triage.total, "message")} waiting on your reply as of {triage.as_of}. Only your own mailbox. Nothing is sent until you confirm it.
-      </p>
-      {lines.length === 0 && <p className="text-[13px] text-muted">Nothing is waiting on your reply.</p>}
+      <p className="text-[12px] text-muted">{plural(triage.total, "message")} waiting on your reply, from your own mailbox and chats.</p>
+      {lines.length === 0 && <EmptyState title="Nothing is waiting on your reply." />}
       <ul className="space-y-3">
         {lines.map((line: ReplyLine) => (
           <li key={line.id} className="space-y-1 rounded-lg border border-border p-3 text-[13px]" data-testid="reply-line">

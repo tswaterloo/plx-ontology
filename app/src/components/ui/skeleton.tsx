@@ -9,7 +9,7 @@ export function Skeleton({ className }: { className?: string }) {
 export function Pending({ label, className, testId }: { label: string; className?: string; testId?: string }) {
   return (
     <p role="status" aria-label={label} className={cn("py-2 text-meta text-muted", className)} data-testid={testId} data-pending="">
-      <span>{/[.…]$/.test(label) ? label : `${label}…`}</span>
+      <span>{label}</span>
     </p>
   );
 }

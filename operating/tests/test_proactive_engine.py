@@ -8,6 +8,7 @@ world of ``case.customer_po_missing`` (fake Workbench, fake drive; network refus
 
 from __future__ import annotations
 
+from operating.copy_gate import say_date
 import contextlib
 from contextlib import closing
 from decimal import Decimal
@@ -279,6 +280,9 @@ class Engine(unittest.TestCase):
 
     def read(self, *, reader="plx:ops", may_read=everyone, held=ALL_MARKINGS, decide=admit,
              **options) -> dict:
+        # detector tests read what the rules found, whether or not the alert registry shows
+        # the type to a reader (``include_off``); the reader-facing filter is tested apart
+        options.setdefault("include_off", True)
         return pe.read_inbox(self.inbox, self.store, reader=reader, may_read=may_read,
                              held=held, decide=decide, **options)
 
@@ -437,7 +441,9 @@ class LateOrderWorld(Engine):
         for fact in draft["facts"]:
             self.assertNotIn("ref", fact)
             self.assertIn(fact["citation"], draft["citations"])
-            self.assertIn(fact["value"], draft["text"])
+            # a date is written "Wed 12 Nov" (operating.copy_gate.say_date)
+            self.assertTrue(fact["value"] in draft["text"]
+                            or say_date(fact["value"]) in draft["text"], fact)
 
 
 class LateOrderTest(LateOrderWorld):
@@ -478,9 +484,9 @@ class LateOrderTest(LateOrderWorld):
         self.assert_worded(draft)
         self.assertEqual(draft["date_basis"], "expected")
         self.assertIn("purchase order PO-77", draft["text"])
-        self.assertIn("- Resin 0: our expected date 2026-10-01, ordered 100 kg, received 40 kg",
+        self.assertIn(f"- Resin 0: our expected date {say_date('2026-10-01')}, ordered 100 kg, received 40 kg",
                       draft["text"])
-        self.assertIn("- Resin 1: our expected date 2026-10-02, ordered 100 kg, received 40 kg",
+        self.assertIn(f"- Resin 1: our expected date {say_date('2026-10-02')}, ordered 100 kg, received 40 kg",
                       draft["text"])
         self.assertEqual(sorted(f["line_id"] for f in draft["facts"]
                                 if f["fact"] == "expected_receipt"), sorted(late))
@@ -492,7 +498,7 @@ class LateOrderTest(LateOrderWorld):
         draft = self.draft_of(w)
         self.assert_worded(draft)
         self.assertEqual(draft["date_basis"], "confirmed")
-        self.assertIn("Your confirmation gives the delivery date 2026-10-25", draft["text"])
+        self.assertIn(f"Your confirmation gives the delivery date {say_date('2026-10-25')}", draft["text"])
         self.assertNotIn("our expected date", draft["text"])
         self.assertIn("- Resin 0: ordered 100 kg, received 40 kg", draft["text"])
         [fact] = [f for f in draft["facts"] if f["fact"] == "confirmed_delivery_date"]
@@ -511,7 +517,7 @@ class LateOrderTest(LateOrderWorld):
         self.assertEqual(draft["date_basis"], "expected")
         self.assertNotIn("2026-10-25", draft["text"])
         self.assertNotIn("confirmation gives", draft["text"])
-        self.assertIn("our expected date 2026-10-01", draft["text"])
+        self.assertIn(f"our expected date {say_date('2026-10-01')}", draft["text"])
         self.assertEqual([(n["note"], n["value"]) for n in draft["internal_notes"]],
                          [("confirmed_date:corroborated_only", "2026-10-25")])
 
@@ -540,7 +546,7 @@ class LateOrderTest(LateOrderWorld):
                 self.assert_worded(draft)
                 self.assertEqual((draft["date_basis"], draft["unresolved"]),
                                  ("expected", unresolved))
-                self.assertIn("our expected date 2026-10-01", draft["text"])
+                self.assertIn(f"our expected date {say_date('2026-10-01')}", draft["text"])
                 self.assertNotIn("2026-10-25", draft["text"])
                 if not refuse:   # the inbox's own draft is the same wording
                     self.assertEqual(gap["follow_up"]["draft"]["text"], draft["text"])
@@ -1540,7 +1546,7 @@ class FastReadEquivalenceTest(Engine):
                                      {k: v for k, v in old[4].items() if k != "seconds"})
             shown = {g["object_id"] for g in pe.read_inbox(
                 self.dir / "old.sqlite", self.store, reader="plx:ops", may_read=everyone,
-                held=ALL_MARKINGS, decide=admit, limit=500)["gaps"]}
+                held=ALL_MARKINGS, decide=admit, limit=500, include_off=True)["gaps"]}
             gone = max(late, key=lambda o: int(o.rsplit(":", 1)[1]))
             self.assertEqual(late - shown, {gone})   # every late order, never the removed one
             st = pe._Store(self.store)
@@ -2003,7 +2009,10 @@ class HomeTest(Engine):
         for n in range(300):   # a busy inbox: Home shows a bounded page, never scans
             po(world, "Pending", "2026-10-01")
         self.run_engine(world, ids["coverage"])
-        found = self.home(OPS, FakeAccess({"api:a"}, ALL_MARKINGS))
+        # the paging bound, with every alert type on (the filler POs are undated, a type the
+        # registry keeps off; that off types reach no reader is tested in test_alert_kinds)
+        with mock.patch("operating.alert_kinds.off_gap_kinds", return_value=frozenset()):
+            found = self.home(OPS, FakeAccess({"api:a"}, ALL_MARKINGS))
         self.assertLess(self.elapsed, 1.0)
         self.assertEqual(found["status"], "read")
         self.assertEqual((len(found["gaps"]), found["more"]), (pe.MAX_SHOWN, True))

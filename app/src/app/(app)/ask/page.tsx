@@ -66,7 +66,7 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
             ))}
           </div>
         ) : late.length === 0 ? (
-          <p className="px-2 text-[13px] text-muted">No late orders.</p>
+          <p className="px-2 text-[13px] text-muted">No late POs.</p>
         ) : (
           <ul className="-mx-2">
             {late.map((p) => {

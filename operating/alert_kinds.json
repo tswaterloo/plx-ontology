@@ -1,0 +1,1351 @@
+{
+ "schema": "plx-alert-kinds/v1",
+ "rule": "A type is on by default only when its last hand-checked live sample has precision.value >= 0.90 on precision.checked >= 15 items and it is actionable (one record, one owner, one next step). home (My work) requires default on. A type with no precision block is off. Off types still run: they show in Watching and on record pages, never on My work. A reader may switch an off type on for themselves in Watching; switching it on for everyone needs a new measurement here.",
+ "kinds": [
+  {
+   "kind": "reply_owed",
+   "label": "Needs your reply",
+   "surface": "alert"
+  },
+  {
+   "kind": "label_change",
+   "label": "Label change to approve",
+   "surface": "alert"
+  },
+  {
+   "kind": "late_po",
+   "label": "Late PO",
+   "surface": "alert"
+  },
+  {
+   "kind": "quality_hold",
+   "label": "Lot on quality hold",
+   "surface": "alert"
+  },
+  {
+   "kind": "waiting_on_them",
+   "label": "Waiting on a supplier",
+   "surface": "alert"
+  },
+  {
+   "kind": "customer_chasing",
+   "label": "Customer asking about an order",
+   "surface": "alert"
+  },
+  {
+   "kind": "approval_waiting",
+   "label": "Approval waiting",
+   "surface": "alert"
+  },
+  {
+   "kind": "task_overdue",
+   "label": "Task or promise overdue",
+   "surface": "alert"
+  },
+  {
+   "kind": "customer_order_late",
+   "label": "Customer order late",
+   "surface": "alert"
+  },
+  {
+   "kind": "shortage",
+   "label": "Shortage",
+   "surface": "alert"
+  },
+  {
+   "kind": "expiring",
+   "label": "Expiring lot or certificate",
+   "surface": "alert"
+  },
+  {
+   "kind": "margin_loss",
+   "label": "Order or item losing money",
+   "surface": "alert"
+  },
+  {
+   "kind": "price_exception",
+   "label": "Price far from usual",
+   "surface": "alert"
+  },
+  {
+   "kind": "order_exception",
+   "label": "Order not converted, shipped or matched",
+   "surface": "alert"
+  },
+  {
+   "kind": "duplicate_payable",
+   "label": "Supplier invoice or payment twice",
+   "surface": "alert"
+  },
+  {
+   "kind": "ledger_integrity",
+   "label": "Ledger or account problem",
+   "surface": "alert"
+  },
+  {
+   "kind": "receivable_risk",
+   "label": "Customer balance",
+   "surface": "alert"
+  },
+  {
+   "kind": "payable_attention",
+   "label": "Supplier balance",
+   "surface": "alert"
+  },
+  {
+   "kind": "statement_reconciliation",
+   "label": "Statement or remittance mismatch",
+   "surface": "alert"
+  },
+  {
+   "kind": "watcher",
+   "label": "Watcher finding",
+   "surface": "alert"
+  },
+  {
+   "kind": "data_health",
+   "label": "Data health",
+   "surface": "data_health"
+  },
+  {
+   "kind": "weekly_trends",
+   "label": "Weekly trends",
+   "surface": "weekly"
+  }
+ ],
+ "types": [
+  {
+   "type": "po_late",
+   "kind": "late_po",
+   "label": "Late purchase order",
+   "precision": {
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "capability-audit.md:18: receipt reconciliation 15/15",
+    "note": "the whole late rule was 23/30 (77%) before correct-1; re-measure the whole rule"
+   },
+   "actionable": true,
+   "default": "on",
+   "home": true,
+   "roles": [
+    "PROC"
+   ]
+  },
+  {
+   "type": "po_due",
+   "kind": "late_po",
+   "label": "Due today, not confirmed",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC"
+   ]
+  },
+  {
+   "type": "po_undated",
+   "kind": "late_po",
+   "label": "Open, no due date recorded",
+   "precision": {
+    "value": 0.533,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "capability-audit.md:18: 8/15 (7 stale legacy back-orders)"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC"
+   ]
+  },
+  {
+   "type": "eta_slipped",
+   "kind": "late_po",
+   "label": "Delivery date slipped",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC",
+    "OPS"
+   ]
+  },
+  {
+   "type": "vendor_no_reply",
+   "kind": "waiting_on_them",
+   "label": "Supplier has not replied",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC"
+   ]
+  },
+  {
+   "type": "vendor_terms_unapplied",
+   "kind": "waiting_on_them",
+   "label": "Supplier terms not applied",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC"
+   ]
+  },
+  {
+   "type": "negative_margin",
+   "kind": "margin_loss",
+   "label": "Order lost money on item cost",
+   "precision": {
+    "value": 0.4,
+    "checked": 5,
+    "on": "2026-11-08",
+    "source": "capability-audit.md:22: about 2/5"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "SALES",
+    "ACCTMGMT"
+   ]
+  },
+  {
+   "type": "lot_near_expiry",
+   "kind": "expiring",
+   "label": "Lot near expiry",
+   "precision": {
+    "value": 1.0,
+    "checked": 70,
+    "on": "2026-11-08",
+    "source": "capability-audit.md:19: facts 70/70",
+    "note": "facts right, not actionable without on-hand stock"
+   },
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "QUALITY",
+    "QA",
+    "QC",
+    "WH",
+    "PROD"
+   ]
+  },
+  {
+   "type": "lot_on_hold",
+   "kind": "quality_hold",
+   "label": "Batch on quality hold",
+   "precision": {
+    "value": 1.0,
+    "checked": 20,
+    "on": "2026-11-08",
+    "source": "capability-audit.md:19: 20/20 facts correct"
+   },
+   "actionable": true,
+   "default": "on",
+   "home": true,
+   "roles": [
+    "QUALITY",
+    "QA",
+    "QC",
+    "PROD"
+   ]
+  },
+  {
+   "type": "quote_accepted_no_order",
+   "kind": "order_exception",
+   "label": "Accepted quote with no order",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT"
+   ]
+  },
+  {
+   "type": "quantity_mismatch",
+   "kind": "order_exception",
+   "label": "Quantity mismatch",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC",
+    "WH",
+    "FIN"
+   ]
+  },
+  {
+   "type": "customer_order_at_risk",
+   "kind": "customer_order_late",
+   "label": "Late PO hits a customer order",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "ACCTMGMT",
+    "SALES",
+    "OPS",
+    "PROC"
+   ]
+  },
+  {
+   "type": "customer_order_late",
+   "kind": "customer_order_late",
+   "label": "Customer order past its required date",
+   "precision": {
+    "value": 0.21,
+    "checked": 59,
+    "on": "2026-11-08",
+    "source": "capability-audit.md:17,105: proven correct 21% after correct-1",
+    "note": "off until migration-2 applies SalesOrder.erp_order and a re-check reaches 90%"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "ACCTMGMT",
+    "SALES",
+    "OPS"
+   ]
+  },
+  {
+   "type": "stock_out_risk",
+   "kind": "shortage",
+   "label": "Stock cannot cover open orders",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "PROC",
+    "SALES",
+    "WH"
+   ]
+  },
+  {
+   "type": "overdue_receivable",
+   "kind": "receivable_risk",
+   "label": "Customer invoice overdue",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "ACCTMGMT"
+   ]
+  },
+  {
+   "type": "unit_cost_jump",
+   "kind": "margin_loss",
+   "label": "Purchase cost jumped",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC",
+    "FIN"
+   ]
+  },
+  {
+   "type": "mc_task_overdue",
+   "kind": "task_overdue",
+   "label": "Mission Control task overdue",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "PROD"
+   ]
+  },
+  {
+   "type": "mc_task_stuck",
+   "kind": "task_overdue",
+   "label": "Mission Control task stuck",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "PROD"
+   ]
+  },
+  {
+   "type": "mc_approval_pending",
+   "kind": "approval_waiting",
+   "label": "Approval waiting for a decision",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "FIN",
+    "PROC"
+   ]
+  },
+  {
+   "type": "planner_task_overdue",
+   "kind": "task_overdue",
+   "label": "Planner task overdue",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "PROD",
+    "PROC",
+    "SALES",
+    "WH"
+   ]
+  },
+  {
+   "type": "aged_receivable_worsening",
+   "kind": "receivable_risk",
+   "label": "Customer balance older",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "ACCTMGMT"
+   ]
+  },
+  {
+   "type": "aged_payable_worsening",
+   "kind": "payable_attention",
+   "label": "Supplier balance older",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "PROC"
+   ]
+  },
+  {
+   "type": "production_late",
+   "kind": "task_overdue",
+   "label": "Production past due",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROD",
+    "OPS"
+   ]
+  },
+  {
+   "type": "assembly_damage_spike",
+   "kind": "weekly_trends",
+   "label": "Assembly damage spiked",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROD",
+    "QUALITY",
+    "QA",
+    "QC",
+    "PROC"
+   ]
+  },
+  {
+   "type": "teams_unanswered_ask",
+   "kind": "reply_owed",
+   "label": "Teams question unanswered",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "SALES",
+    "PROC",
+    "FIN",
+    "PROD",
+    "WH",
+    "ACCTMGMT",
+    "QUALITY"
+   ]
+  },
+  {
+   "type": "customer_demand_drop",
+   "kind": "weekly_trends",
+   "label": "Customer ordering much less",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "FIN"
+   ]
+  },
+  {
+   "type": "promise_date_slip",
+   "kind": "customer_order_late",
+   "label": "Customer orders missing their promised date",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "SALES",
+    "ACCTMGMT"
+   ]
+  },
+  {
+   "type": "margin_erosion",
+   "kind": "weekly_trends",
+   "label": "Margin eroding",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "SALES",
+    "PROC"
+   ]
+  },
+  {
+   "type": "supplier_reliability",
+   "kind": "weekly_trends",
+   "label": "Supplier delivering later than before",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC",
+    "OPS"
+   ]
+  },
+  {
+   "type": "shipped_not_invoiced",
+   "kind": "order_exception",
+   "label": "Shipped but not invoiced",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "ACCTMGMT",
+    "OPS"
+   ]
+  },
+  {
+   "type": "duplicate_customer_order",
+   "kind": "data_health",
+   "label": "Customer order entered twice",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "OPS"
+   ]
+  },
+  {
+   "type": "recurring_component_damage",
+   "kind": "weekly_trends",
+   "label": "Item damaged repeatedly in assembly",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "QUALITY",
+    "QA",
+    "QC",
+    "PROC",
+    "OPS"
+   ]
+  },
+  {
+   "type": "customer_chasing_order",
+   "kind": "customer_chasing",
+   "label": "Customer chasing an order",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "CS",
+    "OPS"
+   ]
+  },
+  {
+   "type": "expedite_unanswered",
+   "kind": "waiting_on_them",
+   "label": "Expedite with no answer",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "PROC",
+    "SALES",
+    "CS"
+   ]
+  },
+  {
+   "type": "supplier_shortage_open_orders",
+   "kind": "shortage",
+   "label": "Supplier shortage hits open orders",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC",
+    "OPS",
+    "SALES"
+   ]
+  },
+  {
+   "type": "supplier_chasing_payment",
+   "kind": "payable_attention",
+   "label": "Supplier chasing us for payment",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "PROC"
+   ]
+  },
+  {
+   "type": "tell_before_they_ask",
+   "kind": "customer_chasing",
+   "label": "Tell the customer before they ask",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "CS",
+    "OPS"
+   ]
+  },
+  {
+   "type": "commitment_due",
+   "kind": "task_overdue",
+   "label": "Promise due",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "CS",
+    "OPS"
+   ]
+  },
+  {
+   "type": "commitment_missed",
+   "kind": "task_overdue",
+   "label": "Promise missed",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "CS",
+    "OPS"
+   ]
+  },
+  {
+   "type": "needs_my_reply",
+   "kind": "reply_owed",
+   "label": "Needs your reply",
+   "precision": {
+    "value": 0.933,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L790: 6.7% false positives on the last hand-checked sample (143 threads, owner)",
+    "commit": "a75690cc08"
+   },
+   "actionable": true,
+   "default": "on",
+   "home": true,
+   "roles": []
+  },
+  {
+   "type": "approval_waiting",
+   "kind": "approval_waiting",
+   "label": "Approval waiting",
+   "precision": {
+    "value": 0.73,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L759: 27% wrong before the precision round",
+    "note": "not re-measured since"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "PROC",
+    "SALES",
+    "QUALITY",
+    "OPS",
+    "ACCTMGMT",
+    "PROD",
+    "WH"
+   ]
+  },
+  {
+   "type": "chase_escalating",
+   "kind": "customer_chasing",
+   "label": "Chased repeatedly",
+   "precision": {
+    "value": 0.8,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "proactive_threads.py hand check on gen 11 (2026-11-08): 80%"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "CS",
+    "OPS",
+    "PROC",
+    "FIN",
+    "WH",
+    "QUALITY"
+   ]
+  },
+  {
+   "type": "quality_hold_aging",
+   "kind": "quality_hold",
+   "label": "Quality hold open too long",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "QUALITY",
+    "QA",
+    "QC",
+    "OPS"
+   ]
+  },
+  {
+   "type": "reject_trend",
+   "kind": "weekly_trends",
+   "label": "Rejects rising",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "QUALITY",
+    "QA",
+    "QC",
+    "PROC"
+   ]
+  },
+  {
+   "type": "customer_paying_slower",
+   "kind": "weekly_trends",
+   "label": "Customer paying more slowly",
+   "precision": {
+    "value": 1.0,
+    "checked": 7,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L664: 7 live, false positives fixed, not re-measured"
+   },
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "ACCTMGMT",
+    "SALES"
+   ]
+  },
+  {
+   "type": "early_pay_discount_missed",
+   "kind": "weekly_trends",
+   "label": "Early-pay discount missed",
+   "precision": {
+    "value": 1.0,
+    "checked": 2,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L673: 2 live"
+   },
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "PROC"
+   ]
+  },
+  {
+   "type": "duplicate_supplier_invoice",
+   "kind": "duplicate_payable",
+   "label": "Supplier invoice entered twice",
+   "precision": {
+    "value": 1.0,
+    "checked": 6,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L754: 0 false positives in a sample of 6",
+    "note": "money at stake: re-sample to 15 to turn on"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "PROC"
+   ]
+  },
+  {
+   "type": "duplicate_supplier_payment",
+   "kind": "duplicate_payable",
+   "label": "Supplier paid twice",
+   "precision": {
+    "value": 1.0,
+    "checked": 6,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L754: 0 false positives in a sample of 6",
+    "note": "money at stake: re-sample to 15 to turn on"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "PROC"
+   ]
+  },
+  {
+   "type": "customer_credits_rising",
+   "kind": "receivable_risk",
+   "label": "Customer credits and returns rising",
+   "precision": {
+    "value": 1.0,
+    "checked": 4,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L754: 4 found, 0 false positives"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "ACCTMGMT",
+    "SALES",
+    "QA"
+   ]
+  },
+  {
+   "type": "slow_moving_stock",
+   "kind": "weekly_trends",
+   "label": "Stock not moving",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "WH",
+    "PROC",
+    "FIN"
+   ]
+  },
+  {
+   "type": "expiring_lot_stock",
+   "kind": "expiring",
+   "label": "Lot with stock expiring soon",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "WH",
+    "PROD",
+    "QUALITY",
+    "QA",
+    "OPS"
+   ]
+  },
+  {
+   "type": "assembly_blocked_by_component",
+   "kind": "shortage",
+   "label": "Assembly order short of components",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROD",
+    "PROC",
+    "OPS"
+   ]
+  },
+  {
+   "type": "certificate_expiring",
+   "kind": "expiring",
+   "label": "Certificate expiring soon",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "QUALITY",
+    "QA",
+    "QC",
+    "PROC"
+   ]
+  },
+  {
+   "type": "freight_cost_anomaly",
+   "kind": "margin_loss",
+   "label": "Freight bill far above usual",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "WH",
+    "OPS"
+   ]
+  },
+  {
+   "type": "price_below_typical",
+   "kind": "price_exception",
+   "label": "Customer paying far below the usual price",
+   "precision": {
+    "value": 0.875,
+    "checked": 24,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L690: 21/24 strict"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "FIN"
+   ]
+  },
+  {
+   "type": "customer_price_drop",
+   "kind": "price_exception",
+   "label": "Customer's price dropped",
+   "precision": {
+    "value": 0.875,
+    "checked": 24,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L690: 21/24 strict"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "FIN"
+   ]
+  },
+  {
+   "type": "price_below_cost",
+   "kind": "margin_loss",
+   "label": "Customer price below cost",
+   "precision": {
+    "value": 0.875,
+    "checked": 24,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L690: 21/24 strict"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "FIN"
+   ]
+  },
+  {
+   "type": "stale_quote",
+   "kind": "order_exception",
+   "label": "Quote not converted to an order",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "OPS",
+    "FIN"
+   ]
+  },
+  {
+   "type": "duplicate_party_candidate",
+   "kind": "data_health",
+   "label": "Customer or supplier entered twice",
+   "precision": {
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L698: 0/15 false positives after the fix"
+   },
+   "actionable": true,
+   "default": "on",
+   "home": false,
+   "roles": [
+    "FIN",
+    "SALES",
+    "PROC",
+    "OPS"
+   ]
+  },
+  {
+   "type": "key_field_missing",
+   "kind": "data_health",
+   "label": "Key field missing",
+   "precision": {
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "capability-audit.md:20,107: order without customer PO 15/15 after correct-1"
+   },
+   "actionable": true,
+   "default": "on",
+   "home": false,
+   "roles": [
+    "OPS",
+    "FIN",
+    "SALES",
+    "PROC",
+    "WH"
+   ]
+  },
+  {
+   "type": "twins_disagree",
+   "kind": "data_health",
+   "label": "Systems disagree on a record",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "FIN",
+    "SALES",
+    "PROC"
+   ]
+  },
+  {
+   "type": "inventory_adjustment",
+   "kind": "ledger_integrity",
+   "label": "Stock written down by hand",
+   "precision": {
+    "value": 1.0,
+    "checked": 2,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L762: 2 real of 242 manual adjustments"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "WH",
+    "OPS"
+   ]
+  },
+  {
+   "type": "blocked_account_activity",
+   "kind": "ledger_integrity",
+   "label": "Open orders with a blocked account",
+   "precision": {
+    "value": 1.0,
+    "checked": 1,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L762: 1 real"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN",
+    "SALES",
+    "PROC"
+   ]
+  },
+  {
+   "type": "gl_posting_errors",
+   "kind": "ledger_integrity",
+   "label": "Ledger batch failed to post",
+   "precision": {
+    "value": 1.0,
+    "checked": 1,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L762: 346 failed batches confirmed as one finding"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN"
+   ]
+  },
+  {
+   "type": "recurring_task_missed",
+   "kind": "task_overdue",
+   "label": "Recurring check missed a cycle",
+   "precision": {
+    "value": 1.0,
+    "checked": 3,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L762: 3 real"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "QUALITY",
+    "QA",
+    "QC",
+    "OPS"
+   ]
+  },
+  {
+   "type": "source_stale",
+   "kind": "data_health",
+   "label": "Source not updated lately",
+   "precision": null,
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "IT",
+    "FIN"
+   ]
+  },
+  {
+   "type": "reorder_soon",
+   "kind": "shortage",
+   "label": "Reorder soon",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "PROC",
+    "OPS",
+    "WH"
+   ]
+  },
+  {
+   "type": "watcher_attention",
+   "kind": "watcher",
+   "label": "Watcher finding",
+   "precision": {
+    "value": 1.0,
+    "checked": 8,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L219-223: 8/8 true, 7/8 matter, isolated runs",
+    "note": "watcher dry: model billing paused"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": []
+  },
+  {
+   "type": "reply_owed",
+   "kind": "reply_owed",
+   "label": "Needs your reply",
+   "lane": "triage-labels",
+   "precision": {
+    "value": 0.933,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L790 (triage-labels reply_owed is needs_my_reply)",
+    "commit": "a75690cc08"
+   },
+   "actionable": true,
+   "default": "on",
+   "home": true,
+   "roles": []
+  },
+  {
+   "type": "statement_difference",
+   "kind": "statement_reconciliation",
+   "label": "Statement differs from our books",
+   "lane": "sheet-readings",
+   "precision": {
+    "value": 1.0,
+    "checked": 1,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L791: 1 real"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN"
+   ]
+  },
+  {
+   "type": "unapplied_remittance",
+   "kind": "statement_reconciliation",
+   "label": "Remittance not applied",
+   "lane": "sheet-readings",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN"
+   ]
+  },
+  {
+   "type": "short_payment",
+   "kind": "statement_reconciliation",
+   "label": "Customer paid short",
+   "lane": "sheet-readings",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "FIN"
+   ]
+  },
+  {
+   "type": "label_change",
+   "kind": "label_change",
+   "label": "Label or artwork change",
+   "precision": {
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L790: 0/15 false positives over 19 alerts (label_change_stale and label_change_unapproved, now one briefing type)",
+    "commit": "a75690cc08"
+   },
+   "actionable": true,
+   "default": "on",
+   "home": true,
+   "roles": [
+    "ARTWORK",
+    "QA",
+    "QC",
+    "QUALITY",
+    "PROD",
+    "SALES",
+    "ACCTMGMT"
+   ]
+  },
+  {
+   "type": "priority_order_unfilled",
+   "kind": "customer_order_late",
+   "label": "Priority-listed order late or unscheduled",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "OPS"
+   ]
+  },
+  {
+   "type": "labour_overtime_spike",
+   "kind": "weekly_trends",
+   "label": "Overtime above 44 hours a week",
+   "lane": "labour-hours",
+   "precision": {
+    "value": 1.0,
+    "checked": 10,
+    "on": "2026-11-08",
+    "source": "OVERNIGHT-LOG L849: 10/10 department-week totals hand-checked",
+    "note": "shown only with the hr or ops-management grant; a trend for the weekly review"
+   },
+   "actionable": false,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "HR",
+    "OPS"
+   ]
+  },
+  {
+   "type": "rd_project",
+   "kind": "task_overdue",
+   "label": "R&D or sample project idle",
+   "precision": {
+    "value": 0.27,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "hand check of 15 idle R&D and sample projects: 27% true",
+    "note": "early detector; off until a 15-item live sample reaches 90%"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "RND",
+    "QUALITY",
+    "QA",
+    "QC",
+    "SALES",
+    "ACCTMGMT",
+    "CS"
+   ]
+  }
+ ]
+}

@@ -22,6 +22,24 @@ const config: NextConfig = {
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${apiOrigin}/api/:path*` }];
   },
+  // the old pages, folded into the seven (My work, Late POs, Meetings, Team, Ask, Watching,
+  // Activity) and the record page; temporary so the routes stay free to change
+  async redirects() {
+    return [
+      { source: "/briefing", destination: "/watching#alerts", permanent: false },
+      { source: "/prepare", destination: "/meetings", permanent: false },
+      { source: "/weekly", destination: "/meetings?view=weekly", permanent: false },
+      { source: "/brief/:type/:id*", destination: "/meetings/brief/:type/:id*", permanent: false },
+      { source: "/approvals", destination: "/team#approvals", permanent: false },
+      { source: "/rules", destination: "/watching", permanent: false },
+      { source: "/actions", destination: "/activity", permanent: false },
+      { source: "/replies", destination: "/?view=reply", permanent: false },
+      { source: "/workload", destination: "/team#workload", permanent: false },
+      { source: "/labour", destination: "/team#labour", permanent: false },
+      { source: "/meetings/action-items", destination: "/meetings?view=follow-ups", permanent: false },
+      { source: "/pack/:type/:id*", destination: "/object/:type/:id*#documents", permanent: false },
+    ];
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

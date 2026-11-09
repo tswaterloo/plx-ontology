@@ -61,7 +61,9 @@ from ontology.identity_scoring import mail_address
 from ontology.mentions import QuotedRanges, mail_domain, registrable_domain, website_domain
 from ontology.units import currency_reading, currency_token_pattern
 
+from . import drafts
 from .answer_conflicts import Reading, resolve, value_key
+from .copy_gate import say_date
 from .claim_checks import unit_word
 from .people_graph import EXTERNAL, PERSON, UNDECIDED, WITHHELD
 
@@ -1029,12 +1031,16 @@ def follow_up_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mappi
                       "reader may read (a reply in mail it cannot read is not seen)",
                       *who_steps, "would follow up: nothing is sent"],
             "basis": [doc.oid], "check": "not_applicable"}))
-        sent = doc.when.date().isoformat() if doc.when else "our last message"
+        # the year is written so the answer's claim check reads it as the cited date
+        sent = (f"{say_date(doc.when.date())} {doc.when.year}".replace(
+            f" {doc.when.year} {doc.when.year}", f" {doc.when.year}") if doc.when else None)
         entries.append(_digest({
             "name": f"{entry_name}_draft"[:64], "kind": "computed",
-            "value": (f"Hello, following up on our message of {sent} (subject as cited) about "
-                      f"{reference}. Could you send your price per unit with its currency, the "
-                      "MOQ, the lead time and how long the quote is valid? Thank you."),
+            "value": drafts.compose("quote_followup", [
+                f"Following up on my message{' of ' + sent if sent else ''} about "
+                f"{reference}: can you send the unit price with its currency, the MOQ, the "
+                "lead time and how long the quote is valid?"],
+                subject=reference, specific=False)["body"],
             "inputs": ([subject] if subject else []) + ([po["name"]] if po else []),
             "steps": [f"a draft to copy for entry {entry_name}: never sent"],
             "basis": [doc.oid],

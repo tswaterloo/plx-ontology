@@ -9,6 +9,7 @@ isolated-fixture.
 from __future__ import annotations
 
 from datetime import timedelta
+from operating.copy_gate import say_date
 import json
 import time
 
@@ -172,8 +173,8 @@ class MailPains(Engine):
         gaps = {g["object_id"]: g for g in self.kinds(mp.EXPEDITE_KIND)}
         self.assertEqual(set(gaps), {so, po})
         self.assertEqual([m["id"] for m in gaps[so]["event"]["messages"]], [first])
-        self.assertIn("SYNTH-SO-1: we were asked 1 time(s)", gaps[so]["summary"])
-        self.assertIn("we asked 1 time(s)", gaps[po]["summary"])
+        self.assertIn("SYNTH-SO-1: we were asked 1 time,", gaps[so]["summary"])
+        self.assertIn("we asked 1 time,", gaps[po]["summary"])
         self.assertEqual(gaps[po]["event"]["messages"][0]["id"], ours)
         self.assertNotIn(SECRET, json.dumps(gaps))
         for hidden in (MAILBOX, "api:orders"):
@@ -256,7 +257,7 @@ class MailPains(Engine):
         self.run_rules(w)
         (gap,) = self.kinds(mp.PAYABLE_KIND)         # the paid one is not raised
         self.assertEqual(gap["object_id"], bill)
-        self.assertIn("SYNTH-AP 2 time(s), last on " + day(2), gap["summary"])
+        self.assertIn("SYNTH-AP 2 times, last on " + say_date(day(2)), gap["summary"])
         self.assertEqual(self.kinds(mp.PAYABLE_KIND, held=NO_FINANCE), [])
         self.assertEqual(self.kinds(mp.PAYABLE_KIND, may_read=lambda a: a != MAILBOX), [])
 

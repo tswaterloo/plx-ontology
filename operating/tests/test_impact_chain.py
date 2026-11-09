@@ -38,8 +38,22 @@ STAFF, SALES = tp.STAFF, tp.SALES
 TODAY = "2099-02-01"   # tp.NOW's business date
 
 
+_ALL_ON = None
+
+
 def setUpModule():
+    # the impact detectors' findings (order_at_risk, po_impact) are read whatever the
+    # alert registry shows readers; that off types reach no reader is tested in
+    # test_alert_kinds and test_proactive_threads
+    global _ALL_ON
+    from unittest import mock
+    _ALL_ON = mock.patch("operating.alert_kinds.off_gap_kinds", return_value=frozenset())
+    _ALL_ON.start()
     tp.setUpModule()
+
+
+def tearDownModule():
+    _ALL_ON.stop()
 
 
 def late_po(s, key="ic", planned="2099-01-15", promise="2099-01-20"):
@@ -903,9 +917,9 @@ class ScanAndProactiveTests(unittest.TestCase):
         # a mailed confirmation's promises are never proven complete (item permissions,
         # plx.process's promises_unproven): even the run's reader may miss a later one, so
         # every reader is told so; a reader without the mailbox is too, never which one
-        self.assertTrue(gap["summary"].endswith("(a later promise you cannot see may exist)"))
+        self.assertTrue(gap["summary"].endswith("(a later promise could sit in mail you cannot open)"))
         (gap,) = read(lambda aud: tp.POLICY.may_read(STAFF, aud))
-        self.assertTrue(gap["summary"].endswith("(a later promise you cannot see may exist)"))
+        self.assertTrue(gap["summary"].endswith("(a later promise could sit in mail you cannot open)"))
         self.assertNotIn("box-b", json.dumps(gap))
         # one who may not open the confirmation never sees the claim resting on it
         self.assertEqual(read(lambda aud: tp.POLICY.may_read(STAFF, aud)

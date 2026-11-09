@@ -217,9 +217,13 @@ def view_context(view: Any) -> WatchContext:
         finally:
             st.close()
     def findings(kinds: Sequence[str], since: str) -> Sequence[Mapping[str, Any]]:
+        from operating import briefing as bf
         return pe.read_inbox(pe.inbox_path(path), path, reader=pe.reader_key(view.actor),
                              may_read=may_read, held=held, decide=view.access.decide,
-                             kinds=list(kinds), since=since, limit=wl.SIGNALS_SHOWN)["gaps"]
+                             kinds=list(kinds), since=since, limit=wl.SIGNALS_SHOWN,
+                             # a reader's own watch rule naming these kinds switches them on
+                             # for that reader (``alert_kinds``: off types otherwise stay out)
+                             enabled=[bf.TYPE_OF_KIND.get(k, k) for k in kinds])["gaps"]
     return WatchContext(pe.reader_key(view.actor), wl.watch_path(path), may_read,
                         frozenset(held), view.access.decide, records, findings)
 

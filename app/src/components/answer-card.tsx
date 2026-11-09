@@ -432,7 +432,7 @@ function citationsOf(a: Answer | undefined, facts: Fact[], used: Set<number>): {
   };
   const order = [...used, ...facts.map((_, i) => i).filter((i) => !used.has(i))];
   for (const i of order) {
-    // a fact about one order ("106001: 134 days late…") names the record its sources are of
+    // a fact about one order ("106001: 134 days late") names the record its sources are of
     const m = LATE_FACT.exec(readable(facts[i]?.text ?? "").trim());
     for (const src of facts[i]?.sources ?? []) add(src, m ? `PO ${m[1]}` : null);
   }

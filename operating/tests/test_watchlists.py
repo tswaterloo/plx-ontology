@@ -7,6 +7,7 @@ Evidence label: ``isolated-fixture`` (synthetic stores, no source system)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from operating import briefing as bf
 import json
 from pathlib import Path
 import tempfile
@@ -531,7 +532,10 @@ class SignalRules(unittest.TestCase):
         def read(kinds, since=None):
             return pe.read_inbox(self.inbox, self.store, reader="plx:ops", may_read=may_read,
                                  held=frozenset(held), decide=decide, kinds=list(kinds),
-                                 since=since, limit=wl.SIGNALS_SHOWN)["gaps"]
+                                 since=since, limit=wl.SIGNALS_SHOWN,
+                                 # as operator_api.watch: the reader's rule switches on the
+                                 # kinds it names
+                                 enabled=[bf.TYPE_OF_KIND.get(k, k) for k in kinds])["gaps"]
         return read
 
     def rule(self, text: str, held=("finance",), at: datetime = T) -> dict:
