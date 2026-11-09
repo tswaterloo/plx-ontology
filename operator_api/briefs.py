@@ -558,6 +558,7 @@ class BriefsMixin:
         grant included); the people exclusion fails closed."""
         from operating import inbox_triage as it
         from operating import proactive_engine as pe
+        from operating import system_activity as sa
         from operating.proactive_commitments import OWNER_KINDS
         if not self._is_owner(reader):
             raise UserFacing("forbidden", "Only the owner sees the workload of each person.",
@@ -566,11 +567,31 @@ class BriefsMixin:
         store = getattr(self, "store_path", None)
         inbox = pe.inbox_path(store) if store else None
         since = (date.today() - timedelta(days=it.OWNER_WINDOW_DAYS)).isoformat()
+        excluded = it.excluded_by(br.env_people())
+        loaded = grants.load() if grants else {"teams": {}, "managers": {}}
         raw = it.owner_workload(
             it.open_rows(inbox) if inbox else [], it.closed_rows(inbox, since) if inbox else [],
-            grants=grants.load() if grants else {"teams": {}, "managers": {}},
-            owner_kinds=OWNER_KINDS, excluded=it.excluded_by(br.env_people()))
+            grants=loaded, owner_kinds=OWNER_KINDS, excluded=excluded)
+        systems, coverage, raw["note"] = sa.owner_columns(
+            sa.load_snapshot(self._system_activity_path()), excluded, today=date.today(),
+            days=it.OWNER_WINDOW_DAYS)
+        listed = {p["person"] for p in raw["people"]}
+        for row in raw["people"]:
+            row["systems"] = systems.get(row["person"], {})
+        raw["people"] += [{"person": oid, "team": (loaded.get("teams") or {}).get(
+            oid, it.NOT_ASSIGNED), "awaiting_reply": 0, "tasks": 0, "alerts": 0,
+            "alerts_closed": 0, "systems": n} for oid, n in sorted(systems.items())
+            if oid not in listed]
+        raw["coverage"] = coverage
         return m.OwnerWorkload(**raw)
+
+    def _system_activity_path(self) -> Optional[Path]:
+        """The per-system activity snapshot (``operating.system_activity``): the
+        ``PLX_SYSTEM_ACTIVITY_FILE`` path, else the data directory's."""
+        from operating import system_activity as sa
+        named = os.environ.get("PLX_SYSTEM_ACTIVITY_FILE")
+        data_dir = getattr(self, "data_dir", None)
+        return Path(named) if named else Path(data_dir) / sa.SNAPSHOT_FILE if data_dir else None
 
     def owner_workload_items(self, reader: Reader, person: str, bucket: str
                              ) -> m.OwnerWorkloadItems:

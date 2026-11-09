@@ -149,6 +149,35 @@ class Owner(unittest.TestCase):
             closed = self.client().get("/api/owner/workload").json()
         self.assertEqual(closed["people"], [])
 
+    def test_owner_sees_system_records_per_person_and_the_note_names_the_systems(self):
+        from datetime import date, datetime, timezone
+        from operating import system_activity as sa
+        week = sa.week_of(date.today())
+        D = "00000000-0000-4000-8000-0000000000b3"   # seen only in systems
+        snapshot = {"schema": sa.SCHEMA,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "coverage": [{"system": "planner", "share": 0.9, "actions": 10},
+                                 {"system": "bc", "share": 0.0, "actions": 5}],
+                    "people": {B: {"weeks": {week: {"planner": 3}}},
+                               D: {"weeks": {week: {"planner": 2, "nosuch": 9}}},
+                               EXCLUDED: {"weeks": {week: {"planner": 4}}}}}
+        (self.dir / sa.SNAPSHOT_FILE).write_text(json.dumps(snapshot))
+        denied = self.client().get("/api/owner/workload")
+        self.assertEqual(denied.status_code, 403)
+        self.assertNotIn(D, denied.text)
+        self.backend.owner = True
+        body = self.client().get("/api/owner/workload").json()
+        by = {p["person"]: p for p in body["people"]}
+        self.assertEqual(by[B]["systems"], {"planner": 3})
+        self.assertEqual((by[D]["systems"], by[D]["awaiting_reply"]), ({"planner": 2}, 0))
+        self.assertNotIn(EXCLUDED, json.dumps(body))
+        self.assertIn("Planner (90% tied to a person)", body["note"])
+        self.assertIn("Not tied to people: Business Central", body["note"])
+        self.assertIn("Not captured: the Portal, Sage", body["note"])
+        with mock.patch("operating.briefs.env_people", return_value=None):
+            closed = self.client().get("/api/owner/workload").json()
+        self.assertEqual(closed["people"], [])
+
     # ---- the drill-down: the items behind a count ------------------------------------------
 
     def bound_guard(self, *excluded: str):

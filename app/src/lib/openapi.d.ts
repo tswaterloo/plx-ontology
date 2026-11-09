@@ -4149,12 +4149,15 @@ export type components = {
         };
         /**
          * OwnerWorkload
-         * @description Per person, for the owner only: open threads awaiting reply, open tasks, alerts and
-         *     closed alerts. Counts only, never message content; people the exclusion does not clear
-         *     never appear. Covers mail, Teams and tasks only: floor and lab work is not seen, so
-         *     these figures undercount it.
+         * @description Per person, for the owner only: open threads awaiting reply, open tasks, alerts,
+         *     closed alerts and the records they created or changed in each captured system. Counts
+         *     only, never message content; people the exclusion does not clear never appear. The
+         *     note names exactly the systems covered; floor and lab work is not seen, so these
+         *     figures undercount it.
          */
         OwnerWorkload: {
+            /** Coverage */
+            coverage?: components["schemas"]["SystemCoverage"][];
             /** Note */
             note: string;
             /** People */
@@ -4230,6 +4233,13 @@ export type components = {
              * @description An Entra object id, never a name or an address.
              */
             person: string;
+            /**
+             * Systems
+             * @description Records the person created or changed per captured system in the window (bc, portal, sage, sharepoint, mission_control, planner, calendar); counts only.
+             */
+            systems?: {
+                [key: string]: number;
+            };
             /** Tasks */
             tasks: number;
             /** Team */
@@ -5427,6 +5437,18 @@ export type components = {
              * @description Records with a suggestion (all, not only shown).
              */
             total: number;
+        };
+        /** SystemCoverage */
+        SystemCoverage: {
+            /** Actions */
+            actions: number;
+            /**
+             * Share
+             * @description Share of the system's actions by people that are tied to a person (0..1); the rest name no user we can match.
+             */
+            share: number;
+            /** System */
+            system: string;
         };
         /** TeamsChat */
         TeamsChat: {

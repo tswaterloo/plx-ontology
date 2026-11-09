@@ -7929,8 +7929,15 @@
       },
       "OwnerWorkload": {
         "additionalProperties": false,
-        "description": "Per person, for the owner only: open threads awaiting reply, open tasks, alerts and\nclosed alerts. Counts only, never message content; people the exclusion does not clear\nnever appear. Covers mail, Teams and tasks only: floor and lab work is not seen, so\nthese figures undercount it.",
+        "description": "Per person, for the owner only: open threads awaiting reply, open tasks, alerts,\nclosed alerts and the records they created or changed in each captured system. Counts\nonly, never message content; people the exclusion does not clear never appear. The\nnote names exactly the systems covered; floor and lab work is not seen, so these\nfigures undercount it.",
         "properties": {
+          "coverage": {
+            "items": {
+              "$ref": "#/components/schemas/SystemCoverage"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
           "note": {
             "title": "Note",
             "type": "string"
@@ -8118,6 +8125,14 @@
             "description": "An Entra object id, never a name or an address.",
             "title": "Person",
             "type": "string"
+          },
+          "systems": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Records the person created or changed per captured system in the window (bc, portal, sage, sharepoint, mission_control, planner, calendar); counts only.",
+            "title": "Systems",
+            "type": "object"
           },
           "tasks": {
             "title": "Tasks",
@@ -11017,6 +11032,31 @@
           "note"
         ],
         "title": "Suggestions",
+        "type": "object"
+      },
+      "SystemCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "title": "Actions",
+            "type": "integer"
+          },
+          "share": {
+            "description": "Share of the system's actions by people that are tied to a person (0..1); the rest name no user we can match.",
+            "title": "Share",
+            "type": "number"
+          },
+          "system": {
+            "title": "System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "share",
+          "actions"
+        ],
+        "title": "SystemCoverage",
         "type": "object"
       },
       "TeamsChat": {

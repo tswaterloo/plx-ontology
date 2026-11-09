@@ -50,10 +50,13 @@ describe("my replies, workload and label changes", () => {
 
   it("shows the owner's per-person table with the coverage note", () => {
     const data: OwnerWorkload = { window_days: 28, note: "Covers mail, Teams and tasks only. Floor and lab work are not seen, so these figures undercount that work.", people: [
-      { person: "oid-1", team: "SALES", awaiting_reply: 3, tasks: 1, alerts: 2, alerts_closed: 4 }] };
+      { person: "oid-1", team: "SALES", awaiting_reply: 3, tasks: 1, alerts: 2, alerts_closed: 4, systems: { planner: 2, sage: 7 } },
+      { person: "oid-2", team: "OPS", awaiting_reply: 0, tasks: 0, alerts: 0, alerts_closed: 0 }] };
     render(<OwnerWorkloadView data={data} />);
     expect(screen.getByTestId("owner-workload-note").textContent).toMatch(/undercount/);
     expect(screen.getByText("oid-1")).toBeTruthy();
+    expect(screen.getByTestId("systems-oid-1").textContent).toBe("Sage 7, Planner 2");
+    expect(screen.getByTestId("systems-oid-2").textContent).toBe("None seen");
   });
 
   it("lists R&D projects with status, idle mark and a draft that is not sent", () => {

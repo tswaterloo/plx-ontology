@@ -44,8 +44,9 @@ export function WorkloadView({ data }: { data: Workload }) {
 }
 
 // Per person, for the owner only (the page asks for it and shows nothing on a refusal).
-// Click a person's count to see the items behind it. It covers mail, Teams and tasks, so it
-// undercounts floor and lab work.
+// Click a person's count to see the items behind it. Beside mail, Teams and tasks it counts the
+// records each person created or changed per captured system; the note names exactly which
+// systems are covered. It undercounts floor and lab work.
 export function OwnerWorkloadView({ data }: { data: OwnerWorkload }) {
   const [open, setOpen] = useState<{ person: string; bucket: OwnerWorkloadBucket } | null>(null);
   const count = (person: string, bucket: OwnerWorkloadBucket, n: number) =>
@@ -59,17 +60,27 @@ export function OwnerWorkloadView({ data }: { data: OwnerWorkload }) {
       <p className="text-[12px] text-muted" data-testid="owner-workload-note">{data.note}</p>
       <table className="w-full text-[13px]">
         <thead>
-          <tr className="text-left text-muted"><th>Person</th><th>Team</th><th>Awaiting reply</th><th>Open tasks</th><th>Alerts</th><th>Alerts closed ({data.window_days} days)</th></tr>
+          <tr className="text-left text-muted"><th>Person</th><th>Team</th><th>Awaiting reply</th><th>Open tasks</th><th>Alerts</th><th>Alerts closed ({data.window_days} days)</th><th>Records in systems ({data.window_days} days)</th></tr>
         </thead>
         <tbody>
           {(data.people ?? []).map((p) => (
-            <tr key={p.person}><td>{p.person}</td><td>{p.team === "not_assigned" ? "Not assigned" : p.team}</td><td>{count(p.person, "awaiting_reply", p.awaiting_reply)}</td><td>{count(p.person, "tasks", p.tasks)}</td><td>{count(p.person, "alerts", p.alerts)}</td><td>{p.alerts_closed}</td></tr>
+            <tr key={p.person}><td>{p.person}</td><td>{p.team === "not_assigned" ? "Not assigned" : p.team}</td><td>{count(p.person, "awaiting_reply", p.awaiting_reply)}</td><td>{count(p.person, "tasks", p.tasks)}</td><td>{count(p.person, "alerts", p.alerts)}</td><td>{p.alerts_closed}</td><td data-testid={`systems-${p.person}`}>{systemsText(p.systems)}</td></tr>
           ))}
         </tbody>
       </table>
       {open && <OwnerItems key={`${open.person}/${open.bucket}`} person={open.person} bucket={open.bucket} onClose={() => setOpen(null)} />}
     </section>
   );
+}
+
+const SYSTEM_WORDS: Record<string, string> = {
+  bc: "Business Central", portal: "Portal", sage: "Sage", sharepoint: "SharePoint",
+  mission_control: "Mission Control", planner: "Planner", calendar: "Calendar",
+};
+
+function systemsText(systems?: Record<string, number>): string {
+  const parts = Object.entries(systems ?? {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  return parts.length ? parts.map(([s, n]) => `${SYSTEM_WORDS[s] ?? s} ${n}`).join(", ") : "None seen";
 }
 
 const BUCKET_WORDS: Record<OwnerWorkloadBucket, string> = {
