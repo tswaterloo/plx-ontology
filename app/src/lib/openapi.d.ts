@@ -689,6 +689,50 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/my-work": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My Work
+         * @description The work the autopilots prepared for you from new mail, tasks, approvals, QC
+         *     results, meetings and record changes, each with what happened, the prepared work,
+         *     its evidence and one-click approve through the confirm flows; your digest and
+         *     nudges. Only yours (and your granted reports'). Nothing is sent or written.
+         */
+        get: operations["my_work_api_my_work_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/my-work/{item_id}/write": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * My Work Write
+         * @description Your item's prepared entry as a write intent the autopilot prepared: preview and
+         *     approve it in ``/api/writes*`` (dry run until writes are granted).
+         */
+        post: operations["my_work_write_api_my_work__item_id__write_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/object-impact/{mode}/{object_type}/{object_id}": {
         parameters: {
             query?: never;
@@ -3869,6 +3913,127 @@ export type components = {
             }[];
             /** Person */
             person?: string | null;
+        };
+        /**
+         * MyWork
+         * @description The work the autopilots prepared for you (and, per the owner's grants, for the people
+         *     of the teams you manage), with your daily digest. Nothing is sent or written.
+         */
+        MyWork: {
+            digest: components["schemas"]["MyWorkDigest"];
+            /** Items */
+            items?: components["schemas"]["MyWorkItem"][];
+            /**
+             * Sent
+             * @constant
+             */
+            sent: 0;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "read" | "off" | "not_scheduled";
+            /**
+             * Writes
+             * @constant
+             */
+            writes: 0;
+        };
+        /**
+         * MyWorkBrief
+         * @description The morning brief: decisions waiting, drafts ready, orders to enter, supplier
+         *     follow-ups and ETA slips, as counts and the oldest few items of each.
+         */
+        MyWorkBrief: {
+            /** At */
+            at: string;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /** Top */
+            top?: {
+                [key: string]: components["schemas"]["MyWorkBriefEntry"][];
+            };
+        };
+        /** MyWorkBriefEntry */
+        MyWorkBriefEntry: {
+            /** Item Id */
+            item_id: string;
+            /** Title */
+            title: string;
+        };
+        /** MyWorkDigest */
+        MyWorkDigest: {
+            brief?: components["schemas"]["MyWorkBrief"] | null;
+            /** By Autopilot */
+            by_autopilot?: {
+                [key: string]: number;
+            };
+            /** Due Today */
+            due_today: number;
+            /** Nudges */
+            nudges?: components["schemas"]["MyWorkNudge"][];
+            /** Open */
+            open: number;
+        };
+        /**
+         * MyWorkItem
+         * @description One piece of work an autopilot prepared: what happened, the prepared work (answer,
+         *     drafted reply, impacted records, recommendation, a dry-run entry), its evidence.
+         */
+        MyWorkItem: {
+            /** Autopilot */
+            autopilot: string;
+            /**
+             * Card Id
+             * @description The drafted message's card for ``/api/actions/*`` (preview, then your confirm).
+             */
+            card_id?: string | null;
+            /** Citations */
+            citations?: string[];
+            /** Created At */
+            created_at: string;
+            /** Due At */
+            due_at: string;
+            /** Happened */
+            happened?: {
+                [key: string]: unknown;
+            };
+            /** Item Id */
+            item_id: string;
+            /** Label */
+            label: string;
+            /**
+             * Mine
+             * @description Yours (approve here); false: a report's item you see through the owner's team grant (view only).
+             */
+            mine: boolean;
+            /** Offers */
+            offers?: components["schemas"]["CardActionOffer"][];
+            /** Prepared */
+            prepared?: {
+                [key: string]: unknown;
+            };
+            /** Title */
+            title: string;
+            /**
+             * Write Ready
+             * @description A prepared entry: POST ``/api/my-work/{item_id}/write`` makes it a dry-run write intent for ``/api/writes*``.
+             * @default false
+             */
+            write_ready: boolean;
+        };
+        /** MyWorkNudge */
+        MyWorkNudge: {
+            /** Due At */
+            due_at: string;
+            /** Item Id */
+            item_id: string;
+            /** Text */
+            text: string;
+            /** Title */
+            title: string;
         };
         /** NeedsAttention */
         NeedsAttention: {
@@ -7608,6 +7773,93 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    my_work_api_my_work_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyWork"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    my_work_write_api_my_work__item_id__write_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WriteIntentView"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

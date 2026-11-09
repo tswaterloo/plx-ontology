@@ -1,0 +1,7 @@
+{
+  "schema": "plx-autopilot-replay/v1",
+  "note": "What the replay harness (operating/autopilot_replay.py) counts as a person's real next action. A provider lists actions (person, time, workflow, the conversation, recipients and records they touched). 'record_actor' reads every store event that names a person as its actor (qualifier 'actor'): per-person activity in BC, the Portal, Sage and FileMaker counts as it lands, with no change here. 'plugins' adds a provider from another module of this package (module:function); an unknown provider refuses the whole file.",
+  "horizon_hours": 72,
+  "providers": ["mail_sent", "approval_decided", "task_event", "record_actor"],
+  "plugins": []
+}

@@ -2549,6 +2549,66 @@ class WriteHistoryRow(_Model):
     actor: str
 
 
+class MyWorkItem(_Model):
+    """One piece of work an autopilot prepared: what happened, the prepared work (answer,
+    drafted reply, impacted records, recommendation, a dry-run entry), its evidence."""
+    item_id: str
+    autopilot: str
+    label: str
+    title: str
+    mine: bool = Field(description="Yours (approve here); false: a report's item you see "
+                       "through the owner's team grant (view only).")
+    happened: dict[str, Any] = Field(default_factory=dict)
+    prepared: dict[str, Any] = Field(default_factory=dict)
+    citations: list[str] = Field(default_factory=list)
+    due_at: str
+    created_at: str
+    card_id: Optional[str] = Field(None, description="The drafted message's card for "
+                                   "``/api/actions/*`` (preview, then your confirm).")
+    offers: list[CardActionOffer] = Field(default_factory=list)
+    write_ready: bool = Field(False, description="A prepared entry: POST "
+                              "``/api/my-work/{item_id}/write`` makes it a dry-run write "
+                              "intent for ``/api/writes*``.")
+
+
+class MyWorkNudge(_Model):
+    item_id: str
+    title: str
+    due_at: str
+    text: str
+
+
+class MyWorkBriefEntry(_Model):
+    item_id: str
+    title: str
+
+
+class MyWorkBrief(_Model):
+    """The morning brief: decisions waiting, drafts ready, orders to enter, supplier
+    follow-ups and ETA slips, as counts and the oldest few items of each."""
+    at: str
+    counts: dict[str, int] = Field(default_factory=dict)
+    top: dict[str, list[MyWorkBriefEntry]] = Field(default_factory=dict)
+
+
+class MyWorkDigest(_Model):
+    open: int
+    by_autopilot: dict[str, int] = Field(default_factory=dict)
+    due_today: int
+    brief: MyWorkBrief | None = None
+    nudges: list[MyWorkNudge] = Field(default_factory=list)
+
+
+class MyWork(_Model):
+    """The work the autopilots prepared for you (and, per the owner's grants, for the people
+    of the teams you manage), with your daily digest. Nothing is sent or written."""
+    status: Literal["read", "off", "not_scheduled"]
+    items: list[MyWorkItem] = Field(default_factory=list)
+    digest: MyWorkDigest
+    sent: Literal[0]
+    writes: Literal[0]
+
+
 class WriteIntentView(_Model):
     intent: dict[str, Any]
     status: WriteStatus

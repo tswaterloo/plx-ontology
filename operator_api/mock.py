@@ -20,6 +20,7 @@ from operating.answer_gate import _sentences
 
 from . import ask_progress, models as m, presentation, proposals
 from .actions import ActionsMixin
+from .autopilot_api import AutopilotMixin
 from .write_intents_api import WriteIntentsMixin
 from .watch import MockWatchMixin
 from .auth import Reader
@@ -410,7 +411,7 @@ def _pick(question: str) -> tuple[str, Any]:
     return "other", _unknown_answer
 
 
-class MockBackend(ActionsMixin, WriteIntentsMixin, MockWatchMixin):
+class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, MockWatchMixin):
     data_label = LABEL
 
     def __init__(self, *, step_delay: float = 0.0) -> None:

@@ -126,6 +126,12 @@ class ActionsMixin:
             if built is None:
                 raise UserFacing("not_found", "That approval is no longer on your list.", 404)
             return built
+        if card_id.startswith("autopilot:"):
+            # an autopilot's prepared message, rebuilt now from the reader's own queue
+            built = self.my_work_card_of(reader, card_id)  # type: ignore[attr-defined]
+            if built is None:
+                raise UserFacing("not_found", "That item is no longer on your list.", 404)
+            return built
         if card_id.startswith("pack:"):
             # a record's document pack, rebuilt now as this reader's own (never the request's)
             built = self.record_pack_dict(reader, card_id[len("pack:"):])

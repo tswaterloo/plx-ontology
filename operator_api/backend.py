@@ -64,6 +64,7 @@ from . import models as m
 from . import presentation
 from . import proposals
 from .actions import ActionsMixin
+from .autopilot_api import AutopilotMixin
 from .write_intents_api import WriteIntentsMixin
 from .briefs import BriefsMixin
 from operating import labour_hours
@@ -164,7 +165,7 @@ def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
 
 # ---- the backend ---------------------------------------------------------------------
 
-class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, WatchMixin):
+class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin, WatchMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,
     one shared bounded queue), so one Ask never holds up another reader's page."""

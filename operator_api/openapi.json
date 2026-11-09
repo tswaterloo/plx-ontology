@@ -7098,6 +7098,260 @@
         "title": "MyActionItems",
         "type": "object"
       },
+      "MyWork": {
+        "additionalProperties": false,
+        "description": "The work the autopilots prepared for you (and, per the owner's grants, for the people\nof the teams you manage), with your daily digest. Nothing is sent or written.",
+        "properties": {
+          "digest": {
+            "$ref": "#/components/schemas/MyWorkDigest"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MyWorkItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "sent": {
+            "const": 0,
+            "title": "Sent",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "read",
+              "off",
+              "not_scheduled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "writes": {
+            "const": 0,
+            "title": "Writes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "digest",
+          "sent",
+          "writes"
+        ],
+        "title": "MyWork",
+        "type": "object"
+      },
+      "MyWorkBrief": {
+        "additionalProperties": false,
+        "description": "The morning brief: decisions waiting, drafts ready, orders to enter, supplier\nfollow-ups and ETA slips, as counts and the oldest few items of each.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "top": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/MyWorkBriefEntry"
+              },
+              "type": "array"
+            },
+            "title": "Top",
+            "type": "object"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "title": "MyWorkBrief",
+        "type": "object"
+      },
+      "MyWorkBriefEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "title"
+        ],
+        "title": "MyWorkBriefEntry",
+        "type": "object"
+      },
+      "MyWorkDigest": {
+        "additionalProperties": false,
+        "properties": {
+          "brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MyWorkBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "by_autopilot": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Autopilot",
+            "type": "object"
+          },
+          "due_today": {
+            "title": "Due Today",
+            "type": "integer"
+          },
+          "nudges": {
+            "items": {
+              "$ref": "#/components/schemas/MyWorkNudge"
+            },
+            "title": "Nudges",
+            "type": "array"
+          },
+          "open": {
+            "title": "Open",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "open",
+          "due_today"
+        ],
+        "title": "MyWorkDigest",
+        "type": "object"
+      },
+      "MyWorkItem": {
+        "additionalProperties": false,
+        "description": "One piece of work an autopilot prepared: what happened, the prepared work (answer,\ndrafted reply, impacted records, recommendation, a dry-run entry), its evidence.",
+        "properties": {
+          "autopilot": {
+            "title": "Autopilot",
+            "type": "string"
+          },
+          "card_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The drafted message's card for ``/api/actions/*`` (preview, then your confirm).",
+            "title": "Card Id"
+          },
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "due_at": {
+            "title": "Due At",
+            "type": "string"
+          },
+          "happened": {
+            "additionalProperties": true,
+            "title": "Happened",
+            "type": "object"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "mine": {
+            "description": "Yours (approve here); false: a report's item you see through the owner's team grant (view only).",
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/CardActionOffer"
+            },
+            "title": "Offers",
+            "type": "array"
+          },
+          "prepared": {
+            "additionalProperties": true,
+            "title": "Prepared",
+            "type": "object"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "write_ready": {
+            "default": false,
+            "description": "A prepared entry: POST ``/api/my-work/{item_id}/write`` makes it a dry-run write intent for ``/api/writes*``.",
+            "title": "Write Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "item_id",
+          "autopilot",
+          "label",
+          "title",
+          "mine",
+          "due_at",
+          "created_at"
+        ],
+        "title": "MyWorkItem",
+        "type": "object"
+      },
+      "MyWorkNudge": {
+        "additionalProperties": false,
+        "properties": {
+          "due_at": {
+            "title": "Due At",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "title",
+          "due_at",
+          "text"
+        ],
+        "title": "MyWorkNudge",
+        "type": "object"
+      },
       "NeedsAttention": {
         "additionalProperties": false,
         "properties": {
@@ -14924,6 +15178,111 @@
         "summary": "Meeting Follow Up",
         "tags": [
           "briefs"
+        ]
+      }
+    },
+    "/api/my-work": {
+      "get": {
+        "description": "The work the autopilots prepared for you from new mail, tasks, approvals, QC\nresults, meetings and record changes, each with what happened, the prepared work,\nits evidence and one-click approve through the confirm flows; your digest and\nnudges. Only yours (and your granted reports'). Nothing is sent or written.",
+        "operationId": "my_work_api_my_work_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyWork"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "My Work",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/my-work/{item_id}/write": {
+      "post": {
+        "description": "Your item's prepared entry as a write intent the autopilot prepared: preview and\napprove it in ``/api/writes*`` (dry run until writes are granted).",
+        "operationId": "my_work_write_api_my_work__item_id__write_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WriteIntentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "My Work Write",
+        "tags": [
+          "actions"
         ]
       }
     },

@@ -359,6 +359,25 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         reply. Only your own mailbox. Nothing is sent."""
         return backend.reply_triage(who)
 
+    @app.get("/api/my-work", response_model=m.MyWork, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def my_work(who: Reader = Depends(reader)) -> m.MyWork:
+        """The work the autopilots prepared for you from new mail, tasks, approvals, QC
+        results, meetings and record changes, each with what happened, the prepared work,
+        its evidence and one-click approve through the confirm flows; your digest and
+        nudges. Only yours (and your granted reports'). Nothing is sent or written."""
+        return backend.my_work(who)
+
+    @app.post("/api/my-work/{item_id}/write", response_model=m.WriteIntentView,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse},
+                                           422: {"model": m.ErrorResponse}})
+    def my_work_write(item_id: str, who: Reader = Depends(reader)) -> m.WriteIntentView:
+        """Your item's prepared entry as a write intent the autopilot prepared: preview and
+        approve it in ``/api/writes*`` (dry run until writes are granted)."""
+        return backend.my_work_write(who, item_id)
+
     @app.get("/api/workload", response_model=m.Workload, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
     def workload(who: Reader = Depends(reader)) -> m.Workload:

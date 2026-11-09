@@ -29,6 +29,7 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   ApprovalsQueue,
   LabelChanges,
   ReplyTriage,
+  MyWork,
   Workload,
   OwnerWorkload,
   OwnerWorkloadBucket,
@@ -305,6 +306,16 @@ export function getAlertKinds(signal?: AbortSignal): Promise<AlertKinds> {
 // only through a card's preview and your confirm.
 export function getReplies(signal?: AbortSignal): Promise<ReplyTriage> {
   return getJson<ReplyTriage>("/api/replies", signal);
+}
+
+// The work the autopilots prepared for you (and your granted reports), with your digest.
+export function getMyWork(signal?: AbortSignal): Promise<MyWork> {
+  return getJson<MyWork>("/api/my-work", signal);
+}
+
+/** Your item's prepared entry as a dry-run write intent, approved in the write panel. */
+export async function prepareMyWorkWrite(itemId: string): Promise<WriteIntentView> {
+  return (await (await call(`/api/my-work/${encodeURIComponent(itemId)}/write`, { method: "POST" })).json()) as WriteIntentView;
 }
 
 // Counts per team; per person only you and the teams the owner granted you.
