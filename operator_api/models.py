@@ -1451,7 +1451,7 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "freight_cost_anomaly", "stale_quote", "priority_order_unfilled",
                     "duplicate_party_candidate",
                     "key_field_missing", "twins_disagree", "source_stale",
-                    "reorder_soon",
+                    "sync_missing", "sync_mismatch", "reorder_soon",
                     "inventory_adjustment", "blocked_account_activity", "gl_posting_errors",
                     "recurring_task_missed", "label_change", "rd_project",
                     "unapplied_remittance", "short_payment", "statement_difference"]

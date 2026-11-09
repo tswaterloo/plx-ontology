@@ -248,6 +248,20 @@ class QualityAlerts(Engine):
             "(open); portal says Closed (done)"])
         self.assertEqual(self.kinds(q.DISAGREE, may_read=lambda k: k == "bc:orders"), [])
 
+    def test_an_amount_disagreement_is_shown_to_finance_readers_only(self):
+        w = World()
+        bc = order(w, "PurchaseOrder", "bc.purchase_order", status="Open",
+                   total_cost="100.00", po_number="PO-SYN-F")
+        portal = order(w, "PurchaseOrder", "portal.app_purchase_order", status="Open",
+                       total_cost="120.00")
+        money(w, bc, "total_cost", "CAD")
+        money(w, portal, "total_cost", "CAD")
+        w.link("PurchaseOrder.same_record_as", bc, portal)
+        self.run_rules(w, [q.DISAGREE_RULE])
+        (gap,) = self.kinds(q.DISAGREE)
+        self.assertIn("total cost: bc says 100.00 CAD; portal says 120.00 CAD", gap["summary"])
+        self.assertEqual(self.kinds(q.DISAGREE, held=frozenset({"pii"})), [])
+
     def test_a_source_not_captured_lately_is_raised_to_its_readers_only(self):
         w = MetaWorld([{"source": "bc", "captured_at": "2026-10-10T06:00:00Z"},
                        {"source": "portal_api", "captured_at": "2026-10-19T01:00:00Z"},

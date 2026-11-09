@@ -825,7 +825,8 @@ REVIEW_FAMILIES: tuple[tuple[str, str, Any, frozenset[str]], ...] = (
         r"\bincomplete\b|\bmissing\b|\bopen\s+items?\b", _re.I),
      frozenset({"key_field_missing", "order_without_customer_po", "shipped_not_invoiced",
                 "late_order", "late_customer_order", "conflicting_quantity",
-                "twins_disagree", "duplicate_customer_order"})),
+                "twins_disagree", "duplicate_customer_order", "sync_missing",
+                "sync_mismatch"})),
     ("production", "Production, schedule and KPIs", _re.compile(
         r"\bproduction\b|\bkpis?\b|\bschedul\w*|\bhuddle\b|\bprogress\b|\bmrp\b",
         _re.I),
@@ -849,7 +850,8 @@ REVIEW_FAMILIES: tuple[tuple[str, str, Any, frozenset[str]], ...] = (
     ("launch", "Systems launch readiness", _re.compile(
         r"\blaunch\b|\breadiness\b|\bgo[- ]live\b|\buat\b|\berp\b", _re.I),
      frozenset({"mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
-                "planner_task_overdue", "source_stale", "twins_disagree"})),
+                "planner_task_overdue", "source_stale", "twins_disagree",
+                "sync_missing", "sync_mismatch"})),
 )
 # Every standing review also sees what waits on someone of ours.
 WAITING_KINDS = frozenset({"approval_waiting", "chase_escalating", "teams_unanswered_ask"})

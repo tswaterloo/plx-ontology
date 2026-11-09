@@ -839,7 +839,7 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "slow_moving_stock", "expiring_lot_stock", "assembly_blocked_by_component",
               "certificate_expiring", "freight_cost_anomaly", "stale_quote", "priority_order_unfilled",
               "duplicate_party_candidate", "key_field_missing", "twins_disagree",
-              "source_stale",
+              "source_stale", "sync_missing", "sync_mismatch",
               "reorder_soon", "inventory_adjustment", "blocked_account_activity",
               "gl_posting_errors", "recurring_task_missed", "unapplied_remittance",
               "short_payment", "statement_difference")

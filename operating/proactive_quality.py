@@ -608,7 +608,7 @@ def twin_disagreement(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                                         for p in LABEL_PROPS] if r), "")
                 field = prop.replace("_", " ")
                 rows = [row for _v, row, _m in sides.values()]
-                finance = "finance" if prop in spec.amounts else None
+                finance = pb.FINANCE if prop in spec.amounts else None
                 made = gap(DISAGREE, DISAGREE_RULE, top, spec.type, prop,
                            summary=f"{spec.label} {label}".strip() + f": the systems disagree "
                                    f"on its {field}: " + "; ".join(said),

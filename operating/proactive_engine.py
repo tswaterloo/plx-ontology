@@ -121,6 +121,11 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   one, each a review proposal a person confirms), ``key_fields_missing`` (an active record
   without a key field, ``REQUIRES_GRANT``), ``twin_disagreement`` (copies in two systems
   stating different values) and ``stale_captures`` (a source not captured lately);
+* ``operating.proactive_sync``: ``sync_gaps`` (a record missing from, or differing on a key
+  field in, the system it must reach ``SYNC_DAYS`` after it was made; ``REQUIRES_GRANT``);
+* every gap about a sales or purchase order passes the one active-population predicate
+  (``inactive_records``, ``_drop_inactive_orders``): a closed or historic order is counted
+  ``closed_order``/``historic_order``, never listed (``CLOSED_ORDER_RULES`` keep closed ones);
 * ``operating.proactive_commitments``: ``commitments`` (promises in our messages about an
   open customer order, due or missed) and ``needs_reply`` (inbound mail and one-to-one
   Teams messages waiting on their addressee's reply, shown to that person only); people
@@ -268,6 +273,9 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              # suppliers, key fields missing, twins disagreeing, sources not captured lately
              "duplicate_parties", "key_fields_missing", "twin_disagreement",
              "stale_captures",
+             # a record missing from, or differing in, the system it must reach
+             # (``operating.proactive_sync``)
+             "sync_gaps",
              # an item whose forecast demand exceeds on hand plus inbound
              # (``operating.demand_forecast``)
              "reorder_soon",
@@ -415,6 +423,8 @@ REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor
                             "stale_quote", "key_fields_missing",
                             "reorder_soon",
                             "blocked_account_activity",
+                            # a record missing from the system it must reach
+                            "sync_gaps",
                             # resting on no reply in any copy (``proactive_threads``)
                             "approvals_waiting", "chase_escalation",
                             # no reply, no approval, nothing done in the thread
@@ -1432,12 +1442,16 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             counts["historic"] += 1
             continue
         counts["undated"] += 1   # counted whether or not a status value is citable
+        counted[order].add("undated")
         for key, rank, gap in pending:
             if gap is not None:
                 gap["follow_up"][_ORDER] = {"key": key, "rank": rank}
                 gaps.append(gap)
     late_orders = {o for o, keys in counted.items() if "late" in keys}
     result = _result(gaps, not_evaluated=skipped)
+    # per order, the counts it is in: a gap the active-population filter drops takes its
+    # order out of them (``_drop_inactive_orders``), so the counts say what is listed
+    result["counted"] = {o: sorted(keys) for o, keys in counted.items()}
     # each record's order (the cross-system join) and that order's class (open when any
     # read of it is open): the vendor-mail rule judges open orders only, one per order
     result["po_orders"] = {m: (order, po_status.OPEN if order in open_orders
@@ -3299,6 +3313,7 @@ def _business_steps(st: _Store, as_of: date,
     from . import proactive_sales as sales
     from . import business_documents as docs
     from . import proactive_quality as quality
+    from . import proactive_sync as sync
     from . import proactive_commitments as commit
     from . import proactive_integrity as integrity
     from . import proactive_sheets as sheet_rules
@@ -3390,15 +3405,15 @@ def _business_steps(st: _Store, as_of: date,
         "key_fields_missing": lambda: quality.key_fields_missing(
             st, as_of, absence=lambda types: _absence_audiences(st, types,
                                                                 "record:none_stored"),
-            status_of={"PurchaseOrder": lambda: st.memo("quality:po_open", lambda: {
-                           m: po_status.read(_po_source(st), top, as_of).status.cls
-                           for top, members in _po_source(st).clusters.items()
-                           for m in members}),
+            status_of={"PurchaseOrder": lambda: _po_classes(st, as_of),
                        "SalesOrder": lambda: st.memo("quality:so_open", lambda: {
                            m: v.cls for v in _customer_orders(st)[1] for m in v.group})},
             **common),
         "twin_disagreement": lambda: quality.twin_disagreement(st, as_of, **common),
         "stale_captures": lambda: quality.stale_captures(st, as_of, now=moment, **common),
+        "sync_gaps": lambda: sync.sync_gaps(
+            st, as_of, inactive=lambda: inactive_records(st, as_of),
+            tests=lambda: test_records(st, as_of), **common),
         "reorder_soon": lambda: stock.reorder_soon(
             st, as_of, po_source=lambda: _po_source(st),
             absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
@@ -4358,6 +4373,11 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             _drop_test_records(st, results, as_of)
         except sqlite3.Error:
             pass   # the store could not be read for it: the gaps stand as found
+        # one active-population filter for every record-level rule (R3): a claim about a
+        # closed or historic order is not current work
+        _drop_inactive_orders(st, results, as_of)
+        for result in results.values():
+            result.pop("counted", None)   # per-order counts: the filter's only
         populations = {name: {key: digest for key, digest in sorted(st.populations.items())
                               if name in st.population_readers[key]
                               or "*" in st.population_readers[key]}
@@ -4549,6 +4569,194 @@ def _drop_test_records(st: _Store, results: dict[str, dict[str, Any]], as_of: da
             skipped = result.setdefault("not_evaluated", {})
             if isinstance(skipped, dict):
                 skipped["test_record"] = skipped.get("test_record", 0) + dropped
+
+
+# The rules whose claim is about a done order's own trouble keep closed orders (never
+# historic ones) in ``_drop_inactive_orders``; every other rule, a new one included, loses
+# them. Each says why.
+CLOSED_ORDER_RULES = {
+    "po_receipt_quantity_mismatch": "over-receipt, or short on an order recorded as fully "
+                                    "received: closed by definition",
+    "invoice_quantity_mismatch": "an invoice billing another quantity than its order",
+    "shipped_not_invoiced": "a shipped order no invoice bills: shipping closes it",
+    "duplicate_customer_order": "an order keyed twice: either copy may be shipped",
+    "twin_disagreement": "one copy closed and the other open is the disagreement",
+    "negative_margin": "margins are judged on invoiced orders",
+    "margin_erosion": "margins are judged on invoiced orders",
+}
+# Gap kinds whose claim is that one copy is closed and another open (the late rule's
+# ``systems_disagree``): kept for a closed order whatever rule raised them (hand-check
+# 2026-11-09: 4 of 15 dropped late-rule gaps were these)
+CLOSED_ORDER_KINDS = frozenset({"systems_disagree", "twins_disagree"})
+ORDER_TYPES = ("SalesOrder", "PurchaseOrder")
+ACTIVE_UNREADABLE = "active_population_unreadable"
+ACTIVE_READER = "active_population"   # the filter's reads, attributed to no rule
+
+
+def _po_classes(st: _Store, as_of: date) -> dict[str, str]:
+    """Purchase order record -> its order's class by the one PO status definition
+    (``po_status.read``), read once per run (``key_fields_missing`` reads it too)."""
+    return {m: cls for m, (cls, _dated) in _po_reads(st, as_of).items()}
+
+
+def _po_reads(st: _Store, as_of: date) -> dict[str, tuple[str, bool]]:
+    """Purchase order record -> (its order's class, whether the order holds a due date: a
+    requested-by, supplier or lead-time date, readable or not), one ``po_status.read`` per
+    order, once per run."""
+    def read() -> dict[str, tuple[str, bool]]:
+        out = {}
+        for top, members in _po_source(st).clusters.items():
+            found = po_status.read(_po_source(st), top, as_of)
+            need = found.need
+            dated = need is not None and bool(need.lo or need.hi or need.unparseable)
+            out.update({m: (found.status.cls, dated) for m in members})
+        return out
+    return st.memo("po_reads", read)
+
+
+def inactive_records(st: _Store, as_of: date) -> dict[str, str]:
+    """The one active-population predicate (``operating.active_population``) of every
+    record-level rule: sales and purchase order record -> ``closed`` (its order is closed
+    by its type's one status definition across every copy) or ``historic`` (open on paper,
+    no business date within ``active.ACTIVE_DAYS``: a legacy back-order); an active record
+    is absent. A sales order's verdict is ``_inactive_orders``'; a purchase order's is
+    ``po_status`` with ``_historic_orders``, and an open purchase order holding a due date
+    is never stale by age (its lateness is judged on that date; only an undated order is
+    stale, as the late rule's own ``historic`` count says)."""
+    def read() -> dict[str, str]:
+        out = dict(_inactive_orders(st, as_of))
+        reads = _po_reads(st, as_of)
+        source = _po_source(st)
+        top_of = {m: top for top, members in source.clusters.items() for m in members}
+        live = {}
+        for record, (cls, dated) in reads.items():
+            if cls == po_status.CLOSED:
+                out[record] = active.CLOSED
+            elif not dated:
+                live[record] = top_of.get(record, record)
+        stale = _historic_orders(st, as_of, live)
+        out.update({m: active.HISTORIC for m, top in live.items() if top in stale})
+        return out
+    return st.memo(f"inactive_records:{as_of.isoformat()}", read)
+
+
+def _historic_only(st: _Store, as_of: date, records: Iterable[str]) -> set[str]:
+    """Of ``records`` (orders closed by their status), those with no business date within
+    the active window: a closed-order rule still leaves these out."""
+    wanted = sorted(set(records))
+    if not wanted:
+        return set()
+    so = [r for r in wanted if r.startswith("SalesOrder:")]
+    po = [r for r in wanted if r.startswith("PurchaseOrder:")]
+    out: set[str] = set()
+    if po:
+        top_of = {m: top for top, members in _po_source(st).clusters.items()
+                  for m in members}
+        order_of = {r: top_of.get(r, r) for r in po}
+        stale = _historic_orders(st, as_of, order_of)
+        out |= {r for r, top in order_of.items() if top in stale}
+    if so:
+        _found, verdicts = _customer_orders(st)
+        for verdict in verdicts:
+            hit = set(verdict.group) & set(so)
+            # judged on its dates alone (its status already closed it)
+            if hit and active.inactive_reason("open", as_of=as_of, dates=verdict.dates) \
+                    == active.HISTORIC:
+                out |= hit
+    return out
+
+
+def _gap_orders(gap: Mapping[str, Any]) -> list[str]:
+    """The order records a gap is about: its subject when an order, and the order its
+    follow-up names."""
+    out = []
+    if gap.get("object_type") in ORDER_TYPES:
+        out.append(gap.get("object_id"))
+    order = ((gap.get("follow_up") or {}).get(_ORDER) or {}).get("key")
+    if isinstance(order, str) and order.split(":", 1)[0] in ORDER_TYPES:
+        out.append(order)
+    return [o for o in out if isinstance(o, str)]
+
+
+def _drop_inactive_orders(st: _Store, results: dict[str, dict[str, Any]], as_of: date,
+                          inactive: Callable[[], Mapping[str, str]] | None = None) -> None:
+    """Remove every gap about a closed or historic order (``inactive_records``) from every
+    rule's result, counted ``closed_order``/``historic_order``; a ``CLOSED_ORDER_RULES``
+    rule loses only the historic ones. Fails closed: when the predicate cannot be read,
+    every gap about an order is withheld and its rule is ``failed``
+    (``active_population_unreadable``), so nothing it found resolves or shows unjudged."""
+    if not any(_gap_orders(g) for r in results.values() for g in r.get("gaps") or ()):
+        return
+    # the populations it reads are no rule's own (``population``): reading them here never
+    # turns an incremental pass into a whole one
+    st.judging(ACTIVE_READER)
+    try:
+        verdicts = (inactive or (lambda: inactive_records(st, as_of)))()
+        closed_kept = {o for name, r in results.items() for g in r.get("gaps") or ()
+                       if name in CLOSED_ORDER_RULES or g.get("kind") in CLOSED_ORDER_KINDS
+                       for o in _gap_orders(g)
+                       if verdicts.get(o) == active.CLOSED}
+        historic_closed = _historic_only(st, as_of, closed_kept) if closed_kept else set()
+    except Exception:   # noqa: BLE001 - an unreadable predicate never lets a gap through
+        for result in results.values():
+            kept = [g for g in result.get("gaps") or () if not _gap_orders(g)]
+            dropped = len(result.get("gaps") or ()) - len(kept)
+            if dropped:
+                result["gaps"] = kept
+                result["status"] = "failed"
+                result["reasons"] = sorted({*result.get("reasons", ()), ACTIVE_UNREADABLE})
+        return
+    finally:
+        st.judging(None)
+    for name, result in results.items():
+        kept, dropped = [], Counter()
+        gone: dict[str, str] = {}
+        for gap in result.get("gaps") or ():
+            why = None
+            for order in _gap_orders(gap):
+                said = verdicts.get(order)
+                if said == active.CLOSED and (name in CLOSED_ORDER_RULES
+                                              or gap.get("kind") in CLOSED_ORDER_KINDS):
+                    said = active.HISTORIC if order in historic_closed else None
+                if said is not None:
+                    why = said
+                    break
+            if why is None:
+                kept.append(gap)
+            else:
+                dropped[why + "_order"] += 1
+                order = ((gap.get("follow_up") or {}).get(_ORDER) or {}).get("key")
+                if isinstance(order, str):
+                    gone[order] = why
+        if dropped:
+            result["gaps"] = kept
+            skipped = result.setdefault("not_evaluated", {})
+            if isinstance(skipped, dict):
+                for key, n in dropped.items():
+                    skipped[key] = skipped.get(key, 0) + n
+            _uncount(result, kept, gone)
+
+
+COUNTED_KEYS = ("late", "at_risk", "unconfirmed", "undated")
+
+
+def _uncount(result: dict[str, Any], kept: Sequence[Mapping[str, Any]],
+             gone: Mapping[str, str]) -> None:
+    """Take each order whose every gap the filter dropped (``gone``: order -> closed or
+    historic) out of the rule's per-order counts (``counted``) into ``historic`` or
+    ``closed``: the counts then say what is listed."""
+    counted, counts = result.get("counted"), result.get("counts")
+    if not isinstance(counted, Mapping) or not isinstance(counts, dict):
+        return
+    left = {o for g in kept for o in [((g.get("follow_up") or {}).get(_ORDER) or {})
+                                      .get("key")] if o}
+    for order, why in gone.items():
+        if order in left or order not in counted:
+            continue
+        for key in counted[order]:
+            if key in COUNTED_KEYS and counts.get(key):
+                counts[key] -= 1
+        counts[why] = counts.get(why, 0) + 1
 
 
 def _summary(results: Mapping[str, Mapping[str, Any]], gaps: Mapping[str, Mapping[str, Any]],

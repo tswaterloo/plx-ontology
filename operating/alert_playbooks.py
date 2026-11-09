@@ -373,6 +373,11 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n} is missing a key field: enter it in its system.", "change": None},
     "twins_disagree": {"about": "subject", "ask": None,
         "owner": "{n}: the systems disagree: correct the wrong one.", "change": None},
+    "sync_missing": {"about": "subject", "ask": None,
+        "owner": "{n} is not in its other system: key it there or link its copy.",
+        "change": None},
+    "sync_mismatch": {"about": "subject", "finance": True, "ask": None,
+        "owner": "{n} differs in its other system: correct the wrong one.", "change": None},
     "source_stale": {"about": "subject", "ask": None,
         "owner": "{n} was not updated lately: check its capture.", "change": None},
     # integrity (``operating.proactive_integrity``): every one finance-marked but the tasks

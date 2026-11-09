@@ -51,7 +51,7 @@ NOT_INCREMENTAL = ("vendor_no_reply", "order_without_customer_po",
                    "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall",
                    "certificate_expiry", "freight_cost_anomaly", "stale_quote", "priority_fill_unmet",
                    "duplicate_parties",
-                   "key_fields_missing", "twin_disagreement", "stale_captures",
+                   "key_fields_missing", "twin_disagreement", "stale_captures", "sync_gaps",
                    "reorder_soon",
                    "inventory_adjustment", "blocked_account_activity", "gl_posting_errors",
                    "recurring_task_missed", "cash_application", "statement_reconciliation")

@@ -1086,6 +1086,47 @@
    ]
   },
   {
+   "type": "sync_missing",
+   "kind": "data_health",
+   "label": "Record not keyed in its other system",
+   "precision": {
+    "value": 0.22,
+    "checked": 9,
+    "on": "2026-11-09",
+    "source": "lane/sync-gap hand-check of 15 live sync alerts (seeded sample): 1/9 missing true; 8 were Business Central draft POs never placed, now excluded. Re-measured with drafts excluded 2026-11-09: all 9 left live checked, 2/9 true; 7 are BC test, demo or UAT items the test filter does not mark",
+    "note": "Portal orders and Sage invoices vs Business Central are reported not in use (BC holds almost none of them)"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "FIN",
+    "SALES",
+    "PROC"
+   ]
+  },
+  {
+   "type": "sync_mismatch",
+   "kind": "data_health",
+   "label": "Record differs in its other system",
+   "precision": {
+    "value": 1.0,
+    "checked": 6,
+    "on": "2026-11-09",
+    "source": "lane/sync-gap hand-check of 15 live sync alerts (seeded sample): 6/6 PO totals truly differ (Business Central migrated POs carry inflated totals); 14 exist live, fewer than 15 to check"
+   },
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "FIN",
+    "SALES",
+    "PROC"
+   ]
+  },
+  {
    "type": "inventory_adjustment",
    "kind": "ledger_integrity",
    "label": "Stock written down by hand",
