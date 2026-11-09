@@ -280,19 +280,88 @@ class Gate(unittest.TestCase):
                     self.assertEqual(bool(passed), on)
                     (tmp / ap.GATE_FILE).unlink(missing_ok=True)
 
-    def test_live_follow_is_off_without_a_passed_workflow(self):
+    def test_a_pass_in_one_role_stays_in_that_role(self):
+        import tempfile
+        flow = "supplier_eta_receiving"
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            passed, failed = {"judged": 20, "matched": 19}, {"judged": 20, "matched": 10}
+            allowed, _ = self.gate(tmp, {"schema": ap.GATE_SCHEMA, "roles": {
+                "purchasing": {"members": [OURS_OID], "workflows": {flow: passed}},
+                "quality": {"members": [OURS_OID], "workflows": {flow: failed}},
+                "owner": {"members": [OURS_OID], "workflows": {}}}})
+            self.assertTrue(allowed(OURS_OID, flow, {"purchasing"}))
+            self.assertFalse(allowed(OURS_OID, flow, {"quality"}))      # failed there
+            self.assertFalse(allowed(OURS_OID, flow, {"owner"}))        # never measured
+            self.assertFalse(allowed(OURS_OID, flow, {"receiving"}))    # not a member
+            self.assertFalse(allowed(OURS_OID, flow))   # their own item: a role failed it
+            allowed, _ = self.gate(tmp, {"schema": ap.GATE_SCHEMA, "roles": {
+                "purchasing": {"members": [OURS_OID], "workflows": {flow: passed}},
+                "owner": {"members": [OURS_OID], "workflows": {}}}})
+            self.assertTrue(allowed(OURS_OID, flow))
+            self.assertFalse(allowed(OURS_OID, flow, {"owner"}))
+            # the registry's role-bound autopilots carry their role to the gate
+            reg = {a["id"]: a for a in ap.load_registry()["autopilots"]}
+            self.assertEqual(ap.item_roles(reg["qc_hold"]), {"quality"})
+            self.assertEqual(ap.item_roles(reg["po_followup"]), {"purchasing"})
+            self.assertEqual(ap.item_roles(reg["desk"]), {"owner"})
+            self.assertEqual(ap.item_roles(reg["supplier_eta"]), frozenset())
+
+    def test_follow_and_replay_into_a_queue_are_off_without_a_passed_workflow(self):
         import contextlib
         import io
         import tempfile
         from operating.tests.test_proactive_engine import World as Store
-        with tempfile.TemporaryDirectory() as d:
-            store = Store().build(Path(d) / "s.sqlite")
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                code = ap.main(["follow", "--store", str(store),
-                                "--queue", str(Path(d) / "q" / ap.QUEUE_FILE)])
+        for command in ("follow", "replay"):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as d:
+                store = Store().build(Path(d) / "s.sqlite")
+                buf = io.StringIO()
+                queue = Path(d) / "q" / ap.QUEUE_FILE
+                with contextlib.redirect_stdout(buf):
+                    code = ap.main([command, "--store", str(store), "--queue", str(queue)])
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(buf.getvalue())["reason"],
+                                 "no_workflow_passed_replay")
+                q = ap.Queue(queue)
+                try:
+                    self.assertEqual(
+                        q.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 0)
+                finally:
+                    q.close()
+
+
+class LiveReplay(Fixture):
+    def test_replay_into_the_live_queue_prepares_only_gated_workflows(self):
+        import contextlib
+        import io
+        from unittest import mock
+        texts = ("Please send the COA for lot 9.", "Where is order SO-2? When will it ship?")
+        ids = [self.message(50 + n, t) for n, t in enumerate(texts)]
+        store = self.w.build(self.dir / "s.sqlite")
+        flows = {wf.of_item("customer_request", {"subject": "PO", "text": t,
+                                                 "side": "customer"}) for t in texts}
+
+        def items(name: str, workflows) -> int:
+            queue = self.dir / name / ap.QUEUE_FILE
+            queue.parent.mkdir()
+            (queue.parent / ap.GATE_FILE).write_text(json.dumps(
+                {"schema": ap.GATE_SCHEMA, "roles": {"purchasing": {
+                    "members": [OURS_OID],
+                    "workflows": {f: {"judged": 20, "matched": 20} for f in workflows}}}}))
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(ap, "window_ids", return_value=ids), \
+                    mock.patch.object(pe, "_people", return_value=people()):
+                code = ap.main(["replay", "--store", str(store), "--queue", str(queue),
+                                "--until", ap._iso(NOW)])
             self.assertEqual(code, 0)
-            self.assertEqual(json.loads(buf.getvalue())["reason"], "no_workflow_passed_replay")
+            q = ap.Queue(queue)
+            try:
+                return q.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+            finally:
+                q.close()
+
+        self.assertEqual(items("other", [sorted(wf.names() - flows)[0]]), 0)
+        self.assertGreater(items("passed", flows), 0)
 
 
 class Config(unittest.TestCase):

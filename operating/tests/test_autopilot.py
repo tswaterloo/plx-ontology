@@ -341,6 +341,31 @@ class Readers(Fixture):
         self.assertEqual(ap.visible(q, reader=OTHER, may_read=everyone, held=["finance"],
                                     decide=opens_all, grants=other_team), [])
 
+    def test_every_citation_of_an_item_is_checked_fail_closed(self):
+        q = self.prepared()
+        (item,) = [i for i in q.items([OURS_OID], ("open",))][:1]
+        many = [f"api://synth.table/row-{n}" for n in range(60)]
+        with q.conn:
+            q.conn.execute("UPDATE items SET citations = ?", (json.dumps(many),))
+        last = many[-1]
+        seen = lambda decide: ap.visible(q, reader=READER, may_read=everyone,  # noqa: E731
+                                         held=["finance"], decide=decide)
+        self.assertEqual(len(seen(opens_all)), 2)
+        # the 60th citation is refused: the item is not shown
+        self.assertEqual(seen(lambda hs: {h: ({"reason": "x"} if h == last else None)
+                                          for h in hs}), [])
+        # a decision that leaves a citation out, or is not a mapping: not shown
+        self.assertEqual(seen(lambda hs: {h: None for h in list(hs)[:40]}), [])
+        self.assertEqual(seen(lambda hs: None), [])
+        # a handle only the prepared work names is checked too
+        body = dict(item["body"], prepared={"refs": [{"source": "bc://synth/hidden"}]})
+        with q.conn:
+            q.conn.execute("UPDATE items SET body = ?, citations = '[]' WHERE item_id = ?",
+                           (json.dumps(body), item["item_id"]))
+        shown = seen(lambda hs: {h: ({"reason": "x"} if h.startswith("bc://") else None)
+                                 for h in hs})
+        self.assertNotIn(item["item_id"], [i["item_id"] for i in shown])
+
     def test_digest_nudges_items_past_due(self):
         q = self.prepared()
         items = ap.visible(q, reader=READER, may_read=everyone, held=["finance"],

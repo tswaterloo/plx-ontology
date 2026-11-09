@@ -1,0 +1,25 @@
+# PLX Workbench measured system-of-record precedence: one run of
+# `python3 -m operating.source_precedence` over the Postgres ontology. Per record type x
+# field it counts how often each source's copy (FileMaker, the Portal, Sage, BC) agreed
+# with the downstream evidence (shipments, invoices, receipts, completion records) and
+# writes the table the read tools trust disagreeing copies by (PLX_PRECEDENCE_TABLE; the
+# API unit names the same file). Read-only on the store; writes only its table. Started
+# weekly by plx-precedence-measure.timer.
+[Unit]
+Description=PLX measured system-of-record precedence (one run)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 -m operating.source_precedence --pg-dsn "dbname=plx" --out /data/plx-state/precedence/measured.json
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=2G
+MemoryMax=3G
+TimeoutStartSec=4h
+UMask=0077

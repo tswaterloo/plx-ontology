@@ -63,6 +63,8 @@ import sys
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from .citation_schemes import HANDLE_PREFIX
+
 SCHEMA = "plx-autopilot/v1"
 REGISTRY_FILE = Path(__file__).with_name("autopilot_registry.json")
 KILL_ENV = "PLX_AUTOPILOT_OFF"
@@ -1410,12 +1412,12 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
               environ: Mapping[str, str] | None = None, now: datetime | None = None,
               landed_at: str | None = None, settle_items: bool = True,
               only_owners: Iterable[str] | None = None,
-              gate: Callable[[str, str], bool] | None = None) -> dict[str, Any]:
+              gate: Callable[..., bool] | None = None) -> dict[str, Any]:
     """One cycle: type the changed records, store each event once, prepare the work of each
     new event every matching autopilot declares, settle items their evidence closed.
     ``only_owners``: prepare only for these people (a replay of one role); ``gate(owner,
-    workflow)``: prepare only what passes it (the live cycle: the workflows a role's replay
-    passed, ``gate_from``)."""
+    workflow, roles)``: prepare only what passes it (the live cycle and a replay into a
+    queue: the workflows a role's replay passed, in that role, ``gate_from``)."""
     environ = os.environ if environ is None else environ
     registry = registry or load_registry()
     now = now or datetime.now(timezone.utc)
@@ -1470,7 +1472,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
              people: Any, directory: Mapping[str, str], addresses_of: Mapping[str, set[str]],
              roles: Mapping[str, list[str]], domains: Sequence[str], as_of: date,
              now: datetime, summary: dict[str, Any], only_owners: set[str] | None = None,
-             gate: Callable[[str, str], bool] | None = None) -> tuple[str, str | None]:
+             gate: Callable[..., bool] | None = None) -> tuple[str, str | None]:
     from . import workflows as wf
     limits = registry["limits"]
     if event.get("event_type") == "message.received" and not event.get("cleared"):
@@ -1510,7 +1512,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 continue                       # another role's work (a role's replay)
         if gate is not None:
             workflow = wf.of_item(ap["id"], event)
-            owners = [o for o in owners if gate(o, workflow)]
+            owners = [o for o in owners if gate(o, workflow, item_roles(ap))]
             if not owners:
                 summary["skipped"][f"{ap['id']}:workflow_not_passed"] += 1
                 continue
@@ -1577,29 +1579,72 @@ GATE_MIN_JUDGED = 15
 
 
 def gate_from(environ: Mapping[str, str], queue_dir: Path
-              ) -> tuple[Callable[[str, str], bool], dict[str, list[str]]]:
-    """The live gate: an owner's workflow is on only when a replay of a role the owner was
-    measured in judged at least ``GATE_MIN_JUDGED`` items of it with at least
-    ``GATE_PRECISION`` matched (recomputed here from the counts, never a stored verdict).
-    No file, an unreadable one or another schema: nothing is on (fail closed)."""
+              ) -> tuple[Callable[..., bool], dict[str, list[str]]]:
+    """The live gate, per role: a workflow is on for an owner only in a role whose replay
+    measured the owner (a member) and judged at least ``GATE_MIN_JUDGED`` items of it with
+    at least ``GATE_PRECISION`` matched (recomputed here from the counts, never a stored
+    verdict). ``gate(owner, workflow, roles)``: ``roles`` are the roles the item reaches
+    its owner through (``item_roles``); a pass in one role never switches the workflow on
+    in another. An item of the owner's own (no role: their mail, their tasks) is on only
+    when a role of theirs passed it and none of their roles measured it and failed (a
+    ``person:`` replay is their whole day, so it counts for every item of theirs). No
+    file, an unreadable one or another schema: nothing is on (fail closed)."""
     path = Path(environ.get(GATE_ENV) or queue_dir / GATE_FILE)
-    on: dict[str, set[str]] = defaultdict(set)
+    # role -> (members, workflows passed, workflows measured)
+    table: dict[str, tuple[set[str], set[str], set[str]]] = {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if raw.get("schema") != GATE_SCHEMA:
             raise ValueError("schema")
-        for role in (raw.get("roles") or {}).values():
-            members = [str(m).lower() for m in role.get("members") or ()]
-            for name, counts in (role.get("workflows") or {}).items():
+        for name, role in (raw.get("roles") or {}).items():
+            members = {str(m).lower() for m in role.get("members") or ()}
+            ok, seen = set(), set()
+            for flow, counts in (role.get("workflows") or {}).items():
                 judged, matched = int(counts["judged"]), int(counts["matched"])
+                seen.add(str(flow))
                 if judged >= GATE_MIN_JUDGED and 0 <= matched <= judged and \
                         Decimal(matched) / Decimal(judged) >= GATE_PRECISION:
-                    for m in members:
-                        on[m].add(str(name))
+                    ok.add(str(flow))
+            table[str(name)] = (members, ok, seen)
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        on = defaultdict(set)
-    passed = {m: sorted(w) for m, w in on.items()}
-    return (lambda owner, workflow: workflow in on.get(str(owner).lower(), ())), passed
+        table = {}
+
+    def gate(owner: str, workflow: str, roles: Iterable[str] = ()) -> bool:
+        owner = str(owner).lower()
+        mine = {n: t for n, t in table.items() if owner in t[0]}
+        personal = [t for n, t in mine.items() if n.startswith("person:")]
+        if any(workflow in t[1] for t in personal):
+            return True
+        if any(workflow in t[2] for t in personal):
+            return False                    # the person's own day failed it
+        roles = set(roles)
+        if roles:
+            return any(workflow in mine[r][1] for r in roles if r in mine)
+        return any(workflow in t[1] for t in mine.values()) and \
+            not any(workflow in t[2] and workflow not in t[1] for t in mine.values())
+
+    passed: dict[str, set[str]] = defaultdict(set)
+    for members, ok, _seen in table.values():
+        for m in members:
+            passed[m] |= ok
+    return gate, {m: sorted(w) for m, w in passed.items() if w}
+
+
+def item_roles(ap: Mapping[str, Any]) -> frozenset[str]:
+    """The roles an autopilot's item reaches its owner through: its business rule's role
+    (``role:<x>``; ``buyer`` is purchasing, ``approvers`` the owner role) and the mailbox
+    role it requires; none for an item of the owner's own."""
+    rule, when = str(ap.get("owner") or ""), ap.get("when") or {}
+    out = set()
+    if rule.startswith("role:"):
+        out.add(rule[len("role:"):])
+    elif rule == "buyer":
+        out.add("purchasing")
+    elif rule == "approvers":
+        out.add("owner")
+    if when.get("mailbox_role"):
+        out.add(str(when["mailbox_role"]))
+    return frozenset(out)
 
 
 def _happened(event: Mapping[str, Any]) -> dict[str, Any]:
@@ -1641,7 +1686,8 @@ def _prepare(st: Any, ap: Mapping[str, Any], event: Mapping[str, Any], as_of: da
     markings: set[str] = set()
     for row in _markings(st, read):
         markings.update(row)
-    cites = list(dict.fromkeys([*(event.get("handles") or ()), *ctx.handles]))[:40]
+    # every record the work rests on: the reader's check (``visible``) covers each one
+    cites = list(dict.fromkeys([*(event.get("handles") or ()), *ctx.handles]))
     return {"work": work, "audiences": audiences, "markings": markings, "citations": cites,
             "ms": int((time.monotonic() - began) * 1000)}
 
@@ -1735,14 +1781,40 @@ def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
                 continue
             if not set(item["markings"]) <= held:
                 continue
-            refused = decide(item["citations"]) if item["citations"] else {}
-            if any(v is not None for v in (refused or {}).values()):
-                continue
+            cited = item_handles(item)
+            if cited:
+                refused = decide(cited)
+                # every handle decided readable, or the item is not shown (fail closed)
+                if not isinstance(refused, Mapping) or \
+                        any(h not in refused or refused[h] is not None for h in cited):
+                    continue
         except Exception:  # noqa: BLE001 - an undecidable item is not shown
             continue
         item["mine"] = item["owner"] in mine
         out.append(item)
     return out
+
+
+_CITED = re.compile(HANDLE_PREFIX)
+
+
+def item_handles(item: Mapping[str, Any]) -> list[str]:
+    """Every citation of an item: its ``citations`` and any handle its prepared work or
+    event names (an item stored before the list was whole kept only its first 40)."""
+    out = list(item.get("citations") or ())
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            if _CITED.match(value):
+                out.append(value)
+        elif isinstance(value, Mapping):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                walk(v)
+    walk(item.get("body") or {})
+    return list(dict.fromkeys(out))
 
 
 def digest(items: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
@@ -1849,13 +1921,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import autopilot_work as aw
         st.autopilot_capture = aw.CaptureTexts(capture_dir)
     try:
+        # follow and replay both write the queue people read: each prepares only the
+        # workflows a role's replay passed, in that role (``gate_from``)
+        gate, passed = gate_from(os.environ, queue.path.parent)
+        if not passed:                # off until a role's replay passed (``gate_from``)
+            print(json.dumps({"schema": SCHEMA, "status": "off",
+                              "reason": "no_workflow_passed_replay"}))
+            return 0
         if a.command == "follow":
             ids, taken = layer_ids(store, queue, st.digest)
-            gate, passed = gate_from(os.environ, queue.path.parent)
-            if not passed:            # off until a role's replay passed (``gate_from``)
-                print(json.dumps({"schema": SCHEMA, "status": "off",
-                                  "reason": "no_workflow_passed_replay"}))
-                return 0
             summary = run_cycle(st, queue, ids, people=people, registry=registry, gate=gate)
             summary["workflows_on"] = {"owners": len(passed),
                                        "workflows": sorted({w for v in passed.values()
@@ -1870,8 +1944,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             since = _iso(_instant(until) - timedelta(days=a.days))
             ids = window_ids(st, registry, since, until)
             summary = run_cycle(st, queue, ids, people=people, registry=registry,
-                                now=_instant(until), settle_items=False)
-            summary["drained"] = _drain(st, queue, people, registry, _instant(until))
+                                now=_instant(until), settle_items=False, gate=gate)
+            summary["drained"] = _drain(st, queue, people, registry, _instant(until),
+                                        gate=gate)
             if a.layer:
                 with contextlib.closing(sqlite3.connect(f"file:{a.layer}?mode=ro", uri=True)
                                         ) as conn:
@@ -1880,9 +1955,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 try:
                     summary["layer"] = run_cycle(lst, queue, owned, people=people,
                                                  registry=registry, now=_instant(until),
-                                                 settle_items=False)
+                                                 settle_items=False, gate=gate)
                     summary["layer"]["drained"] = _drain(lst, queue, people, registry,
-                                                         _instant(until))
+                                                         _instant(until), gate=gate)
                 finally:
                     lst.close()
             summary["window"] = [since, until]

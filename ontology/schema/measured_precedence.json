@@ -1,0 +1,257 @@
+{
+ "measured_at": "2026-11-09T04:35:37Z",
+ "min_compared": 20,
+ "rules": {
+  "AssemblyOrder.expected_quantity": {
+   "clusters": 11470,
+   "disputed": 0,
+   "evidence_label": "the production completion records",
+   "records": 32356,
+   "sources": {
+    "filemaker": {
+     "agreed": 5623,
+     "compared": 6021,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    },
+    "portal_from_filemaker": {
+     "agreed": 5429,
+     "compared": 5810,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    }
+   },
+   "type": "AssemblyOrder",
+   "with_evidence": 6021
+  },
+  "AssemblyOrder.ordered_quantity": {
+   "clusters": 11470,
+   "disputed": 0,
+   "evidence_label": "the production completion records",
+   "records": 32356,
+   "sources": {
+    "portal_from_filemaker": {
+     "agreed": 4,
+     "compared": 5810,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    }
+   },
+   "type": "AssemblyOrder",
+   "with_evidence": 5810
+  },
+  "PurchaseOrder.expected_date": {
+   "clusters": 11515,
+   "disputed": 0,
+   "evidence_label": "the receipts",
+   "records": 17206,
+   "sources": {
+    "sage": {
+     "agreed": 753,
+     "compared": 1466,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    }
+   },
+   "type": "PurchaseOrder",
+   "with_evidence": 1466
+  },
+  "PurchaseOrder.total_cost": {
+   "clusters": 11515,
+   "disputed": 0,
+   "evidence_label": "the posted purchase invoices",
+   "records": 17206,
+   "sources": {
+    "bc": {
+     "agreed": 0,
+     "compared": 2,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    },
+    "portal_from_filemaker": {
+     "agreed": 0,
+     "compared": 2,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    }
+   },
+   "type": "PurchaseOrder",
+   "with_evidence": 4
+  },
+  "PurchaseOrderLine.ordered_quantity": {
+   "clusters": 11515,
+   "disputed": 6,
+   "evidence_label": "the receipts",
+   "records": 17206,
+   "sources": {
+    "bc": {
+     "agreed": 50,
+     "compared": 72,
+     "disputed_agreed": 1,
+     "disputed_compared": 6
+    },
+    "filemaker": {
+     "agreed": 1,
+     "compared": 18,
+     "disputed_agreed": 1,
+     "disputed_compared": 5
+    },
+    "portal": {
+     "agreed": 0,
+     "compared": 1,
+     "disputed_agreed": 0,
+     "disputed_compared": 1
+    },
+    "portal_from_filemaker": {
+     "agreed": 2,
+     "compared": 19,
+     "disputed_agreed": 2,
+     "disputed_compared": 5
+    },
+    "sage": {
+     "agreed": 4595,
+     "compared": 5114,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    }
+   },
+   "type": "PurchaseOrder",
+   "with_evidence": 5186
+  },
+  "PurchaseOrderLine.received_quantity": {
+   "clusters": 11515,
+   "disputed": 19,
+   "evidence_label": "the receipts",
+   "records": 17206,
+   "sources": {
+    "bc": {
+     "agreed": 72,
+     "compared": 72,
+     "disputed_agreed": 19,
+     "disputed_compared": 19
+    },
+    "portal": {
+     "agreed": 0,
+     "compared": 1,
+     "disputed_agreed": 0,
+     "disputed_compared": 1
+    },
+    "portal_from_filemaker": {
+     "agreed": 1,
+     "compared": 19,
+     "disputed_agreed": 0,
+     "disputed_compared": 18
+    },
+    "sage": {
+     "agreed": 4967,
+     "compared": 5114,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    }
+   },
+   "type": "PurchaseOrder",
+   "with_evidence": 5186
+  },
+  "SalesOrder.required_date": {
+   "clusters": 76368,
+   "disputed": 0,
+   "evidence_label": "the shipments",
+   "records": 77027,
+   "sources": {},
+   "type": "SalesOrder",
+   "with_evidence": 0
+  },
+  "SalesOrder.subtotal": {
+   "clusters": 76368,
+   "disputed": 0,
+   "evidence_label": "the posted invoices",
+   "records": 77027,
+   "sources": {
+    "bc": {
+     "agreed": 0,
+     "compared": 3,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    },
+    "portal_from_sage": {
+     "agreed": 6,
+     "compared": 54,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    }
+   },
+   "type": "SalesOrder",
+   "with_evidence": 57
+  },
+  "SalesOrder.total_amount": {
+   "clusters": 76368,
+   "disputed": 20,
+   "evidence_label": "the posted invoices",
+   "records": 77027,
+   "sources": {
+    "bc": {
+     "agreed": 0,
+     "compared": 3,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    },
+    "portal_from_sage": {
+     "agreed": 4,
+     "compared": 54,
+     "disputed_agreed": 1,
+     "disputed_compared": 20
+    },
+    "sage": {
+     "agreed": 2739,
+     "compared": 73085,
+     "disputed_agreed": 1,
+     "disputed_compared": 20
+    }
+   },
+   "type": "SalesOrder",
+   "with_evidence": 73088
+  },
+  "SalesOrderLine.ordered_quantity": {
+   "clusters": 76368,
+   "disputed": 72,
+   "evidence_label": "the shipments",
+   "records": 77027,
+   "sources": {
+    "portal_from_sage": {
+     "agreed": 4,
+     "compared": 76,
+     "disputed_agreed": 0,
+     "disputed_compared": 72
+    },
+    "sage": {
+     "agreed": 67182,
+     "compared": 73134,
+     "disputed_agreed": 21,
+     "disputed_compared": 72
+    }
+   },
+   "type": "SalesOrder",
+   "with_evidence": 73134
+  },
+  "SalesOrderLine.shipped_quantity": {
+   "clusters": 76368,
+   "disputed": 0,
+   "evidence_label": "the shipments",
+   "records": 77027,
+   "sources": {
+    "sage": {
+     "agreed": 72346,
+     "compared": 73134,
+     "disputed_agreed": 0,
+     "disputed_compared": 0
+    }
+   },
+   "type": "SalesOrder",
+   "with_evidence": 73134
+  }
+ },
+ "sample": 1,
+ "schema": "plx-measured-precedence/v1",
+ "store": "sqlite:generation 00000011 (2026-11-05)",
+ "tie_points": "0.02"
+}

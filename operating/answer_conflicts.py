@@ -5,6 +5,11 @@ Same fact, different values (``resolve``): every reading the reader may open is 
 with its source; one is marked trusted only by a stated rule, tried in this order, and
 every value says why:
 
+0. **measured agreement**: for a type x field the measured precedence table holds
+   (``operating.source_precedence``), the source whose values agreed most often with the
+   downstream evidence (shipments, invoices, receipts, completion records); a tie goes
+   to the most recently updated copy. Measured on history, re-measured on a schedule;
+   never a fixed order.
 1. **system of record**: the side a field's existing rule says governs. ``governs``
    (``operating.po_status``: BC lines govern receipt state), then the declared
    precedence of the property (``authority_rank``, the projection's per-property
@@ -121,6 +126,7 @@ class Reading:
     document: bool = False               # a machine-read document (a lead)
     unit: str | None = None
     currency: str | None = None
+    lineage: str | None = None           # the value's lineage (the measured precedence)
 
     @property
     def system(self) -> str:
@@ -199,9 +205,14 @@ def _agreeing(readings: Sequence[Reading]) -> bool:
     return len({value_key(r.value) for r in readings}) == 1
 
 
-def _by_rule(readings: Sequence[Reading], governs: str | None
-             ) -> tuple[str, list[Reading], str] | None:
+def _by_rule(readings: Sequence[Reading], governs: str | None,
+             measured_as: str | None = None) -> tuple[str, list[Reading], str] | None:
     """(rule, trusted readings, why) of the first rule that decides, else None."""
+    if measured_as:
+        from operating.source_precedence import decide
+        found = decide(measured_as, readings)
+        if found is not None:
+            return "measured_agreement", found[0], found[1]
     if governs:
         system = _GOVERNS.get(str(governs).lower(), governs)
         held = [r for r in readings if r.system == system]
@@ -390,12 +401,14 @@ def display_value(value: Any) -> str:
 
 
 def resolve(field: str, readings: Iterable[Reading], *, governs: str | None = None,
-            now: dt.datetime | None = None, subject: str | None = None
-            ) -> dict[str, Any] | None:
+            now: dt.datetime | None = None, subject: str | None = None,
+            measured_as: str | None = None) -> dict[str, Any] | None:
     """The contract's conflict ``{field, values:[{value, source, trusted, why}]}`` (plus
     ``rule``, ``subject`` and each value's ``as_of``/``age``) for readings the reader may
     open, or None when fewer than two distinct values remain, or when they differ only
-    by rounding, a currency spelling or each system's own number (``not_a_disagreement``)."""
+    by rounding, a currency spelling or each system's own number (``not_a_disagreement``).
+    ``measured_as``: the ``Type.field`` the measured precedence is keyed by
+    (``operating.source_precedence``), tried before every other rule."""
     now = now or dt.datetime.now(dt.timezone.utc)
     present = [r for r in readings if value_key(r.value) is not None
                and isinstance(r.handle, str) and r.handle]
@@ -406,7 +419,7 @@ def resolve(field: str, readings: Iterable[Reading], *, governs: str | None = No
         return None
     present = present[:MAX_VALUES * 2]
     same_place = len({r.handle.split("#", 1)[0] for r in present}) == 1
-    decided = None if same_place else _by_rule(present, governs)
+    decided = None if same_place else _by_rule(present, governs, measured_as)
     rule = decided[0] if decided else ("self_contradiction" if same_place else "undecided")
     trusted = decided[1] if decided else []
     values = []
@@ -473,6 +486,7 @@ def readings_of(conflict: Mapping[str, Any], *, dated: Mapping[str, Any] | None 
             else None,
             rank_scope=("document" if document else "record") if lead else "record",
             as_of=when, names_records=specific.get(handle), document=document,
+            lineage=cite.get("lineage") if isinstance(cite.get("lineage"), str) else None,
             unit=v.get("unit") if isinstance(v.get("unit"), str) else None,
             currency=v.get("currency") if isinstance(v.get("currency"), str) else None))
     return out
@@ -505,7 +519,7 @@ def tool_conflicts(conflicts: Iterable[Any], *, visible: Callable[[Sequence[str]
         allowed = visible([r.handle for r in readings]) if readings else set()
         readings = [r for r in readings if r.handle in allowed]
         found = resolve(field_name(conflict.get("subject")), readings, now=now,
-                        subject=subject)
+                        subject=subject, measured_as=conflict.get("subject"))
         if found is not None:
             out.append(found)
     return out
@@ -546,7 +560,8 @@ def resolution(conflict: Mapping[str, Any], *, dated: Mapping[str, Any] | None =
     ``values``) the rules trust, the rule and why; None for a conflict without two
     distinct cited values. The tool output already holds only what its reader may read."""
     readings = readings_of(conflict, dated=dated)
-    found = resolve(field_name(conflict.get("subject")), readings, now=now)
+    found = resolve(field_name(conflict.get("subject")), readings, now=now,
+                    measured_as=conflict.get("subject"))
     if found is None:
         return None
     trusted_handles = {(v["source"], v["value"]) for v in found["values"] if v["trusted"]}

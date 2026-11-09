@@ -1,0 +1,12 @@
+# Re-measure the system-of-record precedence weekly (Sunday night ET), so which copy is
+# trusted follows how the sources behave now.
+[Unit]
+Description=PLX measured precedence weekly
+
+[Timer]
+OnCalendar=Mon *-*-* 07:30:00 UTC
+Persistent=true
+AccuracySec=10min
+
+[Install]
+WantedBy=timers.target
