@@ -103,6 +103,7 @@ DECISION_TOOLS = {
                              "expression": {"type": "string"},
                              "quote": {"type": "string"},
                              "name": {"type": "string"},
+                             "via": {"type": "string"},
                              "lead": {"type": "boolean"}},
                              "required": ["id", "value"]}},
                          "text": {"type": "string"},

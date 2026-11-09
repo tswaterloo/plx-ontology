@@ -326,7 +326,14 @@ class FindScopeTests(ScopeCase):
                 # The carrier typed by display text: every record, none rooting.
                 out = tools.call("plx.find", {"query": "PO 9100", "object_type": CPO,
                                               "limit": 50}, SALES)
-                self.assertEqual(out["completeness"]["total"], n)
+                # a typed find whose words name records stops there (11-05): every named
+                # record listed first (a long list pages by size), the total not claimed
+                # exact (NAMED_READ_NOTE, which counts them)
+                (cut,) = [g for g in out["gaps"] if g["reason"] == "scan_cap"]
+                self.assertTrue(cut["detail"].startswith(f"{ot.NAMED_READ_NOTE} ({n})"), cut)
+                listed = [c["object"]["object_id"] for c in out["candidates"]]
+                self.assertEqual(len(listed), len(set(listed)))
+                self.assertEqual(len(listed) == n, out["completeness"]["next_cursor"] is None)
                 self.assertEqual({ot.scoped_root_lead(c, "PO 9100", identifiers)
                                   for c in out["candidates"]},
                                  {"normalized_only" if n == 1 else "identity_scope_ambiguous"})
@@ -503,8 +510,10 @@ class TwinRootScopeTests(ScopeCase):
                   "ponumber": "PO-1", "orddate": "2026-09-01"}
         order = 'SalesOrder:portal.app_sales_order:{"id":"so-1"}'
         sage = 'SalesOrder:portal.sage_oe_order_header:{"orduniq":"7001"}'
-        for custom, twin in (({"source": "sage.oe_order_header", "sageSourceOrdUniq": "7001"},
-                              True),
+        # The Sage import's key (sageOrdUniq, 11-06: every imported order carries it, the
+        # same_record_as binding reads it) joins the twins; see identifiers.json.
+        for custom, twin in (({"source": "sage.oe_order_header", "sageOrdUniq": "7001",
+                               "sageSourceOrdUniq": "7001"}, True),
                              ({"source": "fm-oe-ensure"}, False)):
             with self.subTest(linked=twin):
                 tools = self.tools(rows=[_so("so-1", "PO-1", "c-1", custom_fields=custom)],

@@ -50,6 +50,86 @@ _NAMED_DATE = re.compile(
     r"([A-Za-z]{3,9})\.?[ \t]+(\d{1,2})(?:st|nd|rd|th)?,?[ \t]+(\d{4}))(?![\w])")
 # A long link is noise to a vector and a keyword index: kept as its site only.
 _URL = re.compile(r"<?\b(?:https?://|www\.)([A-Za-z0-9.-]+)[^\s<>\]\)\"']*>?")
+# A payment card number: 13-19 digits, optionally grouped, in a card network's range, that
+# passes the Luhn check (``mask_cards``). Never indexed, whatever the source.
+# A card only in a card layout: 4-4-4-4, 4-4-4-4-3, 4-6-5 or 4-6-4 groups with one kind of
+# separator throughout: a single hyphen, or a gap of one to three blanks of any kind
+# (space, tab, no-break space, thin or zero-width space, or the entity ``&nbsp;``, so a
+# card is caught before and after ``normalise`` collapses the gap), or 15-19 unbroken
+# digits; never a run continuing a number before it (999-999 groups, year ranges,
+# decimals). Hyphens mixed with blanks are not a card layout (figures such as
+# ``4111 1111-1111 1111``). An unbroken 13 or 14 digit run is a product barcode (EAN-13,
+# GTIN-14), not a card: one in ten EAN-13s of a 4-prefix country passes Luhn in the Visa
+# range, and no network issues 13 or 14 digit cards any more (a grouped 4-6-4 one is
+# still masked). A trailing group of a 4-4-4-4-3 layout that fails is retried as an
+# expiry or CVV beside a 4-4-4-4 card.
+_BLANK = r"[ \t   ​ ]"
+_GAP = r"(?:" + _BLANK + r"|&nbsp;|&#160;|&#x[aA]0;){1,3}"
+_LEFT = r"(?<![\d])(?<!\d[ .,\-\t   ​ ])(?<!\d&nbsp;)"
+
+
+def _layouts(sep: str) -> str:
+    return (r"\d{4}" + sep + r"\d{4}" + sep + r"\d{4}" + sep + r"\d{4}(?:" + sep + r"\d{3})?"
+            r"|\d{4}" + sep + r"\d{6}" + sep + r"\d{4,5}")
+
+
+_CARD = re.compile(_LEFT + r"(?:" + _layouts(_GAP) + "|" + _layouts("-") + r"|\d{15,19})"
+                   r"(?![\d])(?!\.\d)")
+_SEP = re.compile(_GAP + "|-")
+
+
+# A 15-16 digit card (4-4-4-4 or unbroken) right after a number and a single blank or
+# comma (a CSV cell, a row number): that separator is its boundary. Never a 13-digit run
+# (a barcode after a row number stays).
+_CARD_AFTER = re.compile(
+    r"(?<=\d[ ,\t ])(?:\d{4}" + _GAP + r"\d{4}" + _GAP + r"\d{4}" + _GAP + r"\d{4}"
+    r"|\d{4}-\d{4}-\d{4}-\d{4}|\d{15,16})"
+    r"(?![\d])(?!\.\d)(?!(?:" + _GAP + r"|-)\d{4})")   # never inside a longer run of groups
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        n = int(ch)
+        if i % 2:
+            n = n * 2 - 9 if n > 4 else n * 2
+        total += n
+    return total % 10 == 0
+
+
+# Card networks' number ranges and lengths: a long code, barcode or account number that
+# happens to pass the Luhn check (one in ten does) is not masked unless it is in a range.
+_ISSUED = re.compile(r"4\d{12}(?:\d{3}){0,2}|5[1-5]\d{14}|2(?:2[2-9]|[3-6]\d|7[01])\d{13}"
+                     r"|2720\d{12}|3[47]\d{13}|3(?:0[0-5]|[689]\d)\d{11,16}"
+                     r"|6(?:011|5\d\d|4[4-9]\d)\d{12,15}|35(?:2[89]|[3-8]\d)\d{12,15}"
+                     r"|62\d{14,17}")
+
+
+def _issued(digits: str) -> bool:
+    return 13 <= len(digits) <= 19 and _ISSUED.fullmatch(digits) is not None
+
+
+def mask_cards(text: str) -> str:
+    """``text`` with every card number in a card layout replaced by ``[card]``."""
+    def one(match: re.Match[str]) -> str:
+        run = match.group(0)
+        groups = _SEP.split(run)
+        digits = "".join(groups)
+        if _issued(digits) and _luhn(digits):
+            return "[card]"
+        if len(groups) == 5 and len(digits) == 19:   # 4-4-4-4 card and a CVV after it
+            if _issued(digits[:16]) and _luhn(digits[:16]):
+                return "[card]" + run[run.rindex(groups[3]) + 4:]
+        return run
+    if not text:
+        return text
+
+    def after(match: re.Match[str]) -> str:
+        digits = "".join(_SEP.split(match.group(0)))
+        return "[card]" if _issued(digits) and _luhn(digits) else match.group(0)
+    return _CARD_AFTER.sub(after, _CARD.sub(one, text))
+
+
 _SPACES = re.compile(r"[ \t ​]+")
 _BLANKS = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
 
@@ -98,7 +178,7 @@ def normalise(text: str) -> str:
     """The text as it is embedded and keyword-indexed (module docstring)."""
     if not text:
         return ""
-    out = html.unescape(text).replace("\r\n", "\n").replace("\r", "\n")
+    out = mask_cards(html.unescape(text).replace("\r\n", "\n").replace("\r", "\n"))
     out = _URL.sub(lambda m: m.group(0) if len(m.group(0)) <= 40 else f"[link {m.group(1)}]",
                    out)
     out = _SIGNED.sub(_currency, out)
@@ -108,7 +188,8 @@ def normalise(text: str) -> str:
     out = _NAMED_DATE.sub(_named_date, out)
     out = _SPACES.sub(" ", out)
     out = "\n".join(line.strip() for line in out.split("\n"))
-    return _BLANKS.sub("\n\n", out).strip()
+    # again on the tidied text: a card the gaps or entities hid is caught here too
+    return mask_cards(_BLANKS.sub("\n\n", out).strip())
 
 
-__all__ = ["normalise"]
+__all__ = ["mask_cards", "normalise"]

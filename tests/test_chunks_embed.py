@@ -563,7 +563,7 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         chunk = chunks[0]
         self.assertEqual((chunk.kind, chunk.audience_key, chunk.markings),
-                         ("record_text", "api:sage.ar_cmm", ("finance",)))
+                         ("record_words", "api:sage.ar_cmm", ("finance",)))   # raw rows: words only
         self.assertIn("Customer C0012", chunk.header)
         self.assertEqual(chunk.authority, 4)
 
@@ -1461,6 +1461,81 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(self.st.purge_objects(self.conn, {"O2", "O-not-stored"}), 1)
         left = [r[0] for r in self.conn.execute("SELECT object_id FROM search.chunks")]
         self.assertEqual(left, ["O1"])
+
+    def test_card_purge_dry_run_counts_only_and_apply_masks_words_and_embeddings(self):
+        import contextlib
+        import dataclasses
+        import io
+        from operating.embed import card_purge
+        dim = self.st.column_dim(self.conn)
+        cards = ("4111 1111 1111 1111", "5500-0000-0000-0004", "378282246310005")
+        rows = []
+        for i in range(60):   # N=60: every card row purged once, every other row untouched
+            card = cards[i % 3] if i % 4 == 0 else None
+            chunk = self.chunk(i, f"Order {i} for lavender soap, PO 1045{i:02d}, lot "
+                                  f"2026110912{i:03d}, call 416-555-0199"
+                                  + (f", paid by Visa {card} exp 09/27." if card else "."))
+            if card:   # an index written before chunks were masked
+                chunk = dataclasses.replace(chunk, body=chunk.body.replace("[card]", card),
+                                            title=f"Card {card}" if i == 0 else chunk.title)
+                self.assertIn(card, chunk.body)
+            rows.append(chunk)
+        self.st.ChunkWriter(self.conn).write(rows)
+        self.conn.execute("UPDATE search.chunks SET embedding = %s::halfvec, embed_model = 'm'",
+                          (self.st.vector_text(np.ones(4, dtype=np.float32), dim),))
+        self.conn.execute(
+            "INSERT INTO search.entities (entity_id, object_id, type, name, alias, normalized, "
+            "audience_key, markings) VALUES ('E1', 'O1', 'contact', 'Card holder', "
+            "ARRAY['4111111111111111', 'jane'], 'card holder', 'mail:box-a', '{}'), "
+            "('E2', 'O2', 'item', 'Soap 4006381333931', ARRAY['4006381333931'], 'soap', "
+            "'mail:box-a', '{}')")
+        self.conn.commit()
+        dsn = f"postgresql:///{self.db}"
+        before = self.conn.execute("SELECT md5(string_agg(chunk_id || body || content_sha, '' "
+                                   "ORDER BY chunk_id)) FROM search.chunks").fetchone()[0]
+
+        def run(*args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(card_purge.main(["--dsn", dsn, *args]), 0)
+            text = out.getvalue()
+            for card in cards + ("4111111111111111",):
+                self.assertNotIn(card, text)
+            self.assertNotIn("O1", text)
+            return json.loads(text)
+        dry = run()
+        self.assertEqual((dry["mode"], dry["chunks"]["with_card"], dry["chunks"]["by_column"],
+                          dry["chunks"]["embeddings_to_drop"], dry["entities"]["with_card"]),
+                         ("dry_run", 15, {"body": 15, "title": 1}, 15, 1))
+        self.conn.rollback()
+        self.assertEqual(self.conn.execute(
+            "SELECT md5(string_agg(chunk_id || body || content_sha, '' ORDER BY chunk_id)) "
+            "FROM search.chunks").fetchone()[0], before)          # a dry run writes nothing
+        done = run("--apply")
+        self.assertEqual((done["chunks"]["with_card"], done["chunks"]["embeddings_dropped"],
+                          done["entities"]["by_column"]), (15, 15, {"alias": 1}))
+        self.conn.rollback()
+        stored = {r[0]: r[1:] for r in self.conn.execute(
+            "SELECT chunk_id, title, body, content_sha, embedding IS NULL FROM search.chunks")}
+        self.assertEqual(len(stored), 60)
+        for chunk in rows:
+            title, body, sha, no_vector = stored[chunk.chunk_id]
+            self.assertFalse(any(c in body or c in (title or "") for c in cards))
+            masked = dataclasses.replace(chunk, body=chunk.body.replace(
+                next((c for c in cards if c in chunk.body), "\0"), "[card]"))
+            self.assertEqual((body, sha), (masked.body, masked.content_sha))
+            self.assertEqual(no_vector, "[card]" in body)        # only purged rows re-embed
+        self.assertEqual(self.conn.execute(
+            "SELECT count(*) FROM search.chunks WHERE tsv @@ to_tsquery('simple', '4111') "
+            "OR tsv @@ to_tsquery('simple', '378282246310005') OR body LIKE '%0000-0004%'"
+        ).fetchone()[0], 0)                                       # no word of a card left
+        self.assertEqual(self.conn.execute(
+            "SELECT alias, name FROM search.entities ORDER BY entity_id").fetchall(),
+            [(["[card]", "jane"], "Card holder"),
+             (["4006381333931"], "Soap 4006381333931")])          # a barcode stays
+        self.conn.rollback()
+        again = run()
+        self.assertEqual((again["chunks"]["with_card"], again["entities"]["with_card"]), (0, 0))
 
     def test_vectors_are_padded_to_the_column_never_truncated(self):
         self.assertEqual(self.st.column_dim(self.conn) is not None, True)

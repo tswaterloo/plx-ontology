@@ -1,23 +1,242 @@
 {
-  "schema": "plx-record-text/v1",
-  "about": "Free-text fields of business records chunked for search (descriptions, notes, comments, reasons). Numbers in them are never truth: the record answers. Object type -> properties; a value is chunked when it holds at least min_chars characters and min_letter_share of its non-space characters are letters.",
+  "schema": "plx-record-text/v2",
+  "about": "Which text of business records search indexes. The rule: every text-valued property (schema value_type in rule.value_types) of every served or partial object type is indexed, so a new type is covered without an entry here. Exceptions are explicit: deny (only ids, hashes and secrets, by full-match name pattern), and documents (types whose text a document chunker indexes: mail, attachment, SharePoint, Teams, Mission Control, meeting; each property listed as text the document chunk carries or as fields_only, a closed code read by plx.find filters). json_fields: JSON properties whose string leaves are indexed as 'Column: value' lines (SharePoint list item columns). A value is chunked when it is wordy: label properties (names, titles, subjects, descriptions, notes, comments) from label_min_chars, every other property from min_chars, both with min_letter_share letters. Numbers in indexed text are never truth: the record answers. Markings: a chunk carries the union of its value's markings and the record's current and latest version markings.",
   "min_chars": 20,
+  "label_min_chars": 3,
   "min_letter_share": 0.4,
+  "rule": {
+    "value_types": [
+      "text",
+      "string"
+    ],
+    "availability": [
+      "served",
+      "partial"
+    ]
+  },
+  "labels": [
+    "(.*_)?(names?|title|subject|topic|descriptions?|desc|comments?|notes?|memo|remarks?|reason|summary|caption|label|snippet)(_?[0-9]+)?",
+    "(text|btch|via|item|acct|trans|job|dist|ship|bill)(desc|cmnt|comment|note|line)[0-9]*",
+    "desc(r[a-z]*|invc)[0-9]*",
+    "notes[a-z]{1,4}",
+    "name(acct|batch|city|cust|locn|rmit|vend|item|ctac|sales)",
+    "je?comment[0-9]*"
+  ],
+  "deny": {
+    "ids": [
+      "id",
+      ".*_ids?",
+      "id[a-z]{2,8}[0-9]?",
+      ".*(uuid|guid).*",
+      "(.*_)?uid",
+      "sage_pk",
+      "e_?tag",
+      ".*_handle",
+      ".*url.*",
+      ".*website.*",
+      "upn",
+      ".*e_?mail.*",
+      "mailbox",
+      ".*addresses",
+      "sender",
+      ".*(phone|fax|mobile).*",
+      "(content|mime)_type",
+      ".*user_?id.*",
+      ".*(iban|swift|bank_?acc(oun)?t|routing_?n|tax_?reg|ssn|social_?insurance).*",
+      "(.*_)?sin(_.*)?",
+      "(.*_)?[a-z]*(task|project|user|item|vend|vendor|cust|customer|order|list|site|record|doc|batch|account|acct|line|entry|trans|job|lab|lot|page|form|ticket|case|request|message|thread|group|team|channel)_?id",
+      "(.*_)?[a-z]*(risk|template|docusign|envelope|asset|issue|incident|contract|invoice|quote|ref|file|folder|drive|tenant|object|app|client|session|device)_?id"
+    ],
+    "hashes": [
+      ".*(sha256|sha1|md5|hash|digest|checksum).*"
+    ],
+    "secrets": [
+      ".*(password|passwd|secret|token|api_?key|credential|private_?key).*"
+    ]
+  },
+  "deny_about": {
+    "ids": "Identifiers, keys, handles, links, contact addresses, phone numbers and bank or tax registration numbers (substring patterns, matched on the lower-cased name, list columns included): found through plx.find identifiers and the identity resolver, never by text search. Whatever a field is called, a value that looks like an email address or a phone number is masked before it is chunked.",
+    "hashes": "Content digests: provenance, never prose.",
+    "secrets": "Credential-shaped values: never indexed."
+  },
+  "never_text": [
+    {
+      "types": "RelSage(Gl|Ar|Ap)[A-Z].*",
+      "except_types": [
+        "RelSageArCmm"
+      ],
+      "columns": ".*(desc|comment|cmnt|ref|memo|note|remark).*|text.*",
+      "unless": "(id|cnt|code(?!desc)|sw|date|amt|acct|typ).*|.*nbr|descomp",
+      "about": "Free text of Sage GL, AR and AP records (descriptions, references, comments, text lines, memos, notes) names staff on pay documents (payroll, wage, salary, commission and bonus lines): never search text, whatever a reader holds. AR customer comments (RelSageArCmm, credit-handling notes) keep their reviewed indexing. Matches lane/mega's text_markings rule (reviews of lane raw-tables, 2026-11-08)."
+    },
+    {
+      "types": "RelSageGl[A-Z].*",
+      "columns": "name.*|.*name",
+      "unless": "",
+      "about": "Customer, vendor and remitter name columns of Sage GL lines say who a pay line paid: never search text (lane/mega, 2026-11-08)."
+    }
+  ],
+  "documents": {
+    "Email": {
+      "kind": "mail",
+      "text": [
+        "subject",
+        "body_preview"
+      ]
+    },
+    "Attachment": {
+      "kind": "attachment",
+      "text": [
+        "name"
+      ]
+    },
+    "SharePointFile": {
+      "kind": "sharepoint",
+      "text": [
+        "name",
+        "path"
+      ],
+      "fields_only": [
+        "content_status",
+        "document_kind",
+        "document_category"
+      ]
+    },
+    "ContainerMember": {
+      "kind": "attachment",
+      "text": [
+        "name",
+        "path"
+      ],
+      "fields_only": [
+        "state",
+        "reason",
+        "kind"
+      ]
+    },
+    "TeamsChatMessage": {
+      "kind": "teams",
+      "text": [
+        "subject"
+      ]
+    },
+    "TeamsChannelMessage": {
+      "kind": "teams",
+      "text": [
+        "subject"
+      ]
+    },
+    "MCTask": {
+      "kind": "mc_task",
+      "text": [
+        "title",
+        "description"
+      ],
+      "fields_only": [
+        "stage",
+        "bucket",
+        "priority",
+        "assignee",
+        "reporter",
+        "accountable_owner"
+      ]
+    },
+    "Meeting": {
+      "kind": "meeting",
+      "text": [
+        "subject"
+      ]
+    },
+    "CalendarEvent": {
+      "kind": "meeting",
+      "text": [
+        "subject",
+        "body_preview"
+      ],
+      "fields_only": [
+        "location",
+        "show_as"
+      ]
+    }
+  },
+  "document_families": [
+    "mail",
+    "mail-any",
+    "sharepoint"
+  ],
+  "json_fields": {
+    "SharePointListItem": [
+      "fields"
+    ]
+  },
   "fields": {
-    "Quote": ["notes", "rejection_reason"],
-    "QuoteLine": ["notes"],
-    "FgItem": ["pack_summary", "qty_basis_note"],
-    "MCApproval": ["reason", "note"],
-    "KnowledgeEntry": ["title", "snippet"],
-    "Team": ["description"],
-    "TeamsChannel": ["description"],
-    "PurchaseInvoiceLine": ["description"],
-    "RelSageArCmm": ["textcmnt1", "textcmnt2", "textcmnt3", "textcmnt4", "textcmnt5", "textcmnt6", "textcmnt7", "textcmnt8", "textcmnt9", "textcmnt10"],
-    "RelSageApVcm": ["textcmnt1", "textcmnt2", "textcmnt3", "textcmnt4", "textcmnt5", "textcmnt6", "textcmnt7", "textcmnt8", "textcmnt9", "textcmnt10"],
-    "RelSageArIbt": ["textline"],
-    "RelSageApIbt": ["textline"],
-    "RelSageGlJec": ["jecomment"],
-    "RelSageGlPjc": ["comment"],
-    "RelSageApRpd": ["comment"]
+    "Quote": [
+      "notes",
+      "rejection_reason"
+    ],
+    "QuoteLine": [
+      "notes"
+    ],
+    "FgItem": [
+      "pack_summary",
+      "qty_basis_note"
+    ],
+    "MCApproval": [
+      "reason",
+      "note"
+    ],
+    "KnowledgeEntry": [
+      "title",
+      "snippet"
+    ],
+    "Team": [
+      "description"
+    ],
+    "TeamsChannel": [
+      "description"
+    ],
+    "PurchaseInvoiceLine": [
+      "description"
+    ],
+    "PlannerTask": [
+      "title",
+      "description"
+    ],
+    "MCProject": [
+      "description"
+    ],
+    "PurchaseRequisition": [
+      "notes"
+    ],
+    "PurchaseRequisitionLine": [
+      "notes"
+    ],
+    "AssemblyOrderDamage": [
+      "description"
+    ],
+    "GeneralLedgerEntry": [
+      "description"
+    ],
+    "Payment": [
+      "description"
+    ],
+    "RelSageArCmm": [
+      "textcmnt1",
+      "textcmnt2",
+      "textcmnt3",
+      "textcmnt4",
+      "textcmnt5",
+      "textcmnt6",
+      "textcmnt7",
+      "textcmnt8",
+      "textcmnt9",
+      "textcmnt10"
+    ]
+  },
+  "words_only": {
+    "about": "Record text that is not human language (codes, references, mostly digits or punctuation, short upper-case refs) is word-indexed as kind record_words and never sent to embedding: a free-text value embeds when it holds at least min_words words of at least 3 letters that are not short upper-case codes and min_letter_share of letters; a label value (a name or title) when it holds one such word. Every raw relation type (Rel*: Sage, silver, BC, Portal and FileMaker raw rows; names full-matching raw_types) is words-only whatever its text: only business types and human-language text are embedded.",
+    "min_words": 3,
+    "min_letter_share": 0.6,
+    "raw_types": "^Rel[A-Z]"
   }
 }

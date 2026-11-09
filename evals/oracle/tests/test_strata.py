@@ -111,10 +111,14 @@ class LiveShapedStrataTest(unittest.TestCase):
         sage = [r for r in world.relations[K.SO] if r["custom_fields"]]
         flags = {h["orduniq"]: h["complete"] for h in world.relations[K.SAGE_ORDER]}
         self.assertTrue({"0", "1"} <= set(flags.values()))
+        # A Sage header's completion code alone closes nothing (keys.so_closed_by_copies,
+        # 2026-11-06): a READY_TO_SHIP order with no finished copy and no shipped shipment
+        # stays open whatever its Sage flag says.
         for row in sage:
             self.assertEqual(row["status"], "READY_TO_SHIP")
-            self.assertEqual(closed(K.SO, row, portal),
-                             flags[row["custom_fields"]["sageOrdUniq"]] == "1")
+        bare = {"id": "so-no-copies", "status": "READY_TO_SHIP",
+                "custom_fields": {"sageOrdUniq": next(o for o, f in flags.items() if f == "1")}}
+        self.assertFalse(closed(K.SO, bare, portal))
         # A PO is closed by its fulfillment code over its lines; FM header text ("Pending")
         # does not decide, and a PO without lines is never closed by its header alone.
         ten = Decimal(10)
@@ -291,6 +295,8 @@ class EmptyStratumTest(unittest.TestCase):
             row["status"] = "Open"
         for header in world.relations[K.SAGE_ORDER]:
             header["complete"] = "0"
+        for shipment in world.relations[K.SHIPMENT]:   # a shipped shipment closes its order
+            shipment["status"] = "PENDING"
         generated, _, _ = _generate(world)
         po, so = generated.strata["purchase_order"], generated.strata["sales_order"]
         self.assertEqual((po["status"], po["reason"], po["candidates"], po["tried"]),
@@ -613,9 +619,15 @@ class RootFirstTest(unittest.TestCase):
             entry = generated.strata[kind]
             self.assertEqual((entry["status"], entry["candidates"],
                               entry["funnel"]["documents"]), ("read", 1, 1), kind)
+        # The search found it (one candidate per document stratum, above). A root is drawn
+        # once per family: since 2026-11-06 a shipped shipment closes the order, so its own
+        # sales_order stratum may draw it first; either way it is drawn exactly once.
         named = {i["root"]["identifier"] for i in generated.items
                  if generated.item_strata[i["id"]] in DOCUMENT_STRATA}
-        self.assertEqual(named, {self.closed.identifier})
+        self.assertLessEqual(named, {self.closed.identifier})
+        drawn = [i for i in generated.items
+                 if i["root"]["identifier"] == self.closed.identifier and i["family"] == "F1"]
+        self.assertEqual(len(drawn), 1, drawn)
 
     def test_a_refused_search_is_typed_and_the_number_without_its_prefix_is_searched(self):
         # The tenant refuses a query carrying '#' (a search syntax it will not parse): the

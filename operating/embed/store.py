@@ -372,9 +372,11 @@ def reuse_embeddings(conn: Any, model: str) -> int:
     return n
 
 
+# Chunks found by their words alone, never embedded: record codes and references.
+WORDS_ONLY_KINDS = ("record_words",)
 # Embedding priority (review 2026-10-29): curated documents first, mail last (newest first).
 PRIORITY = ("map_stage", "original", "sharepoint", "sheet_row", "teams", "mc_task",
-            "record_text", "portal_text", "bc_text", "attachment", "mail")
+            "record_text", "list_item", "portal_text", "bc_text", "attachment", "mail")
 
 
 def pending(conn: Any, model: str, kinds: Sequence[str] | None = None,
@@ -386,8 +388,9 @@ def pending(conn: Any, model: str, kinds: Sequence[str] | None = None,
     every text dated in the last ``recent_days`` and every undated record text first
     (newest first, the undated after), then the rest, newest first; ``recent_only``: the
     first part alone."""
-    where = "(embedding IS NULL OR embed_model IS DISTINCT FROM %s)"
-    params: list[Any] = [model]
+    where = ("(embedding IS NULL OR embed_model IS DISTINCT FROM %s) "
+             "AND kind <> ALL(%s::text[])")
+    params: list[Any] = [model, list(WORDS_ONLY_KINDS)]
     if kinds:
         where += " AND kind = ANY(%s)"
         params.append(list(kinds))

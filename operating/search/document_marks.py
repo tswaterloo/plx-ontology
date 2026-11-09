@@ -40,7 +40,7 @@ DOCUMENT_TYPES = frozenset({"Email", "SharePointFile", "Attachment", "ContainerM
                             "TeamsChatMessage", "TeamsChannelMessage", "Meeting", "MCTask",
                             "MCApproval"})
 FILE_TYPES = frozenset({"SharePointFile", "Attachment", "ContainerMember"})
-RECORD_KINDS = ("record_text", "bc_text")
+RECORD_KINDS = ("record_text", "bc_text", "record_words")
 # The marked documents are re-read in the background once this old (a re-mark shows within
 # about this long); an unreadable store is retried after ``RETRY_S``.
 REFRESH_S = 120.0

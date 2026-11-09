@@ -732,7 +732,9 @@ class LiveAlignmentTests(unittest.TestCase):
         brain = ["brain_get_node", "brain_timeline", "brain_search"]
         ids = [f"plx-mc.mcp_tool:{t}" for t in mc] + [f"plx-brain.mcp_tool:{t}" for t in brain]
         units = "passes[*].units[*].collection"
-        read = ["tasks", "buckets", "knowledge", "tasks", "buckets", "knowledge"]
+        # mc_get_context binds MC tasks and projects (projects read from the context answer
+        # since 2026-11-01): a run crediting it reads both.
+        read = ["tasks", "buckets", "knowledge", "projects", "tasks", "buckets", "knowledge"]
         capture = ["mc_get_context", "mc_list_buckets", "mc_search_knowledge"]
 
         def run(result, collections=read, called=capture, mc_source="mission-control-mcp"):

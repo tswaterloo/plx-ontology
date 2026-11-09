@@ -245,6 +245,10 @@ class BcWorld:
     def __init__(self, test: unittest.TestCase, fake: tb.FakeBc | None = None, *,
                  entity_sets=CAPTURE_ENTITY_SETS) -> None:
         self.h = tb.Harness(test, fake or purchase_world())
+        # Production pins every company's name (NAMED), so its Page 38 lots and Page 50
+        # references are read too: an unread field page is a partly read source.
+        self.h.capture = tb.BcCapture(self.h.reader, self.h.store, books=tb.BOOKS,
+                                      names=NAMED, monotonic=self.h.clock.monotonic)
         self.capture = self.h.run(entity_sets=entity_sets)
         scratch = tempfile.TemporaryDirectory()
         test.addCleanup(scratch.cleanup)
@@ -422,8 +426,9 @@ class BcOnlyProjectionTests(unittest.TestCase):
         self.assertIn("portal.app_purchase_order", w.gaps(NOT_CAPTURED))
         out = w.around(po_id(1), "PurchaseOrder.same_record_as")
         self.assertEqual(out["objects"], [])
+        # a walk reaching nothing names the twins' route as a hint (twin_route, 11-07)
         self.assertEqual([(g["state"], g["reason"]) for g in out["gaps"]],
-                         [("not_ingested", "no_match")])
+                         [("not_ingested", "no_match"), ("unknown", "twin_route")])
         self.assertIn("portal.app_purchase_order was not captured", out["gaps"][0]["detail"])
         # The three-way match reads the twin and identity hops through Portal bindings.
         # Portal was not captured, so a BC-rooted side proven complete in BC is decided
@@ -823,8 +828,10 @@ class PaymentStateTests(unittest.TestCase):
         self.assertTrue(out["partial"])
         self.assertEqual({g["key"]["currency"]["untrusted_text"]: g["value"]
                           for g in out["groups"]}, {"USD": None, "EUR": None})
+        # the failed credit-memo read leaves BC read in part, and the answer says so
         self.assertEqual([(g["state"], g["reason"]) for g in out["gaps"]],
-                         [("inaccessible", "not_served"), ("unknown", "measure_value_missing")])
+                         [("inaccessible", "not_served"), ("unknown", "measure_value_missing"),
+                          ("unknown", "source_partly_read")])
 
 
 class SensitiveMasterTests(unittest.TestCase):

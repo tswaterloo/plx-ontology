@@ -164,19 +164,23 @@ class LotImpactPlanTests(unittest.TestCase):
         return out
 
     def investigate(self, store, root, actor=STAFF):
-        """Every page of the answer (a paged answer repeats its shared entries)."""
+        """Every page of the answer (a paged answer repeats its shared entries); the gaps
+        are listed on the first page only (answer_page.gaps_on_page), so they are its."""
         arguments = {"family": "F17", "root": root}
         answer: dict = {}
         self.pages = 0
+        gaps = None
         while True:
             self.pages += 1
             out = self.ask(store, arguments, actor)
             self.assertNotIn("error", out, json.dumps(out)[:2000])
+            if gaps is None:
+                gaps = out["gaps"]
             for e in out["answer"]:
                 self.assertEqual(answer.setdefault(e["name"], e), e)
             cursor = out["completeness"].get("next_cursor")
             if not cursor:
-                return out, answer
+                return dict(out, gaps=gaps), answer
             arguments = {**arguments, "cursor": cursor}
 
     @staticmethod

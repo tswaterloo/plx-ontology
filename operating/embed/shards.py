@@ -22,7 +22,7 @@ from operating.chunking.records import RecordChunker
 
 from . import store as st
 
-PERSON_KINDS = frozenset({"mail", "attachment", "sharepoint", "sheet_row", "map_stage",
+PERSON_KINDS = frozenset({"mail", "attachment", "sharepoint", "sheet_row", "map_stage", "list_item",
                           "original", "teams", "meeting"})
 WRITE_BATCH = 2000
 
@@ -39,9 +39,11 @@ def produce(state: Path, projection: Path, exclusion: Any, counts: Counts,
             objects: frozenset[str] | None = None, until: str | None = None
             ) -> Iterator[Chunk]:
     """Every chunk of ``kinds`` (a limit is spread evenly over the kinds asked).
-    ``shard`` (i, n): this process's share of the projection's documents; the record
-    fields and the case originals (small) are shard 0's. ``objects``: a row-delta layer's
-    own objects, the only ones chunked (no case originals; ``LAYER_SKIPS``)."""
+    ``shard`` (i, n): this process's share of the projection's documents and of the
+    business records (by object id: the schema rule reads every record type, so one
+    process alone was the longest shard); the case originals (small) are shard 0's.
+    ``objects``: a row-delta layer's own objects, the only ones chunked (no case
+    originals; ``LAYER_SKIPS``)."""
     conn = open_ro(projection)
     per_kind = None if limit is None else max(1, math.ceil(limit / len(kinds)))
     projection_kinds = [k for k in kinds if k in {"mail", "attachment", "sharepoint", "sheet_row",
@@ -53,14 +55,16 @@ def produce(state: Path, projection: Path, exclusion: Any, counts: Counts,
         if asked:
             yield from chunker.chunks(asked, per_kind, shard=shard, since=since,
                                       objects=objects, until=until)
-    if shard is not None and shard[0] != 0:
-        return
     records = RecordChunker(conn, exclusion, counts)
-    record_kinds = [k for k in kinds if k in {"portal_text", "bc_text", "record_text", "mc_task"}]
+    record_kinds = [k for k in kinds if k in {"portal_text", "bc_text", "record_text", "mc_task",
+                                              "list_item", "record_words"}]
     if record_kinds:
-        for chunk in records.record_chunks(record_kinds, per_kind, objects=objects):
+        for chunk in records.record_chunks(record_kinds, per_kind, shard=shard,
+                                           objects=objects):
             if objects is None or chunk.object_id in objects:
                 yield chunk
+    if shard is not None and shard[0] != 0:
+        return
     if objects is not None or until is not None:
         return
     original_kinds = [k for k in kinds if k in {"original", "map_stage", "sheet_row"}]

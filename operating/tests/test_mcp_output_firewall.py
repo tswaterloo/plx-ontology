@@ -1644,6 +1644,7 @@ class PortalRowFreeTextTests(case_tools.CaseToolsTestCase):
 
     def test_a_portal_notes_cell_is_marked_under_the_row_origin(self):
         self.fake.catalog["public.assembly_order"]["columns"].append("notes")
+        self.described_text("public.assembly_order", ["notes"])
         for row in self.fake.tables["public.assembly_order"]:
             row["notes"] = NEEDLE
         server = self.server(case_tools.OPS, self.runtime())
@@ -1686,9 +1687,25 @@ class PortalRowFreeTextTests(case_tools.CaseToolsTestCase):
                 server, "public.app_purchase_order", "po_number", number))["fields"]
             self.assertEqual(fields["row.tracking_number"]["untrusted_text"], token)
 
+    def described_text(self, relation: str, columns: list[str]) -> None:
+        """Columns a test adds to a fake relation, described as text no marking covers.
+        An undescribed column of a money relation is withheld (raw_markings fail closed,
+        11-06), so a column these tests add would never be served otherwise."""
+        from ontology import raw_markings
+        original, added = raw_markings._column_of, frozenset(columns)
+
+        def column_of(found, source, rel, column):
+            if rel == relation and column in added:
+                return frozenset()
+            return original(found, source, rel, column)
+        patcher = mock.patch.object(raw_markings, "_column_of", column_of)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def wide_sage_row(self, value: Any) -> list[str]:
         """sage.po_header widened to 188 columns, as the served po_receipt_header is."""
         extra = [f"col{index:03d}" for index in range(188 - 5)]
+        self.described_text("sage.po_header", extra)
         self.fake.catalog["sage.po_header"]["columns"].extend(extra)
         for row in self.fake.tables["sage.po_header"]:
             row.update({column: value(index) for index, column in enumerate(extra)})
@@ -1703,8 +1720,20 @@ class PortalRowFreeTextTests(case_tools.CaseToolsTestCase):
         first = self.plx_read(server, citation)
         rest = self.plx_read(server, citation, column_offset=first["columns"]["next_offset"])
         self.assertIsNone(rest["columns"]["next_offset"])
+        withheld = self.withheld(first)
+        self.assertEqual(withheld, self.withheld(rest))
         self.assertEqual(sorted({**first["fields"], **rest["fields"]}),
-                         sorted(f"row.{c}" for c in columns))
+                         sorted(f"row.{c}" for c in columns if f"row.{c}" not in withheld))
+
+    def withheld(self, value: dict[str, Any]) -> set[str]:
+        """The fields a read names withheld: this reader holds no finance marking, so the
+        money column (doctotal) and the columns no schema describes in a money relation
+        (raw_markings fails closed, 11-06) are named, never served; every other column is."""
+        named = {f.strip() for g in value["gaps"] if g["reason"] == "marking_withheld"
+                 for f in g["subject"].split(",")}
+        self.assertIn("row.doctotal", named)
+        self.assertFalse({f"row.col{i:03d}" for i in range(183)} & named)
+        return named
 
     def test_a_188_column_sage_row_is_paged_by_columns_within_the_bound(self):
         """A row too wide for one response (cells of free text) is served page by page,
@@ -1715,11 +1744,13 @@ class PortalRowFreeTextTests(case_tools.CaseToolsTestCase):
         citation = self.citation(server, "sage.po_header", "ponumber", "PO-1001")
         fields: dict[str, Any] = {}
         offset, pages, digests = 0, 0, set()
+        withheld = self.withheld(self.plx_read(server, citation))
         while offset is not None:
             value = self.plx_read(server, citation, column_offset=offset)
             pages += 1
             self.assertEqual((value["citation"], value["columns"]["offset"],
-                              value["columns"]["total"]), (citation, offset, 188))
+                              value["columns"]["total"]),
+                             (citation, offset, 188 - len(withheld)))
             self.assertEqual(value["columns"]["returned"], len(value["fields"]))
             self.assertGreater(value["columns"]["returned"], 0)
             digests.add(value["digest"])
@@ -1727,7 +1758,8 @@ class PortalRowFreeTextTests(case_tools.CaseToolsTestCase):
             offset = value["columns"]["next_offset"]
         self.assertGreater(pages, 1)
         self.assertEqual(len(digests), 1)  # every page is the same cited row
-        self.assertEqual(sorted(fields), sorted(f"row.{c}" for c in columns))
+        self.assertEqual(sorted(fields),
+                         sorted(f"row.{c}" for c in columns if f"row.{c}" not in withheld))
         self.assertEqual(fields["row.col007"]["untrusted_text"], "line 7 " + NEEDLE * 4)
         self.assertEqual(fields["row.col007"]["origin"], {"citation": citation,
                                                           "field_path": "row.col007"})
@@ -1764,6 +1796,7 @@ class PortalRowFreeTextTests(case_tools.CaseToolsTestCase):
         long_text = ("Line of notes. " + NEEDLE + "\n") * 300  # ~24,000 characters
         self.assertGreater(len(long_text), guard.ENVELOPE_CHARS)
         self.fake.catalog["public.assembly_order"]["columns"].append("notes")
+        self.described_text("public.assembly_order", ["notes"])
         for row in self.fake.tables["public.assembly_order"]:
             row["notes"] = long_text
         server = self.server(case_tools.OPS, self.runtime())

@@ -165,10 +165,10 @@ class ToolListingTests(CaseToolsTestCase):
                 self.assertFalse(tools[name]["annotations"]["destructiveHint"], name)
         propose = tools["plx.case_propose"]["description"]
         self.assertIn("never approved or dispatched", propose)
-        self.assertIn("writes no business system", propose)
+        self.assertIn("No business write.", propose)   # shortened tool text, same promise
         for name in ("plx.schema", "plx.find", "plx.object"):
             self.assertTrue(tools[name]["annotations"]["readOnlyHint"], name)
-        self.assertIn("Without case_id", tools["plx.case_get"]["description"])
+        self.assertIn("No case_id:", tools["plx.case_get"]["description"])
         self.assertEqual(len({tool["name"] for tool in TOOLS}), len(TOOLS))
 
 

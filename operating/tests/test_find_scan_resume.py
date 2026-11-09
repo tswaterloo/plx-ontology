@@ -75,6 +75,13 @@ class FindScanResumeTests(ContractMixin, unittest.TestCase):
         patcher = mock.patch.object(ot, "FILTER_SCAN_CAP", CAP)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # These tests pin the capped scan and its resume over segments that hold matches
+        # and non-matches. Since 2026-11-06 a ``present`` filter narrows the scan in SQL to
+        # the records holding the value (_value_narrowing, 11-06 q17), which skips the
+        # non-matches; the narrowing is pinned in its own tests, so it is off here.
+        narrowing = mock.patch.object(ot, "_value_narrowing", lambda filters: [])
+        narrowing.start()
+        self.addCleanup(narrowing.stop)
 
     def store(self, *args, **kwargs) -> Store:
         s = listing_store(*args, **kwargs)

@@ -1803,6 +1803,20 @@ class InvestigateTools:
                                      sorted(retry["set_args"].items())) +
                                  ": what this step reached rests on weaker links"))
                 # A note, not a reason: each entry resting on a lead says so (lead_basis).
+            if tool == "plx.around" and args.get("tier_floor") == "lead" and \
+                    result is first and isinstance(result.get("possibly_related"), Mapping):
+                # a step that asks the lead floor itself labels what it reaches (each entry
+                # resting on a lead says lead_basis): it follows the lead set plx.around
+                # sets apart, as a step asked again at that floor does (ask_again)
+                apart = result["possibly_related"]
+                merged = dict(with_leads(result))
+                if not result.get("objects"):
+                    merged["set"] = apart.get("set")
+                merged.pop("possibly_related", None)
+                result = merged
+                if retry is None:   # the solid part was harvested at dispatch
+                    self._harvest(run, {"objects": apart.get("objects") or [],
+                                        "edges": apart.get("edges") or []})
             if retry is not None:
                 self._harvest(run, result)
             # A paged answer is read to its last page within the budget, with the same

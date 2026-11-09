@@ -29,7 +29,7 @@ from typing import Any, Iterator, Sequence
 
 from .sensitive import MARKS, folders, labelled, personal_financial
 
-RECORD_KINDS = ("record_text", "bc_text")   # a record's own text: its record's markings
+RECORD_KINDS = ("record_text", "bc_text", "record_words")   # a record's own text: its record's markings
 BATCH = 2000
 DOC_BATCH = 4000   # documents judged at a time (bounded memory)
 DOC_TEXT_CAP = 400_000

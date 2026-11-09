@@ -30,6 +30,7 @@ from operating import ontology_tools as ot
 from operating import ontology_tools_investigate as oi
 from operating import ontology_tools_traverse as tt
 from operating import people_graph as pg
+from operating import tool_results
 from operating import vendor_terms as vt
 from operating.claim_checks import unit_word
 from tests import test_investigate_people_graph as base
@@ -540,7 +541,8 @@ class OnTheCaseHostTests(unittest.TestCase):
             reply = server.handle({"jsonrpc": "2.0", "id": n, "method": "tools/call",
                                    "params": {"name": "plx.investigate",
                                               "arguments": {"family": family, "root": PO}}})
-            out = reply["result"]["structuredContent"]
+            # a large answer is sent once, as its text (tool_results.TEXT_ONLY_KEY)
+            out = tool_results.result_value(reply["result"])
             self.assertEqual(validate(out, OUTPUT, root=CONTRACTS), [], json.dumps(out)[:1500])
             return out
         out = ask("F26", 2)
@@ -577,10 +579,14 @@ class OnTheCaseHostTests(unittest.TestCase):
             (e["name"], e["value"]["untrusted_text"] if isinstance(e["value"], dict)
              else e["value"], e["citation"]["l1_handle"], e["citation"]["field_path"])
             for e in cells]
+        # A value resting on lead-tier links (the mail a lead mention ties to the order)
+        # is stated as a lead (answer_gate LEAD_UNMARKED, 11-07), never as confirmed.
+        lead = {e["name"] for e in spans + cells if e.get("lead_basis")}
         decision = {"claims": [{"text": f"The record states {value}.", "citations": [cite],
                                 "value_claims": [{"value": value, "citation": cite,
-                                                  "field": field}]}
-                               for _name, value, cite, field in stated]}
+                                                  "field": field}],
+                                **({"lead": True} if name in lead else {})}
+                               for name, value, cite, field in stated]}
         gated = answer_gate.gate_answer(decision, server, seen={c for *_, c, _ in stated},
                                         returned=server._returned(), may_repair=False)
         self.assertEqual(gated["outcome"], "answered", gated["unsupported"])

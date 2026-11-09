@@ -38,8 +38,8 @@ from typing import Sequence
 
 # Authority of a chunk's source (contract): 4 system of record, 3 approved document,
 # 2 email (and task systems), 1 chat.
-AUTHORITY = {"portal_text": 4, "bc_text": 4, "record_text": 4, "sharepoint": 3, "original": 3,
-             "sheet_row": 3, "map_stage": 3, "mail": 2, "attachment": 2, "mc_task": 2,
+AUTHORITY = {"portal_text": 4, "bc_text": 4, "record_text": 4, "record_words": 4, "sharepoint": 3, "original": 3,
+             "sheet_row": 3, "map_stage": 3, "list_item": 3, "mail": 2, "attachment": 2, "mc_task": 2,
              "meeting": 2, "teams": 1}
 KINDS = tuple(sorted(AUTHORITY))
 # Body characters one chunk holds at most (about 400 tokens: retrieval quality and CPU
@@ -100,7 +100,10 @@ def make_chunk(*, kind: str, parts: Sequence[str], source_handle: str, object_id
                markings: Sequence[str]) -> Chunk:
     if kind not in AUTHORITY:
         raise ValueError(f"chunk_kind_unknown:{kind}")
-    header, body, title = clean(header) or "", clean(body) or "", clean(title)
+    # a card number is never stored, in the text, its header or its title (every chunker)
+    from .normalise import mask_cards
+    header, body = mask_cards(clean(header) or ""), mask_cards(clean(body) or "")
+    title = None if title is None else mask_cards(clean(title) or "")
     return Chunk(chunk_id=chunk_id(kind, *parts), source_handle=source_handle,
                  object_id=object_id, kind=kind, title=title, author_role=clean(author_role),
                  occurred_at=occurred_at, header=header, body=body,

@@ -620,10 +620,41 @@ def _restamped(conn: sqlite3.Connection, plan: "Plan", key: tuple[str, str],
     return True
 
 
+# The mail scan positions count from when the generation read the capture (``read_since``).
+MAIL_EVENT_BASIS = "read_since"
+# How far before the stalest recorded refresh the first scan of a generation starts: the
+# generation's relations are read at different times of a build, none recorded (the
+# recoveries missed on 2026-11-05 began before the mail refresh it recorded). Following a
+# message again is idempotent; missing one is a document never searchable.
+READ_MARGIN_S = 24 * 3600
+
+
+def read_since(base: Any, source: str) -> str:
+    """The earliest time the generation may have read ``source`` at: its build time, or
+    the stalest refresh any of the source's relations recorded if earlier, less
+    ``READ_MARGIN_S`` (the generation read its relations before its ``built_at``, at
+    times it does not record). No stamp at all: from the start."""
+    built = base.built_at or ""
+    stamps = [entry.get("last_refresh_at") for entry in
+              ((base.freshness or {}).get(source) or {}).values() if isinstance(entry, dict)]
+    stamps = [s for s in stamps if isinstance(s, str) and s]
+    earliest = min([built, *stamps]) if built and stamps else (built or min(stamps, default=""))
+    try:
+        at = dt.datetime.fromisoformat(earliest.replace("Z", "+00:00"))
+    except ValueError:
+        return ""   # an unreadable stamp: scan from the start (nothing missed)
+    return (at - dt.timedelta(seconds=READ_MARGIN_S)).isoformat().replace("+00:00", "Z")
+
+
 def mail_changes(mail_db: Path, base: Base, state: State, exclusion: Any) -> int:
-    """Message versions past the generation's, and attachment texts read since; never a
-    mailbox the people exclusion names."""
+    """Message versions past the generation's, and attachment texts and message events
+    since the generation read the mail capture (``read_since``); never a mailbox the
+    people exclusion names. A state counted from the build time instead (before
+    ``MAIL_EVENT_BASIS``) scans again from the read: an attachment recovered between the
+    read and the build (2026-11-05: 28,042, never projected) was in neither."""
     conn = _ro(mail_db)
+    rescan = state.get("mail_event_basis") != MAIL_EVENT_BASIS
+    read_at = read_since(base, "graph_mail")
     try:
         start = state.get("mail_version")
         if start is None:
@@ -634,7 +665,7 @@ def mail_changes(mail_db: Path, base: Base, state: State, exclusion: Any) -> int
                                 "WHERE version_id > ?", (start,)):
             last = max(last, row[0])
             keys.add((row[1], row[2]))
-        since = state.get("mail_text_since") or base.built_at or ""
+        since = (None if rescan else state.get("mail_text_since")) or read_at
         newest = since
         for row in conn.execute(
                 "SELECT t.recorded_at, m.mailbox_id, m.message_id FROM attachment_text_versions t "
@@ -644,9 +675,9 @@ def mail_changes(mail_db: Path, base: Base, state: State, exclusion: Any) -> int
             keys.add((row[1], row[2]))
         # a message's events since (removed from the source, attachments recovered, ...)
         # change its projected rows in place: the event log is append-only
-        event = state.get("mail_event")
+        event = None if rescan else state.get("mail_event")
         if event is None:
-            event = _first_after(conn, "message_events", "at", base.built_at or "")
+            event = _first_after(conn, "message_events", "at", read_at)
         newest_event = event
         for row in conn.execute("SELECT rowid, l1_handle FROM message_events WHERE rowid >= ?",
                                 (event,)):
@@ -659,6 +690,7 @@ def mail_changes(mail_db: Path, base: Base, state: State, exclusion: Any) -> int
             state.put("mail_event", newest_event)
             state.put("mail_version", last)
             state.put("mail_text_since", newest)
+            state.put("mail_event_basis", MAIL_EVENT_BASIS)
             return state.add("graph_mail", sorted(kept, key=_order))
     finally:
         conn.close()

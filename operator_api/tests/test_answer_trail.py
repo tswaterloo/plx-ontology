@@ -8,6 +8,8 @@ read leaves the answer standing."""
 
 from __future__ import annotations
 
+import contextlib
+
 import json
 from types import SimpleNamespace
 import unittest
@@ -54,7 +56,8 @@ def world():
 def ask(question, *, refused=(), unopenable=(), call=None, passed=None, unsupported=(),
         found=None, session=()):
     view = SimpleNamespace(access=Access(refused), _can_open=lambda h: h not in unopenable,
-                           _call=call or world(), _base=lambda: {})
+                           _call=call or world(), _base=lambda: {},
+                           _request=contextlib.nullcontext)   # one request's reads (told_apart)
     passed = passed if passed is not None else [
         claim("c1", MADE, "The order manufactured fewer units than planned.")]
     result = {"outcome": "answered", "claims": passed, "unsupported_claims": list(unsupported),
