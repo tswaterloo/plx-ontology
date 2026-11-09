@@ -1034,7 +1034,7 @@ def ordered_full_coverage(client: Any, db_path: str | Path, *,
         name = item["relation"]
         run = run_of.get(name, {})
         entry = {"bound": name in bound_set, "complete": item["complete"],
-                 "rows_current": item["rows_current"],
+                 "rows_current": item["rows_current"], "records": item["records"],
                  "rows_missing": item["rows_missing_from_source"],
                  "rows_deleted": item["rows_deleted_in_source"],
                  "pages": (item["latest_capture"] or {}).get("pages"),
@@ -1110,6 +1110,7 @@ def ordered_full_coverage(client: Any, db_path: str | Path, *,
             {run["relation"] for run in runs
              if run["relation"] in deferred_set and run["outcome"] != "captured"}),
         "rows_current_total": coverage["rows_current_total"],
+        "records_total": coverage["records_total"],
         "rows_missing_total": coverage["rows_missing_total"],
         **soft_delete_counts(coverage),
         "lineage_totals": lineage_totals,

@@ -199,6 +199,7 @@ from ontology.core import LEVELS, Actor
 from .http import SourceUnavailable
 from .workbench_read_api import PagingDefect, RelationUnavailable, catalog_revision
 from .capture_store import bound_wal, checkpoint
+from . import mirror_records
 
 
 AUDIENCE_SCHEMA = "plx-source-mirror-audience/v1"
@@ -1676,6 +1677,8 @@ class SourceMirror:
         # counts them failed until a refresh succeeds. Another connection cannot see
         # a record that was never written.
         self._unrecorded: dict[str, str] = {}
+        # relation -> ((last_capture_id, row_count), its records): one count per capture.
+        self._records: dict[str, tuple[tuple[Any, int], dict[str, Any]]] = {}
         # (when, failure) of the last catalog read that met an outage (``_catalog``).
         self._catalog_outage: tuple[datetime, MirrorError] | None = None
         # Seconds the current sync relation waited for another connection's write
@@ -4268,6 +4271,23 @@ class SourceMirror:
                         merge_batches=merge["batches"], served=False)
         return item
 
+    def _relation_records(self, name: str, state: sqlite3.Row | None) -> dict[str, Any]:
+        """``records`` (what coverage quotes: an ETL-reinserted relation's copies are one
+        record, ``integrations.mirror_records``), ``copies_per_record`` and
+        ``records_basis`` of a relation's present rows; counted once per capture."""
+        if state is None:
+            return {"records": 0, "copies_per_record": None, "records_basis": None}
+        mark = (state["last_capture_id"], int(state["row_count"]))
+        held = self._records.get(name)
+        if held is None or held[0] != mark:
+            counted = mirror_records.relation_records(
+                self._db, name, mark[1], mirror_records.minted_columns())
+            held = self._records[name] = (mark, {
+                "records": counted["records"],
+                "copies_per_record": counted["copies_per_record"],
+                "records_basis": counted["basis"]})
+        return dict(held[1])
+
     def _coverage(self, actor: Actor, audience: AudienceMap, catalog: Mapping[str, Any],
                   fetched_at: str | None, error: str | None) -> dict[str, Any]:
         """Coverage of the relations ``actor`` may read. A relation whose failure this
@@ -4326,6 +4346,7 @@ class SourceMirror:
                 "complete": served and state is not None and progress is None
                             and failure is None and name not in unrecorded,
                 "rows_current": state["row_count"] if state else 0,
+                **self._relation_records(name, state),
                 "rows_missing_from_source": missing,
                 "rows_deleted_in_source": deleted,
                 "rows_replaced_in_source": replaced.get(SOURCE_REPLACEMENT, 0),
@@ -4360,6 +4381,7 @@ class SourceMirror:
                                     or item["unrecorded_refresh_failure"]),
                 "not_mirrored_count": sum(1 for item in served if not item["mirrored"]),
                 "rows_current_total": sum(item["rows_current"] for item in relations),
+                "records_total": sum(item["records"] for item in relations),
                 "rows_missing_total": sum(item["rows_missing_from_source"]
                                           for item in relations),
                 "rows_deleted_in_source_total": sum(item["rows_deleted_in_source"]
@@ -5190,11 +5212,13 @@ def full_coverage_probe(client: Any, db_path: str | Path, *,
         "failed_count": coverage["failed_count"],
         "run_outcomes": outcomes,
         "rows_current_total": coverage["rows_current_total"],
+        "records_total": coverage["records_total"],
         "rows_missing_total": coverage["rows_missing_total"],
         **soft_delete_counts(coverage),
         "lineage_totals": lineage_totals,
         "relations": {item["relation"]: {
             "complete": item["complete"], "rows_current": item["rows_current"],
+            "records": item["records"],
             "rows_missing": item["rows_missing_from_source"],
             "rows_deleted": item["rows_deleted_in_source"],
             "pages": (item["latest_capture"] or {}).get("pages")}
