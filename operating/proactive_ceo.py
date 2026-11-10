@@ -157,6 +157,14 @@ def _named(summary: str, name_row: Mapping[str, Any] | None) -> str:
 
 # --------------------------------------------------------------------------- demand drop
 
+def _valued(entry: Mapping[str, Any] | None) -> bool:
+    """An order record stating a positive total (a zero total is a header zeroed once
+    invoiced, never the order's value)."""
+    row = _one(((entry or {}).get("props") or {}).get("total_amount"))
+    value = _dec(row["value"]) if row else None
+    return value is not None and value > 0
+
+
 def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                          result: Callable, settled: Sequence[str], skips: Callable,
                          orders: Callable, absence: Callable) -> dict[str, Any]:
@@ -181,10 +189,11 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
     ties, root = _parties(st, [ORDERED_BY], CUSTOMER_TWINS, settled)
     newest: dict[str, date] = {}    # system -> its newest order date (not after as_of)
     read: list[tuple[Any, str, date, Decimal, str, list]] = []
+    unvalued: list[tuple[Any, str]] = []   # orders in the windows of no known value
     for verdict in judged:
         _tick(st)
-        stating = [m for m in verdict.group if (values.get(m) or {}).get("props", {})
-                   .get("total_amount") and values[m]["props"].get("order_date")]
+        stating = [m for m in verdict.group if _valued(values.get(m))
+                   and values[m]["props"].get("order_date")]
         record = _governing(stating or verdict.group, po_status.binding_of)
         props = (values.get(record) or {}).get("props") or {}
         day_row = _one(props.get("order_date"))
@@ -201,12 +210,16 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
             continue
         total_row = _one(props.get("total_amount"))
         total = _dec(total_row["value"]) if total_row else None
-        if total is None:
+        if total is None or total <= 0:
+            # a zero total is no value: a source zeroes an order's header once it is
+            # invoiced (Sage), and an order of unknown value is no evidence of less demand
             skipped.note("order_value_unknown", [verdict.top], cause)
+            unvalued.append((verdict, record))
             continue
         currency = _currency(codes, total_row)
         if currency is None:
             skipped.note("currency_unknown", [verdict.top], cause)
+            unvalued.append((verdict, record))
             continue
         read.append((verdict, record, day, total, currency, [total_row, day_row]))
     # customer, currency -> its orders: (order, day, total, rows, marks, system)
@@ -220,6 +233,24 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
         series[(customer, currency)].append(
             (verdict.top, day, total, rows, [*marks, *verdict.link_marks],
              po_status.system_of(record)))
+    # a customer with an order in the windows of no known value is not judged: its sum
+    # would be short by that order, a drop that is not one
+    unknown_value = {c for verdict, _r in unvalued
+                     if (c := _party_of(verdict.group, ties, root)[0]) is not None}
+    # nor one whose unsettled twin (a ``same_record_as`` lead to another cluster) ordered
+    # in the recent window: the claim rests on no other order being recorded, and that
+    # twin's orders may be this customer's
+    ordered_recently = {k for (k, _c), got in series.items()
+                        if any(o[1] > recent_from for o in got)}
+    twin_active: set[str] = set()
+    for link in st.links([CUSTOMER_TWINS]):
+        a, b = (root.get(link["from_object"], link["from_object"]),
+                root.get(link["to_object"], link["to_object"]))
+        if a != b:
+            if b in ordered_recently:
+                twin_active.add(a)
+            if a in ordered_recently:
+                twin_active.add(b)
     baseline = {key: sum((o[2] for o in got if o[1] <= recent_from), Decimal(0))
                 for key, got in series.items()}
     floor: dict[str, Decimal] = {}
@@ -239,6 +270,11 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
         base = baseline[(customer, currency)]
         if len(before) < DEMAND_MIN_ORDERS or base <= 0 or base < floor.get(currency, base):
             counts["below_floor"] += 1
+            continue
+        if customer in unknown_value or customer in twin_active:
+            skipped.note("customer_order_value_unknown" if customer in unknown_value
+                         else "customer_twin_unsettled", [customer],
+                         [(o[0], FINANCE) for o in got])
             continue
         stale = sorted({o[5] for o in got
                         if (as_of - newest[o[5]]).days > SOURCE_CURRENT_DAYS})

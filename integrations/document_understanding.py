@@ -12,7 +12,9 @@ read by MarkItDown when installed, else by that converter in MarkItDown's shape
 (``doc_convert.convert_stdlib``), labelled the same way. XLSX
 keeps the Workbench cell transcription, with a span per sheet. An HTML file is its
 visible text (:func:`html_text`, the one HTML reading; bounded by ``MAX_HTML_BYTES``)
-and JSON is plain text as written. Outlook ``.msg``
+and JSON is plain text as written (UTF-16 by its byte-order mark, else Windows-1252,
+when not UTF-8); RTF is its visible text and XML (SVG too) its element text and naming
+attributes (``integrations.text_formats``). Outlook ``.msg``
 messages are read like RFC822 ones: a message's text is its own headers and body
 only. Its attachments, nested messages included (attached as a file or carried: a
 ``message/rfc822`` entity, an embedded Outlook item), are not read here: each is a
@@ -61,7 +63,7 @@ from ontology import identifiers as _ids
 from ontology.core import ValidationError
 from ontology.units import ISO_4217, SIGN_CURRENCIES, currency_reading, currency_token_pattern
 from . import child_process, doc_convert
-from . import legacy_office
+from . import legacy_office, text_formats
 from .xlsx_extract import extract_xlsx_text
 
 
@@ -1931,8 +1933,8 @@ def _converted_claims(text: str, ranges: list[tuple[int, int, str,
 # JSON is read as written (never re-serialized: a parse would round floats and reorder
 # nothing worth the loss), its raw bytes hashed as every file's are.
 PLAIN_TEXT_TYPES = ("text/plain", "text/markdown", "text/x-markdown", "text/csv",
-                    "application/json", "text/json")
-PLAIN_TEXT_SUFFIXES = (".csv", ".md", ".markdown", ".txt", ".json")
+                    "text/tab-separated-values", "application/json", "text/json")
+PLAIN_TEXT_SUFFIXES = (".csv", ".tsv", ".md", ".markdown", ".txt", ".json")
 HTML_TYPES = ("text/html", "application/xhtml+xml")
 HTML_SUFFIXES = (".html", ".htm", ".xhtml")
 # An HTML file is parsed (stdlib HTMLParser) only up to this many bytes (about 1.5 s with
@@ -1962,6 +1964,29 @@ def is_plain_text(kind: str, filename: str = "") -> bool:
     read as UTF-8 text as written: plain text, Markdown, CSV or JSON by type or by name."""
     return (any(kind.startswith(t) for t in PLAIN_TEXT_TYPES)
             or filename.lower().endswith(PLAIN_TEXT_SUFFIXES))
+
+
+XML_TYPES = ("text/xml", "application/xml", "image/svg+xml")
+XML_SUFFIXES = (".xml", ".svg")
+RTF_TYPES = ("application/rtf", "text/rtf", "application/x-rtf", "text/richtext")
+# A legacy Word name or type whose bytes are RTF (Word's "Rich Text" saved as .doc).
+_RTF_WORD = ("application/msword", "application/vnd.ms-word")
+
+
+def is_xml(kind: str, filename: str = "") -> bool:
+    """Whether a file is read as XML (``text_formats.xml_text``) by type or by name."""
+    return kind in XML_TYPES or filename.lower().endswith(XML_SUFFIXES)
+
+
+def is_rtf(kind: str, filename: str = "", content: bytes = b"") -> bool:
+    """Whether a file is read as RTF (``text_formats.rtf_document_text``): its type or
+    name is RTF's (bytes that are not RTF are then refused), or its type or name is a
+    legacy Word document's and its bytes begin ``{\\rtf`` (Word's Rich Text saved as .doc)."""
+    name = filename.lower()
+    if kind in RTF_TYPES or name.endswith(".rtf"):
+        return True
+    return text_formats.is_rtf_bytes(content) and (
+        kind in _RTF_WORD or name.endswith((".doc", ".dot")))
 
 
 def is_html(kind: str, filename: str = "") -> bool:
@@ -2035,19 +2060,46 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
         method, text = "html-text", ""
         if len(content) > MAX_HTML_BYTES:
             status, warnings = "unsupported", (f"html_exceeds_bound:{MAX_HTML_BYTES}",)
+        elif (decoded := text_formats.decode_text(content)) is None:
+            status, warnings = "unsupported", ("text_encoding_unsupported",)
+        else:
+            source_text, warnings = decoded
+            text = html_text(source_text)
+            status = "extracted" if text else "no_text"
+    elif is_rtf(kind, filename, content):
+        # Rich Text (an SDS saved as .doc included): its visible text; an Outlook-style
+        # HTML body it encapsulates is read as HTML. Bytes that are not RTF are refused.
+        method, text = "rtf-text", ""
+        if not text_formats.is_rtf_bytes(content):
+            status, warnings = "unsupported", ("rtf_not_rich_text",)
         else:
             try:
-                text = html_text(content.decode("utf-8-sig"))
-                status = "extracted" if text else "no_text"
-            except UnicodeDecodeError:
-                status, warnings = "unsupported", ("text_encoding_unsupported",)
+                body, html_body = text_formats.rtf_document_text(content)
+                text = html_text(body) if html_body else body
+                status = "extracted" if text.strip() else "no_text"
+            except ValueError:
+                status, warnings = "unsupported", ("rtf_unreadable",)
+    elif is_xml(kind, filename):
+        # XML and SVG: element text and naming attributes (``text_formats.xml_text``),
+        # bounded by bytes like HTML; no declared entity is ever expanded.
+        method, text = "xml-text", ""
+        if len(content) > MAX_HTML_BYTES:
+            status, warnings = "unsupported", (f"xml_exceeds_bound:{MAX_HTML_BYTES}",)
+        elif (found := text_formats.xml_text(content)) is None:
+            status, warnings = "unsupported", ("xml_unreadable",)
+        else:
+            text, warnings = found
+            status = "extracted" if text else "no_text"
     elif is_plain_text(kind, filename):
         # A .csv is text whatever the host declares (vnd.ms-excel), as a member's is; a
-        # Markdown or CSV file is plain text read as written (no rendering).
-        try:
-            text = content.decode("utf-8-sig")
-            status, method = "extracted", "utf8-text"
-        except UnicodeDecodeError:
+        # Markdown or CSV file is plain text read as written (no rendering). Not UTF-8:
+        # UTF-16 by its byte-order mark, else Windows-1252, named in a warning
+        # (``text_formats.decode_text``); binary bytes are never read as text.
+        decoded = text_formats.decode_text(content)
+        if decoded is not None:
+            (text, warnings), status = decoded, "extracted"
+            method = "decoded-text" if warnings else "utf8-text"
+        else:
             text, status, method = "", "unsupported", "utf8-text"
             warnings = ("text_encoding_unsupported",)
     else:
@@ -2055,7 +2107,7 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
         warnings = (f"unsupported_mime_type:{kind}",)
     # An HTML file's cost is bounded by its bytes (MAX_HTML_BYTES); its visible text is
     # never longer than they are, so it is read whole (a map page holds >MAX_TEXT chars).
-    if len(text) > (MAX_HTML_BYTES if method == "html-text" else MAX_TEXT):
+    if len(text) > (MAX_HTML_BYTES if method in ("html-text", "xml-text") else MAX_TEXT):
         raise ValidationError("extracted document text exceeds bound")
     if len(warnings) > MAX_WARNINGS:
         raise ValidationError("document warning count exceeds bound")

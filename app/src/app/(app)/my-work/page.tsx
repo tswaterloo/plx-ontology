@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { MyWorkList } from "@/components/my-work";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Pending } from "@/components/ui/skeleton";
+import { Toolbar } from "@/components/ui/toolbar";
 import { LoadProblem } from "@/components/ui/notice";
 import { getMyWork } from "@/lib/api";
 import { noticeKind, plainError } from "@/lib/errors";
@@ -25,7 +26,18 @@ export default function MyWorkPage() {
     });
     return () => ctl.abort();
   }, [round]);
-  if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
-  if (!work) return <Skeleton className="h-64 w-full" />;
-  return <MyWorkList work={work} />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Toolbar heading title="Prepared for you" />
+      <div className="mx-auto w-full max-w-3xl px-6 py-6">
+        {error ? (
+          <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
+        ) : work ? (
+          <MyWorkList work={work} />
+        ) : (
+          <Pending label="Reading the work prepared for you" />
+        )}
+      </div>
+    </div>
+  );
 }

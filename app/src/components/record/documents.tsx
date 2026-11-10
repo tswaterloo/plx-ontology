@@ -8,8 +8,11 @@ import { Pending } from "@/components/ui/skeleton";
 import { LoadProblem } from "@/components/ui/notice";
 import { getRecordPack } from "@/lib/api";
 import { noticeKind, plainError } from "@/lib/errors";
-import { formatDate } from "@/lib/format";
+import { formatDate, safeHref } from "@/lib/format";
 import type { ActionResult, RecordPack } from "@/lib/types";
+
+/** Where a document was found, as the reader names it. */
+const DOC_KIND: Record<string, string> = { attachment: "Email attachment", sharepoint_file: "SharePoint file", original: "Original", email: "Email", record: "Record" };
 
 // The record page's Documents section (was /pack): what a customer or supplier usually asks
 // for, found around the record as you may read it, and a drafted reply that goes out only
@@ -62,27 +65,38 @@ function PackBody({ pack, state, setState }: { pack: RecordPack; state: ActionRe
   return (
     <div className="space-y-3">
       <p className="text-muted">{pack.basis}</p>
-      <ul className="space-y-1">
-        {(pack.documents ?? []).map((d) => (
-          <li key={d.citation}>
-            <span className="font-medium">{d.label}</span>: {d.title ?? d.kind}
-            {d.date ? ` · ${formatDate(d.date, { short: true })}` : ""} · {d.kind.replace(/_/g, " ")}
-            {d.url && (
-              <>
-                {" "}
-                <Link className="hover:underline" href={d.url}>open</Link>
-              </>
-            )}
-            <span className="ml-1 text-muted">({d.citation})</span>
-          </li>
-        ))}
+      <ul className="divide-y divide-border" aria-label="Documents found">
+        {(pack.documents ?? []).map((d) => {
+          // the document opens where it lives, else in the source reader by its citation; the
+          // citation itself is a handle, never shown
+          const href = safeHref(d.url) ?? `/source?handle=${encodeURIComponent(d.citation)}`;
+          const name = d.title && d.title !== d.label ? `${d.label}: ${d.title}` : d.label;
+          const where = DOC_KIND[d.kind] ?? d.kind.replace(/_/g, " ");
+          return (
+            <li key={d.citation} className="flex flex-wrap items-baseline gap-x-2 py-1.5" data-testid="pack-document">
+              <Link className="min-w-0 font-medium break-words hover:underline" href={href}>
+                {name}
+              </Link>
+              <span className="text-[12px] text-muted">
+                {where}
+                {d.date ? ` · ${formatDate(d.date, { short: true })}` : ""}
+              </span>
+            </li>
+          );
+        })}
       </ul>
       {(pack.missing_labels ?? []).length > 0 && <p className="text-muted">Not found for you: {(pack.missing_labels ?? []).join(", ")}.</p>}
       <section className="space-y-2 rounded-lg border border-border p-3">
-        <h2 className="font-medium">Drafted reply</h2>
-        <div>To: {pack.draft.to?.address ?? "not recorded for you"}</div>
-        <div>Subject: {pack.draft.subject}</div>
-        {pack.draft.body ? <pre className="whitespace-pre-wrap rounded bg-hover p-2 text-[12px]">{pack.draft.body}</pre> : <p className="text-muted">No draft.</p>}
+        <h3 className="font-medium">
+          Drafted reply <span className="font-normal text-muted">· not sent</span>
+        </h3>
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5">
+          <dt className="text-muted">To</dt>
+          <dd className="break-words">{pack.draft.to?.address ?? <span className="text-muted">No address on record that you can see</span>}</dd>
+          <dt className="text-muted">Subject</dt>
+          <dd className="break-words">{pack.draft.subject}</dd>
+        </dl>
+        {pack.draft.body ? <p className="whitespace-pre-wrap rounded-lg bg-surface p-2.5 leading-5">{pack.draft.body}</p> : <p className="text-muted">No draft.</p>}
         {(pack.draft_missing ?? []).length > 0 && <p className="text-muted">{(pack.draft_missing ?? []).join("; ")}.</p>}
         {pack.card_id && <CardActions card={{ id: pack.card_id, subject: { label: pack.draft.subject }, actions: pack.offers }} state={state} onDone={setState} />}
       </section>

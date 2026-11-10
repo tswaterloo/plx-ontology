@@ -143,9 +143,36 @@ class CeoSignals(Engine):
         both = order(w, who, placed=day(23))
         w.link("SalesOrder.ordered_by", both, other)           # two customers
         summary = self.run_rules(w)
+        # the customer of the unreadable orders is not judged either: its sum would be short
         self.assertEqual(summary["not_evaluated"][ceo.DEMAND], {
             "currency_unknown": 1, "order_value_unknown": 1, "customer_unknown": 1,
-            "customer_ambiguous": 1})
+            "customer_ambiguous": 1, "customer_order_value_unknown": 1})
+        self.assertEqual(self.kinds(ceo.DEMAND), [])
+
+    def test_a_zeroed_order_total_or_an_active_unsettled_twin_is_no_drop(self):
+        # live 11-10: 14 of 15 drops were customers still buying: a Sage order header reads
+        # 0 once invoiced, or the orders go to an unsettled twin of the customer
+        w = World()
+        zeroed = customer(w, "SYNTH Zeroed")
+        for i in range(4):
+            order(w, zeroed, placed=day(100 + 60 * i))
+        order(w, zeroed, placed=day(15), total="0", binding="portal.sage_oe_order_header")
+        moved = customer(w, "SYNTH Moved")
+        for i in range(4):
+            order(w, moved, placed=day(100 + 60 * i))
+        twin = customer(w, "SYNTH Moved Twin")
+        w.link("Customer.same_record_as", twin, moved, tier="lead")
+        order(w, twin, placed=day(12), total="1200")
+        stopped, _orders = dropping(w)                    # still a drop
+        summary = self.run_rules(w)
+        self.assertEqual([g["object_id"] for g in self.kinds(ceo.DEMAND)], [stopped])
+        self.assertEqual(summary["not_evaluated"][ceo.DEMAND], {
+            "order_value_unknown": 1, "customer_order_value_unknown": 1,
+            "customer_twin_unsettled": 1})
+        # a header stating 0 beside a twin record of the same order stating its value: the
+        # stated value counts (the governing record is one that states a positive total)
+        self.assertTrue(ceo._valued({"props": {"total_amount": [{"value": "10"}]}}))
+        self.assertFalse(ceo._valued({"props": {"total_amount": [{"value": "0"}]}}))
 
     # ------------------------------------------------------------------ promise slips
 

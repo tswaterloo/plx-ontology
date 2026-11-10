@@ -70,6 +70,7 @@ from ontology.json_contract import validate
 from .ontology_tools import (_AUDIENCE_SOURCE, _ITEM_ACL_AUDIENCES, Actor, OntologyTools,
                              ToolError, _envelope_bytes, _error,
                              _format_time, _gap, _parse_time, _value_out)
+from operating.declared_schema.changes_index import _INDEX_DDL, _INDEX_INDEXES
 
 TOOL_NAME = "plx.changes"
 TOOL_NAMES = (TOOL_NAME,)
@@ -246,22 +247,6 @@ INDEX_FORMAT = "plx-changes-index/v1"
 INDEX_PREFIX = ".store-changes-"
 _FAR = 1 << 62
 _EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
-_INDEX_DDL = (
-    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    "CREATE TABLE ver (object_type TEXT NOT NULL, object_id TEXT NOT NULL, "
-    "audience TEXT NOT NULL, seq INTEGER NOT NULL, handle TEXT NOT NULL, "
-    "recorded TEXT NOT NULL, superseded TEXT, start_us INTEGER NOT NULL, end_us INTEGER, "
-    "markings TEXT NOT NULL, latest TEXT NOT NULL, digest TEXT NOT NULL, created TEXT)",
-    "CREATE TABLE removed (object_id TEXT PRIMARY KEY)",
-    "CREATE TABLE audiences (object_type TEXT NOT NULL, audience TEXT NOT NULL, "
-    "PRIMARY KEY (object_type, audience))",
-)
-_INDEX_INDEXES = (
-    "CREATE INDEX ver_start ON ver(object_type, start_us)",
-    "CREATE INDEX ver_end ON ver(object_type, end_us)",
-    "CREATE INDEX ver_object ON ver(object_id, seq)",
-    "CREATE INDEX ver_audience ON ver(object_type, audience, latest, markings, start_us)",
-)
 
 
 def _us(moment: dt.datetime) -> int:

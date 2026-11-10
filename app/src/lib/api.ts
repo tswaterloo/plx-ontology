@@ -28,8 +28,16 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   MyActionItemsResponse,
   ApprovalsQueue,
   LabelChanges,
+  LabelRevisions,
   ReplyTriage,
   MyWork,
+  AutopilotArea,
+  AutopilotAudit,
+  AutopilotDecisionRequest,
+  AutopilotItem,
+  AutopilotSwitches,
+  AutopilotWorkflowSwitch,
+  AssistDraft,
   Workload,
   OwnerWorkload,
   OwnerWorkloadBucket,
@@ -318,6 +326,42 @@ export async function prepareMyWorkWrite(itemId: string): Promise<WriteIntentVie
   return (await (await call(`/api/my-work/${encodeURIComponent(itemId)}/write`, { method: "POST" })).json()) as WriteIntentView;
 }
 
+/** The autopilot area: prepared items you may see, per workflow scores, state and switches. */
+export function getAutopilot(signal?: AbortSignal): Promise<AutopilotArea> {
+  return getJson<AutopilotArea>("/api/autopilot", signal);
+}
+
+/** Accept, edit, reject or snooze an item of yours (accept: a recorded dry run unless live). */
+export async function decideAutopilotItem(itemId: string, body: AutopilotDecisionRequest): Promise<AutopilotItem> {
+  return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/decision`, { method: "POST", json: body })).json()) as AutopilotItem;
+}
+
+/** Assist: a line you typed ("tell Sam the PO 1234 is late") drafted as a message with
+ * recipients, subject and body, each fact cited. Nothing is sent. */
+export async function assistDraft(intent: string): Promise<AssistDraft> {
+  return (await (await call("/api/autopilot/assist", { method: "POST", json: { intent } })).json()) as AssistDraft;
+}
+
+/** Owner only: the write path's global kill switch. */
+export async function setAutopilotGlobal(globalOff: boolean): Promise<AutopilotSwitches> {
+  return (await (await call("/api/autopilot/switches", { method: "POST", json: { global_off: globalOff } })).json()) as AutopilotSwitches;
+}
+
+/** Owner only: a workflow off or on, or a role's workflow live or back to dry run. */
+export async function setAutopilotWorkflow(workflow: string, body: AutopilotWorkflowSwitch): Promise<AutopilotArea> {
+  return (await (await call(`/api/autopilot/workflows/${encodeURIComponent(workflow)}`, { method: "POST", json: body })).json()) as AutopilotArea;
+}
+
+/** Owner only: the write path's audit log, newest first. */
+export function getAutopilotAudit(signal?: AbortSignal): Promise<AutopilotAudit> {
+  return getJson<AutopilotAudit>("/api/autopilot/audit", signal);
+}
+
+/** Owner only: undo a live action once through its recorded inverse. */
+export async function undoAutopilotAction(key: string): Promise<AutopilotAudit> {
+  return (await (await call(`/api/autopilot/audit/${encodeURIComponent(key)}/undo`, { method: "POST" })).json()) as AutopilotAudit;
+}
+
 // Counts per team; per person only you and the teams the owner granted you.
 export function getWorkload(signal?: AbortSignal): Promise<Workload> {
   return getJson<Workload>("/api/workload", signal);
@@ -341,6 +385,10 @@ export function getRdBoard(signal?: AbortSignal): Promise<RdBoard> {
 // An item's label and artwork changes from your own alert list.
 export function getLabelChanges(objectId: string, signal?: AbortSignal): Promise<LabelChanges> {
   return getJson<LabelChanges>(`/api/label-changes/${encodeURIComponent(objectId)}`, signal);
+}
+
+export function getLabelRevisions(objectId: string, signal?: AbortSignal): Promise<LabelRevisions> {
+  return getJson<LabelRevisions>(`/api/label-revisions/${encodeURIComponent(objectId)}`, signal);
 }
 
 export function getApprovals(signal?: AbortSignal): Promise<ApprovalsQueue> {

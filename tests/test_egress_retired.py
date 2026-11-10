@@ -36,7 +36,7 @@ RETIRED_FLAGS = ("--enable-cloud-document-tags", "--cloud-tag-model",
 RETIRED_NAMES = ("HttpPortalQuoteReader", "CloudDocumentTagger", "CloudGoalPlanner",
                  "CloudTransactionAnswerer", "api.openai.com", "suggest_transaction_answer",
                  "suggest_campaign_plan", "generate_document_tags", "request_freight_quote")
-PRODUCT_DIRS = ("ontology", "integrations", "operating", "operator_ui")
+PRODUCT_DIRS = ("ontology", "integrations", "operating", "operator_api")
 # The one embeddings sender may name its provider's endpoint: scripts/check_http_egress.py
 # pins that file to that URL and function, so the retired cloud answerers stay banned.
 ALLOWED_MARKERS = {"operating/embed_sender.py": frozenset({"api.openai.com"})}
@@ -75,7 +75,7 @@ class EgressRetiredTests(unittest.TestCase):
     def test_case_host_rejects_the_retired_flags_and_the_platform_launcher_is_gone(self):
         # deletion-8: `python3 -m operating workbench` (UnifiedPlatform's launcher) is
         # gone; the case host is the only agent entry point and the console is
-        # `python3 -m operator_ui.case_console`.
+        # `python3 -m operator_api.workspace.case_console`.
         with tempfile.TemporaryDirectory() as tmp:
             for flag in ("--enable-cloud-goal-plans", "--enable-cloud-transaction-answers",
                          "--enable-portal-quote-read", "--enable-cloud-document-tags"):

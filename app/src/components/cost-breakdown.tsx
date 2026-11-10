@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { money, objectHref, plural, safeHref } from "@/lib/format";
+import { money, objectHref, plural, readable, safeHref } from "@/lib/format";
 import type { CostBreakdownView, CostSource, CustomerAmount, ObjectRef, OrderMargin, ProductMargin, ProfitDriver, Profitability, Source } from "@/lib/types";
 import { EtaPill } from "./eta-confirmed";
 import { NextActionCard } from "./evidence-trail";
@@ -37,7 +37,8 @@ function sentence(s: string): string {
 }
 
 /** Orders worst margin first; orders without a margin collapse under one line with their reasons. */
-export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: OrderMargin[]; note?: string | null; more?: number; inPeriod?: number }) {
+/** `footnote`: off when the page states the margin basis itself (the asterisk then points at that note). */
+export function OrderRanking({ orders, note, more = 0, inPeriod, footnote = true }: { orders: OrderMargin[]; note?: string | null; more?: number; inPeriod?: number; footnote?: boolean }) {
   const real = orders.filter((o) => !TEST_ORDER.test(o.order.label));
   if (real.length === 0) return null;
   const withMargin = real.filter((o) => o.margin);
@@ -108,7 +109,7 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
         )}
       </table>
 </div>
-      <p className="text-[12px] leading-4 text-muted">*Item cost only. Freight, labour and overhead aren&apos;t included.</p>
+      {footnote && <p className="text-[12px] leading-4 text-muted">*Item cost only. Freight, labour and overhead aren&apos;t included.</p>}
     </div>
   );
 }
@@ -168,21 +169,22 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
       {lines.length > 0 && (
         <div className="overflow-x-auto">
           <div className="max-w-full overflow-x-auto">
-            <table className="w-full text-[13px]" aria-label="Order lines">
+            {/* fixed on a phone: the item and its source share what Qty and Margin leave, never wider than the screen */}
+            <table className="w-full text-[13px] max-sm:table-fixed" aria-label="Order lines">
             <thead className="text-[12px] text-muted [&_th]:font-normal">
               <tr className="h-8 border-b border-border">
                 <th scope="col" className="py-1.5 pr-3 text-left">Item</th>
-                <th scope="col" className="py-1.5 pl-3 text-right">Qty</th>
+                <th scope="col" className="py-1.5 pl-3 text-right max-sm:w-[84px]">Qty</th>
                 <th scope="col" className="py-1.5 pl-3 text-right max-sm:hidden">Revenue</th>
                 <th scope="col" className="py-1.5 pl-3 text-right max-sm:hidden">Cost</th>
-                <th scope="col" className="py-1.5 pl-3 text-right">Margin*</th>
+                <th scope="col" className="py-1.5 pl-3 text-right max-sm:w-[92px]">Margin*</th>
                 {lines.length > 1 && <th scope="col" className="py-1.5 pl-3 text-right whitespace-nowrap max-sm:hidden">Share of cost</th>}
               </tr>
             </thead>
             <tbody>
               {lines.map((l, i) => (
                 <tr key={i} className="border-b border-border align-top last:border-0">
-                  <td className="py-2 pr-3">
+                  <td className="py-2 pr-3 break-words">
                     <span className="font-medium">{l.label}</span> <SourceChips sources={l.sources} max={1} />
                   </td>
                   <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums">{l.quantity ? `${l.quantity} ${l.unit ?? ""}`.trim() : "–"}</td>
@@ -224,7 +226,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
           <summary className="cursor-pointer text-[12px] text-muted hover:text-fg">All margin drivers</summary>
           <ul className="mt-1 space-y-1" aria-label="What drove the margin">
             {(b.drivers ?? []).map((d, i) => (
-              <li key={i}>{d}</li>
+              <li key={i}>{readable(d)}</li>
             ))}
           </ul>
         </details>
@@ -245,7 +247,7 @@ export function MarginDrivers({ drivers }: { drivers: ProfitDriver[] }) {
       <ul className="max-w-[72ch] space-y-1 text-[13px] leading-5">
         {drivers.map((d, i) => (
           <li key={i} className={d.established ? undefined : "text-muted"} data-testid={`driver-${d.kind}`}>
-            {d.text} {(d.sources ?? []).length > 0 && <SourceChips sources={d.sources ?? []} max={2} />}
+            {readable(d.text)} {(d.sources ?? []).length > 0 && <SourceChips sources={d.sources ?? []} max={2} />}
           </li>
         ))}
       </ul>
@@ -271,7 +273,7 @@ export function ProfitabilityView({ p }: { p: Profitability }) {
         />
       </StatRow>
       <MarginDrivers drivers={p.drivers ?? []} />
-      <OrderRanking orders={p.orders ?? []} note={p.ranking} more={p.orders_more ?? 0} inPeriod={inPeriod} />
+      <OrderRanking orders={p.orders ?? []} note={p.ranking} more={p.orders_more ?? 0} inPeriod={inPeriod} footnote={!p.margin_note} />
       {p.test_records_hidden && (
         <p className="text-[12px] leading-4 text-muted" data-testid="tests-hidden">
           {p.test_records_hidden} (test and staging orders are not counted)
@@ -279,7 +281,7 @@ export function ProfitabilityView({ p }: { p: Profitability }) {
       )}
       {p.margin_note && (
         <p className="text-[12px] leading-4 text-muted" data-testid="margin-basis">
-          Margins are {p.margin_basis ?? "on item cost only"}. {p.margin_note}
+          *Margins are {p.margin_basis ?? "on item cost only"}. {p.margin_note}
         </p>
       )}
       <ProductRanking products={p.products ?? []} />
@@ -321,7 +323,7 @@ export function MarginHeadline({ b, scope }: { b: CostBreakdownView; scope?: str
       {why.length > 0 && (
         <div className="max-w-[72ch] space-y-0.5 text-[13px] leading-5" data-testid="margin-why">
           {why.map((w, i) => (
-            <p key={i}>{w}</p>
+            <p key={i}>{readable(w)}</p>
           ))}
         </div>
       )}
@@ -389,7 +391,7 @@ function CustomerVerdict({ p }: { p: Profitability }) {
             <Signed m={b.margin} />.
           </p>
           {why.map((w, i) => (
-            <p key={i}>{w}</p>
+            <p key={i}>{readable(w)}</p>
           ))}
         </div>
       )}

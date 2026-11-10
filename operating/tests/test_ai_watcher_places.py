@@ -40,6 +40,36 @@ class PlacesTests(unittest.TestCase):
             finally:
                 places._conns.clear()
 
+    def test_a_later_read_reuses_a_layers_ids_until_the_layer_changes(self):
+        # each briefing read makes its own Places: an unchanged layer's owned ids are
+        # not read again; a layer rewritten in place is read afresh
+        with tempfile.TemporaryDirectory() as root:
+            served = Path(root) / "projection" / "ontology.sqlite"
+            served.parent.mkdir()
+            with sqlite3.connect(served) as conn:
+                conn.execute("CREATE TABLE store_meta(key TEXT PRIMARY KEY, value TEXT)")
+            one = layer(Path(root) / "one.sqlite", ["PurchaseOrder:fx:1"])
+            first = aw.Places(served)
+            first.layers = [one]
+            self.assertEqual(first._where("PurchaseOrder:fx:1"), one)
+            for conn in first._conns.values():
+                conn.close()
+            later = aw.Places(served)
+            later.layers = [one]
+            reads = []
+            later._conn = lambda path: reads.append(path)   # any layer read fails here
+            self.assertEqual(later._where("PurchaseOrder:fx:1"), one)
+            self.assertEqual(reads, [])
+            with sqlite3.connect(one) as conn:
+                conn.execute("INSERT INTO delta_owned VALUES ('SalesOrder:fx:2')")
+            again = aw.Places(served)
+            again.layers = [one]
+            try:
+                self.assertEqual(again._where("SalesOrder:fx:2"), one)
+            finally:
+                for conn in again._conns.values():
+                    conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

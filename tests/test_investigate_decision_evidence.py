@@ -527,7 +527,7 @@ class DecisionEvidenceTests(unittest.TestCase):
         self.assertEqual(oi.plan_root_types(plan.doc, None), frozenset())
         # Every reader of a plan's roots resolves them the same way: the console offers
         # the family on an order and on a quote, the dev baseline syncs their relations.
-        from operator_ui import object_workspace
+        from operator_api.workspace import object_workspace
         from scripts import eval_dev_baseline
         for type_id in ("PurchaseOrder", "Quote"):
             self.assertIn("decision_evidence", [p["family"] for p in

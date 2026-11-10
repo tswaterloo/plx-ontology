@@ -1537,7 +1537,7 @@ class RoutedAgent:
 
 
 class AppView:
-    """A reader's workspace as the app's Ask jobs use it (``operator_ui.object_workspace``'s
+    """A reader's workspace as the app's Ask jobs use it (``operator_api.workspace.object_workspace``'s
     view and ``HostAccess``), over the reader's eval session (``fast_answer.Reads``): every
     tool call is the session's, recorded as a transcript event, and each cited record is
     decided for the reader by the console's own rule (``HostAccess._decide``)."""
@@ -1554,7 +1554,7 @@ class AppView:
         """The reader's gap inbox as the app's workspace reads it
         (``ObjectWorkspace.gap_inbox``: the inbox beside the store, trimmed by this
         reader's grant and per-item decision)."""
-        from operator_ui.object_workspace import ObjectWorkspace
+        from operator_api.workspace.object_workspace import ObjectWorkspace
         return ObjectWorkspace.gap_inbox(self, limit=limit)  # type: ignore[arg-type]
 
     def grant(self) -> tuple[Callable[[str], bool], frozenset[str]]:
@@ -1586,7 +1586,7 @@ class AppView:
         return False   # no console here to open it in
 
     def decide(self, handles: Iterable[str]) -> dict[str, Any]:
-        from operator_ui.object_workspace import HostAccess
+        from operator_api.workspace.object_workspace import HostAccess
         reads = self.reads
         gated = reads._gated
         todo = [h for h in dict.fromkeys(handles) if h not in self._memo]
@@ -1810,7 +1810,7 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str],
         injected = agent is not None
         evidence_label = "injected-transport" if injected else "live-captures"
         if args.command == "run":
-            from operator_ui.session_journal import isolate_journal
+            from operator_api.workspace.session_journal import isolate_journal
             isolate_journal(args.work_dir / "journal")
             if make_host is None:
                 identity, _kind, problem = cards_run.run_reader(environ, args)

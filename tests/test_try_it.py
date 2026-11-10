@@ -153,12 +153,12 @@ def mcp_failures(block, stdout):
 class TryItTest(unittest.TestCase):
     def test_try_it_names_only_flags_the_tool_accepts(self):
         text = TRY_IT.read_text(encoding="utf-8")
-        for module in ("operator_ui.tests.case_fixtures", "operating.mcp_server"):
+        for module in ("operator_api.tests.case_fixtures", "operating.mcp_server"):
             help_out = subprocess.run([sys.executable, "-m", module, "--help"], cwd=ROOT,
                                       capture_output=True, text=True, timeout=120).stdout
             accepted = set(re.findall(r"--[a-z][a-z-]*", help_out))
             if module.endswith("case_fixtures"):  # flags its entry strips before argparse
-                src = (ROOT / "operator_ui/tests/case_fixtures.py").read_text(encoding="utf-8")
+                src = (ROOT / "operator_api/tests/case_fixtures.py").read_text(encoding="utf-8")
                 accepted |= set(re.findall(r'"(--[a-z-]+)" in sys\.argv', src))
             for command in re.findall(rf"python3 -m {re.escape(module)} ([^\n|]*)", text):
                 for flag in re.findall(r"(?<![\w-])--[a-z][a-z-]*", command.split(" | ")[0]):
@@ -171,7 +171,7 @@ class TryItTest(unittest.TestCase):
             env = keyless_env(TMPDIR=tmp, PYTHONDONTWRITEBYTECODE="1")
             state = {}
             for block in found:
-                if "operator_ui.case_console" in block or "operator_ui.tests.case_fixtures" in block:
+                if "operator_api.workspace.case_console" in block or "operator_api.tests.case_fixtures" in block:
                     self._console(block, env, state)
                     continue
                 if "$DIR" in block:

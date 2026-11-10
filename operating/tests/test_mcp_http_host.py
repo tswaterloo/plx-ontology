@@ -3,7 +3,7 @@
 Evidence label: ``isolated-fixture``. Access tokens are signed here with a generated
 RSA key whose JWKS is injected into ``python3 -m operating.host mcp-http`` start-up;
 the employees are Portal-shaped fixture rows; the data is the case console's synthetic
-fixture world (``operator_ui.tests.case_fixtures``) projected into the host's projection
+fixture world (``operator_api.tests.case_fixtures``) projected into the host's projection
 path. Nothing is live: no Entra, no network beyond loopback.
 """
 
@@ -109,9 +109,9 @@ def fixture_world(root: Path) -> tuple[Path, Path, Path]:
     """The fixture world projected where the host serves its projection: ``(state dir,
     mirror audience, projection store)``. The rows are synthetic; the host under test is
     the live employee host, so the seed's fixture marker is removed."""
-    from operator_ui import object_workspace as objects
-    from operator_ui.case_console import FIXTURE_MARKER
-    from operator_ui.tests import case_fixtures
+    from operator_api.workspace import object_workspace as objects
+    from operator_api.workspace.case_console import FIXTURE_MARKER
+    from operator_api.tests import case_fixtures
 
     state = root / "state"
     case_fixtures.seed(state, "plx")

@@ -152,7 +152,9 @@ class LinkKindTests(unittest.TestCase):
         mail = self.around(SO, [{"link_type": "Email.mentions_sales_order",
                                  "direction": "reverse"}])
         edges = {(e["link_type"], e["kind"], e["tier"])
-                 for out in (dependency_chain, packets, mail) for e in out["edges"]}
+                 # a lead-tier mention is set apart (possibly_related); with_leads reads it back
+                 for out in map(tt.with_leads, (dependency_chain, packets, mail))
+                 for e in out["edges"]}
         self.assertEqual(edges, {
             ("AssemblyOrder.for_order_line", "dependency", "verified"),
             ("SalesOrderLine.line_of", "reference", "verified"),
@@ -166,6 +168,7 @@ class LinkKindTests(unittest.TestCase):
         # A reader without the mailbox reaches no mention and learns nothing of it.
         hidden = self.around(SO, [{"link_type": "Email.mentions_sales_order",
                                    "direction": "reverse"}], B.actor)
+        hidden = tt.with_leads(hidden)   # the lead set is read too: nothing leaks through it
         self.assertEqual((hidden["edges"], hidden["objects"]), ([], []))
 
         # plx.object names each record by itself, never the pair as one.

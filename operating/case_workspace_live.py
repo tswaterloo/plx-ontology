@@ -6,7 +6,7 @@ its own store; a persistent host (``operating.host``) may hold BC, mail and Shar
 captures there too. This module never fills or refreshes them. It opens a case
 **offline** over those captures (``CaseRuntime(client=None)``: no Workbench API client
 exists here, so no Portal request can be made) through the generic path every MCP client
-uses, then builds the console's workspace (``operator_ui.case_workspace``: timeline,
+uses, then builds the console's workspace (``operator_api.workspace.case_workspace``: timeline,
 originals, gaps, conflicts and actions together) for each reader, every
 part re-resolved for that reader. A reader the mirror audience does not grant a relation
 sees withheld markers, never the rows.
@@ -3045,7 +3045,7 @@ class CaseOpener:
 
     def _investigate(self, call: Callable[[str, dict], dict], kind: str,
                      identifier: str) -> str | None:
-        from operator_ui.object_workspace import plans_for
+        from operator_api.workspace.object_workspace import plans_for
 
         from .ontology_tools import _IDENTITY_TIERS
 
@@ -3275,7 +3275,7 @@ def _decisions(state_dir: Path, tenant: str) -> dict[str, list[int]] | None:
 def workspace(runtime: Any, reader: Any, case_id: str, *, evidence: Mapping[str, Any] | None = None,
               action_path: Any = None, ingestion: Any = None) -> dict[str, Any] | None:
     """The console workspace of one case for ``reader``, or None when not readable."""
-    from operator_ui.case_workspace import CaseWorkspace
+    from operator_api.workspace.case_workspace import CaseWorkspace
 
     view = CaseWorkspace(runtime, reader, evidence=evidence or MIRROR_EVIDENCE,
                          action_path=action_path, ingestion=ingestion)

@@ -152,7 +152,7 @@ from evals import runner
 from evals import score as scoring
 from operating import deep_investigation as deep
 from operating import eval_principal
-from operator_ui.session_journal import run_journal_scope
+from operator_api.workspace.session_journal import run_journal_scope
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "plx-eval-case-card-answers/v1"
@@ -1180,7 +1180,7 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     args = parser.parse_args(argv)
     if args.per_case < 0:
         parser.error("--per-case must be 0 (every card) or a positive count")
-    from operator_ui.session_journal import isolate_journal
+    from operator_api.workspace.session_journal import isolate_journal
     isolate_journal(args.work_dir / "journal")   # never the host's own journal
     picked = [part.strip() for part in args.items.split(",") if part.strip()]
     environ = os.environ if environ is None else environ

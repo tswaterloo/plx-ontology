@@ -27,13 +27,15 @@ import sqlite3
 import threading
 import time
 from typing import Any, Iterator, Optional
+from operating import declared_schema as _schemas
+from operating.declared_schema import page_store as _PAGE_STORE
 
 LOG = logging.getLogger("operator_api.page_store")
 FILE = "page-cache.sqlite"
 MAX_ROWS = 20000          # entries kept; the oldest go first
 PRUNE_EVERY = 200         # writes between prunes
 # The packages whose code reads a page: a change to any of them is a new code version.
-CODE_PACKAGES = ("operator_api", "operator_ui", "operating", "integrations", "ontology")
+CODE_PACKAGES = ("operator_api", "operating", "integrations", "ontology")
 
 _CODE: Optional[str] = None
 
@@ -131,8 +133,7 @@ class PageStore:
             conn = sqlite3.connect(str(self.path), timeout=5, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("CREATE TABLE IF NOT EXISTS pages (key TEXT PRIMARY KEY, "
-                         "read_at REAL NOT NULL, expires REAL NOT NULL, value BLOB NOT NULL)")
+            _schemas.apply(conn, _PAGE_STORE)
             self._local.conn = conn
         return conn
 

@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/errors";
 import type { SourceView } from "@/lib/types";
 
 const params = { handle: "", field: [] as string[] };
@@ -73,7 +74,10 @@ const bcPo: SourceView = {
 };
 
 describe("source page", () => {
-  beforeEach(() => getSource.mockReset());
+  // braces: a hook that returns the mock would have vitest call it as a teardown
+  beforeEach(() => {
+    getSource.mockReset();
+  });
   afterEach(() => {
     params.handle = "";
     params.field = [];
@@ -155,5 +159,24 @@ describe("source page", () => {
     expect(labels[0]).toBe("Lot ID");
     expect(grid).toHaveTextContent("L-26101");
     expect(document.body.textContent).not.toContain("row.lot_id");
+  });
+
+  it("a source that isn't there names the page, offers no retry and no question about it", async () => {
+    params.handle = "bc://gone@x";
+    params.field = [];
+    getSource.mockImplementation(async () => { throw new ApiError(404, "not_found"); });
+    render(<SourcePage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't find that, or you don't have access to it.");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Source");
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.queryByPlaceholderText("Ask about this document")).toBeNull();
+  });
+
+  it("a server failure still offers a retry", async () => {
+    params.handle = "bc://flaky@x";
+    getSource.mockImplementation(async () => { throw new ApiError(500, "internal"); });
+    render(<SourcePage />);
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 });

@@ -23,6 +23,14 @@ Rows are :class:`Row` (index and name access, ``keys()``, as ``sqlite3.Row``) wi
 SQLite's value types: a boolean is 0/1, an integral numeric an int, bytea bytes. A
 Postgres error is raised as ``sqlite3.OperationalError``, so the tools' existing handling
 (``store_unavailable``) applies. Stdlib and psycopg.
+
+A lost connection (Postgres restarted, the backend terminated) is replaced: before each
+statement the held connection is checked without a round trip (``pool.alive``) and, when
+the server went away, opened again with the same session; a read-only statement
+(``read_only``) that failed because the connection was lost under it runs once more on
+the new one. A write, or any statement inside a transaction the caller opened, is never
+run again: its error is raised and the next statement gets the new connection. Each loss
+is logged once.
 """
 
 from __future__ import annotations
@@ -30,12 +38,25 @@ from __future__ import annotations
 from decimal import Decimal
 import functools
 import json
+import logging
 import re
 import sqlite3
 import threading
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 MAX_ROUNDS = 24
+# The seconds a reconnect may take: the caller's lock is held meanwhile.
+RECONNECT_TIMEOUT_S = 5
+log = logging.getLogger(__name__)
+# What a read-only statement never holds (``read_only``): any of these words, wherever it
+# stands (a string or a name that holds one only costs that statement its retry).
+_NOT_READ_ONLY = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|REPLACE|UPSERT|MERGE|INTO|CREATE|DROP|ALTER|TRUNCATE|COPY"
+    r"|GRANT|REVOKE|VACUUM|ANALYZE|REINDEX|CLUSTER|LOCK|CALL|DO|BEGIN|START|COMMIT"
+    r"|END|ROLLBACK|SAVEPOINT|RELEASE|PREPARE|EXECUTE|DEALLOCATE|SET|RESET|ATTACH|DETACH"
+    r"|NOTIFY|LISTEN|REFRESH|IMPORT|SECURITY|FOR\s+(?:NO\s+KEY\s+)?(?:UPDATE|SHARE|KEY)"
+    r"|NEXTVAL|SETVAL|PG_\w+|LO_\w+|DBLINK\w*)\b", re.IGNORECASE)
+_LEADING_COMMENTS = re.compile(r"^(?:\s+|--[^\n]*\n?|/\*.*?\*/)*", re.DOTALL)
 STATEMENT_TIMEOUT_MS = 120_000
 # A table's SQLite rowid in the Postgres ontology.
 ROWID = {"objects": "row_no", "link_rows": "row_no",
@@ -690,6 +711,20 @@ class Cursor:
         self._rows = []
 
 
+def read_only(sql: str) -> bool:
+    """Whether ``sql`` (the caller's SQLite text) is one plain read that may run again
+    after its connection was lost: it starts with SELECT, WITH or VALUES and carries no
+    word of a write, a transaction or a session change (``_NOT_READ_ONLY``). Anything
+    else, or anything unsure, is not."""
+    if not isinstance(sql, str):
+        return False
+    body = _LEADING_COMMENTS.sub("", sql, count=1)
+    head = re.match(r"[A-Za-z]+", body)
+    if head is None or head.group(0).upper() not in ("SELECT", "WITH", "VALUES"):
+        return False
+    return ";" not in body.rstrip().rstrip(";") and not _NOT_READ_ONLY.search(body)
+
+
 class PgCompatConnection:
     """A ``sqlite3.Connection`` look-alike over the Postgres ontology (module docstring).
     Thread-safe: one statement at a time."""
@@ -701,13 +736,11 @@ class PgCompatConnection:
     postgres = True
 
     def __init__(self, dsn: str, *, statement_timeout_ms: int = STATEMENT_TIMEOUT_MS) -> None:
-        import psycopg
-
         self.dsn = dsn
-        # client-side binding: a parameter is a literal typed by its context, as in
-        # SQLite (``? IS NULL`` with None, a text compared with a number)
-        self._pg = psycopg.connect(dsn, autocommit=True, cursor_factory=psycopg.ClientCursor)
+        self._statement_timeout_ms = int(statement_timeout_ms)
         self._lock = threading.RLock()
+        self._closed = False
+        self._down_logged = False   # a reconnect that failed is logged once, until one works
         self._functions: dict[str, Callable[[Any], Any]] = {}
         # statements whose parameters bind client side (``_run``)
         self._client_only: set[str] = set()
@@ -720,7 +753,29 @@ class PgCompatConnection:
         # queries run here only then, else they raise (``translate``).
         self.words: tuple[str, ...] = ()
         self.row_factory: Any = sqlite3.Row
-        with self._pg.cursor() as cur:
+        self._conn = self._open()
+        from operating.ontology_tools_traverse import GATED_SCHEMES
+        self._gated = tuple(sorted(GATED_SCHEMES))
+
+    def _open(self, **kwargs: Any) -> Any:
+        """A new connection with this connection's session (search path, time zone,
+        statement timeout, planner settings, the item gate's temp tables)."""
+        import psycopg
+
+        # client-side binding: a parameter is a literal typed by its context, as in
+        # SQLite (``? IS NULL`` with None, a text compared with a number)
+        conn = psycopg.connect(self.dsn, autocommit=True, cursor_factory=psycopg.ClientCursor,
+                               **kwargs)
+        try:
+            self._session(conn)
+        except BaseException:
+            conn.close()
+            raise
+        return conn
+
+    def _session(self, conn: Any) -> None:
+        statement_timeout_ms = self._statement_timeout_ms
+        with conn.cursor() as cur:
             cur.execute("SET search_path = ontology, public")
             cur.execute("SET TimeZone = 'UTC'")
             cur.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
@@ -740,58 +795,135 @@ class PgCompatConnection:
                         "result boolean, PRIMARY KEY (fn, arg))")
             cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_pending (fn text, arg text, "
                         "PRIMARY KEY (fn, arg))")
-        from operating.ontology_tools_traverse import GATED_SCHEMES
-        self._gated = tuple(sorted(GATED_SCHEMES))
+
+    # -- the held connection, replaced when lost --------------------------------------
+    @property
+    def _pg(self) -> Any:
+        """The live psycopg connection (``live``): what the readers' own Postgres
+        queries run on."""
+        return self.live()
+
+    def live(self) -> Any:
+        """The held connection, opened again first when its server went away (module
+        docstring). Lost while a transaction was open on it: the new connection is made
+        and the loss raised (``sqlite3.OperationalError``), never hidden from the
+        transaction's owner."""
+        import psycopg
+        from operating.pg.pool import alive
+
+        with self._lock:
+            if self._closed:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+            conn = self._conn
+            # read before the probe: a lost connection's status is unknown afterwards
+            status = conn.pgconn.transaction_status if not conn.closed else None
+            if alive(conn):
+                return conn
+            self._reconnect("found lost before a statement")
+            if status in (psycopg.pq.TransactionStatus.INTRANS,
+                          psycopg.pq.TransactionStatus.INERROR):
+                raise sqlite3.OperationalError(
+                    "postgres: the connection was lost inside a transaction")
+            return self._conn
+
+    def _lost(self) -> bool:
+        from operating.pg.pool import alive
+        return not alive(self._conn)
+
+    def _reconnect(self, why: str, *, retry: bool = False) -> None:
+        """Replace the held connection (bounded by ``RECONNECT_TIMEOUT_S``); one log line
+        per loss, and one for a run of failed reconnects."""
+        old = self._conn
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 - already gone
+            pass
+        try:
+            self._conn = self._open(connect_timeout=RECONNECT_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 - raised as the store's error
+            if not self._down_logged:
+                log.warning("postgres connection lost (%s); reconnect failed: %s", why,
+                            type(exc).__name__)
+                self._down_logged = True
+            raise sqlite3.OperationalError(
+                f"postgres: reconnect failed: {type(exc).__name__}") from exc
+        self._down_logged = False
+        log.warning("postgres connection lost (%s); reconnected%s", why,
+                    ", running the read once more" if retry else "")
 
     # -- sqlite3.Connection surface ------------------------------------------------
     def execute(self, sql: str, parameters: Any = ()) -> Cursor:
+        """Run ``sql``; a read-only statement whose connection was lost under it runs
+        once more on a new one (module docstring)."""
         import psycopg
 
         with self._lock:
             if self._trace is not None:
                 self._trace(sql)
-            names = tuple(sorted(self._functions))
-            text = translate(sql, names, self._gated, self.words, self.arrays)
-            params = self._params(parameters)
-            if self.words and "MATCH" in sql.upper():
-                params = self._word_queries(sql, params)
-            gated = "ontology.sq_call(" in text
-            # a word query read from its GIN index first (``translate``): the planner's
-            # estimates of the joins after it are far off (a page of a common document
-            # word: 120 s in its order, 0.7 s in the written one)
-            fenced = text.startswith("WITH sq_words_")
-            try:
-                if "AS u(value)" in text:
-                    params = self._lists(text, params)
-                for _ in range(MAX_ROUNDS):
-                    with self._cursor(text) as cur:
-                        if fenced:   # joined from the word rows, in the written order
-                            cur.execute("SET join_collapse_limit = 1")
-                        try:
-                            rows, columns, count = self._run(cur, text, params)
-                        finally:
-                            if fenced:
-                                cur.execute("RESET join_collapse_limit")
-                    if not gated or not self._answer():
-                        break
-                else:
-                    raise sqlite3.OperationalError("item gate did not settle")
-            except psycopg.errors.QueryCanceled as exc:
-                raise sqlite3.OperationalError("interrupted") from exc
-            except psycopg.Error as exc:
-                raise sqlite3.OperationalError(
-                    f"postgres: {type(exc).__name__}: {str(exc).splitlines()[0][:300]}"
-                ) from exc
-            plain = self.row_factory is None
-            return Cursor(columns, [tuple(_value(v) for v in r) for r in rows], count, plain)
+            retried = False
+            while True:
+                conn = self.live()
+                status = conn.pgconn.transaction_status
+                try:
+                    return self._execute(sql, parameters)
+                except sqlite3.OperationalError as exc:
+                    cause = exc.__cause__
+                    if not isinstance(cause, (psycopg.OperationalError,
+                                              psycopg.InterfaceError)) or not self._lost():
+                        raise
+                    again = (not retried and read_only(sql)
+                             and status == psycopg.pq.TransactionStatus.IDLE)
+                    # the next statement gets a new connection either way
+                    self._reconnect("lost during a statement", retry=again)
+                    if not again:
+                        raise
+                    retried = True
+
+    def _execute(self, sql: str, parameters: Any) -> Cursor:
+        import psycopg
+
+        names = tuple(sorted(self._functions))
+        text = translate(sql, names, self._gated, self.words, self.arrays)
+        params = self._params(parameters)
+        if self.words and "MATCH" in sql.upper():
+            params = self._word_queries(sql, params)
+        gated = "ontology.sq_call(" in text
+        # a word query read from its GIN index first (``translate``): the planner's
+        # estimates of the joins after it are far off (a page of a common document
+        # word: 120 s in its order, 0.7 s in the written one)
+        fenced = text.startswith("WITH sq_words_")
+        try:
+            if "AS u(value)" in text:
+                params = self._lists(text, params)
+            for _ in range(MAX_ROUNDS):
+                with self._cursor(text) as cur:
+                    if fenced:   # joined from the word rows, in the written order
+                        cur.execute("SET join_collapse_limit = 1")
+                    try:
+                        rows, columns, count = self._run(cur, text, params)
+                    finally:
+                        if fenced:
+                            cur.execute("RESET join_collapse_limit")
+                if not gated or not self._answer():
+                    break
+            else:
+                raise sqlite3.OperationalError("item gate did not settle")
+        except psycopg.errors.QueryCanceled as exc:
+            raise sqlite3.OperationalError("interrupted") from exc
+        except psycopg.Error as exc:
+            raise sqlite3.OperationalError(
+                f"postgres: {type(exc).__name__}: {str(exc).splitlines()[0][:300]}"
+            ) from exc
+        plain = self.row_factory is None
+        return Cursor(columns, [tuple(_value(v) for v in r) for r in rows], count, plain)
 
     def _cursor(self, text: str) -> Any:
         """A server-side cursor (the statement prepared once, its plan reused) unless the
         statement was seen to need client-side binding (``_run``)."""
         import psycopg
         if text in self._client_only:
-            return psycopg.ClientCursor(self._pg)
-        return psycopg.Cursor(self._pg)
+            return psycopg.ClientCursor(self._conn)
+        return psycopg.Cursor(self._conn)
 
     def _run(self, cur: Any, text: str, params: Any) -> tuple[list, tuple, int]:
         """(rows, column names, row count) of ``text`` with ``params``: prepared on the
@@ -817,7 +949,7 @@ class PgCompatConnection:
             if len(self._client_only) > 4096:
                 self._client_only.clear()
             self._client_only.add(text)
-        with psycopg.ClientCursor(self._pg) as client:
+        with psycopg.ClientCursor(self._conn) as client:
             client.execute(text, params)
             return read(client)
 
@@ -858,10 +990,12 @@ class PgCompatConnection:
         pass
 
     def interrupt(self) -> None:
-        self._pg.cancel_safe() if hasattr(self._pg, "cancel_safe") else self._pg.cancel()
+        conn = self._conn
+        conn.cancel_safe() if hasattr(conn, "cancel_safe") else conn.cancel()
 
     def close(self) -> None:
-        self._pg.close()
+        self._closed = True
+        self._conn.close()
 
     def __enter__(self) -> "PgCompatConnection":
         return self
@@ -931,14 +1065,14 @@ class PgCompatConnection:
     def _members_of(self, raw: Any, numeric: bool) -> list[Any]:
         members = _members(raw, numeric=numeric)
         if members is None:
-            with self._pg.cursor() as cur:
+            with self._conn.cursor() as cur:
                 cur.execute(_FALLBACK[numeric], (raw,))
                 members = list(cur.fetchone()[0] or [])
         return members
 
     def _answer(self) -> int:
         """Answer the queued function calls in Python; how many were queued."""
-        with self._pg.cursor() as cur:
+        with self._conn.cursor() as cur:
             cur.execute("DELETE FROM sq_pending RETURNING fn, arg")
             pending = cur.fetchall()
             if not pending:

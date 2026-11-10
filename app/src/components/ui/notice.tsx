@@ -1,5 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/cn";
+import { FINAL_ERRORS } from "@/lib/errors";
 import { staleLine } from "@/lib/home";
 
 /** "Reference 8e081121" out of a message that carries "(incident 8e081121)" or "incident 8e081121". */
@@ -24,6 +25,8 @@ export function ErrorNotice({
   tone?: "error" | "notice" | "info";
 }) {
   const { text, reference } = splitReference(message);
+  // a missing record or a refused access is the same on a second try: no "Try again" for those
+  const retry = FINAL_ERRORS.has(text) ? undefined : onRetry;
   return (
     <div
       role={tone === "error" ? "alert" : "status"}
@@ -38,8 +41,8 @@ export function ErrorNotice({
         <p>{text}</p>
         {reference && <p className="mt-0.5 text-meta text-muted">Reference {reference}</p>}
       </div>
-      {onRetry && (
-        <button type="button" onClick={onRetry} className="shrink-0 font-medium text-fg underline underline-offset-2 hover:no-underline cursor-pointer">
+      {retry && (
+        <button type="button" onClick={retry} className="shrink-0 font-medium text-fg underline underline-offset-2 hover:no-underline cursor-pointer">
           Try again
         </button>
       )}

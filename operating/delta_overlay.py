@@ -50,6 +50,15 @@ _UNMERGED_GAP = {"state": "stale", "reason": "delta_overlay_unmerged",
                  "subject": "plx.find",
                  "detail": "records changed since the served projection generation could "
                            "not be merged into this answer; it reads that generation only"}
+# A pointer published over the Postgres base (``ontology.delta``, ``partial``) lists only
+# the newest layers; the changes of the layers it dropped are in Postgres alone. A reader
+# of the SQLite generation and this overlay (Postgres unreachable or not serving) answers
+# with this gap: never silently older.
+PARTIAL = "delta_overlay_partial"
+_PARTIAL_GAP = {"state": "stale", "reason": PARTIAL,
+                "detail": "the changes since the served projection generation are held in "
+                          "Postgres, which this answer could not read; it reads only the "
+                          "newest delta layers, so a record may be older than it is"}
 
 
 def pointer_path(store_path: str | Path) -> Path:
@@ -148,8 +157,9 @@ class Overlay:
     """The pointer's layers, newest first: an object is read from the newest layer
     owning it (``owner``); ``owned``: every layer's owned ids."""
 
-    def __init__(self, layers: list[Layer], stamp: tuple) -> None:
+    def __init__(self, layers: list[Layer], stamp: tuple, *, partial: bool = False) -> None:
         self.layers, self.stamp = layers, stamp
+        self.partial = partial   # the pointer's ``partial``: answers say so (``PARTIAL``)
         serves, self._owner, self.owned = _ownership(tuple(layer.owned for layer in layers))
         for layer, served in zip(layers, serves):
             layer.serves = served
@@ -223,7 +233,15 @@ def open_overlay(pointer: Path, stamp: tuple, base: Any) -> Overlay | None:
         for opened in layers:
             opened.close()
         raise
-    return Overlay(layers, stamp)
+    return Overlay(layers, stamp, partial=fields.get("partial") is True)
+
+
+def with_partial_gap(result: dict[str, Any], subject: str) -> dict[str, Any]:
+    """``result`` saying the overlay it read is partial (``PARTIAL``), not complete; an
+    error, or one with no room for the gap, as it is."""
+    marked = with_gap(result, dict(_PARTIAL_GAP, subject=subject)) \
+        if isinstance(result, dict) else None
+    return result if marked is None else marked
 
 
 # What every host of this process reads of one layer file (its owned ids and audience
@@ -434,6 +452,6 @@ def with_unmerged_gap(base: dict[str, Any], subject: str = "plx.find"
     return out
 
 
-__all__ = ["DIR_ENV", "FORMAT", "HOPS_DEFERRED", "NOT_AGGREGATED", "Layer", "Overlay",
-           "merge_find", "open_overlay", "with_gap",
+__all__ = ["DIR_ENV", "FORMAT", "HOPS_DEFERRED", "NOT_AGGREGATED", "PARTIAL", "Layer",
+           "Overlay", "merge_find", "open_overlay", "with_gap", "with_partial_gap",
            "pointer_path", "pointer_stamp", "read_pointer", "with_unmerged_gap"]

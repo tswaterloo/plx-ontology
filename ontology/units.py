@@ -18,9 +18,8 @@ BC item sync codes (``bcCode``) are an outbound mapping the Portal never folds b
 BC code folds only where the Portal's own table happens to spell it: ``PCS`` is the alias
 ``pcs`` (``ea``) and ``CSE`` the option ``cse``, while ``GR`` stays ``gr``, not ``g``.
 The projection's conflict key (``ontology/project.py``), ``plx.process``, ``plx.aggregate``
-and ``plx.compare`` use this fold; the console's ``operator_ui/workspace.js`` carries the
-same two tables (``UOM_CANONICAL``/``UOM_ALIASES``), and ``ontology/tests/test_units.py``
-fails when they differ.
+and ``plx.compare`` use this fold (the retired console's copy of the two tables went with
+it).
 
 Money tax basis (``money_basis``): every money source of the curated schema declares
 ``tax_basis`` (``incl_tax``, ``excl_tax``, ``tax_only`` for a tax amount itself, or

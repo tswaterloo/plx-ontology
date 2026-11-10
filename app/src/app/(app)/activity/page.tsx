@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SystemTile } from "@/components/ui/glyphs";
 import { LoadProblem } from "@/components/ui/notice";
+import { SlowNote } from "@/components/ui/skeleton";
 import { StatusWord } from "@/components/ui/status-badge";
 import { Toolbar } from "@/components/ui/toolbar";
 import { actionChip } from "@/lib/actions";
@@ -153,10 +154,11 @@ export default function ActivityPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar
+        heading
         title={
           <>
             Activity
-            {rows && rows.length > 0 && <span className="ml-2 text-[13px] font-normal tracking-normal tabular-nums text-faint">{rows.length}</span>}
+            {rows && rows.length > 0 && <span className="ml-2 text-[13px] font-normal tracking-normal tabular-nums text-faint"><span className="sr-only">, </span>{rows.length}</span>}
           </>
         }
         className="bg-[color-mix(in_srgb,var(--list)_90%,transparent)]"
@@ -166,6 +168,8 @@ export default function ActivityPage() {
           <LoadProblem message={error} onRetry={load} />
         </div>
       ) : !rows ? (
+        <>
+        <SlowNote className="px-5 pt-3" />
         <ul className="space-y-1 px-2 pt-3 sm:px-3" aria-busy="true" aria-label="Loading activity">
           {Array.from({ length: 7 }).map((_, i) => (
             <li key={i} className="flex items-center gap-3 px-3 py-2.5">
@@ -177,6 +181,7 @@ export default function ActivityPage() {
             </li>
           ))}
         </ul>
+        </>
       ) : rows.length === 0 ? (
         <Empty />
       ) : (

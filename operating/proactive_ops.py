@@ -24,8 +24,8 @@ no rule names a record, a person, a customer or an item.
   each its own ``aged_as_of_date``): the past-due amount (periods 1-3) grew by
   ``AGED_WORSEN`` or more and its share of the balance rose. One currency and one period
   length across both snapshots (``Decimal``, never converted); every figure ``finance``.
-* ``production_late``: an assembly order, production task or batch open by its own status
-  past its due date, read from the due dates the schema declares (``PRODUCTION_DUE``); none
+* ``production_late``: an assembly order or batch open by its own status past the day it is
+  scheduled to be made, read from the dates the schema declares (``PRODUCTION_DUE``); none
   declared: ``blocked`` (``due_date_not_served``). Read on one record of an identity
   cluster (BC first, else the least id).
 * ``assembly_damage_spike``: per item (the assembly orders' ``makes`` item, its settled
@@ -109,14 +109,21 @@ AGED_PROPS = ("balance_due", "current_amount", *BUCKETS, "aged_as_of_date", "per
 AGED_WORSEN = Decimal("0.10")
 
 # Where a production record's due date is read: (type, due property, done-date property or
-# None, status property or None). Only what the loaded schema declares is read.
-PRODUCTION_DUE = (("AssemblyOrder", "scheduled_end_date", "actual_end_date", "status"),
-                  ("ProductionTask", "due_date", "time_finish", None),
-                  ("Batch", "scheduled_date", "released_at", "status"))
+# None, status property or None). Only what the loaded schema declares is read. The due day
+# is the day the record is scheduled to be made (FM datescheduled / datesche, the Portal
+# copies' scheduled_date; the Portal MO's scheduled_end_date and actual_end_date are never
+# filled) and done is the day it was realized. A production task has no planned or due day
+# in any source, so it is not judged.
+PRODUCTION_DUE = (("AssemblyOrder", "scheduled_date", "realized_date", "status"),
+                  ("Batch", "scheduled_date", "realized_date", "status"))
+# FM's own stages (Generated -> Allocated -> Committed -> Realized, + Cancelled) and the
+# Portal MO's open words. The MO's RELEASED is left unmapped (not evaluated): thousands of
+# MOs scheduled years back hold it with nothing realized, so it does not say open.
 PRODUCTION_OPEN = frozenset({"open", "planned", "scheduled", "pending", "in progress",
-                             "in_progress", "started", "waiting", "on hold", "released to floor"})
-PRODUCTION_DONE = frozenset({"complete", "completed", "closed", "done", "finished",
-                             "cancelled", "canceled", "shipped", "void"})
+                             "in_progress", "in_production", "started", "waiting", "on hold",
+                             "released to floor", "generated", "allocated", "committed"})
+PRODUCTION_DONE = frozenset({"complete", "completed", "realized", "closed", "done",
+                             "finished", "cancelled", "canceled", "shipped", "void"})
 PRODUCTION_HIGH_DAYS = 7
 
 # the people a task or approval links (cleared against the exclusion)
@@ -402,6 +409,27 @@ def mc_approval_pending(st: Any, as_of: date, *, gap: Callable, cites: Callable,
 
 # --------------------------------------------------------------------------- Planner
 
+PLAN_ACTIVE_DAYS = 30   # a plan none of whose tasks was created or completed this long is dormant
+
+
+def _active_plans(found: Mapping[str, Mapping[str, Any]], as_of: date) -> set[str]:
+    """The plans a task of which was created or completed in the ``PLAN_ACTIVE_DAYS``
+    before the run's day (dates after it unseen)."""
+    since = as_of - timedelta(days=PLAN_ACTIVE_DAYS)
+    out: set[str] = set()
+    for entry in found.values():
+        props = entry["props"]
+        plan = (_one(props.get("plan_id")) or {}).get("value")
+        if plan in (None, "") or plan in out:
+            continue
+        for prop in ("created_at", "completed_at"):
+            moment = _instant((_one(props.get(prop)) or {}).get("value"))
+            if moment is not None and since <= moment.date() <= as_of:
+                out.add(plan)
+                break
+    return out
+
+
 def _assignee_ids(raw: Any) -> list[str] | None:
     """The assignees' ids a Planner task states (a list or a map keyed by id); None when the
     value cannot be read (never cleared)."""
@@ -432,7 +460,9 @@ def planner_task_overdue(st: Any, as_of: date, *, gap: Callable, cites: Callable
     if blocked is not None:
         return blocked
     found = st.values([PLANNER_TASK], ("title", "plan_title", "due_at", "completed_at",
-                                       "percent_complete", "assignees"))
+                                       "percent_complete", "assignees", "created_at",
+                                       "plan_id"))
+    active = _active_plans(found, as_of)
     linked = _person_ids(st, [PLANNER_PEOPLE], settled)
     audience = _audiences(st, found)
     skipped = skips()
@@ -448,12 +478,21 @@ def planner_task_overdue(st: Any, as_of: date, *, gap: Callable, cites: Callable
                 or not _cleared(people, [*linked[oid], *assignees]):
             skipped.note(NOT_JUDGED, [oid], cause)
             continue
-        if any(r.get("value") not in (None, "") for r in props.get("completed_at", ())):
+        # judged as the run's day saw it: a task created later did not exist, a completion
+        # dated later had not happened (its progress, read now, is then not that day's)
+        created = _instant((_one(props.get("created_at")) or {}).get("value"))
+        if created is not None and created.date() > as_of:
+            counts["not_yet_created"] += 1
+            continue
+        done = [r.get("value") for r in props.get("completed_at", ())
+                if r.get("value") not in (None, "")]
+        done_at = [_instant(v) for v in done]
+        if done and not any(d is not None and d.date() > as_of for d in done_at):
             counts["completed"] += 1
             continue
-        pct_row = _one(props.get("percent_complete"))
+        pct_row = None if done else _one(props.get("percent_complete"))
         pct = _dec(pct_row["value"]) if pct_row else None
-        if props.get("percent_complete") and pct is None:
+        if not done and props.get("percent_complete") and pct is None:
             skipped.note("percent_unreadable", [oid], cause)
             continue
         if pct is not None and pct >= 100:
@@ -474,6 +513,12 @@ def planner_task_overdue(st: Any, as_of: date, *, gap: Callable, cites: Callable
         if due.date() >= as_of:
             continue
         days = (as_of - due.date()).days
+        plan = (_one(props.get("plan_id")) or {}).get("value")
+        if plan not in active:
+            # nobody created or completed a task of its plan lately: a plan left behind,
+            # whose open tasks no one works (1 of 270 such alerts was ever completed)
+            counts["dormant_plan"] += 1
+            continue
         counts["overdue"] += 1
         title = _clip((_one(props.get("title")) or {}).get("value")) or "untitled"
         plan = _clip((_one(props.get("plan_title")) or {}).get("value"), 40)
@@ -490,7 +535,8 @@ def planner_task_overdue(st: Any, as_of: date, *, gap: Callable, cites: Callable
             extra=cites([*props.get("title", ()), *props.get("plan_title", ())]),
             event={"days": days}))
     out = result(gaps, not_evaluated=skipped)
-    out["counts"] = {k: counts.get(k, 0) for k in ("open", "overdue", "completed", "undated")}
+    out["counts"] = {k: counts.get(k, 0) for k in ("open", "overdue", "completed", "undated",
+                                                  "not_yet_created", "dormant_plan")}
     return out
 
 

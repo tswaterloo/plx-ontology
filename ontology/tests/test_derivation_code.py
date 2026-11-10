@@ -117,7 +117,7 @@ class DerivationCodeTests(unittest.TestCase):
         a function only), the field parser, a module it imports or its profiles move it."""
         copy = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, copy, True)
-        for package in ("ontology", "integrations", "operating", "operator_ui"):
+        for package in ("ontology", "integrations", "operating", "operator_api"):
             shutil.copytree(ROOT / package, copy / package,
                             ignore=shutil.ignore_patterns("tests", "__pycache__", "*.sqlite"))
         base = project._derivation_digest(copy)
@@ -134,7 +134,7 @@ class DerivationCodeTests(unittest.TestCase):
                 path.write_bytes(original)
         for unrelated in ("operating/fast_answer.py", "operating/ontology_tools_traverse.py",
                           "operating/host.py", "operating/build_steps.py",
-                          "operator_ui/__init__.py", "ontology/project_incremental.py",
+                          "operator_api/workspace/__init__.py", "ontology/project_incremental.py",
                           "integrations/capture_mail.py",
                           "ontology/schema/domains/purchasing.json"):
             self.assertEqual(changed(unrelated), base, unrelated)

@@ -635,9 +635,13 @@ class ReadTest(World):
                 rows = [tuple(r) for r in src.execute(f"SELECT * FROM {table}")]
                 marks = ",".join("?" * len(rows[0]))
                 ws.executemany(f"INSERT INTO {table} VALUES ({marks})", rows)
-        brief = bf.build(aw.merge_briefing(found, self.served, **grant),
-                         routing=bf.Routing(departments=frozenset({"PROC"})), hidden=None,
-                         last_visit=None)
+        # the alert registry keeps watcher_attention off by default (billing paused), so a
+        # reader sees its items only with the type switched on, beside the watcher switch
+        merged = aw.merge_briefing(found, self.served, **grant)
+        routing = bf.Routing(departments=frozenset({"PROC"}))
+        self.assertEqual(bf.build(merged, routing=routing, hidden=None, last_visit=None)["items"], [])
+        brief = bf.build(merged, routing=routing, hidden=None, last_visit=None,
+                         enabled=("watcher_attention",))
         self.assertEqual([i["event_type"] for i in brief["items"]], ["watcher_attention"])
         self.assertEqual(brief["items"][0]["summary"], "PO moved")
 

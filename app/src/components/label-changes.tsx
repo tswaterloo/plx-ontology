@@ -26,9 +26,9 @@ export function LabelChangesView({ data }: { data: LabelChanges }) {
             <span className="font-medium">{STATE_WORDS[c.state ?? ""] ?? "Requested"}</span>
             {c.requested_on ? ` · requested ${c.requested_on}` : ""}
             {c.approved_on ? ` · approved ${c.approved_on}` : ""}
-            {c.done_on ? ` · done ${c.done_on}${c.done_by === "file" ? " (label file changed)" : ""}` : ""}
-            {c.stale && <span className="ml-1 text-amber-700">· stale</span>}
-            {c.no_approval && <span className="ml-1 text-red-700">· no approval recorded</span>}
+            {c.done_on ? ` · done ${c.done_on}${c.done_by === "file" ? " (new label revision)" : ""}` : ""}
+            {c.stale && <span className="ml-1 text-risk">· stale</span>}
+            {c.no_approval && <span className="ml-1 text-late">· no approval recorded</span>}
           </li>
         ))}
       </ul>

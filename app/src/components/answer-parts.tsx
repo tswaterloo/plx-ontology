@@ -88,7 +88,8 @@ export function SourceLine({ source, record, prefix = "From" }: { source: Source
   const text = [`${prefix} ${sys}`, tail, source.as_of ? `read ${formatDate(source.as_of, { short: true })}` : null].filter(Boolean).join(", ");
   const opens = !!source.handle || !!source.open_url;
   return (
-    <p className="flex items-center gap-2 text-meta text-muted" data-testid="source-line">
+    // a span (shown as a line): it also stands inside a sentence's paragraph
+    <span className="flex items-center gap-2 text-meta text-muted" data-testid="source-line">
       <SystemTile system={source.system} size={16} />
       {opens ? (
         <button type="button" onClick={() => setOpen(true)} className="min-w-0 truncate text-left underline-offset-2 hover:text-fg hover:underline cursor-pointer">
@@ -98,7 +99,7 @@ export function SourceLine({ source, record, prefix = "From" }: { source: Source
         text
       )}
       {open && <EvidenceDrawer source={source} open={open} onOpenChange={setOpen} />}
-    </p>
+    </span>
   );
 }
 
@@ -303,6 +304,8 @@ export function conflictSentence(c: Conflict): string {
 /** A bare amount in a money field reads "25,113.60", never "25113.600"; anything else as given. */
 export function conflictValue(c: Conflict, value: string): string {
   const v = withoutFloatNoise(value);
+  // a date reads as a date, like everywhere else in the answer ("17 Oct 2026", not "2026-10-17")
+  if (/^\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(v.trim())) return readable(v.trim());
   if (!/amount|total|price|cost|value/i.test(c.field) || !/^-?\d+(?:\.\d+)?$/.test(v.trim())) return v;
   return Number(v).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -328,14 +331,15 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
         <caption className="sr-only">Values for {what}, by system</caption>
         <tbody>
           {conflict.values.map((v, i) => (
-            <tr key={i} className="border-t border-border align-top first:border-0">
-              <th scope="row" className="py-2 pr-3 text-left font-normal text-muted">
+            <tr key={i} className="border-t border-border align-top first:border-0 max-sm:flex max-sm:flex-wrap">
+              {/* on a phone the system takes its own line, and the value with its reason the width below it */}
+              <th scope="row" className="py-2 pr-3 text-left font-normal text-muted max-sm:w-full max-sm:pb-0.5">
                 <span className="flex items-center gap-2">
                   <SystemTile system={v.source.system} size={16} />
                   {valueSystem(v.source)}
                 </span>
               </th>
-              <td className="py-2 pr-3 font-medium tabular-nums">
+              <td className="py-2 pr-3 font-medium tabular-nums max-sm:min-w-0 max-sm:flex-1 max-sm:pt-0.5">
                 {conflictValue(conflict, v.value)}
                 {used === v && (
                   <span className="ml-2.5 inline-flex items-center gap-1 align-[-2px] text-[12px] font-normal text-fg">
@@ -343,10 +347,9 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
                     Used
                   </span>
                 )}
-                {v.why && used === v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
-                {v.why && used !== v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
+                {v.why && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
               </td>
-              <td className="py-2 text-right">
+              <td className="py-2 text-right max-sm:pt-0.5">
                 <SourceChip source={v.source} />
               </td>
             </tr>

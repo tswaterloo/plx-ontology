@@ -29,10 +29,12 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from decimal import Decimal
 
 from integrations.bc_read import CAPTURE_ENTITY_SETS
+from integrations.capture_store import CaptureStore
 from integrations.tests import test_bc_capture as tb
 from ontology import identifiers, store_ddl
 from ontology.project import CapturedRecord, build_store
@@ -183,7 +185,8 @@ class World:
     tools opened for one reader (``audiences``: who may read each source)."""
 
     def __init__(self, test: unittest.TestCase, audiences: dict | None = None,
-                 markings: tuple = store_ddl.MARKINGS, records: list | None = None) -> None:
+                 markings: tuple = store_ddl.MARKINGS, records: list | None = None,
+                 clock=None) -> None:
         os.environ.pop("PLX_WORKBENCH_API_KEY", None)
         self.h = tb.Harness(test, fake_bc(bc_records() if records is None else records))
         self.h.run(entity_sets=CAPTURE_ENTITY_SETS)
@@ -194,24 +197,48 @@ class World:
             build_store(path, load_schema(), {"bc": source,
                                               "portal_api": Static("portal_api", PORTAL)},
                         normalizer=identifiers.normalize)
-        reader = ot.StoreReader.open(path)
+        self.path, self.audiences, self.markings = path, audiences, markings
+        self.clock = clock
+        self._open(test, self.h.store)
+
+    def _open(self, test: unittest.TestCase, captures) -> None:
+        reader = ot.StoreReader.open(self.path)
         test.addCleanup(reader.conn.close)
-        policy = ot.ReadPolicy(tenant="plx", audiences=audiences or {
+        policy = ot.ReadPolicy(tenant="plx", audiences=self.audiences or {
             "bc:*": {READER}, "api:*": {READER}},
-            markings={m: {READER} for m in markings})
+            markings={m: {READER} for m in self.markings})
         base = ot.OntologyTools(reader, policy, schema=ot.default_schema(),
-                                grammar=ot.default_grammar())
+                                grammar=ot.default_grammar(), clock=self.clock)
         table: dict = {}
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
 
+        # The margin reads fan orders out over the Ask pool, so the citation reader is
+        # a read-only connection that may serve any thread, one read at a time.
+        reader_store = CaptureStore.open_read_only(self.h.db, self.h.audience)
+        test.addCleanup(reader_store.close)
+        gate = threading.Lock()
+
         def rows(handle, actor):
-            result = self.h.store.resolve(handle, tb.SERVICE)
+            with gate:
+                result = reader_store.resolve(handle, tb.SERVICE)
             return result if result.get("ok") else None
         oi.register(table, oi.InvestigateTools(table, rows=rows, scope=oi.read_scope(base),
                                                captured=oi.capture_claims(base)))
         self.table, self.base = table, base
         self.calls: list[str] = []
+
+    def runtime(self, test: unittest.TestCase) -> "World":
+        """Another runtime over this world's store and captures, its connections opened
+        on the calling thread (as each Ask worker opens its own)."""
+        twin = object.__new__(World)
+        twin.h, twin.path = self.h, self.path
+        twin.audiences, twin.markings = self.audiences, self.markings
+        twin.clock = self.clock
+        captures = tb.CaptureStore(self.h.db, self.h.audience, clock=self.h.clock)
+        test.addCleanup(captures.close)
+        twin._open(test, captures)
+        return twin
 
     def call(self, name: str, arguments: dict) -> dict:
         self.calls.append(name)
@@ -426,8 +453,10 @@ class CustomerProfitTests(unittest.TestCase):
                                      "discount", "freight"])
         losing = got["losing_orders"]
         self.assertEqual(losing["text"], "2 of 3 checked orders lost money: −65.00 CAD in "
-                         "all (on item cost only); worst SO-101, −45.00 CAD. "
-                         "1 of 4 invoiced orders not checked.")
+                         "all (on item cost only); worst SO-101, −45.00 CAD.")
+        # SO-104 is not invoiced (excluded, listed apart), so no invoiced order is
+        # unchecked and the line carries no "not checked" count
+
         decided = [o for o in self.answer["orders"] if o["decided"]]
         self.assertEqual(losing["amount"], sum(o["margin"] for o in decided if o["margin"] < 0))
         self.assertEqual(len(losing["handles"]), 2)
@@ -712,3 +741,105 @@ class QuestionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SideBySideTests(unittest.TestCase):
+    """The orders read side by side on the Ask pool (``serving.fan_out``): each helper
+    worker reads on its own runtime (a world built on its own thread, as an Ask worker
+    builds its runtime) and its own workspace of the asking reader's session; the answer
+    is the one read one order after another."""
+
+    @staticmethod
+    def now():   # one moment for every runtime, so answers compare whole
+        from datetime import datetime, timezone
+        return datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
+
+    READERS = {"full": {"clock": now}, "restricted": {"clock": now, "markings": tuple(
+        m for m in store_ddl.MARKINGS if m != "finance")}}
+
+    def pool(self, worlds: dict, width: int) -> tuple:
+        import queue
+        import threading
+        from types import SimpleNamespace
+        from operator_api.serving import Worker
+        jobs, stopped = queue.PriorityQueue(), threading.Event()
+        opened: dict[str, list[World]] = {name: [] for name in self.READERS}
+
+        def objects_for(session):
+            # built and closed on the worker's own thread (``Worker.loop`` closes it)
+            owner, cleanups = unittest.TestCase(), []
+            owner.addCleanup = cleanups.append   # type: ignore[method-assign]
+            world = worlds[session.name].runtime(owner)
+            opened[session.name].append(world)
+
+            def close():
+                for cleanup in reversed(cleanups):
+                    cleanup()
+            return SimpleNamespace(_call=world.call, bind=lambda _s: None, close=close)
+        threads = []
+        for _ in range(width - 1):
+            worker = Worker(objects_for, jobs)
+            worker.stopped = stopped
+            threads.append(threading.Thread(target=worker.loop, daemon=True))
+            threads[-1].start()
+
+        def stop():
+            stopped.set()
+            for thread in threads:
+                thread.join(10)
+        self.addCleanup(stop)
+        return jobs, stopped, opened
+
+    @staticmethod
+    def spread(jobs, stopped, name: str, call, width: int):
+        from types import SimpleNamespace
+        from operator_api.serving import fan_out
+        reader = SimpleNamespace(session=SimpleNamespace(name=name, principals={name}))
+        return lambda tasks, late: fan_out(jobs, stopped, reader, call, list(tasks), late,
+                                           width=width)
+
+    def test_side_by_side_is_the_same_answer_for_each_reader(self):
+        worlds = {name: World(self, **kwargs) for name, kwargs in self.READERS.items()}
+        jobs, stopped, opened = self.pool(worlds, 3)
+        answers = {}
+        for name, world in worlds.items():
+            with self.subTest(reader=name):
+                customer = world.customer("C-50")
+                before = len(world.calls)
+                alone = cp.profitability(world.call, customer, today=TODAY)
+                calls_alone = len(world.calls) - before
+                spread = cp.profitability(world.call, customer, today=TODAY,
+                                          fan_out=self.spread(jobs, stopped, name,
+                                                              world.call, 3))
+                self.assertEqual(spread, alone)
+                # every read made once, on whichever runtime took it, each a helper's
+                # workspace opened for this reader only
+                helped = sum(len(w.calls) for w in opened[name])
+                self.assertEqual(len(world.calls) - before - calls_alone + helped,
+                                 calls_alone)
+                self.assertGreater(helped, 0)
+                answers[name] = alone["totals"]
+        self.assertNotEqual(answers["full"], answers["restricted"])
+
+    def test_side_by_side_keeps_the_time_budget(self):
+        world = World(self)
+        jobs, stopped, _opened = self.pool({"full": world}, 3)
+        customer = world.customer("C-50")
+
+        def ticking():
+            ticks = iter(range(100_000))
+            return lambda: float(next(ticks))
+        got = cp.profitability(world.call, customer, today=TODAY, budget_seconds=0.0,
+                               clock=ticking(),
+                               fan_out=self.spread(jobs, stopped, "full", world.call, 3))
+        self.assertEqual(got["coverage"]["read"], 0)
+        self.assertTrue(got["coverage"]["timed_out"])
+        self.assertIsNone(got["totals"]["margin"])
+        # past the budget mid-way: the orders read are a prefix led by the order asked
+        # about, never a total of a subset
+        got = cp.profitability(world.call, customer, today=TODAY, focus="SO-102",
+                               budget_seconds=8.0, clock=ticking(),
+                               fan_out=self.spread(jobs, stopped, "full", world.call, 3))
+        self.assertTrue(got["coverage"]["timed_out"])
+        self.assertIn("SO-102", [o["number"] for o in got["orders"]])
+        self.assertIsNone(got["totals"]["revenue"])

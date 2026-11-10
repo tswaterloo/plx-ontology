@@ -9,11 +9,14 @@ read from the later messages of its conversation (mail: the conversation id; Tea
 chat) and the SharePoint files of its item:
 
 * ``approved``: a later message approves it (the requester too: a customer approves the proof)
-  (``approval``: "approved", "looks good, go ahead", "OK to print"; negated or asked, no);
+  (``approval``: "approved", "looks good, go ahead", "OK to print"; negated or asked, no), or
+  the revision register (``operating.label_revisions``) records an approval of a revision of
+  the named item first seen after the request;
 * ``done``: a later message says the change is made (``done``: "updated artwork
-  attached", "revised label uploaded", "sent to print"), or a label or artwork file of the
-  named item (a SharePoint file whose name holds the artefact's word and that mentions the
-  item) changed after the request.
+  attached", "revised label uploaded", "sent to print"), or a new revision of the named
+  item's label or artwork (``operating.label_revisions``: a mail attachment or SharePoint
+  file whose name carries a revision) was first seen after the request; the revision's
+  copies are cited and their audiences required.
 
 Each request is linked to its item (the message's settled ``mentions_product`` link) or, with
 none, to its customer (``Email.sent_by_customer``, a ``mentions_customer`` link); with
@@ -71,10 +74,10 @@ WORD_GROUPS = ("label OR labels", "artwork OR artworks OR dieline OR dielines",
 WORDS = " OR ".join(WORD_GROUPS)
 MAIL_PROPS = pt.PROPS
 TEAMS_PROPS = ("created_at", "chat_id", "from", "deleted_at")
-FILE = "SharePointFile"
 ITEM_LINK = "mentions_product"
 CUSTOMER_LINKS = ("Email.sent_by_customer", "Email.mentions_customer",
                   "TeamsChatMessage.mentions_customer")
+SUPPLIER_LINKS = ("Email.sent_by_supplier",)
 SETTLED = ("verified", "reviewed", "corroborated")
 
 _ART = r"(?:label|labels|labelling|labeling|artwork|artworks|art\s*work|dieline|dielines|" \
@@ -210,22 +213,45 @@ def mail_population(st: Any, as_of: date, people: Any, word_groups: Sequence[str
             teams_job.result() if teams_job else ({}, {}, set(), 0))
     indexed = all(f is not None for f in found)
     seeds = set().union(*found) if indexed else None
+    windowed = None
     if indexed:
         sent = pt._read(st, sorted(seeds), ("sent_at",))
         inside = {o for o, r in sent.items()
                   if (_instant(r["sent_at"]["value"]) or datetime.min).date() >= since}
         rows = pt._read(st, sorted(inside), MAIL_PROPS)
     else:
-        rows = {o: r for o, r in pt._scan(st, MAIL_PROPS).items()
-                if (_instant((r.get("sent_at") or {}).get("value")) or datetime.min).date()
-                >= since}
+        # no word index (a Postgres reader): the window's mail by its events, else whole
+        windowed = pt.windowed(st, since, as_of, MAIL_PROPS)
+        rows = windowed if windowed is not None else {
+            o: r for o, r in pt._scan(st, MAIL_PROPS).items()
+            if (_instant((r.get("sent_at") or {}).get("value")) or datetime.min).date()
+            >= since}
         inside = set(rows)
+    out = thread_population(st, rows, inside, indexed, people, as_of,
+                            windowed=windowed is not None)
+    out.update({"teams": teams_rows, "teams_audience": teams_audience,
+                "teams_inside": teams_inside,
+                "dropped_unread": out["dropped_unread"] + teams_dropped})
+    return out
+
+
+def thread_population(st: Any, rows: dict[str, Any], inside: set[str], indexed: bool,
+                      people: Any, as_of: date, *, windowed: bool = False) -> dict[str, Any]:
+    """These messages (``rows``: object -> MAIL_PROPS rows) and every message of their
+    conversations, read only from audiences the exclusion clears (``inside``: the messages
+    judged; the rest are their threads), none sent after the run's day had seen it
+    (``pt.seen_by``). ``windowed``: ``rows`` is a window's whole mail read by its events
+    (``pt.windowed``), every reply of its conversations already in it."""
+    rows = dict(rows)
     conversations = {r["conversation_id"]["value"] for o, r in rows.items()
                      if "conversation_id" in r and o in inside}
-    members = pt._members(st, conversations, indexed)
+    members = pt.conversations_of(rows, conversations) if windowed \
+        else pt._members(st, conversations, indexed)
     others = sorted({o for ms in members.values() for o in ms[:pt.MAX_THREAD]} - set(rows))
     rows.update(pt._read(st, others, MAIL_PROPS) if indexed else
-                {o: r for o, r in pt._scan(st, MAIL_PROPS).items() if o in set(others)})
+                {o: r for o, r in pt._scan(st, MAIL_PROPS).items() if o in set(others)}
+                if others else {})
+    rows = pt.seen_by(rows, as_of)
     audience: dict[str, str] = {}
     wanted = sorted(rows)
     for start in range(0, len(wanted), pt.CHUNK):
@@ -237,14 +263,14 @@ def mail_population(st: Any, as_of: date, people: Any, word_groups: Sequence[str
     clear = {k: bool(people.unit_clear(k)) for k in set(audience.values())}
     kept = {o: r for o, r in rows.items() if o in audience and clear[audience[o]]}
     return {"rows": kept, "audience": audience, "members": members, "inside": inside,
-            "teams": teams_rows, "teams_audience": teams_audience, "teams_inside": teams_inside,
-            "indexed": indexed,
-            "dropped_unread": len(rows) - len(kept) + teams_dropped}
+            "indexed": indexed, "dropped_unread": len(rows) - len(kept)}
 
 
 def _links(st: Any, oids: Sequence[str]) -> dict[str, dict[str, list[str]]]:
-    """message -> {"items": [...], "customers": [...]} from settled links (index reads)."""
-    out: dict[str, dict[str, list[str]]] = defaultdict(lambda: {"items": [], "customers": []})
+    """message -> {"items": [...], "customers": [...], "suppliers": [...]} from settled links
+    (index reads)."""
+    out: dict[str, dict[str, list[str]]] = defaultdict(
+        lambda: {"items": [], "customers": [], "suppliers": []})
     for start in range(0, len(oids), pt.CHUNK):
         for frm, link_type, to, tier in st.conn.execute(
                 "SELECT from_object, link_type, to_object, tier FROM link_rows WHERE from_object "
@@ -256,30 +282,8 @@ def _links(st: Any, oids: Sequence[str]) -> dict[str, dict[str, list[str]]]:
                 out[frm]["items"].append(to)
             elif link_type in CUSTOMER_LINKS:
                 out[frm]["customers"].append(to)
-    return out
-
-
-def _file_changes(st: Any, items: Iterable[str]) -> dict[str, list[tuple[datetime, str]]]:
-    """item -> (last modified, file) of its label or artwork SharePoint files (the files
-    linked to it, by the link table's ``to`` index)."""
-    out: dict[str, list[tuple[datetime, str]]] = defaultdict(list)
-    files: dict[str, set[str]] = defaultdict(set)
-    for item in sorted(set(items)):
-        for (frm,) in st.conn.execute(
-                "SELECT from_object FROM link_rows WHERE to_object = ? AND from_object LIKE ? "
-                "AND link_type LIKE ? AND superseded_at IS NULL",
-                (item, FILE + ":%", "%." + ITEM_LINK)):
-            files[frm].add(item)
-    if not files:
-        return out
-    rows = pt._read(st, sorted(files), ("name", "last_modified"))
-    for oid, row in rows.items():
-        name = (row.get("name") or {}).get("value") or ""
-        at = _instant((row.get("last_modified") or {}).get("value"))
-        if at is None or not ART.search(re.sub(r"[_\-.]+", " ", name)):
-            continue
-        for item in files[oid]:
-            out[item].append((at, oid))
+            elif link_type in SUPPLIER_LINKS:
+                out[frm]["suppliers"].append(to)
     return out
 
 
@@ -356,22 +360,27 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
                              "channel": channel, "subject": subject, "approved": approved,
                              "done": finished})
     links = _links(st, sorted({r["oid"] for r in asks}))
-    files = _file_changes(st, [i for r in asks for i in links[r["oid"]]["items"]])
+    from . import label_revisions
+    revisions = label_revisions.item_revisions(st, as_of, people) if asks else {}
     gaps = []
     for r in sorted(asks, key=lambda x: (x["at"], x["oid"])):
         _tick(st)
         linked = links[r["oid"]]
         items = sorted(set(linked["items"]))
         customers = sorted(set(linked["customers"]))
-        file_done = None
-        for item in items:
-            later = [f for f in files.get(item, ()) if f[0] > r["at"]]
-            if later:
-                file_done = min(later)
-        state = ("done" if r["done"] or file_done else "approved" if r["approved"]
+        # the item's label and artwork revisions after the request (``label_revisions``):
+        # the first is a finished change, an approval of any is the change approved
+        later = sorted((v for item in items for v in revisions.get(item, ())
+                        if v["at"] > r["at"]), key=lambda v: (v["at"], v["oid"]))
+        file_done = later[0] if later else None
+        rev_ok = min((v["approval"] for v in later if v["approval"]),
+                     key=lambda a: (a["at"], a["oid"]), default=None)
+        approved_at = min([a for a in (r["approved"][0] if r["approved"] else None,
+                                       rev_ok["at"] if rev_ok else None) if a], default=None)
+        state = ("done" if r["done"] or file_done else "approved" if approved_at
                  else "requested")
         waited = pt._business_days(r["at"].date(), as_of)
-        if state == "done" and not r["approved"]:
+        if state == "done" and not approved_at:
             kind, priority = UNAPPROVED, "high"
         elif state != "done" and waited >= STALE_BUSINESS_DAYS:
             kind, priority = STALE, "medium"
@@ -389,6 +398,12 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
         for step in (r["approved"], r["done"]):
             if step is not None and step[1] in rows:
                 groups.append(pt._cites_of(cites, rows, [step[1]], props))
+        used = [v for v in (file_done if not r["done"] else None,) if v]
+        if rev_ok and not r["approved"]:
+            used += [v for v in later if v["approval"] is rev_ok and v is not file_done]
+            groups.append(cites(rev_ok["rows"]))
+        for v in used:
+            groups.append(cites(v["rows"]))
         what = {UNAPPROVED: "was changed with no approval recorded",
                 STALE: f"is not done after {count(waited, 'business day')}",
                 TRACKED: f"is {state}"}[kind]
@@ -407,8 +422,8 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
             priority=priority, about=(subject_type, "label_change"), groups=groups,
             event={"days": waited, "state": state, "channel": r["channel"],
                    "requested_on": r["at"].date().isoformat(),
-                   "approved_on": r["approved"][0].date().isoformat() if r["approved"] else None,
-                   "done_on": (r["done"][0] if r["done"] else file_done[0]).date().isoformat()
+                   "approved_on": approved_at.date().isoformat() if approved_at else None,
+                   "done_on": (r["done"][0] if r["done"] else file_done["at"]).date().isoformat()
                    if (r["done"] or file_done) else None,
                    "done_by": "message" if r["done"] else "file" if file_done else None,
                    "items": items[:5], "customers": customers[:5],
@@ -418,7 +433,8 @@ def label_changes(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
         if made is None:
             skipped["message_uncited"] += 1
             continue
-        made["requires"] = sorted(thread_aud[r["key"]])
+        made["requires"] = sorted(thread_aud[r["key"]].union(
+            *(v["audience"] for v in used)))
         gaps.append(made)
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {"threads": len(threads), **{k: counts[k] for k in (

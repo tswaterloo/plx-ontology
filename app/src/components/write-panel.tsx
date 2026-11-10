@@ -71,7 +71,7 @@ function WriteEntry({ view, onChange }: { view: WriteIntentView; onChange: (v: W
               ))}
             </tbody>
           </table>
-          {preview.problems.map((p) => <p key={p} className="text-red-700" data-testid="write-problem">{p}</p>)}
+          {preview.problems.map((p) => <p key={p} className="text-late" data-testid="write-problem">{p}</p>)}
           {preview.warnings.map((w) => <p key={w.code + w.text} className="text-amber-700" data-testid="write-warning">{w.text}</p>)}
           {preview.warnings.length > 0 && (
             <label className="flex items-center gap-2"><input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} data-testid="write-ack" />I checked these warnings</label>
@@ -95,7 +95,7 @@ function WriteEntry({ view, onChange }: { view: WriteIntentView; onChange: (v: W
           {view.request && <p className="text-muted" data-testid="write-result">{view.text}</p>}
         </div>
       )}
-      {error && <p className="text-[12px] text-red-700" role="alert">{error}</p>}
+      {error && <p className="text-[12px] text-late" role="alert">{error}</p>}
     </li>
   );
 }

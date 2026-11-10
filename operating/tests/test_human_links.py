@@ -430,7 +430,7 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
         from operating import case_workspace_live as live_ws
         from operating.host import HostConfig, projection_path
         from operating.session_identity import CHANNEL_CONSOLE, fixture_session
-        from operator_ui.object_workspace import ObjectWorkspace, host_access
+        from operator_api.workspace.object_workspace import ObjectWorkspace, host_access
 
         config = HostConfig.from_file(self.temp / "host.json")
         session = fixture_session(config.tenant, principals, channel=CHANNEL_CONSOLE,
@@ -517,8 +517,8 @@ class LinkConfirmHttpTests(unittest.TestCase):
         import shutil
 
         from operating.tests import test_session_identity as ids
-        from operator_ui import object_workspace as objects
-        from operator_ui.tests import case_fixtures
+        from operator_api.workspace import object_workspace as objects
+        from operator_api.tests import case_fixtures
         from tests import test_object_workspace_http as http
 
         cls.http, cls.ids = http, ids
@@ -526,7 +526,7 @@ class LinkConfirmHttpTests(unittest.TestCase):
         cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.state = cls.tmp / "state"
         case_fixtures.seed(cls.state, "plx")
-        from operator_ui import case_console
+        from operator_api.workspace import case_console
         cls.store = cls.state / case_console.ONTOLOGY_FILE
         objects.project_mirror(cls.state, cls.store)
         cls.policy, cls.portal = ids.identity_files(cls.tmp / "identity", {

@@ -179,6 +179,8 @@ from ontology.build_timings import BuildTimings
 from ontology.finish_digest import ParallelBuilder
 from ontology.store import (_DIRTY_TRIGGERS, StoreBuilder, StoreError, _fsync_dir, canonical,
                             known_at, object_segment)
+from operating import declared_schema as _schemas
+from operating.declared_schema import project_objects as _PROJECT_OBJECTS
 
 FORMAT = "plx-projection-generations/v1"
 CURRENT = "CURRENT"
@@ -509,11 +511,9 @@ class _Objects:
         self.conn = sqlite3.connect(str(path), isolation_level=None)
         self.conn.executescript("""
             PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;
-            CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-            CREATE TABLE IF NOT EXISTS bindings (binding TEXT PRIMARY KEY, key TEXT,
-                basis TEXT, objects INTEGER);
-            CREATE TABLE IF NOT EXISTS objects (binding TEXT, object_id TEXT, print BLOB,
-                part TEXT, PRIMARY KEY (binding, object_id)) WITHOUT ROWID;
+            """)
+        _schemas.apply(self.conn, _PROJECT_OBJECTS)
+        self.conn.executescript("""
             CREATE TEMP TABLE lines (binding TEXT, object_id TEXT, seq INTEGER, line BLOB);
             CREATE TEMP TABLE pending (binding TEXT, object_id TEXT, seq INTEGER PRIMARY KEY,
                 part TEXT);

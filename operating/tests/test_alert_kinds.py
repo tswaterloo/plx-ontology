@@ -22,6 +22,10 @@ class Registry(unittest.TestCase):
                     self.assertEqual(t["default"], "on", "My work needs default on")
                 if t["precision"] is not None:
                     self.assertTrue({"value", "checked", "on", "source"} <= set(t["precision"]))
+                else:
+                    # every type carries a measurement or says why it has none yet
+                    self.assertTrue(str(t.get("unmeasured", "")).startswith(
+                        "not measurable yet: "), "an unmeasured type states why")
 
     def test_every_alert_type_has_one_entry_and_a_known_kind(self):
         types = [t["type"] for t in ak.registry()["types"]]

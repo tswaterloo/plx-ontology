@@ -35,7 +35,7 @@ from operating.case_runtime import CaseRuntime
 from operating.mcp_server import MCPServer, TOOLS
 from operating.ontology_host import CaseHostTools
 from operating.ontology_tools_investigate import load_plans
-from operator_ui.object_workspace import audience_unit
+from operator_api.workspace.object_workspace import audience_unit
 from operating.tests.test_proactive_engine import AS_OF, QC_LINK, World, handle, po, seeded
 
 ROOT = Path(__file__).resolve().parents[2]

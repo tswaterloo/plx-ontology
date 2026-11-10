@@ -64,9 +64,14 @@ from .proactive_chasers import AUTOMATED, PUBLIC_MAIL, _FORWARD, _REPLY, _addr, 
 
 APPROVALS = "approvals_waiting"
 CHASES = "chase_escalation"
+PARTY_CHASES = "party_chases"
+INTERNAL_CHASES = "internal_chases"
 APPROVAL_KIND = "approval_waiting"
 CHASE_KIND = "chase_escalating"
-RULES = (APPROVALS, CHASES)
+PARTY_CHASE_KIND = "party_chase_unanswered"
+INTERNAL_CHASE_KIND = "internal_order_chase"
+RULES = (APPROVALS, CHASES, PARTY_CHASES, INTERNAL_CHASES)
+INTERNAL_FAMILIES = frozenset({"order_status"})   # what a colleague's chase must be about
 CHASE_FLAG = "PLX_CHASE_ESCALATION"   # "1" turns the chase rule on (off by default)
 
 WINDOW_DAYS = 30
@@ -75,6 +80,10 @@ CHASE_MIN = 3
 CHASE_HIGH = 5
 MAX_APPROVERS = 5       # an ask To more people than this is a mailing, not a request
 RECENT_DAYS = 14
+PARTY_CHASE_BUSINESS_DAYS = 1   # a customer's or supplier's chase unanswered this long
+# the senders a chase must be settled-linked to: a business party of ours, never a pitch
+PARTY_LINKS = {"Email.sent_by_customer": "customer", "Email.sent_by_supplier": "supplier"}
+PARTY_SETTLED = ("verified", "reviewed", "corroborated")
 SUBJECT_CHARS = 60
 MAX_THREAD = 400        # copies one conversation reads (a longer one is a list, not a thread)
 CHUNK = 500
@@ -93,6 +102,10 @@ SEED_WORDS = {
               '("second" AND "request") OR ("2nd" AND "request") OR ("third" AND "request") '
               'OR ("haven" AND "heard") OR ("not" AND "heard") OR ("previous" AND "email") OR '
               '("last" AND "email")'),
+    # a supplier chasing payment (``proactive_mail_pains`` reads this window too)
+    "payment": ('overdue OR remit OR remittance OR payment OR pay OR ("past" AND "due") OR '
+                '("balance" AND "due") OR ("balance" AND "owing") OR ("outstanding" AND '
+                '"balance") OR ("statement" AND "account")'),
 }
 
 _SENTENCE = re.compile(r"[^.!?\n]+[.!?]?")
@@ -310,6 +323,90 @@ def _scan(st: Any, props: Sequence[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
+RECEIVED = "Email.received"
+EVENT_THREADS = 16      # a SQLite store's window events, read in rowid ranges side by side
+
+
+def window_ids(st: Any, since: date, until: date | None = None,
+               event_type: str = RECEIVED) -> list[str]:
+    """The mail received from ``since`` (to ``until``, whole days) by the store's event
+    index: what a store without the word index reads instead of every message. Postgres
+    reads it by its (type, time) index; SQLite, which has none, in rowid ranges on the
+    store's threads. Raises when the store records no events of the type (the caller then
+    reads whole)."""
+    low = since.isoformat()
+    high = None if until is None else (until + timedelta(days=1)).isoformat()
+    where = ("e.event_type = ? AND e.time >= ?" + ("" if high is None else " AND e.time < ?")
+             + " AND e.superseded_at IS NULL")
+    bounds = (event_type, low) + (() if high is None else (high,))
+    sql = ("SELECT eo.object_id FROM events e JOIN event_objects eo ON eo.event_id = "
+           "e.event_id WHERE ")
+    found: set[str] = set()
+    if getattr(st.conn, "postgres", False):
+        found = {row[0] for row in st.conn.execute(sql + where, bounds)}
+    else:
+        top = st.conn.execute("SELECT max(rowid) FROM events").fetchone()[0] or 0
+        workers = max(1, min(int(getattr(st, "threads", 1) or 1), EVENT_THREADS))
+        step = top // workers + 1
+        lock = threading.Lock()
+
+        def part(start: int) -> None:   # one rowid range per thread (its own connection)
+            got = {row[0] for row in st.conn.execute(
+                sql + "e.rowid BETWEEN ? AND ? AND " + where,
+                (start, start + step - 1, *bounds))}
+            with lock:
+                found.update(got)
+        if workers == 1:
+            part(0)
+        else:
+            with ThreadPoolExecutor(workers) as pool:
+                list(pool.map(part, range(0, top + 1, step)))
+    if not found and st.conn.execute("SELECT 1 FROM events WHERE event_type = ? LIMIT 1",
+                                     (event_type,)).fetchone() is None:
+        raise LookupError("no_mail_events")   # a store that records no mail events
+    prefix = event_type.split(".", 1)[0] + ":"
+    return sorted(o for o in found if str(o).startswith(prefix))
+
+
+def windowed(st: Any, since: date, until: date, props: Sequence[str]
+             ) -> dict[str, dict[str, Any]] | None:
+    """The ``props`` of the mail sent from ``since`` to ``until`` read through its events
+    (``window_ids``, a day of slack each side for the received time), filtered by sent
+    time; None when the store records no mail events (read whole instead)."""
+    try:
+        ids = window_ids(st, since - timedelta(days=1), until + timedelta(days=1))
+    except Exception as exc:  # noqa: BLE001 - no event table (an old layout)
+        if getattr(st, "interrupt", None) is not None and "interrupted" in str(exc):
+            raise   # the detector's window is spent: never read as "no events"
+        return None
+    rows = _read(st, ids, tuple(dict.fromkeys(("sent_at", *props))))
+    return {o: r for o, r in rows.items()
+            if since <= (_instant((r.get("sent_at") or {}).get("value"))
+                         or datetime.min).date() <= until}
+
+
+def seen_by(rows: Mapping[str, Mapping[str, Any]], as_of: date
+            ) -> dict[str, Mapping[str, Any]]:
+    """The messages the run's day had seen: none sent more than a day after it (the day of
+    slack keeps a reply sent late in the evening, already the next day in UTC), so a
+    replay of a past day never reads a later answer as already given."""
+    last = as_of + timedelta(days=1)
+    return {o: r for o, r in rows.items()
+            if (_instant((r.get("sent_at") or {}).get("value")) or datetime.min).date() <= last}
+
+
+def conversations_of(rows: Mapping[str, Mapping[str, Any]], conversations: set[str],
+                     prop: str = "conversation_id") -> dict[str, list[str]]:
+    """conversation id -> its messages among ``rows`` (a windowed read: every reply to a
+    message of the window is in it too)."""
+    out: dict[str, list[str]] = defaultdict(list)
+    for oid in sorted(rows):
+        value = (rows[oid].get(prop) or {}).get("value")
+        if value in conversations:
+            out[value].append(oid)
+    return out
+
+
 def _members(st: Any, conversations: set[str], indexed: bool, prop: str = "conversation_id",
              prefix: str = "Email:%") -> dict[str, list[str]]:
     """conversation id -> its mail objects (exact value), by the id's words when indexed."""
@@ -352,6 +449,7 @@ def _population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
         found_by = dict(zip(SEED_WORDS, pool.map(
             lambda words: _word_ids(st, words, TEXT_PROPS), SEED_WORDS.values())))
     indexed = all(found is not None for found in found_by.values())
+    windowed_rows = None
     seeds: dict[str, set[str]] = {k: v for k, v in found_by.items() if v is not None}
     timings["seeds"] = round(time.monotonic() - started, 1)
     if indexed:
@@ -362,17 +460,24 @@ def _population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
                   >= since}
         rows = _read(st, sorted(inside), PROPS)
     else:
-        rows = {o: r for o, r in _scan(st, PROPS).items()
-                if (_instant(r.get("sent_at", {}).get("value")) or datetime.min).date()
-                >= since}
+        # no word index (a Postgres reader): the window's mail by its events, else whole
+        windowed_rows = windowed(st, since, as_of, PROPS)
+        rows = windowed_rows if windowed_rows is not None else {
+            o: r for o, r in _scan(st, PROPS).items()
+            if (_instant(r.get("sent_at", {}).get("value")) or datetime.min).date() >= since}
         inside = set(rows)
     timings["window"] = round(time.monotonic() - started, 1)
     conversations = {r["conversation_id"]["value"] for r in rows.values()
                      if "conversation_id" in r}
-    members = _members(st, conversations, indexed)
+    if not indexed and windowed_rows is not None:
+        members = conversations_of(rows, conversations)
+    else:
+        members = _members(st, conversations, indexed)
     others = sorted({o for ms in members.values() for o in ms[:MAX_THREAD]} - set(rows))
     rows.update(_read(st, others, PROPS) if indexed else
-                {o: r for o, r in _scan(st, PROPS).items() if o in set(others)})
+                {o: r for o, r in _scan(st, PROPS).items() if o in set(others)}
+                if others else {})
+    rows = seen_by(rows, as_of)
     audience: dict[str, str] = {}
     wanted = sorted(rows)
     for start in range(0, len(wanted), CHUNK):
@@ -434,6 +539,47 @@ def _people_of(row: Mapping[str, Any]) -> list[str] | None:
 def _clip(text: Any, n: int = SUBJECT_CHARS) -> str:
     flat = " ".join(str(text or "").split())
     return flat if len(flat) <= n else flat[:n - 1].rstrip() + "…"
+
+
+# what a party's chase is about, the first that matches (an enum on the alert, never text)
+PARTY_FAMILIES = (
+    ("payment_invoice", re.compile(r"\b(?:invoices?|payments?|paid|remittance|statement|"
+                                   r"overdue|past\s+due|balance|credit\s+note|refund)\b", re.I)),
+    ("order_status", re.compile(r"\b(?:eta|ship(?:ped|ping|ment)?|deliver(?:y|ed)?|tracking|"
+                                r"dispatch(?:ed)?|arriv(?:e|al)|orders?|p\.?o\.?)\b", re.I)),
+    ("quote_price", re.compile(r"\b(?:quotes?|quotation|pricing|prices?)\b", re.I)),
+    ("documents", re.compile(r"\b(?:coa|sds|msds|specs?|specifications?|certificates?|tds|"
+                             r"allergen|declarations?)\b", re.I)),
+    ("sample", re.compile(r"\bsamples?\b", re.I)),
+    ("artwork_label", re.compile(r"\b(?:artwork|labels?|proofs?|dielines?)\b", re.I)))
+
+
+def party_family(text: str) -> str:
+    for name, pattern in PARTY_FAMILIES:
+        if pattern.search(text or ""):
+            return name
+    return "other"
+
+
+def _party_links(st: Any, oids: Sequence[str]) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """message -> (customer or supplier, the records its sender is settled-linked to) when
+    every such link names the same side: one party kept in several systems (a BC vendor, a
+    Portal supplier) is linked once per record. A sender linked as both a customer and a
+    supplier is none (not guessed)."""
+    found: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for start in range(0, len(oids), CHUNK):
+        for frm, link_type, to, tier in st.conn.execute(
+                "SELECT from_object, link_type, to_object, tier FROM link_rows WHERE from_object "
+                "IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL",
+                (json.dumps(list(oids[start:start + CHUNK])),)):
+            if tier in PARTY_SETTLED and link_type in PARTY_LINKS:
+                found[frm].add((PARTY_LINKS[link_type], to))
+    out = {}
+    for o, p in found.items():
+        sides = {side for side, _ in p}
+        if len(sides) == 1:
+            out[o] = (sides.pop(), tuple(sorted(record for _, record in p)))
+    return out
 
 
 def _business_days(start: date, end: date) -> int:
@@ -982,6 +1128,211 @@ def chase_escalation(st: Any, as_of: date, *, gap: Callable, cites: Callable,
 AGING = ((2, "0-2 business days"), (5, "3-5 business days"), (10, "6-10 business days"),
          (None, "over 10 business days"))
 QUEUE_KINDS = (APPROVAL_KIND, "mc_approval_pending")
+
+
+def party_chases(st: Any, as_of: date, *, gap: Callable, cites: Callable,
+                 result: Callable, skips: Callable, people: Any, **_: Any) -> dict[str, Any]:
+    """``party_chase_unanswered``: a customer or supplier (the sender settled-linked as one,
+    ``PARTY_LINKS``) chased us (``chase_phrase``; automated mail and outreach excluded) within
+    ``RECENT_DAYS``, and nobody of ours wrote in the conversation after it for
+    ``PARTY_CHASE_BUSINESS_DAYS`` business days. One alert per chase message across the
+    mailboxes' copies; it rests on the absence of our reply, so every copy's audience is
+    required. Off by default until measured (``operating/alert_kinds.json``)."""
+    blocked = _blocked(people, result)
+    if blocked is not None:
+        return blocked
+    domains = _domains(people)
+    pop = population(st, as_of, people)
+    skipped = skips()
+    counts: Counter = Counter()
+    since = as_of - timedelta(days=RECENT_DAYS)
+    candidates: dict[str, list[str]] = defaultdict(list)
+    for oid, row in pop["rows"].items():
+        moment = _instant((row.get("sent_at") or {}).get("value"))
+        sender = _addr((row.get("sender") or {}).get("value"))
+        if moment is None or not since <= moment.date() <= as_of or not sender \
+                or _internal(sender, domains) or "conversation_id" not in row:
+            continue
+        candidates[row["conversation_id"]["value"]].append(oid)
+    linked = _party_links(st, sorted(o for ms in candidates.values() for o in ms))
+    # a link sits on the copy its capture linked; the thread keeps one copy per message id
+    by_ident: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for oid, found in linked.items():
+        row = pop["rows"][oid]
+        by_ident[(row.get("internet_message_id") or {}).get("value") or oid].add(found)
+    parties = {oid: next(iter(by_ident[ident])) for ms in candidates.values() for oid in ms
+               for ident in [(pop["rows"][oid].get("internet_message_id") or {}).get("value")
+                             or oid] if len(by_ident.get(ident, ())) == 1}
+    verdicts: dict[str, bool] = {}
+    reads: dict[str, set[str]] = defaultdict(set)
+    made_for: dict[str, dict[str, Any] | None] = {}
+    for conversation in sorted(candidates):
+        _tick(st)
+        if not any(o in parties for o in candidates[conversation]):
+            continue
+        thread = _Thread(pop, conversation, people, domains)
+        chases = []
+        for oid in thread.messages:
+            if oid not in parties or not since <= thread.sent(oid).date() <= as_of:
+                continue
+            text = thread.text(oid)
+            if not CHASE_ASK.search(text):
+                continue
+            if automated(thread.sender(oid), text, thread.subject(oid)):
+                counts["automated"] += 1
+                continue
+            if chase_phrase(text) and not OUTREACH.search(text):
+                chases.append(oid)
+        if not chases:
+            continue
+        if not thread.ok:
+            skipped.note("participants_not_cleared", chases, [(o, "[]") for o in chases])
+            continue
+        last = chases[-1]
+        answered = any(_internal(thread.sender(o), domains) for o in thread.messages
+                       if thread.sent(o) > thread.sent(last))
+        ident = thread.ident(last)
+        reads[ident].update(thread.audiences)
+        if ident in verdicts:
+            counts["duplicate_copy"] += 1
+            verdicts[ident] = verdicts[ident] or answered
+            continue
+        verdicts[ident] = answered
+        counts["chases"] += 1
+        if answered:
+            continue
+        waited = _business_days(thread.sent(last).date(), as_of)
+        if waited < PARTY_CHASE_BUSINESS_DAYS:
+            counts["waiting_under_threshold"] += 1
+            continue
+        side, records = parties[last]
+        party = records[0]
+        row = thread.rows[last]
+        subject = _clip((row.get("subject") or {}).get("value"))
+        family = party_family(thread.text(last))
+        made_for[ident] = gap(
+            PARTY_CHASE_KIND, PARTY_CHASES, last, MAIL, "party_chase",
+            summary=f"A {side} chased us {thread.sent(last).date().isoformat()} and nobody of "
+                    f"ours has answered for {waited} business "
+                    f"{'day' if waited == 1 else 'days'}" + (f": {subject}" if subject else ""),
+            missing=f"Who owns the answer to this {side}, and what do we tell them?",
+            why=f"The message is from a sender linked to a {side} record, chases in its own "
+                "text (text rules: promises, meeting follow-ups, outreach and automated mail "
+                "excluded) and no later message in its conversation is from anyone of ours.",
+            priority="high" if waited >= 3 or len(chases) >= 2 else "medium",
+            about=(MAIL, "sender"),
+            groups=[_cites_of(cites, thread.rows, [last], ("sent_at", "sender")),
+                    _cites_of(cites, thread.rows, [last], ("subject", "body_preview"))],
+            event={"days": waited, "family": family, "party_kind": side, "party": party,
+                   "chased_on": thread.sent(last).date().isoformat(),
+                   "chases": len(chases), "channel": "mail", "messages": chases[-3:]})
+    gaps = [dict(made, requires=sorted(reads[ident])) for ident, made in made_for.items()
+            if made is not None and not verdicts[ident]]
+    counts["answered"] = sum(1 for v in verdicts.values() if v)
+    counts["waiting"] = len(gaps)
+    out = result(gaps, not_evaluated=skipped)
+    out["counts"] = {k: counts.get(k, 0) for k in ("chases", "answered", "waiting",
+                                                   "waiting_under_threshold", "automated",
+                                                   "duplicate_copy")}
+    return out
+
+
+def internal_chases(st: Any, as_of: date, *, gap: Callable, cites: Callable,
+                    result: Callable, skips: Callable, people: Any, **_: Any
+                    ) -> dict[str, Any]:
+    """``internal_order_chase``: one of ours chased colleagues only (every recipient ours)
+    about an order or its ETA (``party_family`` in ``INTERNAL_FAMILIES``), within
+    ``RECENT_DAYS``, and none of those it was sent to wrote in the conversation after it for
+    ``PARTY_CHASE_BUSINESS_DAYS`` business days. One alert per chase message across the
+    mailboxes' copies; it rests on the absence of an answer, so every copy's audience is
+    required. Off by default until measured (``operating/alert_kinds.json``)."""
+    blocked = _blocked(people, result)
+    if blocked is not None:
+        return blocked
+    domains = _domains(people)
+    pop = population(st, as_of, people)
+    skipped = skips()
+    counts: Counter = Counter()
+    since = as_of - timedelta(days=RECENT_DAYS)
+    conversations: set[str] = set()
+    for oid, row in pop["rows"].items():
+        moment = _instant((row.get("sent_at") or {}).get("value"))
+        sender = _addr((row.get("sender") or {}).get("value"))
+        if moment is not None and since <= moment.date() <= as_of and sender \
+                and _internal(sender, domains) and "conversation_id" in row:
+            conversations.add(row["conversation_id"]["value"])
+    verdicts: dict[str, bool] = {}
+    reads: dict[str, set[str]] = defaultdict(set)
+    made_for: dict[str, dict[str, Any] | None] = {}
+    for conversation in sorted(conversations):
+        _tick(st)
+        thread = _Thread(pop, conversation, people, domains)
+        chases = []
+        for oid in thread.messages:
+            if not since <= thread.sent(oid).date() <= as_of \
+                    or not _internal(thread.sender(oid), domains):
+                continue
+            to = _to(thread.rows[oid])
+            if not to or any(not _internal(a, domains) for a in to):
+                continue   # to someone outside: a chase of a party, not of a colleague
+            text = thread.text(oid)
+            if not CHASE_ASK.search(text) or not chase_phrase(text) or OUTREACH.search(text):
+                continue
+            if party_family(text) not in INTERNAL_FAMILIES:
+                continue
+            chases.append((oid, to))
+        if not chases:
+            continue
+        if not thread.ok:
+            skipped.note("participants_not_cleared", [o for o, _ in chases],
+                         [(o, "[]") for o, _ in chases])
+            continue
+        last, asked = chases[-1]
+        sender = thread.sender(last)
+        answered = any(thread.sender(o) in asked and thread.sender(o) != sender
+                       for o in thread.messages if thread.sent(o) > thread.sent(last))
+        ident = thread.ident(last)
+        reads[ident].update(thread.audiences)
+        if ident in verdicts:
+            counts["duplicate_copy"] += 1
+            verdicts[ident] = verdicts[ident] or answered
+            continue
+        verdicts[ident] = answered
+        counts["chases"] += 1
+        if answered:
+            continue
+        waited = _business_days(thread.sent(last).date(), as_of)
+        if waited < PARTY_CHASE_BUSINESS_DAYS:
+            counts["waiting_under_threshold"] += 1
+            continue
+        row = thread.rows[last]
+        subject = _clip((row.get("subject") or {}).get("value"))
+        made_for[ident] = gap(
+            INTERNAL_CHASE_KIND, INTERNAL_CHASES, last, MAIL, "internal_chase",
+            summary=f"A colleague chased an order {thread.sent(last).date().isoformat()} and "
+                    f"nobody it was sent to has answered for {waited} business "
+                    f"{'day' if waited == 1 else 'days'}" + (f": {subject}" if subject else ""),
+            missing="Who has the order's answer, and has the colleague been told?",
+            why="The message is from one of ours to colleagues only, chases about an order or "
+                "its ETA in its own text (promises, meeting follow-ups and outreach excluded) "
+                "and no later message in its conversation is from anyone it was sent to.",
+            priority="high" if waited >= 3 or len(chases) >= 2 else "medium",
+            about=(MAIL, "sender"),
+            groups=[_cites_of(cites, thread.rows, [last], ("sent_at", "sender")),
+                    _cites_of(cites, thread.rows, [last], ("subject", "body_preview"))],
+            event={"days": waited, "family": "order_status", "direction": "internal",
+                   "chased_on": thread.sent(last).date().isoformat(),
+                   "chases": len(chases), "channel": "mail",
+                   "messages": [o for o, _ in chases[-3:]]})
+    gaps = [dict(made, requires=sorted(reads[ident])) for ident, made in made_for.items()
+            if made is not None and not verdicts[ident]]
+    counts["answered"] = sum(1 for v in verdicts.values() if v)
+    counts["waiting"] = len(gaps)
+    out = result(gaps, not_evaluated=skipped)
+    out["counts"] = {k: counts.get(k, 0) for k in ("chases", "answered", "waiting",
+                                                   "waiting_under_threshold",
+                                                   "duplicate_copy")}
+    return out
 
 
 def _bucket(days: int) -> str:

@@ -319,7 +319,7 @@ class FullReadGrantTest(unittest.TestCase):
 
     def test_label_and_journal_entry_for_what_is_served_under_the_grant(self):
         from operator_api import auth, backend
-        from operator_ui.session_journal import SessionJournal
+        from operator_api.workspace.session_journal import SessionJournal
         resolver = self.resolver()
         vince = auth.configured_employee(resolver, VINCE)()
         other = auth.configured_employee(resolver, OTHER)()
@@ -407,7 +407,7 @@ class FullReadGrantTest(unittest.TestCase):
         from unittest import mock
         from operating import ontology_host
         from operating.case_tools_host import CaptureCaseHostTools
-        from operator_ui.object_workspace import host_access
+        from operator_api.workspace.object_workspace import host_access
         runtime = SimpleNamespace(
             employee_gate=ep.EmployeeActorGate(self.resolver(), "plx"),
             mirror=SimpleNamespace(_audience=lambda: SimpleNamespace(

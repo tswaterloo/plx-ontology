@@ -142,7 +142,8 @@
    "home": false,
    "roles": [
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: derived on read from the late list (no gap kind of its own); measure on a business day's served list (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "po_undated",
@@ -172,7 +173,8 @@
    "roles": [
     "PROC",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found: served run 2026-11-09 complete and a run alone on the served store 2026-11-10 complete (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "vendor_no_reply",
@@ -184,7 +186,8 @@
    "home": false,
    "roles": [
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 6 carried on the served list (5 lead, not firm), n<15; a tool-call rule: a bounded run needs the vendor pass's session, after the build (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "vendor_terms_unapplied",
@@ -196,7 +199,8 @@
    "home": false,
    "roles": [
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (complete) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "negative_margin",
@@ -270,7 +274,8 @@
    "roles": [
     "SALES",
     "ACCTMGMT"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found: served run 2026-11-09 and a run alone 2026-11-10, both complete (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "quantity_mismatch",
@@ -284,7 +289,8 @@
     "PROC",
     "WH",
     "FIN"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (both rules complete) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "customer_order_at_risk",
@@ -299,7 +305,8 @@
     "SALES",
     "OPS",
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 open on the served list; a tool-call rule (orders_at_risk): a bounded run needs the vendor pass's session, after the build (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "customer_order_late",
@@ -334,7 +341,8 @@
     "PROC",
     "SALES",
     "WH"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (on-hand unknown for most items) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "overdue_receivable",
@@ -347,7 +355,8 @@
    "roles": [
     "FIN",
     "ACCTMGMT"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 4 served, n<15 (one is a 0.57 CAD residue) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "unit_cost_jump",
@@ -360,7 +369,8 @@
    "roles": [
     "PROC",
     "FIN"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 6 found by a run alone 2026-11-10, n<15; 4 of 6 are 91-99% drops that read as a pack cost against a per-kg trailing average (a unit defect to fix before measuring) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "mc_task_overdue",
@@ -373,7 +383,8 @@
    "roles": [
     "OPS",
     "PROD"
-   ]
+   ],
+   "unmeasured": "not measurable yet: blocked on the served run: the task due date is not served (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "mc_task_stuck",
@@ -386,7 +397,8 @@
    "roles": [
     "OPS",
     "PROD"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "mc_approval_pending",
@@ -400,13 +412,20 @@
     "OPS",
     "FIN",
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "planner_task_overdue",
    "kind": "task_overdue",
    "label": "Planner task overdue",
-   "precision": null,
+   "precision": {
+    "value": 0.0,
+    "checked": 15,
+    "on": "2026-11-10",
+    "source": "/data/scratch/alert-precision-1110.md",
+    "note": "facts 14/15 right, 0/15 worth acting: 11 in a plan with no activity since 2026-07-27, 3 in plans dormant since 2021-2024, 1 in a COMPLETE bucket; needs an active-plan window before it can pass"
+   },
    "actionable": true,
    "default": "off",
    "home": false,
@@ -429,7 +448,8 @@
    "roles": [
     "FIN",
     "ACCTMGMT"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (aged rows of unknown currency not judged) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "aged_payable_worsening",
@@ -442,7 +462,8 @@
    "roles": [
     "FIN",
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (aged rows of unknown currency not judged) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "production_late",
@@ -455,7 +476,8 @@
    "roles": [
     "PROD",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: blocked on the served run: the production due date is not served (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "assembly_damage_spike",
@@ -471,7 +493,8 @@
     "QA",
     "QC",
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "teams_unanswered_ask",
@@ -490,13 +513,21 @@
     "WH",
     "ACCTMGMT",
     "QUALITY"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (230 asks not judged) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "customer_demand_drop",
    "kind": "weekly_trends",
    "label": "Customer ordering much less",
-   "precision": null,
+   "precision": {
+    "value": 0.067,
+    "checked": 15,
+    "on": "2026-11-10",
+    "source": "/data/scratch/alert-precision-1110.md",
+    "note": "1/15 before 67b7720073 (9 zeroed Sage order totals, 5 orders on an unsettled twin); re-run after the fix finds 0: re-judge when items appear",
+    "commit": "67b7720073"
+   },
    "actionable": false,
    "default": "off",
    "home": false,
@@ -518,7 +549,8 @@
     "OPS",
     "SALES",
     "ACCTMGMT"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 2 served, n<15 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "margin_erosion",
@@ -532,7 +564,8 @@
     "FIN",
     "SALES",
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: truncated on the served run; a run alone exceeds the 3 GB cap while the build runs: after the build (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "supplier_reliability",
@@ -545,7 +578,8 @@
    "roles": [
     "PROC",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "shipped_not_invoiced",
@@ -559,7 +593,8 @@
     "FIN",
     "ACCTMGMT",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 1 found by a run alone 2026-11-10 (truncated on the served run), n<15 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "duplicate_customer_order",
@@ -573,7 +608,8 @@
     "SALES",
     "ACCTMGMT",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "recurring_component_damage",
@@ -589,7 +625,8 @@
     "QC",
     "PROC",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 2 served, n<15 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "customer_chasing_order",
@@ -604,7 +641,8 @@
     "ACCTMGMT",
     "CS",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (customer_chase complete) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "expedite_unanswered",
@@ -619,7 +657,8 @@
     "PROC",
     "SALES",
     "CS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 7 served, n<15 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "supplier_shortage_open_orders",
@@ -633,7 +672,8 @@
     "PROC",
     "OPS",
     "SALES"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "supplier_chasing_payment",
@@ -646,7 +686,8 @@
    "roles": [
     "FIN",
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "tell_before_they_ask",
@@ -661,7 +702,8 @@
     "ACCTMGMT",
     "CS",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (customer_chase complete) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "commitment_due",
@@ -676,7 +718,8 @@
     "ACCTMGMT",
     "CS",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: commitments truncated on the served run; a mail rule, a run alone exceeds the 3 GB cap while the build runs: after the build (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "commitment_missed",
@@ -691,7 +734,8 @@
     "ACCTMGMT",
     "CS",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: commitments truncated on the served run; a mail rule, a run alone exceeds the 3 GB cap while the build runs: after the build (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "needs_my_reply",
@@ -759,6 +803,46 @@
    ]
   },
   {
+   "type": "party_chase_unanswered",
+   "kind": "customer_chasing",
+   "precision": null,
+   "label": "Customer or supplier chase unanswered",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "CS",
+    "OPS",
+    "PROC",
+    "FIN",
+    "WH",
+    "QUALITY"
+   ],
+   "unmeasured": "not measurable yet: new rule (proactive-5), not on the served run; a mail rule over the 3 GB cap while the build runs: after the build (/data/scratch/alert-precision-1110.md)"
+  },
+  {
+   "type": "internal_order_chase",
+   "kind": "customer_chasing",
+   "precision": null,
+   "label": "Colleague's order chase unanswered",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "SALES",
+    "ACCTMGMT",
+    "CS",
+    "OPS",
+    "PROC",
+    "WH"
+   ],
+   "unmeasured": "not measurable yet: new rule (proactive-5), not on the served run; a mail rule over the 3 GB cap while the build runs: after the build (/data/scratch/alert-precision-1110.md)"
+  },
+  {
    "type": "quality_hold_aging",
    "kind": "quality_hold",
    "label": "Quality hold open too long",
@@ -771,7 +855,8 @@
     "QA",
     "QC",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 7 served, n<15 (4 name a placeholder lot 'X') (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "reject_trend",
@@ -786,7 +871,8 @@
     "QA",
     "QC",
     "PROC"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "customer_paying_slower",
@@ -896,7 +982,8 @@
     "WH",
     "PROC",
     "FIN"
-   ]
+   ],
+   "unmeasured": "not measurable yet: blocked: on-hand quantity not served (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "expiring_lot_stock",
@@ -912,7 +999,8 @@
     "QUALITY",
     "QA",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: blocked: lot on-hand and expiry not served (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "assembly_blocked_by_component",
@@ -926,14 +1014,22 @@
     "PROD",
     "PROC",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: blocked: on-hand and assembly start date not served (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "certificate_expiring",
    "kind": "expiring",
    "label": "Certificate expiring soon",
-   "precision": null,
-   "actionable": true,
+   "precision": {
+    "value": 0.933,
+    "checked": 15,
+    "on": "2026-11-10",
+    "source": "/data/scratch/alert-precision-1110.md",
+    "note": "after c870302b36 (10/15 before: certificates naming nothing, a superseded one): dates 14/15 match the cited text, 1 duplicate without its lot; whether the lot is still held is unknown (on-hand not served), so not actionable, as lot_near_expiry",
+    "commit": "c870302b36"
+   },
+   "actionable": false,
    "default": "off",
    "home": false,
    "roles": [
@@ -955,17 +1051,19 @@
     "FIN",
     "WH",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found by a run alone 2026-11-10 (truncated on the served run) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "price_below_typical",
    "kind": "price_exception",
    "label": "Customer paying far below the usual price",
    "precision": {
-    "value": 0.875,
-    "checked": 24,
-    "on": "2026-11-08",
-    "source": "OVERNIGHT-LOG L690: 21/24 strict"
+    "value": 0.867,
+    "checked": 15,
+    "on": "2026-11-10",
+    "source": "/data/scratch/alert-precision-1110.md",
+    "note": "like-for-like 15/15; 2 of 15 are a reseller or private-label tier, explained by the price list"
    },
    "actionable": true,
    "default": "off",
@@ -981,14 +1079,16 @@
    "kind": "price_exception",
    "label": "Customer's price dropped",
    "precision": {
-    "value": 0.875,
-    "checked": 24,
-    "on": "2026-11-08",
-    "source": "OVERNIGHT-LOG L690: 21/24 strict"
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-10",
+    "source": "/data/scratch/alert-precision-1110.md",
+    "note": "15/15 after cd707fb4de (13/15 before: a labour code and a non-stock code its system never costed)",
+    "commit": "cd707fb4de"
    },
    "actionable": true,
-   "default": "off",
-   "home": false,
+   "default": "on",
+   "home": true,
    "roles": [
     "SALES",
     "ACCTMGMT",
@@ -1000,14 +1100,15 @@
    "kind": "margin_loss",
    "label": "Customer price below cost",
    "precision": {
-    "value": 0.875,
-    "checked": 24,
-    "on": "2026-11-08",
-    "source": "OVERNIGHT-LOG L690: 21/24 strict"
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-10",
+    "source": "/data/scratch/alert-precision-1110.md",
+    "note": "15/15: each line's net price under the cost its own system booked for that line, same item, unit and currency"
    },
    "actionable": true,
-   "default": "off",
-   "home": false,
+   "default": "on",
+   "home": true,
    "roles": [
     "SALES",
     "ACCTMGMT",
@@ -1027,7 +1128,8 @@
     "ACCTMGMT",
     "OPS",
     "FIN"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found: served run 2026-11-09 and a run alone 2026-11-10 (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "duplicate_party_candidate",
@@ -1074,7 +1176,14 @@
    "type": "twins_disagree",
    "kind": "data_health",
    "label": "Systems disagree on a record",
-   "precision": null,
+   "precision": {
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-10",
+    "source": "/data/scratch/alert-precision-1110.md",
+    "note": "15/15 after d3063273d3 (9/15 before: a 0 amount on one copy, float noise); data health, not actionable",
+    "commit": "d3063273d3"
+   },
    "actionable": false,
    "default": "off",
    "home": false,
@@ -1213,7 +1322,8 @@
     "OPS",
     "IT",
     "FIN"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 3 served (3 true: captures paused during the build), n<15; data health (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "reorder_soon",
@@ -1227,7 +1337,8 @@
     "PROC",
     "OPS",
     "WH"
-   ]
+   ],
+   "unmeasured": "not measurable yet: blocked: on-hand quantity not served (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "watcher_attention",
@@ -1291,7 +1402,8 @@
    "home": false,
    "roles": [
     "FIN"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (cash_application complete) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "short_payment",
@@ -1304,7 +1416,8 @@
    "home": false,
    "roles": [
     "FIN"
-   ]
+   ],
+   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (cash_application complete) (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "label_change",
@@ -1331,6 +1444,25 @@
    ]
   },
   {
+   "type": "label_revision_superseded",
+   "kind": "label_change",
+   "label": "Open order on a superseded label",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "ARTWORK",
+    "QA",
+    "QC",
+    "QUALITY",
+    "PROD",
+    "SALES",
+    "ACCTMGMT"
+   ],
+   "unmeasured": "not measurable yet: failed on the merged tree (NameError, fixed 748ef0ef6f); a mail rule over the 3 GB cap while the build runs: after the build (/data/scratch/alert-precision-1110.md)"
+  },
+  {
    "type": "priority_order_unfilled",
    "kind": "customer_order_late",
    "label": "Priority-listed order late or unscheduled",
@@ -1342,7 +1474,8 @@
     "SALES",
     "ACCTMGMT",
     "OPS"
-   ]
+   ],
+   "unmeasured": "not measurable yet: truncated on the served run; a run alone exceeds the 3 GB cap while the build runs: after the build (/data/scratch/alert-precision-1110.md)"
   },
   {
    "type": "labour_overtime_spike",

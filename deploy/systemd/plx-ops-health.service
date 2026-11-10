@@ -1,0 +1,21 @@
+# The stale-capture and start-loop alarm: operating.ops_health exits 1 on any breach (a
+# capture source past twice its normal turn, or plx-ingest refusing to start 3+ times in a
+# row); systemd marks the unit failed and the journal carries the one-line-per-check
+# report. No message is sent anywhere. Reads state only; the env file names the state dir.
+[Unit]
+Description=PLX Workbench ops health (stale captures, ingest start loop)
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 -m operating.ops_health check --state-dir ${PLX_INGEST_STATE}
+Nice=10
+CPUWeight=20
+MemoryHigh=512M
+MemoryMax=1G
+TimeoutStartSec=10min
+UMask=0077

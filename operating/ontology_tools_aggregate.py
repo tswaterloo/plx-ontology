@@ -139,6 +139,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 from ontology.json_contract import validate
@@ -195,6 +196,10 @@ MAX_ROWS = 200
 # Scan segments (each at most ontology_tools.FILTER_SCAN_CAP readable objects) a filter
 # count reads before it says it is incomplete: 200 x 5000 objects of one type.
 MAX_FILTER_SEGMENTS = 200
+# ``_same_as_now``'s second read starts only with this much of the call left: the first
+# read's time times the slack, plus the margin (seconds)
+SAME_AS_NOW_SLACK = 1.25
+SAME_AS_NOW_MARGIN_SECONDS = 3.0
 NUMERIC = frozenset({"integer", "decimal", "money", "quantity"})
 
 # --------------------------------------------------------------------------- value picking
@@ -369,9 +374,11 @@ class AggregateTools:
             self.store.conn.create_function(gate_name, 1, self.walk._gate_function(actor),
                                             deterministic=True)
             try:
+                began = time.monotonic()
                 result = handler(arguments, actor, gate_name)
                 if name == "plx.aggregate":
-                    self._same_as_now(arguments, actor, gate_name, result)
+                    self._same_as_now(arguments, actor, gate_name, result,
+                                      took=time.monotonic() - began)
             except ToolError as exc:
                 result = _error(exc.code, exc.message, exc.hint)
                 try:
@@ -388,7 +395,7 @@ class AggregateTools:
         return self._checked(name, result)
 
     def _same_as_now(self, arguments: Mapping[str, Any], actor: Actor, gate: str,
-                     result: dict[str, Any]) -> None:
+                     result: dict[str, Any], took: float = 0.0) -> None:
         """Mark a count read at an ``as_known_at`` before now ``same_as_now`` when the same
         call read now returns the same complete groups (each key, value and member, any
         revision): what was known then is then also what is known now, so the count is
@@ -396,7 +403,11 @@ class AggregateTools:
         time before the data's end reads it with ``as_known_at``; without this its count
         stayed a lower bound even when nothing it counts changed since. Anything else
         (another measure, a time at or after now, an incomplete or refused result on
-        either side, a difference) marks nothing."""
+        either side, a difference) marks nothing. The second read is added value, never
+        the answer's cost: it is not started when the call's time left is shorter than
+        the first read took (``took``), and one cut at the call's limit marks nothing and
+        leaves the count read (11-09: a dated count over 21k sales orders read twice, its
+        second read interrupted at the limit replaced the count with store_unavailable)."""
         measure = arguments.get("measure")
         if "as_known_at" not in arguments or not isinstance(measure, Mapping) \
                 or measure.get("op") not in ("count", "count_distinct") \
@@ -406,10 +417,14 @@ class AggregateTools:
         if self.base._as_known_at(arguments) >= _to_ms(self.base.clock()) \
                 or "captured_after_as_known_at" in since:
             return   # now, or a member captured since: read now it counts more
+        from operating import call_limits
+        left = call_limits.seconds_left()
+        if left is not None and left < took * SAME_AS_NOW_SLACK + SAME_AS_NOW_MARGIN_SECONDS:
+            return
         now = {k: v for k, v in arguments.items() if k != "as_known_at"}
         try:
             current = self._aggregate(now, actor, gate)
-        except ToolError:
+        except (ToolError, sqlite3.Error):
             return
         if "error" not in current and _count_whole(current) \
                 and _count_signature(current) == _count_signature(result):
@@ -1227,7 +1242,7 @@ class AggregateTools:
         start, segments = "", 0
         while True:
             matches, truncated, unsure, position = base._match_filters(
-                found_scope, object_type, filters, start)
+                found_scope, object_type, filters, start, ids_only=True)
             members += [match.object_id for match in matches]
             undecided |= unsure
             segments += 1

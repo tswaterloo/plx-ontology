@@ -575,6 +575,16 @@ def twin_disagreement(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                         value = cls if cls in ("open", "done") else None
                     elif prop in spec.amounts:
                         value = _amount(st, row, codes)
+                        if value is not None:
+                            # compared to the cent: a float-written copy (250.70000000000002)
+                            # states the same amount as its decimal twin (250.700)
+                            value = (value[0].quantize(Decimal("0.01")), value[1])
+                        if value is not None and value[0] == 0:
+                            # a zero total is no statement of the amount: a source zeroes
+                            # an invoiced order's header (Sage) or leaves an unpriced copy
+                            # at 0 (live 11-10: 6 of 15 disagreements were a 0 side)
+                            counts["zero_amount"] += 1
+                            continue
                     else:
                         value = pb._day(row["value"])
                     if value is None:
@@ -621,7 +631,7 @@ def twin_disagreement(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 gaps.append(made)
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts.get(k, 0) for k in ("clusters", "agree", "disagree",
-                                                    "currency_differs")}
+                                                    "currency_differs", "zero_amount")}
     return out
 
 

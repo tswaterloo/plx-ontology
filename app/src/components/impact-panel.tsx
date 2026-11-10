@@ -52,7 +52,7 @@ const CAUSE_WORDS: Record<NonNullable<Panel["causes"]>[number]["cause"], string>
 };
 
 function Tier({ tier }: { tier: "firm" | "lead" }) {
-  return tier === "lead" ? <span className="ml-1.5 rounded bg-amber-50 px-1 text-[11px] text-amber-700">possible</span> : null;
+  return tier === "lead" ? <span className="ml-1.5 rounded bg-risk-soft px-1 text-[11px] text-risk">possible</span> : null;
 }
 
 export function buildChange(kind: ImpactChange["kind"], days: number, percent: string): ImpactChange | null {
@@ -99,10 +99,13 @@ export function ImpactCard({ type, id }: { type: string; id: string }) {
   return (
     <section data-testid="impact">
       <SectionTitle>{why ? "Why" : "Impact"}</SectionTitle>
+      <p className="-mt-1 mb-2 text-[12px] leading-4 text-muted">
+        {why ? "Follows this order's links back to what held it up." : "Try a change here and see the orders and customers it would reach. Nothing is changed."}
+      </p>
       <div className="flex flex-wrap items-center gap-2 text-[13px]">
         {!why && (
           <>
-            <select aria-label="Change" className="rounded border px-1.5 py-1" value={kind ?? ""} onChange={(e) => setKind(e.target.value as ImpactChange["kind"])}>
+            <select aria-label="Change" className="h-8 rounded-lg border border-border bg-bg px-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-ring cursor-pointer" value={kind ?? ""} onChange={(e) => setKind(e.target.value as ImpactChange["kind"])}>
               {kinds.map((k) => (
                 <option key={k} value={k}>
                   {KIND_WORDS[k]}
@@ -110,23 +113,23 @@ export function ImpactCard({ type, id }: { type: string; id: string }) {
               ))}
             </select>
             {kind === "delay" && (
-              <label className="flex items-center gap-1">
-                <input aria-label="Days" type="number" min={1} max={365} className="w-16 rounded border px-1.5 py-1" value={days} onChange={(e) => setDays(Number(e.target.value))} />
+              <label className="flex items-center gap-1.5 text-muted">
+                <input aria-label="Days" type="number" min={1} max={365} className="w-16 h-8 rounded-lg border border-border bg-bg px-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-ring tabular-nums" value={days} onChange={(e) => setDays(Number(e.target.value))} />
                 days
               </label>
             )}
             {kind === "price_change" && (
-              <label className="flex items-center gap-1">
-                <input aria-label="Percent" className="w-16 rounded border px-1.5 py-1" value={percent} onChange={(e) => setPercent(e.target.value.trim())} />%
+              <label className="flex items-center gap-1.5 text-muted">
+                <input aria-label="Percent" className="w-16 h-8 rounded-lg border border-border bg-bg px-2 text-[13px] text-fg focus-visible:outline-2 focus-visible:outline-ring tabular-nums" value={percent} onChange={(e) => setPercent(e.target.value.trim())} />%
               </label>
             )}
           </>
         )}
-        <button type="button" className="rounded border px-2 py-1 hover:bg-muted/10 disabled:opacity-50" onClick={run} disabled={busy}>
+        <button type="button" className="h-8 cursor-pointer rounded-lg border border-border px-3 text-[13px] hover:bg-hover disabled:cursor-default disabled:opacity-50" onClick={run} disabled={busy} aria-busy={busy || undefined}>
           {busy ? "Walking links" : why ? "Find causes" : "Show impact"}
         </button>
       </div>
-      {error && <p className="mt-2 text-[13px] text-red-700">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-[13px] text-late">{error}</p>}
       {panel && <ImpactBody panel={panel} />}
     </section>
   );
@@ -171,7 +174,7 @@ export function ImpactBody({ panel: raw }: { panel: Panel }) {
                 <RecordLink r={o.order} />
                 <Tier tier={o.tier} />
                 {o.required_date && <span className="text-muted">required {formatDate(o.required_date)}</span>}
-                {o.slips && o.late_by_days != null && <span className="text-red-700">slips {o.late_by_days} day{o.late_by_days === 1 ? "" : "s"}</span>}
+                {o.slips && o.late_by_days != null && <span className="text-late">slips {o.late_by_days} day{o.late_by_days === 1 ? "" : "s"}</span>}
                 {o.slips === false && <span className="text-muted">still on time</span>}
                 {o.revenue && <span className="tabular-nums">{money(o.revenue)}</span>}
               </li>

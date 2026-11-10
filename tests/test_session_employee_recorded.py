@@ -17,8 +17,8 @@ from unittest import mock
 
 from verify import live_verify
 from operating import session_identity
-from operator_ui import console_ticket, session_journal
-from operator_ui.session_journal import SessionJournal
+from operator_api.workspace import console_ticket, session_journal
+from operator_api.workspace.session_journal import SessionJournal
 
 TENANT = "00000000-0000-4000-8000-0000000000f1"
 EMPLOYEE = "00000000-0000-4000-8000-0000000000a1"

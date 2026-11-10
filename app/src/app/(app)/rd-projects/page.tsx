@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { RdBoardView } from "@/components/rd-board";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Pending } from "@/components/ui/skeleton";
+import { Toolbar } from "@/components/ui/toolbar";
 import { LoadProblem } from "@/components/ui/notice";
 import { getRdBoard } from "@/lib/api";
 import { noticeKind, plainError } from "@/lib/errors";
@@ -24,7 +25,25 @@ export default function RdProjectsPage() {
     });
     return () => ctl.abort();
   }, [round]);
-  if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
-  if (!board) return <Skeleton className="h-64 w-full" />;
-  return <RdBoardView board={board} />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Toolbar
+        heading
+        title={
+          <>
+            R&amp;D projects <span className="ml-2 rounded bg-hover px-1 text-[11px] font-normal">Early</span>
+          </>
+        }
+      />
+      <div className="mx-auto w-full max-w-3xl px-6 py-6">
+        {error ? (
+          <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
+        ) : board ? (
+          <RdBoardView board={board} />
+        ) : (
+          <Pending label="Reading R&D and sample projects" />
+        )}
+      </div>
+    </div>
+  );
 }

@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 
 from fastapi import Body, Depends, FastAPI, Path as PathParam, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import feedback as fb
@@ -378,6 +378,72 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         approve it in ``/api/writes*`` (dry run until writes are granted)."""
         return backend.my_work_write(who, item_id)
 
+    @app.get("/api/autopilot", response_model=m.AutopilotArea, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def autopilot_area(who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """The autopilot area: today's prepared items you may see (the owner: everyone's),
+        each with its evidence, drafted action and decision; per role and workflow the dev
+        and fresh scores, state and switches. Read only."""
+        return backend.autopilot_area(who)
+
+    @app.post("/api/autopilot/items/{item_id}/decision", response_model=m.AutopilotItem,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse},
+                                           422: {"model": m.ErrorResponse}})
+    def autopilot_decide(item_id: str, body: m.AutopilotDecisionRequest,
+                         who: Reader = Depends(reader)) -> m.AutopilotItem:
+        """Accept, edit, reject or snooze an item of your own. Accept runs it through the
+        gated write path: a dry run (the decision recorded, nothing written) unless its
+        workflow passed the fresh gate and the owner switched it live."""
+        return backend.autopilot_decide(who, item_id, body)
+
+    @app.post("/api/autopilot/assist", response_model=m.AssistDraft, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
+    def autopilot_assist(body: m.AssistRequest,
+                         who: Reader = Depends(reader)) -> m.AssistDraft:
+        """Draft the message a line you typed asks for: recipients, subject and body, each
+        fact from your Ask's gated answer with its sources. Nothing is sent."""
+        return backend.autopilot_assist(who, body)
+
+    @app.post("/api/autopilot/switches", response_model=m.AutopilotSwitches,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           403: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse}})
+    def autopilot_global(body: m.AutopilotSwitchRequest,
+                         who: Reader = Depends(reader)) -> m.AutopilotSwitches:
+        """The global kill switch of the write path. Owner only (403 for every other
+        reader)."""
+        return backend.autopilot_global(who, body)
+
+    @app.post("/api/autopilot/workflows/{workflow}", response_model=m.AutopilotArea,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           403: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse},
+                                           422: {"model": m.ErrorResponse}})
+    def autopilot_workflow(workflow: str, body: m.AutopilotWorkflowSwitch,
+                           who: Reader = Depends(reader)) -> m.AutopilotArea:
+        """Switch a workflow off or on, or a role's workflow live (only after its fresh
+        gate passed) or back to dry run. Owner only (403 for every other reader)."""
+        return backend.autopilot_workflow(who, workflow, body)
+
+    @app.get("/api/autopilot/audit", response_model=m.AutopilotAudit, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def autopilot_audit(who: Reader = Depends(reader)) -> m.AutopilotAudit:
+        """The write path's audit log, newest first, with undo where the system has one.
+        Owner only (403 for every other reader)."""
+        return backend.autopilot_audit(who)
+
+    @app.post("/api/autopilot/audit/{key}/undo", response_model=m.AutopilotAudit,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           403: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse}})
+    def autopilot_undo(key: str, who: Reader = Depends(reader)) -> m.AutopilotAudit:
+        """Undo a live action once through its recorded inverse. Owner only."""
+        return backend.autopilot_undo(who, key)
+
     @app.get("/api/workload", response_model=m.Workload, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
     def workload(who: Reader = Depends(reader)) -> m.Workload:
@@ -427,6 +493,14 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """The item page's label and artwork section: changes requested, approved, done,
         stale or with no approval, from your own alert list."""
         return backend.label_changes(who, object_id)
+
+    @app.get("/api/label-revisions/{object_id:path}", response_model=m.LabelRevisions,
+             tags=["actions"], responses={401: {"model": m.ErrorResponse}})
+    def label_revisions(object_id: str, who: Reader = Depends(reader)) -> m.LabelRevisions:
+        """A record's label and artwork revision history: every revision of each file, who
+        approved it and when, and on an order the superseded revisions it points at, from
+        your own alert list."""
+        return backend.label_revisions(who, object_id)
 
     @app.get("/api/record-pack/{object_type}/{object_id:path}", response_model=m.RecordPack,
              tags=["actions"], responses={401: {"model": m.ErrorResponse},
@@ -479,6 +553,31 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         weekly figure against the week before. Generated from the records you may read, no
         model call; every figure cites its sources and nothing hidden is counted."""
         return backend.weekly_review(who, week)
+
+    @app.get("/api/brief/qc-daily", response_model=m.Brief, tags=["briefs"],
+             responses={401: {"model": m.ErrorResponse}})
+    def qc_daily_pack(who: Reader = Depends(reader)) -> m.Brief:
+        """The daily QC pack: quality checks open now (missed, overdue, due within a week),
+        open calibration, production slots past start and not completed, batches on hold
+        and the hold-release queue (not available yet, with its reason). Only a reader
+        holding quality_controlled sees any line; every line cites its task, slot or
+        batch."""
+        return backend.qc_pack(who, "daily")
+
+    @app.get("/api/brief/qc-audit", response_model=m.Brief, tags=["briefs"],
+             responses={401: {"model": m.ErrorResponse}})
+    def qc_audit_pack(who: Reader = Depends(reader)) -> m.Brief:
+        """The QC audit pack: on-time share of the calibration, sanitation and other QC
+        checks by area and month over the last year, each recurring check with its cycle
+        and its missed, late and overdue occurrences cited, the production schedule by
+        line and batches on hold. Quality_controlled readers only."""
+        return backend.qc_pack(who, "audit")
+
+    @app.get("/api/brief/qc-audit.txt", response_class=PlainTextResponse, tags=["briefs"],
+             responses={401: {"model": m.ErrorResponse}})
+    def qc_audit_text(who: Reader = Depends(reader)) -> PlainTextResponse:
+        """The QC audit pack as one printable plain-text page, each line with its sources."""
+        return PlainTextResponse(backend.qc_pack_text(who, "audit"))
 
     @app.get("/api/meetings/follow-up/{meeting_id}", response_model=m.MeetingFollowUp,
              tags=["briefs"], responses={401: {"model": m.ErrorResponse},

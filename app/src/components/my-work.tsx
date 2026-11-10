@@ -59,12 +59,14 @@ export function MyWorkList({ work }: { work: MyWork }) {
   const items = work.items ?? [];
   return (
     <div className="space-y-4" data-testid="my-work">
-      <h1 className="text-lg font-semibold">My work</h1>
       {work.status === "off" && <p className="text-[13px] font-medium">The autopilot is switched off: nothing new is prepared and nothing can be approved.</p>}
-      <p className="text-[13px] text-muted">
-        {plural(work.digest.open, "item")} prepared, {work.digest.due_today} due today, {plural((work.digest.nudges ?? []).length, "past due")}. Nothing is sent or written until you confirm it.
-      </p>
-      {items.length === 0 && <p className="text-[13px] text-muted">Nothing is waiting on you.</p>}
+      {items.length === 0 ? (
+        <p className="text-[13px] text-muted">Nothing is waiting on you.</p>
+      ) : (
+        <p className="text-[13px] text-muted">
+          {plural(work.digest.open, "item")} prepared, {work.digest.due_today} due today, {(work.digest.nudges ?? []).length} past due. Nothing is sent or written until you confirm it.
+        </p>
+      )}
       <ul className="space-y-3">
         {items.map((item) => (
           <Item key={item.item_id} item={item} state={states[item.card_id ?? ""] ?? null} onDone={(r) => setStates((s) => ({ ...s, [item.card_id as string]: r }))} />

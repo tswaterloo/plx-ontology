@@ -83,6 +83,23 @@ describe("friendly URLs", () => {
     params = { ref: "V06110" };
     render(<FriendlyRecord kind="supplier" />);
     expect(await screen.findByText("No supplier “V06110” that you can open")).toBeInTheDocument();
+    // one page heading, and a way on from it
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Search for it" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open My work" })).toHaveAttribute("href", "/");
+  });
+});
+
+describe("a record that is not there", () => {
+  it("offers search and the way home, never a retry that cannot help", async () => {
+    serve(() => new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 }));
+    render(<ObjectView type="PurchaseOrder" id="PurchaseOrder:x:00000" />);
+    const missing = await screen.findByTestId("record-missing");
+    expect(missing).toHaveTextContent("This purchase order isn't here, or you don't have access to it.");
+    expect(screen.getByRole("button", { name: "Search for it" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open My work" })).toHaveAttribute("href", "/");
+    expect(screen.queryByText("Try again")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Purchase order");
   });
 });
 

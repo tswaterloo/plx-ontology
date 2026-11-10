@@ -21,7 +21,7 @@ from . import copy_gate as gate
 PURPOSES = ("supplier_date_ask", "supplier_expedite", "customer_status",
             "customer_delay_notice", "approval_nudge", "quote_followup",
             "document_pack_reply", "holding_reply", "digest", "playbook_ask",
-            "meeting_followup")
+            "meeting_followup", "assist")
 
 _PERSON = re.compile(r"^[A-Z][a-z'\-]{1,30}$")
 

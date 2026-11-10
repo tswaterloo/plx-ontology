@@ -394,31 +394,34 @@ class ProjectedTests(unittest.TestCase):
         return result
 
     @staticmethod
-    def freight_steps(result: dict) -> list:
-        return [s for e in _entries(result, "computed").values() for s in e["steps"]
-                if s.startswith("freight total")]
+    def freight_steps(pages: list) -> list:
+        """The freight allocation steps across every page of one answer: a line's entry may
+        be on a later page than the first."""
+        return [s for page in pages for e in _entries(page, "computed").values()
+                for s in e["steps"] if s.startswith("freight total")]
 
     def test_freight_is_never_allocated_over_a_partial_line_set(self):
         """Review lcp-1: a step budget that stops the line reads must not spread the header
         freight (300 over four lines of 10 x 1.5 = 7.5 USD/ea) over the lines read."""
-        full = self.investigate_with("PO100905")
-        self.assertNotIn("error", full)
-        self.assertNotIn("po_lines_incomplete", full["answerability"]["reasons"])
+        full = self.pages("PO100905")
+        self.assertNotIn("po_lines_incomplete", full[0]["answerability"]["reasons"])
         self.assertEqual(len(self.freight_steps(full)), 4)
         self.assertTrue(all("freight=7.5 USD/ea" in s for s in self.freight_steps(full)))
         # A cut that leaves part of the line set read (1 to 3 of 4 lines priced).
         for budget in (8, 6):
+            self.assertEqual(self.freight_steps(self.pages("PO100905", step_budget=budget)),
+                             [], budget)
             cut = self.investigate_with("PO100905", step_budget=budget)
-            self.assertEqual(self.freight_steps(cut), [], budget)
             self.assertIn("po_lines_incomplete", cut["answerability"]["reasons"])
             self.assertIsNone(_entries(cut, "computed")["landed_cost"]["value"])
             lines = next(g for g in cut["gaps"] if g["reason"] == "po_lines_incomplete")
             self.assertRegex(lines["detail"], r"[1-3] of 4 line\(s\)")
 
-    def pages(self, number: str, table=None) -> list:
+    def pages(self, number: str, table=None, **extra) -> list:
         """Every page of one question, following next_cursor; an error page fails."""
         table = table or self.table()
-        arguments = {"family": "landed_cost", "root": {"identifier": number}, "as_known_at": AT}
+        arguments = {"family": "landed_cost", "root": {"identifier": number}, "as_known_at": AT,
+                     **extra}
         pages = []
         while True:
             result = table["plx.investigate"]["handler"](dict(arguments), self.actor)
@@ -517,10 +520,12 @@ class ProjectedTests(unittest.TestCase):
                                f'{{"id":"{hidden}"}}')).rowcount
             self.assertGreater(changed, 0)
             without_l5 = [m for m in store_ddl.MARKINGS if m != "l5"]
-            marked = self.investigate("PO100905", self.table(store=store, markings=without_l5))
-            holder = self.investigate("PO100905", self.table(store=store))
-        self.assertNotIn(hidden, json.dumps(marked))
-        self.assertEqual(self.freight_steps(marked), [])
+            marked_table = self.table(store=store, markings=without_l5)
+            marked = self.investigate("PO100905", marked_table)
+            marked_pages = self.pages("PO100905", marked_table)
+            holder = self.pages("PO100905", self.table(store=store))
+        self.assertNotIn(hidden, json.dumps(marked_pages))
+        self.assertEqual(self.freight_steps(marked_pages), [])
         self.assertIsNone(_entries(marked, "computed")["landed_cost"]["value"])
         self.assertIn("po_lines_incomplete", marked["answerability"]["reasons"])
         lines = next(g for g in marked["gaps"] if g["reason"] == "po_lines_incomplete")
@@ -528,9 +533,9 @@ class ProjectedTests(unittest.TestCase):
                       "hold and are withheld", lines["detail"])
         # No line carries l5 in the unmarked store: the reader without l5 holds every marking
         # the order's lines carry, so its line set is proven whole and freight is allocated.
-        unmarked = self.investigate("PO100905", self.table(markings=without_l5))
+        unmarked = self.pages("PO100905", self.table(markings=without_l5))
         self.assertEqual(len(self.freight_steps(unmarked)), 4)
-        self.assertNotIn("po_lines_incomplete", unmarked["answerability"]["reasons"])
+        self.assertNotIn("po_lines_incomplete", unmarked[0]["answerability"]["reasons"])
         # A reader holding l5 sees the line, and the freight is allocated over all four.
         self.assertIn(hidden, json.dumps(holder))
         self.assertEqual(len(self.freight_steps(holder)), 4)

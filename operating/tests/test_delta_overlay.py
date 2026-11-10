@@ -146,11 +146,14 @@ class DeltaOverlayTests(unittest.TestCase):
         self.addCleanup(self.host.close)
 
     def point(self, digest: str, store: Path | None = None,
-              fmt: str = delta_overlay.FORMAT, layers: list | None = None) -> None:
+              fmt: str = delta_overlay.FORMAT, layers: list | None = None,
+              partial: bool | None = None) -> None:
         pointer = self.delta.parent / "CURRENT.json"
         temp = pointer.with_suffix(".tmp")
         body = {"format": fmt, "base_digest": digest, "store": str(store or self.delta),
                 "owned": 3, "built_at": "2099-02-01T11:30:00Z"}
+        if partial is not None:
+            body.update(partial=partial, base="postgres")
         if layers is not None:
             body.update(store=str(layers[0]), layers=[{"store": str(path), "owned": 1}
                                                       for path in layers])
@@ -369,6 +372,43 @@ class DeltaOverlayTests(unittest.TestCase):
         plain = self.call("plx.aggregate", {"set": tools.sets.new(fx.FULL, [fx.PO2], complete=True),
                                             "measure": {"op": "count"}})
         self.assertNotIn(delta_overlay.NOT_AGGREGATED, reasons(plain))
+
+
+    def test_an_overlay_a_postgres_base_trimmed_says_so_on_every_answer_and_hides_nothing_more(self):
+        """A pointer published over the Postgres base lists only the newest layers
+        (``partial``): a reader of the SQLite generation and that overlay (Postgres not
+        serving) gets every answer marked ``delta_overlay_partial``, within the contract,
+        and still nothing it may not read."""
+        def reasons(result):
+            return [gap["reason"] for gap in result.get("gaps") or ()]
+        self.point(DIGEST, partial=True)
+        tools = self.host.tools
+        answers = {
+            "plx.find": self.call("plx.find", {"query": "PO5555"}),
+            "plx.object": self.call("plx.object", {"object_id": NEW}),
+            "plx.around": self.call("plx.around", {"from": INV2, "path": [
+                {"link_type": "SalesInvoice.invoices_order", "direction": "forward"}]}),
+            "plx.timeline": self.call("plx.timeline", {"from": SO2}),
+            "plx.aggregate": self.call("plx.aggregate", {
+                "set": tools.sets.new(fx.FULL, [fx.PO2], complete=True),
+                "measure": {"op": "count"}}),
+        }
+        self.assertEqual(self.ids(answers["plx.find"]), [NEW])   # the layers still serve
+        for name, result in answers.items():
+            self.assertIn(delta_overlay.PARTIAL, reasons(result), name)
+            if "completeness" in result:
+                self.assertFalse(result["completeness"]["complete"], name)
+        hidden = self.call("plx.find", {"query": "PO7777"}, actor=fx.SALES)
+        self.assertEqual((hidden["status"], self.ids(hidden)), ("not_found", []))
+        self.assertIn(delta_overlay.PARTIAL, reasons(hidden))
+        self.assertNotIn(BC_NEW, json.dumps(hidden))
+        self.assertEqual(self.call("plx.object", {"object_id": BC_NEW}, actor=fx.SALES)
+                         ["error"]["code"], "object_not_found")
+        # a whole pointer (a SQLite base, or one written before the field): no such gap
+        for partial in (False, None):
+            self.point(DIGEST, partial=partial)
+            self.assertNotIn(delta_overlay.PARTIAL,
+                             reasons(self.call("plx.find", {"query": "PO5555"})))
 
 
 class MergeFindTests(unittest.TestCase):

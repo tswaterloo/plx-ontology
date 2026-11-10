@@ -72,6 +72,8 @@ import sqlite3
 import sys
 import time
 from typing import Any, Iterable, Iterator, Mapping, Sequence
+from operating import declared_schema as _schemas
+from operating.declared_schema import sheet_readings as _SHEET_READINGS
 
 READER = "sheet-readings/" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
 KINDS = ("on_hand", "remittance", "statement")
@@ -641,34 +643,13 @@ def read_text(text: str, form: str, name: str) -> list[dict[str, Any]]:
 
 # ----------------------------------------------------------------------------- store
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS files (
-    file_key TEXT PRIMARY KEY, reader TEXT NOT NULL, status TEXT NOT NULL,
-    kinds TEXT NOT NULL, tables INTEGER NOT NULL, rows INTEGER NOT NULL,
-    seconds REAL NOT NULL, read_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sources (
-    handle TEXT PRIMARY KEY, file_key TEXT NOT NULL, origin TEXT NOT NULL,
-    name TEXT NOT NULL, object_id TEXT, object_type TEXT, audience_key TEXT,
-    markings TEXT, received_at TEXT, participants TEXT NOT NULL DEFAULT '[]',
-    seen_at TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS sources_by_file ON sources(file_key);
-CREATE TABLE IF NOT EXISTS tables (
-    file_key TEXT NOT NULL, table_no INTEGER NOT NULL, kind TEXT NOT NULL,
-    sheet TEXT NOT NULL, header TEXT NOT NULL, roles TEXT NOT NULL, facts TEXT NOT NULL,
-    PRIMARY KEY (file_key, table_no));
-CREATE TABLE IF NOT EXISTS readings (
-    file_key TEXT NOT NULL, table_no INTEGER NOT NULL, seq INTEGER NOT NULL,
-    kind TEXT NOT NULL, cell TEXT NOT NULL, fields TEXT NOT NULL,
-    PRIMARY KEY (file_key, table_no, seq));
-CREATE INDEX IF NOT EXISTS readings_by_kind ON readings(kind, file_key);
-"""
 
 
 def open_readings(path: str | Path) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=60)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(SCHEMA)
+    _schemas.apply(conn, _SHEET_READINGS)
     return conn
 
 

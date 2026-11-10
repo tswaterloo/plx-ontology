@@ -1,6 +1,6 @@
 """The connector's business questions end to end over stdio MCP, plx.* tools only.
 
-Four questions on the seeded console fixture (operator_ui/tests/case_fixtures):
+Four questions on the seeded console fixture (operator_api/tests/case_fixtures):
 'which POs are late and why' and 'what does this product really cost landed' asked with a
 scope (plx.find's portfolio mode: the late_po and landed_cost plans on every purchase order
 of the named order set the reader may list, ranked, one cited line or named missing
@@ -41,9 +41,9 @@ from operating import connector_home_check, mcp_portfolio, mcp_server, po_status
 from operating import proactive_engine as pe
 from operating.case_runtime import CaseRuntime
 from operating.tests import test_status_card as tsc
-from operator_ui import case_console
-from operator_ui import object_workspace as objects
-from operator_ui.tests import case_fixtures
+from operator_api.workspace import case_console
+from operator_api.workspace import object_workspace as objects
+from operator_api.tests import case_fixtures
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = json.loads((ROOT / "operating/ontology_tool_contracts.json").read_text("utf-8"))

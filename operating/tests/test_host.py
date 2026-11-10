@@ -747,14 +747,20 @@ class OneWriterTests(HostCase):
                 break
             runner.join(0.05)
         self.assertTrue(started.exists())
-        code, text, err = self.main("serve", "--no-console", "--max-cycles", "1",
-                                    "--state-dir", str(self.state), "--config",
-                                    str(self.config))
-        self.assertEqual(code, 0, err)
-        waiting = json.loads(text)
-        self.assertEqual({k: waiting[k] for k in ("schema", "state", "reason", "cycle")},
-                         {"schema": host_module.CYCLE_SCHEMA, "state": "waiting",
-                          "reason": "host_cycle_running", "cycle": None})
+        # ``serve`` runs the cycles only, with or without the retired ``--no-console``
+        # (and ``--port``): the console it once opened is never started.
+        from operator_api.workspace import case_console
+        for flags in (("--no-console",), ("--port", "8765")):
+            with patch.object(case_console, "main",
+                                   side_effect=AssertionError("console started")):
+                code, text, err = self.main("serve", *flags, "--max-cycles", "1",
+                                            "--state-dir", str(self.state), "--config",
+                                            str(self.config))
+            self.assertEqual(code, 0, err)
+            waiting = json.loads(text)
+            self.assertEqual({k: waiting[k] for k in ("schema", "state", "reason", "cycle")},
+                             {"schema": host_module.CYCLE_SCHEMA, "state": "waiting",
+                              "reason": "host_cycle_running", "cycle": None}, flags)
         code, text, err = self.main("run", "--state-dir", str(self.state), "--config",
                                     str(self.config))
         self.assertEqual((code, text, json.loads(err)), (2, "", {"error": "host_cycle_running"}))

@@ -68,10 +68,11 @@ def assembly(w: World, start: str, components, *, status: str = "Allocated",
     return order
 
 
-def coa(w: World, expiry: str, *, lot_no: str = "SYN-L1", supplier: str = "SYNTH Supplier",
-        audience: str = "graph:coa") -> str:
+def coa(w: World, expiry: str, *, lot_no: str | None = "SYN-L1",
+        supplier: str | None = "SYNTH Supplier", audience: str = "graph:coa",
+        product: str | None = "SYNTH Material") -> str:
     return w.obj("CertificateOfAnalysis", {"expiry_date": expiry, "supplier": supplier,
-                                           "product": "SYNTH Material", "lot": lot_no,
+                                           "product": product, "lot": lot_no,
                                            "tier": "lead"}, audience=audience)
 
 
@@ -174,19 +175,41 @@ class OpsAlerts(Engine):
         coa(w, ahead(45), lot_no="SYN-L2")
         coa(w, ahead(200), lot_no="SYN-L3")                   # not soon
         coa(w, "not a date", lot_no="SYN-L4")
+        coa(w, ahead(30), lot_no="SYN-L5", supplier=None)     # the document names no supplier
         summary = self.run_rules(w)
         self.assertEqual(summary["detectors"][ops.CERT_RULE], "complete")
         gaps = sorted(self.kinds(ops.CERT_EXPIRING), key=lambda g: g["event"]["days"])
-        self.assertEqual([g["event"]["days"] for g in gaps], [20, 45])
+        self.assertEqual([g["event"]["days"] for g in gaps], [20, 30, 45])
+        # a label the document does not state is left out, never worded as "None"
+        self.assertEqual(gaps[1]["summary"], "Certificate of analysis for SYNTH Material lot "
+                         f"SYN-L5 expires {ahead(30)} (in 30 days, as read from the document)")
         self.assertEqual(gaps[0]["object_id"], first)
         self.assertEqual(gaps[0]["summary"],
                          "Certificate of analysis for SYNTH Material lot SYN-L1 from SYNTH "
                          f"Supplier expires {ahead(20)} (in 20 days, as read from the document)")
-        self.assertEqual([g["follow_up"]["priority"] for g in gaps], ["high", "medium"])
+        self.assertEqual([g["follow_up"]["priority"] for g in gaps], ["high", "high", "medium"])
         self.assertEqual(summary["not_evaluated"][ops.CERT_RULE], {"date_unreadable": 1})
         self.assertIn("not_served_RelPublicAppSupplierCertification__expiry_date",
                       self.read()["detector_reasons"][ops.CERT_RULE])
         self.assertEqual(self.kinds(ops.CERT_EXPIRING, may_read=lambda k: k == "api:a"), [])
+
+    def test_a_certificate_of_nothing_or_superseded_by_a_newer_one_is_not_raised(self):
+        # live 11-10: the reader wrote "None" for fields a document did not hold (worded
+        # "for None lot None from None"), and an older certificate of a lot was raised
+        # beside the newer one stating a later date
+        w = World()
+        coa(w, ahead(10), lot_no="None", product="None", supplier="None")   # of nothing
+        coa(w, ahead(12), lot_no=None, product=None)                        # of nothing
+        coa(w, ahead(8), lot_no="SYN-L7")                                   # superseded
+        newer = coa(w, ahead(38), lot_no="SYN-L7")
+        named = coa(w, ahead(15), lot_no="SYN-L8", supplier="None")
+        summary = self.run_rules(w)
+        gaps = sorted(self.kinds(ops.CERT_EXPIRING), key=lambda g: g["event"]["days"])
+        self.assertEqual([g["object_id"] for g in gaps], [named, newer])
+        self.assertEqual(gaps[0]["summary"], "Certificate of analysis for SYNTH Material lot "
+                         f"SYN-L8 expires {ahead(15)} (in 15 days, as read from the document)")
+        self.assertEqual(summary["not_evaluated"][ops.CERT_RULE],
+                         {"certificate_unidentified": 2})
 
     def test_a_freight_bill_far_above_its_carrier_and_lane_norm_is_raised(self):
         w = World()

@@ -145,6 +145,38 @@ class PriceAlerts(Engine):
         self.assertEqual(len(gap["citations"]), 4)    # each line and its invoice, both windows
         self.assertEqual(gap["event"]["amount"]["value"], "15.00")
 
+    def test_a_code_its_system_never_costed_is_not_priced(self):
+        # live 11-10: the false price drops and below-typical prices were a labour code
+        # (hours and flat fees under one code) and a miscellaneous non-stock code, every
+        # line booked at a cost of 0 by its own system
+        w = World()
+        labour = w.obj("Product", {"code": "SYNTH-SERVICE"}, audience="api:items")
+        zero = ("0", "1", "1")
+        for i in range(3):
+            who = customer(w, f"SYNTHL{i}")
+            sale(w, who, labour, "10", "1250", ago=20, own_cost=zero)
+        cheap = customer(w, "SYNTHFLAT")
+        sale(w, cheap, labour, "10", "300", ago=250, own_cost=zero)   # 30 a unit before
+        sale(w, cheap, labour, "10", "100", ago=20, own_cost=zero)    # 10 now: down, below
+        stock = w.obj("Product", {"code": "SYNTH-STOCK"}, audience="api:items")
+        fell = customer(w, "SYNTHFELL")
+        sale(w, fell, stock, "10", "100", ago=250, own_cost=zero)
+        sale(w, fell, stock, "10", "50", ago=20, own_cost=("4", "1", "1"))  # costed once
+        # a line sold in USD whose cost is booked in CAD (Sage's home currency) is costed
+        export = w.obj("Product", {"code": "SYNTH-EXPORT"}, audience="api:items")
+        abroad = customer(w, "SYNTHUSD")
+        for ago, amount in ((250, "200"), (20, "100")):
+            inv = sale(w, abroad, export, "10", amount, ago=ago, currency="USD",
+                       own_cost=("4", "1", "1"))
+            line = next(l["from_object"] for l in w.rows["links"]
+                        if l["link_type"] == "SalesInvoiceLine.line_of" and l["to_object"] == inv)
+            money(w, line, "unit_cost", "CAD")
+        summary = self.run_rules(w)
+        self.assertEqual(sorted(g["object_id"] for g in self.kinds(pp.DROP_KIND)),
+                         sorted([fell, abroad]))
+        self.assertEqual(self.kinds(pp.BELOW_TYPICAL_KIND), [])
+        self.assertEqual(summary["not_evaluated"][pp.RULE].get("item_uncosted"), 4)
+
     def test_unknown_or_unreadable_figures_fail_closed(self):
         w = World()
         p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")

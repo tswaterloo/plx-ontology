@@ -1,5 +1,5 @@
 """Live check of Home's objective box (``workspace.objective_box``): three free-form
-objectives, no object id and no case id, run through ``operator_ui.objective_box.answer``
+objectives, no object id and no case id, run through ``operator_api.workspace.objective_box.answer``
 (the path ``POST /api/objective`` serves) on the object workspace the console builds for
 one named reader of the persistent host (``scripts.eval_real_agent.ask_workspace``: the
 reader's own session start-up, its case runtime and projection store), with a headless
@@ -58,7 +58,7 @@ def _report(blocked: str | None, items: list[dict[str, Any]]) -> dict[str, Any]:
 def measure(objects: Any, objectives: Sequence[Mapping[str, Any]] = OBJECTIVES
             ) -> list[dict[str, Any]]:
     """Each objective's verdict and counts through the box (``objective_box.answer``)."""
-    from operator_ui import objective_box
+    from operator_api.workspace import objective_box
 
     items: list[dict[str, Any]] = []
     for request in objectives:

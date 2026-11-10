@@ -7,11 +7,15 @@ pgvector 0.8 iterative index scans, so a permission filter applied inside SQL do
 starve an HNSW scan of rows.
 
 A connection is handed back clean: an open transaction is rolled back on return, and a
-broken or closed connection is discarded rather than reused.
+broken or closed connection is discarded rather than reused. An idle connection whose
+server went away (Postgres restarted, the backend terminated) is found before it is lent
+(``alive``) and replaced, so a restart costs no failed request.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
+import logging
+import select
 import threading
 import time
 from typing import Any, Callable, Iterator
@@ -25,6 +29,45 @@ DEFAULT_EF_SEARCH = 100
 # come slightly out of order, so a dense query re-sorts its candidates (pgvector 0.8).
 ITERATIVE_SCAN = "relaxed_order"
 DEFAULT_MAX_SCAN_TUPLES = 20000
+# Readable-socket rounds ``alive`` reads before it calls an idle connection live.
+ALIVE_ROUNDS = 4
+
+log = logging.getLogger(__name__)
+
+
+def alive(conn: Any) -> bool:
+    """Whether an idle connection can still run a statement, told without a round trip:
+    not closed or broken, and nothing on its socket says the server ended the session.
+    An idle connection has nothing to read unless the server sent something unasked (a
+    notice, a parameter, or the FATAL message and end-of-stream of a terminated
+    backend); that input is read (never blocking: libpq's socket is non-blocking), and a
+    server that went away marks the connection bad; one that spoke unasked but did not
+    close the stream yet is asked once with an empty query. A stand-in without ``pgconn`` is
+    judged by its ``closed`` / ``broken`` flags alone."""
+    if getattr(conn, "closed", False) or getattr(conn, "broken", False):
+        return False
+    pgconn = getattr(conn, "pgconn", None)
+    if pgconn is None:
+        return True
+    try:
+        unasked = False
+        for _ in range(ALIVE_ROUNDS):
+            if not select.select([pgconn.socket], [], [], 0)[0]:
+                break
+            unasked = True
+            pgconn.consume_input()
+        if pgconn.status != psycopg.pq.ConnStatus.OK:
+            return False
+        if unasked:
+            # the server spoke unasked and the stream is still open: its FATAL message
+            # can come before its end-of-stream, so ask once (an empty query, no
+            # statement and no transaction change)
+            result = pgconn.exec_(b"")
+            return (pgconn.status == psycopg.pq.ConnStatus.OK
+                    and result.status == psycopg.pq.ExecStatus.EMPTY_QUERY)
+        return True
+    except (psycopg.Error, OSError, ValueError):
+        return False
 
 
 def search_defaults(conn: psycopg.Connection, *, ef_search: int = DEFAULT_EF_SEARCH,
@@ -102,9 +145,15 @@ class Pool:
                     raise RuntimeError("pool_closed")
                 while self._idle:
                     conn = self._idle.pop()
-                    if not conn.closed and not conn.broken:
+                    if alive(conn):
                         return conn
                     self._open -= 1
+                    log.warning("postgres pool: dropped a lost idle connection; a new "
+                                "one replaces it")
+                    try:
+                        conn.close()
+                    except Exception:  # noqa: BLE001 - already gone
+                        pass
                 if self._open < self.max_size:
                     self._open += 1
                     return None

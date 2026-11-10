@@ -34,7 +34,7 @@ when it changes) or keys injected by a test (``StaticJwks``). Fetching Entra's
 discovery keys is not done here: no HTTP client outside the GET-only module
 (hard guards), and an unknown key fails closed.
 
-The console (``operator_ui.case_console --entra-resource``) accepts the same token from an
+The console (``operator_api.workspace.case_console --entra-resource``) accepts the same token from an
 employee signed in with their PLX Microsoft account: ``entra_session`` with
 ``channel="console"`` (author ``human``). Its resource file is committed
 (``COMMITTED_RESOURCE``, operating/entra_resource.json): identifiers only, never a secret.

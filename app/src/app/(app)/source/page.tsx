@@ -42,7 +42,8 @@ function SourceReader() {
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <SourceLoader key={handle} handle={handle} cited={cited} quote={quote} wide onView={setView} />
-        {handle ? (
+        {/* asking about a document is offered once it opened, never under "couldn't find that" */}
+        {handle && view ? (
           <section aria-label="Ask about this" className="px-5 pb-12 sm:px-8 lg:px-12">
             <div className="max-w-[720px]">
               <AskBox size="md" onSubmit={(question) => askAbout(question)} placeholder="Ask about this document" />

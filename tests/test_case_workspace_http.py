@@ -29,13 +29,13 @@ from operating.tests import test_ao_26005b_case as ao_tests
 from operating.tests import test_ingestion as ingest_fixture
 from operating.tests.test_case_originals import FIXTURE, local_ocr_available
 from operating.tests.test_playbook_eval import AoEvalCase
-from operator_ui import case_workspace as case_workspace_module
-from operator_ui import case_console
-from operator_ui import case_plain
-from operator_ui.tests import case_fixtures
-from operator_ui.case_console import report_store_for
-from operator_ui.case_workspace import CaseWorkspace
-from operator_ui.server import make_server
+from operator_api.workspace import case_workspace as case_workspace_module
+from operator_api.workspace import case_console
+from operator_api.workspace import case_plain
+from operator_api.tests import case_fixtures
+from operator_api.workspace.case_console import report_store_for
+from operator_api.workspace.case_workspace import CaseWorkspace
+from operator_api.tests.console_harness import make_server
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 
 OPS_QUALITY = ao_tests.OPS_QUALITY
@@ -886,7 +886,7 @@ class CaseConflictsTest(unittest.TestCase):
         return {"citation": handle, "relation": relation, "key": key}
 
     def test_a_contradiction_recorded_by_plx_case_link_stays_a_conflict(self):
-        from operator_ui.case_workspace import conflicts
+        from operator_api.workspace.case_workspace import conflicts
         po = self.row("public.app_purchase_order", "po-a")
         line = self.row("public.app_purchase_order_line", "l-b")
         view = {"findings": {}, "gaps": [], "links": [
@@ -960,7 +960,7 @@ class CaseSummaryCounterpartyTest(unittest.TestCase):
 
 
 class ReasonWordsOnePathTest(unittest.TestCase):
-    """One reason code reads the same in the object view and the case and home views."""
+    """One reason code reads the same in the object view and the case view."""
 
     CODES = ("no_match", "not_served", "not_applicable_to_source",
              "evidence_not_fully_visible")
@@ -981,30 +981,6 @@ class ReasonWordsOnePathTest(unittest.TestCase):
         self.assertEqual(case_plain.plain_gap(
             {"missing": "x", "why": "value_disagreement"})["text"],
             explanations.reason_words("value_disagreement"))
-
-    def test_home_words_a_reason_code_as_the_case_view_does(self):
-        from operator_ui import home
-
-        gap = {"id": "G1", "missing": "po_twin_of", "why": "plx.investigate:no_match: x"}
-
-        class Cases:
-            def get(self, actor, case_id):
-                return {"gaps": [gap]}
-
-        class Runtime:
-            cases = Cases()
-
-        class Workspace:
-            actor, runtime = None, Runtime()
-
-            def list_cases(self, **kwargs):
-                return {"cases": [{"case_id": "c1", "question": "q", "opened_at": "t",
-                                   "updated_at": "t", "events": 1}]}
-        [case] = home._open_cases(Workspace())["cases"]
-        self.assertEqual(case["gaps"][0]["plain"]["text"],
-                         case_plain.plain_gap(gap)["text"])
-        self.assertEqual(case["gaps"][0]["plain"]["text"].lower().rstrip("."),
-                         explanations._REASON_TEXT["no_match"])
 
 
 class IdentityCandidatesTest(unittest.TestCase):

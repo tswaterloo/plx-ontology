@@ -6,7 +6,7 @@ Orders come from the lateness model, read by a raw-capture oracle
 the captured Portal rows and Business Central records the reader may read, never through
 the projection, its links or its tools). Each order runs the steps a person takes at the
 console, each through the console's own path
-(``operator_ui.case_console.object_workspace_for``), and records ``pass``, ``fail`` or
+(``operator_api.workspace.case_console.object_workspace_for``), and records ``pass``, ``fail`` or
 ``blocked`` per step with the exact reason:
 
 1. ``home``: scored as recall. The run reports ``home.recall``: the late orders the home
@@ -854,7 +854,7 @@ def workspace_for(state_dir: Path, mirror_audience: Path, tenant: str,
     from operating import case_workspace_live as live_mod
     from operating.action_path import ActionPath
     from operating.session_identity import CHANNEL_CONSOLE, fixture_session
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
 
     runtime = live_mod.offline_runtime(state_dir, mirror_audience, tenant, live=live)
     chosen = None

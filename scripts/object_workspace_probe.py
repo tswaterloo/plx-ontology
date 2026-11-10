@@ -14,7 +14,7 @@ builds the throwaway mirror and projection store (a GET-only Portal sync; with `
 BC capture; with a mail scope one bounded Graph delta capture; with a SharePoint scope the
 bounded capture ``ontology.document_links`` runs, kept in ``--sharepoint-state`` and named
 by the served state) and lays them out as the served host state. Then, offline over that state and without any client, the console's
-object workspace (``operator_ui.case_console.object_workspace_for``: the case host's
+object workspace (``operator_api.workspace.case_console.object_workspace_for``: the case host's
 tools, grants, item gates and the case runtime's L1 resolver) opens sampled real roots
 (first up to ``DOCUMENT_ROOTS`` records a current stored link joins to a mail or SharePoint
 document, ``documents_linked_roots``; then up to ``--per-type`` per object type; each by
@@ -328,7 +328,9 @@ def measure_view(view: Mapping[str, Any], workspace: Any, counts: dict[str, dict
         if digests is None and source.get("kind") == "original" \
                 and isinstance(source.get("sha256"), str):
             digests = {source["sha256"]}   # the case runtime re-hashed the stored bytes
-        if digests is None or not cited:
+        if digests is None or not cited or source.get("withheld_fields"):
+            # a row opened without the fields this reader may not see cannot re-hash to its
+            # citation; that is the permission filter at work, not a changed original
             _add(counts["originals"], "rehash_not_applicable")
         elif digests & cited:
             _add(counts["originals"], "rehash_matched")
@@ -403,7 +405,7 @@ def identifier_queries(object_type: str, view: Mapping[str, Any],
                        own: Mapping[str, frozenset[str]]) -> list[str]:
     """The root's own identifier values as the reader's card shows them (``own``: the
     schema's identifier properties per type, ``own_identifiers``; no literal kinds)."""
-    from operator_ui.object_workspace import MAX_QUERY
+    from operator_api.workspace.object_workspace import MAX_QUERY
 
     values = {value["value"] for value in (view.get("card") or {}).get("values") or []
               if value.get("value_type") == "identifier"
@@ -549,7 +551,7 @@ def measure_find(object_type: str, object_id: str, queries: Sequence[str], grant
 def measure_next_steps(view: Mapping[str, Any], counts: dict[str, Any]) -> None:
     """The next steps the open offers (its registered intents) and the follow-up proposals
     among them: explained = a stated why (the next safe step's detail) and >= 1 citation."""
-    from operator_ui.object_workspace import FOLLOW_UP_CAPABILITY
+    from operator_api.workspace.object_workspace import FOLLOW_UP_CAPABILITY
 
     intents = view.get("intents") or {}
     if intents.get("status") != "read":
@@ -823,7 +825,7 @@ def check_session_replay(host: Any, case_dir: str, *, sessions: int, sample: int
     from integrations import capture_mail, capture_sharepoint
     from ontology.types import Actor
     from operating.host import projection_path
-    from operator_ui.case_console import object_workspace_for
+    from operator_api.workspace.case_console import object_workspace_for
 
     started = time.monotonic()
     state, config = host.state_dir, host.config
@@ -966,9 +968,9 @@ def check_views(host: Any, *, sample: int, per_type: int, max_opens: int,
     from integrations import capture_mail, capture_sharepoint
     from ontology.types import Actor
     from operating.host import projection_path
-    from operator_ui.case_console import (ACTIONS_FILE, REPORTS_FILE, object_workspace_for,
+    from operator_api.workspace.case_console import (ACTIONS_FILE, REPORTS_FILE, object_workspace_for,
                                           report_store_for)
-    from operator_ui.object_workspace import EVALUATION_STATES
+    from operator_api.workspace.object_workspace import EVALUATION_STATES
     from scripts.ontology_projection_probe import MAIL_WITHHELD_PRINCIPAL, reader_actor
 
     started = time.monotonic()

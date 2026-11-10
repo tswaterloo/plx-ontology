@@ -24,7 +24,7 @@ OTHER_OID = "00000000-0000-4000-8000-0000000000b2"
 CHANNEL = "teams:channel:synth-team/synth-channel"
 # what a schema projecting these would declare (none of them is declared today)
 DECLARED = {"mc_task_due": ("due_at",),
-            "production_due": (("AssemblyOrder", "scheduled_end_date", "actual_end_date",
+            "production_due": (("AssemblyOrder", "scheduled_date", "realized_date",
                                 "status"),),
             "damage_date": (("AssemblyOrder", "fm_created_at"),),
             "ask_text": {"TeamsChatMessage": ("subject",),
@@ -60,13 +60,17 @@ def gate(w: World, status: str, asked: int, *, decided: bool = False) -> str:
     return w.obj("MCApproval", values, audience="mc:ops")
 
 
-def planner(w: World, due: int, *, pct: str = "50", done: bool = False,
-            assignees: list[str] | None = None) -> str:
+def planner(w: World, due: int, *, pct: str = "50", done: bool | int = False,
+            assignees: list[str] | None = None, plan: str = "synth-plan",
+            created: int = 20) -> str:
+    """A Planner task due ``due`` days ago, created ``created`` days ago (negative: after the
+    run's day); ``done``: completed a day ago (True) or that many days ago."""
     values = {"title": "Synthetic planner task " + "x" * 80, "plan_title": "Synthetic plan",
               "due_at": day(due) + "T12:00:00Z", "percent_complete": pct,
-              "assignees": json.dumps(assignees or [OURS_OID])}
-    if done:
-        values["completed_at"] = day(1) + "T12:00:00Z"
+              "assignees": json.dumps(assignees or [OURS_OID]), "plan_id": plan,
+              "created_at": day(created) + "T12:00:00Z"}
+    if done is not False:
+        values["completed_at"] = day(1 if done is True else done) + "T12:00:00Z"
     return w.obj("PlannerTask", values, audience="meetings:plan:synth")
 
 
@@ -99,13 +103,13 @@ def aged(w: World, kind: str, then: tuple, now: tuple, *, currency: str = "CAD",
     return oid
 
 
-def assembly(w: World, item: str, *, status: str = "In Progress", due: int | None = 3,
+def assembly(w: World, item: str, *, status: str = "Allocated", due: int | None = 3,
              finished: bool = False, created: int = 5) -> str:
     values = {"status": status, "fm_created_at": day(created) + "T08:00:00Z"}
     if due is not None:
-        values["scheduled_end_date"] = day(due)
+        values["scheduled_date"] = day(due)
     if finished:
-        values["actual_end_date"] = day(1)
+        values["realized_date"] = day(1)
     oid = w.obj("AssemblyOrder", values, audience="api:production")
     w.link("AssemblyOrder.makes", oid, item)
     return oid
@@ -209,8 +213,16 @@ class OpsAlerts(Engine):
         planner(w, 4, pct="100")
         planner(w, -2)                                  # due later
         planner(w, 4, assignees=[EXCLUDED_OID])          # never judged
+        # a plan nobody created or completed a task of in 30 days is left behind
+        planner(w, 200, plan="old-plan", created=300)
+        # judged as the run's day saw it: completed after it (100% now) was still open
+        # then, and a task created after it did not exist
+        reopened = planner(w, 6, pct="100", done=-2)
+        planner(w, 4, created=-1)
         summary = self.run_rules(w)
-        (gap,) = self.kinds(po.PLANNER)
+        self.assertEqual(sorted(g["object_id"] for g in self.kinds(po.PLANNER)),
+                         sorted([late, reopened]))
+        gap = next(g for g in self.kinds(po.PLANNER) if g["object_id"] == late)
         self.assertEqual(gap["object_id"], late)
         self.assertIn("4 days past due", gap["summary"])
         # the title is clipped (never the whole text)
@@ -252,9 +264,9 @@ class OpsAlerts(Engine):
         item = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
         late = assembly(w, item, due=4)
         assembly(w, item, due=4, finished=True)
-        assembly(w, item, due=4, status="Completed")
+        assembly(w, item, due=4, status="Realized")
         assembly(w, item, due=-4)
-        assembly(w, item, due=4, status="Mystery")
+        assembly(w, item, due=4, status="RELEASED")   # the MO's stale word: never open
         summary = self.run_rules(w)
         (gap,) = self.kinds(po.PRODUCTION)
         self.assertEqual(gap["object_id"], late)

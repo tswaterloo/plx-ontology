@@ -406,6 +406,8 @@ from .live_source_guard import MAX_CONTENT_BYTES as MAX_DOWNLOAD_BYTES
 from .live_source_guard import (LiveSourceAudience, NotVisible, SourceNotFound,
                                 SourceUnavailable, parse_handle, q, tenant_download_hosts,
                                 unavailable_detail)
+from operating import declared_schema as _schemas
+from operating.declared_schema import capture_sharepoint as _CAPTURE_SHAREPOINT
 
 SCOPE_SCHEMA = "plx-sharepoint-capture-scope/v1"
 STORE_DIR = "sharepoint-capture"
@@ -793,161 +795,6 @@ class CaptureScope:
 # ------------------------------------------------------------------ store
 
 STORE_SCHEMA_VERSION = "1"
-_DDL = """
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS roots (
-    drive_id TEXT NOT NULL,
-    root_path TEXT NOT NULL,
-    status TEXT NOT NULL,
-    reason TEXT,
-    round_started_at TEXT,
-    last_run_at TEXT,
-    last_complete_at TEXT,
-    rounds_complete INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (drive_id, root_path)
-);
--- One row per validity interval of a drive-item version. A version that comes back
--- after a gap (removal, a move with the same eTag) gets a new row under the same
--- handle, so as_known_at intervals never overlap.
-CREATE TABLE IF NOT EXISTS items (
-    version_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    l1_handle TEXT NOT NULL,
-    drive_id TEXT NOT NULL,
-    item_id TEXT NOT NULL,
-    etag TEXT NOT NULL,
-    root_path TEXT NOT NULL,
-    path TEXT NOT NULL,
-    record TEXT NOT NULL CHECK (json_valid(record)),
-    resources TEXT NOT NULL CHECK (json_valid(resources)),
-    source_acl TEXT NOT NULL CHECK (json_valid(source_acl)),
-    digest TEXT NOT NULL,
-    content_status TEXT NOT NULL,
-    content_sha256 TEXT REFERENCES blobs(sha256),
-    text_status TEXT NOT NULL,
-    text_sha256 TEXT REFERENCES blobs(sha256),
-    recorded_at TEXT NOT NULL,
-    superseded_at TEXT,
-    removed_reason TEXT,
-    last_seen_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS items_by_id ON items(drive_id, item_id);
-CREATE INDEX IF NOT EXISTS items_by_handle ON items(l1_handle);
--- The visibility stamp (``visible_current``): bumped by every write that changes a column
--- a version's visibility or its listing is decided on, in that write's transaction,
--- whatever code makes it; a listing that re-reads equal permissions leaves it as it is.
-INSERT OR IGNORE INTO meta VALUES ('visibility_stamp', '0');
-CREATE TRIGGER IF NOT EXISTS items_visibility_insert AFTER INSERT ON items BEGIN
-    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';
-END;
-CREATE TRIGGER IF NOT EXISTS items_visibility_delete AFTER DELETE ON items BEGIN
-    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';
-END;
-CREATE TRIGGER IF NOT EXISTS items_visibility_update AFTER UPDATE OF version_id, l1_handle, drive_id, item_id, content_sha256, recorded_at, superseded_at, removed_reason, resources, source_acl ON items
-    WHEN OLD.version_id IS NOT NEW.version_id OR OLD.l1_handle IS NOT NEW.l1_handle OR OLD.drive_id IS NOT NEW.drive_id OR OLD.item_id IS NOT NEW.item_id OR OLD.content_sha256 IS NOT NEW.content_sha256 OR OLD.recorded_at IS NOT NEW.recorded_at OR OLD.superseded_at IS NOT NEW.superseded_at OR OLD.removed_reason IS NOT NEW.removed_reason OR OLD.resources IS NOT NEW.resources OR OLD.source_acl IS NOT NEW.source_acl BEGIN
-    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';
-END;
-CREATE TABLE IF NOT EXISTS blobs (
-    sha256 TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    bytes INTEGER NOT NULL,
-    stored_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS item_events (
-    l1_handle TEXT NOT NULL,
-    event TEXT NOT NULL,
-    at TEXT NOT NULL
-);
--- Legacy: one change-feed cursor per drive. It only seeds root_cursors (every root of
--- the drive that was walked) and is then deleted.
-CREATE TABLE IF NOT EXISTS drive_cursors (
-    drive_id TEXT PRIMARY KEY,
-    delta_url TEXT NOT NULL,
-    stored_at TEXT NOT NULL
-);
--- Each root's position in its drive's change feed (graph_read.SharePointReader
--- .drive_delta): the root has applied every change before delta_url, read at read_at
--- (NULL: unknown, the earliest). A NULL delta_url is no position (the root walks).
-CREATE TABLE IF NOT EXISTS root_cursors (
-    drive_id TEXT NOT NULL,
-    root_path TEXT NOT NULL,
-    delta_url TEXT,
-    read_at TEXT,
-    PRIMARY KEY (drive_id, root_path)
-);
--- Each root's permission position: every item permission change its drive's change
--- feed listed before delta_url (read at read_at; NULL: unknown, the earliest) has been
--- re-read for the root. No row: unknown (the root walks once it follows the feed).
--- reread_url/reread_at: the feed cursor and read time of the first run of a re-read the
--- time budget cut (NULL: none open).
-CREATE TABLE IF NOT EXISTS root_permissions (
-    drive_id TEXT NOT NULL,
-    root_path TEXT NOT NULL,
-    delta_url TEXT,
-    read_at TEXT,
-    reread_url TEXT,
-    reread_at TEXT,
-    PRIMARY KEY (drive_id, root_path)
-);
--- The folders the last full walk of a root listed, by item id, so a change-feed entry
--- is attributed to the root whose walked folder is its parent. Rebuilt by every full
--- walk of the root; root_walks.walked_at is when its last full walk ended.
-CREATE TABLE IF NOT EXISTS walked_folders (
-    drive_id TEXT NOT NULL,
-    folder_id TEXT NOT NULL,
-    root_path TEXT NOT NULL,
-    path TEXT NOT NULL,
-    name TEXT,
-    parent_id TEXT,
-    depth INTEGER NOT NULL,
-    PRIMARY KEY (drive_id, folder_id)
-);
--- The security class the scope gave a library when it was last planned; UNRESOLVED
--- for a restricted library it did not classify (served to no employee).
-CREATE TABLE IF NOT EXISTS drive_classes (
-    drive_id TEXT PRIMARY KEY,
-    security_class TEXT NOT NULL,
-    decided_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS root_walks (
-    drive_id TEXT NOT NULL,
-    root_path TEXT NOT NULL,
-    walked_at TEXT NOT NULL,
-    PRIMARY KEY (drive_id, root_path)
-);
--- The position of a full walk the time budget cut, resumed by the root's next run:
--- started_at is when its first run started, delta_url the drive's change-feed cursor
--- read before it, position the folders left (the cut one first, with the children it
--- already holds) and the walk's gaps so far.
--- A text re-read of a version whose refetch failed for that file alone (a 403/423 on
--- the download, no download URL, bytes that differ from the item's size or hash): tries
--- so far, the last failure's fixed-vocabulary token and time, and when it may be tried
--- again (exponential backoff). gave_up_at: past REREAD_MAX_ATTEMPTS, a named gap.
--- A failure of the source as a whole (throttling, no connection, a 5xx on every
--- download, refused credentials) records no try, only last_at, so the version goes
--- behind the others next run.
-CREATE TABLE IF NOT EXISTS text_reread_attempts (
-    l1_handle TEXT NOT NULL,
-    generation TEXT NOT NULL,
-    attempts INTEGER NOT NULL,
-    last_error TEXT NOT NULL,
-    last_at TEXT NOT NULL,
-    next_at TEXT,
-    gave_up_at TEXT,
-    PRIMARY KEY (l1_handle, generation)
-);
-CREATE TABLE IF NOT EXISTS walk_positions (
-    drive_id TEXT NOT NULL,
-    root_path TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    delta_url TEXT,
-    position TEXT NOT NULL CHECK (json_valid(position)),
-    saved_at TEXT NOT NULL,
-    PRIMARY KEY (drive_id, root_path)
-);
-"""
 _CONTENT_COLUMNS = ("content_status", "content_sha256", "text_status", "text_sha256")
 
 
@@ -990,7 +837,7 @@ class SharePointCaptureStore:
         os.chmod(self.path, 0o600)
         self.db.row_factory = sqlite3.Row
         wal_journal(self.db)
-        self.db.executescript(_DDL)
+        _schemas.apply(self.db, _CAPTURE_SHAREPOINT)
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)",
                             (STORE_SCHEMA_VERSION,))
@@ -1480,13 +1327,21 @@ class SharePointCaptureStore:
 
     def text_unread(self, drive_id: str, root_path: str, limit: int) -> list[dict[str, Any]]:
         """Current versions under a root whose bytes are captured but whose scanned pages
-        were never OCR-read (no engine then, or captured before OCR existed)."""
+        or image were never OCR-read (no engine then, OCR put off, or captured before OCR
+        existed): the versions whose bytes are kept for it (:meth:`_awaits_reading`).
+        Chosen in SQL, so a window of files no OCR reads never hides the rest."""
+        from .captured_text import OCR_READ_SUFFIXES
+        names = " OR ".join("lower(json_extract(record, '$.name')) LIKE ?"
+                            for _ in ("pdf", *OCR_READ_SUFFIXES))
         rows = self.db.execute(
             "SELECT * FROM items WHERE drive_id=? AND root_path=? AND superseded_at IS NULL "
             f"AND content_status=? AND text_status IN ({','.join('?' * len(TEXT_UNREAD))}) "
-            "ORDER BY version_id LIMIT ?",
-            (drive_id, root_path, CAPTURED, *TEXT_UNREAD, limit)).fetchall()
-        return [dict(r) for r in rows if is_paged_file(json.loads(r["record"]))]
+            f"AND (lower(json_extract(record, '$.mime_type')) LIKE 'application/pdf%' "
+            f"OR {names}) ORDER BY version_id LIMIT ?",
+            (drive_id, root_path, CAPTURED, *TEXT_UNREAD,
+             *(f"%{suffix}" for suffix in (".pdf", *OCR_READ_SUFFIXES)), limit)).fetchall()
+        return [dict(r) for r in rows
+                if self._awaits_reading(r["text_status"], json.loads(r["record"]))]
 
     def columns_stale(self, drive_id: str, root_path: str, version: str
                       ) -> list[dict[str, Any]]:
@@ -1665,10 +1520,10 @@ class SharePointCaptureStore:
         pending or had no engine, or an untyped OCR failure. Its bytes are kept."""
         if text_status is None or text_status in UNTYPED_OCR_FAILURES:
             return True
-        from .captured_text import IMAGE_OCR_SUFFIXES
+        from .captured_text import OCR_READ_SUFFIXES
         name = str(record.get("name") or "").lower()
         return text_status in TEXT_UNREAD and (is_paged_file(record)
-                                               or name.endswith(IMAGE_OCR_SUFFIXES))
+                                               or name.endswith(OCR_READ_SUFFIXES))
 
     def _pending_rows(self, digest: str) -> list[sqlite3.Row]:
         """Current versions holding ``digest`` whose bytes a later reading needs."""
@@ -3043,14 +2898,24 @@ class SharePointCapture:
             return record
         return where
 
-    def _repair(self, reader: Any, drive_id: str, root: str, counts: dict[str, int]) -> None:
-        """Retry the bytes of current versions whose read failed (bounded per walk), but
-        none the first pass already tried this run (:meth:`_retry_first`)."""
+    def _repair(self, reader: Any, drive_id: str, root: str, counts: dict[str, int], *,
+                share: float | None = None) -> None:
+        """Retry the bytes of current versions whose read failed (bounded per walk), each
+        at most once a run (``first_tried``: the first pass's, :meth:`_retry_first`, and
+        this one's). ``share``: none starts once that share of the budget left at the
+        call is spent (a walk's first step, as :meth:`_reextract`): a walk that spends
+        the budget never reaches its end-of-walk repair, and a file listed unchanged is
+        never read again, so without it a failed read stayed failed until the file changed."""
+        until = None
+        if share is not None and self._deadline is not None:
+            now = self._monotonic()
+            until = now + share * max(0.0, self._deadline - now)
         rows = self.store.degraded(drive_id, root, REPAIRS_PER_ROOT + len(self.first_tried))
         rows = [r for r in rows if r["l1_handle"] not in self.first_tried]
         for row in rows[:REPAIRS_PER_ROOT]:
-            if self._spent():
+            if self._spent() or (until is not None and self._checked_at >= until):
                 return   # the rest waits for a later run
+            self.first_tried.add(row["l1_handle"])
             self._retry_bytes(reader, row, json.loads(row["record"]), counts)
 
     def _retry_bytes(self, reader: Any, row: Mapping[str, Any], record: Mapping[str, Any],
@@ -3264,7 +3129,9 @@ class SharePointCapture:
                             round_started_at=started)
         cut, continued = False, None
         if not self._spent():
-            # Scanned pages a cut run left unread (``ocr_pending``) first, within a share.
+            # Bytes an earlier read failed, then scanned pages a cut run left unread
+            # (``ocr_pending``), each within a share.
+            self._repair(reader, drive_id, root, counts, share=REEXTRACT_SHARE)
             self._reextract(drive_id, root, counts, share=REEXTRACT_SHARE, reader=reader)
             self._reread_stale(drive_id, root, counts, share=REEXTRACT_SHARE, reader=reader)
         self._extraction = _Extraction(self.extract_workers)
@@ -3770,6 +3637,7 @@ class SharePointCapture:
         named = self._named_pass(plans)
         # The capture scheduler's order (capture_mail.schedule_units, shared with mail).
         ordered = schedule_units(plans, lambda plan: self._standing(plan[2], plan[3]))
+        self.first_tried = set()
         if self.retry_first is not None:
             self._retry_first(ordered)
         feeds = self._feeds(ordered, scope.full_walk_hours)

@@ -26,9 +26,9 @@ from operator_api import agent_ask as aa
 from operator_api import backend as be
 from operator_api import models as m
 from operator_api.tests.test_backend_fixture import OPS, Served, events
-from operator_ui import case_console
-from operator_ui import object_workspace as objects
-from operator_ui.tests import case_fixtures
+from operator_api.workspace import case_console
+from operator_api.workspace import object_workspace as objects
+from operator_api.tests import case_fixtures
 
 def tool_use(n, name, arguments):
     return {"type": "assistant", "message": {"content": [{
@@ -722,7 +722,7 @@ class AgentPath(unittest.TestCase):
 
 class ItemRecheck(unittest.TestCase):
     def test_only_a_captured_original_the_app_cannot_recheck_stays_with_the_host_link(self):
-        from operator_ui.object_workspace import ITEM_REFUSED, _withheld
+        from operator_api.workspace.object_workspace import ITEM_REFUSED, _withheld
         original, mail = "original://nr-0123456789ab#page=1", "graph-mail://box/AAA@g-1"
 
         class Access:
@@ -757,7 +757,7 @@ class ItemRecheck(unittest.TestCase):
     def test_a_sharepoint_file_the_readers_host_passed_shows_and_a_refused_one_is_counted(self):
         # Live 2026-10-30: every claim citing a SharePoint file was dropped (the app's item
         # re-check has no SharePoint gate), uncounted, and the answer said nothing.
-        from operator_ui.object_workspace import ITEM_REFUSED, NOT_GRANTED, _withheld
+        from operator_api.workspace.object_workspace import ITEM_REFUSED, NOT_GRANTED, _withheld
         sp = "sharepoint://b%21DRIVE/01MAP@%22%7BE%7D%2C1%22"
         other = "sharepoint://b%21OTHER/01SECRET@%22%7BE%7D%2C1%22"
 
@@ -803,7 +803,7 @@ class ItemRecheck(unittest.TestCase):
 
     def test_a_sentence_repeating_a_withheld_claims_words_goes(self):
         # Review probe: the re-screen kept a hidden claim's words verbatim.
-        from operator_ui.object_workspace import ITEM_REFUSED, _withheld
+        from operator_api.workspace.object_workspace import ITEM_REFUSED, _withheld
         sp = "sharepoint://b%21DRIVE/01MAP@%22%7BE%7D%2C1%22"
 
         class Access:

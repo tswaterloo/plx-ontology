@@ -549,8 +549,8 @@ class SourceViewTests(unittest.TestCase):
             return dict(self.view, citation=handle)
 
     def workspace(self, relation, key, row, grant):
-        from operator_ui.case_workspace import CaseWorkspace
-        from operator_ui.object_workspace import ObjectWorkspace
+        from operator_api.workspace.case_workspace import CaseWorkspace
+        from operator_api.workspace.object_workspace import ObjectWorkspace
 
         class Access:
             read = None
@@ -627,7 +627,7 @@ class StateProfileOnEveryPathTests(unittest.TestCase):
     def test_no_read_path_shows_what_the_state_profile_withholds(self):
         from operating import ontology_tools_investigate as oi
         from operating.case_tools_host import PagedRead
-        from operator_ui.case_workspace import CaseWorkspace
+        from operator_api.workspace.case_workspace import CaseWorkspace
         shown = {}
         read = tools(self.runtime()).call("plx.read", {"citation": self.handle}, QUALITY)
         shown["plx.read"] = read

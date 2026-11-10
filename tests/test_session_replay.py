@@ -28,8 +28,8 @@ from operating.tests.test_agent_loop import model
 from operating.tests.test_mcp_http_host import RULES, USERS, EmployeeDoorTestCase
 from operating.tests.test_session_identity import (EMAIL_A, EMAIL_B, OID_A, OID_B,
                                                    identity_files, user_row)
-from operator_ui.case_workspace import CaseWorkspace
-from operator_ui.object_workspace import REPLAY_NOTE, ObjectWorkspace, host_access
+from operator_api.workspace.case_workspace import CaseWorkspace
+from operator_api.workspace.object_workspace import REPLAY_NOTE, ObjectWorkspace, host_access
 
 QUESTION = "Who is purchase order PO5447 ordered from, and where is that recorded?"
 

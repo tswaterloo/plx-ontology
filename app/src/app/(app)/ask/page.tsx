@@ -203,6 +203,7 @@ function Ask() {
           </div>
         ) : (
           <div className={cn(FRAME, "pt-7 pb-10")} aria-live="off">
+            <h1 className="sr-only">Ask</h1>
             {turns.map((t, i) => (
               <section
                 key={t.id}

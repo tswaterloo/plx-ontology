@@ -47,6 +47,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+import contextvars
+import os
 import re
 import time
 from typing import Any, Callable, Mapping, Sequence
@@ -54,6 +57,24 @@ from typing import Any, Callable, Mapping, Sequence
 from ontology.units import unit_token
 
 Call = Callable[[str, dict], Mapping[str, Any]]
+# Runs per-record reads, ``task(call)`` each, in order: a task starts only while ``late()``
+# is false and every task started finishes; returns the results of the tasks started (a
+# prefix of ``tasks``), in their order. ``in_turn`` runs them one after another on the
+# caller's ``call``; the app's ``serving.fan_out`` runs them side by side, each on a runtime
+# of the Ask pool opened as the same reader, so each task reads what the reader may read.
+FanOut = Callable[[Sequence[Callable[[Call], Any]], Callable[[], bool]], list]
+
+
+def in_turn(call: Call) -> FanOut:
+    """``FanOut`` one task after another on ``call``."""
+    def run(tasks: Sequence[Callable[[Call], Any]], late: Callable[[], bool]) -> list:
+        out = []
+        for task in tasks:
+            if late():
+                break
+            out.append(task(call))
+        return out
+    return run
 
 MARGIN_FAMILY, LANDED_FAMILY, CHAIN_FAMILY = "F10", "F7", "F12"
 # A Sage O/E order's margin is its own plan (F31, ``operating.sage_order_margin``: the cost
@@ -87,7 +108,10 @@ WITHHELD_REASONS = frozenset({"marking_withheld", "withheld_by_permission"})
 # not the order: never an order's gap, so they never decide whether an order is invoiced
 # or why it has no margin.
 SCHEMA_CAVEATS = frozenset({"DEGRADED_BINDING", "NO_MATCH", "NOT_APPLICABLE_TO_SOURCE",
-                            "SCHEMA_DRIFT", "CONFLICTS_TRUNCATED"})
+                            "SCHEMA_DRIFT", "CONFLICTS_TRUNCATED",
+                            # a walk's route hint and its note that other relations were
+                            # read in part: neither says anything of this order
+                            "TWIN_ROUTE", "PARTLY_READ_ELSEWHERE"})
 LABOUR_GAP = ("LABOUR_OVERHEAD_NOT_RECORDED",
               "labour and overhead are not booked separately: BC API v2.0 serves no capacity "
               "or overhead ledger, so the item ledger cost is the only booked cost")
@@ -671,9 +695,14 @@ def read_order(call: Call, order: Order) -> Order:
                                "are on answer pages not read)"))
     cited = {str((e.get("citation") or {}).get("l1_handle") or "").split("#", 1)[0]
              for e in by_name.values() if isinstance(e.get("citation"), Mapping)}
+    # The run says itself when the relations its answer rests on were read whole while
+    # others of the source were not: the source's partly-read note is then no gap of
+    # this order.
+    whole = any(str(g.get("reason") or "").upper() == "PARTLY_READ_ELSEWHERE"
+                for g in run.get("gaps") or ())
     for gap in run.get("gaps") or ():
         code = str(gap.get("reason") or "unknown").upper()
-        if code in SCHEMA_CAVEATS:
+        if code in SCHEMA_CAVEATS or (whole and code == "SOURCE_PARTLY_READ"):
             continue       # caveats of the record types, not of this order
         if code == "AS_OF_CAPTURE" and str(gap.get("subject") or "").split("#", 1)[0] \
                 not in cited:
@@ -728,33 +757,41 @@ def _line_input(line: Line, entry: Mapping[str, Any] | None, returns: set) -> No
 
 def customer_orders(call: Call, customer: str, period: Period,
                     skip: Callable[[str], bool] | None = None,
-                    late: Callable[[], bool] | None = None
+                    late: Callable[[], bool] | None = None,
+                    fan_out: FanOut | None = None
                     ) -> tuple[list[Order], bool, bool | None, int, int]:
     """(the customer's orders dated in the period, whether orders were withheld from this
     reader (never how many or which), whether every page was read (None: the time budget,
     ``late``, ran out before every order's dates were read: the count is a lower bound),
     orders of the customer outside the period, orders ``skip`` left out by their number:
-    test and staging orders the caller does not count, never read for their dates)."""
+    test and staging orders the caller does not count, never read for their dates).
+    Each order's dates are read by ``fan_out`` (default ``in_turn(call)``)."""
     objects, _edges, withheld, complete = _around(call, customer, [(ORDER_LINK, "reverse")],
                                                   MAX_ORDERS * 4)
-    out, outside, skipped = [], 0, 0
+    refs, skipped = [], 0
     for ref in objects:
-        if late is not None and late():
-            return out, withheld, None, outside, skipped
         oid = ref["object_id"]
         number = _display(ref) or oid
         if skip is not None and skip(number):
             skipped += 1
             continue
         handle = ((ref.get("display") or {}).get("origin") or {}).get("citation")
-        card: dict[str, Any] = {}
-        dates = _order_dates(call, oid, card)
+        refs.append((oid, number, handle if isinstance(handle, str) else None))
+
+    def dated(oid: str) -> Callable[[Call], tuple[list[date], dict[str, Any]]]:
+        def task(on: Call) -> tuple[list[date], dict[str, Any]]:
+            card: dict[str, Any] = {}
+            return _order_dates(on, oid, card), card
+        return task
+    done = (fan_out or in_turn(call))([dated(oid) for oid, _n, _h in refs],
+                                      late or (lambda: False))
+    out, outside = [], 0
+    for (oid, number, handle), (dates, card) in zip(refs, done):
         if not dates or not period.start <= min(dates) <= period.end:
             outside += 1
             continue
-        out.append(Order(oid, number, sorted(dates), handle if isinstance(handle, str)
-                         else None, **card))
-    return out, withheld, complete, outside, skipped
+        out.append(Order(oid, number, sorted(dates), handle, **card))
+    return out, withheld, (complete if len(done) == len(refs) else None), outside, skipped
 
 
 OPEN_PROPERTIES = ("order_date", "bc_status", "subtotal")
@@ -1003,12 +1040,60 @@ def _sum(values: Sequence[Decimal]) -> Decimal:
     return sum(values, Decimal(0))
 
 
+READ_THREADS = 4   # orders read side by side (``read_orders``); ``PLX_PROFIT_READ_THREADS``
+
+
+def _read_threads() -> int:
+    try:
+        return max(1, min(16, int(os.environ.get("PLX_PROFIT_READ_THREADS", READ_THREADS))))
+    except ValueError:
+        return READ_THREADS
+
+
+def read_orders(call: Call, orders: Sequence[Order], late: Callable[[], bool]
+                ) -> tuple[list[Order], bool]:
+    """``read_order`` over ``orders`` in their order, several at a time as the same reader:
+    each runs in a copy of this thread's context (the request's grant snapshot) through the
+    same ``call``. Orders start in order and none starts once ``late()``; every started one
+    is waited for, so the orders read are always a prefix of ``orders`` (as one at a time),
+    each exactly as ``read_order`` made it. Returns (the orders read, whether ``late()``
+    stopped the rest). (``read_order`` itself turns a tool failure into the order's
+    gap.)"""
+    width = min(_read_threads(), len(orders))
+    if width <= 1:
+        read: list[Order] = []
+        for order in orders:
+            if late():
+                return read, True
+            read.append(read_order(call, order))
+        return read, False
+    started: list[Future] = []
+    stopped = False
+    with ThreadPoolExecutor(width, thread_name_prefix="profit-read") as pool:
+        waiting: set[Future] = set()
+        for order in orders:
+            while len(waiting) >= width:
+                done, waiting = wait(waiting, return_when=FIRST_COMPLETED)
+                if any(f.exception() is not None for f in done):
+                    break
+            if late() or any(f.done() and f.exception() is not None for f in started):
+                stopped = late()
+                break
+            future = pool.submit(contextvars.copy_context().run, read_order, call, order)
+            started.append(future)
+            waiting.add(future)
+        wait(started)
+    for future in started:      # the first failure in order, else every result
+        future.result()
+    return [f.result() for f in started], stopped
+
+
 def profitability(call: Call, customer: str, *, today: date, question: str = "",
                   period: Period | None = None, focus: str | None = None,
                   skip_order: Callable[[str], bool] | None = None,
                   budget_seconds: float | None = BUDGET_SECONDS,
                   clock: Callable[[], float] = time.monotonic,
-                  also: Sequence[str] = ()) -> dict[str, Any]:
+                  also: Sequence[str] = (), fan_out: FanOut | None = None) -> dict[str, Any]:
     """The customer's profitability over the period, its orders ranked worst first, and why
     the focus order (``focus``: its number or object id; else the worst) lost money
     (module doc). ``also``: other cards of the same customer (one name kept on several
@@ -1016,7 +1101,9 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
     by its number and cited, the totals cover all of them. Raises ``ProfitError``
     when the customer (or a card of ``also``) is not readable for this reader. ``budget_seconds`` (None: none):
     the time its order reads may take (``BUDGET_SECONDS``); orders not read within it are
-    counted as not read (``ORDERS_NOT_ALL_READ``), never guessed."""
+    counted as not read (``ORDERS_NOT_ALL_READ``), never guessed. ``fan_out``: how the
+    per-order reads (dates, then margins) run (``FanOut``; default one after another on
+    ``call``); the answer is the same either way."""
     deadline = None if budget_seconds is None else clock() + budget_seconds
     late = (lambda: False) if deadline is None else (lambda: clock() >= deadline)
     period = period or period_of(question, today)
@@ -1049,11 +1136,12 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
                    "the period by its first posted invoice's posting date (with no posted "
                    "invoice, by its order date)"},
         "gaps": [], "withheld": 0}
+    fan_out = fan_out or in_turn(call)
     orders, trimmed, whole, outside, skipped = customer_orders(call, customer, period,
-                                                               skip_order, late)
+                                                               skip_order, late, fan_out)
     for other in cards[1:]:
         more, held_back, all_read, out_of, skipped_too = customer_orders(
-            call, other["object_id"], period, skip_order, late)
+            call, other["object_id"], period, skip_order, late, fan_out)
         known = {o.object_id for o in orders}
         orders += [o for o in more if o.object_id not in known]
         trimmed = trimmed or held_back
@@ -1077,12 +1165,10 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         -o.dates[0].toordinal()))
     timed_out = whole is None   # the order list's dates were cut by the budget
     whole = bool(whole)
-    read: list[Order] = []
-    for order in order_read:
-        if late():
-            timed_out = True
-            break
-        read.append(read_order(call, order))
+    read: list[Order] = fan_out([lambda on, order=order: read_order(on, order)
+                                 for order in order_read], late)
+    if len(read) < len(order_read):
+        timed_out = True
     taken = {id(o) for o in read}
     orders = [o for o in orders if id(o) in taken]
     covered = whole and len(orders) == in_period
@@ -1190,9 +1276,11 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
     if focus_order is None and decided:
         focus_order = ranked[0]
     items: dict[str, dict[str, Any]] = {}
-    for order in visible:
-        for line in order.lines:
-            _item_card(call, line.item, items)
+    wanted = list(dict.fromkeys(line.item for order in visible for line in order.lines
+                                if line.item))
+    for item, card in zip(wanted, fan_out([lambda on, item=item: _item_card(on, item, {})
+                                           for item in wanted], lambda: False)):
+        items[item] = card
     out["breakdown"] = _breakdown(call, focus_order, items) if focus_order else None
     if out["breakdown"]:
         out["breakdown"]["previous"] = previous_sales(focus_order, decided)

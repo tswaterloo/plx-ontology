@@ -76,7 +76,7 @@ export function LateOverview({
                   {oldest.supplier ? `, ${oldest.supplier}` : ""}
                 </button>
               ) : (
-                <Link href={safeHref(oldest.open_url) ?? objectHref("PurchaseOrder", oldest.object_id)} className="hover:text-fg hover:underline">
+                <Link href={safeHref(oldest.open_url) ?? objectHref("PurchaseOrder", oldest.object_id)} className="block max-w-full truncate hover:text-fg hover:underline">
                   {recordLabel("PurchaseOrder", oldest.label)}
                   {oldest.supplier ? `, ${oldest.supplier}` : ""}
                 </Link>

@@ -644,6 +644,29 @@ class WordWindows:
 class PgStoreReader(StoreReader):
     """``StoreReader`` over Postgres (module docstring)."""
 
+    VALUES_FIRST = True   # values kept by property (``value_cells_by_field``)
+
+    def narrowed_ids(self, object_type: str, narrowing: Sequence[tuple[str, dict[str, Any]]],
+                     marks: str) -> list[str] | None:
+        """``StoreReader.narrowed_ids`` bounded by the thread's SQL deadline
+        (``call_limits.sql_deadline``), which Postgres statements do not otherwise see:
+        the statement's own ``statement_timeout`` for this read only, cancelled at the
+        deadline (``sqlite3.OperationalError``, as a SQLite interrupt)."""
+        from operating import call_limits
+        left = call_limits.seconds_left()
+        if left is None:
+            return super().narrowed_ids(object_type, narrowing, marks)
+        if left <= 0:
+            raise sqlite3.OperationalError("interrupted")
+        pg = self.conn._pg
+        with self.conn._lock:
+            (before,) = pg.execute("SHOW statement_timeout").fetchone()
+            pg.execute(f"SET statement_timeout = {max(1, int(left * 1000))}")
+            try:
+                return super().narrowed_ids(object_type, narrowing, marks)
+            finally:
+                pg.execute(f"SET statement_timeout = '{before}'")
+
     def __init__(self, conn: PgCompatConnection, text_reader: StoreReader | None = None,
                  *, only: bool = False) -> None:
         super().__init__(conn)   # type: ignore[arg-type]

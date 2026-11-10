@@ -27,7 +27,7 @@ Four deterministic rules over a ``plx.object`` card (no model, no guess):
 A detected gap is a candidate, never a written record: it carries the handles that
 support it (a gap no handle supports is not raised), a stable id, and a ``follow_up``
 shaped as the console's propose-follow-up control takes it
-(``operator_ui.object_workspace.FOLLOW_UP_FIELDS``); a person sends it. Each rule also names
+(``operator_api.workspace.object_workspace.FOLLOW_UP_FIELDS``); a person sends it. Each rule also names
 the evidence groups its claim rests on (the document's statement; each disagreeing value;
 the validity date): a reader who cannot open some handle of every group never sees the
 gap, so no gap is shown half-cited. ``scan`` finds

@@ -1,0 +1,1249 @@
+{
+ "constants": {
+  "integrations.capture_mail._FOLDER_LISTING_DDL": "6acefe9f1fb5ddeb0e9bbc726e570e6fe23c94f21809947d2b35c49e0fcad5f9",
+  "integrations.capture_mail._PRIORITY_DDL": "4df68f6f214c7099b008924f88dc7c30ee85055ec4cb981233e8800d51c2d1cb",
+  "integrations.source_mirror._CHANGE_DDL": "ca24924c078f8a57bf2d0a0e7037626d58699fbd6a75dfe9784cd4da5f9ed80a",
+  "integrations.source_mirror._DDL": "adfd87e996819c3c12bed2c4588b055cf952133b42d9e597f6408de2546de1a7",
+  "operating.cases._CURSOR_DDL": "3091a740fc1caeb80835235843b89082d407ba46615b7cb8ada6fb04d8e20a1c",
+  "operating.cases._DDL": "96735626ddc0729e8d9036204ff576247520afcbe626e1c01cba05edb5b8360e",
+  "operating.host._LEDGER_DDL": "35092c77eaf7c01f5863cac50e5da60ed4030f080939dfb4572acb6f9f29af33",
+  "operating.ontology_tools_changes._INDEX_DDL": "b6e275135846fd60681597f483898b433d51aeaeaaa2f64b9d86b10e3f54f720",
+  "operating.ontology_tools_changes._INDEX_INDEXES": "e2f29611c1f4d37002f1a4d0f395e1417d08cc5b9a38c58a4642c76ce469b2c1",
+  "operating.playbook_reports._DDL": "e8a373e1e0a3d5e2a64b8cfb036735af26a7c64cd1334d3aa82f11d7a646b48e",
+  "operating.proactive_engine._VISITS_DDL": "77185055381189e7e9c492a0af8ecb8ac315713598afdf79ccde007cec08a50f"
+ },
+ "schemas": {
+  "action_path": [
+   [
+    "index",
+    "idx_case_author",
+    "case_author",
+    "CREATE INDEX idx_case_author ON case_author(case_id, kind, ref)"
+   ],
+   [
+    "index",
+    "idx_case_author_original",
+    "case_author",
+    "CREATE UNIQUE INDEX idx_case_author_original ON case_author(case_id, kind, ref)\nWHERE original = 1"
+   ],
+   [
+    "table",
+    "action_event",
+    "action_event",
+    "CREATE TABLE action_event (\n  seq INTEGER PRIMARY KEY AUTOINCREMENT,\n  intent_id TEXT NOT NULL,\n  intent_seq INTEGER NOT NULL CHECK(intent_seq >= 1),\n  kind TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  at TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  prev_hash TEXT NOT NULL,\n  event_hash TEXT NOT NULL UNIQUE,\n  UNIQUE(intent_id, intent_seq)\n)"
+   ],
+   [
+    "table",
+    "case_author",
+    "case_author",
+    "CREATE TABLE case_author (\n  seq INTEGER PRIMARY KEY AUTOINCREMENT,\n  case_id TEXT NOT NULL,\n  kind TEXT NOT NULL CHECK(kind IN ('case.opened', 'proposal.recorded')),\n  ref TEXT NOT NULL,\n  original INTEGER NOT NULL CHECK(original IN (0, 1)),\n  case_seq INTEGER,\n  actor TEXT NOT NULL,\n  at TEXT NOT NULL,\n  identity_json TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "case_request",
+    "case_request",
+    "CREATE TABLE case_request (\n  actor TEXT NOT NULL,\n  request_key TEXT NOT NULL,\n  case_id TEXT NOT NULL,\n  at TEXT NOT NULL,\n  PRIMARY KEY(actor, request_key)\n)"
+   ],
+   [
+    "table",
+    "consumed_call_approval",
+    "consumed_call_approval",
+    "CREATE TABLE consumed_call_approval (\n  approval_sha256 TEXT PRIMARY KEY,\n  intent_id TEXT NOT NULL,\n  at TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "internal_action",
+    "internal_action",
+    "CREATE TABLE internal_action (\n  seq INTEGER PRIMARY KEY AUTOINCREMENT,\n  attempt_id TEXT NOT NULL,\n  kind TEXT NOT NULL CHECK(kind IN ('started', 'executed', 'refused')),\n  case_id TEXT NOT NULL,\n  action_id TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  at TEXT NOT NULL,\n  identity_json TEXT NOT NULL,\n  record_json TEXT NOT NULL\n)"
+   ],
+   [
+    "trigger",
+    "action_event_no_delete",
+    "action_event",
+    "CREATE TRIGGER action_event_no_delete BEFORE DELETE ON action_event\nBEGIN SELECT RAISE(ABORT, 'action_event_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "action_event_no_update",
+    "action_event",
+    "CREATE TRIGGER action_event_no_update BEFORE UPDATE ON action_event\nBEGIN SELECT RAISE(ABORT, 'action_event_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "case_author_no_delete",
+    "case_author",
+    "CREATE TRIGGER case_author_no_delete BEFORE DELETE ON case_author\nBEGIN SELECT RAISE(ABORT, 'case_author_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "case_author_no_update",
+    "case_author",
+    "CREATE TRIGGER case_author_no_update BEFORE UPDATE ON case_author\nBEGIN SELECT RAISE(ABORT, 'case_author_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "case_request_no_delete",
+    "case_request",
+    "CREATE TRIGGER case_request_no_delete BEFORE DELETE ON case_request\nBEGIN SELECT RAISE(ABORT, 'case_request_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "case_request_no_update",
+    "case_request",
+    "CREATE TRIGGER case_request_no_update BEFORE UPDATE ON case_request\nBEGIN SELECT RAISE(ABORT, 'case_request_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "consumed_call_approval_no_delete",
+    "consumed_call_approval",
+    "CREATE TRIGGER consumed_call_approval_no_delete BEFORE DELETE\nON consumed_call_approval BEGIN SELECT RAISE(ABORT, 'consumed_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "consumed_call_approval_no_update",
+    "consumed_call_approval",
+    "CREATE TRIGGER consumed_call_approval_no_update BEFORE UPDATE\nON consumed_call_approval BEGIN SELECT RAISE(ABORT, 'consumed_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "internal_action_no_delete",
+    "internal_action",
+    "CREATE TRIGGER internal_action_no_delete BEFORE DELETE ON internal_action\nBEGIN SELECT RAISE(ABORT, 'internal_action_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "internal_action_no_update",
+    "internal_action",
+    "CREATE TRIGGER internal_action_no_update BEFORE UPDATE ON internal_action\nBEGIN SELECT RAISE(ABORT, 'internal_action_is_append_only'); END"
+   ]
+  ],
+  "ai_watcher": [
+   [
+    "index",
+    "items_open",
+    "items",
+    "CREATE INDEX items_open ON items (state, last_seen)"
+   ],
+   [
+    "index",
+    "sessions_started",
+    "sessions",
+    "CREATE INDEX sessions_started ON sessions (started_at)"
+   ],
+   [
+    "table",
+    "correspondents",
+    "correspondents",
+    "CREATE TABLE correspondents (key TEXT PRIMARY KEY, n INTEGER NOT NULL,\n  at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "item_cites",
+    "item_cites",
+    "CREATE TABLE item_cites (item_id TEXT NOT NULL, grp INTEGER NOT NULL,\n  handle TEXT NOT NULL, object_id TEXT, markings TEXT NOT NULL,\n  PRIMARY KEY (item_id, grp, handle))"
+   ],
+   [
+    "table",
+    "item_states",
+    "item_states",
+    "CREATE TABLE item_states (item_id TEXT NOT NULL, reader TEXT NOT NULL,\n  state TEXT NOT NULL CHECK (state IN ('dismissed', 'snoozed')), until TEXT, reason TEXT,\n  at TEXT NOT NULL, PRIMARY KEY (item_id, reader))"
+   ],
+   [
+    "table",
+    "items",
+    "items",
+    "CREATE TABLE items (item_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,\n  subject TEXT NOT NULL, subject_type TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL,\n  why TEXT NOT NULL, next_step TEXT NOT NULL, departments TEXT NOT NULL,\n  priority TEXT NOT NULL, claim_kind TEXT NOT NULL, gate TEXT NOT NULL, truth TEXT NOT NULL,\n  state TEXT NOT NULL CHECK (state IN ('open', 'expired', 'refused', 'duplicate')),\n  reason TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, run_id INTEGER)"
+   ],
+   [
+    "table",
+    "layers",
+    "layers",
+    "CREATE TABLE layers (store TEXT PRIMARY KEY, base_digest TEXT NOT NULL,\n  seen_at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "learned",
+    "learned",
+    "CREATE TABLE learned (store TEXT NOT NULL, base_digest TEXT NOT NULL,\n  at TEXT NOT NULL, PRIMARY KEY (store, base_digest))"
+   ],
+   [
+    "table",
+    "message_keys",
+    "message_keys",
+    "CREATE TABLE message_keys (key TEXT PRIMARY KEY, object_id TEXT NOT NULL,\n  at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "queue",
+    "queue",
+    "CREATE TABLE queue (object_id TEXT PRIMARY KEY, object_type TEXT NOT NULL,\n  handle TEXT NOT NULL, change TEXT NOT NULL, changed TEXT NOT NULL, event_at TEXT NOT NULL,\n  since TEXT, thread TEXT, queued_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,\n  claimed INTEGER, traits TEXT)"
+   ],
+   [
+    "table",
+    "runs",
+    "runs",
+    "CREATE TABLE runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, run_at TEXT NOT NULL,\n  status TEXT NOT NULL, model_run INTEGER NOT NULL, summary TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "seen",
+    "seen",
+    "CREATE TABLE seen (object_id TEXT PRIMARY KEY, digest TEXT NOT NULL,\n  props TEXT, at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "sessions",
+    "sessions",
+    "CREATE TABLE sessions (session_id INTEGER PRIMARY KEY AUTOINCREMENT,\n  kind TEXT NOT NULL CHECK (kind IN ('batch', 'retry')), parent INTEGER,\n  started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL CHECK (state IN\n  ('running', 'answered', 'folded', 'interrupted', 'failed')), entries TEXT NOT NULL,\n  result TEXT, summary TEXT)"
+   ]
+  ],
+  "autopilot_queue": [
+   [
+    "index",
+    "events_state",
+    "events",
+    "CREATE INDEX events_state ON events(state)"
+   ],
+   [
+    "index",
+    "inbound_counterpart",
+    "inbound",
+    "CREATE INDEX inbound_counterpart ON inbound(owner, counterpart, at)"
+   ],
+   [
+    "index",
+    "items_owner",
+    "items",
+    "CREATE INDEX items_owner ON items(owner, state)"
+   ],
+   [
+    "index",
+    "sent_counterpart",
+    "sent",
+    "CREATE INDEX sent_counterpart ON sent(owner, counterpart, at)"
+   ],
+   [
+    "table",
+    "events",
+    "events",
+    "CREATE TABLE events (\n                event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, object_id TEXT NOT NULL,\n                object_type TEXT NOT NULL, at TEXT, landed_at TEXT, seen_at TEXT NOT NULL,\n                body TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'new', reason TEXT,\n                processed_at TEXT)"
+   ],
+   [
+    "table",
+    "inbound",
+    "inbound",
+    "CREATE TABLE inbound (owner TEXT NOT NULL, thread TEXT NOT NULL,\n                counterpart TEXT NOT NULL, at TEXT NOT NULL,\n                PRIMARY KEY (owner, thread, counterpart, at))"
+   ],
+   [
+    "table",
+    "items",
+    "items",
+    "CREATE TABLE items (\n                item_id TEXT PRIMARY KEY, event_id TEXT NOT NULL, autopilot TEXT NOT NULL,\n                owner TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,\n                audiences TEXT NOT NULL, markings TEXT NOT NULL, citations TEXT NOT NULL,\n                due_at TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL,\n                done_reason TEXT, done_at TEXT, prepare_ms INTEGER, latency_s REAL)"
+   ],
+   [
+    "table",
+    "layers",
+    "layers",
+    "CREATE TABLE layers (layer TEXT PRIMARY KEY, base_digest TEXT)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)"
+   ],
+   [
+    "table",
+    "rate",
+    "rate",
+    "CREATE TABLE rate (owner TEXT, hour TEXT, n INTEGER,\n                PRIMARY KEY (owner, hour))"
+   ],
+   [
+    "table",
+    "sent",
+    "sent",
+    "CREATE TABLE sent (owner TEXT NOT NULL, thread TEXT NOT NULL,\n                counterpart TEXT NOT NULL, at TEXT NOT NULL,\n                PRIMARY KEY (owner, thread, counterpart, at))"
+   ]
+  ],
+  "autopilot_replay": [
+   [
+    "table",
+    "days",
+    "days",
+    "CREATE TABLE days (day TEXT PRIMARY KEY, finished_at TEXT, summary TEXT)"
+   ]
+  ],
+  "briefs": [
+   [
+    "table",
+    "weeks",
+    "weeks",
+    "CREATE TABLE weeks (reader TEXT NOT NULL, week TEXT NOT NULL, grant_key TEXT NOT NULL, stored_at TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (reader, week))"
+   ]
+  ],
+  "capture_mail": [
+   [
+    "index",
+    "attachments_by_content",
+    "attachments",
+    "CREATE INDEX attachments_by_content ON attachments(content_sha256)"
+   ],
+   [
+    "index",
+    "attachments_by_status",
+    "attachments",
+    "CREATE INDEX attachments_by_status ON attachments(content_status, mailbox_id)"
+   ],
+   [
+    "index",
+    "attachments_by_text",
+    "attachments",
+    "CREATE INDEX attachments_by_text ON attachments(text_sha256)"
+   ],
+   [
+    "index",
+    "attachments_by_text_status",
+    "attachments",
+    "CREATE INDEX attachments_by_text_status ON attachments(text_status)"
+   ],
+   [
+    "index",
+    "message_events_by_handle",
+    "message_events",
+    "CREATE INDEX message_events_by_handle ON message_events(l1_handle, event)"
+   ],
+   [
+    "index",
+    "messages_by_body",
+    "messages",
+    "CREATE INDEX messages_by_body ON messages(body_sha256)"
+   ],
+   [
+    "index",
+    "messages_by_folder",
+    "messages",
+    "CREATE INDEX messages_by_folder ON messages(mailbox_id, folder_id)"
+   ],
+   [
+    "index",
+    "messages_by_handle",
+    "messages",
+    "CREATE INDEX messages_by_handle ON messages(l1_handle)"
+   ],
+   [
+    "index",
+    "messages_by_id",
+    "messages",
+    "CREATE INDEX messages_by_id ON messages(mailbox_id, message_id)"
+   ],
+   [
+    "index",
+    "messages_by_sender",
+    "messages",
+    "CREATE INDEX messages_by_sender ON messages(mailbox_id, sender_key) WHERE superseded_at IS NULL"
+   ],
+   [
+    "index",
+    "text_versions_by_text",
+    "attachment_text_versions",
+    "CREATE INDEX text_versions_by_text ON attachment_text_versions(text_sha256)"
+   ],
+   [
+    "table",
+    "attachment_text_versions",
+    "attachment_text_versions",
+    "CREATE TABLE attachment_text_versions (\n    l1_handle TEXT NOT NULL,\n    version INTEGER NOT NULL CHECK (version >= 1),\n    text_status TEXT NOT NULL,\n    text_sha256 TEXT REFERENCES blobs(sha256),\n    recorded_at TEXT NOT NULL,\n    PRIMARY KEY (l1_handle, version)\n)"
+   ],
+   [
+    "table",
+    "attachments",
+    "attachments",
+    "CREATE TABLE attachments (\n    message_handle TEXT NOT NULL,\n    attachment_id TEXT NOT NULL,\n    l1_handle TEXT UNIQUE,\n    mailbox_id TEXT NOT NULL,\n    metadata TEXT NOT NULL CHECK (json_valid(metadata)),\n    content_sha256 TEXT,\n    content_status TEXT NOT NULL,\n    recorded_at TEXT NOT NULL,\n    text_status TEXT,\n    text_sha256 TEXT REFERENCES blobs(sha256),\n    PRIMARY KEY (message_handle, attachment_id)\n)"
+   ],
+   [
+    "table",
+    "blobs",
+    "blobs",
+    "CREATE TABLE blobs (\n    sha256 TEXT PRIMARY KEY,\n    kind TEXT NOT NULL,\n    bytes INTEGER NOT NULL,\n    stored_at TEXT NOT NULL\n, stored_bytes INTEGER, dropped_at TEXT)"
+   ],
+   [
+    "table",
+    "folders",
+    "folders",
+    "CREATE TABLE folders (\n    mailbox_id TEXT NOT NULL REFERENCES mailboxes(mailbox_id),\n    folder_key TEXT NOT NULL,\n    folder_id TEXT,\n    window_days INTEGER,\n    received_since TEXT,\n    next_url TEXT,\n    delta_url TEXT,\n    round_kind TEXT,\n    round_started_at TEXT,\n    status TEXT NOT NULL,\n    reason TEXT,\n    last_complete_at TEXT,\n    last_run_at TEXT,\n    rounds_complete INTEGER NOT NULL DEFAULT 0, backfill_next_url TEXT, backfill_before TEXT, backfill_status TEXT,\n    PRIMARY KEY (mailbox_id, folder_key)\n)"
+   ],
+   [
+    "table",
+    "mailbox_directory",
+    "mailbox_directory",
+    "CREATE TABLE mailbox_directory (\n    mailbox_id TEXT PRIMARY KEY,\n    department TEXT,\n    listed_at TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "mailbox_folders",
+    "mailbox_folders",
+    "CREATE TABLE mailbox_folders (\n    mailbox_id TEXT NOT NULL,\n    folder_id TEXT NOT NULL,\n    total INTEGER,\n    listed_at TEXT NOT NULL,\n    PRIMARY KEY (mailbox_id, folder_id))"
+   ],
+   [
+    "table",
+    "mailboxes",
+    "mailboxes",
+    "CREATE TABLE mailboxes (\n    mailbox_id TEXT PRIMARY KEY,\n    upn TEXT NOT NULL,\n    identities TEXT NOT NULL,\n    resources TEXT NOT NULL,\n    source_acl TEXT NOT NULL,\n    first_captured_at TEXT NOT NULL,\n    identity_checked_at TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "message_events",
+    "message_events",
+    "CREATE TABLE message_events (\n    l1_handle TEXT NOT NULL,\n    event TEXT NOT NULL,\n    at TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "messages",
+    "messages",
+    "CREATE TABLE messages (\n    version_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    l1_handle TEXT NOT NULL,\n    mailbox_id TEXT NOT NULL REFERENCES mailboxes(mailbox_id),\n    message_id TEXT NOT NULL,\n    change_key TEXT NOT NULL,\n    folder_id TEXT NOT NULL,\n    record TEXT NOT NULL CHECK (json_valid(record)),\n    digest TEXT NOT NULL,\n    body_status TEXT NOT NULL,\n    body_sha256 TEXT REFERENCES blobs(sha256),\n    attachments_status TEXT NOT NULL DEFAULT 'complete',\n    attachment_list_attempts INTEGER NOT NULL DEFAULT 0,\n    recorded_at TEXT NOT NULL,\n    superseded_at TEXT,\n    removed_reason TEXT,\n    last_seen_at TEXT NOT NULL\n, sender_key TEXT)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (\n    key TEXT PRIMARY KEY,\n    value TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "priority_folders",
+    "priority_folders",
+    "CREATE TABLE priority_folders (mailbox_id TEXT NOT NULL, folder_id TEXT NOT NULL, oldest TEXT, newest TEXT, PRIMARY KEY (mailbox_id, folder_id))"
+   ],
+   [
+    "table",
+    "priority_senders",
+    "priority_senders",
+    "CREATE TABLE priority_senders (mailbox_id TEXT NOT NULL, folder_id TEXT NOT NULL, sender TEXT NOT NULL, automated INTEGER NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (mailbox_id, folder_id, sender))"
+   ],
+   [
+    "table",
+    "tenant_listing",
+    "tenant_listing",
+    "CREATE TABLE tenant_listing (\n    address TEXT PRIMARY KEY,\n    object_id TEXT,\n    kind TEXT NOT NULL\n)"
+   ],
+   [
+    "trigger",
+    "attachment_text_versions_no_delete",
+    "attachment_text_versions",
+    "CREATE TRIGGER attachment_text_versions_no_delete\nBEFORE DELETE ON attachment_text_versions\nBEGIN SELECT RAISE(ABORT, 'attachment_text_versions_immutable'); END"
+   ],
+   [
+    "trigger",
+    "attachment_text_versions_no_update",
+    "attachment_text_versions",
+    "CREATE TRIGGER attachment_text_versions_no_update\nBEFORE UPDATE ON attachment_text_versions\nBEGIN SELECT RAISE(ABORT, 'attachment_text_versions_immutable'); END"
+   ]
+  ],
+  "capture_sharepoint": [
+   [
+    "index",
+    "items_by_handle",
+    "items",
+    "CREATE INDEX items_by_handle ON items(l1_handle)"
+   ],
+   [
+    "index",
+    "items_by_id",
+    "items",
+    "CREATE INDEX items_by_id ON items(drive_id, item_id)"
+   ],
+   [
+    "table",
+    "blobs",
+    "blobs",
+    "CREATE TABLE blobs (\n    sha256 TEXT PRIMARY KEY,\n    kind TEXT NOT NULL,\n    bytes INTEGER NOT NULL,\n    stored_at TEXT NOT NULL\n, dropped_at TEXT, stored_bytes INTEGER)"
+   ],
+   [
+    "table",
+    "drive_classes",
+    "drive_classes",
+    "CREATE TABLE drive_classes (\n    drive_id TEXT PRIMARY KEY,\n    security_class TEXT NOT NULL,\n    decided_at TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "drive_cursors",
+    "drive_cursors",
+    "CREATE TABLE drive_cursors (\n    drive_id TEXT PRIMARY KEY,\n    delta_url TEXT NOT NULL,\n    stored_at TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "item_events",
+    "item_events",
+    "CREATE TABLE item_events (\n    l1_handle TEXT NOT NULL,\n    event TEXT NOT NULL,\n    at TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "items",
+    "items",
+    "CREATE TABLE items (\n    version_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    l1_handle TEXT NOT NULL,\n    drive_id TEXT NOT NULL,\n    item_id TEXT NOT NULL,\n    etag TEXT NOT NULL,\n    root_path TEXT NOT NULL,\n    path TEXT NOT NULL,\n    record TEXT NOT NULL CHECK (json_valid(record)),\n    resources TEXT NOT NULL CHECK (json_valid(resources)),\n    source_acl TEXT NOT NULL CHECK (json_valid(source_acl)),\n    digest TEXT NOT NULL,\n    content_status TEXT NOT NULL,\n    content_sha256 TEXT REFERENCES blobs(sha256),\n    text_status TEXT NOT NULL,\n    text_sha256 TEXT REFERENCES blobs(sha256),\n    recorded_at TEXT NOT NULL,\n    superseded_at TEXT,\n    removed_reason TEXT,\n    last_seen_at TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (\n    key TEXT PRIMARY KEY,\n    value TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "root_cursors",
+    "root_cursors",
+    "CREATE TABLE root_cursors (\n    drive_id TEXT NOT NULL,\n    root_path TEXT NOT NULL,\n    delta_url TEXT,\n    read_at TEXT,\n    PRIMARY KEY (drive_id, root_path)\n)"
+   ],
+   [
+    "table",
+    "root_permissions",
+    "root_permissions",
+    "CREATE TABLE root_permissions (\n    drive_id TEXT NOT NULL,\n    root_path TEXT NOT NULL,\n    delta_url TEXT,\n    read_at TEXT,\n    reread_url TEXT,\n    reread_at TEXT,\n    PRIMARY KEY (drive_id, root_path)\n)"
+   ],
+   [
+    "table",
+    "root_walks",
+    "root_walks",
+    "CREATE TABLE root_walks (\n    drive_id TEXT NOT NULL,\n    root_path TEXT NOT NULL,\n    walked_at TEXT NOT NULL,\n    PRIMARY KEY (drive_id, root_path)\n)"
+   ],
+   [
+    "table",
+    "roots",
+    "roots",
+    "CREATE TABLE roots (\n    drive_id TEXT NOT NULL,\n    root_path TEXT NOT NULL,\n    status TEXT NOT NULL,\n    reason TEXT,\n    round_started_at TEXT,\n    last_run_at TEXT,\n    last_complete_at TEXT,\n    rounds_complete INTEGER NOT NULL DEFAULT 0,\n    PRIMARY KEY (drive_id, root_path)\n)"
+   ],
+   [
+    "table",
+    "text_reread_attempts",
+    "text_reread_attempts",
+    "CREATE TABLE text_reread_attempts (\n    l1_handle TEXT NOT NULL,\n    generation TEXT NOT NULL,\n    attempts INTEGER NOT NULL,\n    last_error TEXT NOT NULL,\n    last_at TEXT NOT NULL,\n    next_at TEXT,\n    gave_up_at TEXT,\n    PRIMARY KEY (l1_handle, generation)\n)"
+   ],
+   [
+    "table",
+    "walk_positions",
+    "walk_positions",
+    "CREATE TABLE walk_positions (\n    drive_id TEXT NOT NULL,\n    root_path TEXT NOT NULL,\n    started_at TEXT NOT NULL,\n    delta_url TEXT,\n    position TEXT NOT NULL CHECK (json_valid(position)),\n    saved_at TEXT NOT NULL,\n    PRIMARY KEY (drive_id, root_path)\n)"
+   ],
+   [
+    "table",
+    "walked_folders",
+    "walked_folders",
+    "CREATE TABLE walked_folders (\n    drive_id TEXT NOT NULL,\n    folder_id TEXT NOT NULL,\n    root_path TEXT NOT NULL,\n    path TEXT NOT NULL,\n    name TEXT,\n    parent_id TEXT,\n    depth INTEGER NOT NULL,\n    PRIMARY KEY (drive_id, folder_id)\n)"
+   ],
+   [
+    "trigger",
+    "items_visibility_delete",
+    "items",
+    "CREATE TRIGGER items_visibility_delete AFTER DELETE ON items BEGIN\n    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';\nEND"
+   ],
+   [
+    "trigger",
+    "items_visibility_insert",
+    "items",
+    "CREATE TRIGGER items_visibility_insert AFTER INSERT ON items BEGIN\n    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';\nEND"
+   ],
+   [
+    "trigger",
+    "items_visibility_update",
+    "items",
+    "CREATE TRIGGER items_visibility_update AFTER UPDATE OF version_id, l1_handle, drive_id, item_id, content_sha256, recorded_at, superseded_at, removed_reason, resources, source_acl ON items\n    WHEN OLD.version_id IS NOT NEW.version_id OR OLD.l1_handle IS NOT NEW.l1_handle OR OLD.drive_id IS NOT NEW.drive_id OR OLD.item_id IS NOT NEW.item_id OR OLD.content_sha256 IS NOT NEW.content_sha256 OR OLD.recorded_at IS NOT NEW.recorded_at OR OLD.superseded_at IS NOT NEW.superseded_at OR OLD.removed_reason IS NOT NEW.removed_reason OR OLD.resources IS NOT NEW.resources OR OLD.source_acl IS NOT NEW.source_acl BEGIN\n    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';\nEND"
+   ]
+  ],
+  "capture_store": [
+   [
+    "index",
+    "pruned_by_unit",
+    "pruned",
+    "CREATE INDEX pruned_by_unit ON pruned(kind, unit)"
+   ],
+   [
+    "index",
+    "removals_by_path",
+    "removals",
+    "CREATE INDEX removals_by_path ON removals(kind, path)"
+   ],
+   [
+    "index",
+    "runs_by_unit",
+    "runs",
+    "CREATE INDEX runs_by_unit ON runs(kind, unit, run_id)"
+   ],
+   [
+    "index",
+    "runs_open",
+    "runs",
+    "CREATE UNIQUE INDEX runs_open ON runs(kind, unit) WHERE state = 'in_progress'"
+   ],
+   [
+    "index",
+    "versions_by_path",
+    "versions",
+    "CREATE INDEX versions_by_path ON versions(kind, path, capture_id)"
+   ],
+   [
+    "index",
+    "versions_by_unit",
+    "versions",
+    "CREATE INDEX versions_by_unit ON versions(kind, unit, path)"
+   ],
+   [
+    "index",
+    "versions_current",
+    "versions",
+    "CREATE UNIQUE INDEX versions_current ON versions(kind, path) WHERE superseded_at IS NULL"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "pruned",
+    "pruned",
+    "CREATE TABLE pruned (\n        capture_id INTEGER PRIMARY KEY, kind TEXT NOT NULL, path TEXT NOT NULL,\n        unit TEXT NOT NULL, pruned_at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "removals",
+    "removals",
+    "CREATE TABLE removals (\n        kind TEXT NOT NULL, path TEXT NOT NULL, since TEXT NOT NULL, until TEXT NOT NULL,\n        CHECK (until >= since))"
+   ],
+   [
+    "table",
+    "run_marks",
+    "run_marks",
+    "CREATE TABLE run_marks (\n        run_id INTEGER NOT NULL REFERENCES runs(run_id), mark TEXT NOT NULL,\n        PRIMARY KEY (run_id, mark))"
+   ],
+   [
+    "table",
+    "runs",
+    "runs",
+    "CREATE TABLE runs (\n        run_id INTEGER PRIMARY KEY AUTOINCREMENT,\n        kind TEXT NOT NULL, unit TEXT NOT NULL,\n        state TEXT NOT NULL CHECK (state IN ('in_progress','complete','partial','failed')),\n        started_at TEXT NOT NULL, finished_at TEXT, updated_at TEXT NOT NULL,\n        resources TEXT NOT NULL, cursor TEXT, pages INTEGER NOT NULL DEFAULT 0, records INTEGER NOT NULL DEFAULT 0,\n        new_versions INTEGER NOT NULL DEFAULT 0, withheld INTEGER NOT NULL DEFAULT 0,\n        dropped INTEGER NOT NULL DEFAULT 0, restarts INTEGER NOT NULL DEFAULT 0,\n        reason TEXT, error TEXT, retry_not_before TEXT, detail TEXT)"
+   ],
+   [
+    "table",
+    "unit_acl",
+    "unit_acl",
+    "CREATE TABLE unit_acl (\n        kind TEXT NOT NULL, unit TEXT NOT NULL, acl TEXT NOT NULL, recorded_at TEXT NOT NULL,\n        PRIMARY KEY (kind, unit))"
+   ],
+   [
+    "table",
+    "versions",
+    "versions",
+    "CREATE TABLE versions (\n        capture_id INTEGER PRIMARY KEY AUTOINCREMENT,\n        kind TEXT NOT NULL, path TEXT NOT NULL, unit TEXT NOT NULL,\n        source_version TEXT NOT NULL, digest TEXT NOT NULL, lineage TEXT NOT NULL,\n        payload TEXT NOT NULL, run_id INTEGER NOT NULL REFERENCES runs(run_id),\n        recorded_at TEXT NOT NULL, superseded_at TEXT, superseded_by INTEGER,\n        last_seen_run INTEGER NOT NULL, last_seen_at TEXT NOT NULL,\n        missing_from_source_since TEXT,\n        CHECK (superseded_at IS NULL OR superseded_at >= recorded_at))"
+   ]
+  ],
+  "captured_text": [
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "readings",
+    "readings",
+    "CREATE TABLE readings (key TEXT PRIMARY KEY, code TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)"
+   ]
+  ],
+  "case_originals": [
+   [
+    "table",
+    "original",
+    "original",
+    "CREATE TABLE original (\n  original_id TEXT PRIMARY KEY,\n  sha256 TEXT NOT NULL,\n  tenant TEXT NOT NULL,\n  classification TEXT NOT NULL,\n  audience_json TEXT NOT NULL,\n  filename TEXT NOT NULL,\n  media_type TEXT NOT NULL,\n  byte_size INTEGER NOT NULL,\n  attached_by TEXT NOT NULL,\n  attached_at TEXT NOT NULL,\n  extraction_json TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "original_source",
+    "original_source",
+    "CREATE TABLE original_source (\n  original_id TEXT PRIMARY KEY REFERENCES original(original_id),\n  provenance_json TEXT NOT NULL\n)"
+   ],
+   [
+    "table",
+    "reextraction",
+    "reextraction",
+    "CREATE TABLE reextraction (\n  original_id TEXT NOT NULL REFERENCES original(original_id),\n  version INTEGER NOT NULL CHECK (version >= 2),\n  extracted_at TEXT NOT NULL,\n  extracted_by TEXT NOT NULL,\n  reason TEXT NOT NULL,\n  local_ocr INTEGER NOT NULL,\n  extraction_json TEXT NOT NULL,\n  PRIMARY KEY (original_id, version)\n)"
+   ],
+   [
+    "trigger",
+    "original_no_update",
+    "original",
+    "CREATE TRIGGER original_no_update BEFORE UPDATE ON original\nBEGIN SELECT RAISE(ABORT, 'original_is_immutable'); END"
+   ],
+   [
+    "trigger",
+    "original_source_no_delete",
+    "original_source",
+    "CREATE TRIGGER original_source_no_delete BEFORE DELETE ON original_source\nBEGIN SELECT RAISE(ABORT, 'original_is_immutable'); END"
+   ],
+   [
+    "trigger",
+    "original_source_no_update",
+    "original_source",
+    "CREATE TRIGGER original_source_no_update BEFORE UPDATE ON original_source\nBEGIN SELECT RAISE(ABORT, 'original_is_immutable'); END"
+   ],
+   [
+    "trigger",
+    "reextraction_no_delete",
+    "reextraction",
+    "CREATE TRIGGER reextraction_no_delete BEFORE DELETE ON reextraction\nBEGIN SELECT RAISE(ABORT, 'extraction_is_immutable'); END"
+   ],
+   [
+    "trigger",
+    "reextraction_no_update",
+    "reextraction",
+    "CREATE TRIGGER reextraction_no_update BEFORE UPDATE ON reextraction\nBEGIN SELECT RAISE(ABORT, 'extraction_is_immutable'); END"
+   ]
+  ],
+  "cases": [
+   [
+    "index",
+    "idx_case_event_case_kind",
+    "case_event",
+    "CREATE INDEX idx_case_event_case_kind ON case_event(case_id, kind)"
+   ],
+   [
+    "index",
+    "idx_case_event_kind",
+    "case_event",
+    "CREATE INDEX idx_case_event_kind ON case_event(kind, seq)"
+   ],
+   [
+    "table",
+    "case_event",
+    "case_event",
+    "CREATE TABLE case_event (\n  seq INTEGER PRIMARY KEY AUTOINCREMENT,\n  case_id TEXT NOT NULL,\n  case_seq INTEGER NOT NULL CHECK(case_seq >= 1),\n  kind TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  at TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  prev_hash TEXT NOT NULL,\n  event_hash TEXT NOT NULL UNIQUE,\n  UNIQUE(case_id, case_seq)\n)"
+   ],
+   [
+    "trigger",
+    "case_event_no_delete",
+    "case_event",
+    "CREATE TRIGGER case_event_no_delete BEFORE DELETE ON case_event\nBEGIN SELECT RAISE(ABORT, 'case_event_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "case_event_no_update",
+    "case_event",
+    "CREATE TRIGGER case_event_no_update BEFORE UPDATE ON case_event\nBEGIN SELECT RAISE(ABORT, 'case_event_is_append_only'); END"
+   ]
+  ],
+  "confirmation_forms": [
+   [
+    "table",
+    "confirmation_form",
+    "confirmation_form",
+    "CREATE TABLE confirmation_form (\n                token_sha256 TEXT PRIMARY KEY, purpose TEXT NOT NULL, tenant TEXT NOT NULL,\n                subject TEXT NOT NULL, requested_by TEXT NOT NULL, payload_json TEXT NOT NULL,\n                created_at TEXT NOT NULL, expires_at TEXT NOT NULL, state TEXT NOT NULL,\n                outcome TEXT)"
+   ]
+  ],
+  "delta_state": [
+   [
+    "table",
+    "changed",
+    "changed",
+    "CREATE TABLE changed (source TEXT NOT NULL, key TEXT NOT NULL, seen_at TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0, mark TEXT, PRIMARY KEY (source, key))"
+   ],
+   [
+    "table",
+    "context",
+    "context",
+    "CREATE TABLE context (source TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY (source, key))"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT)"
+   ],
+   [
+    "table",
+    "owned",
+    "owned",
+    "CREATE TABLE owned (object_id TEXT PRIMARY KEY, source TEXT NOT NULL, key TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "slow",
+    "slow",
+    "CREATE TABLE slow (digest TEXT PRIMARY KEY, timeouts INTEGER NOT NULL)"
+   ]
+  ],
+  "document_fields": [
+   [
+    "table",
+    "fields",
+    "fields",
+    "CREATE TABLE fields (key TEXT PRIMARY KEY, code TEXT NOT NULL, value TEXT NOT NULL, used INTEGER NOT NULL)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ]
+  ],
+  "feedback": [
+   [
+    "index",
+    "feedback_at",
+    "feedback",
+    "CREATE INDEX feedback_at ON feedback (at)"
+   ],
+   [
+    "index",
+    "feedback_reader",
+    "feedback",
+    "CREATE INDEX feedback_reader ON feedback (reader, at)"
+   ],
+   [
+    "table",
+    "feedback",
+    "feedback",
+    "CREATE TABLE feedback (\n  id TEXT PRIMARY KEY, at TEXT NOT NULL,\n  kind TEXT NOT NULL CHECK (kind IN ('answer','alert','page','record','list','ui','general')),\n  reader TEXT NOT NULL, reader_name TEXT, by_admin INTEGER NOT NULL DEFAULT 0,\n  rating INTEGER, verdict TEXT, note TEXT, expected TEXT,\n  page TEXT, object_type TEXT, object_id TEXT, label TEXT,\n  item_id TEXT, answer_id TEXT, question TEXT, answer TEXT,\n  context TEXT NOT NULL DEFAULT '{}',\n  status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','accepted','fixed','wont_fix')),\n  status_by TEXT, status_at TEXT)"
+   ]
+  ],
+  "goal2_exec_owner": [
+   [
+    "table",
+    "owner_operation",
+    "owner_operation",
+    "CREATE TABLE owner_operation (\n  idempotency_key TEXT PRIMARY KEY,\n  payload_sha256 TEXT, payload_json TEXT,\n  relation TEXT, record_key TEXT,\n  status TEXT NOT NULL CHECK(status IN ('applied','pending','rejected','fenced','partial')),\n  receipt TEXT, reason TEXT, seq INTEGER NOT NULL)"
+   ],
+   [
+    "table",
+    "owner_record",
+    "owner_record",
+    "CREATE TABLE owner_record (\n  relation TEXT NOT NULL, record_key TEXT NOT NULL, row_json TEXT NOT NULL,\n  PRIMARY KEY (relation, record_key))"
+   ],
+   [
+    "table",
+    "owner_relation",
+    "owner_relation",
+    "CREATE TABLE owner_relation (\n  relation TEXT PRIMARY KEY, fields_json TEXT NOT NULL, version_field TEXT NOT NULL)"
+   ]
+  ],
+  "ingestion": [
+   [
+    "table",
+    "item",
+    "item",
+    "CREATE TABLE item (\n  unit_id TEXT NOT NULL, item_key TEXT NOT NULL, version TEXT NOT NULL,\n  content_sha256 TEXT, citation TEXT, source_time TEXT, record_json TEXT NOT NULL,\n  first_seen_run INTEGER NOT NULL, last_seen_run INTEGER NOT NULL,\n  last_changed_run INTEGER NOT NULL, last_seen_pass INTEGER NOT NULL DEFAULT 0,\n  absent_since_run INTEGER,\n  PRIMARY KEY (unit_id, item_key))"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "run",
+    "run",
+    "CREATE TABLE run (\n  run_id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,\n  state TEXT NOT NULL, config_digest TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "run_unit",
+    "run_unit",
+    "CREATE TABLE run_unit (\n  run_id INTEGER NOT NULL, unit_id TEXT NOT NULL, source_id TEXT NOT NULL,\n  kind TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, state TEXT NOT NULL,\n  reasons_json TEXT NOT NULL DEFAULT '[]', counts_json TEXT NOT NULL DEFAULT '{}',\n  cursor_before_json TEXT, cursor_after_json TEXT, lag_json TEXT NOT NULL DEFAULT '{}',\n  PRIMARY KEY (run_id, unit_id))"
+   ],
+   [
+    "table",
+    "unit_cursor",
+    "unit_cursor",
+    "CREATE TABLE unit_cursor (\n  unit_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, kind TEXT NOT NULL,\n  config_digest TEXT NOT NULL, cursor_json TEXT NOT NULL, updated_at TEXT NOT NULL,\n  updated_run INTEGER NOT NULL)"
+   ]
+  ],
+  "kept_members": [
+   [
+    "table",
+    "members",
+    "members",
+    "CREATE TABLE members (key TEXT PRIMARY KEY, code TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ]
+  ],
+  "kind_confirmation": [
+   [
+    "index",
+    "idx_confirmation_item",
+    "confirmation",
+    "CREATE INDEX idx_confirmation_item\n                ON confirmation(tenant, drive_id, item_id)"
+   ],
+   [
+    "table",
+    "confirmation",
+    "confirmation",
+    "CREATE TABLE confirmation (\n                seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,\n                tenant TEXT NOT NULL, original_id TEXT NOT NULL, drive_id TEXT,\n                item_id TEXT, record_json TEXT NOT NULL, record_sha256 TEXT NOT NULL,\n                supersedes TEXT)"
+   ],
+   [
+    "table",
+    "confirmation_form",
+    "confirmation_form",
+    "CREATE TABLE confirmation_form (\n                token_sha256 TEXT PRIMARY KEY, purpose TEXT NOT NULL, tenant TEXT NOT NULL,\n                subject TEXT NOT NULL, requested_by TEXT NOT NULL, payload_json TEXT NOT NULL,\n                created_at TEXT NOT NULL, expires_at TEXT NOT NULL, state TEXT NOT NULL,\n                outcome TEXT)"
+   ]
+  ],
+  "labour_hours": [
+   [
+    "table",
+    "labour_build",
+    "labour_build",
+    "CREATE TABLE labour_build (built_at TEXT NOT NULL, coverage TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "labour_week",
+    "labour_week",
+    "CREATE TABLE labour_week (\n    department TEXT NOT NULL, week TEXT NOT NULL, run TEXT NOT NULL DEFAULT '',\n    hours TEXT NOT NULL, overtime_hours TEXT, overtime_basis TEXT, headcount_days INTEGER,\n    week_basis TEXT NOT NULL, markings TEXT NOT NULL CHECK (markings = '[\"hr\"]'),\n    sources TEXT NOT NULL CHECK (json_valid(sources)),\n    PRIMARY KEY (department, week, run))"
+   ]
+  ],
+  "mention_memo": [
+   [
+    "table",
+    "groups",
+    "groups",
+    "CREATE TABLE groups (key TEXT PRIMARY KEY, value BLOB NOT NULL, used INTEGER NOT NULL)"
+   ],
+   [
+    "table",
+    "mentions",
+    "mentions",
+    "CREATE TABLE mentions (key TEXT PRIMARY KEY, code TEXT NOT NULL, valid_at TEXT, value BLOB NOT NULL, used INTEGER NOT NULL)"
+   ],
+   [
+    "table",
+    "texts",
+    "texts",
+    "CREATE TABLE texts (key TEXT PRIMARY KEY, code TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)"
+   ]
+  ],
+  "page_counts": [
+   [
+    "table",
+    "page_counts",
+    "page_counts",
+    "CREATE TABLE page_counts (key TEXT PRIMARY KEY, pages INTEGER NOT NULL)"
+   ]
+  ],
+  "page_store": [
+   [
+    "table",
+    "pages",
+    "pages",
+    "CREATE TABLE pages (key TEXT PRIMARY KEY, read_at REAL NOT NULL, expires REAL NOT NULL, value BLOB NOT NULL)"
+   ]
+  ],
+  "playbook_reports": [
+   [
+    "index",
+    "idx_playbook_report_case",
+    "playbook_report",
+    "CREATE INDEX idx_playbook_report_case ON playbook_report(case_id, playbook_id, id)"
+   ],
+   [
+    "table",
+    "playbook_change",
+    "playbook_change",
+    "CREATE TABLE playbook_change (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  record_json TEXT NOT NULL,\n  prev_hash TEXT NOT NULL,\n  row_hash TEXT NOT NULL UNIQUE\n)"
+   ],
+   [
+    "table",
+    "playbook_report",
+    "playbook_report",
+    "CREATE TABLE playbook_report (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  report_sha256 TEXT NOT NULL UNIQUE,\n  case_id TEXT NOT NULL,\n  playbook_id TEXT NOT NULL,\n  playbook_version TEXT NOT NULL,\n  definition_sha256 TEXT NOT NULL,\n  evaluator_version TEXT NOT NULL,\n  case_boundary_sha256 TEXT NOT NULL,\n  manifest_sha256 TEXT NOT NULL,\n  passed_all INTEGER NOT NULL CHECK(passed_all IN (0,1)),\n  passed_all_clean INTEGER NOT NULL CHECK(passed_all_clean IN (0,1)),\n  recorded_at TEXT NOT NULL,\n  recorded_by TEXT NOT NULL,\n  transcript_source TEXT NOT NULL,\n  report_json TEXT NOT NULL,\n  prev_hash TEXT NOT NULL,\n  row_hash TEXT NOT NULL UNIQUE\n)"
+   ],
+   [
+    "trigger",
+    "playbook_change_no_delete",
+    "playbook_change",
+    "CREATE TRIGGER playbook_change_no_delete BEFORE DELETE ON playbook_change\nBEGIN SELECT RAISE(ABORT, 'playbook_change_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "playbook_change_no_update",
+    "playbook_change",
+    "CREATE TRIGGER playbook_change_no_update BEFORE UPDATE ON playbook_change\nBEGIN SELECT RAISE(ABORT, 'playbook_change_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "playbook_report_no_delete",
+    "playbook_report",
+    "CREATE TRIGGER playbook_report_no_delete BEFORE DELETE ON playbook_report\nBEGIN SELECT RAISE(ABORT, 'playbook_report_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "playbook_report_no_update",
+    "playbook_report",
+    "CREATE TRIGGER playbook_report_no_update BEFORE UPDATE ON playbook_report\nBEGIN SELECT RAISE(ABORT, 'playbook_report_is_append_only'); END"
+   ]
+  ],
+  "proactive_inbox": [
+   [
+    "index",
+    "gaps_open",
+    "gaps",
+    "CREATE INDEX gaps_open ON gaps (state, priority, last_seen)"
+   ],
+   [
+    "table",
+    "acks",
+    "acks",
+    "CREATE TABLE acks (gap_id TEXT NOT NULL, reader TEXT NOT NULL, at TEXT NOT NULL,\n  PRIMARY KEY (gap_id, reader))"
+   ],
+   [
+    "table",
+    "detector_history",
+    "detector_history",
+    "CREATE TABLE detector_history (detector TEXT NOT NULL, run_at TEXT NOT NULL,\n  status TEXT NOT NULL, found INTEGER NOT NULL, PRIMARY KEY (detector, run_at))"
+   ],
+   [
+    "table",
+    "detector_runs",
+    "detector_runs",
+    "CREATE TABLE detector_runs (detector TEXT PRIMARY KEY, status TEXT NOT NULL,\n  reasons TEXT NOT NULL, found INTEGER NOT NULL, not_evaluated TEXT NOT NULL,\n  run_at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "event_cache",
+    "event_cache",
+    "CREATE TABLE event_cache (detector TEXT NOT NULL, root TEXT NOT NULL,\n  reading TEXT NOT NULL, PRIMARY KEY (detector, root))"
+   ],
+   [
+    "table",
+    "gap_cites",
+    "gap_cites",
+    "CREATE TABLE gap_cites (gap_id TEXT NOT NULL, grp INTEGER NOT NULL,\n  handle TEXT NOT NULL, object_id TEXT, markings TEXT NOT NULL,\n  PRIMARY KEY (gap_id, grp, handle))"
+   ],
+   [
+    "table",
+    "gap_requires",
+    "gap_requires",
+    "CREATE TABLE gap_requires (gap_id TEXT NOT NULL, audience_key TEXT NOT NULL,\n  PRIMARY KEY (gap_id, audience_key))"
+   ],
+   [
+    "table",
+    "gaps",
+    "gaps",
+    "CREATE TABLE gaps (gap_id TEXT PRIMARY KEY, kind TEXT NOT NULL,\n  detector TEXT NOT NULL, object_id TEXT NOT NULL, object_type TEXT NOT NULL,\n  summary TEXT NOT NULL, follow_up TEXT NOT NULL, priority INTEGER NOT NULL,\n  state TEXT NOT NULL CHECK (state IN ('open', 'resolved')), first_seen TEXT NOT NULL,\n  last_seen TEXT NOT NULL, resolved_at TEXT)"
+   ],
+   [
+    "table",
+    "kind_history",
+    "kind_history",
+    "CREATE TABLE kind_history (kind TEXT NOT NULL, run_at TEXT NOT NULL,\n  found INTEGER NOT NULL, PRIMARY KEY (kind, run_at))"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "rule_coverage",
+    "rule_coverage",
+    "CREATE TABLE rule_coverage (detector TEXT PRIMARY KEY,\n  unattributed INTEGER NOT NULL, run_at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "runs",
+    "runs",
+    "CREATE TABLE runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, run_at TEXT NOT NULL,\n  as_of TEXT NOT NULL, store_digest TEXT, summary TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "scope",
+    "scope",
+    "CREATE TABLE scope (audience_key TEXT NOT NULL, markings TEXT NOT NULL,\n  objects INTEGER NOT NULL, PRIMARY KEY (audience_key, markings))"
+   ],
+   [
+    "table",
+    "unjudged_causes",
+    "unjudged_causes",
+    "CREATE TABLE unjudged_causes (detector TEXT NOT NULL, skip INTEGER NOT NULL,\n  object_id TEXT NOT NULL, markings TEXT NOT NULL, subject INTEGER NOT NULL,\n  PRIMARY KEY (detector, skip, object_id, markings))"
+   ],
+   [
+    "table",
+    "unjudged_reasons",
+    "unjudged_reasons",
+    "CREATE TABLE unjudged_reasons (detector TEXT NOT NULL, skip INTEGER NOT NULL,\n  reason TEXT NOT NULL, PRIMARY KEY (detector, skip))"
+   ],
+   [
+    "table",
+    "visits",
+    "visits",
+    "CREATE TABLE visits (reader TEXT PRIMARY KEY, at TEXT NOT NULL, previous TEXT)"
+   ]
+  ],
+  "proactive_incremental": [
+   [
+    "table",
+    "layers",
+    "layers",
+    "CREATE TABLE layers (layer TEXT PRIMARY KEY, base_digest TEXT NOT NULL,\n  seen_at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "passes",
+    "passes",
+    "CREATE TABLE passes (pass_id INTEGER PRIMARY KEY AUTOINCREMENT,\n  at TEXT NOT NULL, summary TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "prints",
+    "prints",
+    "CREATE TABLE prints (object_id TEXT PRIMARY KEY, print TEXT NOT NULL,\n  neighbors TEXT NOT NULL)"
+   ]
+  ],
+  "project_objects": [
+   [
+    "table",
+    "bindings",
+    "bindings",
+    "CREATE TABLE bindings (binding TEXT PRIMARY KEY, key TEXT,\n                basis TEXT, objects INTEGER)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)"
+   ],
+   [
+    "table",
+    "objects",
+    "objects",
+    "CREATE TABLE objects (binding TEXT, object_id TEXT, print BLOB,\n                part TEXT, PRIMARY KEY (binding, object_id)) WITHOUT ROWID"
+   ]
+  ],
+  "session_journal": [
+   [
+    "table",
+    "request",
+    "request",
+    "CREATE TABLE request (\n  id INTEGER PRIMARY KEY, at TEXT NOT NULL, session_ref TEXT, employee TEXT,\n  method TEXT NOT NULL, route TEXT NOT NULL, status INTEGER NOT NULL, refusal TEXT,\n  object_type TEXT, panels TEXT, proof TEXT, access TEXT)"
+   ]
+  ],
+  "session_replay": [
+   [
+    "table",
+    "ticket_jti",
+    "ticket_jti",
+    "CREATE TABLE ticket_jti (\n  jti_sha256 TEXT NOT NULL,\n  kind TEXT NOT NULL CHECK(kind IN ('used', 'revoked')),\n  exp INTEGER NOT NULL,\n  PRIMARY KEY (jti_sha256, kind)\n)"
+   ]
+  ],
+  "sheet_readings": [
+   [
+    "index",
+    "readings_by_kind",
+    "readings",
+    "CREATE INDEX readings_by_kind ON readings(kind, file_key)"
+   ],
+   [
+    "index",
+    "sources_by_file",
+    "sources",
+    "CREATE INDEX sources_by_file ON sources(file_key)"
+   ],
+   [
+    "table",
+    "files",
+    "files",
+    "CREATE TABLE files (\n    file_key TEXT PRIMARY KEY, reader TEXT NOT NULL, status TEXT NOT NULL,\n    kinds TEXT NOT NULL, tables INTEGER NOT NULL, rows INTEGER NOT NULL,\n    seconds REAL NOT NULL, read_at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "readings",
+    "readings",
+    "CREATE TABLE readings (\n    file_key TEXT NOT NULL, table_no INTEGER NOT NULL, seq INTEGER NOT NULL,\n    kind TEXT NOT NULL, cell TEXT NOT NULL, fields TEXT NOT NULL,\n    PRIMARY KEY (file_key, table_no, seq))"
+   ],
+   [
+    "table",
+    "sources",
+    "sources",
+    "CREATE TABLE sources (\n    handle TEXT PRIMARY KEY, file_key TEXT NOT NULL, origin TEXT NOT NULL,\n    name TEXT NOT NULL, object_id TEXT, object_type TEXT, audience_key TEXT,\n    markings TEXT, received_at TEXT, participants TEXT NOT NULL DEFAULT '[]',\n    seen_at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "tables",
+    "tables",
+    "CREATE TABLE tables (\n    file_key TEXT NOT NULL, table_no INTEGER NOT NULL, kind TEXT NOT NULL,\n    sheet TEXT NOT NULL, header TEXT NOT NULL, roles TEXT NOT NULL, facts TEXT NOT NULL,\n    PRIMARY KEY (file_key, table_no))"
+   ]
+  ],
+  "watchlists": [
+   [
+    "index",
+    "alerts_reader",
+    "alerts",
+    "CREATE INDEX alerts_reader ON alerts (reader, at)"
+   ],
+   [
+    "index",
+    "follows_object",
+    "follows",
+    "CREATE INDEX follows_object ON follows (object_id)"
+   ],
+   [
+    "table",
+    "alerts",
+    "alerts",
+    "CREATE TABLE alerts (alert_id TEXT PRIMARY KEY, reader TEXT NOT NULL,\n  origin TEXT NOT NULL, origin_id TEXT NOT NULL, kind TEXT NOT NULL, about TEXT NOT NULL,\n  object_id TEXT NOT NULL, body TEXT NOT NULL, gates TEXT NOT NULL, at TEXT NOT NULL,\n  read_at TEXT)"
+   ],
+   [
+    "table",
+    "events",
+    "events",
+    "CREATE TABLE events (rule_id TEXT NOT NULL, grp TEXT NOT NULL,\n  subject TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (rule_id, grp, subject, at))"
+   ],
+   [
+    "table",
+    "follows",
+    "follows",
+    "CREATE TABLE follows (reader TEXT NOT NULL, object_id TEXT NOT NULL,\n  object_type TEXT, label TEXT, at TEXT NOT NULL, baseline_at TEXT,\n  PRIMARY KEY (reader, object_id))"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)"
+   ],
+   [
+    "table",
+    "rules",
+    "rules",
+    "CREATE TABLE rules (rule_id TEXT PRIMARY KEY, reader TEXT NOT NULL,\n  text TEXT NOT NULL, spec TEXT NOT NULL, description TEXT NOT NULL, at TEXT NOT NULL,\n  baseline_at TEXT, state TEXT NOT NULL DEFAULT 'active', note TEXT, cursor TEXT)"
+   ],
+   [
+    "table",
+    "seen",
+    "seen",
+    "CREATE TABLE seen (object_id TEXT PRIMARY KEY, object_type TEXT,\n  full INTEGER NOT NULL, props TEXT NOT NULL, neighbors TEXT, gate TEXT, label TEXT,\n  at TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "signal_reads",
+    "signal_reads",
+    "CREATE TABLE signal_reads (reader TEXT NOT NULL, alert_id TEXT NOT NULL,\n  at TEXT NOT NULL, PRIMARY KEY (reader, alert_id))"
+   ]
+  ]
+ }
+}

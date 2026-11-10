@@ -202,6 +202,11 @@ INTENTS: tuple[Intent, ...] = (
            "customer"),
     Intent("invoiced_window", _w(r"\b(?:invoic\w*|billed|bill|billing|revenue|sold)\b"),
            "customer", takes_frame=True),
+    # One record's card by its own identifier, of any type ("status of OR1000154182"):
+    # only the bare form; a record a family above reads (a PO, a task, a batch) is theirs.
+    Intent("record_status", _w(r"^(?:(?:what s|whats|what is) )?(?:the )?(?:current )?"
+                               r"(?:status|details?|info) (?:of|on|for) (?:order |record )?"
+                               r"[a-z0-9]+(?: [a-z0-9]+){0,2}$"), "record"),
     Intent("late_po_count", _w(r"\b(?:pos?|purchase orders?)\b.*\b(?:late|overdue|past due|"
                                r"behind)\b|\b(?:late|overdue|past due|behind)\b.*"
                                r"\b(?:pos?|purchase orders?)\b"), "none"),
@@ -221,7 +226,10 @@ _OVERRIDES = (("receipt_vs_po", "po_status"), ("vendor_open_pos", "open_sos"),
               ("po_followup", "po_confirmed"), ("po_followup", "po_people"),
               ("po_confirmed", "po_status"), ("po_confirmed", "vendor_last_mail"),
               ("po_first_mail", "po_status"), ("po_first_mail", "vendor_last_mail"),
-              ("po_first_mail", "po_confirmed"))
+              ("po_first_mail", "po_confirmed"),
+              ("po_status", "record_status"), ("task_status", "record_status"),
+              ("batch_status", "record_status"), ("lot_expiry", "record_status"),
+              ("order_shipped", "record_status"), ("order_margin", "record_status"))
 
 # Words that never belong to a customer's name in an open-AR or open-order question.
 _NAME_FILLER = re.compile(
@@ -326,6 +334,8 @@ def _kind(token: str) -> Optional[str]:
 def _takes(intent: Intent, named: Optional[str]) -> bool:
     if named is None:
         return intent.entity in ("customer", "vendor", "none")
+    if intent.entity == "record":   # any identifier the grammar reads, of any type
+        return named in ("po", "so", "batch", "item", "lot", "number")
     return intent.entity == named or (named == "number" and (
         intent.entity in ("po", "lot") or intent.name == "order_shipped"))
 
@@ -783,6 +793,9 @@ class Reads:
         # Monotonic second past which no further read starts (``answer`` sets it from
         # ``BUDGET_SECONDS``): a recipe past it declines (``time_budget``), never guesses.
         self.deadline: Optional[float] = None
+        # The moment a record card is read as of (``fast_record``): None, now.
+        self.as_of: Optional[str] = None
+        self.as_of_reads: list[str] = []
 
     @classmethod
     def of_server(cls, server: Any) -> "Reads":
@@ -4728,3 +4741,6 @@ class FastAgent:
 from . import fast_chain as _chain  # noqa: E402 - it reads this module's helpers
 
 _RECIPES.update(_chain.RECIPES)
+from . import fast_record as _record  # noqa: E402 - it reads this module's helpers
+
+_RECIPES.update(_record.RECIPES)

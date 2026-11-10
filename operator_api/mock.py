@@ -21,6 +21,8 @@ from operating.answer_gate import _sentences
 from . import ask_progress, models as m, presentation, proposals
 from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
+from .autopilot_area import AutopilotAreaMixin
+from .assist_api import AssistMixin
 from .write_intents_api import WriteIntentsMixin
 from .watch import MockWatchMixin
 from .auth import Reader
@@ -411,7 +413,8 @@ def _pick(question: str) -> tuple[str, Any]:
     return "other", _unknown_answer
 
 
-class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, MockWatchMixin):
+class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin, AssistMixin,
+                  MockWatchMixin):
     data_label = LABEL
 
     def __init__(self, *, step_delay: float = 0.0) -> None:
@@ -687,6 +690,16 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, MockWatchMixi
     def approvals_queue(self, reader: Reader) -> m.ApprovalsQueue:
         return m.ApprovalsQueue(as_of="2026-01-05", total=0, sent=0, writes=0)
 
+    def reply_triage(self, reader: Reader) -> m.ReplyTriage:
+        """The demo world holds no mailbox: nothing waits on a reply."""
+        return m.ReplyTriage(as_of="2026-01-05", total=0, sent=0, writes=0)
+
+    def rd_board(self, reader: Reader) -> m.RdBoard:
+        """The demo world holds no R&D or sample threads."""
+        from operating.rd_projects import idle_days
+        return m.RdBoard(as_of="2026-01-05", idle_after_days=idle_days(), total=0, idle=0, sent=0,
+                         writes=0)
+
     def record_pack(self, reader: Reader, object_type: str, object_id: str) -> m.RecordPack:
         from .errors import UserFacing
         raise UserFacing("not_found", "That record is not one you can open.", 404)
@@ -734,6 +747,24 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, MockWatchMixi
             return {"error": {"code": "not_served", "message": "the demo serves no records"}}
         return brief_model(br.weekly_review(call, frozenset(), {"status": "not_configured"},
                                             week=week))
+
+    def qc_pack_dict(self, reader: Reader, kind: str) -> dict[str, Any]:
+        """The real builder over no records and no markings: every section is marked."""
+        from operating import briefs as br
+
+        def call(tool: str, args: dict) -> dict:
+            return {"error": {"code": "not_served", "message": "the demo serves no records"}}
+        if kind == "daily":
+            return br.qc_daily_pack(call, frozenset(), {"status": "not_configured"})
+        return br.qc_audit_pack(call, frozenset())
+
+    def qc_pack(self, reader: Reader, kind: str) -> m.Brief:
+        from .briefs import brief_model
+        return brief_model(self.qc_pack_dict(reader, kind))
+
+    def qc_pack_text(self, reader: Reader, kind: str) -> str:
+        from operating import briefs as br
+        return br.pack_text(self.qc_pack_dict(reader, kind))
 
     def alert_playbook_dict(self, reader: Reader, alert_id: str) -> Optional[dict[str, Any]]:
         """A demo alert's playbook by the real builder over the demo briefing; no record

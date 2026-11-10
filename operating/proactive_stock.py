@@ -753,7 +753,19 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     gaps = []
     for cert, props in served:
         labels = [p for p in (cert.supplier, cert.material, cert.lot) if p]
+        names = [p for p in (cert.material, cert.lot) if p]   # what the certificate is of
         found = st.values([cert.type], [*props, *labels])
+        # per material and lot, the latest date any of its certificates states: an older
+        # certificate of the same lot is superseded by a newer one stating a later date
+        latest: dict[tuple, date] = {}
+        for entry in found.values():
+            of = tuple(_fold(_stated(entry["props"], p)) for p in names)
+            if names and any(of):
+                for prop in props:
+                    row = pb._one(entry["props"].get(prop) or ())
+                    day = pb._day(row["value"]) if row is not None else None
+                    if day is not None:
+                        latest[(prop, *of)] = max(latest.get((prop, *of), day), day)
         for oid, entry in sorted(found.items()):
             pb._tick(st)
             values = entry["props"]
@@ -768,7 +780,17 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 counts["dated"] += 1
                 if not as_of <= day <= horizon:
                     continue
-                said = {p: pb._one(values.get(p)) for p in labels}
+                said = {p: (row_ if _stated(values, p) else None)
+                        for p in labels for row_ in [pb._one(values.get(p))]}
+                of = tuple(_fold(_stated(values, p)) for p in names)
+                if names and not any(of):
+                    # neither material nor lot read from the document: no one can tell
+                    # what expires (live 11-10: 4 of 15 certificates)
+                    skipped.note("certificate_unidentified", [oid], [(oid, "[]")])
+                    continue
+                if names and latest.get((prop, *of), day) > day:
+                    counts["superseded"] += 1
+                    continue
                 key = (cert.type, prop, day,
                        *(_fold(r["value"]) if r else "" for r in said.values()))
                 if key in seen:
@@ -778,7 +800,7 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 counts["expiring"] += 1
                 left = (day - as_of).days
                 text = {p: str(r["value"]).strip() for p, r in said.items()
-                        if r and str(r["value"]).strip()}
+                        if r and r.get("value") is not None and str(r["value"]).strip()}
                 what = cert.label[0].upper() + cert.label[1:]
                 if cert.material in text:
                     what += f" for {text[cert.material]}"
@@ -805,8 +827,20 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 gaps.append(made)
     out = result(gaps, not_evaluated=skipped,
                  reasons=[waiting(f) for f in dict.fromkeys(unserved)])
-    out["counts"] = {k: counts.get(k, 0) for k in ("dated", "expiring", "copies")}
+    out["counts"] = {k: counts.get(k, 0) for k in ("dated", "expiring", "copies",
+                                                   "superseded")}
     return out
+
+
+NOT_STATED = frozenset({"", "none", "null", "n/a"})
+
+
+def _stated(props: Mapping[str, list], name: str) -> str:
+    """The text a record states for ``name``; "" when it states none or a reader wrote
+    its own empty ("None", "null", "n/a": a field the document did not hold)."""
+    row = pb._one(props.get(name))
+    text = str(row["value"]).strip() if row and row.get("value") is not None else ""
+    return "" if text.casefold() in NOT_STATED else text
 
 
 # --------------------------------------------------------------------------- freight

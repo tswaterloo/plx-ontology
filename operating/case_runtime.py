@@ -570,7 +570,7 @@ class CaseRuntime:
         if hours is None:
             return
         try:
-            from operator_ui.session_journal import record_full_read_stale
+            from operator_api.workspace.session_journal import record_full_read_stale
             record_full_read_stale(self.state_dir, employee=entitlement.principal.principal,
                                    access=entitlement.full_read_code(), source=scheme,
                                    hours=hours)

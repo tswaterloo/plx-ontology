@@ -1181,7 +1181,7 @@ def claim_refusal(decided: Mapping[str, Any]) -> Optional[str]:
     citations): the first refusal's reason, or None. A captured original or SharePoint
     file (``HOST_READ_SCHEMES``) whose item re-check this app's runtime cannot make stays:
     the reader's own host gate admitted it."""
-    from operator_ui.object_workspace import ITEM_REFUSED
+    from operator_api.workspace.object_workspace import ITEM_REFUSED
     return next((marker.get("reason") or "withheld" for handle, marker in decided.items()
                  if marker is not None and not (handle.startswith(HOST_READ_SCHEMES)
                                                 and marker.get("reason") == ITEM_REFUSED)),

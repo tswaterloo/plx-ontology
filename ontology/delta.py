@@ -67,6 +67,8 @@ import sys
 import time
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import unquote
+from operating import declared_schema as _schemas
+from operating.declared_schema import delta_state as _DELTA_STATE
 
 FORMAT = "plx-delta/v1"
 POINTER = "CURRENT.json"
@@ -211,7 +213,6 @@ class Base:
         self.digest = meta.get("content_digest")
         self.built_at = meta.get("built_at")
         self.freshness = json.loads(meta.get("source_freshness") or "{}")
-        self.stat = os.stat(self.path)
 
     def close(self) -> None:
         self.conn.close()
@@ -302,6 +303,18 @@ def served_store(state_dir: Path) -> Path:
     return state_dir / "projection" / "ontology.sqlite"
 
 
+def pg_base_enabled(environ: Mapping[str, str]) -> bool:
+    """Whether a cycle projects against the Postgres ontology (``Base(postgres=)``):
+    ``PLX_DELTA_BASE_PG=1``, or Postgres the only store (``PLX_ONTOLOGY_PG=only``: no
+    SQLite generation need exist; ``PLX_DELTA_BASE_PG=0`` cannot override that, a
+    cycle never reads a generation nobody serves). In mode 1 (``PLX_ONTOLOGY_PG=1``) the
+    SQLite generation stays the base unless asked: over Postgres the pointer keeps only
+    ``PG_KEPT_LAYERS`` layers, so a SQLite overlay reader's answers say they are partial
+    (``partial`` in the pointer)."""
+    # ``operating.pg.ontology_reader.pg_only``, read here without importing the read tools
+    return environ.get("PLX_DELTA_BASE_PG") == "1" or environ.get("PLX_ONTOLOGY_PG") == "only"
+
+
 # --------------------------------------------------------------------------- state
 
 class State:
@@ -311,18 +324,8 @@ class State:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, timeout=60, isolation_level=None)
-        self.conn.executescript(
-            "PRAGMA journal_mode=WAL;"
-            "CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT);"
-            "CREATE TABLE IF NOT EXISTS changed (source TEXT NOT NULL, key TEXT NOT NULL, "
-            "seen_at TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0, "
-            "PRIMARY KEY (source, key));"
-            "CREATE TABLE IF NOT EXISTS context (source TEXT NOT NULL, key TEXT NOT NULL, "
-            "PRIMARY KEY (source, key));"
-            "CREATE TABLE IF NOT EXISTS owned (object_id TEXT PRIMARY KEY, source TEXT NOT NULL, "
-            "key TEXT NOT NULL);"
-            "CREATE TABLE IF NOT EXISTS slow (digest TEXT PRIMARY KEY, "
-            "timeouts INTEGER NOT NULL);")
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        _schemas.apply(self.conn, _DELTA_STATE)
         # a changed record's input mark (``add``): a state written before it has none,
         # so its records are each taken once more and marked then
         if "mark" not in {r[1] for r in self.conn.execute("PRAGMA table_info(changed)")}:
@@ -729,8 +732,11 @@ def sharepoint_paths(state_dir: Path) -> tuple[Path, Path]:
 
 
 def sharepoint_changes(drive: Path, lists: Path, base: Base, state: State) -> int:
-    """Drive-item versions past the generation's mark and items whose interval closed
-    since it was built, and list-item versions past its mark."""
+    """Drive-item versions past the generation's mark, items whose interval closed since
+    it was built, and every item whose newest version the source no longer holds
+    (``absent_after_resync``, whenever it was removed: a generation built before removed
+    files were marked ``missing_from_source_since`` serves them unmarked, and its delta
+    marks them), and list-item versions past its mark."""
     keys: set[tuple[str, ...]] = set()
     since = base.built_at or ""
     item_mark = state.get("sharepoint_item") or base.mark("sharepoint", "driveItems") or 0
@@ -745,7 +751,8 @@ def sharepoint_changes(drive: Path, lists: Path, base: Base, state: State) -> in
         with contextlib.closing(_ro(drive)) as conn:
             items = set()
             for row in conn.execute("SELECT version_id, drive_id, item_id FROM items WHERE "
-                                    "version_id > ? OR superseded_at > ?", (item_mark, since)):
+                                    "version_id > ? OR superseded_at > ? OR removed_reason "
+                                    "= 'absent_after_resync'", (item_mark, since)):
                 last_item = max(last_item, row[0])
                 items.add(("item", row[1], row[2]))
             for key in items:
@@ -1469,7 +1476,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
 
     environ = os.environ if environ is None else environ
     pg_base = None
-    if environ.get("PLX_DELTA_BASE_PG") == "1":
+    if pg_base_enabled(environ):
         from operating.pg import config as pg_config
         pg_base = pg_config.dsn(environ)
     base = Base(base_path or served_store(state_dir), postgres=pg_base)
@@ -1490,6 +1497,17 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         readings = contextlib.ExitStack()
         readings.enter_context(kept(delta_dir, [state_dir / "mail-capture" / "blobs"]))
         report["base_digest"] = base.digest
+        if base.postgres and not force_changed and not compact_only:
+            # over Postgres the closure reads every earlier change from it: a listed layer
+            # it has not applied is applied first, and while one stays unapplied (a stall,
+            # a load) no layer is built over the incomplete base; the changes stay open
+            behind = postgres_behind(state, base, environ, report)
+            if behind:
+                report["layer"] = "none: Postgres behind the published layers"
+                report["status"] = "postgres_behind"
+                report["postgres_behind"] = behind
+                report["seconds"]["total"] = round(time.monotonic() - started, 2)
+                return report
         schema = load_schema() if schema is None else schema
         plan = Plan(schema)
         try:
@@ -1618,9 +1636,11 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         # replaces them all.
         layers = snapshot if publish and not force_changed else []
         layers = [layer for layer in layers if Path(layer["store"]).is_file()]
-        # over Postgres every earlier change is in the base already: never cumulative
-        compact = compact_only or (not base.postgres and (not layers
-                                                          or len(layers) >= MAX_LAYERS))
+        # over Postgres every earlier change is in the base already: never cumulative.
+        # Over SQLite after a Postgres base dropped layers (``pointer_partial``): the
+        # layers no longer hold every change, so the next one holds them all again.
+        compact = compact_only or (not base.postgres and (
+            not layers or len(layers) >= MAX_LAYERS or bool(state.get("pointer_partial"))))
         if compact:
             records = {s: (state.context(s) | set(changed[s]) | found[s]) for s in SOURCES}
             mine = changed
@@ -1701,8 +1721,17 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     layers = [layer] + _not_in_postgres(now, base.conn, keep=PG_KEPT_LAYERS)
                 else:
                     layers = [layer] + now
-                publish_pointer(delta_dir, layers, base, report)
+                # whether the layers still hold every change since the generation: a fold
+                # or cumulative layer does; a Postgres base dropping one makes them partial
+                kept_stores = {item["store"] for item in layers}
+                if compact:
+                    partial = False
+                else:
+                    partial = bool(state.get("pointer_partial")) or any(
+                        item["store"] not in kept_stores for item in now)
+                publish_pointer(delta_dir, layers, base, report, partial=partial)
                 state.put("layers", layers)
+                state.put("pointer_partial", partial)
                 # only now are the changes this layer holds marked done: a cycle that
                 # fails before this leaves them open, and the next cycle projects them
                 if not force_changed and not compact_only:
@@ -1750,9 +1779,39 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
 
 
 KEPT = ("readings.sqlite", "member-readings.sqlite", "fields.sqlite")
-# Over a Postgres base: the newest layers the pointer keeps after Postgres applied them
-# (the SQLite overlay of the served generation still reads them).
-PG_KEPT_LAYERS = 8
+# Over a Postgres base: the newest layers the pointer keeps after Postgres applied them,
+# as many as a SQLite base serves at once. Its readers take each layer by name (the search
+# index follower, the incremental proactive pass, the AI watcher): over a SQLite base a
+# fold presents every change again, over Postgres a layer dropped is never presented
+# again, so a reader gets this many cycles (with something new: about 8 h) to take it in.
+PG_KEPT_LAYERS = MAX_LAYERS - 1
+
+
+def postgres_behind(state: "State", base: Base, environ: Mapping[str, str],
+                    report: dict[str, Any]) -> list[str]:
+    """The published layers (``state``'s, names) Postgres has not applied, after applying
+    them (``apply_listed``, oldest first) when there are any; none: the base is current."""
+    stores = [item["store"] for item in state.get("layers") or []
+              if Path(item["store"]).is_file()]
+    if not stores:
+        return []
+
+    def missing() -> list[str]:
+        names = [Path(store).name for store in stores]
+        applied = {row[0] for row in base.conn.execute(
+            "SELECT substr(name, 7) FROM load_state WHERE name IN (SELECT 'delta:' || value "
+            "FROM json_each(?))", (json.dumps(names),))}
+        return [name for name in names if name not in applied]
+
+    if not missing():
+        return []
+    try:
+        from operating.pg import config as pg_config
+        from operating.pg.ontology_delta import apply_listed
+        report["postgres_before"] = apply_listed(stores, pg_config.dsn(environ))
+    except Exception as exc:  # noqa: BLE001 - reported; the cycle waits for Postgres
+        report["postgres_before"] = {"applied": False, "error": f"{type(exc).__name__}"[:120]}
+    return missing()
 
 
 def _not_in_postgres(layers: Sequence[Mapping[str, Any]], conn: Any, *, keep: int
@@ -2101,9 +2160,12 @@ def reproject_requests(state: State, base: Base, environ: Mapping[str, str],
 
 
 def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: Base,
-                    report: Mapping[str, Any]) -> None:
+                    report: Mapping[str, Any], *, partial: bool = False) -> None:
     """``layers``: newest first; an object is read from the newest layer owning it.
-    ``store``/``owned`` name the newest (a reader of one layer reads that one)."""
+    ``store``/``owned`` name the newest (a reader of one layer reads that one).
+    ``partial``: the layers no longer hold every change since the generation (a Postgres
+    base dropped some it applied): a SQLite overlay reader says its answers may be older
+    (``delta_overlay.PARTIAL``)."""
     # each new layer names the step code that projected it, and the pointer the code its
     # documents were read by (``operating.derived_status``: a layer of older code is
     # stale until a fold, ``compact``, projects every change again)
@@ -2120,7 +2182,8 @@ def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: 
     body = {"format": FORMAT, "base_digest": base.digest, "store": layers[0]["store"],
             "owned": layers[0]["owned"], "layers": list(layers), "built_at": _now(),
             "changed": report.get("changed"), "seconds": report.get("seconds"),
-            "documents": report.get("documents")}
+            "documents": report.get("documents"), "partial": bool(partial),
+            "base": "postgres" if base.postgres else "sqlite"}
     temp = delta_dir / f".{POINTER}.tmp"
     temp.write_text(json.dumps(body, sort_keys=True), encoding="utf-8")
     os.replace(temp, delta_dir / POINTER)

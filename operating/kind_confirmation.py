@@ -149,6 +149,8 @@ from .cases import CitationError
 from .confirmation_forms import DEFAULT_TTL_SECONDS, ConfirmationForms, FormRefused, is_response
 from .entitlements import _AGENT_PREFIXES  # "agents are never principals" (one rule)
 from .playbook_originals import KINDS, confirmation_binds
+from operating import declared_schema as _schemas
+from operating.declared_schema import kind_confirmation as _KIND_CONFIRMATION
 
 SCHEMA = "plx.document-fields-confirmation/v1"
 PROPOSAL_DIGEST_SCHEMA = "plx.document-fields-proposal-digest/v1"
@@ -330,13 +332,7 @@ class KindConfirmations:
         self._clock = clock or _now
         self.forms = ConfirmationForms(path, clock=self._clock, ttl_seconds=ttl_seconds)
         with closing(self._db()) as db, db:
-            db.execute("""CREATE TABLE IF NOT EXISTS confirmation (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
-                tenant TEXT NOT NULL, original_id TEXT NOT NULL, drive_id TEXT,
-                item_id TEXT, record_json TEXT NOT NULL, record_sha256 TEXT NOT NULL,
-                supersedes TEXT)""")
-            db.execute("""CREATE INDEX IF NOT EXISTS idx_confirmation_item
-                ON confirmation(tenant, drive_id, item_id)""")
+            _schemas.apply(db, _KIND_CONFIRMATION)
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)

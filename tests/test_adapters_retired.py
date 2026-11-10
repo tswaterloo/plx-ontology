@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RETIRED_MODULES = ("integrations.github", "integrations.portal_bc_links", "ontology.fixtures",
                    "reasoning", "reasoning.engine", "reasoning.rules",
                    "scripts.package_release", "scripts.generate_audit_inventory")
-SCANNED = ("ontology", "integrations", "operating", "operator_ui", "scripts", "devloop",
+SCANNED = ("ontology", "integrations", "operating", "operator_api", "scripts", "devloop",
            "evals", "tests")
 
 

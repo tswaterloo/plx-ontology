@@ -279,6 +279,13 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                      "label": "Label or artwork change", "departments": (
                          "ARTWORK", "QA", "QC", "QUALITY", "PROD", "SALES", "ACCTMGMT"),
                      "check": ("label_changes",), "hidden": "none"},
+    # an open sales or manufacturing order a superseded label or artwork revision names
+    # (``operating.label_revisions``); the revisions themselves are the item page's
+    "label_revision_superseded": {"kinds": ("label_revision_superseded",),
+                                  "label": "Open order on a superseded label",
+                                  "departments": ("ARTWORK", "QA", "QC", "QUALITY", "PROD",
+                                                  "SALES", "ACCTMGMT"),
+                                  "check": ("label_revisions",), "hidden": "none"},
     # an R&D or sample project with no activity for days (``operating.rd_projects``); its
     # lines are the board's, never the briefing's
     "rd_project": {"kinds": ("rd_project_idle",), "label": "R&D or sample project idle",
@@ -294,6 +301,15 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                          "departments": ("SALES", "ACCTMGMT", "CS", "OPS", "PROC", "FIN",
                                          "WH", "QUALITY"),
                          "check": ("chase_escalation",), "hidden": "none"},
+    "internal_order_chase": {"kinds": ("internal_order_chase",),
+                             "label": "Colleague's order chase unanswered",
+                             "departments": ("SALES", "ACCTMGMT", "CS", "OPS", "PROC", "WH"),
+                             "check": ("internal_chases",), "hidden": "none"},
+    "party_chase_unanswered": {"kinds": ("party_chase_unanswered",),
+                               "label": "Customer or supplier chase unanswered",
+                               "departments": ("SALES", "ACCTMGMT", "CS", "OPS", "PROC",
+                                               "FIN", "WH", "QUALITY"),
+                               "check": ("party_chases",), "hidden": "none"},
     "quality_hold_aging": {"kinds": ("quality_hold_aging",),
                            "label": "Quality hold open too long",
                            "departments": ("QUALITY", "QA", "QC", "OPS"),
@@ -632,6 +648,8 @@ NEXT_ACTIONS = {
                        "reply_or_hand_off"),
     "label_change": ("Record who approved the change, or make it and tell the requester.",
                      "label_change_follow_up"),
+    "label_revision_superseded": ("Confirm the order runs on the current label revision, or "
+                                  "update the order.", "label_revision_check"),
     "rd_project": ("Send the customer a status update, or close the project.",
                    "rd_project_follow_up"),
     "approval_waiting": ("Decide the approval, or send the approver the drafted nudge "
@@ -639,6 +657,12 @@ NEXT_ACTIONS = {
     "chase_escalating": ("Find who owns the answer, send the chaser a holding reply with "
                          "the date it will come (nothing is sent until you send it), and "
                          "raise it with the owner's lead.", "chase_escalate_owner"),
+    "internal_order_chase": ("Answer the colleague with the order's status, or tell them who "
+                             "has it (nothing is sent until you send it).",
+                             "chase_escalate_owner"),
+    "party_chase_unanswered": ("Answer the customer or supplier, or send them a holding reply "
+                               "with the date the answer will come (nothing is sent until "
+                               "you send it).", "chase_escalate_owner"),
     "quality_hold_aging": ("Ask QC to release or reject the held stock; the orders waiting "
                            "on it are held up until then.", "hold_decide_release"),
     "reject_trend": ("Review the rejects with QC and, for a supplier's lots, send the drafted "
@@ -1532,9 +1556,15 @@ TODAY_WORDS = {
     "approval_waiting": ("approval", "approvals", "went unanswered", "waiting"),
     "label_change": ("label or artwork change", "label or artwork changes",
                      "is not approved or not done", "open"),
+    "label_revision_superseded": ("order on a superseded label", "orders on a superseded label",
+                                  "points at a superseded label revision", "on old labels"),
     "rd_project": ("R&D or sample project", "R&D or sample projects",
                    "has had no activity for days", "idle"),
     "chase_escalating": ("thread", "threads", "was chased repeatedly", "escalating"),
+    "internal_order_chase": ("order chase", "order chases", "from a colleague is unanswered",
+                             "unanswered"),
+    "party_chase_unanswered": ("chase", "chases", "from a customer or supplier is unanswered",
+                               "unanswered"),
     "quality_hold_aging": ("held batch or lot", "held batches and lots",
                            "stayed on hold too long", "on hold too long"),
     "reject_trend": ("reject trend", "reject trends", "started rising", "rising"),

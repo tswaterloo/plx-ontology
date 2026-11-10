@@ -333,6 +333,12 @@ def generation_follow(args: argparse.Namespace, state: Path, now_served: dict[st
             # history are chunked again; a chunk of the same text keeps its embedding
             # (``content_sha``), so only the chunks the change affects are embedded again
             cursor = {k: v for k, v in cursor.items() if k not in ("digest", "history_until")}
+        if not Path(now_served["store"]).is_file():
+            # the SQLite generation retired (Postgres the only store, ``PLX_ONTOLOGY_PG=
+            # only``): no generation is read again here; its chunks stay as indexed, and
+            # the delta layers still follow (``layers_follow``)
+            report["generation_pass"] = {"skipped": "generation_retired"}
+            return
         if cursor.get("digest") != now_served["digest"]:
             if args.min_free_gb and _free_gb(state) < args.min_free_gb:
                 report["generation_pass"] = {"skipped": "disk_below_min_free"}

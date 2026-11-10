@@ -24,6 +24,10 @@ by ``operating.proactive_engine`` beside its other rules in its own time window
   whose price is under that percentile AND ``BELOW_TYPICAL`` or more under that median is
   raised, citing its own lines and every other customer's lines (a reader who may not
   open them all sees nothing).
+* A series whose lines' own system books a cost per line (Sage ``unit_cost``) and booked
+  none above 0 on any line of either window, with no purchase cost of the item, is not
+  judged (``item_uncosted``): a code never costed (a service, a miscellaneous non-stock
+  line) prices different things under one code.
 * ``customer_price_drop``: a customer's price in a series ``OWN_DROP`` or more below its
   own price over the ``PRICE_DAYS`` before (the stronger signal), citing both windows'
   lines.
@@ -173,6 +177,11 @@ def price_consistency(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     # (item, unit, currency) -> customer -> Paid
     series: dict[tuple, dict[str, Paid]] = defaultdict(dict)
     earlier: dict[tuple, dict[str, Paid]] = defaultdict(dict)   # the previous window
+    # the series some line or purchase states a positive cost for, and those whose lines'
+    # own system booked a cost of 0 or none: a code never costed where costs are booked
+    # (a service, a miscellaneous non-stock line) prices different things under one code
+    costed: set[tuple] = set()
+    booked_zero: set[tuple] = set()
     for line in lines:
         _tick(st)
         inv = line_of[line]["to_object"]
@@ -220,11 +229,18 @@ def price_consistency(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         paid.lines += 1
         paid.groups.append(group)
         paid.points.append((amount / qty, qty))
+        own = _own_cost(props, codes, currency)
+        booked = _one(props.get("unit_cost"))
+        booked_value = _dec(booked["value"]) if booked else None
+        if own is not None or floors.get((item, unit, currency)) or \
+                (booked_value is not None and booked_value > 0):
+            costed.add(key)   # a cost booked in another currency is still a cost
+        elif booked_value is not None:
+            booked_zero.add(key)   # its system books a cost per line, and booked 0
         if day <= start:
             counts["earlier_lines"] += 1
             continue
-        floor = _own_cost(props, codes, currency) or _latest(floors.get((item, unit, currency)),
-                                                             day)
+        floor = own or _latest(floors.get((item, unit, currency)), day)
         if floor is not None:
             per_unit, rows = floor
             paid.floor_quantity += qty
@@ -237,6 +253,13 @@ def price_consistency(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     for (item, unit, currency), by_customer in sorted(series.items()):
         _tick(st)
         counts["series"] += 1
+        if (item, unit, currency) in booked_zero and (item, unit, currency) not in costed:
+            # live 11-10: the false price drops and below-typical prices were a labour code
+            # (hours and flat fees under one code) and a miscellaneous non-stock code
+            counts["uncosted_series"] += 1
+            for customer, paid in sorted(by_customer.items()):
+                skipped.note("item_uncosted", [customer], [(customer, FINANCE)])
+            continue
         judged = len(by_customer) >= MIN_CUSTOMERS
         counts["judged_series"] += judged
         for customer, paid in sorted(by_customer.items()):
@@ -332,7 +355,8 @@ def price_consistency(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                        "customers": len(by_customer), "lines": paid.lines}))
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts.get(k, 0) for k in ("lines", "series", "judged_series",
-                                                   "unposted", "earlier_lines", *KINDS)}
+                                                   "uncosted_series", "unposted",
+                                                   "earlier_lines", *KINDS)}
     return out
 
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX system activity snapshot weekly (Sunday 03:00 ET)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00 America/New_York
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

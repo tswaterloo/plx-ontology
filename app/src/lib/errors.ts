@@ -44,6 +44,9 @@ const BY_CODE: Record<string, string> = {
   microsoft_sign_in_misconfigured: "Microsoft sign-in isn't set up correctly on this server. Tell the Workbench team.",
 };
 
+/** Errors a second try cannot change (the record is missing, or the reader may not see it). */
+export const FINAL_ERRORS: ReadonlySet<string> = new Set([BY_CODE.not_found, BY_CODE.forbidden]);
+
 const BY_STATUS: Record<number, string> = {
   401: BY_CODE.sign_in_required,
   403: BY_CODE.forbidden,

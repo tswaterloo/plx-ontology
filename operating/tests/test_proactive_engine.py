@@ -14,7 +14,6 @@ from contextlib import closing
 from decimal import Decimal
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from http.client import HTTPConnection
 import io
 import json
 import os
@@ -40,10 +39,7 @@ from operating.ontology_tools_investigate import DRAFT_ACTION
 from operating.cases import CaseStore
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operating.tests.test_cases import FakeResolver
-from operator_ui import home as home_view
-from operator_ui import object_workspace as objects
-from operator_ui.case_workspace import CaseWorkspace
-from operator_ui.server import make_server
+from operator_api.workspace import object_workspace as objects
 
 ROOT = Path(__file__).resolve().parents[2]
 AS_OF = date(2026, 10, 19)
@@ -61,7 +57,8 @@ class World:
     """Rows for one synthetic store: records, their one current version and values, links."""
 
     def __init__(self) -> None:
-        self.rows = {"objects": [], "object_versions": [], "object_values": [], "links": []}
+        self.rows = {"objects": [], "object_versions": [], "object_values": [], "links": [],
+                     "events": [], "event_objects": []}
         self.n = 0
 
     def obj(self, object_type: str, values: dict, *, audience: str = "api:a",
@@ -97,9 +94,20 @@ class World:
             "evidence_handles": json.dumps([handle(1)]), "why_not": "[]", "markings": "[]",
             "recorded_at": T0})
 
+    def event(self, event_type: str, oid: str, time: str) -> None:
+        """One event of a record (``Email.received`` at its time)."""
+        eid = f"e{len(self.rows['events'])}"
+        self.rows["events"].append({
+            "event_id": eid, "event_type": event_type, "time_basis": "source_recorded",
+            "time": time, "l1_handle": handle(1), "field_path": "row.time", "digest": eid,
+            "lineage": "workbench", "markings": "[]", "recorded_at": T0})
+        self.rows["event_objects"].append({"event_id": eid, "object_id": oid,
+                                           "qualifier": "subject"})
+
     def build(self, path: Path) -> Path:
         builder = StoreBuilder(path)
-        for table in ("objects", "object_versions", "object_values", "links"):
+        for table in ("objects", "object_versions", "object_values", "links", "events",
+                      "event_objects"):
             builder.add(table, self.rows[table])
         builder.set_meta("audience_keys", sorted({r["audience_key"]
                                                    for r in self.rows["objects"]}))
@@ -705,6 +713,17 @@ class InboxTest(Engine):
             summary = self.run_engine(world, ids["coverage"])
         self.assertEqual(summary["detectors"]["late_or_unconfirmed_po"], "failed")
         self.assertNotIn("SYNTH-detail", json.dumps(summary))
+        # a Postgres statement cut at its timeout, or a Postgres error, says so by class,
+        # never by its message (R8: three rules failed with nothing but OperationalError)
+        for error, why in ((sqlite3.OperationalError("interrupted"), "statement_timeout"),
+                           (sqlite3.OperationalError("postgres: TooManyConnections: SYNTH-x"),
+                            "postgres_TooManyConnections")):
+            with mock.patch.object(pe, "_late_or_unconfirmed_po", side_effect=error):
+                failed = self.run_engine(world, ids["coverage"])
+            self.assertEqual(failed["detectors"]["late_or_unconfirmed_po"], "failed")
+            self.assertEqual(failed["detector_reasons"]["late_or_unconfirmed_po"],
+                             ["OperationalError", why])
+            self.assertNotIn("SYNTH-x", json.dumps(failed))
         shown = self.read()
         self.assertIn("unconfirmed_po", {g["kind"] for g in shown["gaps"]})
         self.assertEqual(shown["unread"], {"late_or_unconfirmed_po_failed": 1})
@@ -756,8 +775,11 @@ class InboxTest(Engine):
                                             "payment_chase": "blocked",
                                             "approvals_waiting": "blocked",
                                             "chase_escalation": "blocked",
+                                            "internal_chases": "blocked",
+                                            "party_chases": "blocked",
                                             "inbox_triage": "blocked",
                                             "label_changes": "blocked",
+                                            "label_revisions": "blocked",
                                             "rd_projects": "blocked",
                                             "vendor_terms_unapplied": "not_configured",
                                             "negative_margin": "not_configured"})
@@ -1973,61 +1995,6 @@ class ConsoleDraftTest(LateOrderWorld):
         self.assertNotIn("draft", answer["proposal"])
         self.assertEqual(workspace.case_records(answer["proposal"]["case_id"])["case"]["drafts"],
                          [])
-
-
-class HomeTest(Engine):
-    """GET /api/home reads the persisted inbox for the session's reader, under a second."""
-
-    def home(self, actor: Actor, access) -> dict:
-        tools = {name: {"handler": lambda arguments, actor: {}}
-                 for name in ("plx.find", "plx.object", "plx.around", "plx.timeline")}
-        cases = CaseStore(self.dir / "cases.db", citation_resolver=FakeResolver())
-        workspace = CaseWorkspace(mock.Mock(cases=cases), actor)
-        server = make_server(
-            case_workspace=workspace,
-            session=fixture_session("plx", actor.principals, channel=CHANNEL_CONSOLE),
-            object_workspace=objects.ObjectWorkspace(
-                tools, actor, access=access, store_status=FakeStatus(self.store)))
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05},
-                                  daemon=True)
-        thread.start()
-        self.addCleanup(lambda: (server.shutdown(), thread.join(timeout=10),
-                                 server.server_close()))
-        connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=60)
-        start = time.monotonic()
-        connection.request("GET", "/api/home",
-                           headers={"Authorization": "Bearer " + server.operator_access_token})
-        response = connection.getresponse()
-        body = json.loads(response.read())
-        self.elapsed = time.monotonic() - start
-        connection.close()
-        self.assertEqual(response.status, 200, body)
-        return body["proactive"]
-
-    def test_home_renders_the_readers_inbox_from_the_store_in_under_a_second(self):
-        world, ids = seeded()
-        for n in range(300):   # a busy inbox: Home shows a bounded page, never scans
-            po(world, "Pending", "2026-10-01")
-        self.run_engine(world, ids["coverage"])
-        # the paging bound, with every alert type on (the filler POs are undated, a type the
-        # registry keeps off; that off types reach no reader is tested in test_alert_kinds)
-        with mock.patch("operating.alert_kinds.off_gap_kinds", return_value=frozenset()):
-            found = self.home(OPS, FakeAccess({"api:a"}, ALL_MARKINGS))
-        self.assertLess(self.elapsed, 1.0)
-        self.assertEqual(found["status"], "read")
-        self.assertEqual((len(found["gaps"]), found["more"]), (pe.MAX_SHOWN, True))
-        self.assertEqual(found["gaps"][0]["follow_up"]["priority"], "high")
-        self.assertEqual(found["scanned"], sum(1 for r in world.rows["objects"]
-                                               if r["audience_key"] == "api:a"))
-        self.assertTrue(all(g["citations"] for g in found["gaps"]))
-        other = self.home(Actor("plx", frozenset({"other"})), FakeAccess(set()))
-        self.assertEqual((other["gaps"], other["scanned"]), ([], 0))
-
-    def test_no_grant_or_no_inbox_is_said_and_cases_still_serve(self):
-        self.assertEqual(self.home(OPS, None)["status"], "not_configured")   # API-only
-        seeded()[0].build(self.store)
-        self.assertEqual(self.home(OPS, FakeAccess({"api:a"}))["status"], "not_scheduled")
-        self.assertEqual(home_view._found(None), {"status": "not_configured"})
 
 
 def _pool_init(_spec) -> None:   # a worker without a session (spawned: by name)

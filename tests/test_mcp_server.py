@@ -897,7 +897,7 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
     def test_stdio_host_serves_the_tools_over_an_ontology_store_file(self):
         import sqlite3
 
-        from operator_ui.object_workspace import project_mirror
+        from operator_api.workspace.object_workspace import project_mirror
 
         # A store not projected from this host's captures (here the hand-built fixture
         # store, which records no source generation: its provenance cannot be checked) is

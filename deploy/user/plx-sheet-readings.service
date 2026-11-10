@@ -1,0 +1,29 @@
+# Sheet readings (integrations.sheet_readings): spreadsheet and PDF attachments and SharePoint
+# files read once per file version into dated, cited rows the alert rules read by index
+# (operating.proactive_sheets: PLX_SHEET_READINGS, else <projection>/sheet-readings.sqlite;
+# until the first pass writes it the two sheet rules report "not_set_up"). Reads the
+# captures' stored text read-only and never a business system: no credential reaches it.
+# Incremental: a pass reads only new file versions, so a daily pass is light (gen 11 cold
+# pass: ~2.5 min on 16 cores, ~300 MB in the parent). The env file holds the people
+# exclusion only (PLX_EXCLUDED_PEOPLE_OIDS); without it the rules treat people as undecided.
+[Unit]
+Description=PLX Workbench sheet readings (spreadsheets and PDFs to dated, cited rows)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+UnsetEnvironment=PLX_WORKBENCH_API_KEY AZURE_CLIENT_SECRET
+ExecStart=/data/venv/bin/python3 -m integrations.sheet_readings \
+  --state /data/plx-state \
+  --store /data/plx-state/projection/ontology.sqlite \
+  --out /data/plx-state/projection/sheet-readings.sqlite
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryHigh=3G
+MemoryMax=4G
+TimeoutStartSec=2h
+UMask=0077

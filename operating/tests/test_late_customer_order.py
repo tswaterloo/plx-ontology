@@ -103,7 +103,9 @@ class LateCustomerOrder(Engine):
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 w = World()
-                subjects = [order(w, fm="Open", fm_required=f"2026-0{1 + i % 9}-{10 + i % 19}")
+                # required dates inside the 180-day active window before the engine's
+                # fixed day (2026-10-19): an older open order is counted, not listed
+                subjects = [order(w, fm="Open", fm_required=f"2026-0{5 + i % 5}-{10 + i % 19}")
                             [1] for i in range(n)]
                 started = time.monotonic()
                 self.run_rule(w)
@@ -153,11 +155,14 @@ class OpenAcrossSystems(Engine):
         for _ in range(12):
             order(w, status="Closed", portal_updated_at="2026-09-30T03:00:00Z")
         bulk, _ = order(w, required="2025-06-01", portal_updated_at="2026-09-30T03:10:00Z")
-        self.run_rule(w)
+        summary = self.run_rule(w)
         kinds = {g["object_id"]: g["kind"] for g in self.read()["gaps"]}
-        self.assertEqual(kinds, {dead: pe.STALE_SO, touched: RULE, bulk: pe.STALE_SO})
-        stale = next(g for g in self.read()["gaps"] if g["object_id"] == dead)
-        self.assertEqual(stale["follow_up"]["priority"], "low")
+        # one active-population predicate (2b227874e1): an open-on-paper order with no
+        # activity in 180 days is counted (historic_order), never listed as current work;
+        # the touched order and not the import-stamped ones is the only one listed
+        self.assertEqual(kinds, {touched: RULE})
+        counted = summary["not_evaluated"][RULE]
+        self.assertEqual(counted.get("historic_order"), 2, counted)
 
     def test_an_order_whose_work_orders_are_all_done_is_probably_fulfilled(self):
         w = World()

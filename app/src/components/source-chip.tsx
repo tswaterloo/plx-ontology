@@ -221,10 +221,12 @@ export function SourceChip({ source, className, record }: { source: Source; clas
       ? cn(
           "relative -top-px mx-px inline-flex h-4 min-w-4 items-center justify-center rounded-[5px] bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-1 align-middle font-sans text-[10.5px] leading-none font-medium tabular-nums text-muted",
           opens && "cursor-pointer hover:bg-accent hover:text-accent-fg focus-visible:bg-accent focus-visible:text-accent-fg",
+          // on a phone the token stays text-sized in the line; an invisible margin makes it easy to tap
+          opens && "max-sm:after:absolute max-sm:after:-inset-x-1.5 max-sm:after:-inset-y-3 max-sm:after:content-['']",
           className,
         )
       : cn(
-          "group/chip inline-flex max-w-[16rem] items-baseline gap-1 align-baseline text-[12px] font-normal text-fg/85",
+          "group/chip inline-flex min-w-0 max-w-[min(16rem,100%)] items-baseline gap-1 align-baseline text-[12px] font-normal text-fg/85",
           opens && "cursor-pointer hover:text-fg",
           className,
         );
@@ -238,7 +240,7 @@ export function SourceChip({ source, className, record }: { source: Source; clas
       <>
         {tagged ? <span className="shrink-0 text-muted">{lead}</span> : null}
         {(!tagged || tail.length > 0) && (
-          <span className="truncate underline decoration-[color-mix(in_srgb,var(--fg)_24%,transparent)] decoration-1 underline-offset-[3px] group-hover/chip:decoration-fg">{tagged ? tail.join(" · ").replace(new RegExp(`^${lead}\\s+(?=\\S)`, "i"), "") : name}</span>
+          <span className="min-w-0 truncate underline decoration-[color-mix(in_srgb,var(--fg)_24%,transparent)] decoration-1 underline-offset-[3px] group-hover/chip:decoration-fg">{tagged ? tail.join(" · ").replace(new RegExp(`^${lead}\\s+(?=\\S)`, "i"), "") : name}</span>
         )}
       </>
     );
@@ -257,6 +259,7 @@ export function SourceChip({ source, className, record }: { source: Source; clas
               className={chipClass}
               aria-label={aria}
               data-testid="source-chip"
+              data-tap={n !== undefined ? "inline" : undefined}
             >
               {inner}
             </button>

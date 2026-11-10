@@ -903,7 +903,10 @@ _ALLOWED_REGEX_NAMES = {
         # markdown escapes, attachment marker sanitisation; written numbers and their
         # thousands groups; HTML text's blank-line collapse.
         "<_only_line>", "_LAYOUT_LINE", "<_portable_pdf_text>", "<_converted_claims>", "<extract_document>",
-        "NUMBER_TOKEN", "<_grouped>", "<html_text>"},
+        "NUMBER_TOKEN", "<_grouped>", "<html_text>",
+        # RTF control-word tokens and XML tag/CDATA stripping: file-format parsers that
+        # turn a document into text, matching no business identifier.
+        "<rtf_text>", "<xml_text>", "_RTF_TOKEN", "_XML_CDATA", "_XML_DROP", "_XML_TAG"},
     "integrations/graph_evidence.py": set(),
     # _INSTANT is an ISO-instant time format, _VERSION_ID a SharePoint file version
     # label (major.minor) and _BC_COMPANY_NAME a BC company display name (checked

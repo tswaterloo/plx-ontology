@@ -16,7 +16,10 @@ export function Toolbar({
   actions,
   className,
   testId,
+  heading,
 }: {
+  /** The page's own heading (h1) when nothing else on the page names it. */
+  heading?: boolean;
   title: React.ReactNode;
   parent?: { label: string; href: string };
   actions?: React.ReactNode;
@@ -39,12 +42,16 @@ export function Toolbar({
             </span>
           </>
         )}
-        <span className={cn("min-w-0 truncate", parent ? "font-medium" : "text-[15px] font-semibold tracking-[-0.015em]")}>{title}</span>
+        {React.createElement(
+          heading ? "h1" : "span",
+          { className: cn("min-w-0 truncate", parent ? "font-medium" : "text-[15px] font-semibold tracking-[-0.015em]") },
+          title,
+        )}
       </div>
       {actions && <div className="flex shrink-0 items-center gap-0.5">{actions}</div>}
       <div className="flex items-center lg:hidden">
         <MobileSearch />
-        <MobileAccount />
+        <MobileAccount quiet={!!actions} />
       </div>
     </header>
   );

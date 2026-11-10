@@ -447,5 +447,80 @@ class ZipMemberTests(unittest.TestCase):
         self.assertTrue(any(g.get("cap") == "depth" for g in found.gaps))
 
 
+class TextFormatTests(unittest.TestCase):
+    """Text-bearing files once ``unsupported`` (SharePoint coverage 2026-11-09): RTF (an
+    SDS saved as ``.doc`` included), XML and SVG, UTF-16 and Windows-1252 text."""
+
+    def read(self, content: bytes, mime: str, name: str):
+        return extract_document(content, mime, original_url=URL, filename=name)
+
+    def test_rtf_xml_and_non_utf8_text_are_read_and_binary_stays_unsupported(self):
+        rtf = rb"{\rtf1\ansi\ansicpg1252{\fonttbl{\f0 Arial;}}\f0 Product: BR800 \'e9t\'e9\par SDS Rev. 0}"
+        for mime, name in (("application/rtf", "sheet.rtf"), ("application/msword", "OHA-002.DOC")):
+            found = self.read(rtf, mime, name)
+            self.assertEqual((found.status, found.method), ("extracted", "rtf-text"), name)
+            self.assertEqual(found.text, "Product: BR800 \u00e9t\u00e9\nSDS Rev. 0")
+        xml = (b'<?xml version="1.0" encoding="windows-1252"?><!DOCTYPE p [<!ENTITY big "XXXX">]>'
+               b'<page><table name="APIBC" desc="Invoice Batches" style="x:1"/>'
+               b'<comment>MC3055: Eucalyptus &amp; caf\xe9 &big;</comment>'
+               b'<svg><path d="M0 0L10 10"/><text>65936201358</text><style>.a{}</style></svg></page>')
+        found = self.read(xml, "text/xml", "PO1.xml")
+        self.assertEqual((found.status, found.method), ("extracted", "xml-text"))
+        # Element text and naming attributes; no path, style or expanded entity.
+        self.assertEqual(found.text, "APIBC\nInvoice Batches\nMC3055: Eucalyptus & caf\u00e9 &big;"
+                                     "\n65936201358")
+        self.assertEqual(self.read(b"PK\x03\x04 not xml", "text/xml", "x.xml").status,
+                         "unsupported")
+        utf16 = "Name\tDescription\nCleaner \u00e9".encode("utf-16")
+        cp1252 = "Ship To,Amount\nCaf\xe9 Ltd,12.50\n".encode("cp1252")
+        self.assertEqual(self.read(utf16, "text/plain", "list.txt").text,
+                         "Name\tDescription\nCleaner \u00e9")
+        found = self.read(cp1252, "application/vnd.ms-excel", "ups log.csv")
+        self.assertEqual((found.status, found.method, found.text),
+                         ("extracted", "decoded-text", "Ship To,Amount\nCaf\u00e9 Ltd,12.50\n"))
+        # Bytes that only decode with control characters are not text: fail closed.
+        binary = self.read(b"\x81\x00\x02binary\x90", "text/plain", "blob.txt")
+        self.assertEqual((binary.status, binary.warnings),
+                         ("unsupported", ("text_encoding_unsupported",)))
+        self.assertEqual(self.read(b"not rtf", "application/rtf", "x.rtf").status, "unsupported")
+
+    def test_one_reader_path_keeps_both_lanes_contracts_and_fails_closed(self):
+        """The merged reader (text_formats): a declared entity in an internal subset is
+        never read nor expanded, page headers of a Rich Text file are not its text, a
+        UTF-16 mark on bytes that are not Latin text is refused, and malformed markup is
+        read in linear time (a stray or unclosed ``<`` is never rescanned)."""
+        import time
+        from integrations import text_formats
+        xml = (b'<?xml version="1.0"?><!DOCTYPE o [<!ENTITY big "EXPANDED"><!ELEMENT o ANY>]>'
+               b'<o title="Order 77"><!-- hidden --><?pi no?>PO-77 &amp; &big; &#233;</o>')
+        found = self.read(xml, "application/xml", "o.xml")
+        self.assertEqual((found.status, found.text),
+                         ("extracted", "Order 77\nPO-77 & &big; é"))
+        self.assertNotIn("EXPANDED", found.text)
+        rtf = rb"{\rtf1\ansi{\headerl Page 1 of 9}{\*\bkmkstart b1}Body text\par{\xe Index}}"
+        found = self.read(rtf, "text/rtf", "a.rtf")
+        self.assertEqual((found.status, found.text), ("extracted", "Body text"))
+        u16 = self.read(b"\xff\xfe" + bytes(range(0x30, 0x90)) * 4, "text/plain", "x.txt")
+        self.assertEqual(u16.status, "unsupported")
+        for bad in (b"<a" * 900_000, b"<" * 1_900_000, b"<a>" + b"<b x='" * 300_000,
+                    b"<!--" * 450_000, b"<!DOCTYPE [" + b"<" * 1_000_000):
+            started = time.monotonic()
+            text_formats.xml_text(bad)
+            self.assertLess(time.monotonic() - started, 5.0, bad[:12])
+
+    def test_long_attribute_run_is_linear(self):
+        import time
+        from integrations import text_formats
+        for bad, limit in ((b"<a " + b"a" * 20_000 + b">x</a>", 0.5),
+                           (b"<a " + b"a" * 2_000_000 + b">x</a>", 2.0),
+                           (b"<a " + b"a='x " * 400_000 + b">x</a>", 2.0)):
+            started = time.monotonic()
+            found = text_formats.xml_text(bad)
+            self.assertLess(time.monotonic() - started, limit, bad[:12])
+            self.assertEqual(found[0], "x")
+        over = b'<a name="kept">t</a>' + b"<b " + b"y " * 40_000 + b'name="dropped">u</b>'
+        self.assertEqual(text_formats.xml_text(over)[0], "kept\nt\nu")
+
+
 if __name__ == "__main__":
     unittest.main()

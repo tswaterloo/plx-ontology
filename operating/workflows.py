@@ -42,6 +42,10 @@ def load(path: str | None = None) -> dict[str, Any]:
             raise WorkflowsInvalid(f"workflow {w['id']}")
         names.add(w["id"])
     names |= set(raw["fallback"].values())
+    # workflows a system event names (no words to read: an MC question asked of a person)
+    names |= {str(n) for n in raw.get("system_workflows") or ()}
+    if set(raw.get("scored_by_records") or ()) - names:
+        raise WorkflowsInvalid("scored_by_records")
     for table in ("autopilot_workflow", "record_workflow"):
         if set(raw[table].values()) - names:
             raise WorkflowsInvalid(table)

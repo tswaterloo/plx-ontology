@@ -25,7 +25,7 @@ from ontology.types import Actor
 from operating.case_runtime import CaseRuntime, LiveReaders, _EmployeeItemAcl
 from operating.employee_permissions import (EmployeeEntitlement, EmployeePrincipal,
                                             FullReadAccess, FullReadGrant)
-from operator_ui.session_journal import (JOURNAL_DIR_ENV, SessionJournal,
+from operator_api.workspace.session_journal import (JOURNAL_DIR_ENV, SessionJournal,
                                          record_full_read_stale)
 
 GRANTEE = "0000aaaa-0000-0000-0000-0000000000f1"   # not a member of the chat
@@ -277,7 +277,7 @@ class EvalRunJournalTest(unittest.TestCase):
     def test_the_hosts_a_run_starts_are_told_and_a_bad_setting_writes_nothing(self):
         import os
         from operating.agent_session import ReaderHost
-        from operator_ui.session_journal import isolate_journal
+        from operator_api.workspace.session_journal import isolate_journal
         journal = isolate_journal(self.run_dir / "journal")
         host = ReaderHost(self.state, self.state / "host.json", {}, "s", tenant="plx")
         host.ticket = lambda: "ticket"

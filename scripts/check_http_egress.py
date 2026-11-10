@@ -78,7 +78,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SCANNED = ("ontology", "integrations", "operating", "operator_ui", "operator_api",
+SCANNED = ("ontology", "integrations", "operating", "operator_api",
            "ops_plane", "reasoning", "engineering", "scripts", "devloop", "twin")
 # Trees that must exist under ROOT: they hold the reviewed clients and senders. One absent
 # means the scan read the wrong root, never a clean tree (the others may be retired).

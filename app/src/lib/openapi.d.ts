@@ -256,6 +256,154 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autopilot Area
+         * @description The autopilot area: today's prepared items you may see (the owner: everyone's),
+         *     each with its evidence, drafted action and decision; per role and workflow the dev
+         *     and fresh scores, state and switches. Read only.
+         */
+        get: operations["autopilot_area_api_autopilot_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/assist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Assist
+         * @description Draft the message a line you typed asks for: recipients, subject and body, each
+         *     fact from your Ask's gated answer with its sources. Nothing is sent.
+         */
+        post: operations["autopilot_assist_api_autopilot_assist_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autopilot Audit
+         * @description The write path's audit log, newest first, with undo where the system has one.
+         *     Owner only (403 for every other reader).
+         */
+        get: operations["autopilot_audit_api_autopilot_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/audit/{key}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Undo
+         * @description Undo a live action once through its recorded inverse. Owner only.
+         */
+        post: operations["autopilot_undo_api_autopilot_audit__key__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/items/{item_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Decide
+         * @description Accept, edit, reject or snooze an item of your own. Accept runs it through the
+         *     gated write path: a dry run (the decision recorded, nothing written) unless its
+         *     workflow passed the fresh gate and the owner switched it live.
+         */
+        post: operations["autopilot_decide_api_autopilot_items__item_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/switches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Global
+         * @description The global kill switch of the write path. Owner only (403 for every other
+         *     reader).
+         */
+        post: operations["autopilot_global_api_autopilot_switches_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/workflows/{workflow}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Workflow
+         * @description Switch a workflow off or on, or a role's workflow live (only after its fresh
+         *     gate passed) or back to dry run. Owner only (403 for every other reader).
+         */
+        post: operations["autopilot_workflow_api_autopilot_workflows__workflow__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/brief/meetings": {
         parameters: {
             query?: never;
@@ -269,6 +417,73 @@ export type paths = {
          *     link to its meeting prep brief.
          */
         get: operations["upcoming_meetings_api_brief_meetings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brief/qc-audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Qc Audit Pack
+         * @description The QC audit pack: on-time share of the calibration, sanitation and other QC
+         *     checks by area and month over the last year, each recurring check with its cycle
+         *     and its missed, late and overdue occurrences cited, the production schedule by
+         *     line and batches on hold. Quality_controlled readers only.
+         */
+        get: operations["qc_audit_pack_api_brief_qc_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brief/qc-audit.txt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Qc Audit Text
+         * @description The QC audit pack as one printable plain-text page, each line with its sources.
+         */
+        get: operations["qc_audit_text_api_brief_qc_audit_txt_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brief/qc-daily": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Qc Daily Pack
+         * @description The daily QC pack: quality checks open now (missed, overdue, due within a week),
+         *     open calibration, production slots past start and not completed, batches on hold
+         *     and the hold-release queue (not available yet, with its reason). Only a reader
+         *     holding quality_controlled sees any line; every line cites its task, slot or
+         *     batch.
+         */
+        get: operations["qc_daily_pack_api_brief_qc_daily_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -574,6 +789,28 @@ export type paths = {
          *     stale or with no approval, from your own alert list.
          */
         get: operations["label_changes_api_label_changes__object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/label-revisions/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Label Revisions
+         * @description A record's label and artwork revision history: every revision of each file, who
+         *     approved it and when, and on an order the superseded revisions it points at, from
+         *     your own alert list.
+         */
+        get: operations["label_revisions_api_label_revisions__object_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1824,6 +2061,83 @@ export type components = {
              */
             source?: string | null;
         };
+        /** AssistChoice */
+        AssistChoice: {
+            /**
+             * Mention
+             * @description A name as typed that matches several people.
+             */
+            mention: string;
+            /** Options */
+            options: components["schemas"]["AssistRecipient"][];
+        };
+        /**
+         * AssistDraft
+         * @description A drafted message for a line the person typed. Never sent: the person edits, copies
+         *     or opens it in their own mail or Teams.
+         */
+        AssistDraft: {
+            /**
+             * Body
+             * @description Null when the copy check refused it (see gaps).
+             */
+            body?: string | null;
+            /**
+             * Channel
+             * @enum {string}
+             */
+            channel: "mail" | "teams";
+            /** Choices */
+            choices?: components["schemas"]["AssistChoice"][];
+            /**
+             * Facts
+             * @description Every fact the body lists, each with its sources.
+             */
+            facts?: components["schemas"]["Fact"][];
+            /** Gaps */
+            gaps?: string[];
+            /** Intent */
+            intent: string;
+            /**
+             * Questions
+             * @description The Ask questions answered for the facts.
+             */
+            questions?: string[];
+            /**
+             * Sent
+             * @default false
+             * @constant
+             */
+            sent: false;
+            /** Subject */
+            subject?: string | null;
+            /** To */
+            to?: components["schemas"]["AssistRecipient"][];
+            /**
+             * Withheld
+             * @description People the line names who may not be drafted to (left out, never named).
+             * @default 0
+             */
+            withheld: number;
+        };
+        /** AssistRecipient */
+        AssistRecipient: {
+            /** Address */
+            address: string;
+            /**
+             * Name
+             * @description The first name the address states.
+             */
+            name?: string | null;
+        };
+        /** AssistRequest */
+        AssistRequest: {
+            /**
+             * Intent
+             * @description One line: what to send and to whom ("tell <name> the lot for order X is on hold").
+             */
+            intent: string;
+        };
         /** AtRisk */
         AtRisk: {
             /** Kind */
@@ -1864,9 +2178,315 @@ export type components = {
             sign_in_available: boolean;
         };
         /**
+         * AutopilotArea
+         * @description The autopilot area: today's prepared items you may see, per workflow its scores and
+         *     state, and the switches (``owner``: you may change them).
+         */
+        AutopilotArea: {
+            /** Items */
+            items?: components["schemas"]["AutopilotItem"][];
+            /** Notes */
+            notes?: string[];
+            /** Owner */
+            owner: boolean;
+            /** People */
+            people?: components["schemas"]["AutopilotPerson"][];
+            /** Roles */
+            roles?: string[];
+            switches: components["schemas"]["AutopilotSwitches"];
+            /** Workflows */
+            workflows?: components["schemas"]["AutopilotWorkflowRow"][];
+        };
+        /**
+         * AutopilotAudit
+         * @description Every write-path row (newest first): decisions, live attempts and outcomes, gate
+         *     changes and the owner's switches. Owner only.
+         */
+        AutopilotAudit: {
+            /**
+             * Live
+             * @description Live actions done.
+             */
+            live: number;
+            /** Rows */
+            rows?: components["schemas"]["AutopilotAuditRow"][];
+        };
+        /** AutopilotAuditRow */
+        AutopilotAuditRow: {
+            /** At */
+            at: string;
+            /** By */
+            by?: string | null;
+            /** Event */
+            event: string;
+            /** Item Id */
+            item_id?: string | null;
+            /** Key */
+            key?: string | null;
+            /** Kind */
+            kind?: string | null;
+            /** Mode */
+            mode?: string | null;
+            /** Operation */
+            operation?: string | null;
+            /** Reasons */
+            reasons?: string[];
+            /** Role */
+            role?: string | null;
+            /** Status */
+            status?: string | null;
+            /** System */
+            system?: string | null;
+            /** Target */
+            target?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Undo Note */
+            undo_note?: string | null;
+            /**
+             * Undoable
+             * @default false
+             */
+            undoable: boolean;
+            /**
+             * Undone
+             * @default false
+             */
+            undone: boolean;
+            /** Why */
+            why?: string | null;
+            /** Workflow */
+            workflow?: string | null;
+        };
+        /** AutopilotDecision */
+        AutopilotDecision: {
+            /** At */
+            at: string;
+            /** By You */
+            by_you: boolean;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accept" | "edit" | "reject" | "snooze";
+            /** Note */
+            note?: string | null;
+            /**
+             * Outcome
+             * @description The write path's outcome of an accept: dry_run (recorded only), done, killed, refused...
+             */
+            outcome?: string | null;
+            /** Reasons */
+            reasons?: string[];
+            /**
+             * Text
+             * @description The edited draft.
+             */
+            text?: string | null;
+            /** Until */
+            until?: string | null;
+        };
+        /** AutopilotDecisionRequest */
+        AutopilotDecisionRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accept" | "edit" | "reject" | "snooze";
+            /** Note */
+            note?: string | null;
+            /**
+             * Text
+             * @description edit, or accept with your edit: the draft's new text.
+             */
+            text?: string | null;
+            /**
+             * Until
+             * @description snooze: until when (ISO instant, at most 30 days ahead).
+             */
+            until?: string | null;
+        };
+        /**
+         * AutopilotItem
+         * @description A prepared item with its evidence, its drafted action and your decision.
+         */
+        AutopilotItem: {
+            /** Autopilot */
+            autopilot: string;
+            /** Citations */
+            citations?: string[];
+            /** Created At */
+            created_at: string;
+            decision?: components["schemas"]["AutopilotDecision"] | null;
+            /** Due At */
+            due_at: string;
+            /** Happened */
+            happened?: {
+                [key: string]: unknown;
+            };
+            /** Item Id */
+            item_id: string;
+            /** Label */
+            label: string;
+            /** Mine */
+            mine: boolean;
+            /**
+             * Owner
+             * @description The person id the item was prepared for.
+             */
+            owner: string;
+            /** Prepared */
+            prepared?: {
+                [key: string]: unknown;
+            };
+            /** Roles */
+            roles?: string[];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "waiting" | "snoozed" | "edited" | "accepted" | "rejected";
+            /**
+             * System
+             * @description mail, teams, mc, bc, sage, portal, filemaker, sharepoint, meetings, planner or other.
+             */
+            system: string;
+            /** Title */
+            title: string;
+            /**
+             * Today
+             * @description Prepared or due today (Toronto day), or past due.
+             */
+            today: boolean;
+            /** Workflow */
+            workflow: string;
+        };
+        /** AutopilotPerson */
+        AutopilotPerson: {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @description From the person's replay role; empty when no name is on record (the role roster holds ids only).
+             */
+            name: string;
+            /** Roles */
+            roles?: string[];
+            /**
+             * You
+             * @default false
+             */
+            you: boolean;
+        };
+        /** AutopilotScore */
+        AutopilotScore: {
+            /** Judged */
+            judged: number;
+            /** Matched */
+            matched: number;
+            /**
+             * Percent
+             * @description matched / judged, one decimal; absent when nothing was judged.
+             */
+            percent?: number | null;
+        };
+        /** AutopilotSwitchRequest */
+        AutopilotSwitchRequest: {
+            /** Global Off */
+            global_off: boolean;
+        };
+        /** AutopilotSwitches */
+        AutopilotSwitches: {
+            /**
+             * Autopilot Off
+             * @description The autopilot itself is switched off: nothing new is prepared.
+             */
+            autopilot_off: boolean;
+            /**
+             * Global Off
+             * @description The write path's global kill switch.
+             */
+            global_off: boolean;
+            /**
+             * Master Switch
+             * @description The host's master switch for live writes (host configuration, not set from the app).
+             */
+            master_switch: boolean;
+            /** Workflows Off */
+            workflows_off?: string[];
+        };
+        /**
+         * AutopilotWorkflowRow
+         * @description One workflow of one role (a ``person:`` role is one person's whole day): its replay
+         *     scores, its write state and the owner's switches.
+         */
+        AutopilotWorkflowRow: {
+            /** @description Replay on tuning days. */
+            dev?: components["schemas"]["AutopilotScore"] | null;
+            /** @description Replay on held-out days (the write gate's counts). */
+            fresh?: components["schemas"]["AutopilotScore"] | null;
+            /** Last Run */
+            last_run?: string | null;
+            /**
+             * Live Flag
+             * @description The owner switched this role's workflow live.
+             */
+            live_flag: boolean;
+            /** Missing */
+            missing?: string[];
+            /**
+             * N
+             * @description Items judged: fresh when scored, else dev.
+             */
+            n: number;
+            /**
+             * On
+             * @description False when the owner switched this workflow off.
+             */
+            on: boolean;
+            /**
+             * Open Items
+             * @default 0
+             */
+            open_items: number;
+            /**
+             * Person
+             * @description The person id of a person role.
+             */
+            person?: string | null;
+            /** Role */
+            role: string;
+            /** Scored At */
+            scored_at?: string | null;
+            /**
+             * State
+             * @description off: switched off; dry_run: gate not passed; passed_awaiting_owner: passed, the owner has not switched it on; live_held: switched on, held by the host's master switch; live: performs through the write path.
+             * @enum {string}
+             */
+            state: "off" | "dry_run" | "passed_awaiting_owner" | "live_held" | "live";
+            /** Workflow */
+            workflow: string;
+        };
+        /** AutopilotWorkflowSwitch */
+        AutopilotWorkflowSwitch: {
+            /** Live */
+            live?: boolean | null;
+            /**
+             * On
+             * @description false: the workflow is switched off (nothing is performed, not even a dry run).
+             */
+            on?: boolean | null;
+            /**
+             * Role
+             * @description live: the role whose passed gate it goes live through.
+             */
+            role?: string | null;
+        };
+        /**
          * Brief
-         * @description A meeting prep brief or a weekly review, generated from the records you may read
-         *     (no model call). Every row and figure cites its sources; nothing hidden is counted.
+         * @description A meeting prep brief, a weekly review or a QC pack (daily, audit), generated from
+         *     the records you may read (no model call). Every row and figure cites its sources;
+         *     nothing hidden is counted.
          */
         Brief: {
             /** As Of */
@@ -1879,7 +2499,7 @@ export type components = {
              * Kind
              * @enum {string}
              */
-            kind: "meeting" | "weekly";
+            kind: "meeting" | "weekly" | "qc_daily" | "qc_audit";
             /** Parties */
             parties?: components["schemas"]["ObjectRef"][];
             /**
@@ -1989,10 +2609,10 @@ export type components = {
             rows?: components["schemas"]["BriefRow"][];
             /**
              * State
-             * @description finance_marked: shown only to a reader holding finance (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, which is not the same as none; blocked: the people exclusion is not loaded, so no mail, Teams or meeting line is shown.
+             * @description finance_marked / quality_marked: shown only to a reader holding finance / quality_controlled (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, which is not the same as none; blocked: the people exclusion is not loaded, so no mail, Teams, meeting or Planner line is shown; not_available: the data it needs is not captured yet (the note says what).
              * @enum {string}
              */
-            state: "shown" | "empty" | "partial" | "finance_marked" | "unread" | "blocked";
+            state: "shown" | "empty" | "partial" | "finance_marked" | "quality_marked" | "unread" | "blocked" | "not_available";
             /** Title */
             title: string;
         };
@@ -2187,7 +2807,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** First Found */
             first_found?: string | null;
             /**
@@ -2219,7 +2839,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** In Top */
             in_top: number;
             /** Label */
@@ -2285,7 +2905,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /**
              * Evidence
              * @description 'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.
@@ -2362,7 +2982,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** Items */
             items?: components["schemas"]["BriefingItem"][];
             /**
@@ -3520,6 +4140,83 @@ export type components = {
             /** Total */
             total: number;
         };
+        /** LabelRevision */
+        LabelRevision: {
+            /**
+             * Approved By
+             * @description The approving message's sender.
+             */
+            approved_by?: string | null;
+            /** Approved On */
+            approved_on?: string | null;
+            /** Channels */
+            channels?: string[];
+            /** Citations */
+            citations?: string[];
+            /** Current */
+            current: boolean;
+            /** First Seen */
+            first_seen?: string | null;
+            /** Id */
+            id: string;
+            /** Name */
+            name?: string | null;
+            /**
+             * Rank
+             * @default 0
+             */
+            rank: number;
+            /** Revision */
+            revision?: string | null;
+            /** Superseded On */
+            superseded_on?: string | null;
+        };
+        /** LabelRevisionFamily */
+        LabelRevisionFamily: {
+            /** Current */
+            current?: string | null;
+            /** Current Approved */
+            current_approved: boolean;
+            /** Family */
+            family: string;
+            /** Revisions */
+            revisions?: components["schemas"]["LabelRevision"][];
+        };
+        /** LabelRevisionOnOrder */
+        LabelRevisionOnOrder: {
+            /** Citations */
+            citations?: string[];
+            /** Current */
+            current?: string | null;
+            /** Id */
+            id: string;
+            /** Name */
+            name?: string | null;
+            /** Revision */
+            revision?: string | null;
+            /** Summary */
+            summary?: string | null;
+            /** Superseded On */
+            superseded_on?: string | null;
+        };
+        /**
+         * LabelRevisions
+         * @description A record's label and artwork revisions on your alert list, newest first per file
+         *     (current: the highest you can see), who approved each and when; on an order, the
+         *     superseded revisions it points at.
+         */
+        LabelRevisions: {
+            /** Families */
+            families?: components["schemas"]["LabelRevisionFamily"][];
+            /** Object Id */
+            object_id: string;
+            /** Revisions */
+            revisions: number;
+            /** Superseded On Orders */
+            superseded_on_orders?: components["schemas"]["LabelRevisionOnOrder"][];
+            /** Unapproved Current */
+            unapproved_current: number;
+        };
         /** LabourAlert */
         LabourAlert: {
             /** Baseline Median */
@@ -3972,6 +4669,13 @@ export type components = {
             };
             /** Due Today */
             due_today: number;
+            /**
+             * Mc Approvals
+             * @description Your pending Mission Control approval gates per decider, grouped by class (riskier first), each with the history-based recommendation, the low-risk mark and its MC task link (``operating.mc_digest``). Read-only: decide in MC.
+             */
+            mc_approvals?: {
+                [key: string]: unknown;
+            } | null;
             /** Nudges */
             nudges?: components["schemas"]["MyWorkNudge"][];
             /** Open */
@@ -6863,6 +7567,384 @@ export interface operations {
             };
         };
     };
+    autopilot_area_api_autopilot_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_assist_api_autopilot_assist_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistDraft"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_audit_api_autopilot_audit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotAudit"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_undo_api_autopilot_audit__key__undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotAudit"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    autopilot_decide_api_autopilot_items__item_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotItem"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_global_api_autopilot_switches_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotSwitchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotSwitches"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    autopilot_workflow_api_autopilot_workflows__workflow__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotWorkflowSwitch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotArea"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     upcoming_meetings_api_brief_meetings_get: {
         parameters: {
             query?: never;
@@ -6879,6 +7961,93 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpcomingMeetings"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    qc_audit_pack_api_brief_qc_audit_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Brief"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    qc_audit_text_api_brief_qc_audit_txt_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    qc_daily_pack_api_brief_qc_daily_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Brief"];
                 };
             };
             /** @description Unauthorized */
@@ -7026,7 +8195,7 @@ export interface operations {
     briefing_items_api_briefing_items_get: {
         parameters: {
             query: {
-                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
                 offset?: number;
                 limit?: number;
                 view?: "all" | "since_visit";
@@ -7549,6 +8718,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LabelChanges"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    label_revisions_api_label_revisions__object_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabelRevisions"];
                 };
             };
             /** @description Unauthorized */

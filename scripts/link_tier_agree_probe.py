@@ -147,6 +147,9 @@ def check_links(served: Any, reader: Any, conn: sqlite3.Connection, *, sample: i
         hop = {"from": order, "path": [{"link_type": LINK_TYPE, "direction": "reverse"}],
                "limit": PAGE}
         shown = ask("plx.around", {**hop, "tier_floor": "lead"})
+        if shown is not None:   # lead-tier edges are set apart (possibly_related)
+            from operating.ontology_tools_traverse import with_leads
+            shown = with_leads(shown)
         default = ask("plx.around", hop)
         if shown is None or default is None:
             continue

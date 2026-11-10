@@ -28,7 +28,8 @@ def _instant(value: Optional[str]) -> Optional[datetime]:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def capture_alarm_status(state_dir: Any) -> Optional[m.CaptureAlarm]:
+def capture_alarm_status(state_dir: Any, now: Optional[datetime] = None
+                         ) -> Optional[m.CaptureAlarm]:
     """The stale-capture alarm over the served state dir (``operating.ops_health``'s capture
     and start checks); None with no state dir, nothing stalled, or an unreadable ledger."""
     if not state_dir:
@@ -36,7 +37,7 @@ def capture_alarm_status(state_dir: Any) -> Optional[m.CaptureAlarm]:
     from operating import ops_health
     try:
         state = Path(state_dir)
-        now = datetime.now(timezone.utc)
+        now = now or datetime.now(timezone.utc)
         t = ops_health.targets()
         checks = ops_health.capture_checks(state, now, t)
         extra = [c for c in (ops_health.start_check(state, t),

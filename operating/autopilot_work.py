@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -100,6 +100,110 @@ class CaptureTexts:
             if raw is not None:
                 return row[0], raw.decode("utf-8", "replace")
         return row[0], None
+
+    def close(self) -> None:
+        self.conn.close()
+
+
+class MCQuestions:
+    """Read-only: a question an MC agent asked a person on a task, read from the MC capture
+    (``mc-capture/capture.sqlite``, the current version of the task event and of its task),
+    for the question fields the projection does not hold. ``asked`` returns the question as
+    it stood when asked (addressee, text, options, context, the asker's recommended option
+    and reason) and, apart, when and by whom it was answered; the answer's own text is never
+    returned (a replay of past days must not see it)."""
+
+    KIND = "mission_control"
+
+    def __init__(self, state: Path | str) -> None:
+        path = Path(state) / "mc-capture" / "capture.sqlite"
+        self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30,
+                                    check_same_thread=False)
+        self._home: frozenset[str] | None = None
+
+    def home_domains(self) -> frozenset[str]:
+        """The domains MC writes full addresses in (task event actors and addressees): the
+        only place a bare MC name (``vince``) is looked up (``autopilot.handle_person``)."""
+        if self._home is None:
+            found = set()
+            for (who,) in self.conn.execute(
+                    "SELECT json_extract(payload, '$.row.actor') FROM versions WHERE kind = ? "
+                    "AND path LIKE '%/task_events/%' AND superseded_at IS NULL UNION "
+                    "SELECT json_extract(payload, '$.row.payload.addressee') FROM versions "
+                    "WHERE kind = ? AND path LIKE '%/task_events/%' AND superseded_at IS NULL",
+                    (self.KIND, self.KIND)):
+                if isinstance(who, str) and re.fullmatch(r"[^@\s:]+@[a-z0-9.-]+", who.lower()):
+                    found.add(who.lower().rsplit("@", 1)[1])
+            self._home = frozenset(found)
+        return self._home
+
+    @staticmethod
+    def key_of(native_key: str) -> tuple[str, str] | None:
+        """(scope, event id) of an MCTaskEvent's native key, else None."""
+        try:
+            raw = json.loads(native_key)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(raw, Mapping):
+            return None
+        scope, eid = raw.get("scope"), raw.get("event_id")
+        if not isinstance(scope, str) or not isinstance(eid, str) or "~" not in eid or \
+                "/" in scope or "/" in eid:
+            return None
+        return scope, eid
+
+    def _row(self, path: str) -> dict[str, Any] | None:
+        got = self.conn.execute("SELECT payload FROM versions WHERE kind = ? AND path = ? AND "
+                                "superseded_at IS NULL", (self.KIND, path)).fetchone()
+        if not got:
+            return None
+        try:
+            row = json.loads(got[0]).get("row")
+        except (TypeError, ValueError, AttributeError):
+            return None
+        return row if isinstance(row, dict) else None
+
+    def event(self, scope: str, event_id: str) -> dict[str, Any] | None:
+        """The task event's kind, actor and question id (asked or answered), else None.
+        ``by_agent``: an agent runtime took the step under the actor's identity (the payload
+        names its ``runtime`` or an ``actorKind`` other than a human's), not the person."""
+        row = self._row(f"{scope}/task_events/{event_id}")
+        if row is None:
+            return None
+        payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+        kind_of_actor = str(payload.get("actorKind") or "").lower()
+        return {"kind": str(row.get("kind") or ""), "actor": str(row.get("actor") or ""),
+                "by_agent": bool(payload.get("runtime")) or kind_of_actor not in ("", "human"),
+                "task_id": str(row.get("task_id") or ""),
+                "question_id": str(payload.get("questionId") or ""),
+                "addressee": str(payload.get("addressee") or "")}
+
+    def asked(self, scope: str, event_id: str) -> dict[str, Any] | None:
+        """The question a ``question.asked`` event names, else None (unreadable: no item)."""
+        ev = self.event(scope, event_id)
+        if ev is None or ev["kind"] != "question.asked" or not ev["question_id"]:
+            return None
+        task = self._row(f"{scope}/tasks/{ev['task_id']}") if ev["task_id"] else None
+        q = next((q for q in (task or {}).get("questions") or ()
+                  if isinstance(q, Mapping) and q.get("id") == ev["question_id"]), None)
+        if q is None:
+            return None
+        options = [str(o.get("label") or o.get("text") or "") if isinstance(o, Mapping)
+                   else str(o) for o in q.get("options") or ()][:8]
+        rec = q.get("recommended")
+        answer = q.get("answer") if isinstance(q.get("answer"), Mapping) else {}
+        withdrawn = q.get("withdrawal") if isinstance(q.get("withdrawal"), Mapping) else {}
+        return {"question_id": ev["question_id"], "task_id": ev["task_id"],
+                "addressee": str(q.get("addressee") or ev["addressee"]).strip().lower(),
+                "asked_at": str(q.get("askedAt") or ""),
+                "text": str(q.get("text") or "")[:ap.TEXT_CHARS],
+                "context": str(q.get("context") or "")[:1500],
+                "options": options,
+                "recommended": rec if isinstance(rec, int) and 0 <= rec < len(options) else None,
+                "reason": str(q.get("recommendationReason") or "")[:800],
+                "answered_at": str(answer.get("answeredAt") or ""),
+                "answered_by": str(answer.get("answeredBy") or "").strip().lower(),
+                "withdrawn_at": str(withdrawn.get("at") or withdrawn.get("withdrawnAt") or "")}
 
     def close(self) -> None:
         self.conn.close()
@@ -490,7 +594,8 @@ def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Se
     """``record.due`` events: open POs ordered between ``window_days`` and ``after_days``
     ago with no supplier confirmation, receipt or supplier reply (one event per PO)."""
     spec = next((a for a in registry["autopilots"] if a.get("on") == "record.due"
-                 and a.get("enabled") is not False), None)
+                 and a.get("handler") == "po_followup" and a.get("enabled") is not False),
+                None)
     if spec is None:
         return []
     after = int((spec.get("params") or {}).get("after_days", 2))
@@ -498,9 +603,10 @@ def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Se
     since = (as_of - timedelta(days=window)).isoformat()
     until = (as_of - timedelta(days=after)).isoformat() + "T23:59:59Z"
     ids = sorted({r[0] for r in st.conn.execute(
-        "SELECT DISTINCT eo.object_id FROM events e JOIN event_objects eo ON eo.event_id = "
-        "e.event_id WHERE e.event_type IN ('PurchaseOrder.created', 'PurchaseOrder.ordered', "
-        "'PurchaseOrder.sage_ordered') AND e.time >= ? AND e.time <= ?", (since, until))
+        # events first (``autopilot.window_ids``: the store has no time index)
+        "SELECT DISTINCT eo.object_id FROM events e CROSS JOIN event_objects eo ON "
+        "eo.event_id = e.event_id WHERE e.event_type IN ('PurchaseOrder.created', "
+        "'PurchaseOrder.ordered', 'PurchaseOrder.sage_ordered') AND e.time >= ? AND e.time <= ?", (since, until))
         if r[0].startswith("PurchaseOrder:")})
     rows = ap._read(st, ids, PO_HEAD)
     out = []
@@ -871,6 +977,54 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     return {"skip": "nothing_to_prepare"}
 
 
+QUESTION = re.compile(r"[^.?!\n]{8,240}\?")
+
+
+def h_reply_prep(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
+    """A reply someone is waiting on, in a thread the owner already writes in (or a
+    question from someone they write to): what was asked, the records the thread names
+    with their current state, and a drafted answer when those records state one. Never
+    sent: the owner edits and sends from the card."""
+    subject = event.get("subject") or ""
+    text = body_text(ctx, event)
+    own = text.split("\nFrom:")[0][:4000]
+    asked = [q.strip() for q in QUESTION.findall(own)][:3]
+    named = ap._records_named(ctx, {"subject": subject, "text": own,
+                                    "records": event.get("records") or []})
+    pos = [o for o in [*(event.get("records") or ()), *ap.identified(ctx, subject, own)]
+           if o.startswith("PurchaseOrder:")]
+    records = list(dict.fromkeys([*named, *pos]))[:6]
+    orders = _current(ctx, [o for o in records if o.startswith("SalesOrder:")])
+    lines, facts = _status_lines(ctx, orders) if orders else ([], {})
+    out: dict[str, Any] = {
+        "kind": "reply", "asked": asked, "thread": {
+            "engaged": bool(event.get("engaged")),
+            "correspondent": bool(event.get("correspondent"))},
+        "records": [{"object_id": o} for o in records],
+        "links": [{"label": "Open the record", "href": f"/object/{o}"} for o in records[:3]],
+        "gaps": [] if lines else ["no_record_states_the_answer"]}
+    if lines and event.get("channel") == "mail":
+        msg = draft(event.get("sender") or "", subject, lines, facts,
+                    in_reply_to=event["object_id"], today=ctx.as_of)
+        if msg is not None:
+            out["draft"] = msg
+    elif lines and event.get("channel") == "teams":
+        # the same answer, as a chat reply: kept on the item only (``teams_draft``); no
+        # card carries it (``autopilot.card_of``), so nothing here is ever posted
+        msg = draft("", "", lines, facts, today=ctx.as_of)
+        if msg is not None:
+            out["teams_draft"] = {"channel": "teams", "conversation": event.get(
+                "conversation_id"), "reply_to": event["object_id"], "body": msg["body"],
+                "copy_check": msg["copy_check"], "post": False}
+    who = event.get("sender") or "someone"
+    about = subject[:100] or ("(Teams message)" if event.get("channel") == "teams"
+                              else "(no subject)")
+    out["summary"] = (f"{who} is waiting on a reply: {about}"
+                      + (f" ({len(asked)} question{'s' if len(asked) != 1 else ''})"
+                         if asked else ""))
+    return out
+
+
 def brief(items: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
     """The morning brief: decisions waiting, drafts ready to send, late supplier POs and
     ETA slips, each as counts and the first few titles (oldest first)."""
@@ -891,3 +1045,253 @@ def brief(items: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
     return {"at": ap._iso(now), "counts": {k: len(v) for k, v in sections.items()},
             "top": {k: [{"item_id": i["item_id"], "title": i["title"]} for i in v[:5]]
                     for k, v in sections.items()}}
+
+
+# ----------------------------------------------------------------------------- invoice send
+
+INVOICE_HEAD = ("invoice_number", "invoice_date", "order_number", "customer_po",
+                "customer_number", "total_amount", "currency")
+INVOICE_MAILED = "Email.mentions_sales_invoice"
+INVOICE_BILLS = "SalesInvoice.billed_to"
+PAST_INVOICES = 20
+
+
+def _outbound(st: Any, mails: Sequence[str], domains: Sequence[str],
+              directory: Mapping[str, str], until: str) -> list[tuple[str, str, list[str]]]:
+    """(sent at, the internal sender's id, the outside To addresses) of the mails sent
+    from inside to outside before ``until``, oldest first."""
+    rows = ap._read(st, list(mails)[:60], ("sender", "to_addresses", "sent_at"))
+    out = []
+    for r in rows.values():
+        at = ap._v(r, "sent_at")
+        sender = (ap._addresses(ap._v(r, "sender")) or [""])[0]
+        if not at or at >= until or not ap._internal(sender, domains) or \
+                sender not in directory:
+            continue
+        ext = [a for a in ap._addresses(ap._v(r, "to_addresses"))
+               if not ap._internal(a, domains)]
+        if ext:
+            out.append((at, directory[sender], ext))
+    return sorted(out)
+
+
+def invoice_due_events(st: Any, registry: Mapping[str, Any], as_of: date,
+                       domains: Sequence[str], directory: Mapping[str, str]
+                       ) -> list[dict[str, Any]]:
+    """``record.due`` events: an invoice dated in the last ``window_days`` that no mail
+    from inside to the customer has named yet. ``owner_hint``: who mailed this customer's
+    latest earlier invoice (and ``customer_to``, to whom): the person the records show
+    sending this customer's invoices; none known: the event has no owner. Only what was
+    sent before the end of ``as_of`` counts (a replay never reads ahead)."""
+    spec = next((a for a in registry["autopilots"] if a.get("on") == "record.due"
+                 and a.get("handler") == "invoice_send" and a.get("enabled") is not False),
+                None)
+    if spec is None:
+        return []
+    window = int((spec.get("params") or {}).get("window_days", 2))
+    since = (as_of - timedelta(days=window)).isoformat()
+    until = (as_of + timedelta(days=1)).isoformat()
+    cutoff = until + "T00:00:00Z"
+    from .autopilot_receivables import _due_ids
+    ids = _due_ids(st, "SalesInvoice.invoiced", "SalesInvoice", date.fromisoformat(since),
+                   as_of)
+    rows = ap._read(st, ids, INVOICE_HEAD)
+    out = []
+    for oid in ids:
+        row = rows.get(oid) or {}
+        number = ap._v(row, "invoice_number").strip()
+        if not number:
+            continue
+        links = ap._linked(st, oid, (INVOICE_MAILED, INVOICE_BILLS))
+        if _outbound(st, [o for t, o in links if t == INVOICE_MAILED], domains, directory,
+                     cutoff):
+            continue                                   # already sent
+        customers = sorted({o for t, o in links if t == INVOICE_BILLS})
+        if len(customers) != 1:
+            continue
+        earlier = [o for t, o in ap._linked(st, customers[0], (INVOICE_BILLS,))
+                   if o != oid and o.startswith("SalesInvoice:")]
+        dates = ap._read(st, earlier, ("invoice_date",))
+        earlier = sorted((d for d in earlier if ap._v(dates.get(d), "invoice_date")
+                          and ap._v(dates.get(d), "invoice_date") < cutoff),
+                         key=lambda d: ap._v(dates[d], "invoice_date"))[-PAST_INVOICES:]
+        mails = [r[3] if r[3].startswith("Email:") else r[4]
+                 for r in (st.touching(earlier, (INVOICE_MAILED,)) if earlier else ())]
+        sent = _outbound(st, mails[-60:], domains, directory, cutoff)
+        owner, to = (sent[-1][1], sent[-1][2][0]) if sent else (None, None)
+        out.append({"event_id": ap._digest("record.due", "invoice_send", oid),
+                    "event_type": "record.due", "object_id": oid,
+                    "object_type": "SalesInvoice", "at": ap._v(row, "invoice_date"),
+                    "status": "invoiced", "owner_hint": owner, "customer_to": to,
+                    "audience": ap._types(st, [oid]).get(oid, ("", ""))[1],
+                    "handles": [c["l1_handle"] for c in row.values()
+                                if c.get("l1_handle")][:3],
+                    "fields": {"invoice_number": number,
+                               "invoice_date": ap._v(row, "invoice_date")[:10]}})
+    return out
+
+
+def h_invoice_send(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
+    """The invoice drafted to the customer contact this customer's invoices went to,
+    citing its number, date, order and total. Nothing is sent."""
+    inv = event["object_id"]
+    head = ctx.read([inv], INVOICE_HEAD).get(inv) or {}
+    number = ap._v(head, "invoice_number").strip()
+    to = event.get("customer_to")
+    if not number:
+        return {"skip": "invoice_number_missing"}
+    if not to:
+        return {"skip": "customer_contact_unknown"}
+    ctx.cite(head, "invoice_number", "invoice_date", "total_amount")
+    day = ap._v(head, "invoice_date")[:10]
+    total = ap._decimal(ap._v(head, "total_amount"))
+    currency = ap._v(head, "currency").strip()
+    order = ap._v(head, "order_number").strip()
+    po = ap._v(head, "customer_po").strip()
+    amount = f"{total:,.2f} {currency}".strip() if total is not None else None
+    facts = {"invoice": number, "invoice_date": day, "order": order or None,
+             "customer_po": po or None, "total": amount}
+    ref = f" for your PO {po}" if po else (f" for order {order}" if order else "")
+    parts = [f"Please find attached invoice {number}{ref}, dated {say(day, ctx.as_of)}."]
+    if amount:
+        parts.append(f"The total is {amount}.")
+    msg = draft(to, f"Invoice {number}" + (f" - PO {po}" if po else ""), parts, facts,
+                today=ctx.as_of)
+    if msg is None:
+        return {"skip": "draft_failed_copy_gate"}
+    return {"summary": f"Invoice {number} dated {day} has not been sent to the customer; "
+                       "the email is drafted.",
+            "object": {"object_id": inv, "number": number, "date": day, "total": amount},
+            "draft": msg, "gaps": [] if amount else ["total not stated"],
+            "attach": [{"label": f"Invoice {number}", "object_id": inv}],
+            "links": [{"label": "Open the invoice", "href": f"/object/{inv}"}]}
+
+
+# ----------------------------------------------------------------------------- routine update
+
+ROUTINE_SPREAD_MINUTES = 2      # instances sent within this many minutes of one time of day:
+                                # a scheduled send (a rule or flow sends it, no one writes it)
+
+
+def _routine_cadence(days: Sequence[date], as_of: date, *, min_sends: int,
+                     daily_share: float) -> str | None:
+    """``daily`` or ``weekly`` when the send days make ``as_of`` a due day, else None."""
+    if len(days) < min_sends:
+        return None
+    if as_of.weekday() < 5 and (as_of - days[-1]).days <= 4:
+        span = [days[0] + timedelta(i) for i in range((as_of - days[0]).days)]
+        weekdays = [d for d in span if d.weekday() < 5]
+        if weekdays and len([d for d in days if d.weekday() < 5]) >= daily_share * len(weekdays):
+            return "daily"
+    same = [d for d in days if d.weekday() == as_of.weekday() and (as_of - d).days <= 28]
+    if len(same) >= min_sends and (as_of - days[-1]).days <= 8:
+        return "weekly"
+    return None
+
+
+def routine_due_events(st: Any, queue: Any, registry: Mapping[str, Any], as_of: date,
+                       people: Any) -> list[dict[str, Any]]:
+    """``record.due`` events: a person's recurring update to colleagues (a subject series
+    they started themselves, ``ap.routine_series``) due on ``as_of``: sent on at least
+    ``min_sends`` days of the last ``lookback_days``, daily (most weekdays) or weekly (the
+    same weekday), written by them (a greeting in most instances) and not a scheduled send
+    (instances spread over more than ``ROUTINE_SPREAD_MINUTES`` of the day). To: the
+    colleagues on at least half of the instances. Only mails sent before ``as_of`` count (a
+    replay never reads ahead). A series with a colleague the people exclusion does not
+    clear is left out (fail closed)."""
+    spec = next((a for a in registry["autopilots"] if a.get("on") == "record.due"
+                 and a.get("handler") == "routine_update" and a.get("enabled") is not False),
+                None)
+    if spec is None or people is None or getattr(people, "unavailable", None):
+        return []
+    params = spec.get("params") or {}
+    look = int(params.get("lookback_days", 28))
+    min_sends = int(params.get("min_sends", 3))
+    share = float(params.get("daily_share", 0.6))
+    start = datetime(as_of.year, as_of.month, as_of.day, tzinfo=timezone.utc)
+    series: dict[tuple[str, str], list[Any]] = defaultdict(list)
+    for row in queue.routine(ap._iso(start - timedelta(days=look)), ap._iso(start)):
+        series[(row["owner"], row["series"])].append(row)
+    due = []
+    for (owner, key), rows in sorted(series.items()):
+        days = sorted({ap._instant(r["at"]).date() for r in rows})
+        cadence = _routine_cadence(days, as_of, min_sends=min_sends, daily_share=share)
+        if cadence is None:
+            continue
+        minutes = [ap._instant(r["at"]) for r in rows]
+        minutes = [m.hour * 60 + m.minute for m in minutes]
+        if max(minutes) - min(minutes) <= ROUTINE_SPREAD_MINUTES:
+            continue                                   # a scheduled send
+        if sum(r["greeted"] for r in rows) * 2 < len(rows):
+            continue                                   # not written by a person
+        due.append((owner, key, cadence, rows, days))
+    mails = ap._read(st, sorted({r["message"] for *_x, rows, _d in due for r in rows}),
+                     ("subject", "to_addresses", "cc_addresses", "sent_at"))
+    out = []
+    for owner, key, cadence, rows, days in due:
+        counts = Counter(d for r in rows for d in json.loads(r["recipients"]))
+        named: dict[str, str] = {}
+        for r in rows:
+            m = mails.get(r["message"]) or {}
+            for a in ap._addresses(ap._v(m, "to_addresses")) + ap._addresses(
+                    ap._v(m, "cc_addresses")):
+                named[ap._digest("party", a.lower())] = a.lower()
+        if set(counts) - set(named) or not all(people.identity_clear(named[d])
+                                               for d in counts):
+            continue                                   # a colleague unknown or not cleared
+        to = sorted(named[d] for d, n in counts.items() if n * 2 >= len(rows))
+        last = rows[-1]
+        subject = ap._v(mails.get(last["message"]), "subject")
+        if not to or not subject:
+            continue
+        out.append({"event_id": ap._digest("record.due", "routine_update", owner, key,
+                                           as_of.isoformat()),
+                    "event_type": "record.due", "object_id": last["message"],
+                    "object_type": "Email", "at": ap._iso(start), "status": cadence,
+                    "owner_hint": owner, "series": key, "match_hours": 24,
+                    "audience": f"mail:{owner}",
+                    "fields": {"cadence": cadence, "sends": len(rows), "days": len(days),
+                               "last_sent": last["at"][:10], "last_subject": subject[:200],
+                               "recipients": to}})
+    return out
+
+
+def h_routine_update(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
+    """Today's instance of a recurring update, drafted to the colleagues it usually goes to
+    with the subject of the last one (its dates moved to today), citing that last mail as
+    the template. Nothing is sent."""
+    f = event.get("fields") or {}
+    to = list(f.get("recipients") or ())
+    if not to:
+        return {"skip": "recipients_unknown"}
+    handle = _handle(ctx, event["object_id"])
+    if handle:
+        ctx.handles.append(handle)
+    ctx.objects.add(event["object_id"])
+    last_day = str(f.get("last_sent") or "")
+    subject = _today_subject(str(f.get("last_subject") or ""), last_day, ctx.as_of)
+    facts = {"today": ctx.as_of.isoformat(), "last_sent": last_day,
+             "sends": f.get("sends"), "cadence": f.get("cadence")}
+    msg = draft(to[0], subject, [f"Here is the update for {say(ctx.as_of.isoformat(), ctx.as_of)}."],
+                facts, today=ctx.as_of)
+    if msg is None:
+        return {"skip": "draft_failed_copy_gate"}
+    msg["cc"] = [{"address": a} for a in to[1:]]
+    text = body_text(ctx, {"object_id": event["object_id"]}) if handle else ""
+    return {"summary": f"Your {f.get('cadence')} update '{subject}' is due today "
+                       f"({f.get('sends')} sent on {f.get('days')} days of the last four weeks, "
+                       f"the last on {last_day}); the email is drafted to the same colleagues.",
+            "object": {"object_id": event["object_id"], "series": event.get("series"),
+                       "last_sent": last_day},
+            "draft": msg, "template": text[:ap.TEXT_CHARS],
+            "gaps": ["the update's content: start from the last one"],
+            "links": [{"label": "Open the last one", "href": f"/object/{event['object_id']}"}]}
+
+
+_ISO_DAY = re.compile(r"\b20\d{2}-\d{2}-\d{2}\b")
+
+
+def _today_subject(subject: str, last_day: str, today: date) -> str:
+    """The last subject with its ISO date (the last send's day) moved to ``today``."""
+    return _ISO_DAY.sub(lambda m: today.isoformat() if m.group(0) == last_day else m.group(0),
+                        subject)

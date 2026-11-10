@@ -1,4 +1,4 @@
-import { BellRing, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
+import { Bot, BellRing, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /**
@@ -46,6 +46,7 @@ export const PLACES: Record<string, { icon: LucideIcon; tile: string }> = {
   "/late": { icon: Clock3, tile: "bg-[linear-gradient(180deg,#ec7058,#df4a33)]" },
   "/watching": { icon: BellRing, tile: "bg-[linear-gradient(180deg,#f0ae3f,#e3951a)]" },
   "/ask": { icon: MessageCircle, tile: "bg-[linear-gradient(180deg,#2fb0a2,#13917f)]" },
+  "/autopilot": { icon: Bot, tile: "bg-[linear-gradient(180deg,#7486e0,#5465c9)]" },
   "/meetings": { icon: CalendarClock, tile: "bg-[linear-gradient(180deg,#5aa8e8,#3a8bd6)]" },
   "/team": { icon: Users, tile: "bg-[linear-gradient(180deg,#6cc070,#43a047)]" },
   "/activity": { icon: History, tile: "bg-[linear-gradient(180deg,#90939b,#72757e)]" },

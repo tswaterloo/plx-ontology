@@ -12,7 +12,7 @@ Modes (one per server, chosen by explicit flags; there is no default principal):
   makes no call to Entra (a token exchange would be a POST to a business identity system).
 * ``dev`` (demo only, ``--dev``, until the Entra app registration has the app's redirect
   URI): a configured test identity. Over live state it is a console session ticket the
-  host owner minted for one employee (``python3 -m operator_ui.console_ticket mint``),
+  host owner minted for one employee (``python3 -m operator_api.workspace.console_ticket mint``),
   presented once at POST /api/auth/dev-login and re-verified on every request exactly as
   the live console does; over a dev state an employee object id the employee resolver
   resolves on every request (``PROOF_CONFIGURED``; never live state); over a fixture
@@ -152,7 +152,7 @@ class DevAuth:
     """Demo sign-in behind an explicit flag (module doc). ``identity`` resolves the reader
     of a dev session on every request (an employee re-resolves through the resolver, so a
     revocation in the Portal snapshot applies at once). ``ticket_identity``: instead, the
-    person presents a console session ticket at dev-login (``operator_ui.console_ticket
+    person presents a console session ticket at dev-login (``operator_api.workspace.console_ticket
     mint``, the live console's own credential) and each request re-verifies it
     (``session_identity.employee_session``): the only dev identity a live state accepts."""
 

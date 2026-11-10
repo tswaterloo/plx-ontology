@@ -46,6 +46,8 @@ from integrations import captured_text as ct
 from integrations.captured_text import (COMPRESSED_SUFFIX, ContainerReading, Member,
                                         READING_MODULES, blob_path, decode_reading,
                                         encode_reading, readings_code)
+from operating import declared_schema as _schemas
+from operating.declared_schema import kept_members as _KEPT_MEMBERS
 
 # What reads a container's members beyond a file's reading: the container walk (zip,
 # compound file, mail) that yields them.
@@ -189,10 +191,7 @@ class KeptMembers:
         try:
             self._db.execute("PRAGMA journal_mode = WAL")
             self._db.execute("PRAGMA synchronous = NORMAL")
-            self._db.execute("CREATE TABLE IF NOT EXISTS members (key TEXT PRIMARY KEY, "
-                             "code TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)")
-            self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, "
-                             "value TEXT NOT NULL)")
+            _schemas.apply(self._db, _KEPT_MEMBERS)
             row = self._db.execute("SELECT value FROM meta WHERE key = 'builds'").fetchone()
             self.build = (int(row[0]) if row else 0) + (1 if build else 0)
             self._db.execute("INSERT INTO meta VALUES ('builds', ?) ON CONFLICT(key) DO "

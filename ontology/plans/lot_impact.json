@@ -5,14 +5,15 @@
  "families": [
   "F17"
  ],
- "title": "Which customer orders and shipments a supplier lot touches, and where it came from",
- "description": "On a quality hold of a supplier lot (a Lot record or its lot number: every receipt-line record carrying it at a firm tier is a root): walk only recorded firm-tier links to the receipt, purchase order and supplier it was received on, and from the assembly-order components recorded as consuming it to their assembly orders, the order lines those are made or allocated for, the customer orders and their recorded shipments. Per order: the ordered quantity of the touched lines, with every link cited. A missing hop is a typed gap naming the source that would hold it; a component matched by lot number only is a candidate, never walked. Needs the quality_controlled read scope.",
+ "title": "Which customers, orders and shipments a supplier lot or a production batch touches, and where it came from",
+ "description": "On a quality hold or recall of a lot (a supplier Lot record or its lot number: every receipt-line record carrying it at a firm tier is a root; or a production Batch, by its batch or lot number): walk only recorded firm-tier links. From a supplier lot: to the receipt, purchase order and supplier it was received on, and from the assembly-order components recorded as consuming it to their assembly orders. From a batch (and its recorded same-batch records): to the assembly orders filled from it, its order-entry batch allocations and the order its OE list names. Then to the order lines those are made or allocated for, the customer orders, their recorded shipments (on the order and its copies, by shipment header, Sage shipment line or invoice line) and the customers who ordered or were shipped them. Per order: the ordered quantity of the touched lines, with every link cited. A missing hop is a typed gap naming the source that would hold it; a component matched by lot number only is a candidate, never walked; a hop the served schema does not declare yet is named, not guessed. Needs the quality_controlled read scope.",
  "requires_markings": [
   "quality_controlled"
  ],
  "root": {
   "object_types": [
-   "Lot"
+   "Lot",
+   "Batch"
   ],
   "cardinality": "set",
   "set_tiers": [
@@ -24,6 +25,14 @@
    {
     "object_type": "Lot",
     "property": "lot_number"
+   },
+   {
+    "object_type": "Batch",
+    "property": "lot_number"
+   },
+   {
+    "object_type": "Batch",
+    "property": "batch_number"
    }
   ]
  },
@@ -39,6 +48,166 @@
     "Lot"
    ],
    "description": "Each lot record's lot number (one record per receipt line that received it)."
+  },
+  {
+   "id": "batch_twins",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "object_types": [
+    "Batch"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "Batch.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The batch record the FileMaker batch was upserted into (same batch)."
+  },
+  {
+   "id": "batch_twins_rev",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "object_types": [
+    "Batch"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "Batch.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The FileMaker batches upserted into the batch record (same batch)."
+  },
+  {
+   "id": "batch_aos",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "batch_twins_rev"
+   ],
+   "bind": "from",
+   "object_types": [
+    "Batch"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "AssemblyOrder.fills_from",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The assembly orders filled from the batch."
+  },
+  {
+   "id": "batch_allocs",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "batch_twins_rev"
+   ],
+   "bind": "from",
+   "object_types": [
+    "Batch"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "BatchAllocation.allocates",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "FileMaker order-entry batch allocations of the batch."
+  },
+  {
+   "id": "batch_alloc_lines",
+   "tool": "plx.around",
+   "from": "batch_allocs",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "BatchAllocation.for_order_line",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The FileMaker order line each batch allocation is for."
+  },
+  {
+   "id": "batch_orders",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "batch_twins_rev"
+   ],
+   "bind": "from",
+   "object_types": [
+    "Batch"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "Batch.for_sales_order",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "if_declared": true,
+   "description": "The FileMaker order the batch's OE list names (one order only)."
+  },
+  {
+   "id": "batch_schedules",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "batch_twins_rev"
+   ],
+   "bind": "from",
+   "object_types": [
+    "Batch"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "BatchSchedule.for_batch",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The batch's QC calibration schedule rows."
+  },
+  {
+   "id": "schedule_products",
+   "tool": "plx.around",
+   "from": "batch_schedules",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "BatchSchedule.for_bulk_product",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "if_declared": true,
+   "description": "The bulk product each QC calibration schedule row names."
   },
   {
    "id": "lines",
@@ -229,7 +398,10 @@
   {
    "id": "allocations",
    "tool": "plx.around",
-   "from": "assembly",
+   "from": [
+    "assembly",
+    "batch_aos"
+   ],
    "bind": "from",
    "args": {
     "path": [
@@ -240,7 +412,10 @@
     ],
     "limit": 50
    },
-   "description": "FileMaker order-entry assembly allocations of the FileMaker assembly order."
+   "description": "FileMaker order-entry assembly allocations of the FileMaker assembly order.",
+   "object_types": [
+    "AssemblyOrder"
+   ]
   },
   {
    "id": "alloc_lines",
@@ -261,7 +436,10 @@
   {
    "id": "ao_twins",
    "tool": "plx.around",
-   "from": "assembly",
+   "from": [
+    "assembly",
+    "batch_aos"
+   ],
    "bind": "from",
    "args": {
     "path": [
@@ -272,7 +450,10 @@
     ],
     "limit": 50
    },
-   "description": "The Portal manufacturing order recorded as the same record as the FileMaker assembly order."
+   "description": "The Portal manufacturing order recorded as the same record as the FileMaker assembly order.",
+   "object_types": [
+    "AssemblyOrder"
+   ]
   },
   {
    "id": "ao_lines",
@@ -293,9 +474,15 @@
   {
    "id": "line_read",
    "tool": "plx.object",
-   "from": "alloc_lines",
+   "from": [
+    "alloc_lines",
+    "batch_alloc_lines"
+   ],
    "bind": "object_id",
-   "description": "Each touched FileMaker order line's ordered quantity."
+   "description": "Each touched FileMaker order line's ordered quantity.",
+   "object_types": [
+    "SalesOrderLine"
+   ]
   },
   {
    "id": "portal_line_read",
@@ -307,7 +494,10 @@
   {
    "id": "orders",
    "tool": "plx.around",
-   "from": "alloc_lines",
+   "from": [
+    "alloc_lines",
+    "batch_alloc_lines"
+   ],
    "bind": "from",
    "args": {
     "path": [
@@ -318,7 +508,10 @@
     ],
     "limit": 50
    },
-   "description": "The FileMaker customer order each touched order line belongs to."
+   "description": "The FileMaker customer order each touched order line belongs to.",
+   "object_types": [
+    "SalesOrderLine"
+   ]
   },
   {
    "id": "portal_orders",
@@ -339,7 +532,10 @@
   {
    "id": "order_twins",
    "tool": "plx.around",
-   "from": "orders",
+   "from": [
+    "orders",
+    "batch_orders"
+   ],
    "bind": "from",
    "args": {
     "path": [
@@ -350,12 +546,18 @@
     ],
     "limit": 50
    },
-   "description": "The FileMaker order's records in other systems."
+   "description": "The FileMaker order's records in other systems.",
+   "object_types": [
+    "SalesOrder"
+   ]
   },
   {
    "id": "order_twins_named",
    "tool": "plx.around",
-   "from": "orders",
+   "from": [
+    "orders",
+    "batch_orders"
+   ],
    "bind": "from",
    "args": {
     "path": [
@@ -366,7 +568,10 @@
     ],
     "limit": 50
    },
-   "description": "The same, where the other record holds the link."
+   "description": "The same, where the other record holds the link.",
+   "object_types": [
+    "SalesOrder"
+   ]
   },
   {
    "id": "portal_order_twins",
@@ -527,6 +732,196 @@
     "limit": 50
    },
    "description": "The same, through the Portal record holding the link."
+  },
+  {
+   "id": "ship_lines",
+   "tool": "plx.around",
+   "from": [
+    "orders",
+    "batch_orders",
+    "order_twins",
+    "order_twins_named",
+    "portal_order_twins_fwd",
+    "order_twins2",
+    "order_twins2_named"
+   ],
+   "bind": "from",
+   "object_types": [
+    "SalesOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "ShipmentLine.of_sales_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "if_declared": true,
+   "description": "The Sage shipment lines that name the order (line level)."
+  },
+  {
+   "id": "ship_line_shipments",
+   "tool": "plx.around",
+   "from": "ship_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "ShipmentLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "if_declared": true,
+   "description": "The shipment each of those Sage shipment lines belongs to."
+  },
+  {
+   "id": "invoice_lines",
+   "tool": "plx.around",
+   "from": [
+    "orders",
+    "batch_orders",
+    "order_twins",
+    "order_twins_named",
+    "portal_order_twins_fwd",
+    "order_twins2",
+    "order_twins2_named"
+   ],
+   "bind": "from",
+   "object_types": [
+    "SalesOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoiceLine.of_sales_order",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "if_declared": true,
+   "description": "The Sage invoice lines that bill the order."
+  },
+  {
+   "id": "invoice_shipments",
+   "tool": "plx.around",
+   "from": "invoice_lines",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoiceLine.of_shipment",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "if_declared": true,
+   "description": "The shipment each of those Sage invoice lines bills."
+  },
+  {
+   "id": "order_customers",
+   "tool": "plx.around",
+   "from": [
+    "orders",
+    "batch_orders",
+    "portal_orders",
+    "order_twins",
+    "order_twins_named",
+    "portal_order_twins_fwd",
+    "order_twins2",
+    "order_twins2_named"
+   ],
+   "bind": "from",
+   "object_types": [
+    "SalesOrder"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrder.ordered_by",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The customer each touched order (or a copy of it) is ordered by."
+  },
+  {
+   "id": "ship_customers",
+   "tool": "plx.around",
+   "from": [
+    "shipments",
+    "shipments_named",
+    "portal_shipments",
+    "portal_copy_shipments",
+    "copy_shipments",
+    "copy_shipments_named",
+    "ship_line_shipments",
+    "invoice_shipments"
+   ],
+   "bind": "from",
+   "object_types": [
+    "Shipment"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "Shipment.shipped_to",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The customer each shipment was shipped to."
+  },
+  {
+   "id": "customer_twins",
+   "tool": "plx.around",
+   "from": [
+    "order_customers",
+    "ship_customers"
+   ],
+   "bind": "from",
+   "object_types": [
+    "Customer"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "Customer.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The customer's records in other systems (one customer, not two)."
+  },
+  {
+   "id": "customer_twins_rev",
+   "tool": "plx.around",
+   "from": [
+    "order_customers",
+    "ship_customers"
+   ],
+   "bind": "from",
+   "object_types": [
+    "Customer"
+   ],
+   "args": {
+    "path": [
+     {
+      "link_type": "Customer.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "description": "The same, where the other record holds the link."
   }
  ],
  "evidence": [
@@ -555,7 +950,7 @@
    "kind": "compute",
    "engine": "lot_impact",
    "required": true,
-   "description": "Per customer order the lot touches: the ordered quantity of the touched lines (Decimal, with the unit the source states) and the cited chain of links; per lot record its purchase orders and suppliers; lot-number candidates apart; a typed gap at each unrecorded hop.",
+   "description": "Per customer order the lot or batch touches: the ordered quantity of the touched lines (Decimal, with the unit the source states), its shipments and customers, and the cited chain of links; per lot record its purchase orders and suppliers; the customers reached (one per customer across systems); lot-number candidates apart; a typed gap at each unrecorded hop.",
    "engine_args": {
     "lot": "lot",
     "ordered": "line_ordered"

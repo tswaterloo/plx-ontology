@@ -90,18 +90,6 @@ class PortalFoldTests(unittest.TestCase):
         for empty in ("", "   ", None, 3, ["kg"]):
             self.assertIsNone(units.unit_token(empty))
 
-    def test_the_console_carries_the_same_tables(self):
-        js = (ROOT / "operator_ui/workspace.js").read_text("utf-8")
-        canonical = re.search(r"const UOM_CANONICAL = (\[.*?\]);", js, re.S)
-        aliases = re.search(r"const UOM_ALIASES = (\{.*?\});", js, re.S)
-        self.assertIsNotNone(canonical)
-        self.assertIsNotNone(aliases)
-        self.assertEqual(json.loads(canonical.group(1)), list(units.UOM_CANONICAL))
-        self.assertEqual(json.loads(aliases.group(1)), units.UOM_ALIASES)
-        receive = re.search(r"const RECEIVE_ALIASES = (\{.*?\});", js, re.S)
-        self.assertIsNotNone(receive)
-        self.assertEqual(json.loads(receive.group(1)), units.RECEIVE_ALIASES)
-
     def test_two_spellings_are_one_unit_exactly_when_a_portal_fold_says_so(self):
         # One unit iff linked by normalizeProductUom equality or the receiving
         # unitsCompatible relation (closed transitively); every other pair stays apart.

@@ -159,7 +159,7 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
         os.nice(19 - os.nice(0))
     except (AttributeError, OSError):
         pass
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
     from . import backend as be
     from .auth import Reader
 

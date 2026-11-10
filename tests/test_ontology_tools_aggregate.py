@@ -1101,6 +1101,38 @@ class AsKnownAtTests(_Base):
         self.assertNotIn("same_as_now", then)
         self.assertFalse(known_now(args, then))
 
+    def test_the_now_read_of_a_count_at_t_never_costs_the_count(self):
+        # 11-09: the second (now) read of a dated count over 21k sales orders was cut at
+        # the call's limit and replaced the count with store_unavailable. Cut: the count
+        # read stays, unmarked; too little time left for it: it is not started.
+        import sqlite3
+        from unittest import mock
+        from operating import call_limits
+        from operating import ontology_tools_aggregate as oa
+        args = {"set": self.set_of(STAFF, L1, L2), "measure": {"op": "count"},
+                "as_known_at": "2099-01-22"}
+        real = oa.AggregateTools._aggregate
+        reads = []
+
+        def cut_second(self_, arguments, actor, gate):
+            reads.append("as_known_at" in arguments)
+            if "as_known_at" not in arguments:
+                raise sqlite3.OperationalError("interrupted")
+            return real(self_, arguments, actor, gate)
+        with mock.patch.object(oa.AggregateTools, "_aggregate", cut_second):
+            cut = self.call("plx.aggregate", args)
+        self.assertEqual(reads, [True, False])
+        self.assertNotIn("error", cut)
+        self.assertEqual(cut["groups"][0]["value"], "2")
+        self.assertNotIn("same_as_now", cut)
+        reads.clear()
+        with mock.patch.object(oa.AggregateTools, "_aggregate", cut_second), \
+                mock.patch.object(call_limits, "seconds_left", lambda: 1.0):
+            short = self.call("plx.aggregate", args)
+        self.assertEqual(reads, [True])   # the now read never started
+        self.assertEqual(short["groups"][0]["value"], "2")
+        self.assertNotIn("same_as_now", short)
+
     def test_a_record_existing_at_t_counts_and_is_not_missing_before_it_went_missing(self):
         self.missing_since("2099-01-25T00:00:00Z")
         measure = {"property": "ordered_quantity", "op": "sum"}

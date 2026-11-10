@@ -227,10 +227,11 @@ export default function FeedbackPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar
+        heading
         title={
           <>
             {admin ? "Feedback" : "Your feedback"}
-            {list && <span className="ml-2 text-[13px] font-normal tracking-normal tabular-nums text-faint">{list.total}</span>}
+            {list && <span className="ml-2 text-[13px] font-normal tracking-normal tabular-nums text-faint"><span className="sr-only">, </span>{list.total}</span>}
           </>
         }
         className="bg-[color-mix(in_srgb,var(--list)_90%,transparent)]"
@@ -241,7 +242,7 @@ export default function FeedbackPage() {
         }
       />
       <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2 lg:px-5" data-testid="feedback-filters">
-        <div className="mr-2 flex gap-0.5" role="tablist" aria-label="Status">
+        <div className="mr-2 flex gap-0.5 max-sm:-mx-1 max-sm:mr-0 max-sm:w-[calc(100%+8px)] max-sm:overflow-x-auto max-sm:px-1" role="tablist" aria-label="Status">
           {[["", "All", allCount] as const, ...STATUSES.map((s) => [s, STATUS_WORDS[s], list?.counts[s] ?? 0] as const)].map(([value, label, n]) => (
             <button
               key={value || "all"}
@@ -249,7 +250,7 @@ export default function FeedbackPage() {
               role="tab"
               aria-selected={status === value}
               onClick={() => setStatus(value)}
-              className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] cursor-pointer", status === value ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] font-medium" : "text-muted hover:bg-hover hover:text-fg")}
+              className={cn("inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[12px] cursor-pointer", status === value ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] font-medium" : "text-muted hover:bg-hover hover:text-fg")}
             >
               {label}
               {list && <span className="tabular-nums text-faint">{n}</span>}

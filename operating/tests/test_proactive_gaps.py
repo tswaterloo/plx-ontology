@@ -1,4 +1,4 @@
-"""Proactive gaps (operating/proactive_gaps.py) and the console home view (/api/home).
+"""Proactive gaps (operating/proactive_gaps.py) (the app's Home reads them).
 
 SYNTHETIC fixtures only: cards shaped like ``plx.object`` answers, stub tools per reader and
 a real ``CaseStore`` behind a fixture session. Evidence label: isolated-fixture (no network,
@@ -12,13 +12,11 @@ from __future__ import annotations
 import contextlib
 from collections import Counter
 from datetime import date
-from http.client import HTTPConnection
 import io
 import sqlite3
 import json
 from pathlib import Path
 import tempfile
-import threading
 import unittest
 from unittest import mock
 
@@ -29,16 +27,12 @@ from ontology.schema import load_schema
 from operating import answerers
 from operating import proactive_gaps as pg
 from operating.cases import CaseStore
-from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operating.tests.test_cases import FakeResolver
-from operator_ui import object_workspace as objects
-from operator_ui.case_workspace import CaseWorkspace
-from operator_ui.server import make_server
+from operator_api.workspace import object_workspace as objects
 
 ROOT = Path(__file__).resolve().parents[2]
 AS_OF = date(2026, 10, 19)
 OPS = Actor("plx", frozenset({"ops"}))
-OTHER = Actor("plx", frozenset({"other"}))
 
 
 def handle(n: int) -> str:
@@ -400,122 +394,6 @@ class LateOrderTest(unittest.TestCase):
                                  sorted({line["order"] for line in lines[:reads]}))
                 for gap in result["gaps"]:
                     self.assertNotIn("draft", gap["follow_up"])
-
-
-class HomeTest(unittest.TestCase):
-    """GET /api/home for the signed-in session: its open cases, their gaps and the gaps the
-    workspace found itself, for that reader only."""
-
-    def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.resolver = FakeResolver()
-        for n in (1, 2):
-            self.resolver.add(handle(n), {"row": {"n": n}}, {"ops"})
-        self.store = CaseStore(Path(tmp.name) / "cases.db", citation_resolver=self.resolver)
-        self.open_case = self.store.open(OPS, "Why is SYNTH-OPEN short?")
-        self.store.gap(OPS, self.open_case, "the shipping date", "no source states it",
-                       ["buyer"], "not_ingested", [handle(1)])
-        self.store.gap(OPS, self.open_case, "the pallet count", "cited row now unreadable",
-                       ["buyer"], "unknown", [handle(2)])
-        self.resolver.revoke(handle(2), "ops")
-        self.quiet_case = self.store.open(OPS, "Is SYNTH-QUIET fine?")
-        closed = self.store.open(OPS, "What was SYNTH-CLOSED?")
-        self.store.gap(OPS, closed, "a closed question", "was open", ["buyer"], "unknown")
-        self.store.close(OPS, closed, "answered")
-        self.store.gap(OTHER, self.store.open(OTHER, "Is SYNTH-OTHER late?"),
-                       "someone else's gap", "not this reader's", ["buyer"], "unknown")
-        self.cards = {c["object"]["object_id"]: c for c in (
-            card("SalesOrder", leads=[lead()], n=1),
-            card("AssemblyOrderPacket", conflicts=[disagreement("100", "120")], n=2),
-            card("ForwarderQuote", values=[value("valid_until", "2026-01-31", 31, "date")], n=3),
-            card("ForwarderQuote", values=[value("valid_until", "2999-01-01", 33, "date")], n=4))}
-
-    def tools(self):
-        self.reads = 0
-        by_type = {}
-        for object_id, answer in self.cards.items():
-            by_type.setdefault(answer["object"]["object_type"], []).append(object_id)
-        by_type["CustomerPoDocument"] = by_type.pop("SalesOrder")   # the lead is on the document
-
-        def find(arguments, actor):
-            ids = by_type.get(arguments.get("object_type"), []) if "ops" in actor.principals else []
-            return {"status": "ambiguous" if ids else "not_found", "candidates": [
-                {"object": {"object_id": i, "object_type": arguments["object_type"]}}
-                for i in ids]}
-
-        def read(arguments, actor):
-            self.reads += 1
-            found = self.cards.get(arguments["object_id"])
-            return found if found and "ops" in actor.principals else {
-                "error": {"code": "object_not_found", "message": "x"}}
-        empty = {"handler": lambda arguments, actor: {}}
-        return {"plx.find": {"handler": find}, "plx.object": {"handler": read},
-                "plx.around": empty, "plx.timeline": empty}
-
-    def home(self, actor, *, with_objects=True):
-        session = fixture_session("plx", actor.principals, channel=CHANNEL_CONSOLE)
-        workspace = CaseWorkspace(mock.Mock(cases=self.store), actor)
-        server = make_server(
-            case_workspace=workspace, session=session,
-            object_workspace=objects.ObjectWorkspace(self.tools(), actor, sources=workspace)
-            if with_objects else None)
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05},
-                                  daemon=True)
-        thread.start()
-        self.addCleanup(lambda: (server.shutdown(), thread.join(timeout=10),
-                                 server.server_close()))
-        connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=60)
-        connection.request("GET", "/api/home",
-                           headers={"Authorization": "Bearer " + server.operator_access_token})
-        response = connection.getresponse()
-        body = json.loads(response.read())
-        connection.close()
-        self.assertEqual(response.status, 200, body)
-        return body
-
-    def test_home_lists_the_signed_in_readers_open_cases_open_gaps_and_found_gaps(self):
-        home = self.home(OPS)
-        cases = {c["question"]: c for c in home["cases"]["cases"]}
-        self.assertEqual(set(cases), {"Why is SYNTH-OPEN short?", "Is SYNTH-QUIET fine?"})
-        busy = cases["Why is SYNTH-OPEN short?"]
-        self.assertEqual(busy["case_id"], self.open_case)
-        self.assertEqual([g["missing"] for g in busy["gaps"]], ["the shipping date"])
-        self.assertEqual(busy["gaps_withheld"], 1)   # counted, its words never shown
-        self.assertNotIn("pallet", json.dumps(home))
-        counted = home["cases"]
-        self.assertEqual((counted["open_cases"], counted["open_gaps"], counted["gaps_withheld"]),
-                         (2, 1, 1))
-        self.assertEqual(cases["Is SYNTH-QUIET fine?"]["gaps"], [])
-        # Home reads the scheduled engine's inbox (operating/tests/test_proactive_engine.py),
-        # never scans cards on the request: an API-only reader has no grant to trim it by.
-        found = home["proactive"]
-        self.assertEqual((found["status"], found["gaps"]), ("not_configured", []))
-        self.assertEqual(self.reads, 0)
-
-    def test_another_reader_sees_none_of_it_and_cases_alone_still_serve_without_objects(self):
-        home = self.home(OTHER)
-        self.assertEqual([c["question"] for c in home["cases"]["cases"]],
-                         ["Is SYNTH-OTHER late?"])
-        self.assertEqual(home["proactive"]["gaps"], [])
-        self.assertNotIn("SYNTH-OPEN", json.dumps(home))
-        alone = self.home(OPS, with_objects=False)
-        self.assertEqual(alone["proactive"], {"status": "not_configured"})
-        self.assertEqual(len(alone["cases"]["cases"]), 2)
-
-
-    def test_an_inbox_failure_keeps_the_cases(self):
-        with mock.patch.object(objects.ObjectWorkspace, "gap_inbox",
-                               side_effect=sqlite3.OperationalError("SYNTH-locked")):
-            home = self.home(OPS)
-        self.assertEqual(home["proactive"],
-                         {"status": "unreadable", "error": "OperationalError", "gaps": []})
-        with mock.patch.object(objects.ObjectWorkspace, "gap_inbox",
-                               side_effect=PermissionError("SYNTH-secret-detail")):
-            refused = self.home(OPS)["proactive"]
-        self.assertEqual(refused, {"status": "refused", "error": "permission_denied",
-                                   "gaps": []})
-        self.assertEqual(len(home["cases"]["cases"]), 2)
 
 
 class LiveCheckTest(unittest.TestCase):

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
 from operating.playbook_eval import verify_report_hash
+from operating.declared_schema.playbook_reports import _DDL
 
 _GENESIS = "0" * 64
 _SCHEMA_VERSION = 1
@@ -52,42 +53,6 @@ _HANDLE = re.compile(r"(?:api|original|sharepoint|graph-mail|bc)://[^\s\"')\]]+"
 _ENTRY_SOURCE_KEYS = ("handle", "recorded_digest", "current_digest", "reread_payload_sha256",
                       "identity")
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS playbook_report (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  report_sha256 TEXT NOT NULL UNIQUE,
-  case_id TEXT NOT NULL,
-  playbook_id TEXT NOT NULL,
-  playbook_version TEXT NOT NULL,
-  definition_sha256 TEXT NOT NULL,
-  evaluator_version TEXT NOT NULL,
-  case_boundary_sha256 TEXT NOT NULL,
-  manifest_sha256 TEXT NOT NULL,
-  passed_all INTEGER NOT NULL CHECK(passed_all IN (0,1)),
-  passed_all_clean INTEGER NOT NULL CHECK(passed_all_clean IN (0,1)),
-  recorded_at TEXT NOT NULL,
-  recorded_by TEXT NOT NULL,
-  transcript_source TEXT NOT NULL,
-  report_json TEXT NOT NULL,
-  prev_hash TEXT NOT NULL,
-  row_hash TEXT NOT NULL UNIQUE
-);
-CREATE INDEX IF NOT EXISTS idx_playbook_report_case ON playbook_report(case_id, playbook_id, id);
-CREATE TRIGGER IF NOT EXISTS playbook_report_no_update BEFORE UPDATE ON playbook_report
-BEGIN SELECT RAISE(ABORT, 'playbook_report_is_append_only'); END;
-CREATE TRIGGER IF NOT EXISTS playbook_report_no_delete BEFORE DELETE ON playbook_report
-BEGIN SELECT RAISE(ABORT, 'playbook_report_is_append_only'); END;
-CREATE TABLE IF NOT EXISTS playbook_change (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  record_json TEXT NOT NULL,
-  prev_hash TEXT NOT NULL,
-  row_hash TEXT NOT NULL UNIQUE
-);
-CREATE TRIGGER IF NOT EXISTS playbook_change_no_update BEFORE UPDATE ON playbook_change
-BEGIN SELECT RAISE(ABORT, 'playbook_change_is_append_only'); END;
-CREATE TRIGGER IF NOT EXISTS playbook_change_no_delete BEFORE DELETE ON playbook_change
-BEGIN SELECT RAISE(ABORT, 'playbook_change_is_append_only'); END;
-"""
 
 _COLUMNS = ("report_sha256", "case_id", "playbook_id", "playbook_version", "definition_sha256",
             "evaluator_version", "case_boundary_sha256", "manifest_sha256", "passed_all",

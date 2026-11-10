@@ -29,8 +29,8 @@ from operating import case_workspace_live
 from operating import goal2_mc_approval as g2
 from operating import mcp_server
 from operating.tests import test_goal2_e2e as e2e
-from operator_ui import case_console
-from operator_ui.tests import case_fixtures
+from operator_api.workspace import case_console
+from operator_api.tests import case_fixtures
 from tests import test_object_workspace_http as http_tests
 
 FOLLOW_UP_BUCKET = http_tests.FOLLOW_UP_BUCKET

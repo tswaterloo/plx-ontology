@@ -66,7 +66,8 @@ export function SuggestionActions({ card, state, onDone }: { card: ProactiveSugg
   const rank = (k: string) => ["send_email", "teams_message", "create_follow_up", "mark_done"].indexOf(k);
   const shown = offers.filter((o) => !MORE.includes(o.kind)).sort((a, b) => ((rank(a.kind) + 9) % 9) - ((rank(b.kind) + 9) % 9));
   const more = offers.filter((o) => MORE.includes(o.kind));
-  const narrow = shown.filter((o) => o.kind === "create_follow_up" || o.kind === "mark_done");
+  // a phone has room for the first two (send and message); the rest go under More
+  const narrow = shown.slice(2);
   return (
     <div className="mt-3 flex items-center gap-1" data-testid="card-actions">
       {shown.map((o) => (
@@ -75,7 +76,7 @@ export function SuggestionActions({ card, state, onDone }: { card: ProactiveSugg
           type="button"
           onClick={() => setOpen(o)}
           className={cn(
-            "h-8 shrink-0 rounded-lg px-3 text-[13px] cursor-pointer",
+            "h-8 shrink-0 rounded-lg px-3 text-[13px] cursor-pointer max-sm:min-w-0 max-sm:shrink max-sm:truncate",
             narrow.includes(o) && "max-sm:hidden",
             o.kind === "send_email" ? "mr-1.5 bg-accent font-medium text-accent-fg shadow-sm hover:brightness-110" : "text-muted hover:bg-hover hover:text-fg",
           )}

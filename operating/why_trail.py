@@ -620,6 +620,10 @@ _QUESTION_WORDS = frozenset({
     "show", "give", "does", "did", "will", "would", "should", "could", "supposed", "land",
     "come", "came", "vendor", "supplier", "customer", "please", "were", "been", "much",
     "many", "whole", "story", "next", "eta"})
+# The source systems' own names: a question's "in Business Central" or "the Portal PO"
+# names where a record is, never a supplier or customer.
+_SYSTEM_NAME_WORDS = frozenset({"business", "central", "portal", "filemaker", "sage",
+                                "mission", "control", "sharepoint", "teams", "outlook"})
 MAX_PARTY_LOOKUPS = 3
 
 
@@ -684,7 +688,8 @@ def by_named_party(call: Callable[[str, dict], Any], question: str,
     # a party none of them has: a word of the question that is a supplier's or customer's
     # own word (looked up as the reader, longest words first, a few at most)
     words = sorted({w for w in re.findall(r"[^\W\d_]{4,}", (question or "").casefold())
-                    if w not in _PARTY_FILLER and w not in _QUESTION_WORDS},
+                    if w not in _PARTY_FILLER and w not in _QUESTION_WORDS
+                    and w not in _SYSTEM_NAME_WORDS},
                    key=lambda w: (-len(w), w))[:MAX_PARTY_LOOKUPS]
     for word in words:
         for object_type in ("Supplier", "Customer"):

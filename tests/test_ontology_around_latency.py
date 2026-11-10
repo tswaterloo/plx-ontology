@@ -17,6 +17,7 @@ All identifiers are synthetic.
 
 from __future__ import annotations
 
+import atexit
 import copy
 import json
 import os
@@ -38,6 +39,7 @@ BASE_SHA = "6887afa79c437a46df3c00791b7d562025d7998c"
 # The traverse module before absence and the event-type maps came from cached store facts.
 FACTS_BASE_SHA = "a6d76e03cb965bfb2770a86cbfe90b304e585076"
 LIMIT = 50
+FIRST_CALL_FIXED_STEPS = 100
 DEGREE = 1000          # links per link type on the high-degree objects
 CALLS = (
     {"from": fx.P1, "path": [{"link_type": "Order.placed_by", "direction": "reverse"}]},
@@ -109,9 +111,12 @@ def base_module(sha=BASE_SHA):
 
 
 def comparable(result):
-    """A result without its per-call set handle and cursor."""
+    """A result without its per-call set handle and cursor, and without ``exact_count``
+    (a complete listing's own member count, added after the base commits compared here;
+    the listing it counts is still compared whole)."""
     out = copy.deepcopy(result)
     out.pop("set", None)
+    out.pop("exact_count", None)
     out.get("completeness", {}).pop("next_cursor", None)
     return out
 
@@ -629,6 +634,16 @@ def host_table(store):
     """The host's tool table over ``store`` (``ontology_host.tool_table``, as the served
     host builds it when it opens a store generation), and the connection's work meter."""
     from operating import ontology_host
+    # A host serves a store file; an in-memory store keeps no facts (``_store_identity``),
+    # so the fixture is put in a file, as a build publishes it, before the host opens it.
+    tmp = tempfile.TemporaryDirectory()
+    atexit.register(tmp.cleanup)
+    path = Path(tmp.name) / "projection.sqlite"
+    target = sqlite3.connect(path)
+    store.conn.backup(target)
+    target.close()
+    store.conn.close()
+    store.conn = sqlite3.connect(path, check_same_thread=False)
     base = ot.OntologyTools(
         ot.StoreReader(store.conn), fx.POLICY, item_gate=fx.item_gate, schema=fx.SCHEMA,
         grammar=None, contracts=fx.CONTRACTS, clock=lambda: fx.NOW,
@@ -707,11 +722,18 @@ class ColdCallTests(unittest.TestCase):
     def test_the_first_call_after_a_store_swap_does_what_a_later_call_does(self):
         # Failing first on cc45652..874e03c: request() dropped the table on a new
         # generation and the first call rebuilt it, paying the store-wide reads itself.
+        firsts = {}
         for name, args in (("plx.around", EMPTY_HOP), ("plx.timeline", {"from": fx.O2})):
             for groups in (SIZE, 10 * SIZE):
                 with self.subTest(name=name, groups=groups):
                     first, later = swapped_host_calls(groups, name, args, fx.FULL)
-                    self.assertEqual(first, later)
+                    # A fixed handful of steps (the freshness read of a new generation)
+                    # is the first call's own; a store-wide read is thousands.
+                    self.assertGreaterEqual(first, later)
+                    self.assertLessEqual(first - later, FIRST_CALL_FIXED_STEPS)
+                    firsts.setdefault(name, set()).add(first)
+        for name, seen in firsts.items():
+            self.assertEqual(len(seen), 1, (name, seen))   # not a function of the store size
 
     def test_the_first_call_reads_none_of_the_store_wide_slices(self):
         store = sized(SIZE)

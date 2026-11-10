@@ -124,5 +124,75 @@ class InboxCodeTest(_Versions):
         self.assertEqual(held["code"], "new-proactive-inbox")
 
 
+def _versions_beside_others(state: str, calls: str, conn) -> None:   # a forked process
+    import os
+    import time
+    os.environ["XDG_CACHE_HOME"] = state
+
+    def slow(artifact, root):
+        with open(calls, "a") as out:
+            out.write(f"{os.getpid()}\n")
+        time.sleep(0.5)
+        return f"v-{artifact.name}"
+    ds.compute = slow
+    ds._tree = lambda root: "tree-under-test"
+    ds._VERSIONS.clear()
+    conn.send(ds.deployed(["truth-check"], state_dir=Path(state) / "state"))
+
+
+class SharedVersionsTest(unittest.TestCase):
+    def test_processes_starting_together_compute_versions_once(self) -> None:
+        # the API, its warm and section workers start together: one computes, the
+        # others wait for its cache file instead of parsing the same code again
+        import multiprocessing as mp
+        ctx = mp.get_context("fork")
+        state = tempfile.mkdtemp(prefix="versions-")
+        calls = str(Path(state) / "calls")
+        pipes, children = [], []
+        for _ in range(4):
+            here, there = ctx.Pipe()
+            child = ctx.Process(target=_versions_beside_others, args=(state, calls, there))
+            child.start()
+            pipes.append(here)
+            children.append(child)
+        try:
+            for here in pipes:
+                self.assertTrue(here.poll(60))
+                self.assertEqual(here.recv(), {"truth-check": "v-truth-check"})
+        finally:
+            for child in children:
+                child.join(10)
+        self.assertEqual(len(Path(calls).read_text().split()), 1)
+        doc = json.loads((Path(state) / "state" / ds.CODE_DIR
+                          / "deployed-tree-under-test.json").read_text())
+        self.assertEqual(doc["versions"], {"truth-check": "v-truth-check"})
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+def _versions_in_daemon(conn) -> None:   # runs in a daemonic child (fork)
+    from types import SimpleNamespace
+    ds.compute = lambda artifact, root: f"v-{artifact.name}"
+    try:
+        conn.send(ds._compute_all([SimpleNamespace(name="a"), SimpleNamespace(name="b")],
+                                  Path(".")))
+    except BaseException as exc:  # noqa: BLE001 - reported to the test
+        conn.send(repr(exc))
+
+
+class DaemonWorkerTest(unittest.TestCase):
+    def test_a_daemonic_worker_computes_versions_itself(self) -> None:
+        # the API's section and warm workers are daemonic: a process pool there failed
+        # ("daemonic processes are not allowed to have children") and left no versions
+        import multiprocessing as mp
+        ctx = mp.get_context("fork")
+        here, there = ctx.Pipe()
+        child = ctx.Process(target=_versions_in_daemon, args=(there,), daemon=True)
+        child.start()
+        try:
+            self.assertTrue(here.poll(60))
+            self.assertEqual(here.recv(), {"a": "v-a", "b": "v-b"})
+        finally:
+            child.join(10)

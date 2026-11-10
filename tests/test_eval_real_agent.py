@@ -229,13 +229,21 @@ class LivePartTests(unittest.TestCase):
         self.assertNotIn("reader@", json.dumps(info) + json.dumps(blocked))
         # The people-exclusion guard's settings reach both servers (without them the host
         # withholds every mailbox); a credential the config does not ask for never does.
+        # The store switch reaches them too: a host started by an API reading Postgres
+        # reads Postgres, never the SQLite generation and its delta layers.
         with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": "oid-x",
+                                          "PLX_ONTOLOGY_PG": "only",
+                                          "PLX_PG_FACTS_DIR": "/facts",
                                           "MICROSOFT_GRAPH_CLIENT_SECRET": "s3cret"}):
             for server in (host.mcp_server(), host.harness_server()):
                 self.assertEqual(server["env"]["PLX_EXCLUDED_PEOPLE_OIDS"], "oid-x")
+                self.assertEqual((server["env"]["PLX_ONTOLOGY_PG"],
+                                  server["env"]["PLX_PG_FACTS_DIR"]), ("only", "/facts"))
                 self.assertNotIn("MICROSOFT_GRAPH_CLIENT_SECRET", server["env"])
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(set(era.EXCLUSION_ENV) & set(host.mcp_server()["env"]))
+            from operating.agent_session import STORE_ENV
+            self.assertFalse(set(era.EXCLUSION_ENV + STORE_ENV)
+                             & set(host.mcp_server()["env"]))
 
     def test_roots_resolve_over_the_live_host_wire_and_too_few_block_the_part(self):
         """The fixture stdio case host stands in for ``operating.host mcp`` (its real
@@ -582,8 +590,8 @@ class LivePartTests(unittest.TestCase):
         from integrations.source_mirror import AUDIENCE_SCHEMA, SourceMirror
         from operating.case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
         from operating.host import projection_path
-        from operator_ui import case_console
-        from operator_ui import object_workspace as objects
+        from operator_api.workspace import case_console
+        from operator_api.workspace import object_workspace as objects
         audience = self.root / "mirror-audience.json"
         audience.write_text(json.dumps({"schema": AUDIENCE_SCHEMA, "tenant": "plx",
                                         "audiences": {}}))
@@ -878,8 +886,8 @@ class LivePartTests(unittest.TestCase):
         no value of it is scored, and it is counted beside the score."""
         from ontology.types import Actor
         from operating.case_runtime import CaseRuntime
-        from operator_ui import case_console
-        from operator_ui import object_workspace as objects
+        from operator_api.workspace import case_console
+        from operator_api.workspace import object_workspace as objects
         from scripts import eval_dev_baseline as edb
         items, host_for, _ = era.fixture_parts(self.root / "work")["fixture_sample"]
         self.assertEqual([item["id"] for item in items], list(era.FIXTURE_SAMPLE))
@@ -955,8 +963,8 @@ class LivePartTests(unittest.TestCase):
         from operating import agent_loop
         from operating.build_steps import ReviewsIfPresent
         from operating.case_runtime import CASE_RUNTIME_DIR, CaseRuntime, MIRROR_FILE
-        from operator_ui import case_console
-        from operator_ui import object_workspace as objects
+        from operator_api.workspace import case_console
+        from operator_api.workspace import object_workspace as objects
         audience = self.root / "mirror-audience.json"
         audience.write_text(json.dumps({"schema": AUDIENCE_SCHEMA, "tenant": "plx",
                                         "audiences": {}}))
@@ -1038,7 +1046,7 @@ class LivePartTests(unittest.TestCase):
         withheld root uses no session slot, so a cap of one slot per admitted root
         completes the run."""
         import copy
-        from operator_ui import object_workspace as objects
+        from operator_api.workspace import object_workspace as objects
         items, host_for, _ = era.fixture_parts(self.root / "work")["fixture_sample"]
         modes = ("answers", "refused", "raises", "usage_limit", "close_fails", "withheld")
         base = next(i for i in items if i["id"] == "dev-F1-0009-fixture")

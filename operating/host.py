@@ -1,7 +1,11 @@
-"""One host over one state directory: capture cycles, the projection, MCP and the console.
+"""One host over one state directory: capture cycles, the projection and MCP.
 
 Capture cycles write into a persistent state directory, the projection is rebuilt from
-them, and MCP plus the console are served from that directory. ``--state-dir`` defaults to
+them, and MCP is served from that directory; the app API (``python3 -m operator_api
+serve --host-config``) serves the same directory with ``console_arguments``. ``serve`` runs
+the cycles only: the console it once opened was retired, and
+``--no-console``/``--port`` stay accepted with no effect so existing units keep starting.
+``--state-dir`` defaults to
 ``PLX_WORKBENCH_STATE_DIR`` (``operating.warm_store.state_dir``); with neither the host
 refuses, naming the setting (``{"error": "state_dir_unset", "setting":
 "PLX_WORKBENCH_STATE_DIR"}``, exit 2).
@@ -9,7 +13,7 @@ refuses, naming the setting (``{"error": "state_dir_unset", "setting":
     python3 -m operating.host run    --state-dir DIR --config HOST.json
     python3 -m operating.host status --state-dir DIR
     python3 -m operating.host serve  --state-dir DIR --config HOST.json \\
-        [--interval-seconds N] [--no-console] [--stop-file PATH]
+        [--interval-seconds N] [--stop-file PATH]
     python3 -m operating.host check  --state-dir DIR --config HOST.json [--cycles N] \\
         [--interrupt-after-seconds S]
     python3 -m operating.host mcp    --state-dir DIR --config HOST.json \\
@@ -106,7 +110,7 @@ tries again at its next interval. The lock holder first stops any capture child 
 host left running (``host/cycle-children.json``: pid, process group and start token; the
 group is killed only when the token still matches) and refuses when it cannot
 (``orphan_capture_running``, ``cycle_children_unreadable``); ``run``, ``check`` and
-``serve --no-console`` turn SIGTERM into an exit that stops the running child first.
+``serve`` turn SIGTERM into an exit that stops the running child first.
 ``check`` reports ``checks.cycles_overlapping``: ledger cycles that started before an
 earlier one finished (0 under the one lock). In ingest mode ``check`` adds the capture
 resume counters (``resume_checked``, ``completed_not_resumed``, ``requests_grew``,
@@ -206,6 +210,7 @@ from integrations import child_process
 from ontology.core import Actor
 
 from . import session_identity
+from operating.declared_schema.host_ledger import _LEDGER_DDL
 
 CONFIG_SCHEMA = "plx-host-config/v1"
 STATUS_SCHEMA = "plx-host-status/v1"
@@ -305,22 +310,6 @@ _SOURCE_KEYS = {"portal": {"base_url", "relations", "budget_seconds"},
                 "teams": {"scope"}}
 _PATHS = {"capture_audience", "live_audience", "mirror_audience", "employee_policy",
           "portal_access", "knowledge_namespaces"}
-_LEDGER_DDL = (
-    """CREATE TABLE IF NOT EXISTS source_state (
-  source TEXT PRIMARY KEY, configured INTEGER NOT NULL, generation INTEGER NOT NULL,
-  captured_at TEXT, served_from TEXT NOT NULL, complete INTEGER, attempted_at TEXT,
-  stale_since TEXT, error TEXT, served_path TEXT)""",
-    """CREATE TABLE IF NOT EXISTS cycle (
-  cycle_id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
-  state TEXT NOT NULL, report TEXT)""",
-    """CREATE TABLE IF NOT EXISTS projection (
-  generation INTEGER PRIMARY KEY, built_at TEXT NOT NULL, previous_generation INTEGER,
-  content_digest TEXT, objects INTEGER, inputs TEXT NOT NULL)""",
-    # The parts the source's latest read was refused or not answered on (``blocked_parts``:
-    # codes and statuses only); no row while it answered.
-    """CREATE TABLE IF NOT EXISTS source_blocked (
-  source TEXT PRIMARY KEY, parts TEXT NOT NULL)""",
-)
 
 
 class HostError(Exception):
@@ -3545,7 +3534,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     commands = parser.add_subparsers(dest="command", required=True)
     for name, text in (("run", "one capture cycle and projection rebuild (counts only)"),
                        ("status", "per source generation, age and staleness"),
-                       ("serve", "capture cycles on an interval and the console"),
+                       ("serve", "capture cycles on an interval"),
                        ("check", "N cycles over one state directory and what they keep"),
                        ("mcp", "the MCP stdio host over this state for one employee"),
                        ("mcp-http", "the remote MCP host (Streamable HTTP, loopback) for "
@@ -3558,9 +3547,10 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     serve = commands.choices["serve"]
     serve.add_argument("--interval-seconds", type=int, default=None)
     serve.add_argument("--max-cycles", type=int, default=0)
-    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--port", type=int, default=None,
+                       help="accepted, no effect (the console it served was retired)")
     serve.add_argument("--no-console", action="store_true",
-                       help="cycles only (for a scheduler or a separate console)")
+                       help="accepted, no effect: serve runs the cycles only")
     serve.add_argument("--stop-file", type=Path, default=None,
                        help="ingest mode: stop when this file exists (default: "
                             "<DIR>/host/ingest.stop)")
@@ -3671,28 +3661,10 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                                   port=args.port, monotonic=monotonic, jwks=jwks, ready=ready)
         else:
             interval = args.interval_seconds or config.interval_seconds
-            if args.no_console:
-                with _terminated_exits():
-                    host.serve(interval_seconds=interval, max_cycles=args.max_cycles,
-                               on_cycle=_print, stop_file=args.stop_file)
-                return 0
-            continuous = config.ingest is not None
-            if not continuous:
-                _print(host.serve_cycle())   # the console opens over a built projection
-
-            def later() -> None:
-                # Ingest mode starts at once: its sources refresh the projection as each
-                # finishes, the console serves the generation committed meanwhile.
-                if continuous or not host.stop.wait(interval):
-                    host.serve(interval_seconds=interval, max_cycles=args.max_cycles,
-                               on_cycle=_print, stop_file=args.stop_file)
-
-            threading.Thread(target=later, daemon=True).start()
-            from operator_ui import case_console
-            try:
-                return case_console.main(console_arguments(host, args.port))
-            finally:
-                host.stop.set()
+            with _terminated_exits():
+                host.serve(interval_seconds=interval, max_cycles=args.max_cycles,
+                           on_cycle=_print, stop_file=args.stop_file)
+            return 0
     except HostError as error:
         if args.command == "serve" and args.state_dir is not None:
             record_serve_start(args.state_dir, error=error.code, now=(clock or _utc)())

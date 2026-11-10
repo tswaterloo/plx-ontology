@@ -550,10 +550,10 @@ class ConsoleHttpTests(Fixture):
         from queue import Queue
         import threading
 
-        from operator_ui.case_console import TicketSessions
-        from operator_ui.case_workspace import CaseWorkspace
-        from operator_ui.server import make_server
-        from operator_ui.session_journal import SessionJournal
+        from operator_api.workspace.case_console import TicketSessions
+        from operator_api.workspace.case_workspace import CaseWorkspace
+        from operator_api.tests.console_harness import make_server
+        from operator_api.workspace.session_journal import SessionJournal
 
         ready: Queue = Queue(maxsize=1)
 
@@ -641,9 +641,9 @@ class ConsoleHttpTests(Fixture):
 
         from operating.oidc_auth import EntraResource, StaticJwks
         from operating.tests import test_mcp_http_host as door
-        from operator_ui.case_console import TicketSessions
-        from operator_ui import session_journal
-        from operator_ui.session_journal import SessionJournal
+        from operator_api.workspace.case_console import TicketSessions
+        from operator_api.workspace import session_journal
+        from operator_api.workspace.session_journal import SessionJournal
 
         audience = "api://plx-console-test"
         resource = EntraResource(TID, frozenset({audience}), door.SCOPE,
@@ -742,8 +742,8 @@ class ConsoleHttpTests(Fixture):
         from http.client import HTTPConnection
 
         from operating.tests import test_mcp_http_host as door
-        from operator_ui.case_workspace import CaseWorkspace
-        from operator_ui.server import make_server
+        from operator_api.workspace.case_workspace import CaseWorkspace
+        from operator_api.tests.console_harness import make_server
 
         runtime = self.runtime(require_employee=False)
         session = si.fixture_session("plx", ["staff:operations"], channel=si.CHANNEL_CONSOLE)
@@ -777,7 +777,7 @@ class ConsoleHttpTests(Fixture):
         import contextlib
         import io
 
-        from operator_ui import console_ticket
+        from operator_api.workspace import console_ticket
 
         reader = {"uid": "cmuser1", "email": EMAIL_A, "entraTenantId": TID,
                   "entraObjectId": OID_A} if reader is None else reader
@@ -796,8 +796,8 @@ class ConsoleHttpTests(Fixture):
         import contextlib
         import io
 
-        from operator_ui import console_ticket
-        from operator_ui.session_journal import SessionJournal
+        from operator_api.workspace import console_ticket
+        from operator_api.workspace.session_journal import SessionJournal
 
         request = self.serve(guarded=True)
         out = self.dir / "console-url"
@@ -824,7 +824,7 @@ class ConsoleHttpTests(Fixture):
         # is stubbed here: its audience checks are tests.test_case_workspace_http's).
         from unittest import mock
 
-        from operator_ui.case_workspace import CaseWorkspace
+        from operator_api.workspace.case_workspace import CaseWorkspace
         with mock.patch.object(CaseWorkspace, "original_pdf",
                                return_value={"content": b"%PDF-1.4 stub"}):
             self.assertEqual(request("/api/case-original-pdf?handle=original%3A%2F%2Forig-"
@@ -860,7 +860,7 @@ class ConsoleHttpTests(Fixture):
             self.assertNotIn(value, dumped)
         # An object id's type is journaled only when it names a schema object type, and
         # each write keeps only the newest KEEP_ROWS rows.
-        import operator_ui.session_journal as journal_module
+        import operator_api.workspace.session_journal as journal_module
         probe = SessionJournal(self.dir / "probe" / "journal.sqlite")
         who = type("Session", (), {"session_ref": "a" * 64, "employee": type(
             "Employee", (), {"principal": "employee:" + OID_A})()})()
@@ -908,7 +908,7 @@ class ConsoleHttpTests(Fixture):
         import contextlib
         import io
 
-        from operator_ui import console_ticket
+        from operator_api.workspace import console_ticket
 
         si.bind_state_dir(self.dir / "state", fixture=False)
         out = self.dir / "console-url"
@@ -1003,7 +1003,7 @@ class ConsoleHttpTests(Fixture):
         # the next mint is not blocked by out_exists.
         from unittest import mock
 
-        from operator_ui import console_ticket
+        from operator_api.workspace import console_ticket
 
         real_fdopen = console_ticket.os.fdopen
         opened = []
@@ -1053,8 +1053,8 @@ class ConsoleHttpTests(Fixture):
 
         from unittest import mock
 
-        from operator_ui import session_journal
-        from operator_ui.session_journal import SessionJournal
+        from operator_api.workspace import session_journal
+        from operator_api.workspace.session_journal import SessionJournal
 
         si.bind_state_dir(self.dir / "state", fixture=False)
         code, printed = self.mint(self.dir / "console-url")
@@ -1102,8 +1102,8 @@ class ConsoleHttpTests(Fixture):
             self.assertEqual(journal.minted_by(), {"d" * 64: "host"})
 
     def test_a_live_workspace_is_never_bound_to_a_process_token(self):
-        from operator_ui.case_workspace import CaseWorkspace
-        from operator_ui.server import make_server
+        from operator_api.workspace.case_workspace import CaseWorkspace
+        from operator_api.tests.console_harness import make_server
 
         runtime = self.runtime()
         employee = si.employee_session(self.resolver(), channel=si.CHANNEL_CONSOLE,

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import glob
 import hashlib
 import json
@@ -47,17 +48,17 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 SCHEME = "plx-derived-code/v1"
 CODE_DIR = "derived-code"
 SIDECAR = ".code.json"
 ROOT = Path(__file__).resolve().parents[1]
 # packages whose modules and data files make up the source tree (:func:`tree_key`)
-PACKAGES = ("app", "integrations", "ontology", "operating", "operator_api", "operator_ui",
+PACKAGES = ("app", "integrations", "ontology", "operating", "operator_api",
             "evals", "verify", "twin", "scripts")
 KEEP_CACHES = 6
 STATES = ("current", "stale", "flagged", "absent", "unknown")
@@ -277,9 +278,11 @@ def _compute_one(job: tuple[str, str]) -> tuple[str, str | None]:
 def _compute_all(artifacts: Sequence[Artifact], root: Path) -> dict[str, str | None]:
     """Versions of several artifacts, side by side in child processes (each closure is
     seconds of parsing); one in this process."""
-    if len(artifacts) < 2:
-        return {a.name: compute(a, root) for a in artifacts}
     import multiprocessing as mp
+    # a daemonic process (the API's section and warm workers) may not start children:
+    # its versions are computed here, one after another, never not at all
+    if len(artifacts) < 2 or mp.current_process().daemon:
+        return {a.name: compute(a, root) for a in artifacts}
     from concurrent.futures import ProcessPoolExecutor
     workers = min(len(artifacts), os.cpu_count() or 1)
     with ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn")) as pool:
@@ -313,6 +316,44 @@ def _write_json(path: Path, doc: Any) -> bool:
         return False
 
 
+LOCK_WAIT = 300.0
+
+
+@contextmanager
+def _shared(state_dir: Path | None, write: bool) -> Iterator[None]:
+    """Held while one process computes a tree's versions, so the others starting beside
+    it (the API, its warm and section workers) read its cache file instead of each
+    parsing the same code: an advisory lock in the first writable cache directory, given
+    up after ``LOCK_WAIT`` seconds (then computed here as well, never left unknown)."""
+    if not write:
+        yield
+        return
+    handle = None
+    for directory in _cache_dirs(state_dir):
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            handle = open(directory / "deployed.lock", "a+b")
+            break
+        except OSError:
+            continue
+    if handle is None:
+        yield
+        return
+    try:
+        deadline = time.monotonic() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+        yield
+    finally:
+        handle.close()   # releases the lock
+
+
 def deployed(names: Iterable[str] | None = None, *, state_dir: Path | None = None,
              root: Path | None = None, write: bool = True) -> dict[str, str | None]:
     """Each artifact's version in the deployed tree (this process's source): from memory,
@@ -333,7 +374,7 @@ def deployed(names: Iterable[str] | None = None, *, state_dir: Path | None = Non
             out[artifact.name] = None
     if not missing:
         return out
-    with _LOCK:
+    with _LOCK, _shared(state_dir, write):
         cached: dict[str, Any] = {}
         for directory in _cache_dirs(state_dir):
             doc = _read_json(directory / f"deployed-{key}.json")

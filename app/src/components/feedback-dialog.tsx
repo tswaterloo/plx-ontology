@@ -10,6 +10,7 @@ import { plainError } from "@/lib/errors";
 import { useShortcut } from "@/lib/platform";
 import type { NoteFeedbackRequest } from "@/lib/types";
 import { Sheet } from "./ui/sheet";
+import { useReturnFocus } from "@/lib/return-focus";
 
 type NoteKind = NonNullable<NoteFeedbackRequest["kind"]>;
 
@@ -76,6 +77,7 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const value = useMemo(() => ({ open: () => setOpen(true) }), []);
+  useReturnFocus(open);
   return (
     <Ctx.Provider value={value}>
       {children}

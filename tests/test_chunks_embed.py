@@ -1286,6 +1286,14 @@ class PostgresTests(unittest.TestCase):
                  "layers": [{"store": str(fold), "owned": 1}]}))
             again = fl.follow(args)["layers"]["delta-2.sqlite"]
             self.assertEqual((again["already_indexed"], again["chunks"]), (1, 0))
+            # the SQLite generation retired (Postgres the only store): a pass that would
+            # be due (newer chunk code) is skipped, never read from a missing file, and
+            # the layers still follow
+            (projection / "generations" / "g1" / "store.sqlite").unlink()
+            with mock.patch.object(fl, "chunk_code", return_value="newer-chunk-code"):
+                retired = fl.follow(args)
+            self.assertEqual(retired["generation_pass"], {"skipped": "generation_retired"})
+            self.assertEqual((len(passes), "layers" in retired), (1, True))
 
     def test_backfill_embeds_the_recent_and_the_undated_first_and_takes_turns(self):
         from operating.embed import backfill as bf

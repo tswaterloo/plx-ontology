@@ -81,6 +81,55 @@ class ImageOcrTests(unittest.TestCase):
         self.assertTrue(set(ct.IMAGE_OCR_SUFFIXES) <= set(ct.REREAD_SUFFIXES))
 
 
+def dib_with_text(text: str) -> bytes:
+    """A NiceLabel preview stream: its length, then a BITMAPINFOHEADER and pixels."""
+    from PIL import Image
+    out = io.BytesIO()
+    Image.open(io.BytesIO(png_with_text(text))).convert("RGB").save(out, "BMP")
+    dib = out.getvalue()[14:]
+    return len(dib).to_bytes(4, "little") + dib
+
+
+class LabelPreviewTests(unittest.TestCase):
+    """BarTender and NiceLabel label files (13k on SharePoint, ``unsupported``): their
+    own preview of the label is OCR-read locally; one without a preview stays unread."""
+
+    def test_a_label_file_is_read_by_ocr_of_its_own_preview(self):
+        from operating.msg_reader import _compound_file
+
+        png = png_with_text("BR200 CONDITIONER")
+        btw = (b"\r\nBar Tender Format File\r\n<Metadata><Author>x</Author></Metadata>"
+               + bytes(40) + png + b"\x00encrypted format")
+        lbl = _compound_file({"Contents": b"\x0a\x00NicePower", "NICE Preview": b"\x00" * 8,
+                              "NICE Preview Big": dib_with_text("FMVM-15 108 PCS")})
+        seen = []
+
+        def ocr(image, timeout):
+            seen.append(image[:2])
+            return "label text"
+        with mock.patch.object(du, "local_image_ocr_available", return_value=True), \
+                mock.patch.object(du, "local_image_text", side_effect=ocr):
+            for content, name in ((btw, "YMCA Hair Gel.btw"), (lbl, "FMVM-15.lbl")):
+                self.assertEqual(ct.capture_text(content, {"name": name,
+                                                           "mime_type": "application/octet-stream"},
+                                                 image_ocr=True),
+                                 (ct.TEXT_OCR, "label text"), name)
+            # The preview is what OCR reads (a PNG, a BMP), never the label file itself.
+            self.assertEqual(seen, [b"\x89P", b"BM"])
+            # Without a preview, or another label format (an encrypted .nlbl archive):
+            # unread as before, never OCR-read.
+            for content, name in ((btw[:60], "cut.btw"), (b"PK\x03\x04\x14\x00\x01\x00", "a.nlbl"),
+                                  (_compound_file({"Contents": b"x"}), "old.lbl")):
+                self.assertEqual(ct.capture_text(content, {"name": name}, image_ocr=True)[0],
+                                 "unsupported", name)
+            self.assertEqual(len(seen), 2)
+        if du.local_image_ocr_available():   # the real engine on the real preview bytes
+            status, text = ct.capture_text(lbl, {"name": "FMVM-15.lbl"}, image_ocr=True)
+            self.assertEqual(status, ct.TEXT_OCR)
+            self.assertIn("FMVM-15", text)
+        self.assertTrue({".btw", ".lbl"} <= set(ct.REREAD_SUFFIXES))
+
+
 if __name__ == "__main__":
     unittest.main()
 

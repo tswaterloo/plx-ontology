@@ -360,7 +360,7 @@ class ConsolePathTests(TwinTestCase):
         the shown call at their own session (nothing sent), the request goes to the MC
         twin once, its admin decides, the employee dispatches once and verifies."""
         from operating.session_identity import CHANNEL_CONSOLE, fixture_session
-        from operator_ui.object_workspace import WorkspaceActions
+        from operator_api.workspace.object_workspace import WorkspaceActions
 
         world = self.world()
         _case, iid = world.portal_intent(1, "PO7001")
@@ -422,7 +422,7 @@ class ConsolePathTests(TwinTestCase):
         recorded as non-authorizing, MC refuses a second decision, and a new gate decided
         by another admin is dispatched once and verified."""
         from operating.session_identity import CHANNEL_CONSOLE, fixture_session
-        from operator_ui.object_workspace import WorkspaceActions
+        from operator_api.workspace.object_workspace import WorkspaceActions
 
         world = self.world()
         _case, iid = world.portal_intent(1, "PO7002")

@@ -61,7 +61,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                             "section pool and kept across restarts; 0: in memory only")
     group.add_argument("--dev-ticket-login", action="store_true",
                        help="--dev over live state: dev-login takes a console session ticket "
-                            "(python3 -m operator_ui.console_ticket mint)")
+                            "(python3 -m operator_api.workspace.console_ticket mint)")
     group.add_argument("--dev-employee-oid", help="--dev over a dev state: this employee")
     group.add_argument("--dev-fixture-principal", action="append", default=[],
                        help="--dev over a fixture state: a fixture principal")

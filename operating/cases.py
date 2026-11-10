@@ -101,6 +101,7 @@ from ontology.core import LEVELS, Actor, ValidationError
 
 from . import quantity_types as _qt
 from .entitlements import _AGENT_PREFIXES  # agents are never principals (one rule)
+from operating.declared_schema.cases import _DDL, _CURSOR_DDL
 
 _LOG = logging.getLogger(__name__)
 
@@ -1010,26 +1011,6 @@ def each_objective_case(case_ids: Any,
 # Store
 # --------------------------------------------------------------------------
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS case_event (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  case_id TEXT NOT NULL,
-  case_seq INTEGER NOT NULL CHECK(case_seq >= 1),
-  kind TEXT NOT NULL,
-  actor TEXT NOT NULL,
-  at TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  prev_hash TEXT NOT NULL,
-  event_hash TEXT NOT NULL UNIQUE,
-  UNIQUE(case_id, case_seq)
-);
-CREATE INDEX IF NOT EXISTS idx_case_event_kind ON case_event(kind, seq);
-CREATE INDEX IF NOT EXISTS idx_case_event_case_kind ON case_event(case_id, kind);
-CREATE TRIGGER IF NOT EXISTS case_event_no_update BEFORE UPDATE ON case_event
-BEGIN SELECT RAISE(ABORT, 'case_event_is_append_only'); END;
-CREATE TRIGGER IF NOT EXISTS case_event_no_delete BEFORE DELETE ON case_event
-BEGIN SELECT RAISE(ABORT, 'case_event_is_append_only'); END;
-"""
 # Every object ``_DDL`` creates: a file holding them all needs no DDL at open.
 _DDL_OBJECTS = frozenset(re.findall(
     r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|VIEW|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(\w+)",
@@ -1038,9 +1019,6 @@ _DDL_OBJECTS = frozenset(re.findall(
 
 # Where each session's read position lives: beside the case store, never in it (the case
 # log and its tables hold the case's record only).
-_CURSOR_DDL = ("CREATE TABLE IF NOT EXISTS case_cursor (case_id TEXT NOT NULL, "
-               "session_ref TEXT NOT NULL, case_seq INTEGER NOT NULL, "
-               "PRIMARY KEY (case_id, session_ref))")
 
 # Findings a session sees on opening a case besides what it has not read, and the most
 # unread ones it is shown (the rest are counted).

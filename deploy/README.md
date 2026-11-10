@@ -225,3 +225,15 @@ host, root-owned, mode 0600, and never commit it). Memory and CPU limits set wit
 `systemctl set-property` live in `/etc/systemd/system.control/<unit>.d/` on the host, not in
 this repo. They survive a render and a release switch and take precedence over the unit
 files and drop-ins.
+
+## Keeping data and readings current (upkeep units)
+
+`deploy/ops/install_keep_fresh.sh` (idempotent; `--dry-run` renders and verifies only) installs
+and enables, after a build: user timers `plx-sheet-readings` (daily 02:40 ET),
+`plx-system-activity` (Sunday 03:00 ET, 13 weekly aggregates) and `plx-work-graph` (Sunday
+03:30 ET, role owners from the last 13 weeks, written to a candidate roles file the autopilot
+reads only if `PLX_AUTOPILOT_ROLES_FILE` names it); system timers `plx-proactive-whole` (every 4
+h), `plx-backup` (03:15 ET), `plx-restore-test` (04:30 ET) and `plx-ops-health` (every 15
+min, `/etc/plx/ingest.env`); and links `plx-release` into `~/.local/bin`. Each unit sets `Nice` and
+`MemoryMax`; the ones that read people data load `proactive.env` (the people exclusion only);
+no unit embeds a secret.

@@ -1,0 +1,26 @@
+# Weekly per-person, per-system activity (operating.system_activity): counts by ISO week,
+# system and workflow, resolved to people through the directory only; no row content. The
+# owner workload view reads the snapshot (PLX_SYSTEM_ACTIVITY_FILE, else the API's data
+# directory; ignored after 8 days, hence weekly). Retention: 13 weekly aggregates. A person
+# the exclusion does not clear is counted only as "withheld" (PLX_EXCLUDED_PEOPLE_OIDS from
+# the env file; unavailable guard clears nobody). Read only: every store opens mode=ro.
+[Unit]
+Description=PLX weekly system activity snapshot (counts per person, system and workflow)
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+UnsetEnvironment=PLX_WORKBENCH_API_KEY AZURE_CLIENT_SECRET
+ExecStart=/data/venv/bin/python3 -m operating.system_activity \
+  --state-dir /data/plx-state \
+  --out /data/plx-state/system-activity.json \
+  --aliases /data/plx-state/system-actors.json --weeks 13
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryHigh=3G
+MemoryMax=4G
+TimeoutStartSec=1h
+UMask=0077

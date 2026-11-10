@@ -14,13 +14,16 @@ scan of this fixture. Evidence label: isolated-fixture.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime as dt
+import time
 from decimal import Decimal
 import json
 from pathlib import Path
 import re
 import tempfile
 import unittest
+from unittest import mock
 
 from ontology.json_contract import validate
 from operating import lot_impact as li
@@ -37,9 +40,63 @@ STAFF, SALES = tp.STAFF, tp.SALES   # SALES holds no quality_controlled marking
 PLAN = tp.ROOT / "ontology/plans/lot_impact.json"
 QC = '["quality_controlled"]'
 
+# The link types the next build serves (schema declarations as
+# they stand there, evidence trimmed): the walk is tested over them before main's schema
+# declares them. A declaration main gains must agree (test_overlay_agrees_with_the_schema).
+NEXT_LINKS = {link["id"]: link for link in (
+    {"id": "Batch.for_sales_order", "from": "Batch", "to": "SalesOrder",
+     "name": "for_sales_order", "reverse_name": "batches", "cardinality": "N:1",
+     "bindings": [{"kind": "fk", "tier_ceiling": "verified", "from_binding": "portal.fm_batch",
+                   "to_binding": "portal.fm_order_entry",
+                   "pairs": [{"from": "oelist_c", "to": "erpcode", "compare": "identifier"}]}]},
+    {"id": "BatchSchedule.for_bulk_product", "from": "BatchSchedule", "to": "Product",
+     "name": "for_bulk_product", "reverse_name": "batch_schedules", "cardinality": "N:1",
+     "bindings": [{"kind": "fk", "tier_ceiling": "verified",
+                   "from_binding": "portal.fm_batch_calibration",
+                   "to_binding": "portal.app_product",
+                   "pairs": [{"from": "bulkcode", "to": "code", "compare": "identifier"}]}]},
+    {"id": "SalesInvoiceLine.of_sales_order", "from": "SalesInvoiceLine", "to": "SalesOrder",
+     "name": "of_sales_order", "reverse_name": "sage_invoice_lines", "cardinality": "N:1",
+     "bindings": [{"kind": "fk", "tier_ceiling": "verified",
+                   "from_binding": "portal.sage_oe_invoice_detail",
+                   "to_binding": "portal.sage_oe_order_header",
+                   "pairs": [{"from": "ordnumber", "to": "ordnumber",
+                              "compare": "identifier"}]}]},
+    {"id": "SalesInvoiceLine.of_shipment", "from": "SalesInvoiceLine", "to": "Shipment",
+     "name": "of_shipment", "reverse_name": "sage_invoice_lines", "cardinality": "N:1",
+     "bindings": [{"kind": "fk", "tier_ceiling": "verified",
+                   "from_binding": "portal.sage_oe_invoice_detail",
+                   "to_binding": "portal.sage_oe_shipment_header",
+                   "pairs": [{"from": "shinumber", "to": "shinumber",
+                              "compare": "identifier"}]}]},
+    {"id": "ShipmentLine.of_sales_order", "from": "ShipmentLine", "to": "SalesOrder",
+     "name": "of_sales_order", "reverse_name": "sage_shipment_lines", "cardinality": "N:1",
+     "bindings": [{"kind": "fk", "tier_ceiling": "verified",
+                   "from_binding": "portal.sage_oe_shipment_detail",
+                   "to_binding": "portal.sage_oe_order_header",
+                   "pairs": [{"from": "ordnumber", "to": "ordnumber",
+                              "compare": "identifier"}]}]})}
+NEXT = None   # tp.SCHEMA with NEXT_LINKS (the schema's own declarations win)
+
 
 def setUpModule():
+    global NEXT
     tp.setUpModule()
+    NEXT = dataclasses.replace(tp.SCHEMA, link_types={**NEXT_LINKS, **tp.SCHEMA.link_types})
+
+
+def customer(s, system, key):
+    """The fixture customer ``key`` as one system records it; the Sage and BC records are
+    recorded as the same customer as the Portal's (verified same_record links)."""
+    oid = {"portal": f"Customer:portal.app_customer:cu-{key}",
+           "sage": f"Customer:portal.sage_ar_customer:scu-{key}",
+           "bc": f"Customer:bc.customers:bcu-{key}"}[system]
+    if oid not in s.handles:
+        s.obj(oid)
+        if system != "portal":
+            s.link("Customer.same_record_as", customer(s, "portal", key), oid,
+                   kind="same_record")
+    return oid
 
 
 def consumed(s, comp, lot, tier="reviewed"):
@@ -107,6 +164,7 @@ def lot_fixture(s, *, orders=2, key="la", qty=("40", "60"), without_ao=(), lead=
         s.link("SalesOrderLine.line_of", sol, fm_so)
         so = s.obj(f"SalesOrder:portal.app_sales_order:so-{key}-{n:03d}")
         s.link("SalesOrder.same_record_as", so, fm_so, kind="same_record")
+        s.link("SalesOrder.ordered_by", so, customer(s, "portal", key))
         where = (ship_on or {}).get(n, "portal")
         shipped = so
         if where == "bc":
@@ -121,6 +179,8 @@ def lot_fixture(s, *, orders=2, key="la", qty=("40", "60"), without_ao=(), lead=
             ship = s.obj(f"Shipment:portal.app_shipment:sh-{key}-{n:03d}")
         if where != "none":
             s.link("Shipment.ships", ship, shipped)
+            s.link("Shipment.shipped_to", ship,
+                   customer(s, where if where in ("bc", "sage") else "portal", key))
             ids["shipments"].append(ship)
         else:
             ids["shipments"].append(None)
@@ -142,22 +202,105 @@ def lot_fixture(s, *, orders=2, key="la", qty=("40", "60"), without_ao=(), lead=
     return ids
 
 
-def table_of(store, policy=None, held=True):
+def batch_fixture(s, *, key="ba", allocated=(), direct=None, filled=None, invoiced=None,
+                  ship_on=None, after_build=True):
+    """A production batch (FileMaker record and the batch record it was upserted into) that
+    reaches customer orders, all synthetic:
+    ``direct`` n: the batch's OE list names FM order n (Batch.for_sales_order, after build);
+    ``filled`` n: an FM assembly order filled from the batch is allocated to a line of order n;
+    ``allocated``: FM order-entry batch allocations to a line of each order n.
+    Each FM order n is the Portal order n, which is the Sage order n. ``ship_on`` n ->
+    "line" (a Sage shipment line of the Sage order, after build), "invoice" (a Sage invoice
+    line of the Sage order billing the shipment, after build), "portal" (the Portal
+    shipment header) or "none" (default). ``after_build`` False: no after-build link."""
+    ids = {"orders": {}, "lines": {}, "shipments": {}}
+    fm = ids["batch"] = s.obj(f"Batch:portal.fm_batch:b-{key}", "fm_bronze")
+    s.val(fm, "lot_number", "text", f"BL-{key.upper()}7", path="row.lotno_c")
+    gold = ids["gold"] = s.obj(f"Batch:portal.app_batch_record:g-{key}")
+    s.link("Batch.same_record_as", fm, gold, kind="same_record")
+    sched = ids["schedule"] = s.obj(f"BatchSchedule:portal.fm_batch_calibration:q-{key}",
+                                    "fm_bronze")
+    s.link("BatchSchedule.for_batch", sched, fm)
+    ids["product"] = s.obj(f"Product:portal.app_product:p-{key}")
+    if after_build:
+        s.link("BatchSchedule.for_bulk_product", sched, ids["product"])
+
+    def order(n, quantity):
+        if n in ids["orders"]:
+            return ids["lines"][n]
+        fm_so = ids["orders"][n] = s.obj(f"SalesOrder:portal.fm_order_entry:oe-{key}-{n}",
+                                         "fm_bronze")
+        sol = ids["lines"][n] = s.obj(f"SalesOrderLine:portal.fm_order_entry_item:"
+                                      f"oe-{key}-{n}-1", "fm_bronze")
+        s.val(sol, "ordered_quantity", "quantity", quantity, role="ordered", path="row.qty")
+        s.link("SalesOrderLine.line_of", sol, fm_so)
+        so = s.obj(f"SalesOrder:portal.app_sales_order:so-{key}-{n}")
+        s.link("SalesOrder.same_record_as", so, fm_so, kind="same_record")
+        sage = s.obj(f"SalesOrder:portal.sage_oe_order_header:sso-{key}-{n}")
+        s.link("SalesOrder.same_record_as", so, sage, kind="same_record")
+        s.link("SalesOrder.ordered_by", so, customer(s, "portal", key))
+        where = (ship_on or {}).get(n, "none")
+        ship = None
+        if where == "portal":
+            ship = s.obj(f"Shipment:portal.app_shipment:sh-{key}-{n}")
+            s.link("Shipment.ships", ship, so)
+        elif where in ("line", "invoice") and after_build:
+            ship = s.obj(f"Shipment:portal.sage_oe_shipment_header:ssh-{key}-{n}")
+            if where == "line":
+                line = s.obj(f"ShipmentLine:portal.sage_oe_shipment_detail:sd-{key}-{n}")
+                s.link("ShipmentLine.of_sales_order", line, sage)
+                s.link("ShipmentLine.line_of", line, ship)
+            else:
+                line = s.obj(f"SalesInvoiceLine:portal.sage_oe_invoice_detail:id-{key}-{n}")
+                s.link("SalesInvoiceLine.of_sales_order", line, sage)
+                s.link("SalesInvoiceLine.of_shipment", line, ship)
+        if ship is not None:
+            s.link("Shipment.shipped_to", ship,
+                   customer(s, "portal" if where == "portal" else "sage", key))
+        ids["shipments"][n] = ship
+        return sol
+
+    for n in direct or ():
+        order(n, "5")
+        if after_build:
+            s.link("Batch.for_sales_order", fm, ids["orders"][n])
+    for n in filled or ():
+        sol = order(n, "12")
+        ao = s.obj(f"AssemblyOrder:portal.fm_assembly_order:ao-{key}-{n}", "fm_bronze")
+        s.link("AssemblyOrder.fills_from", ao, fm)
+        alloc = s.obj(f"AssemblyOrderAllocation:portal.fm_order_entry_item_assembly:"
+                      f"al-{key}-{n}", "fm_bronze")
+        s.link("AssemblyOrderAllocation.allocates", alloc, ao)
+        s.link("AssemblyOrderAllocation.for_order_line", alloc, sol)
+    for n in allocated:
+        sol = order(n, "30")
+        alloc = s.obj(f"BatchAllocation:portal.fm_order_entry_item_batch:ba-{key}-{n}",
+                      "fm_bronze")
+        s.link("BatchAllocation.allocates", alloc, fm)
+        s.link("BatchAllocation.for_order_line", alloc, sol)
+    return ids
+
+
+def table_of(store, policy=None, held=True, schema=None):
     table: dict = {}
     policy = policy or tp.POLICY
-    base = ot.OntologyTools(ot.StoreReader(store.conn), policy, schema=tp.SCHEMA,
+    schema = schema or tp.SCHEMA
+    base = ot.OntologyTools(ot.StoreReader(store.conn), policy, schema=schema,
                             contracts=CONTRACTS, clock=lambda: tp.NOW)
     ot.register(table, base)
     tt.register(table, tt.TraverseTools(base))
     op.register(table, op.ProcessTools(base, tp.GRAPHS))
     oi.register(table, oi.InvestigateTools(
-        table, schema=tp.SCHEMA, rows=rows_of(store, policy), scope=oi.read_scope(base),
+        table, schema=schema, rows=rows_of(store, policy), scope=oi.read_scope(base),
         held_markings=policy.held_markings if held else None))
     return table
 
 
-class LotImpactPlanTests(unittest.TestCase):
+class Asker:
+    schema = None   # tp.SCHEMA
+
     def ask(self, store, arguments, actor=STAFF, **kw):
+        kw.setdefault("schema", self.schema)
         out = table_of(store, **kw)["plx.investigate"]["handler"](arguments, actor)
         self.assertEqual(validate(out, CONTRACTS["tools"]["plx.investigate"]["output"],
                                   root=CONTRACTS), [], json.dumps(out)[:3000])
@@ -188,6 +331,9 @@ class LotImpactPlanTests(unittest.TestCase):
         return {n: e for n, e in answer.items()
                 if n.startswith("lot_impact_") and n.removeprefix("lot_impact_").isdigit()}
 
+
+
+class LotImpactPlanTests(Asker, unittest.TestCase):
     def test_lot_reaches_two_customer_orders_through_two_assembly_orders(self):
         s = tp.Store()
         ids = lot_fixture(s)
@@ -366,6 +512,256 @@ class LotImpactPlanTests(unittest.TestCase):
             next(e for e in bad["evidence"] if e["kind"] == "compute")["engine_args"] = args
             out = self.ask(tp.Store(), {"plan": bad, "root": "Lot:portal.fm_receipt_raw_material.lotnoqc:none"})
             self.assertEqual(out["error"]["code"], "plan_engine_args", args)
+
+
+class BatchRecallTests(Asker, unittest.TestCase):
+    """A production batch by its id or lot number: the orders, shipments and customers it
+    reaches, over the links main serves and those the next build adds (``NEXT``)."""
+
+    def setUp(self):
+        self.schema = NEXT
+
+    def by_order(self, answer, ids):
+        out = {}
+        for e in self.orders(answer).values():
+            hit = [n for n, so in ids["orders"].items() if so in e["basis"]]
+            self.assertEqual(len(hit), 1, e["basis"])
+            out[hit[0]] = e
+        return out
+
+    def test_a_batch_reaching_a_shipped_and_an_unshipped_order(self):
+        """Acceptance: both orders listed, the shipment under the first, a
+        shipment_not_found gap naming the second only; quantities Decimal."""
+        s = tp.Store()
+        ids = batch_fixture(s, direct=(0,), filled=(1,), ship_on={0: "line"})
+        for root in (ids["batch"], ids["gold"], {"identifier": "BL-BA7"}):
+            out, answer = self.investigate(s, root)
+            self.assertEqual(answer["lot_impact"]["value"], 2, root)
+            got = self.by_order(answer, ids)
+            self.assertEqual(set(got), {0, 1})
+            self.assertIn(ids["shipments"][0], got[0]["basis"])
+            self.assertTrue(any("ShipmentLine.of_sales_order" in st for st in got[0]["steps"]))
+            self.assertTrue(any("Batch.for_sales_order" in st for st in got[0]["steps"]))
+            self.assertIsNone(got[0]["value"])   # the OE list names the order, not lines
+            self.assertTrue(any("not its lines" in st for st in got[0]["steps"]))
+            self.assertEqual(Decimal(got[1]["value"]), Decimal("12"))
+            self.assertTrue(any("AssemblyOrder.fills_from" in st for st in got[1]["steps"]))
+            gaps = {(g["reason"], g["subject"]) for g in out["gaps"]}
+            missing = [g for g in out["gaps"] if g["reason"] == "shipment_not_found"]
+            self.assertEqual(len(missing), 1, out["gaps"])
+            self.assertIn(f"so-ba-1", missing[0]["subject"])
+            self.assertNotIn("so-ba-0", missing[0]["subject"])
+            self.assertEqual(missing[0]["state"], "unknown")   # never proof of no shipment
+            self.assertIn(("touched_order_lines_not_recorded",
+                           sorted([ids["orders"][0], "SalesOrder:portal.app_sales_order:so-ba-0",
+                                   "SalesOrder:portal.sage_oe_order_header:sso-ba-0"])[0]),
+                          gaps)
+            self.assertFalse([g for g in out["gaps"] if g["reason"] == "link_not_served"])
+            # one customer across the Portal and Sage records, shipped to on order 0 only
+            customers = answer["lot_impact_customers"]
+            self.assertEqual(customers["value"], 1)
+            self.assertEqual(set(customers["basis"]), {customer(s, "portal", "ba"),
+                                                       customer(s, "sage", "ba")})
+            self.assertTrue(any("shipped on order" in st and "with no shipment" in st
+                                for st in customers["steps"]), customers["steps"])
+            batch = [e for n, e in answer.items() if n.startswith("lot_impact_batch_")]
+            self.assertEqual(len(batch), 1)
+            self.assertEqual(set(ids[k] for k in ("batch", "gold", "product")) - set(
+                batch[0]["basis"]), set())
+
+    def test_shipments_by_invoice_line_and_header_and_allocations(self):
+        s = tp.Store()
+        ids = batch_fixture(s, allocated=(0, 1, 2), ship_on={0: "invoice", 1: "portal"})
+        out, answer = self.investigate(s, ids["batch"])
+        got = self.by_order(answer, ids)
+        self.assertEqual(set(got), {0, 1, 2})
+        self.assertEqual({n: Decimal(e["value"]) for n, e in got.items()},
+                         {n: Decimal("30") for n in range(3)})
+        self.assertTrue(any("SalesInvoiceLine.of_shipment" in st for st in got[0]["steps"]))
+        for n in (0, 1):
+            self.assertIn(ids["shipments"][n], got[n]["basis"])
+        missing = [g["subject"] for g in out["gaps"] if g["reason"] == "shipment_not_found"]
+        self.assertEqual(len(missing), 1)
+        self.assertIn("so-ba-2", missing[0])
+
+    def test_on_main_s_schema_the_after_build_hops_are_named_not_guessed(self):
+        """Before the build serves them: the plan validates, the after-build steps are not
+        run and say so, and what main serves (fills_from, allocations) is still walked."""
+        self.assertEqual(oi.check_plan(json.loads(PLAN.read_text("utf-8")), tp.SCHEMA,
+                                       CONTRACTS), [])
+        s = tp.Store()
+        ids = batch_fixture(s, direct=(0,), filled=(1,), allocated=(2,),
+                            ship_on={1: "portal"}, after_build=False)
+        out, answer = self.investigate_on(s, ids["batch"], tp.SCHEMA)
+        got = self.by_order(answer, ids)
+        self.assertEqual(set(got), {1, 2})   # order 0 is reached only by the OE list
+        unserved = {g["subject"]: g for g in out["gaps"] if g["reason"] == "link_not_served"}
+        self.assertEqual(set(unserved), {"batch_orders", "schedule_products", "ship_lines",
+                                         "invoice_lines", "invoice_shipments"})
+        self.assertIn("Batch.for_sales_order", unserved["batch_orders"]["detail"])
+        self.assertEqual(unserved["batch_orders"]["who_can_answer"],
+                         ["undeclared:Workbench operator"])
+        trace = {t["step"]: t for t in out["trace"]}
+        self.assertEqual((trace["batch_orders"]["status"], trace["batch_orders"]["reason"]),
+                         ("skipped", "link_not_declared"))
+
+    def investigate_on(self, store, root, schema):
+        self.schema = schema
+        try:
+            return self.investigate(store, root)
+        finally:
+            self.schema = NEXT
+
+    def test_the_plan_is_whole_once_the_schema_declares_the_new_links(self):
+        """With the next build's declarations every step is checked as written: no
+        if_declared step hides a broken path."""
+        plan = json.loads(PLAN.read_text("utf-8"))
+        flagged = [st["id"] for st in plan["steps"] if st.get("if_declared")]
+        self.assertEqual(sorted(flagged), ["batch_orders", "invoice_lines",
+                                           "invoice_shipments", "schedule_products",
+                                           "ship_line_shipments", "ship_lines"])
+        for st in plan["steps"]:
+            st.pop("if_declared", None)
+        self.assertEqual(oi.check_plan(plan, NEXT, CONTRACTS), [])
+        self.assertTrue(oi.check_plan(plan, tp.SCHEMA, CONTRACTS))
+        self.assertEqual(li.plan_check(
+            next(e for e in plan["evidence"] if e["kind"] == "compute")["engine_args"],
+            plan, len(plan["evidence"]) - 1, tp.SCHEMA), [])
+
+    def test_overlay_agrees_with_the_schema(self):
+        """A next-build link main's schema already declares is declared the same way."""
+        for link_id, link in NEXT_LINKS.items():
+            self.assertIn(link_id, li.AFTER_BUILD)
+            real = tp.SCHEMA.link_types.get(link_id)
+            if real is not None:
+                self.assertEqual({k: real[k] for k in ("from", "to", "name")},
+                                 {k: link[k] for k in ("from", "to", "name")}, link_id)
+        self.assertEqual(set(li.AFTER_BUILD), set(NEXT_LINKS))
+
+    def test_a_text_joined_customer_record_is_never_merged(self):
+        """Conservative identity: a customer record joined only by a text match (lead
+        tier) counts apart, said as such; never one customer by a shared name."""
+        s = tp.Store()
+        ids = batch_fixture(s, key="bt", allocated=(0,), ship_on={0: "portal"})
+        fm_customer = s.obj("Customer:portal.fm_customer:fcu-bt", "fm_bronze")
+        s.link("SalesOrder.ordered_by", ids["orders"][0], fm_customer)
+        s.link("Customer.same_record_as", customer(s, "portal", "bt"), fm_customer,
+               tier="stored_by_text_join", kind="same_record")
+        out, answer = self.investigate(s, ids["batch"])
+        customers = answer["lot_impact_customers"]
+        self.assertEqual(customers["value"], 2)
+        self.assertIn(fm_customer, customers["basis"])
+
+    def test_a_batch_linked_to_nothing_is_a_typed_gap(self):
+        s = tp.Store()
+        ids = batch_fixture(s, key="bn")
+        out, answer = self.investigate(s, ids["batch"])
+        self.assertEqual(answer["lot_impact"]["value"], 0)
+        gap = next(g for g in out["gaps"] if g["reason"] == "batch_not_linked_to_order")
+        self.assertIn(ids["batch"], gap["subject"])
+        # a complete run over links the reader may see: recorded as absent
+        self.assertEqual(gap["state"], "absent_in_source")
+        # while the served schema cannot hold the OE-list link, never a proof of absence
+        out, answer = self.investigate_on(s, ids["batch"], tp.SCHEMA)
+        gap = next(g for g in out["gaps"] if g["reason"] == "batch_not_linked_to_order")
+        self.assertEqual(gap["state"], "unknown")
+
+    def test_reader_without_quality_scope_is_refused_for_a_batch(self):
+        s = tp.Store()
+        ids = batch_fixture(s, direct=(0,), ship_on={0: "line"})
+        for root in (ids["batch"], {"identifier": "BL-BA7"}):
+            out = self.ask(s, {"family": "F17", "root": root}, SALES)
+            self.assertEqual(out["error"]["code"], "scope_not_held")
+            self.assertNotIn("answer", out)
+            self.assertNotIn("BA7", json.dumps(out))
+            self.assertNotIn("SalesOrder:", json.dumps(out))
+
+    def test_an_expired_reused_set_never_fails_a_step(self):
+        """A later step asks an earlier step's set handles instead of each object; a set
+        evicted under load or past its ttl (handle_expired) is asked again per object, never
+        a failed step: the same orders, shipments and customers at more calls, and where
+        those calls outrun the step budget the answer says it is partial."""
+        def expired():
+            return mock.patch.object(ot.SetRegistry, "resolve", lambda *_: None)
+        for n in (1, 3, 10):
+            s = tp.Store()
+            ids = batch_fixture(s, key=f"exp{n}", allocated=range(n), ship_on={
+                i: ("line", "invoice", "portal")[i % 3] for i in range(n)})
+            kept_trace = self.ask(s, {"family": "F17", "root": ids["batch"]})["trace"]
+            with expired():
+                gone_first = self.ask(s, {"family": "F17", "root": ids["batch"]})
+            gone_trace = gone_first["trace"]
+            self.assertFalse([t for t in gone_trace if t["status"] == "error"], (n, gone_trace))
+            self.assertNotIn("step_failed", gone_first["answerability"]["reasons"], n)
+            calls = {t["step"]: t["calls"] for t in kept_trace}
+            self.assertTrue(any(t["calls"] > calls[t["step"]] for t in gone_trace), n)
+            if n == 10:   # per-object calls run out of steps: said, never read as whole
+                self.assertEqual(gone_first["answerability"]["state"], "partial")
+                self.assertIn("step_budget_exhausted", gone_first["answerability"]["reasons"])
+                continue
+            kept_out, kept = self.investigate(s, ids["batch"])
+            with expired():
+                gone_out, gone = self.investigate(s, ids["batch"])
+            self.assertEqual(gone, kept, n)
+            # the plan's gaps are the same; a primitive's own no-match notes name the source
+            # of the objects each call started from, so they differ by how it was asked
+            def plan_gaps(out):
+                return sorted(json.dumps(g) for g in out["gaps"] if g["reason"]
+                              not in {"no_match", "not_applicable_to_source"})
+            self.assertEqual(plan_gaps(gone_out), plan_gaps(kept_out), n)
+            self.assertEqual(set(self.by_order(gone, ids)), set(range(n)), n)
+            self.assertEqual([(t["step"], t["status"], t["objects"]) for t in gone_trace],
+                             [(t["step"], t["status"], t["objects"]) for t in kept_trace], n)
+
+    def test_batch_cardinality_no_order_lost_or_duplicated(self):
+        for n in (1, 10, 60):
+            s = tp.Store()
+            ids = batch_fixture(s, key=f"c{n}", allocated=range(n), ship_on={
+                i: ("line", "invoice", "portal")[i % 3] for i in range(n)})
+            started = time.monotonic()
+            out, answer = self.investigate(s, ids["batch"])
+            seconds = time.monotonic() - started
+            got = self.by_order(answer, ids)
+            self.assertEqual(set(got), set(range(n)), n)
+            self.assertEqual(answer["lot_impact"]["value"], n)
+            shipped = [b for e in got.values() for b in e["basis"]
+                       if b in ids["shipments"].values()]
+            self.assertEqual(sorted(shipped), sorted(ids["shipments"].values()), n)
+            self.assertNotIn("shipment_not_found", {g["reason"] for g in out["gaps"]}, n)
+            first = self.ask(s, {"family": "F17", "root": ids["batch"]})
+            self.assertNotIn("budget_exhausted", {t["status"] for t in first["trace"]}, n)
+            self.assertLessEqual(first["steps"]["used"], 128, n)
+            if n <= 50:
+                self.assertTrue(all(e["value"] == "30" for e in got.values()), n)
+                self.assertEqual(answer["lot_impact_customers"]["value"], 1, n)
+            else:   # line reads cut at max_each, and said so: never a guessed quantity
+                self.assertIn("page_cap", {g["reason"] for g in out["gaps"]})
+            self.assertLess(seconds, 60, n)
+
+    def test_hand_check_worksheet_and_score(self):
+        """The post-apply hand check (scripts.recall_handcheck): one verdict pair per order
+        of a real answer, counts without ids, and a pass only at >= 90% with every order
+        judged."""
+        from scripts import recall_handcheck as hc
+        s = tp.Store()
+        ids = batch_fixture(s, direct=(0,), filled=(1,), ship_on={0: "line"})
+        out = self.ask(s, {"family": "F17", "root": ids["batch"]})
+        lines, counts = hc.section("oe_list", ids["batch"], out)
+        self.assertEqual((counts["orders"], counts["shipped"]), (2, 1))
+        self.assertNotIn("SalesOrder:", json.dumps(counts))
+        text = "\n".join(lines)
+        self.assertEqual(hc.score(text)["orders_listed"], 2)
+        self.assertFalse(hc.score(text)["pass"])   # nothing judged yet
+
+        def sheet(right, wrong, open_=0):
+            return "\n".join(["- [x] correct: a", "- [ ] wrong: b"] * right
+                             + ["- [ ] correct: a", "- [x] wrong: b"] * wrong
+                             + ["- [ ] correct: a", "- [ ] wrong: b"] * open_)
+        self.assertTrue(hc.score(sheet(14, 1))["pass"])     # 93%
+        self.assertFalse(hc.score(sheet(13, 2))["pass"])    # 87%
+        self.assertFalse(hc.score(sheet(15, 0, 1))["pass"])  # one order not judged
+        refused = hc.section("oe_list", ids["batch"], {"error": {"code": "scope_not_held"}})
+        self.assertEqual(refused[1], {"error": "scope_not_held"})
 
 
 class LotConsumptionReviewTests(unittest.TestCase):

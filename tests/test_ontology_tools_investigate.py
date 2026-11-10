@@ -285,6 +285,32 @@ class PlansAreDataTests(unittest.TestCase):
             with self.subTest(mutate.__name__):
                 self.assertTrue(self._broken(mutate))
 
+    def test_an_if_declared_step_waits_for_its_links_and_is_checked_once_declared(self):
+        """A step for links a coming schema adds keeps the plan valid until then; misused,
+        or once its links are declared and its path is wrong, it is refused as any step."""
+        def coming(d):   # a link the schema does not declare yet, and a step it feeds
+            d["steps"] += [
+                {"id": "later", "tool": "plx.around", "from": "lines", "bind": "from",
+                 "if_declared": True, "args": {"path": [
+                     {"link_type": "SalesOrderLine.made_up", "direction": "forward"}]}},
+                {"id": "later_orders", "tool": "plx.around", "from": "later", "bind": "from",
+                 "if_declared": True, "args": {"path": [
+                     {"link_type": "SalesOrderLine.line_of", "direction": "forward"}]}}]
+        self.assertEqual(self._broken(coming), [])
+
+        def coming_feeds_a_plain_path(d):
+            coming(d)
+            del d["steps"][-1]["if_declared"]
+        def on_an_object_read(d):
+            d["steps"][0]["if_declared"] = True
+        def declared_but_disconnected(d):
+            coming(d)
+            d["steps"][-1]["from"] = "root"   # SalesOrderLine.line_of starts at a line
+        for mutate in (coming_feeds_a_plain_path, on_an_object_read,
+                       declared_but_disconnected):
+            with self.subTest(mutate.__name__):
+                self.assertTrue(self._broken(mutate))
+
     def test_a_family_claimed_twice_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             for name in ("_plan.schema.json", "order_quantities.json"):

@@ -30,10 +30,10 @@ from operating import objective_runner, proactive_engine
 from operator_api import backend as be
 from operator_api import models as m
 from operator_api.server import main as serve_main
-from operator_ui import case_console
-from operator_ui import object_workspace as objects
-from operator_ui.tests import case_fixtures
-from operator_ui.tests.test_objective_box import _on_record
+from operator_api.workspace import case_console
+from operator_api.workspace import object_workspace as objects
+from operator_api.tests import case_fixtures
+from operator_api.tests.test_objective_box import _on_record
 
 OPS = [case_fixtures.OPERATIONS, case_fixtures.PURCHASING, case_fixtures.QUALITY]
 
@@ -54,6 +54,8 @@ def planner(request):
             {"tool": "plx.object", "arguments": {"object_id": oid}} for oid in roots]
             or [{"tool": "plx.find", "arguments": {"query": case_fixtures.PO_NUMBER}}]}, None
     result = request["transcript"][0]["observations"][0]["result"]
+    # a card over the observation bound arrives as its first entries under "shown"
+    result = result.get("shown", result) if isinstance(result.get("shown"), dict) else result
     if "values" not in result:
         return {"action": "abstain", "reason": "nothing readable"}, None
     return {"action": "answer", "unknowns": ["not in the record: why it is late"],
@@ -457,7 +459,7 @@ class Mapping(unittest.TestCase):
         secret = [{"text": f"SECRET subject line {h}", "citations": [h]} for h in UNITS]
         ran = {"claims": [shown], "withheld": len(secret),
                "loop": {"claims": [shown, *secret]}}
-        with mock.patch("operator_ui.object_workspace.audience_unit", UNITS.get), \
+        with mock.patch("operator_api.workspace.object_workspace.audience_unit", UNITS.get), \
                 mock.patch("operating.pg.permissions.load_exclusion", return_value=exclusion):
             return self.backend()._hidden(_View(set(UNITS)), ran)
 
@@ -807,8 +809,11 @@ class HomeFreshnessTest(unittest.TestCase):
         # over a day before it named beside it, never folded into it (demo-ready: Home
         # said 29 Oct from Teams while the late list said 1 Nov)
         self.assertEqual(backend.freshness().as_of, "2026-10-31T05:00:00Z")
+        # the ledger above holds failed captures, so the stale-capture alarm (judged at
+        # the backend's clock) closes the label
+        alarm = "; captures not refreshed: mc, portal, sharepoint (oldest 2 h)"
         self.assertEqual(backend.freshness().label,
-                         "Data as of 31 Oct 2026 1:00 AM ET; Teams to 29 Oct")
+                         "Data as of 31 Oct 2026 1:00 AM ET; Teams to 29 Oct" + alarm)
         # with hybrid search on, a source whose searchable text ends over a day before its
         # capture says so (records after it exist but search cannot find them yet)
         with mock.patch.dict(os.environ, {"PLX_SEARCH": "hybrid"}), mock.patch(
@@ -817,7 +822,7 @@ class HomeFreshnessTest(unittest.TestCase):
                               "Portal": "2026-10-30T15:00:00+00:00"}):
             fresh = backend.freshness()
         self.assertEqual(fresh.label, "Data as of 31 Oct 2026 1:00 AM ET; Teams to 29 Oct; "
-                                      "searchable text: Teams to 27 Oct")
+                                      "searchable text: Teams to 27 Oct" + alarm)
         self.assertEqual({s.system: s.searchable_to for s in fresh.sources}["Teams"],
                          "2026-10-27T22:00:00+00:00")
         self.assertIsNone(backend.freshness().sources[0].searchable_to)   # search off
@@ -1501,7 +1506,7 @@ class KnownReaderWarmTests(unittest.TestCase):
     def test_a_read_ahead_identity_serves_and_audits_nothing(self):
         from operating import session_identity as si
         from operating.employee_permissions import EmployeePrincipal
-        from operator_ui.session_journal import SessionJournal
+        from operator_api.workspace.session_journal import SessionJournal
         principal = EmployeePrincipal("11111111-1111-4111-8111-111111111111",
                                       "29e05178-0bd1-49b9-be6e-b01be1975f70")
         warm = si.SessionIdentity(

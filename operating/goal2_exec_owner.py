@@ -81,6 +81,8 @@ from .action_catalog import FIELD_TYPES, OWNER_DECLARED_ROLE, role_declared, val
 from .case_verification import field_status
 from .cases import CitationError, _canon, effect_values
 from .goal2_preconditions import CHECKS
+from operating import declared_schema as _schemas
+from operating.declared_schema import goal2_exec_owner as _GOAL2_EXEC_OWNER
 
 DISPATCH_SCHEMA = "plx-owner-dispatch/v1"
 READBACK_SCHEMA = "plx-owner-readback/v1"
@@ -197,19 +199,6 @@ REAL_CAPABILITY_REQUIREMENTS: tuple[Mapping[str, str], ...] = (
              "devloop/live-checks spec for it"},
 )
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS owner_record (
-  relation TEXT NOT NULL, record_key TEXT NOT NULL, row_json TEXT NOT NULL,
-  PRIMARY KEY (relation, record_key));
-CREATE TABLE IF NOT EXISTS owner_operation (
-  idempotency_key TEXT PRIMARY KEY,
-  payload_sha256 TEXT, payload_json TEXT,
-  relation TEXT, record_key TEXT,
-  status TEXT NOT NULL CHECK(status IN ('applied','pending','rejected','fenced','partial')),
-  receipt TEXT, reason TEXT, seq INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS owner_relation (
-  relation TEXT PRIMARY KEY, fields_json TEXT NOT NULL, version_field TEXT NOT NULL);
-"""
 
 
 class OwnerRejected(Exception):
@@ -481,7 +470,7 @@ class IsolatedOwnerSystem:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.path, timeout=30)
         try:
-            db.executescript(_DDL)
+            _schemas.apply(db, _GOAL2_EXEC_OWNER)
         finally:
             db.close()
 

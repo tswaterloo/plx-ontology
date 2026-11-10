@@ -162,7 +162,7 @@ class EstimateEngineTests(unittest.TestCase):
         self.assertEqual(lc.money_text(Decimal("0.012345"), "USD/kg"), "0.0123")
         self.assertEqual(lc.money_text(Decimal("1.234567"), "CAD/USD"), "1.234567")
         self.assertEqual(lc.money_text(Decimal("12.345678"), "kg"), "12.345678")
-        from operator_ui.object_workspace import investigation_verdict
+        from operator_api.workspace.object_workspace import investigation_verdict
         verdict = investigation_verdict("landed_cost", {"investigation": {
             "answer": [{"name": "landed_cost", "kind": "computed", "value": total["value"],
                         "unit": "USD", "currency": "USD"}],

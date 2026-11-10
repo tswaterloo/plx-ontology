@@ -972,6 +972,22 @@ class CaptureTests(CaptureCase):
             "SELECT event FROM item_events WHERE l1_handle=?", (self.handle("01FILEA"),))]
         self.assertIn("content_recovered", events)
 
+    def test_a_failed_read_is_retried_before_the_walk_spends_the_budget(self):
+        # Live 2026-11-09: no failed read (http_429, content_mismatch) was ever recovered
+        # in place (0 content_recovered events; 2,092 stayed failed until the file
+        # changed): the retry ran only after a walk, and every walk spent the budget.
+        self.drive.fail_download["01FILEA"] = 403
+        self.capture().run(scope())
+        self.assertEqual(self.store.current(DRIVE, "01FILEA")["content_status"],
+                         "unavailable:http_403")
+        del self.drive.fail_download["01FILEA"]
+        self.drive.file("01FILED", "d.txt", "01AOS", b"d", mime="text/plain")
+        base = self.drive.downloads()
+        run = self.capture(budget_seconds=1, monotonic=lambda: self.drive.downloads() - base
+                           ).run(scope())
+        self.assertEqual(self.store.current(DRIVE, "01FILEA")["content_status"], "captured")
+        self.assertEqual(self.root(run)["counts"]["contents_recovered"], 1)
+
     def test_a_transient_download_error_is_retried_once_then_typed(self):
         # Live 2026-10-11 (capture.sharepoint_estate): contents_unavailable urlerror 14.
         # A download that failed in transit waited for the run's byte repair, which a
@@ -996,7 +1012,11 @@ class CaptureTests(CaptureCase):
                          "unavailable:urlerror")
         # The walk's read and the run's byte repair, each retried once, never more.
         self.assertEqual(downloads("01FILED"), 4)
-        # With the budget spent by the first attempt there is no retry.
+        # A later run reads it first (before its walk); then, with the budget spent by
+        # the first attempt there is no retry.
+        del self.drive.download_errors["01FILED"]
+        self.capture().run(scope())
+        self.assertEqual(self.store.current(DRIVE, "01FILED")["content_status"], "captured")
         self.drive.file("01FILEE", "e.txt", "01AOS", b"e", mime="text/plain")
         self.drive.download_errors["01FILEE"] = 10
         base = self.drive.downloads()
@@ -1103,6 +1123,26 @@ class ScopeRemovalAndTextTests(CaptureCase):
                                   reader_audience())
         self.assertIn("PO100235", page["row"]["content_text"])
         self.assertEqual(self.store.counts(CAPTURE, capture_audience())["texts_ocr"], 1)
+
+    def test_pending_images_and_labels_are_offered_past_files_no_ocr_reads(self):
+        # Live 2026-11-09: 2,313 images stayed ``ocr_pending`` with their bytes kept:
+        # the pending window held only PDFs, and 100 other unread files filled it.
+        self.capture().run(scope())
+        copy = ("INSERT INTO items (l1_handle, drive_id, item_id, etag, root_path, path, "
+                "record, resources, source_acl, digest, content_status, content_sha256, "
+                "text_status, recorded_at, last_seen_at) SELECT ?, drive_id, ?, etag, "
+                "root_path, path, json_set(record, '$.name', ?, '$.mime_type', ?), resources, "
+                "source_acl, digest, content_status, content_sha256, ?, recorded_at, "
+                "last_seen_at FROM items WHERE item_id='01FILEB'")
+        with self.store.db:
+            for n in range(cs.REPAIRS_PER_ROOT):
+                self.store.db.execute(copy, (f"h{n}", f"X{n}", "empty.txt", "text/plain",
+                                             "no_text"))
+            for name, mime in (("scan.png", "image/png"), ("case.btw", "application/octet-stream")):
+                self.store.db.execute(copy, (name, name, name, mime, OCR_PENDING))
+        root = self.store.current(DRIVE, "01FILEB")["root_path"]
+        self.assertEqual({r["item_id"] for r in self.store.text_unread(DRIVE, root, 100)},
+                         {"scan.png", "case.btw"})
 
     def test_ocr_starts_only_with_its_reserve_of_the_budget_left_then_reads_later(self):
         """Live 2026-10-27: a run cut while scans were being OCR-read waited for them past

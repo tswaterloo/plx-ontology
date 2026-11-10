@@ -68,10 +68,10 @@ from operating.tests.test_action_path import (ALL_TYPES, API_ORDER, DECIDER, DEC
                                               STEPHEN, VINCE, VINCE_OID, ActionPathTestCase)
 from operating.tests.test_mcp_action_tools import ActionToolsTestCase, fixture_host_session
 from operating.tests.test_mcp_case_tools import FINANCE, OPS_FINANCE
-from operator_ui import case_console
-from operator_ui import object_workspace as objects
-from operator_ui.tests import case_fixtures
-from operator_ui.tests.test_workspace_actions import OBJECT as WS_OBJECT, stub_tools
+from operator_api.workspace import case_console
+from operator_api.workspace import object_workspace as objects
+from operator_api.tests import case_fixtures
+from operator_api.tests.test_workspace_actions import OBJECT as WS_OBJECT, stub_tools
 from twin import mode as twin_mode
 from twin.portal import PortalTwin
 from twin.world import ORDER_RELATION, TwinWorld

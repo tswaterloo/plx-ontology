@@ -2,7 +2,7 @@
 
 No live data without a real employee identity (the MCP host's
 ``eng`` fallback is gone). A session host (``operating.mcp_server``,
-``operator_ui.case_console``) binds each session to exactly one
+``operator_api.workspace.case_console``) binds each session to exactly one
 ``SessionIdentity`` and builds its case runtime with ``require_employee=True``,
 so ``EmployeeActorGate`` refuses, before any read, an actor that carries no
 employee. What the employee may read is decided, on every call, by
@@ -92,6 +92,7 @@ from ontology.core import LEVELS, Actor
 from .employee_permissions import (EMPLOYEE_PREFIX, EmployeeAccessRefused,
                                    EmployeePermissionResolver, EmployeePrincipal)
 from .entitlements import _AGENT_PREFIXES
+from operating.declared_schema.session_replay import _REPLAY_DDL
 
 SESSION_TICKET_VERSION = "v1"
 SESSION_TICKET_SECRET_ENV = "PLX_WORKBENCH_SESSION_SECRET"
@@ -242,14 +243,6 @@ def verify_session_ticket(ticket: Any, secret: Any, *, now: int | None = None) -
     return claims
 
 
-_REPLAY_DDL = """
-CREATE TABLE IF NOT EXISTS ticket_jti (
-  jti_sha256 TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('used', 'revoked')),
-  exp INTEGER NOT NULL,
-  PRIMARY KEY (jti_sha256, kind)
-);
-"""
 
 
 class TicketReplayGuard:
@@ -640,7 +633,7 @@ def check_runtime(runtime: Any, session: SessionIdentity) -> None:
 
 STATE_LABEL_FILE = "session-state-label.json"
 STATE_LABEL_SCHEMA = "plx-session-state-label/v1"
-# Written by the case console fixture seeds (operator_ui/case_console.py FIXTURE_MARKER).
+# Written by the case console fixture seeds (operator_api/workspace/case_console.py FIXTURE_MARKER).
 _CONSOLE_FIXTURE_MARKER = "fixture-seed.json"
 
 

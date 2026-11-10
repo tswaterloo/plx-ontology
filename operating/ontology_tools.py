@@ -146,7 +146,7 @@ import zlib
 # against a ``typing`` alias costs several times more, and a find makes hundreds per call.
 from collections.abc import (Callable, Collection, Iterable, Iterator, Mapping,
                              MutableMapping, Sequence)
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 from urllib.parse import unquote
 
 from ontology import store_ddl
@@ -295,6 +295,7 @@ LINK_TARGET_CAP = 5000
 LINK_TARGET_SEGMENTS = 20
 FILTER_BATCH = 1000  # objects a filter scan reads per statement (its key-ordered range)
 NARROWED_SPAN = 2000  # keys a narrowed statement passes over at most
+NARROWED_ROWS_PER_ID = 4  # value rows per candidate a value-first narrowing reads at most
 SCAN_MARGIN_SECONDS = 8.0   # call time a filter scan leaves to answer what it decided
 # A filter listing whose segment matched nothing scans the next ones for this long (and
 # stops this many seconds before the call's own limit), so a scarce match is listed.
@@ -1314,6 +1315,43 @@ class StoreReader:
             + narrow + self._VISIBLE_OBJECT + "ORDER BY o.object_id LIMIT :batch",
             scope.params(type=object_type, after=after, batch=batch, lo=object_type + ":",
                          hi=object_type + ";", **extra)))
+
+    # Whether a narrowing is read value first (``narrowed_ids``): only a store that keeps
+    # its values by property (Postgres' ``value_cells_by_field``); a SQLite generation keys
+    # them by object only, and a by-property read there passes over every value it holds.
+    VALUES_FIRST = False
+    NARROWED_IDS_CAP = 5000   # candidates a value-first read returns at most
+
+    def narrowed_ids(self, object_type: str,
+                     narrowing: Sequence[tuple[str, dict[str, Any]]], marks: str
+                     ) -> list[str] | None:
+        """The ids of ``object_type`` meeting every condition of ``narrowing`` (each the
+        very ``EXISTS`` condition ``objects_of_type`` applies, the withheld-markings
+        clause included, so the set is the one its span scan keeps), read from the
+        values of each narrowed property in one statement per condition rather than one
+        per span of keys (11-09: a file name over 190k SharePoint files, 95 statements and
+        31-49 s, against one of 4 s). None when the store does not read values first or a
+        condition holds more than ``NARROWED_IDS_CAP`` records: the caller scans spans."""
+        if not self.VALUES_FIRST or not narrowing:
+            return None
+        found: set[str] | None = None
+        for condition, values in narrowing:
+            params = {k: v for k, v in values.items() if k != "property"}
+            # value rows, not distinct ids: a broad condition stops at the row limit at
+            # once (a record holds a value per version, so the limit is a few per id)
+            limit = self.NARROWED_IDS_CAP * NARROWED_ROWS_PER_ID
+            rows = self.conn.execute(
+                "SELECT x.object_id FROM object_values x WHERE x.property = :np "
+                "AND x.object_id >= :lo AND x.object_id < :hi AND ((" + condition + ") OR "
+                "x.markings NOT IN (SELECT value FROM json_each(:marks))) LIMIT :cap",
+                {"np": values["property"], "lo": object_type + ":", "hi": object_type + ";",
+                 "marks": marks, "cap": limit + 1,
+                 **{f"n_{k}": v for k, v in params.items()}}).fetchall()
+            ids = {row[0] for row in rows}
+            if len(rows) > limit or len(ids) > self.NARROWED_IDS_CAP:
+                return None
+            found = ids if found is None else found & ids
+        return sorted(found or ())
 
     def audience_of_version(self, handle: str) -> str | None:
         """The audience key of the record whose version ``handle`` is (``version_audience``),
@@ -2335,6 +2373,11 @@ class ToolError(Exception):
     def __init__(self, code: str, message: str, hint: str | None = None) -> None:
         super().__init__(message)
         self.code, self.message, self.hint = code, message, hint
+
+
+class _MatchedId(NamedTuple):
+    """A filter match read for its record alone (``_match_filters(ids_only=True)``)."""
+    object_id: str
 
 
 @dataclass
@@ -3614,7 +3657,7 @@ class OntologyTools:
             start, segments = "", 0
             while True:
                 matches, truncated, undecided, position = self._match_filters(
-                    scope, target_type, wanted, start)
+                    scope, target_type, wanted, start, ids_only=True)
                 ids += [m.object_id for m in matches]
                 unsure = unsure or bool(undecided)
                 segments += 1
@@ -5066,7 +5109,8 @@ class OntologyTools:
         return matches, truncated, undecided, position, start
 
     def _match_filters(self, scope: _Scope, object_type: str, filters: list[dict],
-                       start: str = "") -> tuple[list[_Match], bool, set[str], str | None]:
+                       start: str = "", *, ids_only: bool = False
+                       ) -> tuple[list[_Match], bool, set[str], str | None]:
         """Objects of one type whose readable values satisfy every filter, scanned in
         object-id order after ``start`` (a resumed scan, ``_read_scan_cursor``). The
         scan reads only readable objects (SQL), re-checks item ACLs, and counts only
@@ -5077,24 +5121,30 @@ class OntologyTools:
 
         Inside a plan run (``run_memo``: one reader, one policy, one generation) a segment
         is scanned once: the pages of one listing resume in the same segment (a cursor's
-        offset), and each would otherwise scan it again from its start."""
+        offset), and each would otherwise scan it again from its start.
+
+        ``ids_only``: each match is only its ``object_id`` (``_MatchedId``), its matched
+        identifier never read: a caller that counts or follows the records (plx.aggregate,
+        a link filter's name lookup) never reads the identifiers of every match (21k
+        sales orders of a dated count: 8.8 s of identifier reads, then dropped)."""
         kept = run_memo_for(("filter_segment", id(self), id(self.store.conn), scope.actor,
                              scope.audience_keys, scope.held, scope.marking_sets,
                              scope.sources, scope.at))
-        key = (object_type, json.dumps(filters, sort_keys=True, default=str), start)
+        key = (object_type, json.dumps(filters, sort_keys=True, default=str), start, ids_only)
         if kept is not None and key in kept:
             # copies: a caller marks its matches (tier, why_not), never the kept ones
             out, truncated, undecided, position = kept[key]
-            return ([dataclasses.replace(m) for m in out], truncated, set(undecided),
-                    position)
-        found = self._scan_filters(scope, object_type, filters, start)
+            return ([m if ids_only else dataclasses.replace(m) for m in out], truncated,
+                    set(undecided), position)
+        found = self._scan_filters(scope, object_type, filters, start, ids_only=ids_only)
         if kept is not None:
-            kept[key] = (tuple(dataclasses.replace(m) for m in found[0]), found[1],
-                         frozenset(found[2]), found[3])
+            kept[key] = (tuple(m if ids_only else dataclasses.replace(m) for m in found[0]),
+                         found[1], frozenset(found[2]), found[3])
         return found
 
     def _scan_filters(self, scope: _Scope, object_type: str, filters: list[dict],
-                      start: str) -> tuple[list[_Match], bool, set[str], str | None]:
+                      start: str, *, ids_only: bool = False
+                      ) -> tuple[list[_Match], bool, set[str], str | None]:
         """``_match_filters``'s scan of one segment, never kept."""
         matched: list[str] = []
         undecided: set[str] = set()
@@ -5116,6 +5166,14 @@ class OntologyTools:
         timed = self.event_names(object_type)
         declared = self._declared_names(object_type)
         narrowing = _value_narrowing([f for f in filters if f.get("property") in declared])
+        listed = False
+        if among is None and narrowing and not start:
+            # a scan's first segment only: a later one resumes a span scan (the value
+            # read was not selective, or the time ran short), never reads it again
+            among = self._narrowed_first(scope, object_type, narrowing)
+            if among is not None and not among:
+                return [], False, undecided, None
+            listed = among is not None
         events = [(timed[f["property"]], f["op"], _event_bound(f))
                   for f in filters if f.get("property") in timed
                   and f.get("property") not in declared and f.get("op") != "absent"]
@@ -5127,7 +5185,7 @@ class OntologyTools:
             # with where to resume, never nothing at its limit (11-06 q17: a supplier
             # name prefix over a cold store stopped at 40 s and returned nothing).
             upto = self.store.key_ahead(object_type, after, NARROWED_SPAN) \
-                if narrowing or events else None
+                if (narrowing or events) and not listed else None
             rows = self.store.objects_of_type(scope, object_type, after, FILTER_BATCH,
                                               narrowing, among, events, upto)
             left = call_limits.seconds_left()
@@ -5165,8 +5223,33 @@ class OntologyTools:
             if truncated or scanned >= SCAN_ROW_BUDGET or (short and not at_end):
                 truncated = True
                 break
-        out = self._filter_matches(scope, object_type, filters, matched, versions)
+        out = [_MatchedId(oid) for oid in matched] if ids_only else \
+            self._filter_matches(scope, object_type, filters, matched, versions)
         return out, truncated, undecided, position if truncated else None
+
+    def _narrowed_first(self, scope: _Scope, object_type: str,
+                        narrowing: Sequence[tuple[str, dict[str, Any]]]) -> list[str] | None:
+        """A selective narrowing read value first (``StoreReader.narrowed_ids``): only its
+        records are then scanned, by their keys in batches, never span by span, the
+        conditions still applied to them as before. None (the span scan runs): the store
+        does not read values first, the narrowing is not selective, or the call's time is
+        short. The read gets at most half the time left; cut there, the span scan answers
+        what it decides in the rest (a scan short of time never answers nothing)."""
+        if not getattr(self.store, "VALUES_FIRST", False):
+            return None
+        from operating import call_limits
+        left = call_limits.seconds_left()
+        if left is not None and left < 2 * SCAN_MARGIN_SECONDS:
+            return None
+        deadline = None if left is None else time.monotonic() + left / 2
+        try:
+            with call_limits.sql_deadline(deadline):
+                return self.store.narrowed_ids(object_type, narrowing, scope.params()["marks"])
+        except sqlite3.OperationalError:
+            left = call_limits.seconds_left()
+            if left is None or left <= 0:
+                raise   # the call's own limit, not the read's half
+            return None
 
     def _filter_matches(self, scope: _Scope, object_type: str, filters: list[dict],
                         matched: list[str], versions: Mapping[str, sqlite3.Row]
@@ -5295,10 +5378,17 @@ class OntologyTools:
         ``value_type``: the nearest-origin twin's) or None: the record states no date."""
         from operating.source_defaults import OWN_DAY_PROPS, own_day
         candidates: dict[tuple[str, str], str] = {}
+        # one ``default_days`` per (type, property), never one per record: each call reads
+        # the store's digest first, a round trip apiece on Postgres (21k sales orders of a
+        # date count: 13 s of 80)
+        columns: dict[tuple[str, str], dict[str, frozenset]] = {}
         for (oid, prop), value in dated.items():
             object_type, _, rest = oid.partition(":")
             day = str(value)[:10]
-            if day in self.default_days(object_type, prop).get(rest.split(":", 1)[0], ()):
+            column = columns.get((object_type, prop))
+            if column is None:
+                column = columns[(object_type, prop)] = self.default_days(object_type, prop)
+            if day in column.get(rest.split(":", 1)[0], ()):
                 candidates[(oid, prop)] = day
         if not candidates:
             return {}

@@ -49,7 +49,7 @@ export default function TeamPage() {
   }, [me, team, labour.data, labourOn, router]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar title="Team" />
+      <Toolbar heading title="Team" />
       <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-6">
         {!me || (!team && !labour.data && !labour.error) ? <Pending label="Checking your access" /> : null}
         {team && (

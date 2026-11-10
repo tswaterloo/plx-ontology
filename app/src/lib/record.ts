@@ -252,7 +252,7 @@ function supplierHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
     { label: "Late", value: String(lateN), status: lateN > 0 ? "late" : undefined, caption: days ? `up to ${days} days` : undefined },
   ];
   if (balance !== undefined) stats.push({ label: "Owed to supplier", value: moneyText(balance, currency) ?? balance });
-  stats.push({ label: "Last message", value: lastMsg ? formatDate(lastMsg.at, { short: true }) : "none found", caption: lastMsg?.label, source: lastMsg?.source });
+  stats.push({ label: "Last message", value: lastMsg ? formatDate(lastMsg.at, { short: true }) : "None found", caption: lastMsg?.label, source: lastMsg?.source });
   return {
     title: name,
     subline: null,

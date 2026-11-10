@@ -241,3 +241,32 @@ class SharePointRemovedAtSourceTests(unittest.TestCase):
         self.assertEqual([i for i, m in rows.items() if m is None and i == "01FILEC"], [])
         self.assertGreaterEqual(len(rows), 3)
         self.assertEqual(sum(m is not None for m in rows.values()), 1)
+
+
+class SharePointRemovedDeltaTests(unittest.TestCase):
+    """F12: a file removed before the served generation was built (which served it
+    unmarked) is a change of every delta scan, so the delta layer marks it."""
+
+    def test_a_file_removed_before_the_generation_is_a_delta_change(self):
+        from types import SimpleNamespace
+        from ontology import delta
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        case = CaptureCase("run")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        capture = case.capture()
+        self.assertTrue(capture.run(scope())["complete"])
+        case.drive.delete("01FILEC")
+        self.assertTrue(capture.run(scope())["complete"])
+        drive, lists = SharePointCaptures.stores(case.state)
+        with sqlite3.connect(drive) as conn:
+            newest = conn.execute("SELECT MAX(version_id) FROM items").fetchone()[0]
+        # the generation read every version and was built after the removal
+        base = SimpleNamespace(built_at="9999-01-01T00:00:00Z",
+                               mark=lambda source, relation: newest)
+        state = delta.State(Path(case.tmp.name) / "delta" / "state.sqlite")
+        self.addCleanup(state.conn.close)
+        self.assertEqual(delta.sharepoint_changes(drive, lists, base, state), 1)
+        self.assertEqual([key[2] for key in state.changed("sharepoint")], ["01FILEC"])
+        # a second scan finds it again under the same mark: not reopened
+        self.assertEqual(delta.sharepoint_changes(drive, lists, base, state), 0)

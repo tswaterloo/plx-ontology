@@ -60,6 +60,8 @@ import sqlite3
 import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from operating import declared_schema as _schemas
+from operating.declared_schema import watchlists as _WATCHLISTS
 
 RULE_SCHEMA = "plx-alert-rule/v1"
 WATCH_SCHEMA = "plx-watchlists/v1"
@@ -706,28 +708,6 @@ def compile_rule(text: str, vocab: Vocabulary, held: Iterable[str] | None, *,
 
 # --------------------------------------------------------------------------- store
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS follows (reader TEXT NOT NULL, object_id TEXT NOT NULL,
-  object_type TEXT, label TEXT, at TEXT NOT NULL, baseline_at TEXT,
-  PRIMARY KEY (reader, object_id));
-CREATE INDEX IF NOT EXISTS follows_object ON follows (object_id);
-CREATE TABLE IF NOT EXISTS rules (rule_id TEXT PRIMARY KEY, reader TEXT NOT NULL,
-  text TEXT NOT NULL, spec TEXT NOT NULL, description TEXT NOT NULL, at TEXT NOT NULL,
-  baseline_at TEXT, state TEXT NOT NULL DEFAULT 'active', note TEXT, cursor TEXT);
-CREATE TABLE IF NOT EXISTS seen (object_id TEXT PRIMARY KEY, object_type TEXT,
-  full INTEGER NOT NULL, props TEXT NOT NULL, neighbors TEXT, gate TEXT, label TEXT,
-  at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS events (rule_id TEXT NOT NULL, grp TEXT NOT NULL,
-  subject TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (rule_id, grp, subject, at));
-CREATE TABLE IF NOT EXISTS alerts (alert_id TEXT PRIMARY KEY, reader TEXT NOT NULL,
-  origin TEXT NOT NULL, origin_id TEXT NOT NULL, kind TEXT NOT NULL, about TEXT NOT NULL,
-  object_id TEXT NOT NULL, body TEXT NOT NULL, gates TEXT NOT NULL, at TEXT NOT NULL,
-  read_at TEXT);
-CREATE INDEX IF NOT EXISTS alerts_reader ON alerts (reader, at);
-CREATE TABLE IF NOT EXISTS signal_reads (reader TEXT NOT NULL, alert_id TEXT NOT NULL,
-  at TEXT NOT NULL, PRIMARY KEY (reader, alert_id));
-"""
 
 
 def watch_path(store_path: Any) -> Path:
@@ -741,7 +721,7 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.executescript(_DDL)
+    _schemas.apply(conn, _WATCHLISTS)
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
     if row is None:
         conn.execute("INSERT OR IGNORE INTO meta VALUES ('schema', ?)", (WATCH_SCHEMA,))

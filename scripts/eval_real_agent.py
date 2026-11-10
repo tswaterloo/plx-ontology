@@ -118,11 +118,11 @@ counts, rates, enums only.
 **Ask** (``ask``, its own daily check live check ``eval.ask_agent``): the same
 admitted items, the same named reader and the same scorer, answered by the object
 workspace's Ask instead of a Claude Code MCP client, through the workspace's own path
-(``operator_ui.object_workspace.ObjectWorkspace.ask_run``, the one ``ask`` shows: its question
+(``operator_api.workspace.object_workspace.ObjectWorkspace.ask_run``, the one ``ask`` shows: its question
 limit and framing, the ``plx.object`` root check, ``operating.agent_loop.run`` unchanged over
 ``HostAccess.agent_server``, the withheld-claim filter and the ``no_cited_claims``
 downgrade), with a headless Claude Code planner (``ClaudeCodePlanner``, as
-``operator_ui.case_console --ask`` wires it). Parts: ``live_bc`` (the live part above, always
+``operator_api.workspace.case_console --ask`` wires it). Parts: ``live_bc`` (the live part above, always
 on) and ``fixture_sample``. Per item the harness asks the reader's ``plx.find`` for the root
 (as the employee picks the object in view); a root it does not name for the reader is
 withheld and gets no session and no session slot (scored ``blocked``, counted
@@ -134,7 +134,7 @@ bounds and review store, read only), over the case runtime and the verified read
 host's own session start-up (``LiveHost.agent_session``: the ``operating.host mcp``
 arguments, a fresh single-use ticket, the host's identity start-up; or the fixture host's).
 The projection store is checked at start-up, before any source read or session
-(``operator_ui.case_console.checked_store_status``, as the console checks it): the fixture
+(``operator_api.workspace.case_console.checked_store_status``, as the console checks it): the fixture
 sample's own build errors on a refused store, and a live host without a store, or with one
 projected from another capture generation or unverifiable, blocks the live part
 (``ask_needs_a_projection_store`` / ``ontology_store_refused``); each session's workspace
@@ -207,7 +207,7 @@ from evals import score as scoring
 from operating import eval_principal
 from operating.answer_contract import NUMERIC_OPS
 from operating.agent_session import EXCLUSION_ENV, GRAPH_ENV, ReaderHost
-from operator_ui.session_journal import run_journal_scope
+from operator_api.workspace.session_journal import run_journal_scope
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "plx-eval-real-agent/v1"
@@ -483,7 +483,7 @@ def fixture_parts(work: Path) -> dict[str, tuple[Any, Any, Any]]:
     from integrations.source_mirror import AUDIENCE_SCHEMA, SourceMirror
     from ontology.schema import load_schema
     from operating.case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
     from scripts import eval_dev_baseline as edb
     from scripts import eval_oracle_dev as dev
 
@@ -945,7 +945,7 @@ def store_refusal(state: Path) -> tuple[str, str] | None:
     refusal's text (paths, details) stays out of the report."""
     import sqlite3
     from operating.host import projection_path
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
     store = projection_path(state)
     if not store.is_file():
         return "ask_needs_a_projection_store", "missing"
@@ -1187,7 +1187,7 @@ def ask_workspace(host: Any, planner: Any, bounds: Any) -> tuple[Any, Any, _Reco
     now (``world_clock``: the fixture world's, ``FIXTURE_NOW``) is read at that now
     (``at_world_now``), as the deterministic baseline's tool table reads it; a live host at
     the real now. The session host is the caller's to close after the workspace."""
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
     session, server = agent_session(host)
     try:
         args, actor = session.args, server.actor
@@ -1261,7 +1261,7 @@ def ask_family(item: Mapping[str, Any], object_id: str) -> str | None:
     for their kind of question), when it may run from the root's type; else None (a
     held-out family has no plan: the planner chooses alone)."""
     from operating.ontology_tools_investigate import load_plans
-    from operator_ui.object_workspace import plans_for
+    from operator_api.workspace.object_workspace import plans_for
     family = item.get("family")
     named = [plan_id for plan_id, plan in load_plans().items()
              if family in plan.doc["families"]]
@@ -1276,7 +1276,7 @@ def ask_question(item: Mapping[str, Any], run_pin: Mapping[str, Any] | None = No
     one ``runner.build_prompt`` states: with a run pin, the time by which the pinned
     captures had completed, as the item's own time
     precedes them and a read as known then finds none of their records."""
-    from operator_ui.object_workspace import MAX_QUESTION
+    from operator_api.workspace.object_workspace import MAX_QUESTION
     roles, gaps = _vocabulary()
     when = (run_pin or {}).get("known_at") or item["as_known_at"]["time"]
     contract = (f"\n\nAnswer as known at {when}. State each value the "
@@ -1649,7 +1649,7 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None, planner: Any =
                      default=agent_loop.Bounds.max_billed_tokens,
                      help="every planner step's usage summed (tokens)")
     args = parser.parse_args(argv)
-    from operator_ui.session_journal import isolate_journal
+    from operator_api.workspace.session_journal import isolate_journal
     isolate_journal(args.work_dir / "journal")   # never the host's own journal
     asking = args.command == "ask"
     environ = os.environ if environ is None else environ

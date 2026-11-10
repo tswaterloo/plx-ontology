@@ -975,6 +975,195 @@ class McSourcesTests(unittest.TestCase):
                                             for c in withheld})
 
 
+class FastPollTests(unittest.TestCase):
+    """The fast poll (``CaptureSpec.fast_poll_seconds``): open approvals and questions are
+    re-read every poll interval of a long sweep, through read tools only, and the sweep's
+    completeness is what it was without it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.fake = FakeMc()
+        self.now = [0.0]
+        tool = self.fake.tool
+
+        def timed(name, args):   # each MC read takes one second of the capture's clock
+            self.now[0] += 1.0
+            return tool(name, args)
+        self.fake.tool = timed
+
+    def fill(self, n, open_every=0):
+        """``n`` more tasks; every ``open_every``-th holds a pending gate, the next an open
+        question (MC Task.questions)."""
+        for i in range(n):
+            task_id = f"TASK-{100 + i}"
+            task = {"id": task_id, "title": "t", "stage": "progress", "bucket": "BKT-OPS",
+                    "approvalGates": [], "questions": []}
+            if open_every and i % open_every == 0:
+                task["approvalGates"] = [{"id": f"apg_{i}", "status": "pending",
+                                          "requestedAt": "2026-10-01T11:00:00Z"}]
+            elif open_every and i % open_every == 1:
+                task["questions"] = [{"id": f"q{i}", "status": "open", "text": "?"}]
+            self.fake.tasks[task_id] = task
+
+    def store(self, name="mc.sqlite"):
+        store = CaptureStore(Path(self.tmp.name) / name, audience(), clock=Clock())
+        self.addCleanup(store.close)
+        return store
+
+    def run_cycle(self, store, spec):
+        self.fake.calls.clear()
+        capture = McSourcesCapture(store, mc_client(self.fake), clock=lambda: self.now[0])
+        out = capture.capture(spec)
+        return out, {u["collection"]: u for u in out["units"]}
+
+    def got(self):
+        return [json.loads(b)["params"]["arguments"]["id"] for _m, _u, b in self.fake.calls
+                if json.loads(b)["params"]["name"] == "mc_get_task"]
+
+    def test_cardinality_open_tasks_are_read_first_each_once_and_completeness_holds(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                self.fill(n * 3, open_every=3)   # n pending gates, n open questions
+                spec = CaptureSpec("ops", max_task_reads=50_000, page_size=5,
+                                   fast_poll_seconds=3600)
+                out, units = self.run_cycle(self.store(), spec)
+                (poll,) = out["fast_polls"]
+                self.assertEqual((poll["listing"], poll["open"], poll["read"], poll["capped"]),
+                                 ("cycle", 2 * n, 2 * n, 0))
+                reads = self.got()
+                # the open tasks first (no duplicate), then the whole sweep in task order
+                self.assertEqual(len(set(reads[:2 * n])), 2 * n)
+                self.assertEqual(reads[2 * n:], sorted(self.fake.tasks))
+                self.assertTrue(set(reads[:2 * n]) <= {f"TASK-{100 + i}" for i in range(n * 3)})
+                self.assertNotIn("TASK-1", reads[:2 * n])
+                # the same records and states as a capture without the fast poll
+                self.fake.calls.clear()
+                plain_store = self.store("plain.sqlite")
+                _out, plain = self.run_cycle(plain_store,
+                                             CaptureSpec("ops", max_task_reads=50_000,
+                                                         page_size=5))
+                for unit in ("approvals", "task_events", "tasks"):
+                    self.assertEqual(
+                        {k: units[unit][k] for k in ("state", "reason", "records_current")},
+                        {k: plain[unit][k] for k in ("state", "reason", "records_current")})
+                self.assertEqual(units["approvals"]["records_current"], n + 1)
+                self.assertEqual(units["approvals"]["state"], "complete")
+
+    def test_a_request_or_question_during_a_long_sweep_is_read_within_one_interval(self):
+        # live 2026-11-09: MC's full context is over the byte bound, so every listing,
+        # the fast poll's too, is task-search pages; both modes are proven
+        for paged in (False, True):
+            with self.subTest(paged=paged):
+                self.setUp()
+                if paged:
+                    McSourcesTests.over_bound(self)
+                self.long_sweep(paged)
+
+    def long_sweep(self, paged):
+        self.fill(200)
+        spec = CaptureSpec("ops", max_task_reads=50_000, page_size=5, fast_poll_seconds=60)
+        store = self.store()
+        self.run_cycle(store, spec)               # settles the fast-poll state
+        tool, asked = self.fake.tool, {}
+
+        def tool_with_news(name, args):
+            # 30 s into the next sweep, an approval is requested on a task the sweep
+            # already passed and a question is asked on another
+            if self.now[0] >= start + 30 and not asked:
+                asked["at"] = self.now[0]
+                self.fake.tasks["TASK-100"]["approvalGates"] = [
+                    {"id": "apg_new", "status": "pending", "requestedAt": "x"}]
+                self.fake.tasks["TASK-101"]["questions"] = [
+                    {"id": "q_new", "status": "open", "text": "?"}]
+                self.fake.events["TASK-101"] = [self.fake.event("TASK-101", "7",
+                                                                "question.asked", "x")]
+            return tool(name, args)
+        self.fake.tool = tool_with_news
+        start = self.now[0]
+        out, units = self.run_cycle(store, spec)
+        fresh = [p for p in out["fast_polls"] if p["listing"] == "fresh"]
+        swept = self.now[0] - start
+        # a fresh listing every interval of the sweep (each read is one second here)
+        self.assertGreaterEqual(len(fresh), int(swept // 70))
+        reads = self.got()
+        # the first poll after the news (the one after 30 s: the one at about 60 s) reads
+        # both; each later one again while they stay open
+        self.assertEqual([p["read"] for p in fresh][0], 2)
+        for task_id in ("TASK-100", "TASK-101"):
+            self.assertEqual(reads.count(task_id), 1 + len(fresh))
+        self.assertTrue(all((p["open"], p["read"], p["capped"]) == (2, 2, 0) for p in fresh))
+        listed = [json.loads(b)["params"]["name"] for _m, _u, b in self.fake.calls]
+        self.assertEqual(listed.count("mc_list_buckets") >= 2 * (1 + len(fresh)), paged)
+        held = {path[2] for path, _c in store.current_versions(KIND, unit_of("ops",
+                                                                             "approvals"))}
+        self.assertIn("apg_new", held)
+        events = {path[2] for path, _c in store.current_versions(KIND, unit_of(
+            "ops", "task_events"))}
+        self.assertIn("TASK-101~7", events)
+        self.assertEqual(units["approvals"]["state"], "complete")
+        # read tools only: no write tool name reached MC, and only the policy's reads
+        called = set(self.fake.tool_names())
+        self.assertLessEqual(called, set(POLICY["reads"]))
+        self.assertLessEqual(called, mc_sources.CAPTURE_TOOLS)
+        self.assertEqual(out["tools_called"], sorted(called))
+
+    def test_a_decision_since_the_last_read_is_read_and_a_first_poll_reads_open_only(self):
+        self.fill(30)
+        self.fake.tasks["TASK-105"]["approvalGates"] = [{"id": "apg_5", "status": "pending"}]
+        # an unknown gate state or a misshapen question list is read, never skipped
+        self.fake.tasks["TASK-106"]["approvalGates"] = [{"id": "apg_6", "status": "paused"}]
+        self.fake.tasks["TASK-107"]["questions"] = {"id": "q7"}
+        spec = CaptureSpec("ops", max_task_reads=0, fast_poll_seconds=600)
+        store = self.store()
+        out, _units = self.run_cycle(store, spec)
+        # max_task_reads 0 reads no detail at all, the fast poll included
+        self.assertEqual((out["fast_polls"], self.got()), ([], []))
+        spec = CaptureSpec("ops", max_task_reads=1, page_size=1, fast_poll_seconds=600)
+        out, _units = self.run_cycle(store, spec)
+        self.assertEqual(sorted(self.got()[:3]), ["TASK-105", "TASK-106", "TASK-107"])
+        self.assertEqual(out["fast_polls"][0]["read"], 3)
+        # decided since: read again though no longer open; unchanged settled tasks are not
+        self.fake.tasks["TASK-105"]["approvalGates"] = [
+            {"id": "apg_5", "status": "approved", "decidedAt": "2026-10-02T09:00:00Z"}]
+        self.fake.tasks["TASK-110"]["questions"] = [{"id": "q10", "status": "answered"}]
+        out, _units = self.run_cycle(store, spec)
+        self.assertEqual(sorted(self.got()[:4]),
+                         ["TASK-105", "TASK-106", "TASK-107", "TASK-110"])
+        self.assertEqual(out["fast_polls"][0]["read"], 4)
+        out, _units = self.run_cycle(store, spec)
+        self.assertEqual(out["fast_polls"][0]["read"], 2)   # the two still open
+        # a row change alone (a task-search row may carry no gates) is read once
+        self.fake.tasks["TASK-120"]["activity"] = ["approval requested"]
+        out, _units = self.run_cycle(store, spec)
+        self.assertEqual(out["fast_polls"][0]["read"], 3)
+        self.assertIn("TASK-120", self.got()[:3])
+
+    def test_a_failed_fast_read_fails_the_units_and_bad_intervals_are_refused(self):
+        self.fill(3, open_every=1)
+        self.fake.failures["mc_get_task"] = ("http", 500)
+        _out, units = self.run_cycle(self.store(), CaptureSpec("ops", fast_poll_seconds=60))
+        for unit in ("approvals", "task_events"):
+            self.assertEqual(units[unit]["state"], "in_progress")
+            self.assertIsNotNone(units[unit]["reason"])
+        for bad in (-1, 1, 59, 3601, True, 60.0, "600", None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                CaptureSpec("ops", fast_poll_seconds=bad)
+        with self.assertRaises(IngestError):
+            load_sources({"schema": "plx-ingest-sources/v1", "tenant": TENANT,
+                          "actor": {"principals": ["svc:ingest"]},
+                          "sources": [{"id": "mc-ops", "kind": "mc_sources", "scope": "ops",
+                                       "fast_poll_seconds": 5}]}, {})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main(["capture", "--store", str(Path(self.tmp.name) / "x.sqlite"),
+                         "--scope", "ops", "--fast-poll-seconds", "5"], environ=ENV,
+                        hub=hub(self.fake))
+        self.assertEqual((code, json.loads(out.getvalue())["error"]),
+                         (1, "mc_fast_poll_seconds_invalid"))
+
+
 class LiveCheckSpecTests(unittest.TestCase):
     def test_spec_expectations_hold_on_the_injected_run_except_the_live_label(self):
         self.assertEqual(lv.validate_spec(SPEC, stem="mc.sources_capture"), [])

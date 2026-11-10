@@ -1041,7 +1041,7 @@ class HostSparesTests(unittest.TestCase):
 class OneGateSourceTests(unittest.TestCase):
     def test_there_is_one_final_answer_gate_and_both_paths_call_it(self):
         definitions, calls = [], []
-        for top in ("operating", "evals", "scripts", "operator_ui", "integrations"):
+        for top in ("operating", "evals", "scripts", "operator_api", "integrations"):
             for root, dirs, files in os.walk(REPO / top):
                 dirs[:] = [d for d in dirs if d not in ("heldout", "tests", "__pycache__")]
                 for name in files:

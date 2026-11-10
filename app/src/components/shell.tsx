@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { BellRing, Bookmark, CalendarClock, Clock3, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
+import { BellRing, Bookmark, Bot, CalendarClock, Clock3, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -177,6 +177,7 @@ function lateOf(home: HomeResponse | null): number | null {
 export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean; grant?: boolean }[] = [
   { href: "/", label: "My work", icon: Inbox },
   { href: "/late", label: "Late POs", icon: Clock3, late: true },
+  { href: "/autopilot", label: "Autopilot", icon: Bot },
   { href: "/meetings", label: "Meetings", icon: CalendarClock },
   { href: "/team", label: "Team", icon: Users, grant: true },
   { href: "/ask", label: "Ask", icon: MessageCircle },
@@ -258,16 +259,45 @@ const OPS_LABEL: Record<string, string> = {
   ai_watcher_last_run: "AI watcher",
   api_page_p95: "Page time (p95)",
   api_reachable: "API",
+  ingest_start: "Update restarts",
+  config_keys_ignored: "Ignored settings",
 };
 
-function opsLabel(name: string) {
-  return name.startsWith("capture:") ? `Capture: ${name.slice(8)}` : OPS_LABEL[name] ?? name;
+const CAPTURE_LABEL: Record<string, string> = {
+  bc: "Business Central",
+  mail: "Mail",
+  mc: "Mission Control",
+  meetings: "Meetings",
+  portal: "Customer Portal",
+  sharepoint: "SharePoint files",
+  sharepoint_lists: "SharePoint lists",
+  teams: "Teams",
+};
+
+/** "Last update cycle", "SharePoint lists capture"; an unknown name in words, never its raw id. */
+export function opsLabel(name: string) {
+  const words = (s: string) => {
+    const w = s.replace(/[_:-]+/g, " ").trim();
+    return w ? w[0].toUpperCase() + w.slice(1) : s;
+  };
+  if (name.startsWith("capture:")) {
+    const sys = name.slice(8);
+    return `${CAPTURE_LABEL[sys] ?? words(sys)} capture`;
+  }
+  return OPS_LABEL[name] ?? words(name);
 }
 
-function opsValue(c: OpsCheck) {
+/** 45 min, 5 h, 2 days: the size a reader takes in at a glance. */
+function minutes(m: number): string {
+  if (m < 120) return `${Math.round(m)} min`;
+  if (m < 36 * 60) return `${Math.round(m / 60)} h`;
+  return `${Math.round(m / 1440)} days`;
+}
+
+export function opsValue(c: OpsCheck) {
   if (c.value === null || typeof c.value === "boolean") return c.detail || "unknown";
   if (c.unit === "share") return `${Math.round(c.value * 100)}% (target ${Math.round(c.target * 100)}%)`;
-  if (c.unit === "min") return `${Math.round(c.value)} min (target ${c.target})`;
+  if (c.unit === "min") return `${minutes(c.value)} (target ${minutes(c.target)})`;
   return `${c.value} ${c.unit} (target ${c.target})`;
 }
 
@@ -523,6 +553,7 @@ function AccountMenuContent({ name, email }: { name: string; email?: string | nu
           {email && <p className="truncate text-meta text-muted">{email}</p>}
         </div>
         <AccessBanner className="px-2 py-1.5" />
+        <DevBanner className="px-2 py-1.5" />
         <div className="flex items-center justify-between px-2 py-1.5">
           <span className="text-meta text-muted">Appearance</span>
           <ThemeToggle />
@@ -620,14 +651,15 @@ function TabBar() {
 }
 
 /** Phone: the account button for a page's title bar. */
-export function MobileAccount() {
+/** Phone: the account button; `quiet` (a title bar full of actions) keeps the demo-sign-in word for wider screens and the menu. */
+export function MobileAccount({ quiet }: { quiet?: boolean } = {}) {
   const { state } = useAuth();
   const desktop = useDesktopShell();
   if (state.status !== "signed-in") return null;
   const name = state.me.display_name || "Account";
   return (
     <div className="flex items-center gap-1 lg:hidden">
-      {desktop === false && <DevBanner compact className="text-[11px] leading-4" />}
+      {desktop === false && <DevBanner compact className={cn("shrink-0 whitespace-nowrap text-[11px] leading-4", quiet && "max-sm:hidden")} />}
       <Menu.Root>
         <Menu.Trigger aria-label={`Account: ${name}`} className="flex size-9 items-center justify-center rounded-full cursor-pointer">
           <Avatar name={name} className="size-7 text-[11px]" />
@@ -665,7 +697,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching"];
+export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot"];
 
 function ShellSkeleton() {
   return (

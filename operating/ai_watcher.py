@@ -95,8 +95,11 @@ import re
 import secrets
 import sqlite3
 import sys
+import threading
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+from operating import declared_schema as _schemas
+from operating.declared_schema import ai_watcher as _AI_WATCHER
 
 SCHEMA = "plx-ai-watcher/v1"
 KIND = "watcher_attention"          # the gap kind its items carry (``briefing``)
@@ -221,44 +224,6 @@ def set_switch(state_dir: Path, state: str, *, clock: Callable[[], dt.datetime] 
 
 # --------------------------------------------------------------------------- store
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS layers (store TEXT PRIMARY KEY, base_digest TEXT NOT NULL,
-  seen_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS seen (object_id TEXT PRIMARY KEY, digest TEXT NOT NULL,
-  props TEXT, at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS queue (object_id TEXT PRIMARY KEY, object_type TEXT NOT NULL,
-  handle TEXT NOT NULL, change TEXT NOT NULL, changed TEXT NOT NULL, event_at TEXT NOT NULL,
-  since TEXT, thread TEXT, queued_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-  claimed INTEGER, traits TEXT);
-CREATE TABLE IF NOT EXISTS sessions (session_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL CHECK (kind IN ('batch', 'retry')), parent INTEGER,
-  started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL CHECK (state IN
-  ('running', 'answered', 'folded', 'interrupted', 'failed')), entries TEXT NOT NULL,
-  result TEXT, summary TEXT);
-CREATE INDEX IF NOT EXISTS sessions_started ON sessions (started_at);
-CREATE TABLE IF NOT EXISTS runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, run_at TEXT NOT NULL,
-  status TEXT NOT NULL, model_run INTEGER NOT NULL, summary TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS items (item_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
-  subject TEXT NOT NULL, subject_type TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL,
-  why TEXT NOT NULL, next_step TEXT NOT NULL, departments TEXT NOT NULL,
-  priority TEXT NOT NULL, claim_kind TEXT NOT NULL, gate TEXT NOT NULL, truth TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('open', 'expired', 'refused', 'duplicate')),
-  reason TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, run_id INTEGER);
-CREATE TABLE IF NOT EXISTS item_cites (item_id TEXT NOT NULL, grp INTEGER NOT NULL,
-  handle TEXT NOT NULL, object_id TEXT, markings TEXT NOT NULL,
-  PRIMARY KEY (item_id, grp, handle));
-CREATE INDEX IF NOT EXISTS items_open ON items (state, last_seen);
-CREATE TABLE IF NOT EXISTS message_keys (key TEXT PRIMARY KEY, object_id TEXT NOT NULL,
-  at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS correspondents (key TEXT PRIMARY KEY, n INTEGER NOT NULL,
-  at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS learned (store TEXT NOT NULL, base_digest TEXT NOT NULL,
-  at TEXT NOT NULL, PRIMARY KEY (store, base_digest));
-CREATE TABLE IF NOT EXISTS item_states (item_id TEXT NOT NULL, reader TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('dismissed', 'snoozed')), until TEXT, reason TEXT,
-  at TEXT NOT NULL, PRIMARY KEY (item_id, reader));
-"""
 
 
 def store_path(directory: Path) -> Path:
@@ -283,7 +248,7 @@ def open_store(directory: Path) -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE queue ADD COLUMN {column}")
         except sqlite3.OperationalError:
             pass   # no queue yet (created below) or the column is there
-    conn.executescript(_DDL)
+    _schemas.apply(conn, _AI_WATCHER)
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
     if row is None:
         conn.execute("INSERT INTO meta VALUES ('schema', ?)", (SCHEMA,))
@@ -1379,6 +1344,14 @@ def proposals(run: Any, *, departments: Iterable[str]) -> list[dict[str, Any]]:
 
 # --------------------------------------------------------------------------- placement
 
+# Each delta layer's owned object ids by its file identity (path, inode, size, change
+# time, WAL size: ``delta_overlay._layer_identity``), so a briefing read does not read
+# every layer's list again; a rewritten layer has another identity.
+_OWNED: dict[tuple, frozenset[str]] = {}
+_OWNED_LOCK = threading.Lock()
+_OWNED_KEPT = 256
+
+
 class Places:
     """Where a cited handle's object is served now, with its audience and markings: the
     newest delta layer owning it, else the served store (``place``)."""
@@ -1387,7 +1360,7 @@ class Places:
         self.store = Path(store)
         _digest, self.layers = _pointer(self.store)
         self._conns: dict[str, sqlite3.Connection] = {}
-        self._owner: dict[str, str] | None = None   # object id -> its newest owning layer
+        self._owner: list[tuple[str, frozenset[str]]] | None = None   # newest first
         self._objects: dict[str, str | None] = {}   # handle -> the object it cites
 
     def _conn(self, path: str) -> sqlite3.Connection:
@@ -1397,14 +1370,29 @@ class Places:
 
     def _where(self, object_id: str) -> str:
         if self._owner is None:
-            # Every layer's owned ids read once (newest first: the newest owner wins),
-            # not one query per layer for every cited record.
-            owner: dict[str, str] = {}
-            for layer in self.layers:
-                for (owned,) in self._conn(layer).execute("SELECT object_id FROM delta_owned"):
-                    owner.setdefault(owned, layer)
-            self._owner = owner
-        return self._owner.get(object_id, str(self.store))
+            # Every layer's owned ids read once (not one query per layer for every cited
+            # record), and kept across reads while the layer file is the same one.
+            self._owner = [(layer, self._owned(layer)) for layer in self.layers]
+        for layer, owned in self._owner:   # newest first: the newest owner wins
+            if object_id in owned:
+                return layer
+        return str(self.store)
+
+    def _owned(self, layer: str) -> frozenset[str]:
+        from .delta_overlay import _layer_identity
+        identity = _layer_identity(layer)
+        with _OWNED_LOCK:
+            kept = _OWNED.get(identity) if identity is not None else None
+        if kept is not None:
+            return kept
+        owned = frozenset(row[0] for row in self._conn(layer).execute(
+            "SELECT object_id FROM delta_owned"))
+        if identity is not None and identity == _layer_identity(layer):
+            with _OWNED_LOCK:
+                if len(_OWNED) >= _OWNED_KEPT:
+                    _OWNED.clear()
+                _OWNED[identity] = owned
+        return owned
 
     def object_of(self, handle: str) -> str | None:
         """The object a handle cites (exact, then without a page or field fragment)."""

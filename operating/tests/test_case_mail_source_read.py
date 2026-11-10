@@ -75,10 +75,11 @@ class SourceReadTests(CaseMailTestCase):
         survey = document["survey"]
         # m-confirm names PO100123 in its subject and body, m-other PO100200: four stored
         # links whose message the reader may read (the outside mailbox's is not counted).
-        # This spec world corroborates none of them (as the per-scan survey's run did).
-        self.assertEqual(survey["links_by_tier"], {"lead": 4})
+        # Each number names one order, so the unique_mentions step (ontology/mention_firm.py)
+        # writes a corroborated link beside each mention lead: four of each.
+        self.assertEqual(survey["links_by_tier"], {"corroborated": 4, "lead": 4})
         self.assertEqual((survey["po_links"], survey["messages_with_po_links"],
-                          survey["pos_linked"], survey["po_links_withheld"]), (4, 2, 2, 0))
+                          survey["pos_linked"], survey["po_links_withheld"]), (8, 2, 2, 0))
         self.assertEqual((survey["po_scan_status"], survey["po_rows_scanned"]), ("read", 2))
         self.assertEqual(survey["relations"]["supplier_source"]["status"], "read")
         self.assertEqual(document["totals"]["cases"], 2)
@@ -95,9 +96,14 @@ class SourceReadTests(CaseMailTestCase):
     def test_a_number_naming_two_orders_reaches_cases_as_leads_only(self):
         # A second gold row PO#100123 reads as the same number as PO100123: the
         # supplier's "PO100123" names both, a lead to each, never corroborated.
+        # PO100200 is shared the same way: a unique number is firmed by the unique_mentions
+        # step (ontology/mention_firm.py), so no number in this survey may be unique.
         self.fake.tables["public.app_purchase_order"].append(
             {**self.fake.tables["public.app_purchase_order"][0], "id": "po-twin",
              "po_number": "PO#100123"})
+        self.fake.tables["public.app_purchase_order"].append(
+            {**self.fake.tables["public.app_purchase_order"][1], "id": "po-twin-b",
+             "po_number": "PO#100200"})
         code, document, _text = self.run_spec()
         self.assertNotIn("corroborated", document["survey"]["links_by_tier"])
         relations = [name for case in document["cases"] for name in case["relations"]]

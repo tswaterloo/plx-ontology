@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const auth = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
@@ -14,7 +15,9 @@ vi.mock("@/lib/api", async (orig) => ({
   getOpsHealth: () => Promise.resolve(api.ops),
 }));
 
-import { AccessBanner, DevBanner, OpsStatus } from "./shell";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { AccessBanner, DevBanner, OpsStatus, TOOLBAR_PAGES } from "./shell";
 
 const me = (over: Record<string, unknown>) => ({
   status: "signed-in",
@@ -87,6 +90,27 @@ describe("ops status line", () => {
     expect(line).not.toHaveTextContent("Capture");
   });
 
+  it("names a capture by its system and says long delays in hours or days", async () => {
+    auth.state = me({ access_label: "Viewing with full-read access" });
+    api.ops = {
+      ...breach,
+      breaches: ["capture:sharepoint_lists", "delta_last_cycle"],
+      checks: [
+        { name: "capture:sharepoint_lists", value: 12865.4, target: 160, unit: "min", state: "breach", detail: "" },
+        { name: "delta_last_cycle", value: 2877.6, target: 15, unit: "min", state: "breach", detail: "" },
+      ],
+    };
+    render(<OpsStatus />);
+    const line = await screen.findByTestId("ops-status");
+    expect(line).toHaveTextContent("SharePoint lists capture, Last update cycle");
+    expect(line).not.toHaveTextContent("sharepoint_lists");
+    await userEvent.click(line);
+    const detail = await screen.findByTestId("ops-detail");
+    expect(detail).toHaveTextContent("9 days (target 3 h)");
+    expect(detail).toHaveTextContent("2 days (target 15 min)");
+    expect(detail).not.toHaveTextContent("12865");
+  });
+
   it("says nothing to other readers, or when every target holds", async () => {
     auth.state = me({});
     api.ops = breach;
@@ -95,5 +119,15 @@ describe("ops status line", () => {
     api.ops = { ...breach, status: "ok", breaches: [], checks: [] };
     render(<OpsStatus />);
     await waitFor(() => expect(screen.queryByTestId("ops-status")).toBeNull());
+  });
+});
+
+describe("phone title bar", () => {
+  it("every page draws its own toolbar, so the shell never stacks a second bar over one", () => {
+    const routes = readdirSync(join(__dirname, "../app/(app)"), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => `/${d.name}`);
+    expect(routes.length).toBeGreaterThan(10);
+    expect(routes.filter((r) => !TOOLBAR_PAGES.includes(r))).toEqual([]);
   });
 });

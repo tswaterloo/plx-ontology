@@ -37,11 +37,13 @@ def day(offset: int) -> str:
 
 
 def task(w: World, title: str, due: int, done: int | None, *,
-         assignee: str = OURS_OID) -> str:
+         assignee: str = OURS_OID, created: int | None = None) -> str:
     values = {"title": title, "plan_id": "SYNTH-PLAN", "plan_title": "Synthetic checks",
               "due_at": day(due), "assignees": json.dumps([assignee])}
     if done is not None:
         values["completed_at"] = day(done)
+    if created is not None:
+        values["created_at"] = day(created)
     return w.obj("PlannerTask", values, audience="meetings:plan:synth")
 
 
@@ -180,6 +182,21 @@ class IntegrityAlerts(Engine):
         self.assertEqual(blocked["detectors"][pi.CYCLE_RULE], "blocked")
         self.assertEqual(self.kinds(pi.CYCLE_RULE), [])
 
+
+    def test_a_replayed_day_reads_the_tasks_as_that_day_saw_them(self):
+        # weekly; the one due 14 days ago was done 3 days AFTER the run's day: on the day it
+        # was open past its next due, so the day sees a missed cycle; a series made of
+        # tasks created after the day did not exist yet
+        w = World()
+        for due in (35, 28, 21):
+            task(w, "Synthetic filter change", due, due - 1)
+        late = task(w, "Synthetic filter change", 14, -3)
+        for due in (35, 28, 21, 14):
+            task(w, "Synthetic future series", due, None, created=-2)
+        summary = self.run_rules(w)
+        (gap,) = self.kinds(pi.CYCLE_RULE)
+        self.assertEqual(gap["object_id"], late)
+        self.assertEqual(summary["detectors"][pi.CYCLE_RULE], "complete")
 
 if __name__ == "__main__":
     import unittest

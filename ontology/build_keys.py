@@ -48,6 +48,7 @@ import ast
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -174,20 +175,37 @@ def _canonical(value: Any) -> str:
 
 # --------------------------------------------------------------------------- code
 
+# One digest's view of the tree: its packages and module paths, looked up once per walk
+# (:func:`code_parts`), never kept past it, so a later walk sees every file change.
+_WALK = threading.local()
+
+
 def _packages(root: Path | None = None) -> frozenset[str]:
     root = root or _ROOT
-    return frozenset(p.name for p in root.iterdir() if (p / "__init__.py").is_file())
+    memo = getattr(_WALK, "packages", None)
+    if memo is not None and root in memo:
+        return memo[root]
+    found = frozenset(p.name for p in root.iterdir() if (p / "__init__.py").is_file())
+    if memo is not None:
+        memo[root] = found
+    return found
 
 
 def _source_path(module: str, root: Path | None = None) -> Path | None:
     root = root or _ROOT
-    if module.split(".")[0] not in _packages(root):
-        return None
-    base = root.joinpath(*module.split("."))
-    for path in (base.with_suffix(".py"), base / "__init__.py"):
-        if path.is_file():
-            return path
-    return None
+    memo = getattr(_WALK, "paths", None)
+    if memo is not None and (root, module) in memo:
+        return memo[(root, module)]
+    found = None
+    if module.split(".")[0] in _packages(root):
+        base = root.joinpath(*module.split("."))
+        for path in (base.with_suffix(".py"), base / "__init__.py"):
+            if path.is_file():
+                found = path
+                break
+    if memo is not None:
+        memo[(root, module)] = found
+    return found
 
 
 def _strip_docstrings(tree: ast.AST) -> None:
@@ -225,6 +243,9 @@ class _Module:
         _strip_docstrings(tree)
         self.defs: dict[str, list[ast.AST]] = {}
         self.imports: dict[str, tuple[str, str | None]] = {}
+        self._said: dict[int, tuple[list[tuple[str, str, str | None]],
+                                    list[tuple[str, str | None]]]] = {}
+        self._text: dict[str, str] = {}
         self._top(tree.body)
 
     def _top(self, body: Iterable[ast.stmt]) -> None:
@@ -267,34 +288,56 @@ class _Module:
         other than as ``module.attr``)."""
         out: set[tuple[str, str | None]] = set()
         for node in nodes:
+            imports, names = self._names(node)
             local: dict[str, tuple[str, str | None]] = {}   # lazy imports in its body
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.ImportFrom):
-                    base = self.resolve(sub)
-                    for alias in sub.names:
-                        if alias.name != "*":
-                            local[alias.asname or alias.name] = _target(base, alias.name,
-                                                                        self.root)
-                elif isinstance(sub, ast.Import):
-                    for alias in sub.names:
-                        if alias.asname:
-                            local[alias.asname] = (alias.name, None)
-                        else:
-                            top = alias.name.split(".")[0]
-                            local[top] = (top, None)
-            bases: set[int] = set()
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
-                    found = self._lookup(sub.value.id, local)
-                    if found is not None and found[1] is None:   # module.attr
-                        out.add(_target(found[0], sub.attr, self.root))
-                        bases.add(id(sub.value))
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Name) and id(sub) not in bases:
-                    found = self._lookup(sub.id, local)
-                    if found is not None:
-                        out.add(found)
+            for alias, module, name in imports:
+                local[alias] = _target(module, name, self.root) if name else (module, None)
+            for used, attr in names:
+                found = self._lookup(used, local)
+                if found is None:
+                    continue
+                if attr is not None and found[1] is None:   # module.attr
+                    out.add(_target(found[0], attr, self.root))
+                else:
+                    out.add(found)
         return out
+
+    def _names(self, node: ast.AST) -> tuple[list[tuple[str, str, str | None]],
+                                             list[tuple[str, str | None]]]:
+        """What ``node`` says, read once per parse: its lazy imports (alias, module,
+        name or None) in order, and each name it uses with the attribute taken of it."""
+        held = self._said.get(id(node))
+        if held is not None:
+            return held
+        imports: list[tuple[str, str, str | None]] = []
+        attrs: dict[int, str] = {}
+        names: list[tuple[str, str | None]] = []
+        for sub in ast.walk(node):   # breadth first: an attribute before the name in it
+            if isinstance(sub, ast.Name):
+                names.append((sub.id, attrs.get(id(sub))))
+            elif isinstance(sub, ast.ImportFrom):
+                base = self.resolve(sub)
+                for alias in sub.names:
+                    if alias.name != "*":
+                        imports.append((alias.asname or alias.name, base, alias.name))
+            elif isinstance(sub, ast.Import):
+                for alias in sub.names:
+                    if alias.asname:
+                        imports.append((alias.asname, alias.name, None))
+                    else:
+                        top = alias.name.split(".")[0]
+                        imports.append((top, top, None))
+            elif isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
+                attrs[id(sub.value)] = sub.attr
+        held = self._said[id(node)] = (imports, names)
+        return held
+
+    def text(self, name: str) -> str:
+        """The syntax tree text of the definitions named ``name``."""
+        held = self._text.get(name)
+        if held is None:
+            held = self._text[name] = "\n".join(_dump(node) for node in self.defs[name])
+        return held
 
     def _lookup(self, name: str, local: Mapping[str, tuple[str, str | None]]
                 ) -> tuple[str, str | None] | None:
@@ -354,7 +397,17 @@ def code_parts(roots: Iterable[tuple[str, str | None]],
     """(module, name) -> the syntax tree text of each definition ``roots`` reach, what
     :func:`code_digest` digests; None when a repository module among them cannot be
     read."""
-    root = Path(root) if root is not None else _ROOT
+    if getattr(_WALK, "paths", None) is not None:   # nested in a walk: its view
+        return _code_parts(roots, stops, Path(root) if root is not None else _ROOT)
+    _WALK.packages, _WALK.paths = {}, {}
+    try:
+        return _code_parts(roots, stops, Path(root) if root is not None else _ROOT)
+    finally:
+        _WALK.packages = _WALK.paths = None
+
+
+def _code_parts(roots: Iterable[tuple[str, str | None]], stops: Iterable[tuple[str, str]],
+                root: Path) -> dict[tuple[str, str], str] | None:
     seen: set[tuple[str, str | None]] = set(stops)
     pending = list(roots)
     parts: dict[tuple[str, str], str] = {}
@@ -381,7 +434,7 @@ def code_parts(roots: Iterable[tuple[str, str | None]],
                     if one in module.imports:   # a name the module re-exports
                         pending.append(_target(*module.imports[one], root))
                     continue
-                parts[(module_name, one)] = "\n".join(_dump(node) for node in nodes)
+                parts[(module_name, one)] = module.text(one)
                 pending.extend(module.refs(nodes) - seen)
     except _Unreadable:
         return None

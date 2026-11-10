@@ -63,7 +63,7 @@ BANNED_ATTRS = BANNED_NAMES | frozenset({
 })
 TEST_ONLY = frozenset({"unittest"})
 ALLOWED_DUNDERS = frozenset({"__name__", "__file__", "__init__"})
-REPO_PACKAGES = ("ontology", "operating", "integrations", "scripts", "operator_ui", "ops_plane",
+REPO_PACKAGES = ("ontology", "operating", "integrations", "scripts", "operator_api", "ops_plane",
                  "reasoning", "engineering")
 _PATH_STRING = re.compile(r"(?<![A-Za-z0-9_\-])(?:%s)(?![A-Za-z0-9_\-])" % "|".join(REPO_PACKAGES))
 

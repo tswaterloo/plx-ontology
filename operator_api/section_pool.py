@@ -205,7 +205,7 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any],
     answer ``(reader, object_type, object_id, section)`` with
     ``("ok", section)`` or ``("error", exception)`` until the parent sends None or goes
     away."""
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
     from . import backend as be
 
     def serve(ctx: Mapping[str, Any]) -> int:

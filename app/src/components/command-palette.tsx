@@ -13,6 +13,7 @@ import { stashPending } from "@/lib/pending";
 import { arrange, type Arranged } from "./ask-box";
 import { PlaceTile, SystemTile } from "./ui/glyphs";
 import { Monogram } from "./ui/monogram";
+import { useReturnFocus } from "@/lib/return-focus";
 
 /**
  * The command bar: one field that finds any record by number or name, goes anywhere in the
@@ -27,9 +28,11 @@ type Item =
   | { kind: "example"; id: string; q: string };
 
 const PLACES: { label: string; href: string; hint: string; words: string }[] = [
-  { label: "Today", href: "/", hint: "Late POs and what to chase", words: "today home front page briefing" },
+  { label: "My work", href: "/", hint: "Late POs and what to chase", words: "my work today home front page briefing" },
+  { label: "Prepared for you", href: "/my-work", hint: "Replies and entries the autopilots prepared", words: "prepared autopilot drafts entries my work" },
   { label: "Late POs", href: "/late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
   { label: "Watching", href: "/watching", hint: "Every alert, rules and data health", words: "watching briefing alerts rules attention" },
+  { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
   { label: "R&D projects", href: "/rd-projects", hint: "Sample and R&D projects, idle first", words: "rd r&d samples projects lab" },
   { label: "Activity", href: "/activity", hint: "What was sent, approved and logged", words: "activity actions log journal" },
@@ -56,6 +59,7 @@ export function CommandPaletteProvider({ children }: { children: React.ReactNode
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const value = useMemo(() => ({ open: () => setOpen(true) }), []);
+  useReturnFocus(open);
   return (
     <PaletteCtx.Provider value={value}>
       {children}
@@ -113,11 +117,12 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
         { group: "Go to", items: places },
         { group: "Ask", items: VERIFIED_EXAMPLES.slice(0, 4).map((x, i): Item => ({ kind: "example", id: `ex-${i}`, q: x })) },
       ];
-    return [
-      { group: "Ask", items: [{ kind: "ask", id: "ask", q: text } as Item] },
-      { group: "Records", items: records.map((s, i): Item => ({ kind: "record", id: `rec-${s.object_id}-${i}`, s })) },
-      { group: "Go to", items: places },
-    ].filter((g) => g.items.length > 0);
+    const ask = { group: "Ask", items: [{ kind: "ask", id: "ask", q: text } as Item] };
+    const recs = { group: "Records", items: records.map((s, i): Item => ({ kind: "record", id: `rec-${s.object_id}-${i}`, s })) };
+    const go = { group: "Go to", items: places };
+    // Enter opens what was typed for: a record's exact number or name, a page's name ("late"), else the question
+    const order = records[0]?.match === "exact" ? [recs, ask, go] : low.length >= 3 && places.some((p) => p.kind === "go" && p.label.toLowerCase().startsWith(low)) ? [go, ask, recs] : [ask, recs, go];
+    return order.filter((g) => g.items.length > 0);
   }, [q, records]);
   const flat = useMemo(() => items.flatMap((g) => g.items), [items]);
   useEffect(() => setActive((a) => Math.min(a, Math.max(0, flat.length - 1))), [flat.length]);

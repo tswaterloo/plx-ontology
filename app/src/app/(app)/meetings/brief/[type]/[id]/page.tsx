@@ -37,7 +37,7 @@ export default function BriefPage() {
   }, [type, objectId, round]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar title={brief?.title ?? "Brief"} parent={{ label: "Meetings", href: "/meetings" }} />
+      <Toolbar heading={!brief} title={brief?.title ?? "Brief"} parent={{ label: "Meetings", href: "/meetings" }} />
       <div className="p-5">
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />

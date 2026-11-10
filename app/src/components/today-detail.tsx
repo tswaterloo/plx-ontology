@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { getObject, getObjectSection, mergeSection } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { draftText } from "@/components/proactive-suggestions";
-import { formatDate, objectHref, readable, recordLabel, typeLabel } from "@/lib/format";
+import { businessToday, formatDate, objectHref, readable, recordLabel, typeLabel } from "@/lib/format";
 import { factMap, receivedOf, recordHead } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import { briefingKind } from "@/lib/status";
@@ -118,7 +118,7 @@ function OrderLine({ ordered, needed, daysLate }: { ordered: number | null; need
         )}
         <span className="absolute right-0 top-0 text-right">
           <span className="block text-muted">Today</span>
-          <span className="block font-medium">{short(now)}</span>
+          <span className="block font-medium">{formatDate(businessToday(new Date(now)), { short: true })}</span>
         </span>
       </div>
     </div>
@@ -256,8 +256,8 @@ function Actions({ card, state, onDone }: { card: ProactiveSuggestion; state?: A
   const rank = (k: string) => ["send_email", "teams_message", "create_follow_up", "mark_done"].indexOf(k);
   const shown = offers.filter((o) => !MORE.includes(o.kind)).sort((a, b) => ((rank(a.kind) + 9) % 9) - ((rank(b.kind) + 9) % 9));
   const more = offers.filter((o) => MORE.includes(o.kind));
-  // a phone has room for send and message; the rest go under More
-  const narrow = shown.filter((o) => o.kind === "create_follow_up" || o.kind === "mark_done");
+  // a phone has room for the first two (send and message); the rest go under More
+  const narrow = shown.slice(2);
   return (
     <div className="mt-3 flex items-center gap-1" data-testid="card-actions">
       {shown.map((o) => (
@@ -266,7 +266,7 @@ function Actions({ card, state, onDone }: { card: ProactiveSuggestion; state?: A
           type="button"
           onClick={() => setOpen(o)}
           className={cn(
-            "h-8 shrink-0 rounded-lg px-3 text-[13px] cursor-pointer",
+            "h-8 shrink-0 rounded-lg px-3 text-[13px] cursor-pointer max-sm:min-w-0 max-sm:shrink max-sm:truncate",
             narrow.includes(o) && "max-sm:hidden",
             o.kind === "send_email" ? "mr-1.5 bg-accent font-medium text-accent-fg shadow-sm hover:brightness-110" : "text-muted hover:bg-hover hover:text-fg",
           )}
@@ -334,7 +334,9 @@ function Facts({ row, page }: { row: QueueRow; page: ObjectPage | null }) {
         Supplier confirmed{eta?.when ? ` ${formatDate(eta.when, { short: true })}` : ""}
       </span>,
     );
-  else if (eta || trailEta || row.status === "late")
+  // "no date" only once the PO's trail is read: the quick first read carries none, and a
+  // confirmed date found a moment later must never follow a "no date" claim
+  else if (eta || trailEta || (row.status === "late" && !!page && (page.trail != null || !!page.complete)))
     out.push(
       <span key="eta" className="inline-flex items-center gap-1.5 text-muted">
         <OpenRing size={14} tone="neutral" />
@@ -462,7 +464,7 @@ export function TodayDetail({
             {(page || !failed) && (
               <section className="space-y-6" data-testid="detail-stats">
                 {page ? (
-                  <div className="grid grid-cols-2 gap-6 sm:grid-cols-[auto_auto_1fr] sm:gap-10">
+                  <div className="grid grid-cols-2 gap-6 empty:hidden sm:grid-cols-[auto_auto_1fr] sm:gap-10">
                     {total && <Figure label="Total" value={total.value} unit={total.caption} />}
                     {got && (
                       <Figure label="Received" value={got.lines ? got.got : `${got.got} of ${got.of}`} unit={got.lines ? `${got.lines} lines short` : got.uom}>
@@ -573,9 +575,9 @@ export function TodayDetail({
                 <SectionTitle>Sources</SectionTitle>
                 <ul className="space-y-2">
                   {sources.slice(0, 5).map((src, i) => (
-                    <li key={i} className="flex items-center gap-2.5 text-[13px]">
+                    <li key={i} className="flex min-w-0 items-center gap-2.5 text-[13px]">
                       <SystemTile system={src.system} size={18} />
-                      <SourceChip source={src} />
+                      <SourceChip source={src} className="min-w-0 max-w-full" />
                     </li>
                   ))}
                 </ul>
@@ -588,7 +590,7 @@ export function TodayDetail({
                 <ol className="space-y-2">
                   {timeline.slice(0, 5).map((t, i) => (
                     <li key={i} className="flex items-baseline justify-between gap-3 text-[13px] leading-5">
-                      <span className="min-w-0 truncate">{readable(t.title)}</span>
+                      <span className="min-w-0 truncate" title={readable(t.title)}>{readable(t.title)}</span>
                       <span className="shrink-0 text-[12px] tabular-nums text-muted">{stepDate(t.at)}</span>
                     </li>
                   ))}

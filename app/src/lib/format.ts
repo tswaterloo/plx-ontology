@@ -82,6 +82,11 @@ function currencySymbol(currency: string, locale: string): string {
 
 const TZ = "America/Toronto";
 
+/** Today's calendar day where the business is (YYYY-MM-DD): after 7 p.m. in Toronto it is not yet tomorrow. */
+export function businessToday(now: Date = new Date()): string {
+  return now.toLocaleDateString("en-CA", { timeZone: TZ });
+}
+
 /** "29 Oct 2026" (one date style in prose and tables); "29 Oct" with `short` when the year is the current one. */
 export function formatDate(iso: string | null | undefined, opts: { short?: boolean; now?: Date } = {}): string {
   if (!iso) return "";

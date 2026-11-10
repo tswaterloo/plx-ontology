@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX work-graph refresh weekly (Sunday 03:30 ET)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00 America/New_York
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

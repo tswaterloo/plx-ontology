@@ -149,7 +149,7 @@ def main_serve(conn, argv, settings, fixtures):
     """The read worker's own read of a section (``read_section`` over the reader's
     workspace on the runtime that built it, nothing kept), answering the slot child's
     messages: what a section read in a slot must equal."""
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
 
     def serve(ctx):
         backend = be.WorkspaceBackend(ctx["objects_for"], **settings)
@@ -178,9 +178,9 @@ class FixtureChildTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from operator_ui import case_console
-        from operator_ui import object_workspace as objects
-        from operator_ui.tests import case_fixtures
+        from operator_api.workspace import case_console
+        from operator_api.workspace import object_workspace as objects
+        from operator_api.tests import case_fixtures
         cls.fixtures = case_fixtures
         cls.tmp = Path(tempfile.mkdtemp(prefix="section-pool-"))
         cls.state = cls.tmp / "state"

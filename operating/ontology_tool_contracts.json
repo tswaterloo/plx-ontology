@@ -462,6 +462,609 @@
         }
       }
     },
+    "qc_compliance_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "plx.aggregate mode qc_compliance (operating/qc_compliance.py): quality checks scheduled as Planner tasks (calibration, sanitation, other QC) by area and month: on time, late (done before the next fell due), missed, overdue, upcoming; production schedule slots by line (completed or not; lateness not measurable); held batches (no age: no hold date stored). Only for readers holding quality_controlled; counts only what the reader may read. view: compliance (default), audit (per series with cited exceptions), daily (open now).",
+      "required": [
+                    "mode",
+                    "format",
+                    "view",
+                    "as_of",
+                    "window",
+                    "checks",
+                    "schedule",
+                    "holds",
+                    "hold_release_queue",
+                    "markings",
+                    "basis",
+                    "complete",
+                    "evidence"
+                  ],
+      "properties": {
+                      "mode": {"type": "string", "enum": ["qc_compliance"]},
+                      "format": {"type": "string", "enum": ["plx-qc-compliance/v1"]},
+                      "view": {"type": "string", "enum": ["compliance", "audit", "daily"]},
+                      "as_of": {"type": "string", "format": "date"},
+                      "window": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": ["from", "to"],
+                                  "properties": {
+                                                  "from": {"type": "string", "format": "date"},
+                                                  "to": {"type": "string", "format": "date"}
+                                                }
+                                },
+                      "checks": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                                  "withheld": {
+                                                                "type": "string",
+                                                                "enum": ["people_exclusion_unavailable"]
+                                                              },
+                                                  "not_recurring": {"type": "integer", "minimum": 0},
+                                                  "totals": {
+                                                              "type": "object",
+                                                              "additionalProperties": false,
+                                                              "required": [
+                                                                            "on_time",
+                                                                            "late",
+                                                                            "missed",
+                                                                            "overdue",
+                                                                            "upcoming",
+                                                                            "judged",
+                                                                            "on_time_share"
+                                                                          ],
+                                                              "properties": {
+                                                                              "on_time": {
+                                                                                           "type": "integer",
+                                                                                           "minimum": 0
+                                                                                         },
+                                                                              "late": {
+                                                                                        "type": "integer",
+                                                                                        "minimum": 0
+                                                                                      },
+                                                                              "missed": {
+                                                                                          "type": "integer",
+                                                                                          "minimum": 0
+                                                                                        },
+                                                                              "overdue": {
+                                                                                           "type": "integer",
+                                                                                           "minimum": 0
+                                                                                         },
+                                                                              "upcoming": {
+                                                                                            "type": "integer",
+                                                                                            "minimum": 0
+                                                                                          },
+                                                                              "judged": {
+                                                                                          "type": "integer",
+                                                                                          "minimum": 0
+                                                                                        },
+                                                                              "on_time_share": {
+                                                                                                 "type": [
+                                                                                                           "string",
+                                                                                                           "null"
+                                                                                                         ],
+                                                                                                 "pattern": "^\\d{1,3}\\.\\d$"
+                                                                                               }
+                                                                            }
+                                                            },
+                                                  "by_area": {
+                                                               "type": "array",
+                                                               "maxItems": 3,
+                                                               "items": {
+                                                                          "type": "object",
+                                                                          "additionalProperties": false,
+                                                                          "required": [
+                                                                                        "on_time",
+                                                                                        "late",
+                                                                                        "missed",
+                                                                                        "overdue",
+                                                                                        "upcoming",
+                                                                                        "judged",
+                                                                                        "on_time_share",
+                                                                                        "area"
+                                                                                      ],
+                                                                          "properties": {
+                                                                                          "on_time": {
+                                                                                                       "type": "integer",
+                                                                                                       "minimum": 0
+                                                                                                     },
+                                                                                          "late": {
+                                                                                                    "type": "integer",
+                                                                                                    "minimum": 0
+                                                                                                  },
+                                                                                          "missed": {
+                                                                                                      "type": "integer",
+                                                                                                      "minimum": 0
+                                                                                                    },
+                                                                                          "overdue": {
+                                                                                                       "type": "integer",
+                                                                                                       "minimum": 0
+                                                                                                     },
+                                                                                          "upcoming": {
+                                                                                                        "type": "integer",
+                                                                                                        "minimum": 0
+                                                                                                      },
+                                                                                          "judged": {
+                                                                                                      "type": "integer",
+                                                                                                      "minimum": 0
+                                                                                                    },
+                                                                                          "on_time_share": {
+                                                                                                             "type": [
+                                                                                                                       "string",
+                                                                                                                       "null"
+                                                                                                                     ],
+                                                                                                             "pattern": "^\\d{1,3}\\.\\d$"
+                                                                                                           },
+                                                                                          "area": {
+                                                                                                    "type": "string",
+                                                                                                    "enum": [
+                                                                                                              "calibration",
+                                                                                                              "sanitation",
+                                                                                                              "other_qc"
+                                                                                                            ]
+                                                                                                  }
+                                                                                        }
+                                                                        }
+                                                             },
+                                                  "by_month": {
+                                                                "type": "array",
+                                                                "maxItems": 60,
+                                                                "items": {
+                                                                           "type": "object",
+                                                                           "additionalProperties": false,
+                                                                           "required": [
+                                                                                         "on_time",
+                                                                                         "late",
+                                                                                         "missed",
+                                                                                         "overdue",
+                                                                                         "upcoming",
+                                                                                         "judged",
+                                                                                         "on_time_share",
+                                                                                         "month",
+                                                                                         "area"
+                                                                                       ],
+                                                                           "properties": {
+                                                                                           "on_time": {
+                                                                                                        "type": "integer",
+                                                                                                        "minimum": 0
+                                                                                                      },
+                                                                                           "late": {
+                                                                                                     "type": "integer",
+                                                                                                     "minimum": 0
+                                                                                                   },
+                                                                                           "missed": {
+                                                                                                       "type": "integer",
+                                                                                                       "minimum": 0
+                                                                                                     },
+                                                                                           "overdue": {
+                                                                                                        "type": "integer",
+                                                                                                        "minimum": 0
+                                                                                                      },
+                                                                                           "upcoming": {
+                                                                                                         "type": "integer",
+                                                                                                         "minimum": 0
+                                                                                                       },
+                                                                                           "judged": {
+                                                                                                       "type": "integer",
+                                                                                                       "minimum": 0
+                                                                                                     },
+                                                                                           "on_time_share": {
+                                                                                                              "type": [
+                                                                                                                        "string",
+                                                                                                                        "null"
+                                                                                                                      ],
+                                                                                                              "pattern": "^\\d{1,3}\\.\\d$"
+                                                                                                            },
+                                                                                           "month": {
+                                                                                                      "type": "string",
+                                                                                                      "pattern": "^\\d{4}-\\d{2}$"
+                                                                                                    },
+                                                                                           "area": {
+                                                                                                     "type": "string",
+                                                                                                     "enum": [
+                                                                                                               "calibration",
+                                                                                                               "sanitation",
+                                                                                                               "other_qc"
+                                                                                                             ]
+                                                                                                   }
+                                                                                         }
+                                                                         }
+                                                              }
+                                                }
+                                },
+                      "schedule": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["totals", "by_line", "late"],
+                                    "properties": {
+                                                    "totals": {
+                                                                "type": "object",
+                                                                "additionalProperties": false,
+                                                                "required": [
+                                                                              "completed",
+                                                                              "not_completed",
+                                                                              "upcoming",
+                                                                              "cancelled",
+                                                                              "judged",
+                                                                              "completed_share"
+                                                                            ],
+                                                                "properties": {
+                                                                                "completed": {
+                                                                                               "type": "integer",
+                                                                                               "minimum": 0
+                                                                                             },
+                                                                                "not_completed": {
+                                                                                                   "type": "integer",
+                                                                                                   "minimum": 0
+                                                                                                 },
+                                                                                "upcoming": {
+                                                                                              "type": "integer",
+                                                                                              "minimum": 0
+                                                                                            },
+                                                                                "cancelled": {
+                                                                                               "type": "integer",
+                                                                                               "minimum": 0
+                                                                                             },
+                                                                                "judged": {
+                                                                                            "type": "integer",
+                                                                                            "minimum": 0
+                                                                                          },
+                                                                                "completed_share": {
+                                                                                                     "type": [
+                                                                                                               "string",
+                                                                                                               "null"
+                                                                                                             ],
+                                                                                                     "pattern": "^\\d{1,3}\\.\\d$"
+                                                                                                   }
+                                                                              }
+                                                              },
+                                                    "by_line": {
+                                                                 "type": "array",
+                                                                 "maxItems": 60,
+                                                                 "items": {
+                                                                            "type": "object",
+                                                                            "additionalProperties": false,
+                                                                            "required": [
+                                                                                          "completed",
+                                                                                          "not_completed",
+                                                                                          "upcoming",
+                                                                                          "cancelled",
+                                                                                          "judged",
+                                                                                          "completed_share",
+                                                                                          "line"
+                                                                                        ],
+                                                                            "properties": {
+                                                                                            "completed": {
+                                                                                                           "type": "integer",
+                                                                                                           "minimum": 0
+                                                                                                         },
+                                                                                            "not_completed": {
+                                                                                                               "type": "integer",
+                                                                                                               "minimum": 0
+                                                                                                             },
+                                                                                            "upcoming": {
+                                                                                                          "type": "integer",
+                                                                                                          "minimum": 0
+                                                                                                        },
+                                                                                            "cancelled": {
+                                                                                                           "type": "integer",
+                                                                                                           "minimum": 0
+                                                                                                         },
+                                                                                            "judged": {
+                                                                                                        "type": "integer",
+                                                                                                        "minimum": 0
+                                                                                                      },
+                                                                                            "completed_share": {
+                                                                                                                 "type": [
+                                                                                                                           "string",
+                                                                                                                           "null"
+                                                                                                                         ],
+                                                                                                                 "pattern": "^\\d{1,3}\\.\\d$"
+                                                                                                               },
+                                                                                            "line": {
+                                                                                                      "$ref": "#/$defs/untrusted_text"
+                                                                                                    }
+                                                                                          }
+                                                                          }
+                                                               },
+                                                    "by_month": {
+                                                                  "type": "array",
+                                                                  "maxItems": 13,
+                                                                  "items": {
+                                                                             "type": "object",
+                                                                             "additionalProperties": false,
+                                                                             "required": [
+                                                                                           "completed",
+                                                                                           "not_completed",
+                                                                                           "upcoming",
+                                                                                           "cancelled",
+                                                                                           "judged",
+                                                                                           "completed_share",
+                                                                                           "month"
+                                                                                         ],
+                                                                             "properties": {
+                                                                                             "completed": {
+                                                                                                            "type": "integer",
+                                                                                                            "minimum": 0
+                                                                                                          },
+                                                                                             "not_completed": {
+                                                                                                                "type": "integer",
+                                                                                                                "minimum": 0
+                                                                                                              },
+                                                                                             "upcoming": {
+                                                                                                           "type": "integer",
+                                                                                                           "minimum": 0
+                                                                                                         },
+                                                                                             "cancelled": {
+                                                                                                            "type": "integer",
+                                                                                                            "minimum": 0
+                                                                                                          },
+                                                                                             "judged": {
+                                                                                                         "type": "integer",
+                                                                                                         "minimum": 0
+                                                                                                       },
+                                                                                             "completed_share": {
+                                                                                                                  "type": [
+                                                                                                                            "string",
+                                                                                                                            "null"
+                                                                                                                          ],
+                                                                                                                  "pattern": "^\\d{1,3}\\.\\d$"
+                                                                                                                },
+                                                                                             "month": {
+                                                                                                        "type": "string",
+                                                                                                        "pattern": "^\\d{4}-\\d{2}$"
+                                                                                                      }
+                                                                                           }
+                                                                           }
+                                                                },
+                                                    "late": {"type": "string", "enum": ["not_measurable"]}
+                                                  }
+                                  },
+                      "holds": {
+                                 "type": "object",
+                                 "additionalProperties": false,
+                                 "required": ["batches_held", "age", "age_reason"],
+                                 "properties": {
+                                                 "batches_held": {"type": "integer", "minimum": 0},
+                                                 "age": {"type": "string", "enum": ["not_available"]},
+                                                 "age_reason": {
+                                                                 "type": "string",
+                                                                 "enum": ["no_hold_date_stored"]
+                                                               }
+                                               }
+                               },
+                      "hold_release_queue": {
+                                              "type": "object",
+                                              "additionalProperties": false,
+                                              "required": ["state", "reason"],
+                                              "properties": {
+                                                              "state": {
+                                                                         "type": "string",
+                                                                         "enum": ["not_available"]
+                                                                       },
+                                                              "reason": {"type": "string", "maxLength": 600}
+                                                            }
+                                            },
+                      "series": {
+                                  "type": "array",
+                                  "maxItems": 40,
+                                  "items": {
+                                             "type": "object",
+                                             "additionalProperties": false,
+                                             "required": [
+                                                           "on_time",
+                                                           "late",
+                                                           "missed",
+                                                           "overdue",
+                                                           "upcoming",
+                                                           "judged",
+                                                           "on_time_share",
+                                                           "title",
+                                                           "area",
+                                                           "cycle_days",
+                                                           "first_due",
+                                                           "last_due",
+                                                           "exceptions"
+                                                         ],
+                                             "properties": {
+                                                             "on_time": {"type": "integer", "minimum": 0},
+                                                             "late": {"type": "integer", "minimum": 0},
+                                                             "missed": {"type": "integer", "minimum": 0},
+                                                             "overdue": {"type": "integer", "minimum": 0},
+                                                             "upcoming": {"type": "integer", "minimum": 0},
+                                                             "judged": {"type": "integer", "minimum": 0},
+                                                             "on_time_share": {
+                                                                                "type": ["string", "null"],
+                                                                                "pattern": "^\\d{1,3}\\.\\d$"
+                                                                              },
+                                                             "title": {"$ref": "#/$defs/untrusted_text"},
+                                                             "area": {
+                                                                       "type": "string",
+                                                                       "enum": [
+                                                                                 "calibration",
+                                                                                 "sanitation",
+                                                                                 "other_qc"
+                                                                               ]
+                                                                     },
+                                                             "cycle_days": {"type": "integer", "minimum": 1},
+                                                             "first_due": {"type": "string", "format": "date"},
+                                                             "last_due": {"type": "string", "format": "date"},
+                                                             "exceptions": {
+                                                                             "type": "array",
+                                                                             "maxItems": 3,
+                                                                             "items": {
+                                                                                        "type": "object",
+                                                                                        "additionalProperties": false,
+                                                                                        "required": [
+                                                                                                      "object_id",
+                                                                                                      "status",
+                                                                                                      "due",
+                                                                                                      "done",
+                                                                                                      "citations"
+                                                                                                    ],
+                                                                                        "properties": {
+                                                                                                        "object_id": {
+                                                                                                                       "$ref": "#/$defs/object_id"
+                                                                                                                     },
+                                                                                                        "status": {
+                                                                                                                    "type": "string",
+                                                                                                                    "enum": [
+                                                                                                                              "missed",
+                                                                                                                              "late",
+                                                                                                                              "overdue"
+                                                                                                                            ]
+                                                                                                                  },
+                                                                                                        "due": {
+                                                                                                                 "type": "string",
+                                                                                                                 "format": "date"
+                                                                                                               },
+                                                                                                        "done": {
+                                                                                                                  "type": [
+                                                                                                                            "string",
+                                                                                                                            "null"
+                                                                                                                          ],
+                                                                                                                  "format": "date"
+                                                                                                                },
+                                                                                                        "citations": {
+                                                                                                                       "type": "array",
+                                                                                                                       "minItems": 1,
+                                                                                                                       "maxItems": 4,
+                                                                                                                       "items": {
+                                                                                                                                  "$ref": "#/$defs/handle"
+                                                                                                                                }
+                                                                                                                     }
+                                                                                                      }
+                                                                                      }
+                                                                           }
+                                                           }
+                                           }
+                                },
+                      "open_now": {
+                                    "type": "array",
+                                    "maxItems": 40,
+                                    "items": {
+                                               "type": "object",
+                                               "additionalProperties": false,
+                                               "required": [
+                                                             "object_id",
+                                                             "title",
+                                                             "area",
+                                                             "status",
+                                                             "due",
+                                                             "days_past_due",
+                                                             "citations"
+                                                           ],
+                                               "properties": {
+                                                               "object_id": {"$ref": "#/$defs/object_id"},
+                                                               "title": {"$ref": "#/$defs/untrusted_text"},
+                                                               "area": {
+                                                                         "type": "string",
+                                                                         "enum": [
+                                                                                   "calibration",
+                                                                                   "sanitation",
+                                                                                   "other_qc"
+                                                                                 ]
+                                                                       },
+                                                               "status": {
+                                                                           "type": "string",
+                                                                           "enum": [
+                                                                                     "missed",
+                                                                                     "overdue",
+                                                                                     "upcoming"
+                                                                                   ]
+                                                                         },
+                                                               "due": {"type": "string", "format": "date"},
+                                                               "days_past_due": {
+                                                                                  "type": "integer",
+                                                                                  "minimum": 0
+                                                                                },
+                                                               "citations": {
+                                                                              "type": "array",
+                                                                              "minItems": 1,
+                                                                              "maxItems": 4,
+                                                                              "items": {
+                                                                                         "$ref": "#/$defs/handle"
+                                                                                       }
+                                                                            }
+                                                             }
+                                             }
+                                  },
+                      "open_counts": {
+                                       "type": "object",
+                                       "additionalProperties": false,
+                                       "required": ["missed", "overdue", "upcoming"],
+                                       "properties": {
+                                                       "missed": {"type": "integer", "minimum": 0},
+                                                       "overdue": {"type": "integer", "minimum": 0},
+                                                       "upcoming": {"type": "integer", "minimum": 0}
+                                                     }
+                                     },
+                      "slots_not_completed": {
+                                               "type": "array",
+                                               "maxItems": 20,
+                                               "items": {
+                                                          "type": "object",
+                                                          "additionalProperties": false,
+                                                          "required": [
+                                                                        "object_id",
+                                                                        "line",
+                                                                        "start",
+                                                                        "citations"
+                                                                      ],
+                                                          "properties": {
+                                                                          "object_id": {
+                                                                                         "$ref": "#/$defs/object_id"
+                                                                                       },
+                                                                          "line": {
+                                                                                    "oneOf": [
+                                                                                               {
+                                                                                                 "$ref": "#/$defs/untrusted_text"
+                                                                                               },
+                                                                                               {
+                                                                                                 "type": "null"
+                                                                                               }
+                                                                                             ]
+                                                                                  },
+                                                                          "start": {
+                                                                                     "type": "string",
+                                                                                     "format": "date"
+                                                                                   },
+                                                                          "citations": {
+                                                                                         "type": "array",
+                                                                                         "minItems": 1,
+                                                                                         "maxItems": 4,
+                                                                                         "items": {
+                                                                                                    "$ref": "#/$defs/handle"
+                                                                                                  }
+                                                                                       }
+                                                                        }
+                                                        }
+                                             },
+                      "markings": {
+                                    "type": "array",
+                                    "items": {"type": "string", "enum": ["quality_controlled"]}
+                                  },
+                      "basis": {"type": "string", "maxLength": 600},
+                      "complete": {"type": "boolean"},
+                      "evidence": {"type": "string", "enum": ["store"]},
+                      "not_counted": {
+                                       "type": "object",
+                                       "additionalProperties": {"type": "integer", "minimum": 0}
+                                     },
+                      "trimmed": {
+                                   "type": "object",
+                                   "additionalProperties": false,
+                                   "properties": {
+                                                   "series": {"type": "integer", "minimum": 1},
+                                                   "open_now": {"type": "integer", "minimum": 1},
+                                                   "slots_not_completed": {"type": "integer", "minimum": 1}
+                                                 }
+                                 }
+                    }
+    },
     "who_knows_answer": {
       "type": "object", "additionalProperties": false,
       "description": "plx.aggregate mode who_knows (operating/who_knows.py): per person of ours the reader may see, message counts about customers, suppliers and items, and open threads waiting on their reply. Counts only.",
@@ -4813,6 +5416,8 @@
                         "rd_project_idle",
                         "approval_waiting",
                         "chase_escalating",
+                        "party_chase_unanswered",
+                        "internal_order_chase",
                         "slow_moving_stock",
                         "expiring_lot_stock",
                         "assembly_blocked_by_component",
@@ -4836,7 +5441,7 @@
                         "statement_difference"
                       ]
                     },
-                    "maxItems": 86
+                    "maxItems": 120
                   },
                   "as_of": {
                     "type": [
@@ -4919,6 +5524,8 @@
                         "needs_reply",
                         "approvals_waiting",
                         "chase_escalation",
+                        "party_chases",
+                        "internal_chases",
                         "slow_moving_stock",
                         "expiring_lot_stock",
                         "assembly_component_shortfall",
@@ -4939,6 +5546,7 @@
                         "priority_fill_unmet",
                         "inbox_triage",
                         "label_changes",
+                        "label_revisions",
                         "rd_projects",
                         "cash_application",
                         "statement_reconciliation"
@@ -4946,7 +5554,7 @@
                     },
                     "maxItems": 80
                   },
-                  "rules_clean": {"type": "array", "maxItems": 80, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "sync_gaps", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "rd_projects", "cash_application", "statement_reconciliation"]}},
+                  "rules_clean": {"type": "array", "maxItems": 80, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "party_chases", "internal_chases", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "sync_gaps", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "label_revisions", "rd_projects", "cash_application", "statement_reconciliation"]}},
                   "rules": {
                     "type": "array",
                     "description": "The rules that did not finish cleanly (rules_clean names the rest), each with its last run's status and not_evaluated: the records this reader may read the rule left unjudged, of the skips whose whole cause it may read (null: unknown). A rule not run or with not_evaluated other than 0 makes the home result incomplete (reason rule_not_evaluated): an empty kind is then not 'none'.",
@@ -5011,6 +5619,8 @@
                             "needs_reply",
                             "approvals_waiting",
                             "chase_escalation",
+                            "party_chases",
+                            "internal_chases",
                             "slow_moving_stock",
                             "expiring_lot_stock",
                             "assembly_component_shortfall",
@@ -5031,6 +5641,7 @@
                             "priority_fill_unmet",
                             "inbox_triage",
                             "label_changes",
+                            "label_revisions",
                             "rd_projects",
                             "cash_application",
                             "statement_reconciliation"
@@ -5201,6 +5812,8 @@
                             "rd_project_idle",
                             "approval_waiting",
                             "chase_escalating",
+                            "party_chase_unanswered",
+                            "internal_order_chase",
                             "slow_moving_stock",
                             "expiring_lot_stock",
                             "assembly_blocked_by_component",
@@ -6516,13 +7129,13 @@
       }
     },
     "plx.aggregate": {
-      "description": "Decimal count/sum/min/max of a set or object_type, filtered, grouped by 1-2 properties; readable rows only; >20 groups: summary+cursor. Refuses mixed roles/units/currencies, unknowns, fan-out sums, unreviewed N:M hops. Totals carry markings. Modes: cash_forecast; demand_forecast(bucket; group_by customer); business_documents(+view,customer,question); margin_variance(variance{subject,from,to,baseline_from,baseline_to}); quote_conversion; cross_sell(+customer); who_knows(+person).",
+      "description": "Decimal count/sum/min/max of a set or object_type, filtered, grouped by 1-2 properties; readable rows only; >20 groups: summary+cursor. Refuses mixed roles/units/currencies, unknowns, fan-out sums, unreviewed N:M hops. Totals carry markings. Modes: cash_forecast; demand_forecast(bucket; group_by customer); business_documents(+view,customer,question); margin_variance(variance{subject,from,to,baseline_from,baseline_to}); quote_conversion; cross_sell(+customer); who_knows(+person); qc_compliance(+view compliance|audit|daily).",
       "read_only": true,
       "input": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "mode": {"enum": ["cash_forecast", "demand_forecast", "margin_variance", "quote_conversion", "cross_sell", "who_knows", "business_documents"]},
+          "mode": {"enum": ["cash_forecast", "demand_forecast", "margin_variance", "quote_conversion", "cross_sell", "who_knows", "business_documents", "qc_compliance"]},
           "view": {"type": "string"},
           "question": {"type": "string"},
           "person": {"type": "string"},

@@ -209,16 +209,19 @@ def aggregate_modes(table: Mapping[str, dict[str, Any]], tools: OntologyTools, *
     and what waits on them, counts only, people exclusion first; ``demand_forecast``:
     invoiced quantities forecast per item, its history read on the first question of a
     day; ``business_documents``: what customers and suppliers send in sheets and documents
-    (``operating.business_documents``), people exclusion first. Each wraps the one before:
+    (``operating.business_documents``), people exclusion first; ``qc_compliance``: the
+    quality checks, production schedule slots and held batches for a quality_controlled
+    reader (``operating.qc_compliance``), its book read on the first question of a day.
+    Each wraps the one before:
     a call naming its mode is its own, any other goes on, and one naming no known mode is
     refused."""
     from . import (business_documents, cash_forecast, demand_forecast, margin_variance,
-                   proactive_sales, who_knows)
+                   proactive_sales, qc_compliance, who_knows)
 
     def unknown(arguments: Any, actor: Any) -> dict[str, Any]:
         return _error("invalid_input", "mode must be cash_forecast, demand_forecast, "
-                      "margin_variance, quote_conversion, cross_sell, who_knows or "
-                      "business_documents")
+                      "margin_variance, quote_conversion, cross_sell, who_knows, "
+                      "business_documents or qc_compliance")
     modes: dict[str, dict[str, Any]] = {"plx.aggregate": {"name": "plx.aggregate",
                                                           "handler": unknown}}
     cash_forecast.register(modes, tools, prime=prime, other_modes=True)
@@ -230,6 +233,7 @@ def aggregate_modes(table: Mapping[str, dict[str, Any]], tools: OntologyTools, *
     # question of a day, never at start.
     demand_forecast.register(modes, tools)
     business_documents.register(modes, tools)
+    qc_compliance.register(modes, tools)
     return modes
 
 
@@ -1198,8 +1202,6 @@ class CaseHostTools:
             return result
 
     def _call(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
-        from .ontology_tools_aggregate import TOOL_NAMES as ANSWER_TOOLS, AggregateTools
-        from .ontology_tools_evidence import TOOL_NAMES as EVIDENCE_TOOLS
         tools = self.tools
         stale = tools.store.format_problem()
         if stale is not None:   # an older projection: never read under this code's queries
@@ -1209,6 +1211,22 @@ class CaseHostTools:
             return self._registered[name](arguments, self.actor)
         self._check_overlay()
         tools.policy = self.policy_for(actor)
+        result = self._dispatch(name, arguments, actor)
+        overlay = self._overlay
+        if overlay is not None and getattr(overlay, "partial", False):
+            # the overlay lists only the newest layers (a Postgres base dropped the rest):
+            # every answer over it says it may be older (``delta_overlay.PARTIAL``)
+            from . import delta_overlay
+            marked = delta_overlay.with_partial_gap(result, name)
+            if marked is not result and (name not in tools.contracts["tools"]
+                                         or tools._checked(name, marked) is marked):
+                return marked
+        return result
+
+    def _dispatch(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
+        from .ontology_tools_aggregate import TOOL_NAMES as ANSWER_TOOLS, AggregateTools
+        from .ontology_tools_evidence import TOOL_NAMES as EVIDENCE_TOOLS
+        tools = self.tools
         if name == "plx.aggregate" and isinstance(arguments, dict) and "mode" in arguments:
             table = self.table
             if self._modes is None or self._modes[0] is not table:

@@ -7,10 +7,10 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { CardActions } from "@/components/card-actions";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Pending } from "@/components/ui/skeleton";
 import { LoadProblem } from "@/components/ui/notice";
 import { getMeetingFollowUp, getMyActionItems } from "@/lib/api";
-import { noticeKind, plainError } from "@/lib/errors";
+import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import type { ActionResult, CardActionOffer } from "@/lib/types";
 
 export interface Person { name?: string | null; address?: string | null }
@@ -149,7 +149,7 @@ export function MeetingFollowUpView({ followUp }: { followUp: FollowUp }) {
 export function MyActionItemsView({ items, person }: { items: Action[]; person?: string | null }) {
   return (
     <div className="space-y-3" data-testid="my-action-items">
-      <h1 className="text-[20px] font-semibold">{person ? `Action items for ${person}` : "My action items"}</h1>
+      <h2 className="text-[20px] font-semibold">{person ? `Action items for ${person}` : "My action items"}</h2>
       {items.length === 0 ? <p className="text-[13px] text-muted">No action item from a recorded meeting.</p> : (
         <ul className="divide-y divide-border">
           {items.map((a) => (
@@ -185,14 +185,16 @@ function useLoad<T>(load: (signal: AbortSignal) => Promise<T>, key: string) {
 export function MeetingFollowUpPanel({ meetingId }: { meetingId: string }) {
   const { data, error, retry } = useLoad((s) => getMeetingFollowUp(meetingId, s), meetingId);
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
-  if (!data) return <Skeleton className="h-40 w-full" />;
+  if (!data) return <Pending label="Reading the meeting's follow-up" />;
   return <MeetingFollowUpView followUp={data.follow_up as unknown as FollowUp} />;
 }
 
 /** My action items (or ``person``'s, for meetings I organised). */
 export function MyActionItemsPanel({ person }: { person?: string | null }) {
   const { data, error, retry } = useLoad((s) => getMyActionItems(person, s), person ?? "");
+  // not found: this server keeps no meeting follow-ups, which is an empty list, not a failure
+  if (error instanceof ApiError && error.status === 404) return <p className="text-[13px] text-muted">No meeting follow-ups are kept on this server.</p>;
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
-  if (!data) return <Skeleton className="h-24 w-full" />;
+  if (!data) return <Pending label="Reading your action items" />;
   return <MyActionItemsView items={data.items as unknown as Action[]} person={person} />;
 }

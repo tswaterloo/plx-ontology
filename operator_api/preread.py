@@ -31,12 +31,42 @@ CHOICE_PROPERTIES = ("vendor_name", "customer_name", "order_date", "document_dat
                      "fm_po_number", "po_number", "bc_status", "status")
 SYSTEM_WORDS = (("bc.", "Business Central"), ("portal.fm_", "FileMaker"),
                 ("portal.sage_", "Sage"), ("portal.", "the Portal"))
+# How a question names one of those systems (``SYSTEM_WORDS``' words), folded.
+SYSTEM_NAMES = ((r"business\s*central|bc", "Business Central"),
+                (r"file\s*maker|fm", "FileMaker"), (r"sage", "Sage"),
+                (r"(?:the\s+)?portal", "the Portal"))
+# The words between a system's name and the number it qualifies ("Business Central PO
+# PO100064", "the Portal purchase order 9"), at most.
+SYSTEM_GAP_WORDS = 3
 
 
 def system_words(object_id: str) -> str:
     binding = str(object_id).split(":", 2)[1] if str(object_id).count(":") >= 2 else ""
     return next((words for prefix, words in SYSTEM_WORDS if binding.startswith(prefix)),
                 "another system")
+
+
+def named_system(question: str, mention: Any) -> Optional[str]:
+    """The system the question names for ``mention`` (``SYSTEM_WORDS``' words): its name
+    just before the number ("Business Central PO PO100064", at most ``SYSTEM_GAP_WORDS``
+    words between) or right after it ("PO100064 in BC"); None when it names none there,
+    or the number is not in the question as written. A system named elsewhere in the
+    question (a hop to another system's records) never qualifies the number."""
+    import re
+    text = " ".join(str(question or "").casefold().split())
+    said = " ".join(str(mention or "").casefold().split())
+    at = text.find(said) if said else -1
+    if at < 0:
+        return None
+    before = text[:at].split()[-(SYSTEM_GAP_WORDS + 2):]
+    after = text[at + len(said):]
+    for pattern, words in SYSTEM_NAMES:
+        name = rf"(?<![\w])(?:{pattern})(?![\w])"
+        gap = rf"{name}(?:\s+[^\s]+){{0,{SYSTEM_GAP_WORDS}}}\s*$"
+        if re.search(gap, " ".join(before) + " ") or re.match(
+                rf"\s*(?:in|from|on)\s+{name}", after):
+            return words
+    return None
 
 
 def _kind_type(kind: Any) -> Optional[str]:
@@ -84,6 +114,16 @@ def resolve(call: Callable[[str, dict], Any], found: Mapping[str, Any],
                 groups.append([candidate])
         picked = next((g for g in groups if object_id in {c["object_id"] for c in g}), None)
         party = None
+        system = named_system(question, item.get("mention")) \
+            if picked is None and len(groups) > 1 else None
+        if system is not None:
+            # the system the question names for the number: its one record there is it
+            held = [g for g in groups
+                    if any(system_words(c["object_id"]) == system for c in g)]
+            if len(held) == 1:
+                picked = held[0]
+                item = {**item, "named_system": system,
+                        "others": [g[0]["object_id"] for g in groups if g is not picked]}
         if picked is None and len(groups) > 1 and question:
             try:
                 hits, party = by_named_party(call, question,
@@ -104,7 +144,8 @@ def resolve(call: Callable[[str, dict], Any], found: Mapping[str, Any],
                           "object_type": first.get("object_type"),
                           "found_by": "identifier",
                           "same_as": [c["object_id"] for c in group if c is not first],
-                          **({"named_party": item["named_party"], "others": item["others"]}
+                          **({key: item[key] for key in ("named_party", "named_system",
+                                                         "others") if key in item}
                              if item.get("others") else {})})
         elif len(groups) > 1:
             several.append({"mention": item.get("mention"),
@@ -251,7 +292,12 @@ def brief(trail: Optional[m.EvidenceTrail], roots: Sequence[Mapping[str, Any]],
         lines.append(f"\"{root['mention']}\" names the record with object id "
                      f"{root['object_id']}" + (" (the same record as " + ", ".join(same)
                                                 + ")" if same else "") + ".")
-        if root.get("others"):
+        if root.get("others") and root.get("named_system"):
+            # picked by the system the question names for the number
+            lines.append(f"It is the one in {root['named_system']}, the system the question "
+                         "names for it; " + ", ".join(root["others"]) + " share the number "
+                         "but are different records (never read them as this one).")
+        elif root.get("others"):
             # picked by the party the question names: the others are different orders
             lines.append(f"It is the one of {root.get('named_party') or 'the party named'}, "
                          "the supplier or customer the question names; "

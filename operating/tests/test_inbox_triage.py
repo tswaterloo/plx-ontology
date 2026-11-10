@@ -1,6 +1,6 @@
 """What needs my reply (``operating.inbox_triage``), who is overloaded (``workload``) and
-label and artwork change control (``operating.label_changes``) through the engine and the
-per-reader inbox.
+label and artwork change control (``operating.label_changes``) and revision control
+(``operating.label_revisions``) through the engine and the per-reader inbox.
 
 SYNTHETIC fixtures only (``World`` stores, synthetic handles and addresses); evidence label:
 isolated-fixture.
@@ -17,12 +17,13 @@ import unittest
 
 from operating import inbox_triage as it
 from operating import label_changes as lc
+from operating import label_revisions as lr
 from operating.tests.test_proactive_engine import (AS_OF, EXCLUDED_OID, OURS_OID, Engine,
                                                    World)
 from operating.tests.test_proactive_threads import (APPROVER, APPROVER_OID, BOSS, OURS,
                                                     OUTSIDE, mail, people)
 
-RULES = [it.RULE, lc.RULE]
+RULES = [it.RULE, lc.RULE, lr.RULE]
 
 
 def day(offset: int) -> date:
@@ -172,6 +173,64 @@ class Triage(Engine):
                 self.assertEqual(len(conversations), n)
                 top = it.triage(gaps, AS_OF)["lines"][0]
                 self.assertEqual(top["chases"], 2)   # the repeat chases rank first
+
+
+class OneToOneChats(Engine):
+    """The Teams capture lists a chat's members as object ids AND addresses and names a
+    one-to-one chat ``19:<id>_<id>@unq.gbl.spaces``; its sender is ``{"display_name", "id"}``.
+    Before, every such chat read as a group of four and no Teams ask was triaged
+    (reproduced bug, same as the autopilot's)."""
+
+    PAIR = "19:{}_{}@unq.gbl.spaces"
+    run_rules, mine = Triage.run_rules, Triage.mine
+
+    def guard(self, n: int):
+        guard = people()
+        for i in range(n):
+            other = f"{i:08x}-0000-4000-8000-00000000a{i:03x}"
+            guard.directory[f"colleague{i}@synth-tenant.example"] = other
+            guard.chat_members[self.PAIR.format(OURS_OID, other)] = [
+                OURS_OID, other, OURS, f"colleague{i}@synth-tenant.example"]
+        guard.chat_members[self.PAIR.format(EXCLUDED_OID, OURS_OID)] = [
+            EXCLUDED_OID, OURS_OID, BOSS, OURS]
+        # a group whose members appear by id and by address: never a one-to-one
+        guard.chat_members["19:group@thread.v2"] = [OURS_OID, APPROVER_OID, OURS, APPROVER,
+                                                    "00000000-0000-4000-8000-0000000000c3"]
+        return guard
+
+    def chat(self, w: World, chat: str, sender: str, sent: int, text: str) -> str:
+        return w.obj("TeamsChatMessage", {
+            "created_at": f"{day(sent).isoformat()}T10:00:00Z", "subject": text,
+            "from": json.dumps({"display_name": "Synth person", "id": sender})},
+            audience=f"teams:chat:{chat}", binding="graph_teams.messages")
+
+    def test_cardinality_each_one_to_one_ask_reaches_its_owner_once(self):
+        ask_text = "Could you confirm the pallet count for tomorrow?"
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w, guard = World(), self.guard(n)
+                for i in range(n):
+                    other = f"{i:08x}-0000-4000-8000-00000000a{i:03x}"
+                    self.chat(w, self.PAIR.format(OURS_OID, other), other, 4, ask_text)
+                barred = self.chat(w, self.PAIR.format(EXCLUDED_OID, OURS_OID), EXCLUDED_OID,
+                                   4, ask_text)
+                unknown = self.chat(w, self.PAIR.format(APPROVER_OID, OURS_OID),
+                                    APPROVER_OID, 4, ask_text)   # members never captured
+                group = self.chat(w, "19:group@thread.v2", APPROVER_OID, 4, ask_text)
+                started = time.monotonic()
+                summary = self.run_rules(w, people=guard)
+                self.assertLess(time.monotonic() - started, 60)
+                self.assertEqual(summary["detectors"][it.RULE], "complete")
+                gaps = self.mine(OURS_OID)
+                self.assertEqual(len(gaps), n)
+                self.assertEqual({g["event"]["channel"] for g in gaps}, {"teams"})
+                self.assertEqual(len({g["object_id"] for g in gaps}), n)
+                for oid in (barred, unknown, group):
+                    self.assertNotIn(oid, {g["object_id"] for g in gaps})
+                self.assertEqual(self.mine(EXCLUDED_OID), [])
+                # the people exclusion unavailable: blocked, nothing raised
+                self.assertEqual(self.run_rules(w, people=people(unavailable=True))
+                                 ["detectors"][it.RULE], "blocked")
 
 
 class Prospects(Engine):
@@ -326,6 +385,167 @@ class Labels(Engine):
         self.assertEqual(self.read(kinds=list(lc.KINDS), limit=1000,
                                    may_read=lambda key: key != f"mail:{OURS_OID}")["gaps"],
                          [])
+
+
+def people_with_drive():
+    made = people()
+    made.drive_owners = {"drive-1": ""}   # a site library (no OneDrive owner): cleared
+    return made
+
+
+def attach(w: World, email: str, name: str, *, box: str = OURS_OID) -> str:
+    made = w.obj("Attachment", {"name": name}, binding="graph_mail.attachments",
+                 audience=f"mail:{box}")
+    w.link("Attachment.attached_to", made, email)
+    return made
+
+
+class Revisions(Engine):
+    """Every label revision per item, its approval, the open orders on a superseded one,
+    and the change rule reading the register as its source."""
+
+    def test_names_parse_to_family_and_rank_and_documents_about_labels_do_not(self):
+        for name, want in (
+                ("Synth Shampoo Front Label Rev 2.pdf", ("synth shampoo front label", ("n", 2))),
+                ("Synth Shampoo Front Label rev.1-06.jpg",
+                 ("synth shampoo front label", ("n", 1))),
+                ("v11 SYN01_0001_B_proof.pdf", ("syn01 0001 b proof", ("n", 11))),
+                ("Synth Carton Artwork Rev B (2).ai", ("synth carton artwork", ("a", 2))),
+                ("Synth Shampoo Front Label Revisions.pdf", None),     # no revision token
+                ("Synth Shipping Label v2.pdf", None),                 # no artwork
+                ("Private Label Inquiry v1.pdf", None),
+                ("Synth Front Label Rev 2.docx", None),                # a document about it
+                ("Synth Label Approval Form v1.pdf", None),
+                ("Synth Front Label 2026-10-01.pdf", None)):            # a date is no revision
+            with self.subTest(name=name):
+                got = lr.parse(name)
+                self.assertEqual(got and got[:2], want)
+        for text, want in (("This is approved! Thanks.", True), ("Looks great.", True),
+                           ("Please confirm the attached proof is approved.", False),
+                           ("Received with the approved color chips.", False),
+                           ("Looks good to me but maybe check the barcode.", False),
+                           ("Artworks were usually approved in three rounds.", False),
+                           ("Can we go ahead and order the labels?", False)):
+            with self.subTest(text=text):
+                self.assertIs(lr.approves(text), want)
+
+    def world(self) -> tuple[World, dict]:
+        w = World()
+        ids = {"item": w.obj("Product", {"code": "SYN-1"})}
+        for key, status in (("open_ao", "scheduled"), ("done_ao", "realized"),
+                            ("both_ao", "allocated"), ("odd_ao", "released")):
+            ids[key] = w.obj("AssemblyOrder", {"status": status})
+        ids["so"] = w.obj("SalesOrder", {"status": "CONFIRMED",
+                                         "order_date": day(30).isoformat()})
+        # revision 1: mailed by the customer, naming the open sales order
+        m1 = mail(w, day(40), sender=OUTSIDE, to=(OURS,), conversation="art-1",
+                  body="Here is the front label.", subject="Front label", n=50_001)
+        w.link("Email.mentions_product", m1, ids["item"])
+        w.link("Email.mentions_sales_order", m1, ids["so"])
+        ids["rev1"] = attach(w, m1, "Synth Shampoo Front Label Rev 1.pdf")
+        # revision 1 in the artwork library too, naming three manufacturing orders
+        f1 = w.obj("SharePointFile", {"name": "Synth Shampoo Front Label Rev 1.ai",
+                                      "last_modified": f"{day(39).isoformat()}T10:00:00Z",
+                                      "path": "/Artwork/Synth/Synth Shampoo Front Label Rev 1.ai"},
+                   binding="sharepoint.drive_items", audience="sharepoint:drive-1")
+        w.link("SharePointFile.mentions_product", f1, ids["item"])
+        for key in ("open_ao", "done_ao", "both_ao", "odd_ao"):
+            w.link("SharePointFile.mentions_assembly_order", f1, ids[key])
+        # a lead-tier order mention is no pointer
+        ids["lead_ao"] = w.obj("AssemblyOrder", {"status": "scheduled"})
+        w.link("SharePointFile.mentions_assembly_order", f1, ids["lead_ao"], tier="lead")
+        # revision 2, sent by us, approved by the customer in the thread
+        m2 = mail(w, day(20), sender=OURS, to=(OUTSIDE,), conversation="art-2",
+                  body="The revised front label is attached.", subject="Front label rev 2",
+                  n=50_002)
+        w.link("Email.mentions_product", m2, ids["item"])
+        w.link("Email.mentions_assembly_order", m2, ids["both_ao"])
+        ids["rev2"] = attach(w, m2, "Synth Shampoo Front Label Rev 2.pdf")
+        mail(w, day(19), sender=OUTSIDE, to=(OURS,), conversation="art-2",
+             body="Approved, OK to print.", subject="Re: Front label rev 2", n=50_003)
+        # noise: no revision, no artwork; and a revision in the excluded person's mailbox
+        m3 = mail(w, day(18), sender=OURS, to=(OUTSIDE,), conversation="art-3",
+                  body="Shipping label attached.", subject="Shipping", n=50_004)
+        attach(w, m3, "Synth Shipping Label v2.pdf")
+        attach(w, m3, "Synth Shampoo Front Label Revisions.pdf")
+        m4 = mail(w, day(10), sender=BOSS, to=(OUTSIDE,), conversation="art-4",
+                  body="Front label attached.", subject="Front label rev 3",
+                  mailbox=EXCLUDED_OID, n=50_005)
+        w.link("Email.mentions_product", m4, ids["item"])
+        ids["rev3_excluded"] = attach(w, m4, "Synth Shampoo Front Label Rev 3.pdf",
+                                      box=EXCLUDED_OID)
+        # a change request before revision 2: done by the new revision, approved with it
+        ids["ask"] = mail(w, day(25), sender=OUTSIDE, to=(OURS,), conversation="art-5",
+                          body="Hi, can you please update the front label to add the lot code?",
+                          subject="Label change", n=50_006)
+        w.link("Email.mentions_product", ids["ask"], ids["item"])
+        return w, ids
+
+    def test_history_approval_superseded_orders_and_the_change_rule_source(self):
+        w, ids = self.world()
+        summary = self.run_engine(w, only=RULES, people=people_with_drive())
+        self.assertEqual(summary["detectors"][lr.RULE], "complete")
+        gaps = self.read(kinds=list(lr.KINDS) + list(lc.KINDS), limit=1000)["gaps"]
+        text = json.dumps(gaps)
+        # the excluded person's copy is never read, and no body is kept
+        self.assertNotIn(ids["rev3_excluded"], text)
+        self.assertNotIn("Rev 3", text)
+        self.assertNotIn("lot code", text)
+        page = lr.history(gaps, ids["item"])
+        self.assertEqual(len(page["families"]), 1)
+        family = page["families"][0]
+        self.assertEqual([r["revision"] for r in family["revisions"]], ["Rev 2", "Rev 1"])
+        current, old = family["revisions"]
+        self.assertTrue(current["current"])
+        self.assertEqual((current["approved_on"], current["approved_by"]),
+                         (day(19).isoformat(), OUTSIDE))
+        self.assertEqual(old["superseded_on"], day(20).isoformat())
+        self.assertIsNone(old["approved_on"])
+        # open orders a superseded copy names: the sales order and the scheduled AO; not
+        # the realized one, not one the new revision names too, not an unknown status,
+        # not a lead-tier mention
+        flagged = {g["object_id"] for g in gaps if g["kind"] == lr.SUPERSEDED}
+        self.assertEqual(flagged, {ids["so"], ids["open_ao"]})
+        self.assertEqual(summary["not_evaluated"][lr.RULE].get("order_status_unknown"), 1)
+        on_order = lr.history(gaps, ids["open_ao"])["superseded_on_orders"]
+        self.assertEqual([(o["revision"], o["current"]) for o in on_order], [("Rev 1", "Rev 2")])
+        # the change rule reads the register: done by the new revision, approved with it
+        change = lc.item_section(gaps, ids["item"])
+        self.assertEqual((change["total"], change["no_approval"]), (1, 0))
+        self.assertEqual(change["changes"][0]["done_by"], "file")
+        self.assertEqual(change["changes"][0]["approved_on"], day(19).isoformat())
+        # a reader without the library sees no superseded alert resting on it (the AO's),
+        # still the one resting on mail it reads (the sales order's), and no revision whose
+        # copies it cannot all read
+        narrow = self.read(kinds=list(lr.KINDS), limit=1000,
+                           may_read=lambda key: key != "sharepoint:drive-1")["gaps"]
+        self.assertEqual({g["object_id"] for g in narrow if g["kind"] == lr.SUPERSEDED},
+                         {ids["so"]})
+        self.assertEqual([r["revision"] for f in lr.history(narrow, ids["item"])["families"]
+                          for r in f["revisions"]], ["Rev 2"])
+        # the superseded alert is off for readers until it is measured (alert registry)
+        self.assertEqual(self.read(kinds=[lr.SUPERSEDED], include_off=False)["gaps"], [])
+
+    def test_fails_closed_without_the_exclusion_and_reads_each_copy_once(self):
+        w, _ids = self.world()
+        blocked = self.run_engine(w, only=[lr.RULE], people=people(unavailable=True))
+        self.assertEqual(blocked["detectors"][lr.RULE], "blocked")
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w = World()
+                item = w.obj("Product", {"code": "SYN-1"})
+                for i in range(n):
+                    m = mail(w, day(30 - i % 20), sender=OUTSIDE, to=(OURS,),
+                             conversation=f"bulk-{i}", body="Label attached.",
+                             subject=f"Label {i}", n=60_000 + i)
+                    w.link("Email.mentions_product", m, item)
+                    attach(w, m, f"Synth Item {i} Front Label Rev {1 + i % 3}.pdf")
+                started = time.monotonic()
+                self.run_engine(w, only=[lr.RULE], people=people_with_drive())
+                gaps = self.read(kinds=[lr.REVISION], limit=1000)["gaps"]
+                self.assertEqual(len(gaps), n)
+                self.assertEqual(len({g["id"] for g in gaps}), n)
+                self.assertLess(time.monotonic() - started, 30)
 
 
 if __name__ == "__main__":

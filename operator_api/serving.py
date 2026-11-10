@@ -785,6 +785,70 @@ def submit(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reader
     return future
 
 
+def fan_out(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reader,
+            call: Callable[[str, dict], Any], tasks: "list[Callable[[Any], Any]]",
+            late: Callable[[], bool], *, width: int,
+            wrap: Callable[[Any], Any] = lambda c: c, priority: int = 0,
+            deadline: Optional[float] = None) -> list:
+    """``customer_profit.FanOut`` over a worker pool: ``task(call)`` of each task, read
+    side by side. The calling thread reads too, on its own ``call``, taking the next
+    unread task; ``width - 1`` helper jobs go on ``jobs`` (the Ask pool's queue) for
+    ``reader``, so each runs on another worker's runtime with that worker's workspace of
+    the same reader's session (``Worker._workspace``): every read is decided for this
+    reader, as on the caller's own runtime. A helper the pool has not started by the time
+    every task is taken is cancelled, so a busy pool never holds the caller back. A task
+    starts only while ``late()`` is false; every task started finishes. Returns the
+    results of the tasks started (a prefix of ``tasks``), in their order; a task's
+    exception is raised once every started task ended. ``wrap``: what a helper's
+    workspace call is wrapped in (the caller's progress events)."""
+    count = len(tasks)
+    if count < 2 or width < 2:
+        out = []
+        for task in tasks:
+            if late():
+                break
+            out.append(task(call))
+        return out
+    results: list[Any] = [None] * count
+    failed: list[BaseException] = []
+    taking = threading.Lock()
+    state = {"next": 0, "halted": False}
+
+    def drain(on: Callable[[str, dict], Any]) -> None:
+        while True:
+            with taking:
+                if state["halted"] or state["next"] >= count:
+                    return
+                if late():
+                    state["halted"] = True
+                    return
+                index = state["next"]
+                state["next"] += 1
+            try:
+                results[index] = tasks[index](on)
+            except BaseException as error:  # noqa: BLE001 - raised to the caller below
+                with taking:
+                    state["halted"] = True
+                failed.append(error)
+
+    helpers = []
+    for _ in range(min(width, count) - 1):
+        future = submit(jobs, stopped, reader, lambda view: drain(wrap(view._call)), priority)
+        if deadline is not None:
+            future.plx_deadline = deadline   # type: ignore[attr-defined]
+        helpers.append(future)
+    drain(call)
+    for future in helpers:
+        if not future.cancel():
+            try:
+                future.result()
+            except BaseException:  # noqa: BLE001 - a helper that failed to open took no task
+                pass
+    if failed:
+        raise failed[0]
+    return results[:state["next"]]
+
+
 # ``PLX_STAGE_TIMING=1``: every read job's queue wait and run time is logged
 # (``operator_api.stages``); ``PLX_STAGE_PROFILE=<dir>``: a job that runs longer than
 # ``PLX_STAGE_PROFILE_SECONDS`` (default 5) leaves its cProfile there. Off by default.

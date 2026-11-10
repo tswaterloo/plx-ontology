@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import gc
+import io
 import json
 import os
 from pathlib import Path
@@ -770,14 +771,30 @@ class CaseCitationGateTests(SharePointHostCase):
 
 
 class HostCaseCaptureTests(HostCase):
-    """``host serve``'s console and ``host mcp`` resolve a case citation of the host's
+    """The app API's workspace over the host (``console_arguments``) and ``host mcp`` resolve a case citation of the host's
     captures through the gates plx.read reads them with, over the host's projection
     (``capture_stale`` as for plx.read), and report the Portal the host captures as
     captured (``--host-captures-portal``)."""
 
+    def served(self) -> tuple[int, str]:
+        """The app API's serving path over this host (``python3 -m operator_api serve
+        --host-config``): one host cycle builds the projection, then the workspace starts
+        with ``console_arguments`` (its listener patched by the caller)."""
+        from operator_api.workspace import case_console
+        code, _out, err = self.main("run", "--state-dir", str(self.state), "--config",
+                                    str(self.config))
+        if code != 0:
+            return code, err
+        host = host_module.Host(self.state, host_module.HostConfig.from_file(self.config),
+                                environ=ENV_HOST)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = case_console.main(host_module.console_arguments(host, 0))
+        return code, stderr.getvalue()
+
     def started(self, command: str) -> CaseRuntime:
         """The case runtime ``host <command>`` serves, captured as it starts serving."""
-        from operator_ui import case_console
+        from operator_api.workspace import case_console
         from operating import mcp_server
         from operating import session_identity as si
         from operating.tests.test_session_identity import SECRET, Fixture
@@ -790,7 +807,7 @@ class HostCaseCaptureTests(HostCase):
                 return built[-1]
             patches = (mock.patch.object(case_console, "CaseRuntime", runtime),
                        mock.patch.object(case_console, "serve", lambda **kw: None))
-            argv = ["--port", "0", "--interval-seconds", "3600"]
+            argv = []
             env = ENV_HOST
         else:
             patches = (mock.patch.object(mcp_server, "serve_stdio",
@@ -802,8 +819,11 @@ class HostCaseCaptureTests(HostCase):
             for patch in patches:
                 stack.enter_context(patch)
             stack.enter_context(mock.patch.dict(os.environ, env))
-            code, _out, err = self.main(command, "--state-dir", str(self.state), "--config",
-                                        str(self.config), *argv)
+            if command == "serve":
+                code, err = self.served()
+            else:
+                code, _out, err = self.main(command, "--state-dir", str(self.state),
+                                            "--config", str(self.config), *argv)
         self.assertEqual((code, len(built)), (0, 1), err)
         self.addCleanup(built[0].close)
         return built[0]
@@ -825,7 +845,7 @@ class HostCaseCaptureTests(HostCase):
         reads the freshness bounds the host passes (a console that refused
         ``--freshness-bound`` left ``host serve`` unable to start)."""
         import argparse
-        from operator_ui import case_console
+        from operator_api.workspace import case_console
         from operating import mcp_http_host, mcp_server
         host = host_module.Host(self.state, host_module.HostConfig.from_file(self.config),
                                 environ=ENV_HOST)
@@ -857,7 +877,7 @@ class HostCaseCaptureTests(HostCase):
             self.assertEqual(mcp_server.freshness_bounds(args.freshness_bound), bounds, mode)
 
     def test_host_serve_console_applies_the_freshness_bounds_and_refuses_bad_ones(self):
-        from operator_ui import case_console
+        from operator_api.workspace import case_console
         host = host_module.Host(self.state, host_module.HostConfig.from_file(self.config),
                                 environ=ENV_HOST)
         tickets, built = [], []
@@ -870,9 +890,7 @@ class HostCaseCaptureTests(HostCase):
         with mock.patch.object(case_console, "TicketSessions", sessions), \
                 mock.patch.object(case_console, "serve", lambda **kw: None), \
                 mock.patch.dict(os.environ, ENV_HOST):
-            code, _out, err = self.main("serve", "--state-dir", str(self.state), "--config",
-                                        str(self.config), "--port", "0",
-                                        "--interval-seconds", "3600")
+            code, err = self.served()
         self.assertEqual((code, len(tickets)), (0, 1), err)
         self.assertIsNotNone(tickets[0])
         reader = mock.Mock(actor=Actor("plx", frozenset({"employee:" + OID})))

@@ -1,7 +1,7 @@
 "use client";
 
 import { DocumentsSection } from "@/components/record/documents";
-import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, MessageCircle } from "lucide-react";
+import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -20,6 +20,7 @@ import { CustodyRail } from "./custody-rail";
 import { EtaCard } from "./eta-confirmed";
 import { History } from "./history";
 import { LabelChangesSection } from "./label-changes";
+import { LabelRevisionsSection } from "./label-revisions";
 import { LinkExplorer } from "./link-explorer";
 import { RecordHistory } from "./record-history";
 import { EvidenceTrailCard, trailNextAction } from "./evidence-trail";
@@ -33,6 +34,7 @@ import { EvidenceDrawer, SourceChip, SourceChips } from "./source-chip";
 import { stepWords } from "./today-detail";
 import { DoneRing, OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
 import { Toolbar, ToolbarButton } from "./ui/toolbar";
+import { useCommandPalette } from "./command-palette";
 import { LoadProblem, StaleNote } from "./ui/notice";
 import { Monogram } from "./ui/monogram";
 import { KindSections } from "./record/kind-sections";
@@ -705,7 +707,7 @@ function NextStep({
             </span>
           )}
           {next.contact_source ? (
-            <span className="text-muted">
+            <span className="min-w-0 max-w-full text-muted">
               <SourceLine source={next.contact_source} prefix="Last message from" />
             </span>
           ) : (
@@ -779,7 +781,7 @@ function MarginCard({ p, order, objectId, revenue }: { p: Profitability | null |
             <MarginHeadline b={own} />
             <CostBreakdown breakdown={own} />
             <p className="text-[12px] leading-4 text-muted">
-              Margins are {p.margin_basis ?? "on item cost only"}. {p.margin_note}
+              *Margins are {p.margin_basis ?? "on item cost only"}. {p.margin_note}
             </p>
           </>
         ) : ownRow ? (
@@ -864,6 +866,36 @@ function salesFigures(obj: ObjectPage) {
     ordered: dayOf(get("order_date", "document_date")),
     needed: dayOf(get("requested_delivery_date", "promised_delivery_date", "shipment_date", "requested_date")),
   };
+}
+
+/** Where to go from a record that isn't there: search for it, or back to My work. */
+export function MissingActions({ className }: { className?: string }) {
+  const { open } = useCommandPalette();
+  return (
+    <div className={cn("mt-4 flex flex-wrap gap-2", className)}>
+      <button
+        type="button"
+        onClick={open}
+        className="inline-flex h-8 items-center rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg shadow-sm hover:brightness-110 cursor-pointer"
+      >
+        Search for it
+      </button>
+      <Link href="/" className="inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]">
+        Open My work
+      </Link>
+    </div>
+  );
+}
+
+/** A record that isn't there (or isn't the reader's to see): retrying never helps, so offer search and the way home. */
+function RecordMissing({ type }: { type: string }) {
+  return (
+    <div className="max-w-2xl" role="status" data-testid="record-missing">
+      <p className="text-row text-fg">This {typeLabel(type).toLowerCase()} isn&apos;t here, or you don&apos;t have access to it.</p>
+      <p className="mt-1 text-meta text-muted">The link may be old, or the record may have a different number. Search for it by number or name.</p>
+      <MissingActions />
+    </div>
+  );
 }
 
 /**
@@ -976,17 +1008,18 @@ if (c.signal.aborted) return;
   const key = `o:${type}/${id}`;
   const isSaved = saved.some((s) => s.key === key);
 
-  if (error && !obj && notFound && missing)
+  if (error && !obj && notFound)
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <Toolbar title={<Crumb type={type} />} />
-        <div className="px-5 pt-6 pb-12 sm:px-8 sm:pt-7">{missing}</div>
+        {/* a page's own "missing" view names itself (its h1); the toolbar is the heading only otherwise */}
+        <Toolbar heading={!missing} title={<Crumb type={type} />} />
+        <div className="px-5 pt-6 pb-12 sm:px-8 sm:pt-7">{missing ?? <RecordMissing type={type} />}</div>
       </div>
     );
   if (error && !obj)
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <Toolbar title={<Crumb type={type} title={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} />} />
+        <Toolbar heading title={<Crumb type={type} title={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} />} />
         <div className="max-w-2xl px-5 pt-6 pb-12 sm:px-8 sm:pt-7">
           <LoadProblem message={error} busy={busy} onRetry={load} />
         </div>
@@ -1083,7 +1116,8 @@ if (c.signal.aborted) return;
           title="Gather the documents a customer or supplier asks for, with a drafted reply"
           data-testid="record-pack"
         >
-          <span>Documents</span>
+          <FolderOpen strokeWidth={2} aria-hidden />
+          <span className="max-sm:sr-only">Documents</span>
         </Link>
       )}
     </>
@@ -1166,7 +1200,7 @@ if (c.signal.aborted) return;
   const hasFigures = factFigures.length > 0 || !!total || !!got || ordered != null || needed != null || !!so?.total || otherStats.length > 0 || revenue.length > 0;
   const figures = hasFigures && (
     <section className="space-y-6" data-testid="detail-stats">
-      <div className="flex flex-wrap gap-x-12 gap-y-5">
+      <div className="flex flex-wrap gap-x-12 gap-y-5 empty:hidden">
         {(isPo ? total : null) && <Figure label="Total" value={total!.value} unit={total!.caption} />}
         {so?.total && <Figure label="Total" value={so.total.replace(/\s+[A-Z]{3}$/, "")} unit={/[A-Z]{3}$/.exec(so.total)?.[0]} />}
         {so && so.needed == null && so.ordered != null && <Figure label="Ordered" value={formatDate(new Date(so.ordered).toISOString().slice(0, 10))} />}
@@ -1290,6 +1324,9 @@ if (c.signal.aborted) return;
       {PACK_TYPES.includes(obj.type) && <DocumentsSection type={obj.type} id={obj.object_id} />}
       <Linked items={obj.linked ?? []} />
       {obj.type === "Product" && <LabelChangesSection objectId={obj.object_id} />}
+      {["Product", "Customer", "SalesOrder", "AssemblyOrder"].includes(obj.type) && (
+        <LabelRevisionsSection objectId={obj.object_id} />
+      )}
       <LinkExplorer type={obj.type} id={obj.object_id} label={head.title} />
       {notOnRecord.length > 0 && (
         <section data-testid="not-found">

@@ -833,7 +833,7 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "aged_payable_worsening", "production_late", "assembly_damage_spike",
               "teams_unanswered_ask",
               "commitment_due", "commitment_missed", "needs_my_reply", "reply_owed",
-              "approval_waiting", "chase_escalating",
+              "approval_waiting", "chase_escalating", "party_chase_unanswered", "internal_order_chase",
               "label_change_unapproved", "label_change_stale", "label_change_tracked",
               "rd_project_line", "rd_project_idle",
               "slow_moving_stock", "expiring_lot_stock", "assembly_blocked_by_component",
@@ -3292,7 +3292,7 @@ class MCPServer:
         """This call's policy and its access decision per citation handle (``HostAccess.
         _decide``: the record's audience unit, then the item permission of a document or
         mail; ``None``: readable), each handle decided once per call."""
-        from operator_ui.object_workspace import HostAccess
+        from operator_api.workspace.object_workspace import HostAccess
 
         policy = host.policy_now(gated)
         decided: dict[str, Any] = {}
@@ -4599,7 +4599,7 @@ class SessionHost:
         if args.ontology_store is not None and (fixture or dev):
             # A host that reads no real source serves only a store projected from its own
             # captures: one projected elsewhere (a live store) or unverifiable is refused, as
-            # the console refuses it (operator_ui.case_console.checked_store_status).
+            # the console refuses it (operator_api.workspace.case_console.checked_store_status).
             refusal = _foreign_store(args.ontology_store, state_dir)
             if refusal is not None:
                 parser.error("ontology store refused: " + refusal)
@@ -4645,7 +4645,7 @@ def playbook_session_tools(runtime: CaseRuntime, actor: Actor, state_dir: Path,
     the session actor is its one recorder), with the host's stewards and frozen cases.
     Adopted versions go to the state directory's overlay (``playbooks.overlay_dir``), loaded
     after the shipped directory, which is never written."""
-    from operator_ui.case_console import REPORTS_FILE, report_store_for
+    from operator_api.workspace.case_console import REPORTS_FILE, report_store_for
     from .playbook_eval import proposal_store
     from .playbooks import overlay_dir
 
@@ -4816,7 +4816,7 @@ def _sharepoint_capture_bounds(parser: argparse.ArgumentParser,
 def _foreign_store(store_path: Path, state_dir: Path) -> str | None:
     """Why a non-live host must not serve ``store_path`` (projected from another capture
     generation than ``state_dir``'s, or unverifiable), else None."""
-    from operator_ui import object_workspace
+    from operator_api.workspace import object_workspace
 
     try:
         state = object_workspace.StoreStatus(store_path, state_dir).read()

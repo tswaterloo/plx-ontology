@@ -85,6 +85,43 @@ class DeployFilesTest(unittest.TestCase):
                     self.assertNotIn("/home/tanush", text, path)
                     self.assertNotIn("/data/OntologyProject", text, path)
 
+    def test_upkeep_units_render_bounded_and_carry_no_secret(self) -> None:
+        """The units that keep data current: each has Nice and MemoryMax, the ones that read
+        people data load the exclusion env file, and none embeds a credential value."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp, "deploy.env")
+            env.write_text("PLX_USER=someone\nPLX_HOME=/srv/someone\nPLX_RELEASES=/srv/rel\n")
+            for flag, out in ((["--user"], "u"), ([], "s")):
+                subprocess.run(["python3", str(DEPLOY / "render.py"), "--out", f"{tmp}/{out}",
+                                "--env", str(env), *flag], check=True, capture_output=True)
+            wanted = {"u": ["plx-sheet-readings", "plx-system-activity", "plx-work-graph"],
+                      "s": ["plx-proactive-whole", "plx-backup", "plx-restore-test",
+                            "plx-ops-health"]}
+            for out, names in wanted.items():
+                for name in names:
+                    service = Path(tmp, out, f"{name}.service").read_text()
+                    self.assertRegex(service, r"(?m)^MemoryMax=", name)
+                    self.assertRegex(service, r"(?m)^Nice=", name)
+                    self.assertTrue(Path(tmp, out, f"{name}.timer").is_file(), name)
+                    self.assertNotRegex(service, r"(?i)(SECRET|TOKEN|API_KEY|PASSWORD)=\S",
+                                        name)
+            for name in wanted["u"]:
+                self.assertIn("EnvironmentFile=-/srv/someone/.config/plx/proactive.env",
+                              Path(tmp, "u", f"{name}.service").read_text(), name)
+            activity = Path(tmp, "u", "plx-system-activity.service").read_text()
+            self.assertIn("--weeks 13", activity)
+
+    def test_install_script_renders_and_verifies_without_installing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp, "deploy.env")
+            env.write_text("PLX_USER=someone\nPLX_HOME=/srv/someone\nPLX_RELEASES=/srv/rel\n")
+            run = subprocess.run(["bash", str(DEPLOY / "ops" / "install_keep_fresh.sh"),
+                                  "--dry-run"], capture_output=True, text=True,
+                                 env={**os.environ, "PLX_DEPLOY_ENV": str(env), "HOME": tmp})
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("nothing installed", run.stdout)
+            self.assertFalse(Path(tmp, ".config", "systemd").exists())
+
 
 class ReleaseTest(unittest.TestCase):
     def test_build_switch_and_roll_back(self) -> None:

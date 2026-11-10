@@ -33,7 +33,7 @@ from operating.playbook_reports import PlaybookReportStore
 from operating.playbooks import PLAYBOOK_DIR, PlaybookRegistry, overlay_dir
 from operating.tests.firewall_view import client_result
 from operating.tests.test_mcp_case_tools import FINANCE, OPS, OPS_FINANCE, CaseToolsTestCase
-from operator_ui.case_console import REPORTS_FILE, report_store_for
+from operator_api.workspace.case_console import REPORTS_FILE, report_store_for
 
 CONTRACTS = load_contracts()
 PROPOSER = Actor("plx", frozenset({"service:proposer", *FINANCE}))

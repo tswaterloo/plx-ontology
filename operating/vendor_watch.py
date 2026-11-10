@@ -71,7 +71,7 @@ WHOLE_PASS = frozenset({"stock_out_risk", "overdue_receivable", "unit_cost_jump"
                         "aged_balance_worsening", "production_late",
                         "assembly_damage_spike", "teams_unanswered_ask",
                         "commitments", "needs_reply", "slow_moving_stock", "expiring_lot_stock",
-                        "approvals_waiting", "chase_escalation",
+                        "approvals_waiting", "chase_escalation", "party_chases", "internal_chases",
                         "assembly_component_shortfall", "certificate_expiry",
                         "freight_cost_anomaly", "stale_quote", "priority_fill_unmet",
                         "duplicate_parties",

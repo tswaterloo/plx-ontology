@@ -8,7 +8,9 @@ skipped and counted). Threads are grouped into projects per customer, conservati
 is one customer, one kind and one product item (the settled ``mentions_product`` link) or, with
 no single item, one conversation. The customer is the thread's single settled customer link
 (``Email.sent_by_customer``, ``mentions_customer``) or, with none, its one outside business
-domain (a customer or a supplier: the mail carries no link yet); two customers, or only
+domain (a customer or a supplier: the mail carries no link yet); a thread with no customer link
+whose mail is settled-linked ``Email.sent_by_supplier`` is purchasing, no project (counted,
+``supplier_thread``); two customers, or only
 personal-mail senders, make no project (counted, not guessed). A thread needs a human message
 of ours and one of theirs, and the first message about the work must be theirs (a sample or
 quote we asked a supplier for is no customer project).
@@ -207,6 +209,11 @@ def rd_projects(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
             continue
         if customers:
             customer = customers[0]
+        elif any(links[o]["suppliers"] for o in x["humans"]):
+            # the outside party is a supplier by a settled link: its samples, quotes and
+            # certificates are purchasing, never a customer's project
+            counts["supplier_thread"] += 1
+            continue
         elif len(domains_out) == 1 and domains_out[0] not in PUBLIC_MAIL:
             # no settled customer link on the thread's mail: the one outside domain is the
             # party (a customer, a supplier: it is not known which), never a person
@@ -284,7 +291,7 @@ def rd_projects(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts[k] for k in ("threads", "projects", "lines", IDLE, "automated",
                                             "mailing", "no_single_customer", "one_sided",
-                                            "asked_by_us")}
+                                            "asked_by_us", "supplier_thread")}
     return out
 
 

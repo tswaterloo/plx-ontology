@@ -830,10 +830,11 @@ class KeyTests(unittest.TestCase):
             doc = json.loads(out.getvalue()[out.getvalue().index('{\n "by_split"'):])
         # a held-out run is counted (its split, suite and family totals), never listed
         outcomes = {row["card"]: row["outcome"] for row in doc["cards"]}
-        self.assertEqual(outcomes, {"LO-15": "incomplete"})
+        # an uncited figure states nothing, so it grades abstained (not incomplete)
+        self.assertEqual(outcomes, {"LO-15": "abstained"})
         self.assertEqual({row["split"] for row in doc["cards"]}, {"dev"})
         self.assertEqual(doc["sealed"], 1)
-        self.assertEqual((doc["per_family"]["open_ar"]["incomplete"],
+        self.assertEqual((doc["per_family"]["open_ar"]["abstained"],
                           doc["per_family"]["lot_expiry"]["correct"]), (1, 1))
         self.assertNotIn("LO-20", doc["per_card"])
         self.assertEqual(doc["totals"]["graded"], 2)

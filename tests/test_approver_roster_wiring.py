@@ -29,7 +29,7 @@ from operating import case_workspace_live
 from operating import goal2_exec as gx
 from operating import goal2_mc_approval as g2
 from operating.action_catalog import ActionCatalog
-from operator_ui.tests import case_fixtures
+from operator_api.tests import case_fixtures
 from twin import mode as twin_mode
 
 FIXTURE = ap.FIXTURE_CAPABILITY          # the isolated owner's action type

@@ -114,7 +114,7 @@ Planners: ``ClaudeCodePlanner`` asks a headless Claude Code session (no tools, n
 settings) for the next decision as JSON, the prompt on stdin (a transcript can exceed
 one argument's limit); a planner process that cannot start escalates
 (``planner_process_failed``). Tests pass a scripted planner. Run in dev
-against the fixture world (``python3 -m operator_ui.tests.case_fixtures --fixture
+against the fixture world (``python3 -m operator_api.tests.case_fixtures --fixture
 --seed-fixtures --state-dir DIR ...`` seeds and projects it):
 
     python3 -m operating.agent_loop --question "..." -- --state-dir DIR --fixture \\

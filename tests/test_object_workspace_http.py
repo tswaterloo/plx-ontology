@@ -1,10 +1,10 @@
 """Object workspace routes of the operator console over the generic ontology tools.
 
-The case console's fixture world (``operator_ui.tests.case_fixtures.seed``: synthetic rows read
+The case console's fixture world (``operator_api.tests.case_fixtures.seed``: synthetic rows read
 through the real read-only clients over in-process fakes) is projected into an ontology
 store (``ontology.project.build_store`` over its source mirror) and served through
 ``plx.find``/``plx.object``/``plx.around``/``plx.timeline``/``plx.process`` for one
-host-configured reader, as ``python3 -m operator_ui.tests.case_fixtures --seed-fixtures`` does.
+host-configured reader, as ``python3 -m operator_api.tests.case_fixtures --seed-fixtures`` does.
 Citations open through the same case runtime. Evidence label: isolated-fixture /
 injected-transport; no network, nothing live.
 """
@@ -39,19 +39,19 @@ from operating.case_runtime import CaseRuntime
 from operating.employee_permissions import (EmployeePermissionPolicy, EmployeePermissionResolver,
                                             PortalAccessSnapshot)
 from operating.cases import PROPOSAL_STATUS, CaseStore
-from operator_ui import case_console
-from operator_ui.tests import case_fixtures
-from operator_ui import object_workspace as objects
+from operator_api.workspace import case_console
+from operator_api.tests import case_fixtures
+from operator_api.workspace import object_workspace as objects
 from operating import explanations
 from operating import goal2_mc_approval as g2
 from operating import ontology_tools as ot
 from operating import ontology_tools_investigate as oi
 from operating import ontology_tools_traverse as tt
 from operating import session_identity
-from operator_ui.case_workspace import CaseWorkspace
+from operator_api.workspace.case_workspace import CaseWorkspace
 from operating.host import BC_DIR, BC_FILE
-from operator_ui.server import make_server
-from operator_ui.session_journal import SessionJournal, ask_counts, investigate_counts
+from operator_api.tests.console_harness import make_server
+from operator_api.workspace.session_journal import SessionJournal, ask_counts, investigate_counts
 from tests import test_investigate_landed_cost as landed
 from types import SimpleNamespace
 
@@ -3118,7 +3118,11 @@ class ObjectViewLiveCheckTest(unittest.TestCase):
         self.assertEqual(originals["rehash_mismatch"], 0)
         self.assertGreater(originals["rehash_matched"], 0)
         self.assertEqual(tampered["originals"]["rehash_matched"], 0)
-        self.assertEqual(tampered["originals"]["rehash_mismatch"], originals["rehash_matched"])
+        # Every opened row that can re-hash (not one opened without its withheld fields)
+        # now mismatches; none of the opened rows is left unaccounted for.
+        flat = tampered["originals"]
+        self.assertGreater(flat["rehash_mismatch"], 0)
+        self.assertEqual(flat["rehash_mismatch"] + flat["rehash_not_applicable"], flat["opened"])
         self.assertEqual((tampered["find_denied_probed"], tampered["find_denied_leaks"]), (0, 0))
         self.assertIn("find_denied_probed < 1", lv.check_expectations(
             spec_doc, 0, {**document, **tampered}))

@@ -70,6 +70,8 @@ from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
+from operating import declared_schema as _schemas
+from operating.declared_schema import labour_hours as _LABOUR_HOURS
 
 MARKING = "hr"
 GRANTS = ("hr", "ops-management")
@@ -755,15 +757,6 @@ def aggregate(sheets: Iterable[Sheet], exclusion: ExclusionCheck) -> dict[str, A
 
 # ----------------------------------------------------------------------- store
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS labour_week (
-    department TEXT NOT NULL, week TEXT NOT NULL, run TEXT NOT NULL DEFAULT '',
-    hours TEXT NOT NULL, overtime_hours TEXT, overtime_basis TEXT, headcount_days INTEGER,
-    week_basis TEXT NOT NULL, markings TEXT NOT NULL CHECK (markings = '["hr"]'),
-    sources TEXT NOT NULL CHECK (json_valid(sources)),
-    PRIMARY KEY (department, week, run));
-CREATE TABLE IF NOT EXISTS labour_build (built_at TEXT NOT NULL, coverage TEXT NOT NULL);
-"""
 _AGGREGATE_KEYS = {"department", "week", "run", "hours", "overtime_hours", "overtime_basis",
                    "headcount_days",
                    "week_basis", "markings", "sources"}
@@ -780,7 +773,7 @@ class LabourStore:
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             self.db = sqlite3.connect(self.path, timeout=5)
-            self.db.executescript(_DDL)
+            _schemas.apply(self.db, _LABOUR_HOURS)
 
     def replace(self, built: Mapping[str, Any], now: Optional[datetime] = None) -> None:
         for row in built["weeks"]:

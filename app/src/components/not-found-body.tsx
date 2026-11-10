@@ -1,0 +1,38 @@
+"use client";
+
+import Link from "next/link";
+import { useCommandPalette } from "@/components/command-palette";
+import { OpenRing } from "@/components/ui/glyphs";
+import { Toolbar } from "@/components/ui/toolbar";
+
+/** "Page not found" inside the app's frame: the root not-found adds the frame, a page's notFound() is already in it. */
+export function NotFoundBody() {
+  const { open } = useCommandPalette();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Toolbar title="" className="max-lg:hidden" />
+      <div className="flex flex-1 items-center justify-center px-6 py-16">
+        <div className="flex max-w-[320px] flex-col items-center text-center">
+          <OpenRing size={36} tone="neutral" />
+          <h1 className="mt-4 text-[15px] leading-5 font-semibold tracking-[-0.01em]">Page not found</h1>
+          <p className="mt-1 text-[13px] leading-5 text-muted">Check the address or the record number, or search for it.</p>
+          <div className="mt-5 flex flex-wrap justify-center gap-2">
+            <button
+              type="button"
+              onClick={open}
+              className="inline-flex h-8 items-center rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg shadow-sm hover:brightness-110 cursor-pointer"
+            >
+              Search
+            </button>
+            <Link
+              href="/"
+              className="inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]"
+            >
+              Open My work
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

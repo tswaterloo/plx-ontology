@@ -381,6 +381,8 @@ def _mc_argv(state: Path, options: Mapping[str, Any]) -> list[str]:
         args += ["--query", query]
     if options.get("max_task_reads"):
         args += ["--max-task-reads", str(options["max_task_reads"])]
+    if options.get("fast_poll_seconds"):
+        args += ["--fast-poll-seconds", str(options["fast_poll_seconds"])]
     if options.get("operator_email_default"):
         args += ["--operator-email-default", options["operator_email_default"]]
     return args + _budget(options)
@@ -620,6 +622,7 @@ SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in (
                env_one_of=("BRAIN_API_KEY", "VMC_API_KEY")),
     SourceSpec("mc", "mission-control-mcp", _mc_argv, summarize_mc,
                {"scope": "str", "queries": "strs", "max_task_reads": "int",
+                "fast_poll_seconds": "int",
                 "operator_email_default": "str", "timeout_seconds": "seconds",
                 "budget_seconds": "seconds", "live_audience": "path", "principal": "str"},
                frozenset({"scope", "live_audience"}), MC_ENV, "snapshot", None,

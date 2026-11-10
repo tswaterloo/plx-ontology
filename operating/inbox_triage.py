@@ -57,7 +57,6 @@ the window, then their records), never a scan of every message.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 import json
@@ -69,6 +68,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from ontology import store as ostore
 
 from . import drafts
+from .autopilot import chat_people, teams_sender
 from .copy_gate import count, say_date
 from . import proactive_threads as pt
 from .proactive_business import _tick
@@ -84,7 +84,6 @@ BOILER_MIN = 3                           # a sentence in this many of a sender's
 MAX_TO = 5                               # a message To more people is a mailing
 SUBJECT_CHARS = 60
 MAX_THREAD = 400
-EVENT_THREADS = 16                       # the window's events, read in rowid ranges
 CHUNK = 500
 EMAIL = "Email"
 TEAMS = "TeamsChatMessage"
@@ -220,32 +219,10 @@ def reply_ask(text: Any, boiler: frozenset[str] | set[str] = frozenset()) -> boo
 
 def _events(st: Any, since: date) -> list[str]:
     """The mail of the window by the store's event index (``Email.received``)."""
-    sql = ("SELECT eo.object_id FROM events e JOIN event_objects eo ON eo.event_id = "
-           "e.event_id WHERE e.rowid BETWEEN ? AND ? AND e.event_type = ? AND e.time >= ? "
-           "AND e.superseded_at IS NULL")
     try:
-        top = st.conn.execute("SELECT max(rowid) FROM events").fetchone()[0] or 0
-        workers = max(1, min(int(getattr(st, "threads", 1) or 1), EVENT_THREADS))
-        step = top // workers + 1
-        found: set[str] = set()
-        lock = threading.Lock()
-
-        def part(start: int) -> None:   # one rowid range per thread (its own connection)
-            got = {row[0] for row in st.conn.execute(
-                sql, (start, start + step - 1, EVENT, since.isoformat()))}
-            with lock:
-                found.update(got)
-        if workers == 1:
-            part(0)
-        else:
-            with ThreadPoolExecutor(workers) as pool:
-                list(pool.map(part, range(0, top + 1, step)))
-        if not found and st.conn.execute("SELECT 1 FROM events WHERE event_type = ? LIMIT 1",
-                                         (EVENT,)).fetchone() is None:
-            raise LookupError("no_mail_events")   # a store that records no mail events
-        return sorted(o for o in found if str(o).startswith(EMAIL + ":"))
-    except Exception as exc:  # noqa: BLE001 - no event table (a Postgres reader's
-        # translator, an old layout): the window is read from every message's time
+        return pt.window_ids(st, since, event_type=EVENT)
+    except Exception as exc:  # noqa: BLE001 - no event table (an old layout): the
+        # window is read from every message's time
         if getattr(st, "interrupt", None) is not None and "interrupted" in str(exc):
             raise
         return [o for o, r in pt._scan(st, ("sent_at",)).items()
@@ -264,10 +241,14 @@ def _audiences(st: Any, ids: Sequence[str]) -> dict[str, str]:
 
 
 def _teams(st: Any, since: date, people: Any) -> tuple[dict[str, dict], dict[str, str], int]:
-    """The one-to-one chats' messages of the window: (rows, audience, dropped unread)."""
+    """The one-to-one chats' messages of the window: (rows, audience, dropped unread). The
+    capture lists a chat's members as object ids AND addresses, so a chat's people are read
+    once each (``autopilot.chat_people``); before, every one-to-one chat read as a group of
+    four and none was triaged."""
     members = getattr(people, "chat_members", None) or {}
-    pairs = {f"teams:chat:{chat}" for chat, who in members.items()
-             if len({str(x).lower() for x in who or ()}) == 2}
+    directory = getattr(people, "directory", None) or {}
+    pairs = {f"teams:chat:{chat}" for chat in members
+             if len(chat_people(chat, members, directory)) == 2}
     if not pairs:
         return {}, {}, 0
     audience = {oid: key for oid, key in st.conn.execute(
@@ -374,13 +355,15 @@ def _messages(pop: Mapping[str, Any], people: Any, domains: Sequence[str],
     for oid, row in pop["teams"].items():
         aud = pop["teams_audience"][oid]
         chat = aud[len("teams:chat:"):]
-        who = sorted({str(x).lower() for x in members.get(chat, ())})
-        sender = str(_value(row, "from")).lower()
-        sender_oid = directory.get(sender, sender)
+        who = chat_people(chat, members, directory)
+        # the capture's sender is {"display_name", "id"}; a bare id or address also reads
+        sender_oid = teams_sender(_value(row, "from"), directory)
         at = _instant(_value(row, "created_at"))
         if at is None or len(who) != 2:
             continue
-        cleared = all(people.identity_clear(x) for x in who)
+        # every captured member as well as the two people: an unreadable one never clears
+        cleared = all(people.identity_clear(x)
+                      for x in [*who, *(str(m) for m in members.get(chat) or ())])
         owner = next((x for x in who if x != sender_oid), "")
         out.append(_Msg(oid, "teams", owner if sender_oid in who else "", aud, sender_oid,
                         [owner], at, "", pt._own(_value(row, "_text")), chat, oid, cleared))

@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX sheet readings daily at 02:40 ET
+
+[Timer]
+OnCalendar=*-*-* 02:40:00 America/New_York
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -98,7 +98,7 @@ GL_RECENT_DAYS = 90
 
 TASK = "PlannerTask"
 TASK_PROPS = ("title", "plan_id", "plan_title", "due_at", "completed_at", "assignees",
-              "created_by", "completed_by")
+              "created_by", "completed_by", "created_at")
 MIN_CYCLE_TASKS = 3
 # a date written into a recurring task's title (``... - 10-05-2026``): folded out of its
 # series key; any other number (an instrument, a line) keeps series apart
@@ -550,8 +550,17 @@ def recurring_task_missed(st: Any, as_of: date, *, gap: Callable, cites: Callabl
         if due is None:
             counts["undated"] += 1
             continue
+        # judged as the run's day saw it: a task created later did not exist yet, a
+        # completion later had not happened
+        made_raw, made_row = _value(props, "created_at")
+        made_on = _instant(made_raw) if made_row and str(made_raw or "").strip() else None
+        if made_on is not None and made_on.date() > as_of:
+            counts["created_after_day"] += 1
+            continue
         done_raw, done_row = _value(props, "completed_at")
         done = _instant(done_raw) if done_row and str(done_raw or "").strip() else None
+        if done is not None and done.date() > as_of:
+            done, done_row = None, None
         plan = str(_value(props, "plan_id")[0] or _value(props, "plan_title")[0] or "")
         title = " ".join(TITLE_DATE.sub(" ", str(_value(props, "title")[0] or ""))
                          .split()).lower().strip(" -:|")

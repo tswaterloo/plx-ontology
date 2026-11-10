@@ -60,6 +60,8 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
+import json
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -689,6 +691,249 @@ def chase_fold(st: Any, cites: Callable, chases: Sequence[Mapping]) -> tuple[lis
     return extra, {"messages": shown}
 
 
+# Sage AP: the payables the business really runs (Sage 300 AP open documents); BC's
+# PurchaseInvoice/AgedPayable rarely carry a mail mention, so the chase is tied by its sender
+SAGE_AP = "RelSageApOpenDocument"
+SAGE_AP_BINDING = "gen.sage.ap_open_document"
+SAGE_AP_PROPS = ("idvend", "idinvc", "dateinvc", "dateinvcdu", "datepaid", "swpaid",
+                 "amtduetc", "txttrxtype")
+SAGE_AP_BILLS = frozenset({"1", "2"})   # invoice, debit note (3: a credit note owes nothing)
+SUPPLIER_CODE = "code"   # a BC or Portal supplier's code: the Sage vendor id it carries
+SETTLED_SENDER = ("verified", "reviewed", "corroborated")
+PAYABLE_CHASE_DAYS = 30
+INVOICE_NUMBER = re.compile(r"^(?=.*\d)[A-Z0-9][A-Z0-9/\-.]{3,}$")
+
+
+def _sage_key(oid: str) -> tuple[str, str] | None:
+    """(vendor id, invoice number) a Sage AP document's id is keyed by; None when the id
+    does not read so (the document is then not judged by this path)."""
+    from urllib.parse import unquote
+    try:
+        pk = unquote(json.loads(oid.split(":", 2)[2])["_sage_pk"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+    vendor, _, number = pk.partition("|")
+    return (vendor.strip().upper(), number.strip().upper()) if vendor.strip() else None
+
+
+def _sage_open(props: Mapping[str, Any], as_of: date) -> bool:
+    """Whether a Sage AP document was an unpaid bill on ``as_of``: issued by then, and not
+    paid by then (paid later counts as open that day; no paid date and no balance: closed,
+    the day unknown, so not counted)."""
+    from .proactive_cash import parse_day
+    kind = str((_one(props.get("txttrxtype")) or {}).get("value") or "").strip()
+    issued = parse_day((_one(props.get("dateinvc")) or {}).get("value"))
+    if kind not in SAGE_AP_BILLS or issued is None or issued > as_of:
+        return False
+    paid_flag = str((_one(props.get("swpaid")) or {}).get("value") or "").strip() == "1"
+    paid_on = parse_day((_one(props.get("datepaid")) or {}).get("value"))
+    if paid_flag:
+        return paid_on is not None and paid_on > as_of
+    due = str((_one(props.get("amtduetc")) or {}).get("value") or "").strip()
+    try:
+        return Decimal(due.replace(",", "")) > 0
+    except (InvalidOperation, ValueError):
+        return False
+
+
+def _sage_doc_ids(st: Any) -> dict[str, list[str]]:
+    """vendor id -> every Sage AP document of theirs, once per run: by the document's key
+    in its id where it reads so (no value read), else by its ``idvend`` value; every
+    document read later is confirmed by its ``idvend`` value anyway."""
+    def make() -> dict[str, list[str]]:
+        from .proactive_cash import _ids
+        out: dict[str, list[str]] = defaultdict(list)
+        unread = []
+        for oid in _ids(st, SAGE_AP, SAGE_AP_BINDING):
+            key = _sage_key(oid)
+            if key is None:
+                unread.append(oid)
+            else:
+                out[key[0]].append(oid)
+        for start in range(0, len(unread), 2000):
+            got = st.values([SAGE_AP], ("idvend",), objects=unread[start:start + 2000])
+            for oid, entry in got.items():
+                vendor = str((_one((entry.get("props") or {}).get("idvend")) or {})
+                             .get("value") or "").strip().upper()
+                if vendor:
+                    out[vendor].append(oid)
+        return dict(out)
+    return st.memo("sage_ap_doc_ids", make) if callable(getattr(st, "memo", None)) else make()
+
+
+def _supplier_addresses(st: Any) -> dict[str, set[str]]:
+    """address or private domain -> the supplier records stating it (``SUPPLIER_MAIL``),
+    once per run: the sender match a message without a settled sender link falls back to
+    (as ``supplier_shortage`` does)."""
+    def make() -> dict[str, set[str]]:
+        from .proactive_cash import _ids
+        out: dict[str, set[str]] = defaultdict(set)
+        ids = _ids(st, "Supplier", "")
+        for start in range(0, len(ids), 2000):
+            got = st.values(["Supplier"], SUPPLIER_MAIL, objects=ids[start:start + 2000])
+            for oid, entry in got.items():
+                for rows in (entry.get("props") or {}).values():
+                    for r in rows:
+                        for part in re.split(r"[;,\s]+", str(r.get("value") or "")):
+                            address = _addr(part)
+                            if "@" not in address:
+                                continue
+                            out[address].add(oid)
+                            domain = address.rsplit("@", 1)[1]
+                            if domain not in PUBLIC_MAIL:
+                                out["@" + domain].add(oid)
+        return dict(out)
+    return st.memo("supplier_addresses", make) if callable(getattr(st, "memo", None)) \
+        else make()
+
+
+def _sage_chases(st: Any, as_of: date, people: Any, *, gap: Callable, cites: Callable,
+                 skipped: Any, counts: Counter) -> list[dict[str, Any]]:
+    """``supplier_chasing_payment`` from Sage AP (module doc): an inbound message chasing
+    payment from a sender settled-linked to one supplier, whose code is a Sage vendor id
+    with a bill unpaid on ``as_of``."""
+    from . import proactive_threads as pt
+
+    domains = tuple(getattr(people, "internal", ()) or ())
+    pop = pt.population(st, as_of, people)
+    since = as_of - timedelta(days=PAYABLE_CHASE_DAYS)
+    by_conversation: dict[str, list[str]] = defaultdict(list)
+    for oid, row in pop["rows"].items():
+        moment = _instant((row.get("sent_at") or {}).get("value"))
+        sender = _addr((row.get("sender") or {}).get("value"))
+        if moment is None or not since <= moment.date() <= as_of or "@" not in sender \
+                or pt._internal(sender, domains) or "conversation_id" not in row:
+            continue
+        subject = (row.get("subject") or {}).get("value") or ""
+        if _FORWARD.match(subject):
+            continue
+        body = (row.get("body_preview") or {}).get("value") or ""
+        family = phrase(body, PAYMENT_FAMILIES, requests=True) or (
+            None if _REPLY.match(subject) else phrase(subject, PAYMENT_FAMILIES,
+                                                      requests=True))
+        if family is None:
+            continue
+        if pt.automated(sender, pt._own(body), subject):
+            counts["automated"] += 1
+            continue
+        by_conversation[row["conversation_id"]["value"]].append(oid)
+    parties = pt._party_links(st, sorted(o for ms in by_conversation.values() for o in ms))
+    # a sender with no settled sender link: its address, else its private domain, stated on
+    # supplier records (never a public mail domain)
+    matched_by = {o: "sender_link" for o in parties}
+    book = None
+    for oid in sorted(o for ms in by_conversation.values() for o in ms):
+        if oid in parties:
+            continue
+        book = _supplier_addresses(st) if book is None else book
+        sender = _addr((pop["rows"][oid].get("sender") or {}).get("value"))
+        records = book.get(sender) or book.get("@" + sender.rsplit("@", 1)[1])
+        if records:
+            parties[oid] = ("supplier", tuple(sorted(records)))
+            matched_by[oid] = "sender_address"
+    suppliers = sorted({r for side, records in parties.values() if side == "supplier"
+                        for r in records})
+    codes = st.values(["Supplier"], (SUPPLIER_CODE,), objects=suppliers) if suppliers else {}
+    code_of = {}
+    for supplier, entry in codes.items():
+        row = _one((entry.get("props") or {}).get(SUPPLIER_CODE))
+        if row and str(row.get("value") or "").strip():
+            code_of[supplier] = (str(row["value"]).strip().upper(), row)
+    docs_of = _sage_doc_ids(st) if code_of else {}
+    # chases per Sage vendor, each message once across mailboxes
+    chases: dict[str, dict[str, tuple[Any, str]]] = defaultdict(dict)
+    for conversation in sorted(by_conversation):
+        _tick(st)
+        wanted = [o for o in by_conversation[conversation]
+                  if parties.get(o, ("", ""))[0] == "supplier"]
+        if not wanted:
+            counts["sender_not_a_supplier"] += len(by_conversation[conversation])
+            continue
+        thread = pt._Thread(pop, conversation, people, domains)
+        if not thread.ok:
+            skipped["participants_not_cleared"] += 1
+            continue
+        for oid in thread.messages:
+            if oid not in wanted:
+                continue
+            # the sender's supplier records whose code is a Sage vendor id: exactly one
+            vendors = {code_of[r][0]: code_of[r][1] for r in parties[oid][1]
+                       if r in code_of and code_of[r][0] in docs_of}
+            if len(vendors) != 1:
+                counts["supplier_not_in_sage" if not vendors else "several_sage_vendors"] += 1
+                continue
+            (vendor, code_row), = vendors.items()
+            chases[vendor].setdefault(thread.ident(oid), (thread, oid, code_row))
+            counts["matched_" + matched_by[oid]] += 1
+    gaps = []
+    for vendor in sorted(chases):
+        _tick(st)
+        found = sorted(chases[vendor].values(), key=lambda p: (p[0].sent(p[1]), p[1]))
+        supplier_row = found[-1][2]
+        found = [(t, o) for t, o, _ in found]
+        read = st.values([SAGE_AP], SAGE_AP_PROPS, objects=sorted(set(docs_of[vendor])))
+        bills = []
+        for doc in sorted(read):
+            props = read[doc].get("props") or {}
+            if str((_one(props.get("idvend")) or {}).get("value") or "").strip().upper() \
+                    != vendor:
+                continue   # the id said this vendor, the record does not: not ours to read
+            if _sage_open(props, as_of):
+                bills.append((doc, props))
+        if not bills:
+            counts["no_open_payable"] += 1
+            continue
+        from .proactive_cash import parse_day
+        text = " ".join(t.text(o) for t, o in found).upper()
+        words = set(re.findall(r"[A-Z0-9][A-Z0-9/\-.]*[A-Z0-9]", text))
+        def number_of(props: Mapping[str, Any]) -> str:
+            return str((_one(props.get("idinvc")) or {}).get("value") or "").strip().upper()
+        named = [(d, p) for d, p in bills
+                 if INVOICE_NUMBER.match(number_of(p)) and number_of(p) in words]
+        due = sorted(((parse_day((_one(p.get("dateinvcdu")) or {}).get("value")) or as_of),
+                      d, p) for d, p in bills)
+        overdue = [x for x in due if x[0] < as_of]
+        anchor_due, anchor, props = (sorted((parse_day((_one(p.get("dateinvcdu")) or {})
+                                                       .get("value")) or as_of, d, p)
+                                            for d, p in named)[0] if named else due[0])
+        counts["chased"] += 1
+        last_thread, last = found[-1]
+        first_day = found[0][0].sent(found[0][1]).date()
+        number = number_of(props)
+        made = gap(
+            PAYABLE_KIND, PAYMENT, anchor, SAGE_AP, f"payable_chase|{first_day.isoformat()}",
+            summary=f"Supplier chased us for payment {_count(len(found), 'time')}, last on "
+                    f"{_say(last_thread.sent(last).date())}; "
+                    + (f"they name invoice {number}" if named else
+                       f"{_count(len(bills), 'bill')} of theirs unpaid in Sage AP"
+                       + (f", {len(overdue)} past due" if overdue else "")),
+            missing="Check whether it is paid, and if not, when it will be; answer the "
+                    "supplier",
+            why=(f"{_count(len(found), 'inbound message')} chase payment in their own text "
+                 "(not a question or a condition) from a sender settled-linked to a "
+                 "supplier, or whose address or private domain a supplier record states, "
+                 "whose code is this Sage AP vendor id, and Sage AP holds a bill of "
+                 "theirs issued and not paid by the day (each message cited)."),
+            priority="high" if (overdue and len(found) >= 2) or len(found) >= 3 else "medium",
+            about=(SAGE_AP, "amtduetc"),
+            groups=[cites([r for r in (_one(props.get("idinvc")), _one(props.get("amtduetc")))
+                           if r], FINANCE),
+                    cites([supplier_row], FINANCE),
+                    *[cites([t.rows[o][p] for p in ("sent_at", "subject") if p in t.rows[o]],
+                            FINANCE) for t, o in found[-SHOWN_MESSAGES:]]],
+            event={"days": (as_of - first_day).days, "chases": len(found),
+                   "open_bills": len(bills), "past_due_bills": len(overdue),
+                   "named_invoice": bool(named), "source": "sage_ap",
+                   "messages": [{"id": o, "sent": t.sent(o).date().isoformat(),
+                                 "subject": (t.subject(o) or "")[:SUBJECT_CHARS],
+                                 "direction": "inbound"} for t, o in found[-SHOWN_MESSAGES:]]})
+        if made is None:
+            skipped["payable_chase_uncited"] += 1
+            continue
+        gaps.append(made)
+    return gaps
+
+
 def payment_chase(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                   result: Callable, settled: Sequence[str], skips: Callable,
                   people: Any) -> dict[str, Any]:
@@ -748,7 +993,15 @@ def payment_chase(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             skipped["payable_chase_uncited"] += 1
             continue
         gaps.append(made)
+    gaps.extend(_sage_chases(st, as_of, people, gap=gap, cites=cites, skipped=skipped,
+                             counts=counts))
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {"payables": len(ids), **{k: counts.get(k, 0)
-                                              for k in ("chased", "payable_paid")}}
+                                              for k in ("chased", "payable_paid",
+                                                        "no_open_payable",
+                                                        "supplier_not_in_sage",
+                                                        "several_sage_vendors",
+                                                        "matched_sender_link",
+                                                        "matched_sender_address",
+                                                        "sender_not_a_supplier")}}
     return out

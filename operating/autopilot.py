@@ -64,6 +64,8 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .citation_schemes import HANDLE_PREFIX
+from operating import declared_schema as _schemas
+from operating.declared_schema import autopilot_queue as _AUTOPILOT_QUEUE
 
 SCHEMA = "plx-autopilot/v1"
 REGISTRY_FILE = Path(__file__).with_name("autopilot_registry.json")
@@ -74,17 +76,20 @@ ROLES_FILE = "autopilot-roles.json"
 QUEUE_FILE = "autopilot.sqlite"
 CARD_PREFIX = "autopilot:"
 EVENT_TYPES = ("message.received", "task.assigned", "record.changed", "qc.result",
-               "approval.requested", "meeting.ended", "record.due")
-OWNER_RULES = ("recipient", "assignee", "approvers", "organizer", "buyer")
+               "approval.requested", "meeting.ended", "record.due", "question.asked")
+OWNER_RULES = ("recipient", "assignee", "approvers", "organizer", "buyer", "addressee",
+               "hinted")
 ROLE_OWNER = re.compile(r"^role:[a-z_]{1,40}$")
 CONDITIONS = ("intents_any", "intents_none", "side_in", "status_in", "assigned", "open", "asks",
               "quality_in", "tested", "ended", "organizer_copy", "external_or_linked",
-              "mailbox_role", "mailbox_role_none")
+              "mailbox_role", "mailbox_role_none", "engaged", "correspondent", "engaged_or_asks",
+              "answers_sender", "closing", "addressed_other", "quiet_sender", "object_type_in")
 DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_released",
-              "owner_mailed_attendees")
+              "owner_mailed_attendees", "question_answered")
 MAX_RECORDS = 12          # business records one handler reads around its event
 MAX_LINES = 50            # order lines one availability check reads
 SUMMARY_CHARS = 160
+REPLY_HOURS = 72          # an answer counts within this many hours (the replay's horizon)
 TEXT_CHARS = 4000
 
 EMAIL_PROPS = ("subject", "sender", "to_addresses", "cc_addresses", "received_at", "sent_at",
@@ -187,12 +192,26 @@ def validate_registry(raw: Any) -> dict[str, Any]:
         when = ap.get("when") or {}
         if not isinstance(when, Mapping) or set(when) - set(CONDITIONS):
             raise RegistryInvalid(f"registry_condition:{ap['id']}")
+        quiet = when.get("quiet_sender")
+        if quiet is not None and not (
+                isinstance(quiet, list) and len(quiet) == 3 and isinstance(quiet[0], int)
+                and quiet[0] >= 1 and isinstance(quiet[1], (int, float))
+                and 0 < quiet[1] <= 1 and isinstance(quiet[2], list)
+                and set(quiet[2]) <= {"internal", "customer", "supplier", "unknown"}):
+            raise RegistryInvalid(f"registry_condition:{ap['id']}")
+        share = when.get("answers_sender")
+        if share is not None and not (
+                isinstance(share, list) and len(share) == 2 and isinstance(share[0], int)
+                and share[0] >= 1 and isinstance(share[1], (int, float))
+                and 0 < share[1] <= 1):
+            raise RegistryInvalid(f"registry_condition:{ap['id']}")
         if ap.get("done_when") not in DONE_RULES:
             raise RegistryInvalid(f"registry_done:{ap['id']}")
         if not isinstance(ap.get("due_minutes"), int) or ap["due_minutes"] <= 0:
             raise RegistryInvalid(f"registry_due:{ap['id']}")
-        if "enabled" in ap and not isinstance(ap["enabled"], bool):
-            raise RegistryInvalid(f"registry_enabled:{ap['id']}")
+        for flag in ("enabled", "fallback"):
+            if flag in ap and not isinstance(ap[flag], bool):
+                raise RegistryInvalid(f"registry_{flag}:{ap['id']}")
         if ap["on"] == "record.due" and not isinstance(ap.get("params") or {}, Mapping):
             raise RegistryInvalid(f"registry_params:{ap['id']}")
         marks = ap.get("markings") or []
@@ -221,8 +240,33 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             return False
         if key == "quality_in" and event.get("quality") not in want:
             return False
+        if key == "object_type_in" and event.get("object_type") not in want:
+            return False
         if key in ("assigned", "open", "tested", "ended", "organizer_copy",
-                   "external_or_linked", "asks") and bool(event.get(key)) != bool(want):
+                   "external_or_linked", "asks", "engaged", "correspondent", "closing",
+                   "addressed_other") and \
+                bool(event.get(key)) != bool(want):
+            return False
+        if key == "answers_sender":
+            # [n, share]: the owner answered at least ``share`` of the sender's last
+            # messages, ``n`` or more of them known
+            n, answered = (list(event.get("sender_history") or ()) + [0, 0])[:2]
+            if not (isinstance(want, list) and len(want) == 2) or n < int(want[0]) or \
+                    answered < float(want[1]) * n:
+                return False
+            continue
+        if key == "quiet_sender":
+            # [n, share, sides]: not a sender on one of ``sides`` whose last ``n`` or more
+            # known messages the owner answered under ``share`` of (measured 2026-10-06..25:
+            # a colleague's mail the owner answers elsewhere, in chat or in person, was
+            # answered by mail about one time in four; an unknown sender passes)
+            n, answered = (list(event.get("sender_history") or ()) + [0, 0])[:2]
+            if event.get("side") in want[2] and n >= int(want[0]) and \
+                    answered < float(want[1]) * n:
+                return False
+            continue
+        if key == "engaged_or_asks" and bool(event.get("engaged") or (
+                event.get("asks") and event.get("correspondent"))) != bool(want):
             return False
     return True
 
@@ -237,25 +281,8 @@ class Queue:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript("""
-            PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS events (
-                event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, object_id TEXT NOT NULL,
-                object_type TEXT NOT NULL, at TEXT, landed_at TEXT, seen_at TEXT NOT NULL,
-                body TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'new', reason TEXT,
-                processed_at TEXT);
-            CREATE INDEX IF NOT EXISTS events_state ON events(state);
-            CREATE TABLE IF NOT EXISTS items (
-                item_id TEXT PRIMARY KEY, event_id TEXT NOT NULL, autopilot TEXT NOT NULL,
-                owner TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
-                audiences TEXT NOT NULL, markings TEXT NOT NULL, citations TEXT NOT NULL,
-                due_at TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL,
-                done_reason TEXT, done_at TEXT, prepare_ms INTEGER, latency_s REAL);
-            CREATE INDEX IF NOT EXISTS items_owner ON items(owner, state);
-            CREATE TABLE IF NOT EXISTS rate (owner TEXT, hour TEXT, n INTEGER,
-                PRIMARY KEY (owner, hour));
-            CREATE TABLE IF NOT EXISTS layers (layer TEXT PRIMARY KEY, base_digest TEXT);
-            CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);""")
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        _schemas.apply(self.conn, _AUTOPILOT_QUEUE)
 
     def close(self) -> None:
         self.conn.close()
@@ -281,6 +308,118 @@ class Queue:
     def mark(self, event_id: str, state: str, reason: str | None, now: str) -> None:
         self.conn.execute("UPDATE events SET state = ?, reason = ?, processed_at = ? "
                           "WHERE event_id = ?", (state, reason, now, event_id))
+
+    def note_sent(self, notes: Iterable[Mapping[str, Any]]) -> int:
+        """The owners' own sent messages (``discover``'s ``outbound``), as digests of the
+        thread and each counterpart: what ``engagement`` reads (no address or text kept)."""
+        rows = set()
+        for n in notes:
+            when = _instant(n.get("at"))
+            if when is None:
+                continue
+            thread = _digest("thread", n.get("conversation") or n.get("message_id"))
+            for addr in n.get("to") or ("",):
+                rows.add((n["owner"], thread, _digest("party", str(addr).lower()),
+                          _iso(when)))
+        cur = self.conn.executemany("INSERT OR IGNORE INTO sent VALUES (?, ?, ?, ?)",
+                                    sorted(rows))
+        return cur.rowcount
+
+    def note_routine(self, notes: Iterable[Mapping[str, Any]]) -> int:
+        """The owners' own self-started internal mails (``routine_note``): the series and
+        recipient digests, the message's record id and whether it greets someone; what
+        ``autopilot_work.routine_due_events`` learns recurring updates from (no subject or
+        address kept: the due event reads them from the store)."""
+        rows = set()
+        for n in notes:
+            when = _instant(n.get("at"))
+            if when is None or not n.get("series") or not n.get("owner"):
+                continue
+            rows.add((n["owner"], n["series"], _iso(when), str(n.get("message") or ""),
+                      json.dumps(sorted({_digest("party", str(a).lower())
+                                         for a in n.get("recipients") or ()})),
+                      int(bool(n.get("greeted")))))
+        return self.conn.executemany("INSERT OR IGNORE INTO routine VALUES (?, ?, ?, ?, ?, ?)",
+                                     sorted(rows)).rowcount
+
+    def routine(self, since: str, until: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT owner, series, at, message, recipients, greeted FROM routine "
+            "WHERE at >= ? AND at < ? ORDER BY owner, series, at", (since, until)).fetchall()
+
+    def note_inbound(self, events: Iterable[Mapping[str, Any]]) -> int:
+        """Messages that reached an owner (thread and sender digests, time): with
+        ``sent``, how often the owner answered a sender before (``reply_history``)."""
+        rows = set()
+        for e in events:
+            when = _instant(e.get("at"))
+            owner = str(e.get("mailbox") or "")
+            if when is None or not owner or e.get("event_type", "message.received") != \
+                    "message.received":
+                continue
+            rows.add((owner, _digest("thread", e.get("conversation_id") or e.get("message_id")),
+                      _digest("party", str(e.get("sender") or "").lower()), _iso(when)))
+        return self.conn.executemany("INSERT OR IGNORE INTO inbound VALUES (?, ?, ?, ?)",
+                                     sorted(rows)).rowcount
+
+    def reply_history(self, owner: str, sender: str, at: str, *,
+                      horizon_hours: int = REPLY_HOURS, days: int = 60) -> tuple[int, int]:
+        """(messages from ``sender`` to ``owner`` whose answer window closed before ``at``,
+        how many of them the owner answered in the thread within ``horizon_hours``): known
+        at ``at``, never later evidence."""
+        start = _instant(at)
+        if start is None or not sender:
+            return 0, 0
+        closed = _iso(start - timedelta(hours=horizon_hours))
+        since = _iso(start - timedelta(days=days))
+        row = self.conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(EXISTS (SELECT 1 FROM sent s WHERE s.owner = "
+            "i.owner AND s.thread = i.thread AND s.at > i.at AND s.at <= strftime("
+            "'%Y-%m-%dT%H:%M:%SZ', i.at, ?))), 0) FROM inbound i WHERE i.owner = ? AND "
+            "i.counterpart = ? AND i.at >= ? AND i.at <= ?",
+            (f"+{horizon_hours} hours", owner, _digest("party", sender.lower()), since, closed)
+        ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def engagement(self, owner: str, conversation: str | None, sender: str, at: str,
+                   *, contact_days: int = 60) -> dict[str, bool]:
+        """Whether ``owner`` wrote in this thread, or to this sender in the last
+        ``contact_days``, before ``at`` (their own sent mail only: no later evidence)."""
+        start = _instant(at)
+        if start is None:
+            return {"engaged": False, "correspondent": False}
+        at = _iso(start)
+        engaged = bool(conversation) and self.conn.execute(
+            "SELECT 1 FROM sent WHERE owner = ? AND thread = ? AND at < ? LIMIT 1",
+            (owner, _digest("thread", conversation), at)).fetchone() is not None
+        since = _iso(start - timedelta(days=contact_days))
+        contact = bool(sender) and self.conn.execute(
+            "SELECT 1 FROM sent WHERE owner = ? AND counterpart = ? AND at >= ? AND at < ? "
+            "LIMIT 1", (owner, _digest("party", sender.lower()), since, at)
+        ).fetchone() is not None
+        return {"engaged": engaged, "correspondent": contact}
+
+    def thread_item_open(self, owner: str, autopilot: str, event: Mapping[str, Any]) -> bool:
+        """Whether this autopilot already has an open item for ``owner`` on an earlier
+        message of the event's thread that the owner has not written in since: one item
+        per thread until they answer (a burst of messages is one piece of work)."""
+        conversation = event.get("conversation_id")
+        at = _instant(event.get("at"))
+        if event.get("event_type") != "message.received" or not conversation or at is None:
+            return False
+        last = self.conn.execute(
+            "SELECT MAX(at) FROM sent WHERE owner = ? AND thread = ? AND at < ?",
+            (owner, _digest("thread", conversation), _iso(at))).fetchone()[0]
+        floor = _instant(last) if last else None
+        for (raw,) in self.conn.execute(
+                "SELECT e.at FROM items i JOIN events e ON e.event_id = i.event_id WHERE "
+                "i.owner = ? AND i.autopilot = ? AND i.state = 'open' AND "
+                "json_extract(e.body, '$.conversation_id') = ?",
+                (owner, autopilot, str(conversation))):
+            then = _instant(raw)
+            if then is not None and then <= at and (floor is None or then > floor):
+                return True
+        return False
 
     def rate_take(self, owner: str, hour: str, cap: int) -> bool:
         row = self.conn.execute("SELECT n FROM rate WHERE owner = ? AND hour = ?",
@@ -453,10 +592,13 @@ def _people_maps(people: Any) -> tuple[dict[str, str], dict[str, set[str]], tupl
 def window_ids(st: Any, registry: Mapping[str, Any], since: str, until: str) -> list[str]:
     """The records the store's event index names in [since, until) (a replay's feed)."""
     kinds = list(registry.get("store_events") or ())
+    # the events first (CROSS JOIN keeps that order): the store has no time index, and the
+    # planner's choice, every event-object pair by object, read about 7 times as much
+    # (measured on the 2026-11 store: 165 s against 24 s for one day, the same records)
     rows = st.conn.execute(
-        "SELECT DISTINCT eo.object_id FROM events e JOIN event_objects eo ON eo.event_id = "
-        "e.event_id WHERE e.event_type IN (SELECT value FROM json_each(?)) AND e.time >= ? "
-        "AND e.time < ?", (json.dumps(kinds), since, until)).fetchall()
+        "SELECT DISTINCT eo.object_id FROM events e CROSS JOIN event_objects eo ON "
+        "eo.event_id = e.event_id WHERE e.event_type IN (SELECT value FROM json_each(?)) AND "
+        "e.time >= ? AND e.time < ?", (json.dumps(kinds), since, until)).fetchall()
     ids = {r[0] for r in rows}
     # a task event names its task: the task is the record the feed types
     tasks = [o for o in ids if o.startswith("MCTaskEvent:")]
@@ -471,16 +613,35 @@ def _value_window(st: Any, registry: Mapping[str, Any], since: str, until: str,
                   people: Any = None) -> set[str]:
     """The records of the types the event index does not date (``value_windows``: type ->
     its time property) whose time falls in [since, until), listed by the type index."""
-    from ontology import store as ostore
+    import bisect
     out: set[str] = set()
+    lo, hi = _instant(since), _instant(until)
     for otype, prop in (registry.get("value_windows") or {}).items():
+        dated = _dated(st, otype, prop)
+        start = bisect.bisect_left(dated, (lo,)) if lo else 0
+        end = bisect.bisect_left(dated, (hi,)) if hi else len(dated)
+        out.update(o for _t, o in dated[start:end])
+    return out
+
+
+def _dated(st: Any, otype: str, prop: str) -> list[tuple[datetime, str]]:
+    """(time, id) of every current record of ``otype``, sorted: read once per store
+    connection (a replay asks for each of its days; a time the record does not state
+    leaves it out)."""
+    from ontology import store as ostore
+    cache = st.__dict__.setdefault("_autopilot_dated", {})
+    if (otype, prop) not in cache:
         ids = [r[0] for r in st.conn.execute(
             "SELECT o.object_id FROM objects o WHERE o.object_type = ? AND NOT "
             + ostore.removed_at_sql("o.object_id"), (otype,))]
+        dated = []
         for start in range(0, len(ids), 5000):
-            rows = _read(st, ids[start:start + 5000], (prop,))
-            out.update(o for o, r in rows.items() if since <= _v(r, prop) < until)
-    return out
+            for o, r in _read(st, ids[start:start + 5000], (prop,)).items():
+                at = _instant(_v(r, prop))
+                if at is not None:
+                    dated.append((at, o))
+        cache[(otype, prop)] = sorted(dated)
+    return cache[(otype, prop)]
 
 
 def layer_ids(store: Path, queue: Queue, digest: str | None) -> tuple[set[str], list[str]]:
@@ -491,8 +652,14 @@ def layer_ids(store: Path, queue: Queue, digest: str | None) -> tuple[set[str], 
 
 
 def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: Any, *,
-             landed_at: str | None = None) -> tuple[list[dict[str, Any]], Counter]:
-    """Typed events of the changed records ``ids`` (module doc)."""
+             landed_at: str | None = None, outbound: list | None = None,
+             now: datetime | None = None, feed_lag: Mapping[str, timedelta] | None = None
+             ) -> tuple[list[dict[str, Any]], Counter]:
+    """Typed events of the changed records ``ids`` (module doc); ``outbound`` collects the
+    mailbox owners' own sent messages (thread, recipients, time) for ``Queue.note_sent``.
+    ``feed_lag`` (a replay of past days): per record type, how long after its time the live
+    feed first holds it (the capture's cadence); a decision taken before then was already
+    taken when the feed saw the request, so no item could have been prepared for it."""
     sources = registry["sources"]
     typed = _types(st, ids)
     by_type: dict[str, list[str]] = defaultdict(list)
@@ -506,11 +673,12 @@ def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: A
         kind = sources[otype]["event"]
         if otype == "Email":
             events += _mail_events(st, oids, typed, people, directory, addresses_of, domains,
-                                   skipped)
-        elif otype == "TeamsChatMessage":
-            events += _teams_events(st, oids, typed, people, directory, skipped)
+                                   skipped, outbound)
+        elif otype in TEAMS_TYPES:
+            events += _teams_events(st, oids, typed, people, directory, skipped, outbound)
         else:
-            events += _record_events(st, otype, kind, oids, typed, sources[otype], skipped)
+            events += _record_events(st, otype, kind, oids, typed, sources[otype], skipped,
+                                     now=now, lag=(feed_lag or {}).get(otype))
     for e in events:
         e["landed_at"] = landed_at
     return events, skipped
@@ -519,7 +687,7 @@ def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: A
 def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, str]],
                  people: Any, directory: Mapping[str, str],
                  addresses_of: Mapping[str, set[str]], domains: Sequence[str],
-                 skipped: Counter) -> list[dict[str, Any]]:
+                 skipped: Counter, outbound: list | None = None) -> list[dict[str, Any]]:
     from . import inbox_triage as it
     from . import proactive_threads as pt
     out = []
@@ -538,6 +706,14 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
         mine = addresses_of.get(mailbox, set())
         if not sender or sender in mine:
             skipped["not_inbound"] += 1
+            if sender and outbound is not None and (_v(row, "sent_at") or _v(row, "received_at")):
+                to = _addresses(_v(row, "to_addresses")) + _addresses(_v(row, "cc_addresses"))
+                outbound.append({
+                    "owner": mailbox, "conversation": _v(row, "conversation_id"),
+                    "message_id": _v(row, "internet_message_id") or oid, "to": to,
+                    "at": _v(row, "sent_at") or _v(row, "received_at"),
+                    **routine_note(_v(row, "subject"), _v(row, "body_preview"), sender, to,
+                                   mine, domains, oid)})
             continue
         subject, text = _v(row, "subject"), pt._own(_v(row, "body_preview"))
         if pt.automated(sender, text, subject) or it.bulk(sender, text, subject):
@@ -563,45 +739,288 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
             "conversation_id": _v(row, "conversation_id"), "message_id": message_id,
             "intents": intents_of(subject, text), "side": side, "records": records[:MAX_RECORDS],
             "asks": bool(it.reply_ask(text) or it.direct_question(text)),
+            "closing": closing(text),
+            "addressed_other": addressed_other(text, mine, [*to, *cc]),
             "cleared": cleared,
             "handles": [c["l1_handle"] for c in row.values() if c.get("l1_handle")][:3]})
     return out
 
 
+TEAMS_TYPES = ("TeamsChatMessage", "TeamsChannelMessage")
+TEAMS_BODY = "row.body_text"
+
+
 def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, str]],
-                  people: Any, directory: Mapping[str, str], skipped: Counter
+                  people: Any, directory: Mapping[str, str], skipped: Counter,
+                  outbound: list | None = None, *, words: bool = True
                   ) -> list[dict[str, Any]]:
+    """Teams chat and channel messages as ``message.received`` events (``words`` False:
+    who reached whom, when, in which conversation only; a replay's history seed). A one-to-one chat's
+    message is the other member's; a group chat's or a channel's is only each member it
+    @mentions (a group message is everyone's to read and no one's to answer: measured, a
+    person writes in the chat after three in four of the others' messages, under the gate).
+    A channel's conversation is its thread (the root post and its replies). Every person
+    of the chat (a channel: the sender and the mentioned) must be cleared; the sender's own
+    message is their side of the conversation (``Queue.note_sent``). The text is the
+    message's own (the store's text index; the declared text property otherwise)."""
     from . import proactive_threads as pt
     from .proactive_ops import declared_sources
     members = getattr(people, "chat_members", None) or {}
     text_props = tuple(dict.fromkeys(
         p for ps in declared_sources()["ask_text"].values() for p in ps))
-    rows = _read(st, oids, ("created_at", "from", "deleted_at") + text_props)
+    rows = _read(st, oids, ("created_at", "from", "deleted_at", "mentions", "reply_to_id")
+                 + text_props)
+    bodies = teams_bodies(st, [h for r in rows.values() for h in _handles_of(r)[:1]]) \
+        if words else {}
     out = []
     for oid in oids:
         aud = typed[oid][1]
-        if not aud.startswith("teams:chat:") or not people.unit_clear(aud):
-            skipped["teams_not_one_to_one_or_not_cleared"] += 1
+        channel = aud.startswith("teams:channel:")
+        if not (channel or aud.startswith("teams:chat:")) or not people.unit_clear(aud):
+            skipped["teams_not_chat_or_not_cleared"] += 1
             continue
-        who = sorted({str(x).lower() for x in members.get(aud[len("teams:chat:"):], ())})
         row = rows.get(oid) or {}
-        sender = _v(row, "from").lower()
-        sender = directory.get(sender, sender)
-        if len(who) != 2 or sender not in who or _v(row, "deleted_at"):
-            skipped["teams_not_one_to_one"] += 1
+        sender = teams_sender(_v(row, "from"), directory)
+        if _v(row, "deleted_at") or not sender:
+            skipped["teams_sender_not_member"] += 1
             continue
-        owner = next(x for x in who if x != sender)
-        text = pt._own(next((_v(row, p) for p in text_props if _v(row, p)), ""))
-        out.append({
-            "event_id": _digest("message.received", oid), "event_type": "message.received",
-            "object_id": oid, "object_type": "TeamsChatMessage", "channel": "teams",
-            "at": _v(row, "created_at"), "mailbox": owner, "audience": aud, "sender": sender,
-            "to": [owner], "cc": [], "to_me": True, "subject": "", "text": text[:TEXT_CHARS],
-            "conversation_id": aud, "message_id": oid, "intents": intents_of("", text),
-            "side": "internal", "records": [], "cleared": all(people.identity_clear(x)
-                                                               for x in who),
-            "handles": [c["l1_handle"] for c in row.values() if c.get("l1_handle")][:3]})
+        named = set(mentioned(_v(row, "mentions"), directory)) - {sender}
+        if channel:
+            # a channel's people are not captured: the sender and the people it mentions
+            # who are in the directory (never a guess at its members)
+            who = sorted({sender, *(x for x in named if x in directory.values())})
+            group, conversation = True, teams_thread(aud, oid, _v(row, "reply_to_id"))
+        else:
+            who = chat_people(aud[len("teams:chat:"):], members, directory)
+            if len(who) < 2 or sender not in who:
+                skipped["teams_sender_not_member"] += 1
+                continue
+            group, conversation = len(who) > 2, aud
+        if outbound is not None and _v(row, "created_at"):
+            # the sender's own message: their side of the chat (a group's: the thread only)
+            outbound.append({"owner": sender, "conversation": conversation, "message_id": oid,
+                             "to": [] if group else [x for x in who if x != sender],
+                             "at": _v(row, "created_at")})
+        owners = sorted(named & set(who)) if group else [x for x in who if x != sender]
+        if not owners:
+            skipped["teams_group_not_mentioned"] += 1
+            continue
+        handle = (_handles_of(row) or [""])[0]
+        text = pt._own(bodies.get(handle) or next(
+            (_v(row, p) for p in text_props if _v(row, p)), ""))
+        records = sorted({o for _t, o in _linked(st, oid) if o.split(":", 1)[0] in BUSINESS}
+                         ) if words else []
+        cleared = all(people.identity_clear(x) for x in who)
+        from . import inbox_triage as it
+        for owner in owners:
+            out.append({
+                "event_id": _digest("message.received", oid, owner) if group
+                else _digest("message.received", oid),
+                "event_type": "message.received", "object_id": oid,
+                "object_type": typed[oid][0], "channel": "teams",
+                "at": _v(row, "created_at"), "mailbox": owner, "audience": aud,
+                "sender": sender, "to": [owner], "cc": [], "to_me": True, "subject": "",
+                "text": text[:TEXT_CHARS], "conversation_id": conversation, "message_id": oid,
+                "intents": intents_of("", text), "side": "internal",
+                "records": records[:MAX_RECORDS], "group": group, "cleared": cleared,
+                "asks": bool(it.reply_ask(text) or it.direct_question(text)),
+                "closing": closing(text), "handles": _handles_of(row)[:3]})
     return out
+
+
+def _handles_of(row: Mapping[str, Any]) -> list[str]:
+    return list(dict.fromkeys(c["l1_handle"] for c in row.values()
+                              if isinstance(c, Mapping) and c.get("l1_handle")))
+
+
+def teams_thread(audience: str, oid: str, reply_to: str) -> str:
+    """A channel message's conversation: its thread (the root post's id; a root post is
+    its own), within the channel."""
+    if reply_to:
+        return f"{audience}#{reply_to}"
+    found = re.search(r'"id"\s*:\s*"([^"]+)"', oid)
+    return f"{audience}#{found.group(1) if found else oid}"
+
+
+def teams_bodies(st: Any, handles: Sequence[str]) -> dict[str, str]:
+    """handle -> the message's body text held by the store's text index (one read for a
+    batch); a handle without one, or an unreadable index, is left out (never a guess)."""
+    from ontology.text_index import chunk_text
+    out: dict[str, str] = {}
+    handles = sorted(set(h for h in handles if h))
+    try:
+        for start in range(0, len(handles), 500):
+            for handle, at, body in st.conn.execute(
+                    "SELECT f.citation, k.start, k.body FROM text_fields f JOIN text_chunks k "
+                    "ON k.field_id = f.field_id WHERE f.citation IN (SELECT value FROM "
+                    "json_each(?)) AND f.field_path = ? ORDER BY f.citation, k.start",
+                    (json.dumps(handles[start:start + 500]), TEAMS_BODY)):
+                # chunks overlap (``text_index.CHUNK_OVERLAP``): each one from its offset
+                out[handle] = out.get(handle, "")[:int(at)] + chunk_text(body)
+    except (sqlite3.Error, ValueError, TypeError):
+        return {}
+    return out
+
+
+# A note that closes its own loop: it opens by acknowledging ("Noted, thanks!", "Perfect, thank
+# you"), or the writer states their own next step ("I'll circle back next week", "we will wait
+# for it", "I will send an invite", "the team is on it"). Measured on dev days 2026-10-06..25:
+# such notes in a thread the reader wrote in were answered about one time in eight.
+CLOSING_ACK = re.compile(
+    r"^\W*(?:(?:hi|hello|hey|dear|good\s+(?:morning|afternoon|evening))\b[^,.!\n]{0,30}"
+    r"[,.!\n]\s*)?(?:ok(?:ay)?|great|perfect|awesome|excellent|wonderful|sounds\s+good|got\s+it|"
+    r"noted|received|will\s+do|thanks?|thank\s+you|many\s+thanks|much\s+appreciated|"
+    r"appreciate\s+it|understood|confirmed|no\s+problem)\b"
+    r"(?!\s+(?:connecting|meeting|talking|speaking|chatting))", re.I)
+CLOSING_STEP = re.compile(
+    r"\b(?:i|we|team|they)(?:'ll|’ll|\s+will|\s+shall)\s+(?:\w+\s+){0,2}(?:review|follow\s+up|"
+    r"get\s+back|circle\s+back|send\s+(?:you\s+)?(?:an?\s+)?invite|wait|keep\s+you\s+posted|"
+    r"update\s+you|be\s+in\s+touch|reach\s+out)\b|\b(?:is|are)\s+on\s+it\b", re.I)
+CLOSING_WORDS = 30
+# A signature's start the shared ``SIGNOFF`` does not read ("Kindest regards", a phone's line).
+CLOSING_SIGNATURE = re.compile(r"\b(?:kindest|warmest|best)\s+(?:regards|wishes)\b|"
+                               r"\bsent\s+from\s+my\b", re.I)
+
+
+def closing(text: Any) -> bool:
+    """Whether a message's own text closes its loop (``CLOSING_ACK`` / ``CLOSING_STEP``): a
+    short note that asks nothing (``reply_ask``, ``direct_question``) and carries no question
+    mark before its sign-off. A reply to it is not owed."""
+    from . import inbox_triage as it
+    own = it.URL.sub(" ", it.FIRST_CONTACT.sub(" ", text if isinstance(text, str) else ""))
+    for found in it.SIGNOFF.finditer(own):
+        if re.search(r"[A-Za-z]{2,}", own[:found.start()]):
+            own = own[:found.start() + 1]   # keep a "?" that ends the sentence before it
+            break
+    cut = CLOSING_SIGNATURE.search(own)
+    own = own[:cut.start()] if cut else own
+    if not own.strip() or "?" in own or it.reply_ask(own) or it.direct_question(own):
+        return False
+    if len(re.findall(r"[A-Za-z]{2,}", own)) > CLOSING_WORDS:
+        return False
+    return bool(CLOSING_ACK.search(own) or CLOSING_STEP.search(own))
+
+
+GREETING = re.compile(r"^\W*(?:hi|hello|hey|dear|good\s+(?:morning|afternoon|evening)|morning|"
+                      r"afternoon)\s*,?\s+([A-Za-z][\w'-]*)(?:\s*(?:,|and|&)\s*"
+                      r"([A-Za-z][\w'-]*))?", re.I)
+
+
+REPLY_PREFIX = re.compile(r"^\s*(?:re|fw|fwd|aw|tr|sv|wg|accepted|declined|tentative|"
+                          r"cancel+ed|automatic reply|out of office)\s*:", re.I)
+_SERIES_DROP = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|mon|tue|wed|"
+                          r"thu|fri|sat|sun)[a-z]*\b|\d+")
+
+
+def routine_series(subject: str, sender: str, recipients: Iterable[str], own: Iterable[str],
+                   domains: Sequence[str]) -> str | None:
+    """The series key of a mail its sender started to colleagues: the subject without
+    dates, numbers and punctuation (``Weekly report 2026-10-19`` and ``Weekly report Oct 26``
+    are one series), as a digest. None for a reply or forward, a calendar answer, a mail with an outside
+    or no colleague recipient, or a subject of fewer than two words."""
+    to = [a.lower() for a in recipients if a]
+    mine = {a.lower() for a in own} | {sender.lower()}
+    if not subject or REPLY_PREFIX.match(subject) or not to or \
+            not all(_internal(a, domains) for a in to) or not set(to) - mine:
+        return None
+    key = " ".join(re.sub(r"[^a-z]+", " ", _SERIES_DROP.sub(" ", subject.lower())).split())
+    return _digest("series", key) if len(re.findall(r"[a-z]{3,}", key)) >= 2 else None
+
+
+def routine_note(subject: str, preview: str, sender: str, to: Sequence[str],
+                 own: Iterable[str], domains: Sequence[str], oid: str) -> dict[str, Any]:
+    """The ``Queue.note_routine`` fields of one sent mail (empty: not a series mail)."""
+    series = routine_series(subject, sender, to, own, domains)
+    if series is None:
+        return {}
+    return {"series": series, "message": oid,
+            "recipients": [a for a in to if a.lower() not in {x.lower() for x in own}],
+            "greeted": bool(GREETING.match(preview or ""))}
+
+
+def _first_names(addresses: Iterable[str]) -> set[str]:
+    """The first name an address's local part starts with (``jane.doe@`` -> ``jane``)."""
+    out = set()
+    for address in addresses:
+        first = re.split(r"[._+\-0-9]", str(address).split("@", 1)[0].lower())[0]
+        if len(first) >= 2:
+            out.add(first)
+    return out
+
+
+def addressed_other(text: str, mine: Iterable[str], recipients: Iterable[str]) -> bool:
+    """Whether a message opens by greeting another of its recipients, not the mailbox's
+    owner ("Hi Sam," on a mail to Sam with the owner copied in): the note is Sam's to answer.
+    A name is one of the owner's (or another recipient's) when either starts with the other
+    ("Hi V", "Hi Chris" to christopher@); a greeting naming neither, or no greeting: no."""
+    found = GREETING.match(text or "")
+    if not found:
+        return False
+    named = {g.lower() for g in found.groups() if g}
+    own = _first_names(mine)
+    others = _first_names(r for r in recipients if str(r).lower() not in
+                          {str(m).lower() for m in mine}) - own
+
+    def one_of(name: str, pool: set[str]) -> bool:
+        return any(name == p or (len(name) >= 3 and (p.startswith(name) or name.startswith(p)))
+                   for p in pool)
+    if not own or any(one_of(n, own) for n in named):
+        return False
+    return any(one_of(n, others) for n in named)
+
+
+ONE_TO_ONE = re.compile(r"^19:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_"
+                        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+                        r"@unq\.gbl\.spaces$", re.I)
+
+
+def chat_people(chat: str, members: Mapping[str, Sequence[str]],
+                directory: Mapping[str, str]) -> list[str]:
+    """The people of a Teams chat, one id each. A one-to-one chat's id names its two
+    members' object ids (``19:<id>_<id>@unq.gbl.spaces``): those, and only when the
+    capture recorded the chat's members (else no one: never a guess). A group chat's
+    captured members are object ids and addresses of the same people, each read through
+    the directory so a person counts once (before, a one-to-one chat's two ids and two
+    addresses read as a four-person group, and no one-to-one message reached anyone)."""
+    if chat not in members:
+        return []
+    pair = ONE_TO_ONE.match(chat)
+    if pair:
+        return sorted({pair.group(1).lower(), pair.group(2).lower()})
+    return sorted({directory.get(x, x) for x in (str(m).strip().lower()
+                                                   for m in members[chat] or ()) if x})
+
+
+def mentioned(raw: str, directory: Mapping[str, str]) -> list[str]:
+    """The people a chat message @mentions (the capture's ``[{"id", "target_id", ...}]``),
+    each read through the directory; unreadable: none (never a guess)."""
+    try:
+        value = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    out = []
+    for m in value if isinstance(value, list) else ():
+        if not isinstance(m, Mapping):
+            continue
+        for key in ("target_id", "id"):
+            x = str(m.get(key) or "").strip().lower()
+            if x:
+                out.append(directory.get(x, x))
+    return out
+
+
+def teams_sender(raw: str, directory: Mapping[str, str]) -> str:
+    """A chat message's sender id: the capture stores ``{"display_name", "id"}``; a bare
+    id or address is read through the directory. Unreadable: "" (never a guess)."""
+    text = str(raw or "").strip()
+    if text.startswith("{"):
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return ""
+        text = str(value.get("id") or "") if isinstance(value, Mapping) else ""
+    text = text.lower()
+    return directory.get(text, text)
 
 
 PARTY_ADDRESSES = {"Customer": ("customer", ("email", "email_2", "email_3", "bc_email")),
@@ -650,7 +1069,8 @@ RECORD_PROPS = {
     "PlannerTask": ("title", "description", "assignees", "completed_at", "due_at",
                     "percent_complete", "created_at", "plan_title"),
     "MCApproval": ("gate_id", "task_id", "status", "reason", "requested_by", "requested_at",
-                   "decided_by", "decided_at"),
+                   "decided_by", "decided_at", "scope"),
+    "MCTaskEvent": ("task_id", "kind", "at"),
     "Batch": ("batch_number", "lot_number", "status", "quality_status", "tested_by",
               "checked_by", "released_at", "order_list", "po_number", "qc_ph",
               "qc_viscosity", "qc_appearance", "qc_odour", "qc_solids"),
@@ -661,14 +1081,24 @@ RECORD_PROPS = {
 
 def _record_events(st: Any, otype: str, kind: str, oids: Sequence[str],
                    typed: Mapping[str, tuple[str, str]], spec: Mapping[str, Any],
-                   skipped: Counter) -> list[dict[str, Any]]:
+                   skipped: Counter, now: datetime | None = None,
+                   lag: timedelta | None = None) -> list[dict[str, Any]]:
     props = RECORD_PROPS.get(otype, (spec.get("time"), "status", "order_number", "po_number",
                                      "invoice_number", "shipment_number", "receipt_number"))
     rows = _read(st, oids, [p for p in props if p])
+    cycle_at = now
     now = datetime.now(timezone.utc)
     out = []
     for oid in oids:
         row = rows.get(oid) or {}
+        if otype == "MCTaskEvent" and _v(row, "kind") != "question.asked":
+            continue                   # only a question asked of a person is an event here
+        # when the feed first held the record: the cycle's time, or (a replay) the record's
+        # own time plus the feed's lag when that is earlier
+        seen = cycle_at
+        happened = _instant(_v(row, spec.get("time") or ""))
+        if cycle_at is not None and lag is not None and happened is not None:
+            seen = min(cycle_at, happened + lag)
         event = {"event_type": kind, "object_id": oid, "object_type": otype,
                  "audience": typed[oid][1], "at": _v(row, spec.get("time") or ""),
                  "status": _v(row, "status") or _v(row, "stage"),
@@ -681,6 +1111,14 @@ def _record_events(st: Any, otype: str, kind: str, oids: Sequence[str],
             event["assigned"] = bool(event["assignees"])
             event["open"] = not (TASK_DONE.match(_v(row, "stage") or "") or
                                  _v(row, "completed_at"))
+        elif otype == "MCApproval":
+            # a decision recorded after the feed saw the request was not taken yet then (a
+            # replay of past days reads today's record): the request was pending then
+            decided = _instant(_v(row, "decided_at"))
+            if seen is not None and decided is not None and decided > seen:
+                event["status"] = "pending"
+                event["fields"] = {k: v for k, v in event["fields"].items()
+                                   if k not in ("status", "decided_by", "decided_at")}
         elif otype == "Batch":
             event["quality"] = _v(row, "quality_status")
             event["tested"] = bool(_v(row, "tested_by") or _v(row, "checked_by") or any(
@@ -698,9 +1136,63 @@ def _record_events(st: Any, otype: str, kind: str, oids: Sequence[str],
             parties = [o for t, o in _linked(st, oid) if t in ("Meeting.with_customer",
                                                                "Meeting.with_supplier")]
             event["parties"] = sorted(parties)[:MAX_RECORDS]
+        elif otype == "MCTaskEvent":
+            if not _question_event(st, oid, event, seen, skipped):
+                continue
+        if seen is not None and lag is not None:
+            event["seen_at"] = _iso(seen)
         event["event_id"] = _digest(kind, oid, _version_digest(st, oid))
         out.append(event)
     return out
+
+
+def _question_event(st: Any, oid: str, event: dict[str, Any], seen: datetime | None,
+                    skipped: Counter) -> bool:
+    """Fill a ``question.asked`` event from the MC capture (``autopilot_work.MCQuestions``):
+    the addressee, the question as asked and whether it was still open when the feed saw
+    it. No reader, no question or no addressee: no event (fail closed)."""
+    reader = getattr(st, "autopilot_mc", None)
+    got = st.conn.execute("SELECT native_key FROM objects WHERE object_id = ?",
+                          (oid,)).fetchone()
+    key = reader.key_of(got[0]) if reader is not None and got else None
+    q = reader.asked(*key) if key else None
+    if q is None or not q["addressee"]:
+        skipped["question_unreadable"] += 1
+        return False
+    closed = [t for t in (_instant(q["answered_at"]), _instant(q["withdrawn_at"])) if t]
+    task = next((o for t, o in _linked(st, oid, ("MCTaskEvent.event_of",))), None)
+    event["event_type"] = "question.asked"
+    event["addressee"] = q["addressee"]
+    event["addressee_domains"] = sorted(reader.home_domains())
+    event["open"] = not closed or (seen is not None and min(closed) > seen)
+    event["status"] = "open" if event["open"] else "closed"
+    event["question_key"] = f"mcq:{key[0]}:{q['question_id']}"
+    event["task"] = task
+    event["text"] = q["text"]
+    event["question"] = {k: q[k] for k in ("question_id", "task_id", "text", "context",
+                                           "options", "recommended", "reason", "asked_at")}
+    event["fields"] = {"task_id": q["task_id"]}
+    return True
+
+
+def handle_person(handle: str, directory: Mapping[str, str],
+                  domains: Iterable[str] | None = None) -> str | None:
+    """The person a handle names: an address the directory holds, or a bare name that is
+    the local part of addresses of exactly one person in ``domains`` (the domains the
+    source itself writes full addresses in; none given: every domain). Conservative: two
+    people sharing the name there, or none, is no person."""
+    handle = str(handle or "").strip().lower()
+    if not handle:
+        return None
+    if "@" in handle:
+        return directory.get(handle)
+    if not re.fullmatch(r"[a-z][a-z0-9._-]{1,40}", handle):
+        return None
+    home = {str(d).lower() for d in domains} if domains is not None else None
+    found = {oid for address, oid in directory.items()
+             if "@" in address and address.split("@", 1)[0] == handle
+             and (home is None or address.rsplit("@", 1)[1] in home)}
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def _json_list(raw: str) -> list[str]:
@@ -747,10 +1239,44 @@ def _approvers(directory: Mapping[str, str]) -> list[str]:
     return sorted(set(out))
 
 
+DECIDER_DAYS = 30
+
+
+def mc_project(audience: str) -> str:
+    """An MC record's project: its audience unit's last segment
+    (``mc:<scope>/approvals/<project>``); none: ""."""
+    head, _, rest = str(audience or "").partition(":")
+    return rest.rsplit("/", 1)[-1] if head == "mc" and "/" in rest else ""
+
+
+def deciders(st: Any, directory: Mapping[str, str], now: datetime, *,
+             days: int = DECIDER_DAYS, project: str | None = None) -> set[str]:
+    """The people (directory ids) who decided an approval in the ``days`` before ``now``;
+    ``project``: in that MC project only. A decider the directory does not know is no one
+    (never a guess). The records are read once per store connection."""
+    cache = st.__dict__.setdefault("_autopilot_decisions", None)
+    if cache is None:
+        rows = st.conn.execute(
+            "SELECT object_id, audience_key FROM objects WHERE object_type = 'MCApproval'"
+        ).fetchall()
+        units = {r[0]: r[1] for r in rows}
+        cache = []
+        for oid, r in _read(st, list(units), ("decided_by", "decided_at")).items():
+            at, by = _instant(_v(r, "decided_at")), _v(r, "decided_by").lower()
+            if at is not None and by in directory:
+                cache.append((at, directory[by], mc_project(units.get(oid, ""))))
+        st.__dict__["_autopilot_decisions"] = cache
+    since = now - timedelta(days=days)
+    return {who for at, who, proj in cache
+            if since <= at < now and (project is None or proj == project)}
+
+
 def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, str],
-              addresses_of: Mapping[str, set[str]], roles: Mapping[str, list[str]]
-              ) -> tuple[list[str], str | None]:
-    """(owner oids, None) or ([], the reason no owner is known: no item)."""
+              addresses_of: Mapping[str, set[str]], roles: Mapping[str, list[str]],
+              decided: set[str] | None = None) -> tuple[list[str], str | None]:
+    """(owner oids, None) or ([], the reason no owner is known: no item). ``decided``: who
+    decided approvals in the event's MC project in the 30 days before it (``deciders``):
+    they get an approval; none: every approver."""
     if rule == "recipient":
         if event.get("event_type") != "message.received":
             return [], "owner_rule_mismatch"
@@ -768,8 +1294,14 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
                 found.append(oid)
         return (sorted(set(found)), None) if found else ([], "assignee_unknown")
     if rule == "approvers":
-        found = _approvers(directory)
+        found = sorted(decided) if decided else _approvers(directory)
         return (found, None) if found else ([], "approvers_unknown")
+    if rule == "addressee":
+        if event.get("event_type") != "question.asked":
+            return [], "owner_rule_mismatch"
+        owner = handle_person(str(event.get("addressee") or ""), directory,
+                              event.get("addressee_domains") or ())
+        return ([owner], None) if owner else ([], "addressee_unknown")
     if rule == "organizer":
         owner = str(event.get("mailbox") or "")
         if not owner or directory.get(str(event.get("organizer") or "")) != owner:
@@ -781,6 +1313,11 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
             return [hint], None                   # who sent the PO to the supplier
         found = roles.get("purchasing") or []
         return (found, None) if found else ([], "buyer_unknown")
+    if rule == "hinted":
+        # the person the records show doing this work for this party (``owner_hint``),
+        # else nobody: never a whole role for one record
+        hint = str(event.get("owner_hint") or "")
+        return ([hint], None) if hint and hint in addresses_of else ([], "owner_unknown")
     if rule.startswith("role:"):
         found = roles.get(rule[len("role:"):]) or _approvers(directory)
         return (found, None) if found else ([], "role_unassigned")
@@ -1216,7 +1753,9 @@ def h_approval(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
                  _v(r, "status").lower() == "pending"]
         approved = sorted((o for o, r in srows.items()
                            if _v(r, "status").lower() in ("approved", "granted")
-                           and _v(r, "requested_at") < f.get("requested_at", "")),
+                           and _v(r, "requested_at") < f.get("requested_at", "")
+                           # granted before this request (a replay reads today's records)
+                           and _v(r, "decided_at")[:19] <= f.get("requested_at", "")[:19]),
                           key=lambda o: _v(srows[o], "requested_at"))
         stage = _v(trow, "stage")
         if newer:
@@ -1238,8 +1777,23 @@ def h_approval(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
             recommendation=rec, reasons=reasons,
             evidence=[{"object_id": o} for o in [task, *newer, *approved[-2:]] if o])
         ctx.cite(trow, "title", "stage")
+        from . import mc_digest as md
+        ctx.check()
+        out["mc"] = md.item_facts(f.get("reason"), f.get("task_id"), md.history(
+            ctx.st, str(event.get("audience") or ""), f.get("requested_at")))
+        scope = f.get("scope")
+        if isinstance(scope, str):
+            try:
+                scope = json.loads(scope)
+            except ValueError:
+                scope = None
         out["action"] = {"kind": "mc_approval", "gate": f.get("gate_id"),
-                         "note": "Decide in Mission Control; the Workbench never decides it."}
+                         "task_id": f.get("task_id") or _v(trow, "task_id") or None,
+                         "requested_by": f.get("requested_by") or None,
+                         "scope": scope if isinstance(scope, dict) else None,
+                         "note": "Decide in Mission Control; the Workbench never decides it "
+                                 "unless this workflow's write gate is live "
+                                 "(operating.autopilot_write)."}
         return out
     family = pt.approval_family(event.get("text") or "")
     out.update(summary=f"Approval asked ({family}): {(event.get('subject') or '')[:120]}",
@@ -1270,6 +1824,43 @@ def h_task(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
                          + (f", shipped {x['shipments'][0]['ship_date']}"
                             if x["shipments"] and x["shipments"][0]["ship_date"] else "")
                          for x in facts]
+    return out
+
+
+def h_question(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
+    """A question an MC agent asked the owner on a task: the question, its options, the
+    asker's recommended option with its reason as the draft answer, the task, and the
+    business records the question names with their state. The answer is the owner's to give
+    in Mission Control: nothing here answers, writes or sends."""
+    q = event.get("question") or {}
+    text, options = str(q.get("text") or ""), [str(o) for o in q.get("options") or ()]
+    if not text or not options:
+        return {"skip": "question_without_options"}
+    task = str(event.get("task") or "")
+    title = ""
+    if task:
+        row = ctx.read([task], ("title", "stage")).get(task) or {}
+        ctx.cite(row, "title")
+        title = _v(row, "title")
+    named = _records_named(ctx, {"subject": title, "text": f"{text}\n{q.get('context') or ''}",
+                                 "records": []})[:MAX_RECORDS]
+    facts = [_order_facts(ctx, o) for o in named if o.startswith("SalesOrder:")][:5]
+    rec = q.get("recommended")
+    out: dict[str, Any] = {
+        "summary": text[:140], "question": text, "context": str(q.get("context") or ""),
+        "options": options, "task_id": q.get("task_id"), "task_title": title[:200],
+        "records": named, "orders": facts,
+        "links": ([{"label": "Open the task", "href": f"/object/{task}"}] if task else [])
+        + [{"label": "Open a record it names", "href": f"/object/{o}"} for o in named[:4]],
+        "note": "Answer in Mission Control; nothing is answered from here."}
+    if task:
+        out["task"] = {"object_id": task}     # the question is the item, not the whole task
+    if isinstance(rec, int) and 0 <= rec < len(options):
+        out["draft"] = {"choice": rec, "option": options[rec],
+                        "reason": str(q.get("reason") or ""),
+                        "basis": "the asking agent's recommendation"}
+    else:
+        out["gaps"] = ["no_recommended_option"]
     return out
 
 
@@ -1385,12 +1976,26 @@ def _work(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
     return run
 
 
+def _receivables(name: str) -> Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]:
+    def run(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
+        from . import autopilot_receivables as ar
+        return getattr(ar, name)(ctx, event)
+    run.__name__ = name
+    return run
+
+
 HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {
     "order_entry": _work("h_order_entry"), "po_followup": _work("h_po_followup"),
     "supplier_eta": _work("h_supplier_eta"), "desk": _work("h_desk"),
+    "reply_prep": _work("h_reply_prep"), "invoice_send": _work("h_invoice_send"),
+    "routine_update": _work("h_routine_update"),
+    "invoice_entry": _receivables("h_invoice_entry"),
+    "shipment_posting": _receivables("h_shipment_posting"),
+    "cash_application": _receivables("h_cash_application"),
     "answer_request": h_answer_request,
     "delay_impact": h_delay_impact, "approval_recommendation": h_approval,
     "task_prepare": h_task, "ledger_answer": h_ledger, "qc_impact": h_qc,
+    "question_prepare": h_question,
     "meeting_followup": h_meeting}
 
 
@@ -1412,12 +2017,16 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
               environ: Mapping[str, str] | None = None, now: datetime | None = None,
               landed_at: str | None = None, settle_items: bool = True,
               only_owners: Iterable[str] | None = None,
-              gate: Callable[..., bool] | None = None) -> dict[str, Any]:
+              gate: Callable[..., bool] | None = None,
+              rate_by_event_hour: bool = False,
+              feed_lag: Mapping[str, timedelta] | None = None) -> dict[str, Any]:
     """One cycle: type the changed records, store each event once, prepare the work of each
     new event every matching autopilot declares, settle items their evidence closed.
     ``only_owners``: prepare only for these people (a replay of one role); ``gate(owner,
     workflow, roles)``: prepare only what passes it (the live cycle and a replay into a
-    queue: the workflows a role's replay passed, in that role, ``gate_from``)."""
+    queue: the workflows a role's replay passed, in that role, ``gate_from``).
+    ``rate_by_event_hour``: the hourly cap counts each event in the hour it happened (a
+    replay runs one cycle per past day; live, a cycle's hour is the one it runs in)."""
     environ = os.environ if environ is None else environ
     registry = registry or load_registry()
     now = now or datetime.now(timezone.utc)
@@ -1434,7 +2043,13 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
         summary["reason"] = "people_exclusion_unavailable"
         return _plain(summary)
     limits = registry["limits"]
-    events, skipped = discover(st, ids, registry, people, landed_at=landed_at)
+    outbound: list[dict[str, Any]] = []
+    events, skipped = discover(st, ids, registry, people, landed_at=landed_at,
+                               outbound=outbound, now=now, feed_lag=feed_lag)
+    with queue.conn:
+        summary["sent_noted"] = queue.note_sent(outbound)
+        queue.note_routine(outbound)
+        queue.note_inbound(e for e in events if e.get("event_type") == "message.received")
     discovered = time.monotonic()
     summary["skipped"].update(skipped)
     directory, addresses_of, domains = _people_maps(people)
@@ -1443,6 +2058,10 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     try:
         from . import autopilot_work as aw
         events += aw.po_due_events(st, registry, as_of, domains, directory, addresses_of)
+        events += aw.invoice_due_events(st, registry, as_of, domains, directory)
+        events += aw.routine_due_events(st, queue, registry, as_of, people)
+        from . import autopilot_receivables as ar
+        events += ar.due_events(st, registry, as_of, people)
     except sqlite3.Error:
         summary["skipped"]["due_events_unreadable"] += 1
     with queue.conn:
@@ -1454,11 +2073,17 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
             summary["status"] = "partial"      # the rest stay new: the next cycle goes on
             break
         _meeting_extra(st, event, domains)
+        if event.get("event_type") == "message.received" and event.get("mailbox") and \
+                event.get("at"):
+            event.update(queue.engagement(str(event["mailbox"]), event.get("conversation_id"),
+                                          str(event.get("sender") or ""), str(event["at"])))
+            event["sender_history"] = list(queue.reply_history(
+                str(event["mailbox"]), str(event.get("sender") or ""), str(event["at"])))
         state, reason = _process(st, queue, event, registry, people=people,
                                  directory=directory, addresses_of=addresses_of, roles=roles,
                                  domains=domains, as_of=as_of, now=now, summary=summary,
                                  only_owners=None if only_owners is None else set(only_owners),
-                                 gate=gate)
+                                 gate=gate, rate_by_event_hour=rate_by_event_hour)
         with queue.conn:
             queue.mark(event["event_id"], state, reason, stamp)
     summary["discover_seconds"] = round(discovered - started, 2)
@@ -1472,7 +2097,8 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
              people: Any, directory: Mapping[str, str], addresses_of: Mapping[str, set[str]],
              roles: Mapping[str, list[str]], domains: Sequence[str], as_of: date,
              now: datetime, summary: dict[str, Any], only_owners: set[str] | None = None,
-             gate: Callable[..., bool] | None = None) -> tuple[str, str | None]:
+             gate: Callable[..., bool] | None = None, rate_by_event_hour: bool = False
+             ) -> tuple[str, str | None]:
     from . import workflows as wf
     limits = registry["limits"]
     if event.get("event_type") == "message.received" and not event.get("cleared"):
@@ -1496,8 +2122,16 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
         role = when.get("mailbox_role_none")
         if role and box in _role_members(role, roles, directory):
             continue
+        decided = None
+        if ap["owner"] == "approvers":
+            try:
+                project = mc_project(str(event.get("audience") or ""))
+                decided = deciders(st, directory, min(_instant(event.get("at")) or now, now),
+                                   project=project) if project else None
+            except sqlite3.Error:
+                decided = None
         owners, why = owners_of(ap["owner"], event, directory=directory,
-                                addresses_of=addresses_of, roles=roles)
+                                addresses_of=addresses_of, roles=roles, decided=decided)
         if why:
             summary["skipped"][f"{ap['id']}:{why}"] += 1
             reasons.append(why)
@@ -1516,11 +2150,22 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             if not owners:
                 summary["skipped"][f"{ap['id']}:workflow_not_passed"] += 1
                 continue
-        hour = now.strftime("%Y-%m-%dT%H")
+        if ap.get("fallback"):
+            # only for an owner no other autopilot prepared this event for
+            owners = [o for o in owners if not queue.conn.execute(
+                "SELECT 1 FROM items WHERE event_id = ? AND owner = ? LIMIT 1",
+                (event["event_id"], o)).fetchone()]
+            if not owners:
+                continue
+        happened = _instant(event.get("at")) if rate_by_event_hour else None
+        hour = (happened if happened and happened <= now else now).strftime("%Y-%m-%dT%H")
         prepared = None
         for owner in owners:
             item_id = "ap_" + _digest(ap["id"], event["event_id"], owner)[:24]
             if queue.item(item_id) is not None:
+                continue
+            if queue.thread_item_open(owner, ap["id"], event):
+                summary["skipped"][f"{ap['id']}:thread_item_open"] += 1
                 continue
             if not queue.rate_take(owner, hour, int(limits["per_owner_per_hour"])):
                 summary["skipped"][f"{ap['id']}:rate_limited"] += 1
@@ -1538,7 +2183,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 reasons.append(prepared["error"])
                 break
             due = now + timedelta(minutes=int(ap["due_minutes"]))
-            landed = _instant(event.get("landed_at") or event.get("at"))
+            landed = _instant(event.get("seen_at") or event.get("landed_at") or event.get("at"))
             with queue.conn:
                 queue.add_item({
                     "item_id": item_id, "event_id": event["event_id"], "autopilot": ap["id"],
@@ -1590,11 +2235,20 @@ def gate_from(environ: Mapping[str, str], queue_dir: Path
     ``person:`` replay is their whole day, so it counts for every item of theirs). No
     file, an unreadable one or another schema: nothing is on (fail closed)."""
     path = Path(environ.get(GATE_ENV) or queue_dir / GATE_FILE)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = None
+    return gate_of(raw)
+
+
+def gate_of(raw: Any) -> tuple[Callable[..., bool], dict[str, list[str]]]:
+    """``gate_from`` over a gate document already read (``None`` or anything that is not
+    a ``GATE_SCHEMA`` document: nothing is on)."""
     # role -> (members, workflows passed, workflows measured)
     table: dict[str, tuple[set[str], set[str], set[str]]] = {}
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if raw.get("schema") != GATE_SCHEMA:
+        if not isinstance(raw, dict) or raw.get("schema") != GATE_SCHEMA:
             raise ValueError("schema")
         for name, role in (raw.get("roles") or {}).items():
             members = {str(m).lower() for m in role.get("members") or ()}
@@ -1606,7 +2260,7 @@ def gate_from(environ: Mapping[str, str], queue_dir: Path
                         Decimal(matched) / Decimal(judged) >= GATE_PRECISION:
                     ok.add(str(flow))
             table[str(name)] = (members, ok, seen)
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+    except (ValueError, TypeError, KeyError, AttributeError):
         table = {}
 
     def gate(owner: str, workflow: str, roles: Iterable[str] = ()) -> bool:
@@ -1742,6 +2396,14 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
                 r = _read(st, [oid], ("stage", "completed_at")).get(oid)
                 if r and (TASK_DONE.match(_v(r, "stage")) or _v(r, "completed_at")):
                     reason = "task_closed"
+            elif rule == "question_answered" and oid:
+                reader = getattr(st, "autopilot_mc", None)
+                got = st.conn.execute("SELECT native_key FROM objects WHERE object_id = ?",
+                                      (oid,)).fetchone()
+                key = reader.key_of(got[0]) if reader is not None and got else None
+                q = reader.asked(*key) if key else None
+                if q and (q["answered_at"] or q["withdrawn_at"]):
+                    reason = "question_answered"
             elif rule == "batch_released" and oid:
                 r = _read(st, [oid], ("quality_status",)).get(oid)
                 if r and _v(r, "quality_status") == "Released":
@@ -1825,8 +2487,10 @@ def digest(items: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
     late = sorted((i for i in items if i["due_at"] < stamp), key=lambda i: i["due_at"])
     today = [i for i in items if i["due_at"][:10] == stamp[:10]]
     from . import autopilot_work as aw
+    from . import mc_digest as md
     return {"open": len(items), "by_autopilot": dict(sorted(by.items())),
             "due_today": len(today), "brief": aw.brief(items, now),
+            "mc_approvals": md.digest(items, now),
             "nudges": [{"item_id": i["item_id"], "title": i["title"], "due_at": i["due_at"],
                         "text": f"Waiting since {i['created_at'][:16].replace('T', ' ')} UTC: "
                                 f"{i['title']}"} for i in late[:20]]}
@@ -1920,6 +2584,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if capture_dir and (Path(capture_dir) / "mail-capture" / "capture.db").exists():
         from . import autopilot_work as aw
         st.autopilot_capture = aw.CaptureTexts(capture_dir)
+    if capture_dir and (Path(capture_dir) / "mc-capture" / "capture.sqlite").exists():
+        from . import autopilot_work as aw
+        st.autopilot_mc = aw.MCQuestions(capture_dir)
     try:
         # follow and replay both write the queue people read: each prepares only the
         # workflows a role's replay passed, in that role (``gate_from``)

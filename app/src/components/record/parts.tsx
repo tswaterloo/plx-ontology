@@ -7,7 +7,7 @@ import { ArrowUpRight } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
-import { formatDate } from "@/lib/format";
+import { businessToday, formatDate } from "@/lib/format";
 import type { Shown, Status } from "@/lib/status";
 import type { Source } from "@/lib/types";
 import { EvidenceDrawer } from "../source-chip";
@@ -222,7 +222,7 @@ export function OrderLine({ ordered, needed, daysLate, end: endLabel = "Today" }
         )}
         <span className="absolute right-0 top-0 text-right">
           <span className="block text-muted">{endLabel}</span>
-          <span className="block font-medium">{short(now)}</span>
+          <span className="block font-medium">{formatDate(businessToday(new Date(now)), { short: true })}</span>
         </span>
       </div>
     </div>

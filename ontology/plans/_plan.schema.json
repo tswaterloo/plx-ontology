@@ -73,6 +73,7 @@
     },
     "args": {"type": "object", "description": "Static tool arguments, validated against the tool's input contract; as_known_at is added by the executor when the tool takes it."},
     "max_each": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Objects this per-object step reads at most, below the plan's max_each (e.g. a read for names only, whose every entry is on every answer page); the rest are reported truncated, as for the plan's."},
+    "if_declared": {"type": "boolean", "description": "A plx.around path of link types a coming schema adds: where the served schema does not declare one of them (or every collection the step starts from was such a skipped step) the step is not run and the answer carries a link_not_served note; once declared it is checked and run like any step."},
     "required": {"type": "boolean", "description": "A required step that could not run (step_unavailable, error, budget) makes the answer partial."},
     "retry": {
      "type": "object", "additionalProperties": false, "required": ["on_gap_reasons", "set_args", "note_gap"],

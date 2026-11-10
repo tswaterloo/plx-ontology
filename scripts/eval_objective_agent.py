@@ -94,7 +94,7 @@ from evals import runner  # noqa: E402
 from operating import tool_results  # noqa: E402
 from evals import score as scoring  # noqa: E402
 from scripts import eval_real_agent as era  # noqa: E402
-from operator_ui.session_journal import run_journal_scope  # noqa: E402
+from operator_api.workspace.session_journal import run_journal_scope  # noqa: E402
 
 SCHEMA = "plx-eval-objective-agent/v1"
 OBJECTIVES_FORMAT = "plx-eval-objectives/v1"
@@ -896,7 +896,7 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     run.add_argument("--folder", default="inbox")
     run.add_argument("--sharepoint-path", action="append", default=[])
     args = parser.parse_args(argv)
-    from operator_ui.session_journal import isolate_journal
+    from operator_api.workspace.session_journal import isolate_journal
     isolate_journal(args.work_dir / "journal")   # never the host's own journal
     environ = os.environ if environ is None else environ
     evidence = "injected-transport" if agent is not None else "real-claude-session"

@@ -135,7 +135,7 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
 
 A gap carries the citations its claim rests on, grouped (each group must stay cited for a
 reader to see the gap), a stable id and a proposed ``follow_up``
-(``operator_ui.object_workspace.FOLLOW_UP_FIELDS``) that only a person sends. ``run``
+(``operator_api.workspace.object_workspace.FOLLOW_UP_FIELDS``) that only a person sends. ``run``
 writes one inbox file next to the store: a gap found again keeps its id and first sight,
 a gap a complete detector no longer finds is ``resolved`` (found again: reopened), and an
 acknowledgement is per reader. ``read_inbox`` trims for one reader: a gap shows only when
@@ -162,7 +162,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from contextlib import closing
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -190,6 +190,9 @@ from . import test_records as test_records_rule
 from . import proactive_gaps as pg
 from . import sales_order_status as so_status
 from . import suspect_money
+from operating import declared_schema as _schemas
+from operating.declared_schema import proactive_inbox as _PROACTIVE_INBOX
+from operating.declared_schema.proactive_inbox import _VISITS_DDL
 
 SCHEMA = "plx-proactive-engine/v1"
 INBOX_SCHEMA = "plx-gap-inbox/v1"
@@ -291,12 +294,15 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              # (``operating.proactive_commitments``; one message read shared by both)
              "commitments", "needs_reply",
              # mail threads waiting on someone (``operating.proactive_threads``; one read
-             # by the word index shared by both): approvals unanswered, chases escalating
-             "approvals_waiting", "chase_escalation",
+             # shared by all three): approvals unanswered, chases escalating, a customer's
+             # or supplier's chase nobody of ours answered
+             "approvals_waiting", "chase_escalation", "party_chases", "internal_chases",
              # what each person owes a reply in their own mail and one-to-one chats
              # (``operating.inbox_triage``), label and artwork changes requested, approved
-             # and done (``operating.label_changes``)
-             "inbox_triage", "label_changes",
+             # and done (``operating.label_changes``), every label and artwork revision and
+             # the open orders on a superseded one (``operating.label_revisions``, the
+             # change rule's source of new label files and revision approvals)
+             "inbox_triage", "label_revisions", "label_changes",
              # R&D and sample projects per customer (``operating.rd_projects``)
              "rd_projects",
              # unanswered vendor requests over the whole store's mail (after the late rule:
@@ -383,10 +389,16 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # the mail the word index finds for both, read once (measured on the
                     # gen 11 store, 2026-11-08: see proactive_threads)
                     "approvals_waiting": 120.0, "chase_escalation": 60.0,
+                    "party_chases": 60.0, "internal_chases": 60.0,
                     # the window's mail by the event index (rowid ranges side by side) and
                     # the label words (measured on the gen 11 store, 2026-11-08: 20 s and
                     # 51 s, a loaded host)
-                    "inbox_triage": 60.0, "label_changes": 120.0,
+                    # (label_changes also waits on label_revisions' read, its source: 93 s
+                    # on its own on the gen 12 store, 2026-11-09)
+                    "inbox_triage": 60.0, "label_changes": 180.0,
+                    # the label words of attachment and file names, then their threads
+                    # (measured on the gen 12 store, 2026-11-09: 48 to 61 s)
+                    "label_revisions": 240.0,
                     "rd_projects": 120.0}
 # Store-only detectors that run side by side on threads (each on its own store connection):
 # every set-based rule but the customer-PO scan (it reads the runtime's mirror, on the
@@ -396,7 +408,10 @@ THREADS_ENV = "PLX_PROACTIVE_DETECTOR_THREADS"
 MAX_DETECTOR_THREADS = 6
 # (the reply rule after the promise rule: it reads the messages that one read, ``memo``)
 CHAINED = {"vendor_no_reply": LATE_RULE, "needs_reply": "commitments",
-           "chase_escalation": "approvals_waiting"}
+           "chase_escalation": "approvals_waiting", "party_chases": "approvals_waiting",
+           "internal_chases": "approvals_waiting",
+           # the Sage AP chases read the thread rules' mail window (proactive_threads)
+           "payment_chase": "approvals_waiting"}
 # The vendor-terms check is incremental: it keeps its readings per purchase order in the
 # inbox (``event_cache``) and investigates only the ones whose mail thread changed.
 INCREMENTAL = ("vendor_terms_unapplied",)
@@ -426,9 +441,11 @@ REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor
                             # a record missing from the system it must reach
                             "sync_gaps",
                             # resting on no reply in any copy (``proactive_threads``)
-                            "approvals_waiting", "chase_escalation",
-                            # no reply, no approval, nothing done in the thread
-                            "inbox_triage", "label_changes",
+                            "approvals_waiting", "chase_escalation", "party_chases",
+                            "internal_chases",
+                            # no reply, no approval, nothing done in the thread; no
+                            # copy of the newer revision naming the order
+                            "inbox_triage", "label_changes", "label_revisions",
                             # no later activity in any thread of the project
                             "rd_projects"})
 # Rule statuses of a host that has not set up a rule's input yet (the reading step's file):
@@ -3479,7 +3496,7 @@ def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
     """The operations alerts (``operating.proactive_ops``) as engine steps; ``sources``:
     overrides of what the schema declares (``proactive_ops.declared_sources``)."""
     from . import proactive_ops as po
-    from . import inbox_triage, label_changes, rd_projects
+    from . import inbox_triage, label_changes, label_revisions, rd_projects
     from . import proactive_threads as threads
 
     given = dict(sources or {})
@@ -3507,8 +3524,13 @@ def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
             st, as_of, people=people(), **common),
         "chase_escalation": lambda: threads.chase_escalation(
             st, as_of, people=people(), **common),
+        "party_chases": lambda: threads.party_chases(st, as_of, people=people(), **common),
+        "internal_chases": lambda: threads.internal_chases(st, as_of, people=people(),
+                                                           **common),
         "inbox_triage": lambda: inbox_triage.inbox_triage(st, as_of, people=people(), **common),
         "label_changes": lambda: label_changes.label_changes(
+            st, as_of, people=people(), **common),
+        "label_revisions": lambda: label_revisions.label_revisions(
             st, as_of, people=people(), **common),
         "rd_projects": lambda: rd_projects.rd_projects(st, as_of, people=people(), **common)}
 
@@ -3718,43 +3740,6 @@ def _with_amounts(st: _Store, results: Mapping[str, Mapping[str, Any]]) -> None:
                                          "amount": stated}
 
 
-_INBOX_DDL = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, run_at TEXT NOT NULL,
-  as_of TEXT NOT NULL, store_digest TEXT, summary TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS scope (audience_key TEXT NOT NULL, markings TEXT NOT NULL,
-  objects INTEGER NOT NULL, PRIMARY KEY (audience_key, markings));
-CREATE TABLE IF NOT EXISTS detector_runs (detector TEXT PRIMARY KEY, status TEXT NOT NULL,
-  reasons TEXT NOT NULL, found INTEGER NOT NULL, not_evaluated TEXT NOT NULL,
-  run_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS rule_coverage (detector TEXT PRIMARY KEY,
-  unattributed INTEGER NOT NULL, run_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS unjudged_causes (detector TEXT NOT NULL, skip INTEGER NOT NULL,
-  object_id TEXT NOT NULL, markings TEXT NOT NULL, subject INTEGER NOT NULL,
-  PRIMARY KEY (detector, skip, object_id, markings));
-CREATE TABLE IF NOT EXISTS unjudged_reasons (detector TEXT NOT NULL, skip INTEGER NOT NULL,
-  reason TEXT NOT NULL, PRIMARY KEY (detector, skip));
-CREATE TABLE IF NOT EXISTS gaps (gap_id TEXT PRIMARY KEY, kind TEXT NOT NULL,
-  detector TEXT NOT NULL, object_id TEXT NOT NULL, object_type TEXT NOT NULL,
-  summary TEXT NOT NULL, follow_up TEXT NOT NULL, priority INTEGER NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('open', 'resolved')), first_seen TEXT NOT NULL,
-  last_seen TEXT NOT NULL, resolved_at TEXT);
-CREATE INDEX IF NOT EXISTS gaps_open ON gaps (state, priority, last_seen);
-CREATE TABLE IF NOT EXISTS gap_cites (gap_id TEXT NOT NULL, grp INTEGER NOT NULL,
-  handle TEXT NOT NULL, object_id TEXT, markings TEXT NOT NULL,
-  PRIMARY KEY (gap_id, grp, handle));
-CREATE TABLE IF NOT EXISTS gap_requires (gap_id TEXT NOT NULL, audience_key TEXT NOT NULL,
-  PRIMARY KEY (gap_id, audience_key));
-CREATE TABLE IF NOT EXISTS acks (gap_id TEXT NOT NULL, reader TEXT NOT NULL, at TEXT NOT NULL,
-  PRIMARY KEY (gap_id, reader));
-CREATE TABLE IF NOT EXISTS visits (reader TEXT PRIMARY KEY, at TEXT NOT NULL, previous TEXT);
-CREATE TABLE IF NOT EXISTS event_cache (detector TEXT NOT NULL, root TEXT NOT NULL,
-  reading TEXT NOT NULL, PRIMARY KEY (detector, root));
-CREATE TABLE IF NOT EXISTS detector_history (detector TEXT NOT NULL, run_at TEXT NOT NULL,
-  status TEXT NOT NULL, found INTEGER NOT NULL, PRIMARY KEY (detector, run_at));
-CREATE TABLE IF NOT EXISTS kind_history (kind TEXT NOT NULL, run_at TEXT NOT NULL,
-  found INTEGER NOT NULL, PRIMARY KEY (kind, run_at));
-"""
 
 
 def _read_cache(inbox: Path) -> dict[str, dict[str, Any]]:
@@ -3788,7 +3773,7 @@ def _open_inbox(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.executescript(_INBOX_DDL)
+    _schemas.apply(conn, _PROACTIVE_INBOX)
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
     if row is None:
         conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)",
@@ -4130,6 +4115,23 @@ def pass_lock(inbox: Any, *, wait: bool | float = True,
         os.close(fd)
 
 
+def _failure_cause(error: BaseException) -> list[str]:
+    """What a detector's failure was, as an enum beside its class: a Postgres statement
+    cut at the connection's ``statement_timeout`` (``sqlite_compat`` raises it as
+    ``OperationalError("interrupted")``; Postgres has no progress handler, so it is never
+    the run's own window), or the Postgres error class ``sqlite_compat`` names; else none.
+    Never the message text."""
+    if not isinstance(error, sqlite3.OperationalError):
+        return []
+    text = str(error)
+    if text == "interrupted":
+        return ["statement_timeout"]
+    if text.startswith("postgres: "):
+        name = text[len("postgres: "):].split(":", 1)[0].strip()
+        return [f"postgres_{name}"] if name.isidentifier() else []
+    return []
+
+
 def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
          coverage: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None,
         call: Callable | None = None, card_bound: int = CARD_BOUND,
@@ -4270,7 +4272,13 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                     # its query was interrupted at its window's end: cut short, not failed
                     result = _result([], status="truncated", reasons=[TIME_BUDGET])
                 else:
-                    result = _result([], status="failed", reasons=[type(error).__name__])
+                    result = _result([], status="failed",
+                                     reasons=[type(error).__name__, *_failure_cause(error)])
+                    # the cause by class only (never the message: it may quote values), so
+                    # the next failed run says why in the journal (R8: three rules failed
+                    # three full runs running with nothing but "OperationalError")
+                    print(f"proactive_engine: {name} failed: "
+                          f"{' '.join(result['reasons'])}", file=sys.stderr, flush=True)
             finally:
                 st.judging(None)
                 window.unshare()
@@ -4586,8 +4594,10 @@ CLOSED_ORDER_RULES = {
 }
 # Gap kinds whose claim is that one copy is closed and another open (the late rule's
 # ``systems_disagree``): kept for a closed order whatever rule raised them (hand-check
-# 2026-11-09: 4 of 15 dropped late-rule gaps were these)
-CLOSED_ORDER_KINDS = frozenset({"systems_disagree", "twins_disagree"})
+# 2026-11-09: 4 of 15 dropped late-rule gaps were these); a receipt reconciliation is the
+# same claim about a received (closed) order whose other copy still reads open
+CLOSED_ORDER_KINDS = frozenset({"systems_disagree", "twins_disagree",
+                                "receipt_reconciliation"})
 ORDER_TYPES = ("SalesOrder", "PurchaseOrder")
 ACTIVE_UNREADABLE = "active_population_unreadable"
 ACTIVE_READER = "active_population"   # the filter's reads, attributed to no rule
@@ -5236,6 +5246,8 @@ def _attach_postgres(conn: sqlite3.Connection) -> None:
         stamp = ontology_reader.change_stamp()
         if stamp is not None:
             meta["content_digest"] = stamp
+            # said: the digest is the data version, so a reader's counts may be kept by it
+            meta["changes_stamp"] = "1"
         # the distinct keys by their index, one probe per key
         keys = [r[0] for r in pg.execute(
             "WITH RECURSIVE k (key) AS (SELECT min(audience_key) FROM ontology.objects "
@@ -5265,6 +5277,68 @@ def _attach_postgres(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA query_only = ON")
 
 
+# the skips a reader may not read the whole cause of: any record of the skip outside the
+# reader's markings or audiences. Computed once per query (an uncorrelated set SQLite builds
+# once), never re-evaluated per counted record: a skip of 10,000 records was 10^8 checks.
+_HIDDEN_SKIPS = (
+    "SELECT c.detector, c.skip FROM unjudged_causes c WHERE NOT (c.markings IN (SELECT "
+    "value FROM json_each(:marks)) AND " + _OBJECT_VISIBLE.format(o="c.object_id") + ")")
+
+# per (inbox, store data, reader's grant): the counts ``_rule_coverage`` reads; the inbox
+# and the store change only on a run or a delta, while every page read asks again
+_COVERAGE_KEPT = 64
+_coverage_kept: OrderedDict[tuple[Any, ...],
+                            tuple[dict[str, int], dict[str, dict[str, int]]]] = OrderedDict()
+_coverage_lock = threading.Lock()
+
+
+def _file_stamp(path: str) -> tuple[Any, ...] | None:
+    """A SQLite file as it stands: identity, time, size and its first 32 bytes (a
+    database's file change counter, which every commit not through a WAL moves; a WAL's
+    checkpoint sequence and salts, which every restart of it moves). None: no file."""
+    try:
+        with open(path, "rb") as fh:
+            st = os.fstat(fh.fileno())
+            head = fh.read(32)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size, head)
+
+
+def _coverage_key(conn: sqlite3.Connection, params: Mapping[str, str]
+                  ) -> tuple[Any, ...] | None:
+    """What the reader's counts depend on, or None (never kept) when any part cannot be
+    said: the inbox file (and its WAL) and its last write, the store's data (a SQLite
+    file and its digest, or Postgres's change stamp), and the reader's audiences and
+    markings exactly as the query reads them."""
+    files = {row[1]: row[2] for row in conn.execute("PRAGMA database_list")}
+    inbox, store = files.get("main") or "", files.get("st")
+    if not inbox or store is None:
+        return None   # an in-memory inbox: nothing says when it changed
+    stamps = (_file_stamp(inbox), _file_stamp(inbox + "-wal"))
+    if stamps[0] is None:
+        return None
+    meta = dict(conn.execute("SELECT key, value FROM st.store_meta WHERE key IN "
+                             "('content_digest', 'changes_stamp')").fetchall())
+    if store:
+        held = (store, _file_stamp(store), _file_stamp(store + "-wal"),
+                meta.get("content_digest"))
+        if held[1] is None:
+            return None
+    else:
+        # Postgres copied into memory: its stamp changes with every delta layer; without
+        # one the store's change is unknown, so nothing is kept
+        if not meta.get("changes_stamp") or not meta.get("content_digest"):
+            return None
+        held = ("postgres", meta["content_digest"])
+    inner = tuple(conn.execute(
+        "SELECT (SELECT max(rowid) FROM unjudged_causes), (SELECT count(*) FROM "
+        "unjudged_causes), (SELECT max(run_at) FROM detector_runs), (SELECT "
+        "group_concat(detector || '=' || unattributed || '@' || run_at) FROM "
+        "rule_coverage)").fetchone())
+    return (inbox, stamps, inner, held, params["aud"], params["marks"])
+
+
 def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
                    detectors: Mapping[str, str]) -> list[dict[str, Any]]:
     """Per rule, its last run's status and how many records this reader may read it left
@@ -5276,28 +5350,10 @@ def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
     tables = {row[0] for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
     recorded: dict[str, int] = {}
-    visible: dict[str, int] = {}
     if {"rule_coverage", "unjudged_causes"} <= tables:
         recorded = {row[0]: row[1] for row in conn.execute(
             "SELECT detector, unattributed FROM rule_coverage")}
-        visible = {row[0]: row[1] for row in conn.execute(
-            "SELECT u.detector, count(DISTINCT u.object_id) FROM unjudged_causes u "
-            "WHERE u.subject = 1 AND NOT EXISTS (SELECT 1 FROM unjudged_causes c WHERE "
-            "c.detector = u.detector AND c.skip = u.skip AND NOT (c.markings IN (SELECT "
-            "value FROM json_each(:marks)) AND " + _OBJECT_VISIBLE.format(o="c.object_id")
-            + ")) GROUP BY u.detector", params)}
-    by_reason: dict[str, dict[str, int]] = defaultdict(dict)
-    if {"unjudged_causes", "unjudged_reasons"} <= tables:
-        # the same count per reason ("cannot check: 12 records lack order lines"), over
-        # the same skips this reader may read the whole cause of
-        for name, reason, n in conn.execute(
-                "SELECT u.detector, r.reason, count(DISTINCT u.object_id) FROM unjudged_causes u "
-                "JOIN unjudged_reasons r ON r.detector = u.detector AND r.skip = u.skip "
-                "WHERE u.subject = 1 AND NOT EXISTS (SELECT 1 FROM unjudged_causes c WHERE "
-                "c.detector = u.detector AND c.skip = u.skip AND NOT (c.markings IN (SELECT "
-                "value FROM json_each(:marks)) AND " + _OBJECT_VISIBLE.format(o="c.object_id")
-                + ")) GROUP BY u.detector, r.reason", params):
-            by_reason[name][reason] = n
+    visible, by_reason = _visible_unjudged(conn, params, tables)
     counted = {row[0]: row[1] for row in conn.execute(
         "SELECT detector, not_evaluated FROM detector_runs")}
     said = {row[0]: row[1] for row in conn.execute(
@@ -5323,6 +5379,51 @@ def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
                     "not_evaluated_by_reason": dict(sorted(by_reason.get(name, {}).items()))
                     if shown else {}})
     return out
+
+
+def _visible_unjudged(conn: sqlite3.Connection, params: Mapping[str, str], tables: set[str]
+                      ) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+    """Per rule, the records this reader may read it left unjudged, of the skips whose
+    whole cause the reader may read; and the same per reason. Kept per
+    ``_coverage_key`` (never for a key that cannot be said)."""
+    if "unjudged_causes" not in tables:
+        return {}, {}
+    key = _coverage_key(conn, params) if {"detector_runs", "rule_coverage"} <= tables else None
+    if key is not None:
+        with _coverage_lock:
+            hit = _coverage_kept.get(key)
+            if hit is not None:
+                _coverage_kept.move_to_end(key)
+                return hit[0], {k: dict(v) for k, v in hit[1].items()}
+    # the skips the reader may not read the whole cause of, checked once; then one pass
+    # over the counted records (a set lookup per record, never a per-record query)
+    hidden = {(d, k) for d, k in conn.execute(
+        "SELECT DISTINCT detector, skip FROM (" + _HIDDEN_SKIPS + ")", params)}
+    has_reasons = "unjudged_reasons" in tables
+    counted: dict[str, set[str]] = defaultdict(set)
+    per_reason: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for name, skip, object_id, reason in conn.execute(
+            "SELECT u.detector, u.skip, u.object_id, " + (
+                "r.reason FROM unjudged_causes u LEFT JOIN unjudged_reasons r ON "
+                "r.detector = u.detector AND r.skip = u.skip" if has_reasons else
+                "NULL FROM unjudged_causes u") + " WHERE u.subject = 1"):
+        if (name, skip) in hidden:
+            continue
+        counted[name].add(object_id)
+        if reason is not None:
+            per_reason[(name, reason)].add(object_id)
+    visible = ({name: len(ids) for name, ids in counted.items()}
+               if "rule_coverage" in tables else {})
+    by_reason: dict[str, dict[str, int]] = defaultdict(dict)
+    for (name, reason), ids in per_reason.items():
+        by_reason[name][reason] = len(ids)
+    by_reason = dict(by_reason)
+    if key is not None:
+        with _coverage_lock:
+            _coverage_kept[key] = (dict(visible), {k: dict(v) for k, v in by_reason.items()})
+            while len(_coverage_kept) > _COVERAGE_KEPT:
+                _coverage_kept.popitem(last=False)
+    return visible, by_reason
 
 
 def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str], bool],
@@ -5732,8 +5833,6 @@ def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
             if total[kind] - seen[kind] > 0}
 
 
-_VISITS_DDL = ("CREATE TABLE IF NOT EXISTS visits (reader TEXT PRIMARY KEY, at TEXT NOT NULL, "
-               "previous TEXT)")
 
 
 def last_visit(inbox: Any, reader: str) -> str | None:
@@ -5862,7 +5961,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
          host_options: Mapping[str, Any] | None = None, graph_sender: Any = None) -> int:
     from integrations.source_mirror import AudienceMap
     from ontology.core import Actor
-    from operator_ui.object_workspace import HostAccess
+    from operator_api.workspace.object_workspace import HostAccess
 
     from . import case_workspace_live as live
 

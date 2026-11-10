@@ -27,7 +27,7 @@ RETIRED = (
 )
 # operating/unified.py still names the family.
 PENDING_OWNER_DELETION = {"operating/unified.py"}
-SCANNED = ("ontology", "integrations", "operating", "operator_ui", "ops_plane", "reasoning",
+SCANNED = ("ontology", "integrations", "operating", "operator_api", "ops_plane", "reasoning",
            "engineering", "scripts", "devloop", "evals", "tests")
 
 

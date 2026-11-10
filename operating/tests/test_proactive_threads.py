@@ -221,6 +221,100 @@ class Threads(Engine):
                                   event["party"]), (3, "inbound", True, "@synth-customer.example"))
                 self.assertEqual(gaps[0]["follow_up"]["priority"], "high")
 
+    def party_chase(self, w: World, i: int, *, link: str = "Email.sent_by_supplier",
+                    tier: str = "verified", answered_on: date | None = None,
+                    body: str = "Following up on my last email: any update on the ETA of "
+                                "our order?") -> str:
+        conv = f"party-{i}"
+        party = w.obj("Supplier" if "supplier" in link else "Customer",
+                      {"name": f"SYNTH Party {i}"}, audience="api:parties")
+        asked = mail(w, day(4), sender=OUTSIDE, to=(OURS,), body=body,
+                     subject=f"Order {i}", conversation=conv, n=50_000 + i * 10)
+        w.link(link, asked, party, tier)
+        if answered_on is not None:
+            mail(w, answered_on, sender=OURS, to=(OUTSIDE,), body="It ships Friday.",
+                 subject=f"Re: Order {i}", conversation=conv, n=50_000 + i * 10 + 1)
+        return asked
+
+    def test_a_partys_chase_nobody_answered_is_raised_once_per_chase(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w = World()
+                want = {self.party_chase(w, i) for i in range(n)}
+                self.party_chase(w, 900, answered_on=day(2))              # answered
+                self.party_chase(w, 901, tier="lead")                      # no settled sender
+                self.party_chase(w, 902, link="Email.mentions_supplier")   # names, not sends
+                self.party_chase(w, 903, body="Thanks, all received.")     # no chase
+                started = time.monotonic()
+                summary = self.run_rules(w)
+                self.assertLess(time.monotonic() - started, 60)
+                self.assertEqual(summary["detectors"][pt.PARTY_CHASES], "complete")
+                gaps = self.kinds(pt.PARTY_CHASE_KIND)
+                self.assertEqual({g["object_id"] for g in gaps}, want)
+                self.assertEqual(len(gaps), n)
+                event = gaps[0]["event"]
+                self.assertEqual((event["party_kind"], event["family"], event["days"]),
+                                 ("supplier", "order_status", pt._business_days(day(4), AS_OF)))
+                self.assertNotIn("any update on the ETA", json.dumps(gaps))   # no body kept
+
+    def test_a_party_kept_in_several_systems_is_one_party_and_a_mixed_sender_none(self):
+        # a supplier kept as a BC vendor and a Portal supplier is linked once per record: one
+        # side, so its chase is raised; a sender settled as a customer and a supplier is not
+        w = World()
+        twin = self.party_chase(w, 1)
+        w.link("Email.sent_by_supplier", twin,
+               w.obj("Supplier", {"name": "SYNTH Party 1"}, audience="api:parties"),
+               "corroborated")
+        mixed = self.party_chase(w, 2)
+        w.link("Email.sent_by_customer", mixed,
+               w.obj("Customer", {"name": "SYNTH Party 2"}, audience="api:parties"),
+               "corroborated")
+        self.run_rules(w)
+        (gap,) = self.kinds(pt.PARTY_CHASE_KIND)
+        self.assertEqual((gap["object_id"], gap["event"]["party_kind"]), (twin, "supplier"))
+
+    def test_a_partys_chase_answered_after_the_day_is_waiting_on_that_day(self):
+        w = World()
+        asked = self.party_chase(w, 1, link="Email.sent_by_customer", answered_on=day(-2))
+        self.run_rules(w)
+        (gap,) = self.kinds(pt.PARTY_CHASE_KIND)          # the answer came after the day
+        self.assertEqual((gap["object_id"], gap["event"]["party_kind"]), (asked, "customer"))
+        self.assertEqual(self.kinds(pt.PARTY_CHASE_KIND, may_read=lambda key: False), [])
+        summary = self.run_rules(w, people=people(unavailable=True))
+        self.assertEqual(summary["detectors"][pt.PARTY_CHASES], "blocked")
+
+    def test_a_colleagues_order_chase_nobody_asked_answered_is_raised_once(self):
+        def chase(w: World, i: int, *, to=(APPROVER,), answer: str | None = None,
+                  body: str = "Following up: any update on the ETA of order {i}?",
+                  subject: str = "Order {i}") -> str:
+            conv = f"inside-{i}"
+            asked = mail(w, day(4), sender=OURS, to=to, body=body.format(i=i),
+                         subject=subject.format(i=i), conversation=conv, n=60_000 + i * 10)
+            if answer is not None:
+                mail(w, day(2), sender=answer, to=(OURS,), body="It ships Friday.",
+                     subject=f"Re: Order {i}", conversation=conv, n=60_000 + i * 10 + 1)
+            return asked
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w = World()
+                want = {chase(w, i) for i in range(n)}
+                chase(w, 900, answer=APPROVER)                         # answered by who it asked
+                chase(w, 901, to=(OUTSIDE,))                           # a party, not a colleague
+                chase(w, 902, body="Following up: any update on the sample {i}?",
+                      subject="Sample {i}")                            # not about an order
+                chase(w, 903, to=(APPROVER, BOSS))                     # an excluded person on it
+                started = time.monotonic()
+                summary = self.run_rules(w)
+                self.assertLess(time.monotonic() - started, 60)
+                self.assertEqual(summary["detectors"][pt.INTERNAL_CHASES], "complete")
+                gaps = self.kinds(pt.INTERNAL_CHASE_KIND)
+                self.assertEqual({g["object_id"] for g in gaps}, want)
+                self.assertEqual(len(gaps), n)
+                self.assertNotIn("any update on the ETA", json.dumps(gaps))
+        self.assertEqual(self.kinds(pt.INTERNAL_CHASE_KIND, may_read=lambda key: False), [])
+        summary = self.run_rules(w, people=people(unavailable=True))
+        self.assertEqual(summary["detectors"][pt.INTERNAL_CHASES], "blocked")
+
     def test_outreach_nobody_answered_is_no_chase_loop_and_a_mailing_is_no_approval_ask(self):
         w = World()
         chase_thread(w, 1)                                   # answered before: a loop
@@ -283,6 +377,68 @@ class Threads(Engine):
         whole = sorted(g["id"] for g in self.kinds(pt.APPROVAL_KIND, pt.CHASE_KIND))
         self.assertEqual(len(indexed), 4)
         self.assertEqual(indexed, whole)
+
+    def test_without_the_word_index_the_window_is_read_by_its_mail_events(self):
+        # a Postgres reader has no word index: the window's mail is read through its
+        # received events, never every message (that read timed out live), and finds what
+        # the word index finds; a replay of a past day never reads a later reply as given
+        w, asked = self.approval_world()
+        for i in range(3):
+            chase_thread(w, i)
+        mail(w, day(-3), sender=APPROVER, to=(OURS,), body="Approved.", n=900)  # after the day
+        self.run_rules(w)
+        indexed = sorted(g["id"] for g in self.kinds(pt.APPROVAL_KIND, pt.CHASE_KIND))
+        self.assertIn(asked, {g["object_id"] for g in self.kinds(pt.APPROVAL_KIND)})
+        for row in w.rows["objects"]:
+            if row["object_type"] == "Email":
+                sent = next(v["value"] for v in w.rows["object_values"]
+                            if v["object_id"] == row["object_id"] and v["property"] == "sent_at")
+                w.event("Email.received", row["object_id"], sent)
+        with mock.patch.object(pt, "_word_ids", return_value=None), \
+                mock.patch.object(pt, "_scan", side_effect=AssertionError("read whole")):
+            self.run_rules(w)
+        windowed = sorted(g["id"] for g in self.kinds(pt.APPROVAL_KIND, pt.CHASE_KIND))
+        self.assertEqual(len(indexed), 4)
+        self.assertEqual(windowed, indexed)
+        self.assertIn(asked, {g["object_id"] for g in self.kinds(pt.APPROVAL_KIND)})
+
+    def test_a_customer_or_supplier_chase_nobody_of_ours_answered_is_raised(self):
+        # the gap found in the mail: outside parties chasing payment, quotes and orders by
+        # hand, one chase at a time, with no rule catching a single unanswered chase
+        w = World()
+        customer = w.obj("Customer", {"name": "SYNTH Customer"})
+        supplier = w.obj("Supplier", {"name": "SYNTH Supplier"})
+        chase = "Following up on my last email: any update on the payment of invoice 12?"
+        waiting = mail(w, day(4), sender=OUTSIDE, to=(OURS,), body=chase, subject="Invoice 12",
+                       conversation="pc-1", n=500)
+        # the capture linked the other mailbox's copy of the same message only
+        copy = mail(w, day(4), sender=OUTSIDE, to=(OURS,), body=chase, subject="Invoice 12",
+                    conversation="pc-1", n=500, mailbox=SECOND_BOX)
+        w.link("Email.sent_by_customer", copy, customer)
+        answered = mail(w, day(5), sender="ar@synth-supplier.example", to=(OURS,),
+                        body="Just checking in on the quote.", conversation="pc-2", n=501)
+        w.link("Email.sent_by_supplier", answered, supplier)
+        mail(w, day(4), sender=OURS, to=("ar@synth-supplier.example",), body="Attached.",
+             conversation="pc-2", n=502)
+        mail(w, day(4), sender="rep@synth-pitch.example", to=(OURS,), body=chase,
+             conversation="pc-3", n=503)                    # no customer or supplier: a pitch
+        lead = mail(w, day(4), sender=OUTSIDE, to=(OURS,), body=chase, conversation="pc-4",
+                    n=504)
+        w.link("Email.sent_by_customer", lead, customer, "lead")    # a lead link: unsettled
+        hidden = mail(w, day(4), sender=OUTSIDE, to=(OURS,), cc=(BOSS,), body=chase,
+                      conversation="pc-5", n=505)
+        w.link("Email.sent_by_customer", hidden, customer)          # the excluded person
+        self.run_rules(w)
+        (gap,) = self.kinds(pt.PARTY_CHASE_KIND)
+        self.assertIn(gap["object_id"], (waiting, copy))
+        self.assertEqual({k: gap["event"][k] for k in ("family", "party_kind", "party")},
+                         {"family": "payment_invoice", "party_kind": "customer",
+                          "party": customer})
+        self.assertNotIn("Following up", json.dumps(gap))           # never the chaser's text
+        self.assertEqual(self.kinds(pt.PARTY_CHASE_KIND,
+                                    may_read=lambda key: key != f"mail:{OURS_OID}"), [])
+        summary = self.run_rules(w, people=people(unavailable=True))
+        self.assertEqual(summary["detectors"][pt.PARTY_CHASES], "blocked")
 
     def test_the_approvals_queue_groups_by_approver_and_only_drafts_nudges(self):
         w, _ = self.approval_world()

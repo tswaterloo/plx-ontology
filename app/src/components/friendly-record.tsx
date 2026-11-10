@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { suggest } from "@/lib/api";
 import { recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
-import { ObjectView } from "./object-view";
+import { MissingActions, ObjectView } from "./object-view";
 import { arrange, type Arranged } from "./ask-box";
 import { SystemTile } from "./ui/glyphs";
 import { Monogram } from "./ui/monogram";
@@ -95,7 +95,7 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
         Looking for {kind} “{refText}”…
       </span>
     ) : found.length === 0 ? (
-      "Check the number or name, or search."
+      "Check the number or name, or search for it."
     ) : near ? (
       `None is named exactly “${refText}”.`
     ) : null;
@@ -104,6 +104,7 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
       <header>
         <h1 className="text-[24px] leading-[30px] font-semibold tracking-[-0.025em] break-words">{title}</h1>
         {sub && <p className="mt-1 text-[13px] leading-5 text-muted">{sub}</p>}
+        {found && found.length === 0 && <MissingActions />}
       </header>
       {found && found.length > 0 && (
         <ul className="-mx-3">

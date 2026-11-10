@@ -67,6 +67,8 @@ from ontology import store as ostore
 
 from . import po_status
 from . import proactive_engine as pe
+from operating import declared_schema as _schemas
+from operating.declared_schema import proactive_incremental as _PROACTIVE_INCREMENTAL
 
 CHANGES_SUFFIX = ".changes.sqlite"
 READ_CAP = 400_000   # a scope larger than this: its rules are judged whole instead
@@ -124,15 +126,6 @@ def _declared() -> None:
 
 # --------------------------------------------------------------------------- change file
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS prints (object_id TEXT PRIMARY KEY, print TEXT NOT NULL,
-  neighbors TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS layers (layer TEXT PRIMARY KEY, base_digest TEXT NOT NULL,
-  seen_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS passes (pass_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  at TEXT NOT NULL, summary TEXT NOT NULL);
-"""
 KEEP_PASSES = 2000
 
 
@@ -145,7 +138,7 @@ def _open(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.executescript(_DDL)
+    _schemas.apply(conn, _PROACTIVE_INCREMENTAL)
     try:
         os.chmod(path, 0o600)
     except OSError:

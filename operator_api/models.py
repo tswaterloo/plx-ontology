@@ -1445,7 +1445,8 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "aged_payable_worsening", "production_late",
                     "assembly_damage_spike", "teams_unanswered_ask",
                     "commitment_due", "commitment_missed", "needs_my_reply",
-                    "approval_waiting", "chase_escalating",
+                    "approval_waiting", "chase_escalating", "party_chase_unanswered",
+                    "internal_order_chase",
                     "slow_moving_stock", "expiring_lot_stock",
                     "assembly_blocked_by_component", "certificate_expiring",
                     "freight_cost_anomaly", "stale_quote", "priority_order_unfilled",
@@ -1453,7 +1454,8 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "key_field_missing", "twins_disagree", "source_stale",
                     "sync_missing", "sync_mismatch", "reorder_soon",
                     "inventory_adjustment", "blocked_account_activity", "gl_posting_errors",
-                    "recurring_task_missed", "label_change", "rd_project",
+                    "recurring_task_missed", "label_change", "label_revision_superseded",
+                    "rd_project",
                     "unapplied_remittance", "short_payment", "statement_difference"]
 
 
@@ -2369,6 +2371,48 @@ class LabelChanges(_Model):
     changes: list[LabelChange] = Field(default_factory=list)
 
 
+class LabelRevision(_Model):
+    id: str
+    revision: Optional[str] = None
+    rank: int = 0
+    name: Optional[str] = None
+    first_seen: Optional[str] = None
+    channels: list[str] = Field(default_factory=list)
+    approved_on: Optional[str] = None
+    approved_by: Optional[str] = Field(None, description="The approving message's sender.")
+    current: bool
+    superseded_on: Optional[str] = None
+    citations: list[str] = Field(default_factory=list)
+
+
+class LabelRevisionFamily(_Model):
+    family: str
+    current: Optional[str] = None
+    current_approved: bool
+    revisions: list[LabelRevision] = Field(default_factory=list)
+
+
+class LabelRevisionOnOrder(_Model):
+    id: str
+    name: Optional[str] = None
+    revision: Optional[str] = None
+    current: Optional[str] = None
+    superseded_on: Optional[str] = None
+    summary: Optional[str] = None
+    citations: list[str] = Field(default_factory=list)
+
+
+class LabelRevisions(_Model):
+    """A record's label and artwork revisions on your alert list, newest first per file
+    (current: the highest you can see), who approved each and when; on an order, the
+    superseded revisions it points at."""
+    object_id: str
+    revisions: int
+    unapproved_current: int
+    families: list[LabelRevisionFamily] = Field(default_factory=list)
+    superseded_on_orders: list[LabelRevisionOnOrder] = Field(default_factory=list)
+
+
 class ActionStates(_Model):
     cards: dict[str, ActionResult] = Field(default_factory=dict, description="Each card's "
                                            "latest action by you.")
@@ -2464,13 +2508,15 @@ class BriefFigure(_Model):
 class BriefSection(_Model):
     key: str
     title: str
-    state: Literal["shown", "empty", "partial", "finance_marked", "unread", "blocked"] = Field(
-        description="finance_marked: shown only to a reader holding finance (the same "
-                    "whatever the data holds); partial: a read limit was reached or a part "
-                    "was not readable; unread: its source (the alert list, or your item "
-                    "access) could not be read, which is not the same as none; blocked: the "
-                    "people exclusion is not loaded, so no mail, Teams or meeting line is "
-                    "shown.")
+    state: Literal["shown", "empty", "partial", "finance_marked", "quality_marked", "unread",
+                   "blocked", "not_available"] = Field(
+        description="finance_marked / quality_marked: shown only to a reader holding finance "
+                    "/ quality_controlled (the same whatever the data holds); partial: a read "
+                    "limit was reached or a part was not readable; unread: its source (the "
+                    "alert list, or your item access) could not be read, which is not the "
+                    "same as none; blocked: the people exclusion is not loaded, so no mail, "
+                    "Teams, meeting or Planner line is shown; not_available: the data it needs "
+                    "is not captured yet (the note says what).")
     note: Optional[str] = None
     rows: list[BriefRow] = Field(default_factory=list)
     more: int = Field(0, description="Rows you may read beyond those listed.")
@@ -2485,9 +2531,10 @@ class BriefGap(_Model):
 
 
 class Brief(_Model):
-    """A meeting prep brief or a weekly review, generated from the records you may read
-    (no model call). Every row and figure cites its sources; nothing hidden is counted."""
-    kind: Literal["meeting", "weekly"]
+    """A meeting prep brief, a weekly review or a QC pack (daily, audit), generated from
+    the records you may read (no model call). Every row and figure cites its sources;
+    nothing hidden is counted."""
+    kind: Literal["meeting", "weekly", "qc_daily", "qc_audit"]
     title: str
     subject: Optional[ObjectRef] = None
     subject_sources: list[Source] = Field(default_factory=list)
@@ -2596,6 +2643,10 @@ class MyWorkDigest(_Model):
     by_autopilot: dict[str, int] = Field(default_factory=dict)
     due_today: int
     brief: MyWorkBrief | None = None
+    mc_approvals: Optional[dict[str, Any]] = Field(None, description=(
+        "Your pending Mission Control approval gates per decider, grouped by class "
+        "(riskier first), each with the history-based recommendation, the low-risk mark "
+        "and its MC task link (``operating.mc_digest``). Read-only: decide in MC."))
     nudges: list[MyWorkNudge] = Field(default_factory=list)
 
 
@@ -2607,6 +2658,188 @@ class MyWork(_Model):
     digest: MyWorkDigest
     sent: Literal[0]
     writes: Literal[0]
+
+
+AutopilotState = Literal["off", "dry_run", "passed_awaiting_owner", "live_held", "live"]
+AutopilotDecisionKind = Literal["accept", "edit", "reject", "snooze"]
+AutopilotItemState = Literal["waiting", "snoozed", "edited", "accepted", "rejected"]
+
+
+class AutopilotScore(_Model):
+    judged: int
+    matched: int
+    percent: Optional[float] = Field(None, description="matched / judged, one decimal; "
+                                     "absent when nothing was judged.")
+
+
+class AutopilotWorkflowRow(_Model):
+    """One workflow of one role (a ``person:`` role is one person's whole day): its replay
+    scores, its write state and the owner's switches."""
+    role: str
+    person: Optional[str] = Field(None, description="The person id of a person role.")
+    workflow: str
+    dev: Optional[AutopilotScore] = Field(None, description="Replay on tuning days.")
+    fresh: Optional[AutopilotScore] = Field(None, description="Replay on held-out days "
+                                            "(the write gate's counts).")
+    n: int = Field(description="Items judged: fresh when scored, else dev.")
+    state: AutopilotState = Field(description="off: switched off; dry_run: gate not "
+                                  "passed; passed_awaiting_owner: passed, the owner has not "
+                                  "switched it on; live_held: switched on, held by the host's "
+                                  "master switch; live: performs through the write path.")
+    on: bool = Field(description="False when the owner switched this workflow off.")
+    live_flag: bool = Field(description="The owner switched this role's workflow live.")
+    missing: list[str] = Field(default_factory=list)
+    last_run: Optional[str] = None
+    scored_at: Optional[str] = None
+    open_items: int = 0
+
+
+class AutopilotDecision(_Model):
+    decision: AutopilotDecisionKind
+    at: str
+    by_you: bool
+    until: Optional[str] = None
+    text: Optional[str] = Field(None, description="The edited draft.")
+    note: Optional[str] = None
+    outcome: Optional[str] = Field(None, description="The write path's outcome of an "
+                                   "accept: dry_run (recorded only), done, killed, refused...")
+    reasons: list[str] = Field(default_factory=list)
+
+
+class AutopilotItem(_Model):
+    """A prepared item with its evidence, its drafted action and your decision."""
+    item_id: str
+    autopilot: str
+    label: str
+    title: str
+    workflow: str
+    system: str = Field(description="mail, teams, mc, bc, sage, portal, filemaker, "
+                        "sharepoint, meetings, planner or other.")
+    roles: list[str] = Field(default_factory=list)
+    owner: str = Field(description="The person id the item was prepared for.")
+    mine: bool
+    happened: dict[str, Any] = Field(default_factory=dict)
+    prepared: dict[str, Any] = Field(default_factory=dict)
+    citations: list[str] = Field(default_factory=list)
+    due_at: str
+    created_at: str
+    today: bool = Field(description="Prepared or due today (Toronto day), or past due.")
+    state: AutopilotItemState
+    decision: Optional[AutopilotDecision] = None
+
+
+class AutopilotPerson(_Model):
+    id: str
+    name: str = Field(description="From the person's replay role; empty when no name is on "
+                      "record (the role roster holds ids only).")
+    you: bool = False
+    roles: list[str] = Field(default_factory=list)
+
+
+class AutopilotSwitches(_Model):
+    global_off: bool = Field(description="The write path's global kill switch.")
+    master_switch: bool = Field(description="The host's master switch for live writes "
+                                "(host configuration, not set from the app).")
+    autopilot_off: bool = Field(description="The autopilot itself is switched off: "
+                                "nothing new is prepared.")
+    workflows_off: list[str] = Field(default_factory=list)
+
+
+class AutopilotArea(_Model):
+    """The autopilot area: today's prepared items you may see, per workflow its scores and
+    state, and the switches (``owner``: you may change them)."""
+    owner: bool
+    switches: AutopilotSwitches
+    people: list[AutopilotPerson] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
+    items: list[AutopilotItem] = Field(default_factory=list)
+    workflows: list[AutopilotWorkflowRow] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class AutopilotDecisionRequest(_Model):
+    decision: AutopilotDecisionKind
+    text: Optional[str] = Field(None, max_length=8000, description="edit, or accept with "
+                                "your edit: the draft's new text.")
+    until: Optional[str] = Field(None, max_length=40, description="snooze: until when "
+                                 "(ISO instant, at most 30 days ahead).")
+    note: Optional[str] = Field(None, max_length=500)
+
+
+class AssistRequest(_Model):
+    intent: str = Field(min_length=1, max_length=300, description="One line: what to send "
+                        "and to whom (\"tell <name> the lot for order X is on hold\").")
+
+
+class AssistRecipient(_Model):
+    address: str
+    name: Optional[str] = Field(None, description="The first name the address states.")
+
+
+class AssistChoice(_Model):
+    mention: str = Field(description="A name as typed that matches several people.")
+    options: list[AssistRecipient]
+
+
+class AssistDraft(_Model):
+    """A drafted message for a line the person typed. Never sent: the person edits, copies
+    or opens it in their own mail or Teams."""
+    intent: str
+    channel: Literal["mail", "teams"]
+    to: list[AssistRecipient] = Field(default_factory=list)
+    choices: list[AssistChoice] = Field(default_factory=list)
+    withheld: int = Field(0, ge=0, description="People the line names who may not be "
+                                              "drafted to (left out, never named).")
+    subject: Optional[str] = None
+    body: Optional[str] = Field(None, description="Null when the copy check refused it "
+                                                  "(see gaps).")
+    facts: list[Fact] = Field(default_factory=list, description="Every fact the body lists, "
+                                                              "each with its sources.")
+    gaps: list[str] = Field(default_factory=list)
+    questions: list[str] = Field(default_factory=list, description="The Ask questions "
+                                                                   "answered for the facts.")
+    sent: Literal[False] = False
+
+
+class AutopilotSwitchRequest(_Model):
+    global_off: bool
+
+
+class AutopilotWorkflowSwitch(_Model):
+    on: Optional[bool] = Field(None, description="false: the workflow is switched off "
+                               "(nothing is performed, not even a dry run).")
+    live: Optional[bool] = None
+    role: Optional[str] = Field(None, max_length=120, description="live: the role whose "
+                                "passed gate it goes live through.")
+
+
+class AutopilotAuditRow(_Model):
+    at: str
+    event: str
+    status: Optional[str] = None
+    mode: Optional[str] = None
+    workflow: Optional[str] = None
+    role: Optional[str] = None
+    system: Optional[str] = None
+    kind: Optional[str] = None
+    operation: Optional[str] = None
+    target: Optional[str] = None
+    item_id: Optional[str] = None
+    title: Optional[str] = None
+    why: Optional[str] = None
+    reasons: list[str] = Field(default_factory=list)
+    key: Optional[str] = None
+    by: Optional[str] = None
+    undoable: bool = False
+    undone: bool = False
+    undo_note: Optional[str] = None
+
+
+class AutopilotAudit(_Model):
+    """Every write-path row (newest first): decisions, live attempts and outcomes, gate
+    changes and the owner's switches. Owner only."""
+    rows: list[AutopilotAuditRow] = Field(default_factory=list)
+    live: int = Field(description="Live actions done.")
 
 
 class WriteIntentView(_Model):

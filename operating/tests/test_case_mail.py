@@ -339,7 +339,11 @@ class PoCaseMailTests(CaseMailTestCase):
         # ER-09: case mail reads the projection's stored mention links (and the review
         # store), the one path plx.object and plx.around read. The confirmation from the
         # supplier's domain is corroborated (two features agree); the other PO's mail names
-        # its number from an unknown domain: the mention alone, a lead for a person.
+        # its number from an unknown domain: the mention alone, a lead for a person. That
+        # number is shared by a second purchase order (a unique number would be firmed by
+        # the unique_mentions step, ontology/mention_firm.py): no record is decided.
+        self.fake.tables["public.app_purchase_order"].append(
+            {**PO_ROWS[1], "id": "po-b-twin", "po_number": "PO#100200"})
         runtime = self.runtime()
         case_a = self.po_case(runtime)
         case_b = runtime.cases.open(PURCHASING, "Which mail belongs to this purchase order?",

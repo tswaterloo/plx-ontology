@@ -74,7 +74,10 @@ from typing import Any, Callable, Generic, Hashable, Iterable, Iterator, Mapping
 from urllib.parse import parse_qs, quote
 
 from .captured_pages import PAGE_BREAK, is_paged_file, text_pages
+from .text_formats import LABEL_SUFFIXES, label_preview
 from operating.msg_reader import CFB_MAGIC
+from operating import declared_schema as _schemas
+from operating.declared_schema import captured_text as _CAPTURED_TEXT
 
 # text_status values (besides the extractor's no_text / unsupported / failed).
 TEXT_EXTRACTED = "extracted"
@@ -157,6 +160,8 @@ _WORKBOOK_TEXT = 1_000_000   # a workbook's text read for its first characters
 # .local_image_text``; never a network service), opted in per capture (``image_ocr``).
 # HEIC is left out: tesseract's image library does not read it.
 IMAGE_OCR_SUFFIXES = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp")
+# Files OCR-read by an image they carry: a label file's preview (``text_formats``).
+OCR_READ_SUFFIXES = (*IMAGE_OCR_SUFFIXES, *LABEL_SUFFIXES)
 IMAGE_OCR_TIMEOUT_SECONDS = 60.0
 
 
@@ -212,16 +217,19 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
         return TEXT_EXCEEDS_BOUND, None
     url = record.get("original_url")
     mime, name = _mime(record), _name(record)
-    if image_ocr and _ocr_image(name, mime):
-        # A raster image (a scan, a photographed label or CoA): its text is OCR text,
-        # untrusted like a scanned page's, pinned as ``extracted_ocr``.
+    # A label file's own preview of its label (``text_formats.label_preview``).
+    preview = label_preview(content, name) if image_ocr else None
+    if image_ocr and (preview is not None or _ocr_image(name, mime)):
+        # A raster image (a scan, a photographed label or CoA, a label file's preview):
+        # its text is OCR text, untrusted like a scanned page's, pinned as ``extracted_ocr``.
         from .document_understanding import local_image_ocr_available, local_image_text
         if not local_image_ocr_available():
             return OCR_UNAVAILABLE, None
         if defer_ocr:
             return OCR_PENDING, None
         try:
-            text = local_image_text(content, timeout=IMAGE_OCR_TIMEOUT_SECONDS)
+            text = local_image_text(content if preview is None else preview,
+                                    timeout=IMAGE_OCR_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 - a failed OCR run is a typed status
             return f"{OCR_FAILED}:recognize_exit", None
         return (TEXT_OCR, text) if text.strip() else (OCR_NO_TEXT, None)
@@ -713,10 +721,7 @@ class KeptReadings:
         try:
             self._db.execute("PRAGMA journal_mode = WAL")
             self._db.execute("PRAGMA synchronous = NORMAL")
-            self._db.execute("CREATE TABLE IF NOT EXISTS readings (key TEXT PRIMARY KEY, "
-                             "code TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)")
-            self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, "
-                             "value TEXT NOT NULL)")
+            _schemas.apply(self._db, _CAPTURED_TEXT)
             row = self._db.execute("SELECT value FROM meta WHERE key = 'builds'").fetchone()
             self.build = (int(row[0]) if row else 0) + 1
             self._db.execute("INSERT INTO meta VALUES ('builds', ?) ON CONFLICT(key) DO "
@@ -833,9 +838,14 @@ class KeptReadings:
 # stored ``failed``/``unsupported`` version of these once per generation:
 # ``SharePointCaptureStore.reader_stale_rows``). Bump the generation when a reader
 # change makes more of these readable; add the suffixes it newly reads.
-REREAD_GENERATION = "2026-11-01-image-ocr"
+REREAD_GENERATION = "2026-11-10-text-formats"
 REREAD_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".doc", ".dot",
-                   *IMAGE_OCR_SUFFIXES)
+                   *IMAGE_OCR_SUFFIXES,
+                   # 11-08: RTF, generic XML, legacy-encoded text, OOXML templates/macros
+                   ".rtf", ".xml", ".txt", ".csv", ".md", ".json", ".htm", ".html",
+                   ".dotx", ".docm", ".dotm", ".pptm", ".potx", ".ppsx", ".ppsm",
+                   # 11-09: SVG, TSV, XML naming attributes, label-file previews (OCR)
+                   ".svg", ".tsv", *LABEL_SUFFIXES)
 
 # The modules that read a captured file's bytes into the text a reading holds (PDF pages,
 # OCR, Office, ``.msg``, spreadsheets, the converter children), named one by one: what
@@ -844,7 +854,7 @@ REREAD_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".doc", "
 READING_MODULES = ("integrations.captured_text", "integrations.captured_pages",
                    "integrations.document_understanding", "integrations.doc_convert",
                    "integrations.office_text", "integrations.xlsx_extract",
-                   "integrations.legacy_office",
+                   "integrations.legacy_office", "integrations.text_formats",
                    "integrations.child_process", "operating.msg_reader")
 # The installed libraries those modules read files with (PDF, Office through markitdown
 # and the converters it loads); the same list as ``ontology.project``'s
@@ -1237,7 +1247,7 @@ __all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "KeptReadings", "READING_LIBRA
            "CapturedText", "ContainerReading", "LIMIT_ERRORS", "MAX_CACHED_CHARS",
            "MEMBER_KEYS", "Member", "NotRemembered", "OCR_DEFERRED", "OCR_FAILED",
            "OCR_NO_TEXT",
-           "OCR_PENDING", "OCR_UNAVAILABLE", "ReadingMemo", "SCANS_PENDING", "StoredText", "TEXT_EXCEEDS_BOUND", "TEXT_EXTRACTED",
+           "OCR_PENDING", "OCR_READ_SUFFIXES", "OCR_UNAVAILABLE", "ReadingMemo", "SCANS_PENDING", "StoredText", "TEXT_EXCEEDS_BOUND", "TEXT_EXTRACTED",
            "TEXT_OCR", "TEXT_READ", "TEXT_UNREAD", "UNTYPED_OCR_FAILURES", "byte_pinned", "capture_text",
            "captured_text", "container_members", "kept_readings", "member_handle", "member_view",
            "ocr_digest", "ocr_failure_cause", "read_blob", "read_container", "read_failure",

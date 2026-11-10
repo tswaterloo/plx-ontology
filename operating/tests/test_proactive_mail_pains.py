@@ -261,6 +261,64 @@ class MailPains(Engine):
         self.assertEqual(self.kinds(mp.PAYABLE_KIND, held=NO_FINANCE), [])
         self.assertEqual(self.kinds(mp.PAYABLE_KIND, may_read=lambda a: a != MAILBOX), [])
 
+    def sage_bill(self, w: World, vendor: str, number: str, *, issued: int,
+                  paid: int | None = None, due: str = "50.00", kind: str = "1") -> str:
+        def ymd(offset: int) -> str:
+            return day(offset).replace("-", "")
+        return w.obj("RelSageApOpenDocument", {
+            "idvend": vendor + "  ", "idinvc": number, "dateinvc": ymd(issued),
+            "dateinvcdu": ymd(issued - 30), "txttrxtype": kind,
+            "swpaid": "1" if paid is not None else "0",
+            "datepaid": ymd(paid) if paid is not None else "0",
+            "amtduetc": "0" if paid is not None else due},
+            binding="gen.sage.ap_open_document", audience="sage:ap")
+
+    def test_a_supplier_chasing_payment_is_read_against_sage_ap_on_the_day(self):
+        w = World()
+        owed = w.obj("Supplier", {"name": "SYNTH Supplier", "code": "SYNTHV1"},
+                     audience="api:suppliers")
+        settled = w.obj("Supplier", {"name": "SYNTH Paid", "code": "SYNTHV2"},
+                        audience="api:suppliers")
+        named = self.sage_bill(w, "SYNTHV1", "SYNTH-AP-77", issued=60, paid=-5)  # paid later
+        self.sage_bill(w, "SYNTHV1", "SYNTH-AP-78", issued=-2)            # issued after the day
+        self.sage_bill(w, "SYNTHV2", "SYNTH-AP-90", issued=60, paid=10)   # paid before the day
+        self.sage_bill(w, "SYNTHV2", "SYNTH-AP-91", issued=60, kind="3", due="40")  # a credit
+        for n, (target, tier, text) in enumerate((
+                (owed, "verified", "Invoice SYNTH-AP-77 is past due, please remit."),
+                (owed, "verified", "Reminder: the balance is overdue, kindly remit."),
+                (settled, "verified", "Your account is past due, please remit."),
+                (owed, "lead", "Your account is past due, please remit."))):
+            mail(w, target, "Email.sent_by_supplier", day(6 - n), text, sender=SUPPLIER,
+                 to=json.dumps([OURS]), tier=tier, conversation=f"pay-{n}", n=700 + n)
+        self.run_rules(w)
+        (gap,) = self.kinds(mp.PAYABLE_KIND)
+        self.assertEqual((gap["object_id"], gap["event"]["source"], gap["event"]["chases"],
+                          gap["event"]["open_bills"], gap["event"]["named_invoice"]),
+                         (named, "sage_ap", 2, 1, True))
+        self.assertIn("they name invoice SYNTH-AP-77", gap["summary"])
+        self.assertNotIn("kindly remit", json.dumps(gap))               # no body kept
+        self.assertEqual(self.kinds(mp.PAYABLE_KIND, held=NO_FINANCE), [])
+        self.assertEqual(self.kinds(mp.PAYABLE_KIND, may_read=lambda a: a != MAILBOX), [])
+        self.assertEqual(self.kinds(mp.PAYABLE_KIND, may_read=lambda a: a != "sage:ap"), [])
+
+    def test_a_payment_chase_without_a_sender_link_is_matched_by_the_suppliers_domain(self):
+        w = World()
+        w.obj("Supplier", {"name": "SYNTH Three", "code": "SYNTHV3",
+                           "bc_email": "orders@synth-vendor3.example"}, audience="api:suppliers")
+        w.obj("Supplier", {"name": "SYNTH Four", "code": "SYNTHV4",
+                           "bc_email": "someone@gmail.com"}, audience="api:suppliers")
+        bill = self.sage_bill(w, "SYNTHV3", "SYNTH-AP-31", issued=40)
+        self.sage_bill(w, "SYNTHV4", "SYNTH-AP-41", issued=40)
+        anchor = w.obj("Product", {"code": "SYNTH-X"}, audience="api:items")
+        for n, sender in enumerate(("billing@synth-vendor3.example", "other@gmail.com")):
+            mail(w, anchor, "Email.mentions_product", day(3), "Your account is past due, "
+                 "please remit.", sender=sender, to=json.dumps([OURS]),
+                 conversation=f"dom-{n}", n=800 + n)
+        self.run_rules(w)
+        (gap,) = self.kinds(mp.PAYABLE_KIND)      # a public mail domain names no supplier
+        self.assertEqual(gap["object_id"], bill)
+        self.assertIn("1 bill of theirs unpaid in Sage AP", gap["summary"])
+
     # ------------------------------------------------------------------ fail closed
 
     def test_without_the_people_exclusion_every_rule_is_blocked_and_nothing_is_folded(self):

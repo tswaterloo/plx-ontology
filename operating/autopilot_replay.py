@@ -4,8 +4,11 @@ have prepared is compared with what the person actually did next. Scored per wor
 (``operating.workflows``) of the role; the live engine switches a workflow on for the role's
 people only when it passed (``autopilot.gate_from``: 90% or better on 15 or more judged).
 
-* **Role** (``members``): ``owner`` (the approver roster), ``purchasing`` (the roles file,
-  else ``autopilot_roster.derive`` over the 90 days before the window), any role of the
+* **Role** (``members``): ``owner`` (the approver roster), a derived role (``purchasing``,
+  ``customer_service``, ``receivables``, ``payables`` by the records their mail names;
+  ``quality``, ``finance``, ``production_planning``, ``rnd`` by what their conversations
+  are about: the roles file, else ``autopilot_roster.derive`` over the 90 days before the
+  window), any role of the
   roles file, or ``person:<address or id>`` for one person's whole day. Every member
   passes the people exclusion (unavailable: the run is ``blocked``).
 * **Prepared**: each day of the window is one cycle (and its drain) with ``now`` at the
@@ -36,10 +39,10 @@ Run::
 from __future__ import annotations
 
 import argparse
+import bisect
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import importlib
 import json
 import os
 from pathlib import Path
@@ -51,11 +54,15 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import autopilot as ap
 from . import workflows as wf
+from operating import declared_schema as _schemas
+from operating.declared_schema import autopilot_replay as _AUTOPILOT_REPLAY
 
 CONFIG_FILE = Path(__file__).with_name("autopilot_replay.json")
 SCHEMA = "plx-autopilot-replay/v1"
 CHUNK = 2000
 EXIT_NO_MEMORY = 75
+SEED_DAYS = 30
+TEAMS_WORKFLOW = "teams_chat"
 MENTIONS = re.compile(r"^Email\.(?:mentions_|sent_by_)")
 
 
@@ -64,6 +71,11 @@ class ReplayInvalid(ValueError):
 
 
 # ----------------------------------------------------------------------------- config
+
+# Extra action providers a config file may name (``"plugins": ["name"]``): registered here in
+# code (name -> provider), so a config file never decides which module is imported.
+PLUGINS: dict[str, Any] = {}
+
 
 def load_config(path: Path | str | None = None) -> dict[str, Any]:
     raw = json.loads(Path(path or CONFIG_FILE).read_text(encoding="utf-8"))
@@ -74,17 +86,21 @@ def load_config(path: Path | str | None = None) -> dict[str, Any]:
         raise ReplayInvalid(f"provider {unknown[0]}")
     plugins = []
     for spec in raw.get("plugins") or ():
-        module, _, func = str(spec).partition(":")
-        if not module.startswith("operating.") or not func.isidentifier():
-            raise ReplayInvalid(f"plugin {spec}")
-        fn = getattr(importlib.import_module(module), func, None)
+        # a name registered in PLUGINS below, never a module imported from the file
+        fn = PLUGINS.get(str(spec))
         if not callable(fn):
             raise ReplayInvalid(f"plugin {spec}")
         plugins.append(fn)
     hours = int(raw.get("horizon_hours") or 0)
     if not 1 <= hours <= 24 * 14:
         raise ReplayInvalid("horizon_hours")
+    lag = raw.get("feed_lag_minutes") or {}
+    if not isinstance(lag, Mapping) or not all(
+            isinstance(k, str) and isinstance(v, int) and 0 <= v <= 24 * 60
+            for k, v in lag.items()):
+        raise ReplayInvalid("feed_lag_minutes")
     return {"horizon": timedelta(hours=hours),
+            "feed_lag": {k: timedelta(minutes=v) for k, v in lag.items()},
             "providers": [PROVIDERS[p] for p in raw.get("providers") or ()] + plugins}
 
 
@@ -97,22 +113,44 @@ def members(st: Any, people: Any, role: str, roles: Mapping[str, list[str]], *,
     if role.startswith("person:"):
         who = role[len("person:"):].lower()
         found = {directory.get(who, who if re.fullmatch(r"[0-9a-f-]{36}", who) else "")}
-    elif role == "purchasing" and not roles.get("purchasing"):
+    elif not roles.get(role) and role in _roster_rules():
         from . import autopilot_roster as roster
         since = ap._iso(ap._instant(until) - timedelta(days=90))
-        found = set(roster.derive(st, people, "purchasing", since, until)["members"])
+        found = set(roster.derive(st, people, role, since, until)["members"])
     else:
         found = ap._role_members(role, roles, directory)
     return sorted(o for o in found if o and people.identity_clear(o))
 
 
+def _roster_rules() -> frozenset[str]:
+    from . import autopilot_roster as roster
+    return roster.ROLE_NAMES
+
+
 # ----------------------------------------------------------------------------- actions
 
 def _window(st: Any, kinds: Sequence[str], since: str, until: str) -> list[tuple[str, str]]:
+    # events first (``autopilot.window_ids``: the store has no time index)
     return [(r[0], r[1]) for r in st.conn.execute(
-        "SELECT eo.object_id, MIN(e.time) FROM events e JOIN event_objects eo ON eo.event_id "
-        "= e.event_id WHERE e.event_type IN (SELECT value FROM json_each(?)) AND e.time >= ? "
+        "SELECT eo.object_id, MIN(e.time) FROM events e CROSS JOIN event_objects eo ON "
+        "eo.event_id = e.event_id WHERE e.event_type IN (SELECT value FROM json_each(?)) AND e.time >= ? "
         "AND e.time < ? GROUP BY eo.object_id", (json.dumps(list(kinds)), since, until))]
+
+
+def _words(text: str) -> str:
+    """A text's words without digits, punctuation or case (every copy of a template)."""
+    return re.sub(r"[\W\d_]+", " ", (text or "").casefold()).strip()
+
+
+def sent_shape(sender: str, subject: str, body: str) -> dict[str, Any]:
+    """What tells a machine's send from a person's, as digests (never text): an automated
+    sender, footer or reply (``proactive_threads.automated``), the body's words (a template
+    sent again and again; a body of under 30 letters is no template) and the subject's."""
+    from . import proactive_threads as pt
+    words = _words(body)
+    return {"automated": pt.automated(sender, body, subject),
+            "body_key": ap._digest("body", words) if len(words) >= 30 else None,
+            "subject_key": ap._digest("subject", _words(subject)) if _words(subject) else None}
 
 
 def mail_sent(st: Any, people: Any, who: set[str], since: str, until: str
@@ -145,12 +183,47 @@ def mail_sent(st: Any, people: Any, who: set[str], since: str, until: str
                 side = next(iter(sides)) if len(sides) == 1 else "internal_out"
             else:
                 side = "internal"
+            subject, body = ap._v(r, "subject"), ap._v(r, "body_preview")
             out.append({"person": box, "at": ap._v(r, "sent_at") or ap._v(r, "received_at"),
-                        "kind": "mail_sent",
+                        "kind": "mail_sent", **sent_shape(sender, subject, body),
+                        **ap.routine_note(ap._v(r, "subject"), ap._v(r, "body_preview"),
+                                          sender, to, addresses_of.get(box, set()), domains,
+                                          oid),
                         "workflow": wf.classify(ap._v(r, "subject"), ap._v(r, "body_preview"),
                                                 side),
                         "conversation": ap._v(r, "conversation_id") or None,
                         "to": sorted(set(to)), "records": sorted(links.get(oid, ()))})
+    return out
+
+
+def mail_received(st: Any, people: Any, who: set[str], since: str, until: str
+                  ) -> list[dict[str, Any]]:
+    """Mail that reached a member from someone else (their own mailbox's copy), the way the
+    feed sees it (automated and bulk mail left out): the replay's history before its window."""
+    from . import inbox_triage as it
+    from . import proactive_threads as pt
+    _directory, addresses_of, _domains = ap._people_maps(people)
+    boxes = {f"mail:{m}" for m in who}
+    ids = [o for o, _t in _window(st, ("Email.received",), since, until)
+           if o.startswith("Email:")]
+    out = []
+    for start in range(0, len(ids), CHUNK):
+        typed = ap._types(st, ids[start:start + CHUNK])
+        mine = sorted(o for o, (_t, aud) in typed.items() if aud in boxes)
+        rows = ap._read(st, mine, ("sender", "subject", "body_preview", "conversation_id",
+                                   "received_at", "sent_at", "mailbox", "internet_message_id"))
+        for oid, r in rows.items():
+            box = ap._v(r, "mailbox").lower()
+            sender = (ap._addresses(ap._v(r, "sender")) or [""])[0]
+            if box not in who or not sender or sender in addresses_of.get(box, set()):
+                continue
+            subject, text = ap._v(r, "subject"), pt._own(ap._v(r, "body_preview"))
+            if pt.automated(sender, text, subject) or it.bulk(sender, text, subject):
+                continue
+            out.append({"event_type": "message.received", "mailbox": box, "sender": sender,
+                        "conversation_id": ap._v(r, "conversation_id") or None,
+                        "message_id": ap._v(r, "internet_message_id") or oid,
+                        "at": ap._v(r, "received_at") or ap._v(r, "sent_at")})
     return out
 
 
@@ -170,20 +243,49 @@ def approval_decided(st: Any, people: Any, who: set[str], since: str, until: str
     return out
 
 
+# an MC approval's decision is also a task event: ``approval_decided`` counts it once
+TASK_EVENTS_COUNTED_ELSEWHERE = frozenset({"approval.decided"})
+
+
 def task_event(st: Any, people: Any, who: set[str], since: str, until: str
                ) -> list[dict[str, Any]]:
+    """MC task events a member took themselves (the actor an address or a bare name of
+    exactly one person, ``autopilot.handle_person``, and the MC capture's event names no
+    agent runtime: agents work under their operator's identity, and their approval
+    requests, questions and updates are no person's work). No capture, or the event not in
+    it: not attributed (fail closed). An answer to a question asked of them is the
+    ``mc_question`` workflow, naming the question."""
     directory, _a, _d = ap._people_maps(people)
     ids = [o for o, _t in _window(st, ("MCTaskEvent.occurred",), since, until)]
-    rows = ap._read(st, ids, ("actor", "at"))
+    rows = ap._read(st, ids, ("actor", "at", "kind"))
+    reader = getattr(st, "autopilot_mc", None)
+    named: dict[str, str | None] = {}
     out = []
     for oid, r in rows.items():
+        kind = ap._v(r, "kind")
+        if kind in TASK_EVENTS_COUNTED_ELSEWHERE:
+            continue
         actor = ap._v(r, "actor").lower()
-        person = directory.get(actor, actor)
+        if actor not in named:
+            named[actor] = ap.handle_person(
+                actor, directory, reader.home_domains() if reader is not None else None)
+        person = named[actor]
         if person not in who:
             continue
+        got = st.conn.execute("SELECT native_key FROM objects WHERE object_id = ?",
+                              (oid,)).fetchone()
+        key = reader.key_of(got[0]) if reader is not None and got else None
+        ev = reader.event(*key) if key else None
+        if ev is None or ev["by_agent"]:
+            continue
         tasks = [o for _t, o in ap._linked(st, oid) if o.startswith("MCTask:")]
-        out.append({"person": person, "at": ap._v(r, "at"), "kind": "task",
-                    "workflow": None, "conversation": None, "to": [], "records": tasks})
+        action = {"person": person, "at": ap._v(r, "at"), "kind": "task", "workflow": None,
+                  "conversation": None, "to": [], "records": tasks}
+        if kind == "question.answered":
+            action.update(kind="question", workflow="mc_question")
+            if ev["question_id"]:
+                action["records"] = tasks + [f"mcq:{key[0]}:{ev['question_id']}"]
+        out.append(action)
     return out
 
 
@@ -194,8 +296,8 @@ def record_actor(st: Any, people: Any, who: set[str], since: str, until: str
     rule = wf.load()["record_workflow"]
     out = []
     for eid, at, actor in st.conn.execute(
-            "SELECT e.event_id, e.time, a.object_id FROM events e JOIN event_objects a ON "
-            "a.event_id = e.event_id AND a.qualifier = 'actor' WHERE e.time >= ? AND "
+            "SELECT e.event_id, e.time, a.object_id FROM events e CROSS JOIN event_objects a "
+            "ON a.event_id = e.event_id AND a.qualifier = 'actor' WHERE e.time >= ? AND "
             "e.time < ?", (since, until)):
         key = str(actor).rsplit(":", 1)[-1].lower()
         person = directory.get(key, key)
@@ -211,9 +313,75 @@ def record_actor(st: Any, people: Any, who: set[str], since: str, until: str
     return out
 
 
+def teams_sent(st: Any, people: Any, who: set[str], since: str, until: str
+               ) -> list[dict[str, Any]]:
+    """Teams chat and channel messages a member wrote (their side of a chat or channel
+    thread the exclusion clears). Scored as the ``teams_chat`` workflow (the channel's own:
+    the autopilot's Teams items are scored there); ``topic`` is what the words are about."""
+    import bisect
+    from .proactive_ops import declared_sources
+    directory, _a, _d = ap._people_maps(people)
+    text_props = tuple(dict.fromkeys(
+        p for ps in declared_sources()["ask_text"].values() for p in ps))
+    lo, hi = ap._instant(since), ap._instant(until)
+    out = []
+    for otype in ap.TEAMS_TYPES:
+        dated = ap._dated(st, otype, "created_at")
+        ids = [o for _t, o in dated[bisect.bisect_left(dated, (lo,)):
+                                    bisect.bisect_left(dated, (hi,))]]
+        for start in range(0, len(ids), CHUNK):
+            chunk = ids[start:start + CHUNK]
+            typed = ap._types(st, chunk)
+            rows = ap._read(st, chunk, ("created_at", "from", "deleted_at", "reply_to_id")
+                            + text_props)
+            mine = {o: r for o, r in rows.items()
+                    if ap.teams_sender(ap._v(r, "from"), directory) in who}
+            bodies = ap.teams_bodies(st, [h for r in mine.values()
+                                          for h in ap._handles_of(r)[:1]])
+            for oid, row in mine.items():
+                aud = typed.get(oid, ("", ""))[1]
+                channel = aud.startswith("teams:channel:")
+                if not (channel or aud.startswith("teams:chat:")) or \
+                        not people.unit_clear(aud) or ap._v(row, "deleted_at"):
+                    continue
+                text = bodies.get((ap._handles_of(row) or [""])[0]) or next(
+                    (ap._v(row, p) for p in text_props if ap._v(row, p)), "")
+                out.append({"person": ap.teams_sender(ap._v(row, "from"), directory),
+                            "at": ap._v(row, "created_at"), "kind": "teams_sent",
+                            "workflow": TEAMS_WORKFLOW,
+                            "topic": wf.classify("", text, "internal"),
+                            "conversation": ap.teams_thread(aud, oid, ap._v(
+                                row, "reply_to_id")) if channel else aud,
+                            "to": [], "records": []})
+    return out
+
+
+def teams_received(st: Any, people: Any, who: set[str], since: str, until: str
+                   ) -> list[dict[str, Any]]:
+    """Teams messages that reached a member as the feed types them (a one-to-one chat's
+    other member; a group's or channel's mentioned): the replay's history before its
+    window, beside ``mail_received`` (a sender's answered share counts both channels)."""
+    import bisect
+    directory, _a, _d = ap._people_maps(people)
+    lo, hi = ap._instant(since), ap._instant(until)
+    out: list[dict[str, Any]] = []
+    skipped: Counter = Counter()
+    for otype in ap.TEAMS_TYPES:
+        dated = ap._dated(st, otype, "created_at")
+        ids = [o for _t, o in dated[bisect.bisect_left(dated, (lo,)):
+                                    bisect.bisect_left(dated, (hi,))]]
+        for start in range(0, len(ids), CHUNK):
+            chunk = ids[start:start + CHUNK]
+            typed = ap._types(st, chunk)
+            out += [e for e in ap._teams_events(st, list(typed), typed, people, directory,
+                                                skipped, words=False)
+                    if e["mailbox"] in who]
+    return out
+
+
 PROVIDERS: dict[str, Callable[..., list[dict[str, Any]]]] = {
     "mail_sent": mail_sent, "approval_decided": approval_decided, "task_event": task_event,
-    "record_actor": record_actor}
+    "record_actor": record_actor, "teams_sent": teams_sent}
 
 
 # ----------------------------------------------------------------------------- scoring
@@ -228,15 +396,31 @@ def item_keys(item: Mapping[str, Any], event: Mapping[str, Any]) -> dict[str, se
             records.add(work[key]["object_id"])
     to = {str(t.get("address")).lower() for t in (work.get("draft") or {}).get("to") or ()
           if isinstance(t, Mapping) and t.get("address")}
+    if event.get("question_key"):
+        records.add(str(event["question_key"]))   # the question, not the task's other work
     if event.get("sender"):
         to.add(str(event["sender"]).lower())
     conv = {str(event["conversation_id"])} if event.get("conversation_id") else set()
-    return {"records": records, "to": to, "conversation": conv}
+    series = {str(event["series"])} if event.get("series") else set()
+    return {"records": records, "to": to, "conversation": conv, "series": series}
+
+
+def trigger_at(item: Mapping[str, Any], event: Mapping[str, Any]) -> datetime | None:
+    """When the item's trigger happened (a due record: the day the cycle found it)."""
+    if event.get("event_type") == "record.due":
+        made = ap._instant(item.get("created_at"))
+        return made - timedelta(days=1) if made else None
+    # a record the feed held only some time after it happened (``feed_lag_minutes``)
+    return ap._instant(event.get("seen_at") or event.get("at"))
 
 
 def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, Any]],
           actions: Sequence[Mapping[str, Any]], *, horizon: timedelta, data_end: datetime,
-          since: datetime, until: datetime) -> dict[str, Any]:
+          since: datetime, until: datetime, window_items: bool = False,
+          anticipated: set[int] | None = None) -> dict[str, Any]:
+    """Per workflow: items prepared, judged, matched; the person's actions in [since, until)
+    and how many an item anticipated. ``window_items``: only the items whose trigger is in
+    [since, until) (a split of the window: dev or held-out days)."""
     by_person: dict[str, list[tuple[datetime, Mapping[str, Any]]]] = defaultdict(list)
     for a in actions:
         at = ap._instant(a.get("at"))
@@ -245,25 +429,33 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
     for v in by_person.values():
         v.sort(key=lambda x: x[0])
     flows: dict[str, Counter] = defaultdict(Counter)
-    anticipated: set[int] = set()
+    anticipated = set() if anticipated is None else anticipated
+    by_records = set(wf.load().get("scored_by_records") or ())
     for item in items:
         event = events.get(item["event_id"]) or {}
+        at = trigger_at(item, event)
+        if window_items and (at is None or not since <= at < until):
+            continue
         flow = wf.of_item(item["autopilot"], event)
         c = flows[flow]
         c["prepared"] += 1
-        at = ap._instant(event.get("at"))
-        if event.get("event_type") == "record.due":   # due on the day the cycle found it
-            made = ap._instant(item.get("created_at"))
-            at = made - timedelta(days=1) if made else None
-        if at is None or at + horizon > data_end:
+        # an entry keyed in a system: judged against what people entered there
+        # (``receivables_score``), never against their mail
+        if at is None or at + horizon > data_end or flow in by_records:
             c["unjudged"] += 1
             continue
         c["judged"] += 1
         keys = item_keys(item, event)
+        # a due-day item (a recurring update): only that day's mail answers it
+        until_at = at + (timedelta(hours=float(event["match_hours"]))
+                         if event.get("match_hours") else horizon)
         hit = None
         for when, a in by_person.get(item["owner"], ()):
-            if when <= at or when > at + horizon:
+            if when <= at or when > until_at:
                 continue
+            if a.get("series") and a["series"] in keys["series"]:
+                hit = a
+                break
             # the same conversation or a record the item is about: a mail to the same
             # contact about something else is no match
             if (a.get("conversation") and a["conversation"] in keys["conversation"]) or \
@@ -291,6 +483,114 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
         out[flow]["passes_gate"] = bool(judged >= ap.GATE_MIN_JUDGED and
                                         Decimal(c["matched"]) / judged >= ap.GATE_PRECISION)
     return out
+
+
+# ----------------------------------------------------------------------------- misses
+
+MINUTES = {"mail_sent": 6, "teams_sent": 2, "approval": 3, "task": 10, "record": 5,
+           "question": 3}
+MISS_CAUSES = ("trigger_not_seen", "self_initiated", "participant_not_cleared",
+               "wrong_timing", "wrong_item", "workflow_unknown", "matcher_too_strict")
+
+
+def miss_cause(action: Mapping[str, Any], *, by_conversation: Mapping[str, list],
+               by_record: Mapping[str, list], items_of: Mapping[str, list],
+               sent_to: Mapping[str, list], horizon: timedelta) -> str:
+    """Why no item anticipated a real action (``MISS_CAUSES``), read from the events the
+    replay's queue holds (each with its state and reason) and the items it prepared:
+
+    * ``self_initiated``: no message came in on the action's conversation before it, and
+      it names no record an event was seen for (the person started it);
+    * ``trigger_not_seen``: a conversation or record of another system the feed never typed;
+    * ``participant_not_cleared``: the trigger involved someone the people exclusion did not
+      clear (fail closed: never prepared, by rule);
+    * ``wrong_timing``: the trigger is older than the horizon, or an item came after;
+    * ``wrong_item``: an autopilot took the trigger but declined (no single record) or its
+      item is about something else;
+    * ``matcher_too_strict``: an item on a message from someone the action went to, inside
+      the horizon, on another conversation;
+    * ``workflow_unknown``: the trigger was seen and no autopilot covers it."""
+    at = ap._instant(action.get("at"))
+    person = action["person"]
+    triggers = []
+    if action.get("conversation"):
+        triggers = [e for e in by_conversation.get(action["conversation"], ())
+                    if e["mailbox"] in ("", person) and e["at"] and e["at"] < at]
+    for rec in action.get("records") or ():
+        triggers += [e for e in by_record.get(rec, ()) if e["at"] and e["at"] < at]
+    mine = sent_to.get(person, ())
+    lo = bisect.bisect_left(mine, (at - horizon,))
+    hi = bisect.bisect_left(mine, (at,))
+    to = set(action.get("to") or ())
+    near = any(e["sender"] in to and items_of.get(e["event_id"]) for _t, _i, e in mine[lo:hi])
+    if near and not triggers:
+        return "matcher_too_strict"
+    if not triggers:
+        if action.get("conversation") or not action.get("records"):
+            return "self_initiated" if action.get("kind") == "mail_sent" else \
+                "trigger_not_seen"
+        return "trigger_not_seen"
+    recent = [e for e in triggers if e["at"] >= at - horizon]
+    if not recent:
+        return "wrong_timing"
+    if any(items_of.get(e["event_id"]) for e in recent):
+        return "wrong_item"
+    if any(items_of.get(e["event_id"]) for e in triggers):
+        return "wrong_timing"
+    if all(e["reason"] == "participants_not_cleared" for e in recent):
+        return "participant_not_cleared"
+    reasons = {r for e in recent for r in (e["reason"] or "").split(",") if r}
+    if reasons - {"participants_not_cleared", "owner_not_addressed"}:
+        return "wrong_item"
+    return "workflow_unknown"
+
+
+def misses(queue: Any, items: Sequence[Mapping[str, Any]], actions: Sequence[Mapping[str, Any]],
+           anticipated: set[int], *, since: datetime, until: datetime, horizon: timedelta
+           ) -> dict[str, Any]:
+    """The actions no item anticipated, by workflow and cause, with hours a week
+    (``MINUTES`` per action kind: an estimate of the time each takes the person)."""
+    by_conversation: dict[str, list] = defaultdict(list)
+    by_record: dict[str, list] = defaultdict(list)
+    sent_to: dict[str, list] = defaultdict(list)
+    for eid, body, state, reason in queue.conn.execute(
+            "SELECT event_id, body, state, reason FROM events"):
+        e = json.loads(body)
+        row = {"event_id": eid, "at": ap._instant(e.get("at")), "state": state,
+               "reason": reason, "mailbox": str(e.get("mailbox") or ""),
+               "sender": str(e.get("sender") or "").lower()}
+        if e.get("conversation_id"):
+            by_conversation[str(e["conversation_id"])].append(row)
+        for rec in [e.get("object_id"), *(e.get("records") or ()), e.get("question_key")]:
+            if rec and not str(rec).startswith(("Email:", "TeamsChatMessage:")):
+                by_record[str(rec)].append(row)
+        if row["mailbox"] and row["at"]:
+            sent_to[row["mailbox"]].append((row["at"], eid, row))
+    for rows in sent_to.values():
+        rows.sort(key=lambda r: (r[0], r[1]))
+    items_of: dict[str, list] = defaultdict(list)
+    for item in items:
+        items_of[item["event_id"]].append(item)
+    weeks = Decimal(max((until - since).total_seconds(), 1)) / Decimal(7 * 86400)
+    table: dict[str, Counter] = defaultdict(Counter)
+    minutes: dict[str, Counter] = defaultdict(Counter)
+    for a in actions:
+        at = ap._instant(a.get("at"))
+        if at is None or not since <= at < until or id(a) in anticipated:
+            continue
+        cause = miss_cause(a, by_conversation=by_conversation, by_record=by_record,
+                           items_of=items_of, sent_to=sent_to, horizon=horizon)
+        flow = a.get("workflow") or "unclassified"
+        table[flow][cause] += 1
+        minutes[flow][cause] += MINUTES.get(a.get("kind") or "", 5)
+    ranked = sorted(((Decimal(m) / 60 / weeks, flow, cause, table[flow][cause])
+                     for flow, row in minutes.items() for cause, m in row.items()),
+                    reverse=True)
+    return {"minutes_per_action": MINUTES,
+            "by_workflow": {f: dict(sorted(c.items())) for f, c in sorted(table.items())},
+            "top": [{"workflow": f, "cause": c, "actions": n,
+                     "hours_week": str(h.quantize(Decimal("0.1")))}
+                    for h, f, c, n in ranked[:25]]}
 
 
 # ----------------------------------------------------------------------------- memory
@@ -329,8 +629,7 @@ class Progress:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path)
-        self.conn.execute("CREATE TABLE IF NOT EXISTS days (day TEXT PRIMARY KEY, "
-                          "finished_at TEXT, summary TEXT)")
+        _schemas.apply(self.conn, _AUTOPILOT_REPLAY)
 
     def done(self) -> set[str]:
         return {r[0] for r in self.conn.execute("SELECT day FROM days")}
@@ -367,14 +666,15 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
            roles: Mapping[str, list[str]], config: Mapping[str, Any],
            registry: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None,
            floor_gb: float = 0.0, wait_s: float = 0.0,
-           probe: Callable[[], float] = available_gb, end: datetime | None = None
-           ) -> dict[str, Any]:
+           probe: Callable[[], float] = available_gb, end: datetime | None = None,
+           held_out_days: float = 0.0) -> dict[str, Any]:
     environ = os.environ if environ is None else environ
     registry = registry or ap.load_registry()
     if people is None or getattr(people, "unavailable", None):
         return {"schema": SCHEMA, "role": role, "status": "blocked",
                 "reason": "people_exclusion_unavailable"}
-    who = set(members(st, people, role, roles, until=ap._iso(until)))
+    # a derived role reads the 90 days before the window (no evidence from the days judged)
+    who = set(members(st, people, role, roles, until=ap._iso(since)))
     if not who:
         return {"schema": SCHEMA, "role": role, "status": "no_members"}
     slug = re.sub(r"[^a-z0-9_]+", "_", role.lower())[:60]
@@ -387,6 +687,23 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
     env = {k: v for k, v in environ.items() if k != ap.ROLES_ENV}
     status = "complete"
     try:
+        if not queue.meta("seeded"):
+            # what the person wrote before the window: a live feed would know it already
+            # (``Queue.engagement``); their own sent mail and chat messages only
+            lo, hi = ap._iso(since - timedelta(days=SEED_DAYS)), ap._iso(since)
+            sent = [{**a, "owner": a["person"]} for a in mail_sent(st, people, who, lo, hi)]
+            notes = [{"owner": a["person"], "conversation": a.get("conversation"),
+                      "message_id": f"{a['person']}:{a['at']}", "to": a.get("to") or (),
+                      "at": a["at"]}
+                     for a in sent + teams_sent(st, people, who, lo, hi) if a.get("at")]
+            heard = mail_received(st, people, who, lo, hi) + teams_received(
+                st, people, who, lo, hi)
+            with queue.conn:
+                queue.note_sent(notes)
+                queue.note_routine(sent)
+                queue.note_inbound(heard)
+                queue.set_meta("seeded", {"days": SEED_DAYS, "notes": len(notes),
+                                          "inbound": len(heard)})
         day = datetime(since.year, since.month, since.day, tzinfo=timezone.utc)
         done = progress.done()
         while day < until:
@@ -400,7 +717,9 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                 ids = _role_ids(st, ids, who)
                 summary = ap.run_cycle(st, queue, ids, people=people, registry=registry,
                                        environ=env, now=nxt, as_of=day.date(),
-                                       settle_items=False, only_owners=who)
+                                       settle_items=False, only_owners=who,
+                                       rate_by_event_hour=True,
+                                       feed_lag=config.get("feed_lag") or {})
                 if summary.get("status") in ("off", "blocked"):
                     status = summary["status"]
                     break
@@ -421,8 +740,23 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
         a_until = ap._iso(min(until + config["horizon"], last))
         for provider in config["providers"]:
             actions += provider(st, people, who, ap._iso(since), a_until)
+        anticipated: set[int] = set()
         flows = score(items, events, actions, horizon=config["horizon"], data_end=last,
-                      since=since, until=until)
+                      since=since, until=until, anticipated=anticipated)
+        splits: dict[str, Any] = {}
+        split_at = until - timedelta(days=held_out_days) if held_out_days else None
+        if split_at is not None and since < split_at < until:
+            for name, lo, hi in (("dev", since, split_at), ("held_out", split_at, until)):
+                seen: set[int] = set()
+                splits[name] = {"window": [ap._iso(lo), ap._iso(hi)],
+                                "workflows": score(items, events, actions,
+                                                   horizon=config["horizon"], data_end=last,
+                                                   since=lo, until=hi, window_items=True,
+                                                   anticipated=seen)}
+                splits[name]["misses"] = misses(queue, items, actions, seen, since=lo,
+                                                until=hi, horizon=config["horizon"])
+        missed = misses(queue, items, actions, anticipated, since=since, until=until,
+                        horizon=config["horizon"])
         skipped: Counter = Counter()
         prepared: Counter = Counter()
         for s in progress.summaries():
@@ -441,10 +775,14 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
               "days_done": len(days_done), "workflows": flows,
               "prepared_by_autopilot": dict(sorted(prepared.items())),
               "skipped": dict(sorted(skipped.items())), "actions": len(actions),
-              "gate": {"precision": str(ap.GATE_PRECISION), "min_judged": ap.GATE_MIN_JUDGED,
-                       "passed": sorted(f for f, v in flows.items() if v["passes_gate"])}}
+              "misses": missed, "splits": splits}
+    # the gate is decided on the held-out days when the window has them (never tuned on)
+    gated = splits["held_out"]["workflows"] if splits else flows
+    result["gate"] = {"precision": str(ap.GATE_PRECISION), "min_judged": ap.GATE_MIN_JUDGED,
+                      "on": "held_out" if splits else "window",
+                      "passed": sorted(f for f, v in gated.items() if v["passes_gate"])}
     (root / "result.json").write_text(json.dumps(result, indent=1, sort_keys=True))
-    write_gate(out / ap.GATE_FILE, role, sorted(who), flows)
+    write_gate(out / ap.GATE_FILE, role, sorted(who), gated)
     return result
 
 
@@ -482,6 +820,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--min-available-gb", type=float, default=9.0)
     p.add_argument("--wait-minutes", type=float, default=60.0)
     p.add_argument("--mem-max-gb", type=float, default=8.0)
+    p.add_argument("--held-out-days", type=float, default=10.0,
+                   help="the window's last days scored apart (the gate's test days); 0: none")
     a = p.parse_args(argv)
     cap_memory(a.mem_max_gb)
     config = load_config()
@@ -491,6 +831,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if a.capture_state and (Path(a.capture_state) / "mail-capture" / "capture.db").exists():
         from . import autopilot_work as aw
         st.autopilot_capture = aw.CaptureTexts(a.capture_state)
+    if a.capture_state and (Path(a.capture_state) / "mc-capture" / "capture.sqlite").exists():
+        from . import autopilot_work as aw
+        st.autopilot_mc = aw.MCQuestions(a.capture_state)
     try:
         until = ap._instant(a.until) if a.until else data_end(
             st, ap._iso(datetime.now(timezone.utc)))
@@ -499,7 +842,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                           Path(a.out))
         result = replay(st, people, role=a.role, out=Path(a.out), since=since, until=until,
                         roles=roles, config=config, floor_gb=a.min_available_gb,
-                        wait_s=a.wait_minutes * 60)
+                        wait_s=a.wait_minutes * 60, held_out_days=a.held_out_days)
     finally:
         st.close()
     print(json.dumps(result, indent=1, sort_keys=True))

@@ -47,7 +47,12 @@ name on the start type, as plx.around takes it, starts at every type declaring t
 so one path serves them all); a step's ``links`` selector instead asks
 one path per link type the schema declares at each object's type (``link_hops``: e.g. every
 mention link into it from a document-field type), so a link type the schema adds is
-followed with no plan edit; the collection's set handle is passed
+followed with no plan edit. A step marked ``if_declared`` (a ``plx.around`` path) is for links a
+coming schema adds: where the served schema does not declare one of its path's link types,
+or every collection it starts from was itself such a skipped step, it is not run (the trace
+says ``link_not_declared``, a ``link_not_served`` note names the hop) and the plan stays
+valid; once the schema declares them it is checked and run like any step. The
+collection's set handle is passed
 when the bound input accepts one, every object fits and no hop is a navigation name
 (plx.around resolves one per start type), else one call per object up to
 ``max_each``; a paged answer is followed by its
@@ -385,6 +390,13 @@ def _path_types(path: Sequence[Mapping[str, Any]], schema: SchemaView | None,
     return ends, None if ends else problem
 
 
+def undeclared_hops(path: Sequence[Mapping[str, Any]], schema: SchemaView | None
+                    ) -> list[str]:
+    """The link types of an ``if_declared`` step's path the schema does not declare."""
+    declared = schema.link_types if schema is not None else {}
+    return [hop["link_type"] for hop in path if hop.get("link_type") not in declared]
+
+
 def plan_root_types(doc: Mapping[str, Any], schema: SchemaView | None) -> frozenset[str]:
     """A plan's root types: those its root lists, or every type of ``schema`` declaring
     each navigation name its root ``links`` lists (none without a schema: no root fits)."""
@@ -551,11 +563,25 @@ def plan_problems(doc: Mapping[str, Any], schema: SchemaView | None,
     if len(doc["steps"]) > doc["step_budget"]:
         add("over_budget", f"{len(doc['steps'])} steps need at least as many primitive "
             f"calls; step_budget is {doc['step_budget']}")
+    skipped: set[str] = set()   # if_declared steps the schema cannot run yet
     for step in doc["steps"]:
         sid = step["id"]
         if sid in types:
             add("bad_reference", f"duplicate step id {sid}")
             continue
+        if step.get("if_declared"):
+            path = (step.get("args") or {}).get("path")
+            if step["tool"] != "plx.around" or "links" in step or not isinstance(path, list) \
+                    or not path or any("link_type" not in hop for hop in path):
+                add("bad_arguments", f"{sid}: if_declared takes a plx.around path of link "
+                    "types")
+                types[sid] = set()
+                continue
+            if schema is not None and (undeclared_hops(path, schema) or (
+                    _froms(step) and all(name in skipped for name in _froms(step)))):
+                skipped.add(sid)
+                types[sid] = set()
+                continue
         if step["tool"] not in tools or step["tool"] in TOOL_NAMES \
                 or step["tool"] in COMPOSITE_TOOLS:
             add("not_a_primitive", f"{sid}: {step['tool']} is not a contract primitive")
@@ -925,6 +951,8 @@ class _Collection:
     ids: list[str] = field(default_factory=list)
     set_handle: str | None = None
     exact: bool = False  # the set handle holds exactly ``ids``
+    # set handles whose union holds exactly ``ids`` (each a whole answer of one call)
+    parts: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1729,8 +1757,25 @@ class InvestigateTools:
     def _step(self, run: _Run, step: Mapping[str, Any]) -> None:
         sid, tool = step["id"], step["tool"]
         froms = [run.collections.get(name) or _Collection() for name in _froms(step)]
-        source = froms[0] if len(froms) == 1 else _Collection(
-            list(dict.fromkeys(oid for each in froms for oid in each.ids)))
+        filled = [each for each in froms if each.ids]
+        # the union with empty collections is the one filled collection: its set handle
+        # still holds exactly its objects
+        source = filled[0] if len(filled) == 1 else froms[0] if len(froms) == 1 else \
+            _Collection(list(dict.fromkeys(oid for each in froms for oid in each.ids)))
+        if step.get("if_declared"):
+            missing = undeclared_hops((step.get("args") or {}).get("path") or (), self.schema)
+            if missing:
+                run.collections[sid] = _Collection()
+                run.trace.append({"step": sid, "tool": tool, "status": "skipped", "calls": 0,
+                                  "objects": 0, "reason": "link_not_declared"})
+                run.add_gap(dict(_gap("unknown", "link_not_served", sid,
+                                      "the served schema does not declare "
+                                      + ", ".join(sorted(set(missing)))
+                                      + " yet: this step was not run, so what it would "
+                                      "reach is not in the answer"),
+                                 # a schema the Workbench serves, not a source's record
+                                 who_can_answer=[answerers.typed("Workbench operator")]))
+                return
         allowed = self._step_types(step)
         targets = [oid for oid in source.ids if (allowed is None or _type_of(oid) in allowed)
                    and self._paths(step, _type_of(oid))]
@@ -1757,100 +1802,134 @@ class InvestigateTools:
         accepts_set = not validate(_SET_PLACEHOLDER, self._input(tool).get(bind, {}),
                                    root=self.contracts, limit=1)
         named = any("link" in hop for hop in (step.get("args") or {}).get("path") or ())
-        if accepts_set and source.set_handle and source.exact and len(targets) == len(source.ids) \
-                and "links" not in step and not named:
-            batches: list[str] = [source.set_handle]
-        else:
+        # the union of the from collections' exact parts, when every filled one has them
+        parts = list(dict.fromkeys(h for each in filled for h in each.parts)) \
+            if filled and all(each.parts for each in filled) else []
+
+        def per_object() -> list[str]:
             limit = int(run.plan.doc.get("max_each") or DEFAULT_MAX_EACH)
             limit = min(limit, int(step.get("max_each") or limit))
-            batches = targets[:limit]
             if len(targets) > limit:
                 run.truncated = run.truncated or "page_cap"
                 run.reason("step_truncated")
                 run.add_gap(_gap("unknown", "page_cap", f"{sid}",
                                  f"{len(targets) - limit} of {len(targets)} starting objects "
                                  f"were not read (max_each {limit})"))
-        reached: list[str] = []
-        handles: list[str] = []
-        calls, status, error_code = 0, "ok", None
-        results = run.results.setdefault(sid, [])
-        cut = False  # a last page read of some target is itself truncated
-        retry = step.get("retry")
-        known = set(run.objects)  # reached before this step: a party check never unreaches
-        asks = [(target, path) for target in batches
-                for path in (self._paths(step, _type_of(target)) if "links" in step else [None])]
-        for target, path in asks:
-            if run.spent():
-                status = "budget_exhausted"
-                run.stopped = True
-                break
-            args = dict(step.get("args") or {})
-            args[bind] = target
-            if path is not None:
-                args["path"] = path
-            before = run.truncated
-            first, result = ask_again(
-                lambda asked: self._dispatch(run, tool, asked, harvest=retry is None), args,
-                retry, lambda _first: not run.spent())
-            calls += 1
-            if result is not first:
-                # The primitive's own gap asked for this; its first answer is replaced.
-                calls += 1
-                args = dict(args, **retry["set_args"])
-                run.add_gap(_gap("unknown", retry["note_gap"], f"{sid}",
-                                 "asked again with " + ", ".join(
-                                     f"{k}={v}" for k, v in
-                                     sorted(retry["set_args"].items())) +
-                                 ": what this step reached rests on weaker links"))
-                # A note, not a reason: each entry resting on a lead says so (lead_basis).
-            if tool == "plx.around" and args.get("tier_floor") == "lead" and \
-                    result is first and isinstance(result.get("possibly_related"), Mapping):
-                # a step that asks the lead floor itself labels what it reaches (each entry
-                # resting on a lead says lead_basis): it follows the lead set plx.around
-                # sets apart, as a step asked again at that floor does (ask_again)
-                apart = result["possibly_related"]
-                merged = dict(with_leads(result))
-                if not result.get("objects"):
-                    merged["set"] = apart.get("set")
-                merged.pop("possibly_related", None)
-                result = merged
-                if retry is None:   # the solid part was harvested at dispatch
-                    self._harvest(run, {"objects": apart.get("objects") or [],
-                                        "edges": apart.get("edges") or []})
-            if retry is not None:
-                self._harvest(run, result)
-            # A paged answer is read to its last page within the budget, with the same
-            # arguments; only an answer read whole undoes the truncation its pages reported.
-            pages = [result]
-            while "error" not in result and (result.get("completeness") or {}).get(
-                    "next_cursor") and "cursor" in self._input(tool):
+            return targets[:limit]
+
+        reused = True   # the step asks earlier steps' set handles, not each object
+        if accepts_set and source.set_handle and source.exact and len(targets) == len(source.ids) \
+                and "links" not in step and not named:
+            batches: list[str] = [source.set_handle]
+        elif accepts_set and parts and len(parts) < len(targets) \
+                and len(targets) == len(source.ids) and "links" not in step and not named:
+            batches = parts   # one call per part: fewer than one per object, none left out
+        else:
+            batches, reused = per_object(), False
+        prior_calls = 0
+        first_result = len(run.results.get(sid, []))
+        while True:
+            reached: list[str] = []
+            handles: list[str] = []
+            whole: list[str] = []   # per call that reached something: its answer's set handle
+            unioned = step.get("retry") is None \
+                and (step.get("args") or {}).get("tier_floor") != "lead"
+            calls, status, error_code = prior_calls, "ok", None
+            results = run.results.setdefault(sid, [])
+            cut = False  # a last page read of some target is itself truncated
+            retry = step.get("retry")
+            known = set(run.objects)  # reached before this step: a party check never unreaches
+            expired = False
+            asks = [(target, path) for target in batches for path in (
+                self._paths(step, _type_of(target)) if "links" in step else [None])]
+            for target, path in asks:
                 if run.spent():
                     status = "budget_exhausted"
                     run.stopped = True
                     break
-                result = self._dispatch(run, tool, dict(
-                    args, cursor=result["completeness"]["next_cursor"]))
+                args = dict(step.get("args") or {})
+                args[bind] = target
+                if path is not None:
+                    args["path"] = path
+                before = run.truncated
+                first, result = ask_again(
+                    lambda asked: self._dispatch(run, tool, asked, harvest=retry is None), args,
+                    retry, lambda _first: not run.spent())
                 calls += 1
-                pages.append(result)
-            last = (result.get("completeness") or {}) if "error" not in result else {}
-            if len(pages) > 1 and "error" not in result and not last.get("truncated"):
-                run.truncated = before
-            cut = cut or "error" in result or bool(last.get("truncated"))
-            for result in pages:
-                results.append(result)
-                if "error" in result:
-                    status, error_code = "error", result["error"].get("code")
-                    run.add_gap(_gap("unknown", "step_failed", f"{tool} ({sid})",
-                                     f"the primitive answered {error_code}"))
-                    continue
-                for ref in result.get("objects") or ():
-                    if ref["object_id"] not in reached:
-                        reached.append(ref["object_id"])
-                owner = result.get("object")
-                if isinstance(owner, Mapping) and owner.get("object_id") not in reached:
-                    reached.append(owner["object_id"])
-                if isinstance(result.get("set"), str):
-                    handles.append(result["set"])
+                if reused and "error" in result \
+                        and result["error"].get("code") == "handle_expired":
+                    expired = True
+                    break   # a reused set expired: ask each object instead
+                if result is not first:
+                    # The primitive's own gap asked for this; its first answer is replaced.
+                    calls += 1
+                    args = dict(args, **retry["set_args"])
+                    run.add_gap(_gap("unknown", retry["note_gap"], f"{sid}",
+                                     "asked again with " + ", ".join(
+                                         f"{k}={v}" for k, v in
+                                         sorted(retry["set_args"].items())) +
+                                     ": what this step reached rests on weaker links"))
+                    # A note, not a reason: each entry resting on a lead says so (lead_basis).
+                if tool == "plx.around" and args.get("tier_floor") == "lead" and \
+                        result is first and isinstance(result.get("possibly_related"), Mapping):
+                    # a step that asks the lead floor itself labels what it reaches (each entry
+                    # resting on a lead says lead_basis): it follows the lead set plx.around
+                    # sets apart, as a step asked again at that floor does (ask_again)
+                    apart = result["possibly_related"]
+                    merged = dict(with_leads(result))
+                    if not result.get("objects"):
+                        merged["set"] = apart.get("set")
+                    merged.pop("possibly_related", None)
+                    result = merged
+                    if retry is None:   # the solid part was harvested at dispatch
+                        self._harvest(run, {"objects": apart.get("objects") or [],
+                                            "edges": apart.get("edges") or []})
+                if retry is not None:
+                    self._harvest(run, result)
+                # A paged answer is read to its last page within the budget, with the same
+                # arguments; only an answer read whole undoes the truncation its pages reported.
+                pages = [result]
+                while "error" not in result and (result.get("completeness") or {}).get(
+                        "next_cursor") and "cursor" in self._input(tool):
+                    if run.spent():
+                        status = "budget_exhausted"
+                        run.stopped = True
+                        break
+                    result = self._dispatch(run, tool, dict(
+                        args, cursor=result["completeness"]["next_cursor"]))
+                    calls += 1
+                    pages.append(result)
+                last = (result.get("completeness") or {}) if "error" not in result else {}
+                if len(pages) > 1 and "error" not in result and not last.get("truncated"):
+                    run.truncated = before
+                cut = cut or "error" in result or bool(last.get("truncated"))
+                for result in pages:
+                    results.append(result)
+                    if "error" in result:
+                        status, error_code = "error", result["error"].get("code")
+                        run.add_gap(_gap("unknown", "step_failed", f"{tool} ({sid})",
+                                         f"the primitive answered {error_code}"))
+                        continue
+                    for ref in result.get("objects") or ():
+                        if ref["object_id"] not in reached:
+                            reached.append(ref["object_id"])
+                    owner = result.get("object")
+                    if isinstance(owner, Mapping) and owner.get("object_id") not in reached:
+                        reached.append(owner["object_id"])
+                    if isinstance(result.get("set"), str):
+                        handles.append(result["set"])
+                if any(page.get("objects") or isinstance(page.get("object"), Mapping)
+                       for page in pages):
+                    sets = {page.get("set") for page in pages}
+                    whole.append(sets.pop() if len(sets) == 1 and None not in sets else "")
+            if not expired:
+                break
+            # Every call above went to a set handle, and one had expired (evicted under
+            # load or past its ttl): the step is asked again per object, as though no
+            # set had been kept, so a reused set never fails a step.
+            del run.results.setdefault(sid, [])[first_result:]
+            batches, reused = per_object(), False
+            prior_calls = calls
         if status != "ok" and step.get("required"):
             run.reason("required_step_incomplete")
         if status == "error":
@@ -1868,8 +1947,17 @@ class InvestigateTools:
             else reached
         exact = len(set(handles)) == 1 and len(batches) == 1 and not cut \
             and len(kept) == len(reached)
+        # Every call answered whole with its own set: their union is exactly what was
+        # reached (the calls that reached nothing add nothing), so a later step asks each
+        # set once instead of each object.
+        union = unioned and not cut and status == "ok" and len(kept) == len(reached) \
+            and "" not in whole
+        parts = tuple(dict.fromkeys(whole)) if union else ()
+        handle = handles[0] if handles else None
+        if len(parts) == 1 and not exact:
+            handle, exact = parts[0], True
         reached = kept
-        run.collections[sid] = _Collection(reached, handles[0] if handles else None, exact)
+        run.collections[sid] = _Collection(reached, handle, exact, parts)
         entry = {"step": sid, "tool": tool, "status": status, "calls": calls,
                  "objects": len(reached)}
         if error_code:

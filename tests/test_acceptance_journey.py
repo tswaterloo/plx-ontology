@@ -522,7 +522,7 @@ class AcceptanceJourney(unittest.TestCase):
 
     def console(self):
         """The employee's console session (a human session ticket) and its case runtime
-        over the host's state directory, as ``operator_ui.case_console`` builds them."""
+        over the host's state directory, as ``operator_api.workspace.case_console`` builds them."""
         from operating.case_runtime import CaseRuntime, build_live_readers
         from operating.employee_permissions import (EmployeePermissionPolicy,
                                                     EmployeePermissionResolver,
@@ -548,7 +548,7 @@ class AcceptanceJourney(unittest.TestCase):
         provenance: test 4). ``review(tool, actor)`` reads what the person sees and returns the
         ``plx.review`` arguments."""
         from ontology.reviews import ReviewStore, store_path
-        from operator_ui.object_workspace import host_access
+        from operator_api.workspace.object_workspace import host_access
 
         person, runtime = self.console()
         access = host_access(runtime, host_module.projection_path(self.state), person.actor,
@@ -621,7 +621,7 @@ class AcceptanceJourney(unittest.TestCase):
         never been captured the host projects BC, mail and SharePoint alone; the employee
         console (``host serve``) opens that projection, its BC capture generation the
         state's own, with the Portal labelled not projected, never refused as foreign."""
-        from operator_ui.case_console import object_workspace_for
+        from operator_api.workspace.case_console import object_workspace_for
 
         person, runtime = self.console()
         workspace = object_workspace_for(

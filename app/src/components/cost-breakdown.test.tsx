@@ -72,13 +72,20 @@ describe("ProfitabilityView", () => {
     expect(b).not.toHaveTextContent("Share of cost");
     expect(within(b).getAllByRole("button", { name: /Business Central/ }).length).toBe(2);
     expect(screen.getByTestId("next-action")).toHaveTextContent("Nothing is sent or changed from here.");
-    // the margin basis is said once, as a footnote, not on every header
+    // the margin basis is said once, as the footnote the header's asterisk points at
     expect(table).toHaveTextContent("Margin*");
-    expect(screen.getByTestId("profitability")).toHaveTextContent("*Item cost only. Freight, labour and overhead aren't included.");
+    expect(screen.getByTestId("profitability")).not.toHaveTextContent("Item cost only. Freight");
+    expect(screen.getByTestId("profitability").textContent!.match(/Margins are on item cost only/g)).toHaveLength(1);
     // four numbers: coverage beside the figure
     expect(screen.getByTestId("profitability")).toHaveTextContent("Orders with a margin2 of 3");
     expect(screen.getByTestId("margin-basis")).toHaveTextContent(
-      "Margins are on item cost only. Labour and overhead aren't booked in Business Central, so this overstates true margin.");
+      "*Margins are on item cost only. Labour and overhead aren't booked in Business Central, so this overstates true margin.");
+  });
+
+  it("with no basis note from the server, the ranking keeps its own footnote", () => {
+    render(<ProfitabilityView p={{ ...p, margin_note: null }} />);
+    expect(screen.getByTestId("profitability")).toHaveTextContent("*Item cost only. Freight, labour and overhead aren't included.");
+    expect(screen.queryByTestId("margin-basis")).toBeNull();
   });
 
   it("labels a partial ranking and says how many more orders are not listed", () => {

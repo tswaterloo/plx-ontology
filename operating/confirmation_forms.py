@@ -41,6 +41,8 @@ import re
 import secrets
 import sqlite3
 from typing import Any, Callable, Iterable, Mapping
+from operating import declared_schema as _schemas
+from operating.declared_schema import confirmation_forms as _CONFIRMATION_FORMS
 
 PREFIX = "cf-"
 DEFAULT_TTL_SECONDS = 600
@@ -82,11 +84,7 @@ class ConfirmationForms:
         self._ttl = timedelta(seconds=ttl_seconds)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with closing(self._db()) as db, db:
-            db.execute("""CREATE TABLE IF NOT EXISTS confirmation_form (
-                token_sha256 TEXT PRIMARY KEY, purpose TEXT NOT NULL, tenant TEXT NOT NULL,
-                subject TEXT NOT NULL, requested_by TEXT NOT NULL, payload_json TEXT NOT NULL,
-                created_at TEXT NOT NULL, expires_at TEXT NOT NULL, state TEXT NOT NULL,
-                outcome TEXT)""")
+            _schemas.apply(db, _CONFIRMATION_FORMS)
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)

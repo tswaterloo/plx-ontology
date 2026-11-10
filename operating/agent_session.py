@@ -3461,7 +3461,7 @@ def ask_prompt(question: str, route: str | None = None) -> str:
 # The people-exclusion guard's settings (``integrations.people_exclusion``): object ids and
 # a file path, no credential. The host subprocess reads them as the product host does;
 # without them the guard does not load and the host withholds every mailbox.
-# An evaluation run's own journal directory (``operator_ui.session_journal.
+# An evaluation run's own journal directory (``operator_api.workspace.session_journal.
 # isolate_journal``): passed to the host it starts, whose session environment drops it.
 JOURNAL_DIR_ENV = "PLX_WORKBENCH_JOURNAL_DIR"
 EXCLUSION_ENV = ("PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE")
@@ -3476,6 +3476,11 @@ SEARCH_ENV = ("PLX_SEARCH", "PLX_PG_DSN", "PLX_SEARCH_WEIGHTS", "PLX_SEARCH_OWNE
               "PLX_RERANK", "PLX_RERANK_MODEL", "PLX_RERANK_ONNX", "PLX_RERANK_THREADS",
               "PLX_EMBED_MODEL", "PLX_EMBED_ALLOW_REMOTE",
               "ORT_DISABLE_TELEMETRY")
+# The store the host reads (no credential: a switch and a local folder): a host started by
+# an API process reading Postgres (``PLX_ONTOLOGY_PG``) reads it too, with the same kept
+# traverse facts (``PLX_PG_FACTS_DIR``). Without them every agent's host read the SQLite
+# generation and every delta layer over it while the API served Postgres.
+STORE_ENV = ("PLX_ONTOLOGY_PG", "PLX_PG_FACTS_DIR")
 LIST_SECONDS = 180.0   # the host's start-up and its tool list
 
 
@@ -3524,7 +3529,7 @@ class ReaderHost:
                 "env": {"PYTHONPATH": str(REPO_ROOT), self.ticket_env: self.ticket(),
                         si.SESSION_TICKET_SECRET_ENV: self._secret,
                         **{name: os.environ[name] for name in EXCLUSION_ENV + SEARCH_ENV
-                           + (JOURNAL_DIR_ENV,) if os.environ.get(name)},
+                           + STORE_ENV + (JOURNAL_DIR_ENV,) if os.environ.get(name)},
                         **self._extra_env}}
 
     def mcp_server(self) -> dict[str, Any]:

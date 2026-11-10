@@ -113,6 +113,14 @@ describe("ConflictCard", () => {
     expect(screen.getByTestId("conflict-card")).toHaveTextContent("Neither value is confirmed");
     expect(screen.getByTestId("conflict-card")).toHaveTextContent("Neither value is confirmed, so neither is used.");
   });
+
+  it("shows dates as dates, never ISO, and leaves other text alone", () => {
+    render(<ConflictCard conflict={{ field: "expected_receipt_date", values: [{ value: "2025-10-17", source: bc, trusted: true, why: "" }, { value: "pending", source: bc, trusted: false, why: "" }] }} />);
+    const card = screen.getByTestId("conflict-card");
+    expect(card).toHaveTextContent("17 Oct 2025");
+    expect(card).not.toHaveTextContent("2025-10-17");
+    expect(card).toHaveTextContent("pending");
+  });
 });
 
 const answer: Answer = {

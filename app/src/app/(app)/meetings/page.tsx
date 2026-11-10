@@ -27,7 +27,7 @@ function Meetings() {
   const view = VIEWS.find((v) => v.view === params.get("view"))?.view ?? "upcoming";
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar title="Meetings" />
+      <Toolbar heading title="Meetings" />
       <nav className="flex h-10 shrink-0 items-stretch gap-4 border-b border-border px-5" aria-label="Meetings" role="tablist">
         {VIEWS.map((v) => (
           <Link

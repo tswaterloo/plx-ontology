@@ -17,6 +17,8 @@ from typing import Any, Mapping
 
 from .captured_pages import text_pages
 from .captured_text import _blob_kept, _mime, _name, captured_text, ocr_digest, readings_code
+from operating import declared_schema as _schemas
+from operating.declared_schema import page_counts as _PAGE_COUNTS
 
 
 class PageCounts:
@@ -50,8 +52,7 @@ class PageCounts:
             os.close(fd)
             conn = sqlite3.connect(str(self.path), timeout=5, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("CREATE TABLE IF NOT EXISTS page_counts (key TEXT PRIMARY KEY, "
-                         "pages INTEGER NOT NULL)")
+            _schemas.apply(conn, _PAGE_COUNTS)
             self._local.conn = conn
         if self._code is None:
             self._code = readings_code()

@@ -1,9 +1,9 @@
 """The real backend of the app API: the console's object workspace, per reader, reshaped.
 
 Nothing here answers on its own. Every read goes through the reader's own object workspace
-(``operator_ui.case_console.object_workspace_for``, the one factory of the console's and
+(``operator_api.workspace.case_console.object_workspace_for``, the one factory of the console's and
 the Ask eval's workspaces: the case host's tools, grants and item gates, decided per
-request), and Ask is the console's one question path (``operator_ui.objective_box``, the
+request), and Ask is the console's one question path (``operator_api.workspace.objective_box``, the
 employee agent loop whose claims pass ``operating.answer_gate``). This module only maps
 what that path shows the reader to the contract's payload (``operator_api.models``):
 
@@ -65,6 +65,8 @@ from . import presentation
 from . import proposals
 from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
+from .autopilot_area import AutopilotAreaMixin
+from .assist_api import AssistMixin
 from .write_intents_api import WriteIntentsMixin
 from .briefs import BriefsMixin
 from operating import labour_hours
@@ -79,7 +81,7 @@ from .serving import (  # noqa: F401 - re-exported
     ASK_TIMEOUT_SECONDS, ASK_WORKERS, ASK_WORKER_GB, ASK_MEMORY_FLOOR_GB, ASK_WORKERS_MOST,
     WARM_HOSTS, ask_worker_count, ASK_TOP_UP_SECONDS, top_up_ask_workers, looked_up,
     ASK_SESSION_GB, ASK_SESSION_FLOOR_GB, ASK_SESSION_RAMP_SECONDS, ASK_SESSIONS_MOST,
-    ASK_WAIT_REPORT_SECONDS, SessionSlots, memory_available_gb, READ_WORKERS,
+    ASK_WAIT_REPORT_SECONDS, SessionSlots, memory_available_gb, READ_WORKERS, fan_out,
     MAX_QUEUED_ASKS, READ_TIMEOUT_SECONDS, PREREAD_FAILURES, _PREREAD_LOCK,
     _count_preread_failure, PAGE_TIMEOUT_SECONDS, SECTION_PRIORITY, WARM_PRIORITY,
     SECTION_WORKERS, SECTION_START_SECONDS, PREWARM_SECONDS, PAGE_DIR, WARM_SECONDS,
@@ -165,7 +167,8 @@ def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
 
 # ---- the backend ---------------------------------------------------------------------
 
-class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin, WatchMixin):
+class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin,
+                       AutopilotAreaMixin, AssistMixin, WatchMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,
     one shared bounded queue), so one Ask never holds up another reader's page."""
@@ -667,13 +670,13 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                     access_label=access_label(s))
 
     def journal_full_read(self, reader: Reader, path: str) -> None:
-        """One session-journal row (``operator_ui.session_journal``, in the state
+        """One session-journal row (``operator_api.workspace.session_journal``, in the state
         directory) for something served under a full-read grant: route, session reference,
         employee principal and the grant's enum code. A failed write never fails the read."""
         if self.state_dir is None:
             return
         try:
-            from operator_ui.session_journal import SessionJournal
+            from operator_api.workspace.session_journal import SessionJournal
             SessionJournal.for_state_dir(self.state_dir).record(
                 method="POST" if path == "/api/ask" else "GET", path=path, status=200,
                 session=reader.session)
@@ -881,7 +884,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             label += "; some figures are refreshing"   # which artifacts: in derived_code
         if label and derived is not None and derived.flagged and not derived.stale:
             label += "; some summaries will refresh on their own schedule"
-        alarm = capture_alarm_status(self.state_dir)
+        alarm = capture_alarm_status(self.state_dir, self.clock())
         if label and alarm is not None:
             label += "; " + alarm.line
         return m.Freshness(as_of=as_of, label=label, sources=sources, truth=truth,
@@ -1273,7 +1276,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         answers)."""
         events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
         job = self.profit_job(request, conversation, ms, question=question,
-                              progress=events.put)
+                              progress=events.put, reader=reader)
         if job is None:
             return None
         future = submit(self.ask_jobs, self.ask_stopped, reader, job, 1)
@@ -1283,12 +1286,16 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
 
     def profit_job(self, request: m.AskRequest, conversation: str, ms: Callable[[], int], *,
                    question: Optional[str] = None,
-                   progress: Callable[[tuple[str, Any]], None] = lambda _event: None
+                   progress: Callable[[tuple[str, Any]], None] = lambda _event: None,
+                   reader: Optional[Reader] = None
                    ) -> Optional[Callable[[Any], Optional[m.AnswerPayload]]]:
         """The profit Ask's work on a reader's workspace (``view``): the job
         ``_profit_ask`` runs on the Ask pool, and the scoreboard runs as the app's route
         (``scripts.eval_live_ops``); its status steps go to ``progress``. None when the
-        question names no customer and no order (the next path answers)."""
+        question names no customer and no order (the next path answers). ``reader``: the
+        reader the job runs for; given, the orders are read side by side on the Ask pool's
+        other runtimes, each as this reader (``serving.fan_out``), else one after another
+        on ``view``."""
         from operating import customer_profit
         from operating.customer_profit import normal_name
 
@@ -1362,11 +1369,22 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                     step="reading", message="Reading the customer's orders and their margins",
                     elapsed_ms=ms())))
 
-                def call(name: str, arguments: dict) -> Mapping[str, Any]:
-                    if name == "plx.investigate":
-                        progress(("status", m.StatusEvent(
-                            step="checking", message=ask_progress.call_step(name), elapsed_ms=ms())))
-                    return view._call(name, arguments)
+                def told(on: Callable[[str, dict], Any]) -> Callable[[str, dict], Any]:
+                    def call(name: str, arguments: dict) -> Mapping[str, Any]:
+                        if name == "plx.investigate":
+                            progress(("status", m.StatusEvent(
+                                step="checking", message=ask_progress.call_step(name),
+                                elapsed_ms=ms())))
+                        return on(name, arguments)
+                    return call
+                call = told(view._call)
+                spread = None
+                if reader is not None and len(self.ask_workers) > 1:
+                    def spread(tasks: Sequence[Any], late: Callable[[], bool]) -> list:
+                        return fan_out(self.ask_jobs, self.ask_stopped, reader, call,
+                                       list(tasks), late, width=len(self.ask_workers),
+                                       wrap=told, deadline=time.monotonic()
+                                       + ASK_TIMEOUT_SECONDS)
                 today = self.today() if self.today is not None else date.today()
                 from .test_records import is_test
                 named_tests = self.test_named()
@@ -1375,7 +1393,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                         call, candidates[0]["object_id"], today=today,
                         question=question, period=period, focus=focus,
                         skip_order=lambda number: is_test((number,), named_tests),
-                        also=also)
+                        also=also, fan_out=spread)
                 except customer_profit.ProfitError:
                     return None
                 return profit_answer(self, view, request, profit, conversation, ms)
@@ -1676,10 +1694,10 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
 
     def _box_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
                  ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
-        """The console's objective box (``operator_ui.objective_box``) for a reader the
+        """The console's objective box (``operator_api.workspace.objective_box``) for a reader the
         agent path does not serve."""
         from operating import objective_runner
-        from operator_ui import objective_box
+        from operator_api.workspace import objective_box
 
         objective = self._objective(request)
         events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
@@ -1725,7 +1743,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
     def _object_ask(view: Any, request: m.AskRequest) -> tuple[dict[str, Any], dict[str, Any]]:
         """The object page's Ask (``ObjectWorkspace.ask_run``) shaped as the objective box's
         run: the loop's unknowns stay as gaps (not found), each as the reply shows it."""
-        from operator_ui.object_workspace import _final_reply
+        from operator_api.workspace.object_workspace import _final_reply
 
         shown = view.ask_run({"object_id": request.object_id, "question": request.question})
         reply = _final_reply(shown["claims"], shown["loop"], request.question)
@@ -1858,7 +1876,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         Nothing of a claim is shown."""
         from operating.pg.permissions import (PRIVATE_BUCKET, _label, is_excluded, is_shared,
                                               load_exclusion)
-        from operator_ui.object_workspace import audience_unit
+        from operator_api.workspace.object_workspace import audience_unit
 
         exclusion = load_exclusion()
         if exclusion.unavailable:
@@ -3079,7 +3097,7 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
     from operator_api.agent_ask import plain_tree, reply_prose
     from operating import answer_gate
     from operating.deep_investigation import NOT_SETTLED
-    from operator_ui.object_workspace import ITEM_REFUSED, NOT_GRANTED
+    from operator_api.workspace.object_workspace import ITEM_REFUSED, NOT_GRANTED
 
     decision, _refused = runner._gate_results(ran.events)
     decision = plain_tree(decision) if isinstance(decision, Mapping) else None
@@ -3779,7 +3797,7 @@ def read_page(backend: WorkspaceBackend, view: Any, oid: str) -> m.ObjectPage:
 
 
 def plan_families(kind: str) -> set[str]:
-    from operator_ui.object_workspace import plans_for
+    from operator_api.workspace.object_workspace import plans_for
     return {plan["family"] for plan in plans_for(kind)} if kind else set()
 
 
@@ -3996,7 +4014,7 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         planner: Any = None) -> int:
     """Build the console's readers from its own arguments and checks
     (``case_console.main(serve_with=...)``), then ``start(backend, auth, auth_config)``."""
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
 
     if mode == "dev":
         chosen = [flag for flag, given in (
@@ -4138,7 +4156,7 @@ def start_ask_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any, 
     """One worker of the Ask pool: the console's builder run again on its own thread (its
     own case runtime and stores, every check again), serving Asks from the shared queue."""
     import logging
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
 
     def serve_asks(ctx: Mapping[str, Any]) -> int:
         backend.add_ask_worker(ctx["objects_for"]).loop()
@@ -4160,7 +4178,7 @@ def start_read_worker(backend: WorkspaceBackend, argv: list[str],
     """One more read worker: the console's builder run again on its own thread (its own
     case runtime and stores, every check again), serving reads from the read queue once
     it is up; until then the owner thread serves them all."""
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
 
     def serve_reads(ctx: Mapping[str, Any]) -> int:
         backend.add_read_worker(ctx["objects_for"]).loop()
@@ -4182,7 +4200,7 @@ def start_warm_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any,
     """The warm worker: the console's builder run again on its own thread (its own case
     runtime, every check again); it reads the served generation's facts first, then each
     reader's warm-up (``WorkspaceBackend.warm``)."""
-    from operator_ui import case_console
+    from operator_api.workspace import case_console
 
     def serve_warm(ctx: Mapping[str, Any]) -> int:
         try:   # the lowest CPU priority for this thread (Linux: per-thread nice)

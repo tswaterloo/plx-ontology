@@ -155,14 +155,19 @@ def _governing(members: Iterable[str], binding_of: Callable[[str], str | None]) 
 
 
 def _currencies(st: Any, rows: Iterable[Mapping[str, Any]]) -> dict[tuple, str | None]:
-    """(object, property, l1 handle) -> the money value's stored currency code."""
+    """(object, property, l1 handle) -> the money value's stored currency code, read for
+    the rows' own properties only (every property of 500 records passed a Postgres
+    reader's statement time)."""
+    rows = list(rows)
     wanted = sorted({r["object_id"] for r in rows})
+    props = json.dumps(sorted({r["property"] for r in rows}))
     out: dict[tuple, str | None] = {}
     for start in range(0, len(wanted), 500):
         for oid, prop, handle, code in st.conn.execute(
                 "SELECT object_id, property, l1_handle, currency FROM object_values WHERE "
-                "superseded_at IS NULL AND object_id IN (SELECT value FROM json_each(?))",
-                (json.dumps(wanted[start:start + 500]),)):
+                "superseded_at IS NULL AND object_id IN (SELECT value FROM json_each(?)) "
+                "AND property IN (SELECT value FROM json_each(?))",
+                (json.dumps(wanted[start:start + 500]), props)):
             out[(oid, prop, handle)] = code
     return out
 

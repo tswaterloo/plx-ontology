@@ -1,6 +1,8 @@
 """Ordered SQL migrations of the Postgres platform (``operating/pg/migrations/NNNN_*.sql``).
 
-A recorded migration whose file changed afterwards is drift: migrate
+Each migration runs once, in its own transaction, under a transaction advisory lock, and is
+recorded in ``plx_meta.migrations`` with the sha256 of its template text and the parameters
+it was rendered with. A recorded migration whose file changed afterwards is drift: migrate
 and check refuse it instead of silently diverging.
 
 Template parameters: ``{{embed_dim}}`` (an int) and ``{{embed_model}}`` (a quoted SQL

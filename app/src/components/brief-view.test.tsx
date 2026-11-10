@@ -27,9 +27,54 @@ describe("brief view", () => {
     render(<BriefView brief={brief()} eyebrow="Weekly review" />);
     expect(screen.getByText("12")).toBeTruthy();
     expect(screen.getByText("+3 vs 9 the week before")).toBeTruthy();
-    expect(screen.getByText("Not readable")).toBeTruthy();
+    expect(screen.getByText("Not read")).toBeTruthy();
     expect(screen.getByText(/Finance-marked/)).toBeTruthy();
     expect(screen.getByText("4 more not listed.")).toBeTruthy();
+  });
+
+  it("says an unread or finance-only section once, keeping 'not the same as none', with dates in words", () => {
+    render(
+      <BriefView
+        brief={brief({
+          sections: [
+            { key: "slips", title: "Top slips", state: "unread", rows: [], more: 0, figures: [], note: "Your alert list could not be read, so this section could not be read: that is not the same as none." },
+            { key: "cash", title: "Cash", state: "finance_marked", rows: [], more: 0, figures: [], note: "Finance-marked: shown only to readers who hold finance." },
+            { key: "trend", title: "Trend", state: "unread", rows: [], more: 0, figures: [], note: "Week of 2099-01-05 to 2099-01-11." },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getAllByText(/not the same as none/)).toHaveLength(2); // the slips note once, the trend's empty line
+    expect(screen.getAllByText(/Finance-marked/)).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 1 })).not.toHaveTextContent("2099-01-05");
+    expect(screen.getByText(/^Week of 5 Jan/)).toBeTruthy();
+  });
+
+  it("says a reason shared by sections in a row once, then points at it; a missing figure says so once", () => {
+    const why = "Your alert list could not be read, so this section could not be read: that is not the same as none.";
+    render(
+      <BriefView
+        brief={brief({
+          when: "2099-01-05",
+          title: "Weekly review, week of 2099-01-05",
+          sections: [
+            { key: "figs", title: "This week", state: "partial", rows: [], more: 0, figures: [{ label: "Orders booked", value: null, unit: "records", note: "could not be read", sources: [] }] },
+            { key: "late", title: "Late", state: "unread", rows: [], more: 0, figures: [], note: why },
+            { key: "slips", title: "Top slips", state: "unread", rows: [], more: 0, figures: [], note: why },
+            { key: "alerts", title: "Top alerts", state: "unread", rows: [], more: 0, figures: [], note: why },
+            { key: "cash", title: "Cash", state: "finance_marked", rows: [], more: 0, figures: [], note: "Finance-marked: shown only to readers who hold finance." },
+            { key: "margin", title: "Margin", state: "finance_marked", rows: [], more: 0, figures: [], note: "Finance-marked: shown only to readers who hold finance." },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getAllByText(why)).toHaveLength(1);
+    expect(screen.getAllByText("Not read either, for the same reason.")).toHaveLength(2);
+    expect(screen.getAllByText(/^Finance-marked/)).toHaveLength(2);
+    expect(screen.getByTestId("brief-section-margin")).toHaveTextContent(/^MarginFinance-marked too\.$/);
+    expect(screen.getByTestId("brief-figure")).toHaveTextContent(/^Orders bookedNot read$/);
+    // the week's date is in the title, so the line under it gives only when it was read
+    expect(screen.getByTestId("brief").textContent).not.toMatch(/5 Jan 2099 · read/);
   });
 
   it("words percents, money and the week picker's Mondays", () => {

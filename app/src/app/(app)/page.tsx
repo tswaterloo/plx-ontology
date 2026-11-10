@@ -8,7 +8,7 @@ import { HiddenNotice } from "@/components/answer-parts";
 import { loadHome, loadLate, MobileAccount, MobileSearch } from "@/components/shell";
 import { ReplyList } from "@/components/reply-list";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
-import { Pending } from "@/components/ui/skeleton";
+import { Pending, SlowNote } from "@/components/ui/skeleton";
 import { AgeRing, OpenRing } from "@/components/ui/glyphs";
 import { Monogram } from "@/components/ui/monogram";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
@@ -183,7 +183,9 @@ function Row({ row, on, onPick, actionState, testId }: { row: QueueRow; on: bool
 
 function ListSkeleton() {
   return (
-    <ul className="space-y-1 px-2 pt-2" aria-busy="true" aria-label="Loading">
+    <>
+    <SlowNote className="px-5 pt-3" />
+    <ul className="space-y-1 px-2 pt-2" aria-busy="true" aria-label="Loading your work">
       {Array.from({ length: 9 }).map((_, i) => (
         <li key={i} className="flex gap-3 px-3 py-2.5">
           <span className="skeleton size-8 rounded-[9px]" />
@@ -194,6 +196,7 @@ function ListSkeleton() {
         </li>
       ))}
     </ul>
+    </>
   );
 }
 
@@ -232,7 +235,7 @@ function Today() {
       .catch((e) => {
         if (c.signal.aborted) return;
         setBusy(noticeKind(e) === "busy");
-        setError(didntLoad("Today", e));
+        setError(didntLoad("your work", e));
       });
     return () => c.abort();
   }, []);
@@ -495,7 +498,7 @@ function Today() {
             </div>
           ))
         )}
-        {briefing?.status === "read" && briefing.count > 0 && groups.length > 0 && (
+        {briefing?.status === "read" && briefing.count > 0 && briefing.watching_count !== 0 && groups.length > 0 && (
           <Link href="/watching#alerts" className="mx-5 mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-muted hover:text-fg" data-testid="see-all">
             {typeof briefing.watching_count === "number" ? `${briefing.watching_count} more in Watching` : `All ${briefing.count} in Watching`}
             <ChevronRight className="size-3.5" aria-hidden />
@@ -518,9 +521,10 @@ function Today() {
       {showDetail && selected && (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="sticky top-0 z-20 flex h-11 shrink-0 items-center border-b border-border bg-[color-mix(in_srgb,var(--bg)_88%,transparent)] px-1.5 backdrop-blur-xl lg:hidden">
-            <button type="button" onClick={() => router.back()} className="flex h-9 items-center gap-0.5 pr-2 text-[15px] text-accent cursor-pointer">
+            {/* back to the list; a link opened straight to an item has no list behind it, so go to it */}
+            <button type="button" onClick={() => (window.history.length > 1 ? router.back() : router.replace("/"))} className="flex h-9 items-center gap-0.5 pr-2 text-[15px] text-accent cursor-pointer">
               <ChevronLeft className="size-6" strokeWidth={2} aria-hidden />
-              Today
+              My work
             </button>
             <span className="ml-auto pr-3 text-[13px] text-muted">{selected.title}</span>
           </div>

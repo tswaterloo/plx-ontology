@@ -257,6 +257,22 @@ class QualityAlerts(Engine):
         money(w, bc, "total_cost", "CAD")
         money(w, portal, "total_cost", "CAD")
         w.link("PurchaseOrder.same_record_as", bc, portal)
+        # a copy stating 0 (an invoiced header zeroed, an unpriced copy) states no amount
+        zero_bc = order(w, "PurchaseOrder", "bc.purchase_order", status="Open",
+                        total_cost="80.00", po_number="PO-SYN-Z")
+        zero_portal = order(w, "PurchaseOrder", "portal.app_purchase_order", status="Open",
+                            total_cost="0")
+        money(w, zero_bc, "total_cost", "CAD")
+        money(w, zero_portal, "total_cost", "CAD")
+        w.link("PurchaseOrder.same_record_as", zero_bc, zero_portal)
+        # one amount written as a float in one copy and a decimal in the other agrees
+        float_bc = order(w, "PurchaseOrder", "bc.purchase_order", status="Open",
+                         total_cost="250.700", po_number="PO-SYN-R")
+        float_portal = order(w, "PurchaseOrder", "portal.app_purchase_order", status="Open",
+                             total_cost="250.70000000000002")
+        money(w, float_bc, "total_cost", "CAD")
+        money(w, float_portal, "total_cost", "CAD")
+        w.link("PurchaseOrder.same_record_as", float_bc, float_portal)
         self.run_rules(w, [q.DISAGREE_RULE])
         (gap,) = self.kinds(q.DISAGREE)
         self.assertIn("total cost: bc says 100.00 CAD; portal says 120.00 CAD", gap["summary"])

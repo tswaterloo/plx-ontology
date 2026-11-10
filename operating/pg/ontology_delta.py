@@ -480,9 +480,20 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
 
     projection = Path(state_dir) / "projection"
     served = projection / "ontology.sqlite"
-    with sqlite3.connect(f"file:{served}?mode=ro", uri=True) as conn:
-        digest = conn.execute("SELECT value FROM store_meta WHERE key = 'content_digest'"
-                              ).fetchone()[0]
+    from operating.pg import ontology_reader
+    if ontology_reader.pg_only() and not served.is_file():
+        # Postgres the only store, its SQLite generation retired: the generation is the
+        # one Postgres holds (nothing to load), and only the delta layers follow
+        with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg:
+            row = pg.execute("SELECT value->>'content_digest' FROM ontology.load_state "
+                             "WHERE name = 'generation'").fetchone()
+        if row is None or row[0] is None:
+            return {"served": None, "held": None, "state": "no_generation_loaded"}
+        digest = row[0]
+    else:
+        with sqlite3.connect(f"file:{served}?mode=ro", uri=True) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
     deferred = tuple(t for t in os.environ.get("PLX_ONTOLOGY_DEFER", "").split(",") if t)
     needed = set(ontology_load.ORDER) - set(ontology_load.OPTIONAL) - set(deferred)
     with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg:
@@ -498,6 +509,8 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
     if report["held"] != digest or not needed <= done:
         if not reload:
             return {**report, "state": "generation_differs"}
+        if not served.is_file():   # retired: nothing to load from, never a partial store
+            return {**report, "state": "not_whole_and_no_generation"}
         # the generation as a file of its own (the served path is swapped at a publish)
         source = served.resolve()
         for candidate in sorted((projection / "generations").glob("*/store.sqlite")):

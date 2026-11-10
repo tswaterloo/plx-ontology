@@ -996,7 +996,7 @@ class ProbeTests(SyncTestCase):
                          {"fm_bronze": 31 * 60, "silver_view": 31 * 60, "sage_bronze": 31 * 60})
         self.assertEqual(report["relations"]["public.probe_rel_00"],
                          {"complete": True, "rows_current": 60, "rows_missing": 0,
-                          "rows_deleted": 0, "pages": 1})
+                          "rows_deleted": 0, "pages": 1, "records": 60})
         text = json.dumps(report)
         self.assertNotIn("SECRET-VALUE", text)
         self.assertNotIn("api://", text)

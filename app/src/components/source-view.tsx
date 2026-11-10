@@ -474,12 +474,16 @@ export function SourceLoader({
     }
   }
   const pad = wide ? "mx-auto w-full max-w-[760px] px-5 pt-9 sm:px-10" : "";
-  if (error && !view)
+  if (error && !view) {
+    // the page still names what it is: a source that couldn't be opened
+    const H = headingLevel === 1 ? "h1" : "h2";
     return (
       <div className={pad}>
+        <H className="sr-only" id={titleId}>Source</H>
         <ErrorNotice message={error} onRetry={load} />
       </div>
     );
+  }
   if (!view)
     return (
       <div className={cn(pad, "space-y-3")}>

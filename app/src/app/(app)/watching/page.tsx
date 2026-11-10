@@ -23,7 +23,7 @@ function AlertRow({ a }: { a: WatchAlert }) {
   const href = a.record.type ? objectHref(a.record.type, a.record.object_id) : null;
   return (
     <li className="flex items-start gap-3 py-2.5">
-      <span aria-hidden className={a.read ? "mt-1.5 size-2 shrink-0 rounded-full" : "mt-1.5 size-2 shrink-0 rounded-full bg-[var(--accent,#2563eb)]"} />
+      <span aria-hidden className={a.read ? "mt-1.5 size-2 shrink-0 rounded-full" : "mt-1.5 size-2 shrink-0 rounded-full bg-accent"} />
       <div className="min-w-0 flex-1">
         <p className="text-[13px] leading-5 text-fg">{href ? <Link href={href} className="hover:underline">{a.sentence}</Link> : a.sentence}</p>
         <p className="text-[12px] text-muted">
@@ -42,6 +42,7 @@ export default function WatchingPage() {
   const [draft, setDraft] = useState<WatchRuleDraft | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setProblem(null);
@@ -74,10 +75,11 @@ export default function WatchingPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
       <Toolbar
+        heading
         title={
           <>
             Watching
-            {data && data.unread > 0 && <span className="ml-2 text-[13px] font-normal tabular-nums text-faint">{data.unread} new</span>}
+            {data && data.unread > 0 && <span className="ml-2 text-[13px] font-normal tabular-nums text-faint"><span className="sr-only">, </span>{data.unread} new</span>}
           </>
         }
         actions={
@@ -95,6 +97,8 @@ export default function WatchingPage() {
 
         <AlertKindsSection />
 
+        {data?.configured !== false && (
+        <>
         <section aria-labelledby="new-rule" className="space-y-3">
           <h2 id="new-rule" className="text-[15px] font-semibold">New alert rule</h2>
           <p className="text-[13px] text-muted">Write it in plain words. You see what it will do before it is kept; it only reads what you may read.</p>
@@ -106,23 +110,26 @@ export default function WatchingPage() {
               onChange={(e) => { setText(e.target.value); setDraft(null); }}
               onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) preview(); }}
               placeholder={EXAMPLES[0]}
-              className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border,#ddd)] bg-transparent px-3 text-[13px]"
+              className="h-9 min-w-0 flex-1 rounded-lg border border-control bg-transparent px-3 text-[13px]"
             />
             <button type="button" disabled={busy || !text.trim()} onClick={preview} className="h-9 rounded-lg px-3 text-[13px] font-medium hover:bg-hover cursor-pointer disabled:opacity-50">
-              Check
+              {busy && !draft ? "Checking" : "Check"}
             </button>
           </div>
           <p className="text-[12px] text-faint">
             For example:{" "}
             {EXAMPLES.map((ex, i) => (
-              <button key={ex} type="button" className="underline-offset-2 hover:underline cursor-pointer" onClick={() => { setText(ex); setDraft(null); }}>
-                {i > 0 ? " · " : ""}“{ex}”
-              </button>
+              <span key={ex}>
+                {i > 0 ? " · " : ""}
+                <button type="button" className="underline-offset-2 hover:underline cursor-pointer" onClick={() => { setText(ex); setDraft(null); }}>
+                  “{ex}”
+                </button>
+              </span>
             ))}
           </p>
-          {refused && <p role="alert" className="text-[13px] text-[var(--danger,#b91c1c)]">{refused}</p>}
+          {refused && <p role="alert" className="text-[13px] text-late">{refused}</p>}
           {draft && (
-            <div className="space-y-2 rounded-lg border border-[var(--border,#ddd)] p-3">
+            <div className="space-y-2 rounded-lg border border-border p-3">
               <p className="text-[13px] font-medium">{draft.description}</p>
               <dl aria-label="What this rule checks" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px]">
                 {ruleParams(draft.spec).map((p) => (
@@ -145,22 +152,33 @@ export default function WatchingPage() {
         <section aria-labelledby="rule-alerts" className="space-y-1">
           <h2 id="rule-alerts" className="text-[15px] font-semibold">From your rules</h2>
           {data && data.alerts.length === 0 && <EmptyState title="No alerts." />}
-          <ul className="divide-y divide-[var(--border,#eee)]">{(data?.alerts ?? []).map((a) => <AlertRow key={a.alert_id} a={a} />)}</ul>
+          <ul className="divide-y divide-border">{(data?.alerts ?? []).map((a) => <AlertRow key={a.alert_id} a={a} />)}</ul>
         </section>
 
         <section aria-labelledby="rules" className="space-y-1">
           <h2 id="rules" className="text-[15px] font-semibold">Your rules</h2>
           {data && data.rules.length === 0 && <EmptyState title="No rules yet." />}
-          <ul className="divide-y divide-[var(--border,#eee)]">
+          <ul className="divide-y divide-border">
             {(data?.rules ?? []).map((r) => (
               <li key={r.rule_id} className="flex items-start gap-3 py-2.5">
                 <div className="min-w-0 flex-1">
                   <p className="text-[13px] text-fg">{r.text}</p>
                   <p className="text-[12px] text-muted">{r.description}{r.state !== "active" ? ` (${r.state}${r.note ? `: ${r.note}` : ""})` : r.watching_since ? "" : " (starts with the next update)"}</p>
                 </div>
-                <button type="button" className="h-7 rounded-md px-2 text-[12px] text-muted hover:bg-hover cursor-pointer" onClick={() => run(async () => { await deleteRule(r.rule_id); load(); })}>
-                  Delete
-                </button>
+                {deleting === r.rule_id ? (
+                  <span className="flex shrink-0 items-center gap-1">
+                    <button type="button" disabled={busy} className="h-7 rounded-md px-2 text-[12px] font-medium text-fg hover:bg-hover cursor-pointer" onClick={() => run(async () => { await deleteRule(r.rule_id); setDeleting(null); load(); })}>
+                      Delete this rule
+                    </button>
+                    <button type="button" className="h-7 rounded-md px-2 text-[12px] text-muted hover:bg-hover cursor-pointer" onClick={() => setDeleting(null)}>
+                      Keep
+                    </button>
+                  </span>
+                ) : (
+                  <button type="button" className="h-7 rounded-md px-2 text-[12px] text-muted hover:bg-hover cursor-pointer" onClick={() => setDeleting(r.rule_id)}>
+                    Delete
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -169,7 +187,7 @@ export default function WatchingPage() {
         <section aria-labelledby="follows" className="space-y-1">
           <h2 id="follows" className="text-[15px] font-semibold">Following</h2>
           {data && data.follows.length === 0 && <p className="text-[13px] text-muted">Use Follow on any record page.</p>}
-          <ul className="divide-y divide-[var(--border,#eee)]">
+          <ul className="divide-y divide-border">
             {(data?.follows ?? []).map((f) => (
               <li key={f.object_id} className="flex items-center gap-3 py-2.5">
                 <div className="min-w-0 flex-1 text-[13px]">
@@ -182,6 +200,8 @@ export default function WatchingPage() {
             ))}
           </ul>
         </section>
+        </>
+        )}
       </div>
     </div>
   );

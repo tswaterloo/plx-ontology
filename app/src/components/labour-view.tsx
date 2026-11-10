@@ -15,11 +15,10 @@ export function LabourView({ page }: { page: LabourPage }) {
   const runs = page.weeks.filter((w) => w.run);
   return (
     <div className="space-y-4">
-      <h1 className="text-lg font-semibold">Labour hours</h1>
       {page.alerts.length > 0 && (
         <ul aria-label="Overtime spikes" className="space-y-1">
           {page.alerts.map((a) => (
-            <li key={a.department + a.week} className="rounded-md border border-amber-400 px-3 py-2 text-[13px]">
+            <li key={a.department + a.week} className="rounded-md bg-risk-soft px-3 py-2 text-[13px]">
               Overtime spike in {a.department}: {a.overtime_hours} h in the week of {a.week}, {a.rise_percent}% over its{" "}
               {a.baseline_weeks}-week median of {a.baseline_median} h.
             </li>

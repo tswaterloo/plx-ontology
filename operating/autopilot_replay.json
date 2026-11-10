@@ -1,7 +1,17 @@
 {
   "schema": "plx-autopilot-replay/v1",
-  "note": "What the replay harness (operating/autopilot_replay.py) counts as a person's real next action. A provider lists actions (person, time, workflow, the conversation, recipients and records they touched). 'record_actor' reads every store event that names a person as its actor (qualifier 'actor'): per-person activity in BC, the Portal, Sage and FileMaker counts as it lands, with no change here. 'plugins' adds a provider from another module of this package (module:function); an unknown provider refuses the whole file.",
+  "note": "What the replay harness (operating/autopilot_replay.py) counts as a person's real next action. A provider lists actions (person, time, workflow, the conversation, recipients and records they touched). 'record_actor' reads every store event that names a person as its actor (qualifier 'actor'): per-person activity in BC, the Portal, Sage and FileMaker counts as it lands, with no change here. 'plugins' adds a provider registered by name in operating/autopilot_replay.PLUGINS; an unknown provider refuses the whole file. 'feed_lag_minutes': per record type, how long after its time the live feed first holds it (the MC capture reads tasks about every 90 minutes, measured 2026-11: median 70, p75 132 minutes from an event to its capture); a decision before then was already taken when the feed saw the request, so the replay prepares nothing for it and judges an item from that time.",
   "horizon_hours": 72,
-  "providers": ["mail_sent", "approval_decided", "task_event", "record_actor"],
-  "plugins": []
+  "providers": [
+    "mail_sent",
+    "teams_sent",
+    "approval_decided",
+    "task_event",
+    "record_actor"
+  ],
+  "plugins": [],
+  "feed_lag_minutes": {
+    "MCApproval": 90,
+    "MCTaskEvent": 90
+  }
 }

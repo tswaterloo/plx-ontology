@@ -636,10 +636,11 @@ _RTF_BREAKS = {b"par": "\n", b"line": "\n", b"row": "\n", b"page": "\n", b"sect"
                b"ldblquote": "\u201c", b"rdblquote": "\u201d"}
 
 
-def rtf_text(rtf: bytes) -> tuple[str, bool]:
+def rtf_text(rtf: bytes, *, skip: frozenset[bytes] = _RTF_SKIP) -> tuple[str, bool]:
     """``(text, is_html)``: the visible text of an RTF body, or the HTML an Outlook
     ``\\fromhtml1`` body encapsulates (``\\*\\htmltag`` groups kept, ``\\htmlrtf``
-    runs dropped)."""
+    runs dropped). ``skip``: the destinations whose groups are not body text (a Rich Text
+    file passes a wider set: ``integrations.text_formats.RTF_FILE_SKIP``)."""
     if not rtf.lstrip().startswith(b"{\\rtf"):
         raise ValueError("not rtf")
     html = b"\\fromhtml1" in rtf[:1024]
@@ -690,7 +691,7 @@ def rtf_text(rtf: bytes) -> tuple[str, bool]:
         if word is not None:
             if star and word == b"htmltag" and html:
                 stack[-1][1] = True
-            elif star or word in _RTF_SKIP:
+            elif star or word in skip:
                 stack[-1][0] = True
             star = False
             if word == b"htmlrtf":

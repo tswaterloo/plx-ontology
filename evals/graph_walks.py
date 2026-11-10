@@ -409,8 +409,10 @@ class Dropped(Exception):
 
 
 class Composer:
-    def __init__(self, links: Sequence[Link], records: Records, as_of: date) -> None:
+    def __init__(self, links: Sequence[Link], records: Records, as_of: date,
+                 hop_weights: Mapping[int, float] | None = None) -> None:
         self.links = {l.id: l for l in links}
+        self.hop_weights = dict(hop_weights or HOP_WEIGHTS)   # hops wanted -> its share
         self.records = records
         self.as_of = as_of
         self.by_type: dict[str, list[Hop]] = {}
@@ -478,8 +480,8 @@ class Composer:
         if same != [start]:
             raise Dropped("start_ambiguous")
         say_system = len(hits) > 1 or rng.random() < 0.3
-        want = max(len(path), rng.choices(list(HOP_WEIGHTS),
-                                          weights=list(HOP_WEIGHTS.values()))[0])
+        want = max(len(path), rng.choices(list(self.hop_weights),
+                                          weights=list(self.hop_weights.values()))[0])
         sets = [[start]]
         for hop in path:
             nxt = self.execute(sets[-1], hop)

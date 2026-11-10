@@ -188,6 +188,22 @@ otherwise, nothing read); a store stamped for another tenant is moved to
 ``<name>.tenant-mismatch`` and captured again (``store_reset``: ``tenant_mismatch``), never
 relabelled; past the budget the task-detail reads pause (``cap:budget_seconds``) and the
 next cycle resumes them.
+
+Fast poll (``CaptureSpec.fast_poll_seconds``, ``--fast-poll-seconds``; 0: off). A whole
+sweep of the task details takes most of an hour, so an approval requested or a question
+asked on a task waits for the cursor to reach it. With the fast poll on, the cycle first
+re-reads (``mc_get_task``, the same read tool) every task whose listing row shows an
+approval gate not yet decided or a question still open, or whose listing row differs from
+the one the task was last read against (``FAST_STATE``; MC patches the row when a gate is
+requested or decided or a question asked or answered); then resumes the sweep, and every
+``fast_poll_seconds`` of it reads the listing again (as the cycle does: ``mc_get_context``,
+else ``mc_search_tasks`` pages) and repeats. No other tool and nothing written to MC. The fast
+reads are saved into the sweep's own open runs at the sweep's own cursor, so the sweep's
+completeness (and what a complete run marks missing) is unchanged; one capture process
+writes the store, as before. A task the cycle's listing did not show waits for the next
+cycle (its project is read from that listing). A first fast poll in a store without
+``FAST_STATE`` reads the open tasks only (the rest are the sweep's, as before). At most
+``FAST_MAX_TASKS`` tasks a poll, open ones first (``capped`` counts the rest).
 """
 
 from __future__ import annotations
@@ -246,6 +262,13 @@ DROP_REASONS = ("no_bucket_row", "bucket_project_invalid", "not_permitted", "oth
 MAX_TASK_READS = 50_000
 # Where a host capture moves a store stamped for another tenant (``run_cli``).
 TENANT_MISMATCH_SUFFIX = ".tenant-mismatch"
+FAST_STATE = "mission_control:fast_poll:"  # + scope: task id -> listing digest last read
+FAST_MAX_TASKS = 500
+# An approval gate in one of these states, a question in one of the other set, is settled;
+# any other state (``pending``, an unknown one, none) is open: the fast poll reads it.
+DECIDED_GATES = frozenset({"approved", "rejected", "denied", "expired", "cancelled",
+                           "withdrawn"})
+SETTLED_QUESTIONS = frozenset({"answered", "withdrawn", "cancelled", "expired"})
 
 _POLICY = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 if (not CAPTURE_TOOLS <= frozenset(_POLICY["reads"])
@@ -259,7 +282,7 @@ _CONFIG_CODES = frozenset({
     "mc_path_invalid", "mc_project_invalid", "mc_audience_key_invalid", "mc_scope_invalid",
     "mc_knowledge_queries_invalid", "mc_knowledge_limit_invalid",
     "mc_max_task_reads_invalid", "mc_page_size_invalid", "mc_principal_missing",
-    "mc_budget_seconds_invalid"})
+    "mc_budget_seconds_invalid", "mc_fast_poll_seconds_invalid"})
 _RECORD_ID = re.compile(r"^[^\x00-\x1f\x7f]{1,200}$")
 _TASK_ID = re.compile(r"^TASK-[A-Za-z0-9-]{1,40}$")
 _PROJECT_ID = re.compile(r"^PRJ-[A-Z0-9-]{1,120}$")  # PLX_MC src/lib/sync/mapping.ts PROJECT_ID_RE
@@ -398,6 +421,7 @@ class CaptureSpec:
     knowledge_limit: int = 10
     max_task_reads: int = 50
     page_size: int = 25
+    fast_poll_seconds: int = 0  # 0: off; else the open approvals and questions this often
 
     def __post_init__(self) -> None:
         if not isinstance(self.scope, str) or _SCOPE.fullmatch(self.scope) is None:
@@ -412,6 +436,10 @@ class CaptureSpec:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
                 raise ValueError(f"mc_{name}_invalid")
+        fast = self.fast_poll_seconds
+        if isinstance(fast, bool) or not isinstance(fast, int) or not (
+                fast == 0 or 60 <= fast <= 3600):
+            raise ValueError("mc_fast_poll_seconds_invalid")
 
 
 # ---------------------------------------------------------------- capture
@@ -524,6 +552,34 @@ class _TaskRead:
     orphans_unparented: bool
 
 
+def _watched(task: Mapping[str, Any]) -> tuple[str, bool]:
+    """A listing row's (digest of the whole row, any approval gate or question open). The
+    whole row: a task-search row may not carry the gates, and MC patches the task row
+    (its ``activity`` too) when a gate is requested or decided or a question is asked or
+    answered. A gate or question list of another shape is open (read, never skipped)."""
+    gates, questions = task.get("approvalGates"), task.get("questions")
+    digest = _digest(task)[:24]
+    if not isinstance(gates or [], list) or not isinstance(questions or [], list):
+        return digest, True
+    is_open = False
+    for rows, settled in ((gates or [], DECIDED_GATES), (questions or [], SETTLED_QUESTIONS)):
+        for row in rows:
+            is_open |= not isinstance(row, dict) or row.get("status") not in settled
+    return digest, is_open
+
+
+def _fast_state(raw: str | None) -> dict[str, str] | None:
+    """The stored task id -> listing digest map; None when absent or unreadable (the
+    next poll then reads the open tasks only)."""
+    try:
+        found = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    if not isinstance(found, dict):
+        return None
+    return {t: d for t, d in found.items() if isinstance(t, str) and isinstance(d, str)}
+
+
 def _retired_reason(bucket: Mapping[str, Any]) -> str:
     """Why MC's default view leaves a bucket out (actions.ts ``isArchived``)."""
     return "bucket_archived" if bucket.get("archivedAt") else "project_archived"
@@ -552,6 +608,10 @@ class McSourcesCapture:
         # (``cap:budget_seconds``); the cursor resumes them in the next cycle
         self.deadline, self._clock = deadline, clock
         self.principal: str | None = None  # the MC service principal (``_pin_view``)
+        # the cycle's listing: task id -> ``_watched`` (``_tasks``), and each fast poll's
+        # counts (module docstring, Fast poll)
+        self._listing: dict[str, tuple[str, bool]] = {}
+        self.fast_polls: list[dict[str, Any]] = []
 
     # -- helpers ----------------------------------------------------------------
 
@@ -678,6 +738,7 @@ class McSourcesCapture:
     def capture(self, spec: CaptureSpec) -> dict[str, Any]:
         """Read every configured collection once; per-unit summaries (counts only)."""
         collections: list[str] = []
+        self._listing, self.fast_polls = {}, []
         failure = self._pin_view(spec) if self.mc is not None else None
         if failure is not None:  # no read without its view: the units fail, reported
             collections = ["tasks", "buckets", "projects"] + (
@@ -698,7 +759,8 @@ class McSourcesCapture:
                 self._knowledge(spec)
                 collections.append("knowledge")
         return {"scope": spec.scope, "units": [self._summary(spec, c) for c in collections],
-                "tools_called": sorted(self.mc.tools_called) if self.mc else []}
+                "tools_called": sorted(self.mc.tools_called) if self.mc else [],
+                "fast_polls": list(self.fast_polls)}
 
     def _context_read(self) -> _TaskRead | None:
         """One ``mc_get_context`` full read: every task and bucket MC's default view
@@ -832,6 +894,7 @@ class McSourcesCapture:
                                          "ids": {"task_id": task_id}},
                                         "sha256:" + _digest(row), project=project))
             projects[task_id] = project
+            self._listing[task_id] = _watched(task)
         if read.expected is not None:
             drops["not_permitted"] += max(0, read.expected - seen)  # counted, on no page
             moved = moved or seen > read.expected
@@ -864,43 +927,99 @@ class McSourcesCapture:
         after = min(cursors) if all(cursors) else None
         pending = [t for t in task_ids if after is None or t > after]
         reads = pending[:spec.max_task_reads]
-        for start in range(0, len(reads), spec.page_size):
-            if self.deadline is not None and self._clock() >= self.deadline:
-                for run in (gates_run, events_run):
-                    self.store.pause_run(run["run_id"], reason="cap:budget_seconds")
-                return
-            chunk = reads[start:start + spec.page_size]
-            gates, events, dropped, windowed = [], [], 0, False
-            for task_id in chunk:
-                try:
-                    data = self.mc.get_task(task_id)["data"]
-                except UpstreamError as error:
-                    if error.code == "not_found":  # restricted or gone since the listing
-                        dropped += 1
-                        continue
-                    self._failed(gates_run["run_id"], error)
-                    self._failed(events_run["run_id"], error)
-                    return
-                except (SourceUnavailable, ReadOnlyGuardError) as error:
-                    self._failed(gates_run["run_id"], error)
-                    self._failed(events_run["run_id"], error)
-                    return
-                gates += self._gates(spec, task_id, data, projects[task_id])
-                task_events = [e for e in data.get("events") or [] if isinstance(e, dict)]
-                full = len(task_events) >= EVENT_WINDOW
-                windowed |= full
-                read = self._events(spec, task_id, task_events, projects[task_id])
-                history[task_id] = _history(history.get(task_id), full, {
-                    r.path[-1].partition("~")[2] for r in read}, held.get(task_id, set()))
-                events += read
+        # where the sweep stands in each run: a fast page is saved at it, never moving it
+        position = [gates_run["cursor"], events_run["cursor"]]
+        runs = (gates_run, events_run)
+        fast = bool(spec.fast_poll_seconds) and spec.max_task_reads > 0
+        fast_key = FAST_STATE + spec.scope
+        watched = _fast_state(self.store.state(fast_key)) if fast else None
+        if fast and watched is None:   # a first poll: the open tasks only
+            watched = {t: digest for t, (digest, _open) in self._listing.items()}
+        next_fast = None
+
+        def failed(error: BaseException) -> None:
+            for run in runs:
+                self._failed(run["run_id"], error)
+
+        def save(chunk: Sequence[str], found: tuple, cursor: list) -> None:
+            gates, events, dropped, windowed = found
             marks = ("windowed",) if windowed else ()
-            self.store.save_page(gates_run["run_id"], gates, chunk[-1], dropped=dropped)
-            self.store.save_page(events_run["run_id"], events, chunk[-1], dropped=dropped,
+            self.store.save_page(gates_run["run_id"], gates, cursor[0], dropped=dropped)
+            self.store.save_page(events_run["run_id"], events, cursor[1], dropped=dropped,
                                  marks=marks)
             self.store.set_state(history_key, json.dumps(
                 {t: h for t, h in sorted(history.items()) if t in projects}, sort_keys=True))
+            if watched is not None:
+                for task_id in chunk:
+                    if task_id in self._listing:
+                        watched[task_id] = self._listing[task_id][0]
+
+        def fast_poll(listing: str) -> bool:
+            """One fast poll (module docstring); False when an MC read failed (recorded)."""
+            started = self._clock()
+            if listing == "fresh":
+                try:   # the cycle's own listing reads: the full context, else task search
+                    read = self._context_read() or self._search_read()
+                except (UpstreamError, SourceUnavailable, ReadOnlyGuardError):
+                    read = None
+                if read is None:   # not read: the sweep goes on, the next poll retries
+                    self.fast_polls.append({"listing": "unread", "due": 0, "open": 0,
+                                            "read": 0, "capped": 0, "seconds": 0.0})
+                    return True
+                for task in read.tasks:
+                    task_id = task.get("id") if isinstance(task, dict) else None
+                    if task_id in projects:
+                        self._listing[task_id] = _watched(task)
+            due = sorted((not is_open, t) for t, (digest, is_open) in self._listing.items()
+                         if is_open or watched.get(t) != digest)
+            chosen = [t for _closed, t in due[:FAST_MAX_TASKS]]
+            report = {"listing": listing, "due": len(due),
+                      "open": sum(1 for closed, _t in due if not closed),
+                      "read": 0, "capped": len(due) - len(chosen)}
+            self.fast_polls.append(report)
+            for start in range(0, len(chosen), spec.page_size):
+                if self.deadline is not None and self._clock() >= self.deadline:
+                    report["capped"] += len(chosen) - start
+                    break
+                chunk = chosen[start:start + spec.page_size]
+                try:
+                    found = self._read_details(spec, chunk, projects, history, held)
+                except (UpstreamError, SourceUnavailable, ReadOnlyGuardError) as error:
+                    failed(error)
+                    return False
+                save(chunk, found, position)
+                report["read"] += len(chunk)
+            self.store.set_state(fast_key, json.dumps(dict(sorted(watched.items()))))
+            report["seconds"] = round(float(self._clock() - started), 3)
+            return True
+
+        if fast:
+            if not fast_poll("cycle"):
+                return
+            next_fast = self._clock() + spec.fast_poll_seconds
+        for start in range(0, len(reads), spec.page_size):
+            if self.deadline is not None and self._clock() >= self.deadline:
+                for run in runs:
+                    self.store.pause_run(run["run_id"], reason="cap:budget_seconds")
+                if watched is not None:
+                    self.store.set_state(fast_key, json.dumps(dict(sorted(watched.items()))))
+                return
+            if next_fast is not None and self._clock() >= next_fast:
+                if not fast_poll("fresh"):
+                    return
+                next_fast = self._clock() + spec.fast_poll_seconds
+            chunk = reads[start:start + spec.page_size]
+            try:
+                found = self._read_details(spec, chunk, projects, history, held)
+            except (UpstreamError, SourceUnavailable, ReadOnlyGuardError) as error:
+                failed(error)
+                return
+            position = [chunk[-1], chunk[-1]]
+            save(chunk, found, position)
+        if watched is not None:
+            self.store.set_state(fast_key, json.dumps(dict(sorted(watched.items()))))
         if len(pending) > len(reads):
-            for run in (gates_run, events_run):
+            for run in runs:
                 self.store.pause_run(run["run_id"], reason="cap:max_task_reads")
             return
         self.store.finish_run(gates_run["run_id"], "complete", detail=self._detail())
@@ -912,6 +1031,33 @@ class McSourcesCapture:
                               reason=(None if not windowed else "source_window:accumulated"
                                       if whole else "source_window:last_25"),
                               detail={**self._detail(), "event_history": counts})
+
+    def _read_details(self, spec: CaptureSpec, chunk: Sequence[str],
+                      projects: Mapping[str, str], history: dict[str, str],
+                      held: dict[str, set[str]]) -> tuple[list, list, int, bool]:
+        """``mc_get_task`` for each task of ``chunk``: (gates, events, dropped, windowed);
+        a task MC no longer shows is dropped, any other failure is raised. ``history`` and
+        ``held`` take each read's events (a task read twice in a cycle stays contiguous)."""
+        gates, events, dropped, windowed = [], [], 0, False
+        for task_id in chunk:
+            try:
+                data = self.mc.get_task(task_id)["data"]
+            except UpstreamError as error:
+                if error.code == "not_found":  # restricted or gone since the listing
+                    dropped += 1
+                    continue
+                raise
+            gates += self._gates(spec, task_id, data, projects[task_id])
+            task_events = [e for e in data.get("events") or [] if isinstance(e, dict)]
+            full = len(task_events) >= EVENT_WINDOW
+            windowed |= full
+            read = self._events(spec, task_id, task_events, projects[task_id])
+            local = {r.path[-1].partition("~")[2] for r in read}
+            history[task_id] = _history(history.get(task_id), full, local,
+                                        held.get(task_id, set()))
+            held.setdefault(task_id, set()).update(local)
+            events += read
+        return gates, events, dropped, windowed
 
     def _gates(self, spec: CaptureSpec, task_id: str, data: Mapping[str, Any],
                project: str) -> list[CapturedRecord]:
@@ -1243,7 +1389,8 @@ def run_cli(args: argparse.Namespace, environ: Mapping[str, str], *,
     except SourceUnavailable as error:
         mc = None
         report["missing_inputs"].append(str(error)[:200])
-    spec = CaptureSpec(args.scope, tuple(args.query or ()), max_task_reads=args.max_task_reads)
+    spec = CaptureSpec(args.scope, tuple(args.query or ()), max_task_reads=args.max_task_reads,
+                       fast_poll_seconds=getattr(args, "fast_poll_seconds", 0) or 0)
     budget = getattr(args, "budget_seconds", None)
     if budget is not None and not 1 <= budget <= 7200:
         raise ValueError("mc_budget_seconds_invalid")
@@ -1290,7 +1437,8 @@ def run_cli(args: argparse.Namespace, environ: Mapping[str, str], *,
         "blocked_upstream": blocked,
         "passes": [{"units": [{k: u[k] for k in ("collection", "state", "reason", "error",
                                                  "records_current", "new_versions",
-                                                 "dropped")} for u in p["units"]]}
+                                                 "dropped")} for u in p["units"]],
+                    "fast_polls": p.get("fast_polls", [])}
                    for p in passes],
         "requests_sent": hub.requests_sent,
         "store_reset": reset,
@@ -1331,6 +1479,9 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                      help="the host's capture principal (with --live-audience)")
     cap.add_argument("--budget-seconds", type=float, default=None,
                      help="pause the task-detail reads past this; the next run resumes")
+    cap.add_argument("--fast-poll-seconds", type=int, default=0,
+                     help="re-read the tasks with open approvals or questions this often "
+                          "(60-3600; 0: off)")
     args = parser.parse_args(argv)
     env = os.environ if environ is None else environ
     try:

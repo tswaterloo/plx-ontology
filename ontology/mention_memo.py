@@ -45,6 +45,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Mapping, Sequence
 import zlib
+from operating import declared_schema as _schemas
+from operating.declared_schema import mention_memo as _MENTION_MEMO
 
 FORMAT = "plx-document-memo/v1"
 FILE = "mentions.sqlite"
@@ -96,10 +98,7 @@ class DocumentMemo:
         try:
             self._db.execute("PRAGMA journal_mode = WAL")
             self._db.execute("PRAGMA synchronous = NORMAL")
-            for table, extra in (("mentions", "code TEXT NOT NULL, valid_at TEXT, "),
-                                 ("texts", "code TEXT NOT NULL, "), ("groups", "")):
-                self._db.execute(f"CREATE TABLE IF NOT EXISTS {table} (key TEXT PRIMARY KEY, "
-                                 f"{extra}value BLOB NOT NULL, used INTEGER NOT NULL)")
+            _schemas.apply(self._db, _MENTION_MEMO)
             self._db.execute("BEGIN")
         except BaseException:
             self._db.close()

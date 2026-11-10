@@ -329,6 +329,15 @@ class EntityIndex(Protocol):
     def distinctive_words(self, words: Sequence[str], scope: Any) -> set[str]: ...
 
 
+
+def _alive(conn: Any) -> bool:
+    """``operating.pg.pool.alive``: an idle connection still usable (psycopg installed)."""
+    try:
+        from operating.pg.pool import alive
+    except ImportError:
+        return not getattr(conn, "closed", False)
+    return alive(conn)
+
 class PgEntityIndex:
     """``search.entities`` in Postgres (pg_trgm + unaccent), one connection reused.
 
@@ -405,7 +414,11 @@ class PgEntityIndex:
             with self._lock:
                 while self._idle and conn is None:
                     conn = self._idle.pop()
-                    if conn.closed:
+                    if not _alive(conn):   # closed, or its server went away (a restart)
+                        try:
+                            conn.close()
+                        except Exception:  # noqa: BLE001 - already gone
+                            pass
                         conn = None
             if conn is None:
                 conn = self._open()

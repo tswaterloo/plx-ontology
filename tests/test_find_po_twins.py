@@ -16,9 +16,9 @@ import unittest
 
 from operating import session_identity
 from operating.case_runtime import CaseRuntime
-from operator_ui import case_console
-from operator_ui import object_workspace as objects
-from operator_ui.tests import case_fixtures
+from operator_api.workspace import case_console
+from operator_api.workspace import object_workspace as objects
+from operator_api.tests import case_fixtures
 
 
 class PoTwinTest(unittest.TestCase):

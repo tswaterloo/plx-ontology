@@ -89,7 +89,7 @@
   --rule-ink: #3a3a3f;
   --control-border: #48484e;
   --accent: #4b9bff;
-  --accent-fg: #ffffff;
+  --accent-fg: #001a3d; /* 6.1:1 on the accent; white would be 2.8:1 */
   --accent-soft: #1d3354;
   --ring: #4b9bff;
   --oak: #d9965a;

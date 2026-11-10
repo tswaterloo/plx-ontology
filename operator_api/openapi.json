@@ -1572,6 +1572,169 @@
         "title": "AskRequest",
         "type": "object"
       },
+      "AssistChoice": {
+        "additionalProperties": false,
+        "properties": {
+          "mention": {
+            "description": "A name as typed that matches several people.",
+            "title": "Mention",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AssistRecipient"
+            },
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mention",
+          "options"
+        ],
+        "title": "AssistChoice",
+        "type": "object"
+      },
+      "AssistDraft": {
+        "additionalProperties": false,
+        "description": "A drafted message for a line the person typed. Never sent: the person edits, copies\nor opens it in their own mail or Teams.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the copy check refused it (see gaps).",
+            "title": "Body"
+          },
+          "channel": {
+            "enum": [
+              "mail",
+              "teams"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "choices": {
+            "items": {
+              "$ref": "#/components/schemas/AssistChoice"
+            },
+            "title": "Choices",
+            "type": "array"
+          },
+          "facts": {
+            "description": "Every fact the body lists, each with its sources.",
+            "items": {
+              "$ref": "#/components/schemas/Fact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "gaps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "intent": {
+            "title": "Intent",
+            "type": "string"
+          },
+          "questions": {
+            "description": "The Ask questions answered for the facts.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Questions",
+            "type": "array"
+          },
+          "sent": {
+            "const": false,
+            "default": false,
+            "title": "Sent",
+            "type": "boolean"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "to": {
+            "items": {
+              "$ref": "#/components/schemas/AssistRecipient"
+            },
+            "title": "To",
+            "type": "array"
+          },
+          "withheld": {
+            "default": 0,
+            "description": "People the line names who may not be drafted to (left out, never named).",
+            "minimum": 0.0,
+            "title": "Withheld",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "intent",
+          "channel"
+        ],
+        "title": "AssistDraft",
+        "type": "object"
+      },
+      "AssistRecipient": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The first name the address states.",
+            "title": "Name"
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "title": "AssistRecipient",
+        "type": "object"
+      },
+      "AssistRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "intent": {
+            "description": "One line: what to send and to whom (\"tell <name> the lot for order X is on hold\").",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Intent",
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "title": "AssistRequest",
+        "type": "object"
+      },
       "AtRisk": {
         "additionalProperties": false,
         "properties": {
@@ -1666,9 +1829,804 @@
         "title": "AuthConfig",
         "type": "object"
       },
+      "AutopilotArea": {
+        "additionalProperties": false,
+        "description": "The autopilot area: today's prepared items you may see, per workflow its scores and\nstate, and the switches (``owner``: you may change them).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "boolean"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotPerson"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "switches": {
+            "$ref": "#/components/schemas/AutopilotSwitches"
+          },
+          "workflows": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotWorkflowRow"
+            },
+            "title": "Workflows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner",
+          "switches"
+        ],
+        "title": "AutopilotArea",
+        "type": "object"
+      },
+      "AutopilotAudit": {
+        "additionalProperties": false,
+        "description": "Every write-path row (newest first): decisions, live attempts and outcomes, gate\nchanges and the owner's switches. Owner only.",
+        "properties": {
+          "live": {
+            "description": "Live actions done.",
+            "title": "Live",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotAuditRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "live"
+        ],
+        "title": "AutopilotAudit",
+        "type": "object"
+      },
+      "AutopilotAuditRow": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "By"
+          },
+          "event": {
+            "title": "Event",
+            "type": "string"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "undo_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undo Note"
+          },
+          "undoable": {
+            "default": false,
+            "title": "Undoable",
+            "type": "boolean"
+          },
+          "undone": {
+            "default": false,
+            "title": "Undone",
+            "type": "boolean"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why"
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow"
+          }
+        },
+        "required": [
+          "at",
+          "event"
+        ],
+        "title": "AutopilotAuditRow",
+        "type": "object"
+      },
+      "AutopilotDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "by_you": {
+            "title": "By You",
+            "type": "boolean"
+          },
+          "decision": {
+            "enum": [
+              "accept",
+              "edit",
+              "reject",
+              "snooze"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The write path's outcome of an accept: dry_run (recorded only), done, killed, refused...",
+            "title": "Outcome"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The edited draft.",
+            "title": "Text"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "decision",
+          "at",
+          "by_you"
+        ],
+        "title": "AutopilotDecision",
+        "type": "object"
+      },
+      "AutopilotDecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "enum": [
+              "accept",
+              "edit",
+              "reject",
+              "snooze"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "edit, or accept with your edit: the draft's new text.",
+            "title": "Text"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "snooze: until when (ISO instant, at most 30 days ahead).",
+            "title": "Until"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "AutopilotDecisionRequest",
+        "type": "object"
+      },
+      "AutopilotItem": {
+        "additionalProperties": false,
+        "description": "A prepared item with its evidence, its drafted action and your decision.",
+        "properties": {
+          "autopilot": {
+            "title": "Autopilot",
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "due_at": {
+            "title": "Due At",
+            "type": "string"
+          },
+          "happened": {
+            "additionalProperties": true,
+            "title": "Happened",
+            "type": "object"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "owner": {
+            "description": "The person id the item was prepared for.",
+            "title": "Owner",
+            "type": "string"
+          },
+          "prepared": {
+            "additionalProperties": true,
+            "title": "Prepared",
+            "type": "object"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "waiting",
+              "snoozed",
+              "edited",
+              "accepted",
+              "rejected"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "system": {
+            "description": "mail, teams, mc, bc, sage, portal, filemaker, sharepoint, meetings, planner or other.",
+            "title": "System",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "today": {
+            "description": "Prepared or due today (Toronto day), or past due.",
+            "title": "Today",
+            "type": "boolean"
+          },
+          "workflow": {
+            "title": "Workflow",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "autopilot",
+          "label",
+          "title",
+          "workflow",
+          "system",
+          "owner",
+          "mine",
+          "due_at",
+          "created_at",
+          "today",
+          "state"
+        ],
+        "title": "AutopilotItem",
+        "type": "object"
+      },
+      "AutopilotPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "description": "From the person's replay role; empty when no name is on record (the role roster holds ids only).",
+            "title": "Name",
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "you": {
+            "default": false,
+            "title": "You",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "AutopilotPerson",
+        "type": "object"
+      },
+      "AutopilotScore": {
+        "additionalProperties": false,
+        "properties": {
+          "judged": {
+            "title": "Judged",
+            "type": "integer"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "integer"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "matched / judged, one decimal; absent when nothing was judged.",
+            "title": "Percent"
+          }
+        },
+        "required": [
+          "judged",
+          "matched"
+        ],
+        "title": "AutopilotScore",
+        "type": "object"
+      },
+      "AutopilotSwitchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "global_off": {
+            "title": "Global Off",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "global_off"
+        ],
+        "title": "AutopilotSwitchRequest",
+        "type": "object"
+      },
+      "AutopilotSwitches": {
+        "additionalProperties": false,
+        "properties": {
+          "autopilot_off": {
+            "description": "The autopilot itself is switched off: nothing new is prepared.",
+            "title": "Autopilot Off",
+            "type": "boolean"
+          },
+          "global_off": {
+            "description": "The write path's global kill switch.",
+            "title": "Global Off",
+            "type": "boolean"
+          },
+          "master_switch": {
+            "description": "The host's master switch for live writes (host configuration, not set from the app).",
+            "title": "Master Switch",
+            "type": "boolean"
+          },
+          "workflows_off": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Workflows Off",
+            "type": "array"
+          }
+        },
+        "required": [
+          "global_off",
+          "master_switch",
+          "autopilot_off"
+        ],
+        "title": "AutopilotSwitches",
+        "type": "object"
+      },
+      "AutopilotWorkflowRow": {
+        "additionalProperties": false,
+        "description": "One workflow of one role (a ``person:`` role is one person's whole day): its replay\nscores, its write state and the owner's switches.",
+        "properties": {
+          "dev": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotScore"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replay on tuning days."
+          },
+          "fresh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotScore"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replay on held-out days (the write gate's counts)."
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run"
+          },
+          "live_flag": {
+            "description": "The owner switched this role's workflow live.",
+            "title": "Live Flag",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "n": {
+            "description": "Items judged: fresh when scored, else dev.",
+            "title": "N",
+            "type": "integer"
+          },
+          "on": {
+            "description": "False when the owner switched this workflow off.",
+            "title": "On",
+            "type": "boolean"
+          },
+          "open_items": {
+            "default": 0,
+            "title": "Open Items",
+            "type": "integer"
+          },
+          "person": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The person id of a person role.",
+            "title": "Person"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "scored_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scored At"
+          },
+          "state": {
+            "description": "off: switched off; dry_run: gate not passed; passed_awaiting_owner: passed, the owner has not switched it on; live_held: switched on, held by the host's master switch; live: performs through the write path.",
+            "enum": [
+              "off",
+              "dry_run",
+              "passed_awaiting_owner",
+              "live_held",
+              "live"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "workflow": {
+            "title": "Workflow",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "workflow",
+          "n",
+          "state",
+          "on",
+          "live_flag"
+        ],
+        "title": "AutopilotWorkflowRow",
+        "type": "object"
+      },
+      "AutopilotWorkflowSwitch": {
+        "additionalProperties": false,
+        "properties": {
+          "live": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live"
+          },
+          "on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "false: the workflow is switched off (nothing is performed, not even a dry run).",
+            "title": "On"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "live: the role whose passed gate it goes live through.",
+            "title": "Role"
+          }
+        },
+        "title": "AutopilotWorkflowSwitch",
+        "type": "object"
+      },
       "Brief": {
         "additionalProperties": false,
-        "description": "A meeting prep brief or a weekly review, generated from the records you may read\n(no model call). Every row and figure cites its sources; nothing hidden is counted.",
+        "description": "A meeting prep brief, a weekly review or a QC pack (daily, audit), generated from\nthe records you may read (no model call). Every row and figure cites its sources;\nnothing hidden is counted.",
         "properties": {
           "as_of": {
             "title": "As Of",
@@ -1688,7 +2646,9 @@
           "kind": {
             "enum": [
               "meeting",
-              "weekly"
+              "weekly",
+              "qc_daily",
+              "qc_audit"
             ],
             "title": "Kind",
             "type": "string"
@@ -2016,14 +2976,16 @@
             "type": "array"
           },
           "state": {
-            "description": "finance_marked: shown only to a reader holding finance (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, which is not the same as none; blocked: the people exclusion is not loaded, so no mail, Teams or meeting line is shown.",
+            "description": "finance_marked / quality_marked: shown only to a reader holding finance / quality_controlled (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, which is not the same as none; blocked: the people exclusion is not loaded, so no mail, Teams, meeting or Planner line is shown; not_available: the data it needs is not captured yet (the note says what).",
             "enum": [
               "shown",
               "empty",
               "partial",
               "finance_marked",
+              "quality_marked",
               "unread",
-              "blocked"
+              "blocked",
+              "not_available"
             ],
             "title": "State",
             "type": "string"
@@ -2423,6 +3385,8 @@
               "needs_my_reply",
               "approval_waiting",
               "chase_escalating",
+              "party_chase_unanswered",
+              "internal_order_chase",
               "slow_moving_stock",
               "expiring_lot_stock",
               "assembly_blocked_by_component",
@@ -2442,6 +3406,7 @@
               "gl_posting_errors",
               "recurring_task_missed",
               "label_change",
+              "label_revision_superseded",
               "rd_project",
               "unapplied_remittance",
               "short_payment",
@@ -2570,6 +3535,8 @@
               "needs_my_reply",
               "approval_waiting",
               "chase_escalating",
+              "party_chase_unanswered",
+              "internal_order_chase",
               "slow_moving_stock",
               "expiring_lot_stock",
               "assembly_blocked_by_component",
@@ -2589,6 +3556,7 @@
               "gl_posting_errors",
               "recurring_task_missed",
               "label_change",
+              "label_revision_superseded",
               "rd_project",
               "unapplied_remittance",
               "short_payment",
@@ -2791,6 +3759,8 @@
               "needs_my_reply",
               "approval_waiting",
               "chase_escalating",
+              "party_chase_unanswered",
+              "internal_order_chase",
               "slow_moving_stock",
               "expiring_lot_stock",
               "assembly_blocked_by_component",
@@ -2810,6 +3780,7 @@
               "gl_posting_errors",
               "recurring_task_missed",
               "label_change",
+              "label_revision_superseded",
               "rd_project",
               "unapplied_remittance",
               "short_payment",
@@ -3034,6 +4005,8 @@
               "needs_my_reply",
               "approval_waiting",
               "chase_escalating",
+              "party_chase_unanswered",
+              "internal_order_chase",
               "slow_moving_stock",
               "expiring_lot_stock",
               "assembly_blocked_by_component",
@@ -3053,6 +4026,7 @@
               "gl_posting_errors",
               "recurring_task_missed",
               "label_change",
+              "label_revision_superseded",
               "rd_project",
               "unapplied_remittance",
               "short_payment",
@@ -6063,6 +7037,263 @@
         "title": "LabelChanges",
         "type": "object"
       },
+      "LabelRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The approving message's sender.",
+            "title": "Approved By"
+          },
+          "approved_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved On"
+          },
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "first_seen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "rank": {
+            "default": 0,
+            "title": "Rank",
+            "type": "integer"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "superseded_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded On"
+          }
+        },
+        "required": [
+          "id",
+          "current"
+        ],
+        "title": "LabelRevision",
+        "type": "object"
+      },
+      "LabelRevisionFamily": {
+        "additionalProperties": false,
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "current_approved": {
+            "title": "Current Approved",
+            "type": "boolean"
+          },
+          "family": {
+            "title": "Family",
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/LabelRevision"
+            },
+            "title": "Revisions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "family",
+          "current_approved"
+        ],
+        "title": "LabelRevisionFamily",
+        "type": "object"
+      },
+      "LabelRevisionOnOrder": {
+        "additionalProperties": false,
+        "properties": {
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "superseded_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded On"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "LabelRevisionOnOrder",
+        "type": "object"
+      },
+      "LabelRevisions": {
+        "additionalProperties": false,
+        "description": "A record's label and artwork revisions on your alert list, newest first per file\n(current: the highest you can see), who approved each and when; on an order, the\nsuperseded revisions it points at.",
+        "properties": {
+          "families": {
+            "items": {
+              "$ref": "#/components/schemas/LabelRevisionFamily"
+            },
+            "title": "Families",
+            "type": "array"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "revisions": {
+            "title": "Revisions",
+            "type": "integer"
+          },
+          "superseded_on_orders": {
+            "items": {
+              "$ref": "#/components/schemas/LabelRevisionOnOrder"
+            },
+            "title": "Superseded On Orders",
+            "type": "array"
+          },
+          "unapproved_current": {
+            "title": "Unapproved Current",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "object_id",
+          "revisions",
+          "unapproved_current"
+        ],
+        "title": "LabelRevisions",
+        "type": "object"
+      },
       "LabourAlert": {
         "additionalProperties": false,
         "properties": {
@@ -7215,6 +8446,19 @@
           "due_today": {
             "title": "Due Today",
             "type": "integer"
+          },
+          "mc_approvals": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Your pending Mission Control approval gates per decider, grouped by class (riskier first), each with the history-based recommendation, the low-risk mark and its MC task link (``operating.mc_digest``). Read-only: decide in MC.",
+            "title": "Mc Approvals"
           },
           "nudges": {
             "items": {
@@ -13756,6 +15000,473 @@
         ]
       }
     },
+    "/api/autopilot": {
+      "get": {
+        "description": "The autopilot area: today's prepared items you may see (the owner: everyone's),\neach with its evidence, drafted action and decision; per role and workflow the dev\nand fresh scores, state and switches. Read only.",
+        "operationId": "autopilot_area_api_autopilot_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotArea"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Autopilot Area",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/assist": {
+      "post": {
+        "description": "Draft the message a line you typed asks for: recipients, subject and body, each\nfact from your Ask's gated answer with its sources. Nothing is sent.",
+        "operationId": "autopilot_assist_api_autopilot_assist_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Autopilot Assist",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/audit": {
+      "get": {
+        "description": "The write path's audit log, newest first, with undo where the system has one.\nOwner only (403 for every other reader).",
+        "operationId": "autopilot_audit_api_autopilot_audit_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotAudit"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "summary": "Autopilot Audit",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/audit/{key}/undo": {
+      "post": {
+        "description": "Undo a live action once through its recorded inverse. Owner only.",
+        "operationId": "autopilot_undo_api_autopilot_audit__key__undo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotAudit"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Autopilot Undo",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/items/{item_id}/decision": {
+      "post": {
+        "description": "Accept, edit, reject or snooze an item of your own. Accept runs it through the\ngated write path: a dry run (the decision recorded, nothing written) unless its\nworkflow passed the fresh gate and the owner switched it live.",
+        "operationId": "autopilot_decide_api_autopilot_items__item_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Decide",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/switches": {
+      "post": {
+        "description": "The global kill switch of the write path. Owner only (403 for every other\nreader).",
+        "operationId": "autopilot_global_api_autopilot_switches_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotSwitchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotSwitches"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Autopilot Global",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/workflows/{workflow}": {
+      "post": {
+        "description": "Switch a workflow off or on, or a role's workflow live (only after its fresh\ngate passed) or back to dry run. Owner only (403 for every other reader).",
+        "operationId": "autopilot_workflow_api_autopilot_workflows__workflow__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow",
+            "required": true,
+            "schema": {
+              "title": "Workflow",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotWorkflowSwitch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotArea"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Workflow",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/brief/meetings": {
       "get": {
         "description": "Calendar events in the next 14 days you may read, soonest first, each with the\nlink to its meeting prep brief.",
@@ -13783,6 +15494,102 @@
           }
         },
         "summary": "Upcoming Meetings",
+        "tags": [
+          "briefs"
+        ]
+      }
+    },
+    "/api/brief/qc-audit": {
+      "get": {
+        "description": "The QC audit pack: on-time share of the calibration, sanitation and other QC\nchecks by area and month over the last year, each recurring check with its cycle\nand its missed, late and overdue occurrences cited, the production schedule by\nline and batches on hold. Quality_controlled readers only.",
+        "operationId": "qc_audit_pack_api_brief_qc_audit_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brief"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Qc Audit Pack",
+        "tags": [
+          "briefs"
+        ]
+      }
+    },
+    "/api/brief/qc-audit.txt": {
+      "get": {
+        "description": "The QC audit pack as one printable plain-text page, each line with its sources.",
+        "operationId": "qc_audit_text_api_brief_qc_audit_txt_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Qc Audit Text",
+        "tags": [
+          "briefs"
+        ]
+      }
+    },
+    "/api/brief/qc-daily": {
+      "get": {
+        "description": "The daily QC pack: quality checks open now (missed, overdue, due within a week),\nopen calibration, production slots past start and not completed, batches on hold\nand the hold-release queue (not available yet, with its reason). Only a reader\nholding quality_controlled sees any line; every line cites its task, slot or\nbatch.",
+        "operationId": "qc_daily_pack_api_brief_qc_daily_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Brief"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Qc Daily Pack",
         "tags": [
           "briefs"
         ]
@@ -14045,6 +15852,8 @@
                 "needs_my_reply",
                 "approval_waiting",
                 "chase_escalating",
+                "party_chase_unanswered",
+                "internal_order_chase",
                 "slow_moving_stock",
                 "expiring_lot_stock",
                 "assembly_blocked_by_component",
@@ -14064,6 +15873,7 @@
                 "gl_posting_errors",
                 "recurring_task_missed",
                 "label_change",
+                "label_revision_superseded",
                 "rd_project",
                 "unapplied_remittance",
                 "short_payment",
@@ -14901,6 +16711,59 @@
           }
         },
         "summary": "Label Changes",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/label-revisions/{object_id}": {
+      "get": {
+        "description": "A record's label and artwork revision history: every revision of each file, who\napproved it and when, and on an order the superseded revisions it points at, from\nyour own alert list.",
+        "operationId": "label_revisions_api_label_revisions__object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelRevisions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Label Revisions",
         "tags": [
           "actions"
         ]

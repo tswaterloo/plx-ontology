@@ -121,6 +121,8 @@ import sys
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology.core import LEVELS, Actor
+from operating import declared_schema as _schemas
+from operating.declared_schema import ingestion as _INGESTION
 
 
 SOURCES_SCHEMA = "plx-ingest-sources/v1"
@@ -382,7 +384,7 @@ def _source(raw: Any, environ: Mapping[str, str]) -> dict[str, Any]:
         from integrations.mc_sources import CaptureSpec
 
         fields = ("scope", "knowledge_queries", "knowledge_limit", "max_task_reads",
-                  "page_size")
+                  "page_size", "fast_poll_seconds")
         allowed |= set(fields)
         options = {k: raw[k] for k in fields if k in raw}
         if isinstance(options.get("knowledge_queries"), list):
@@ -572,29 +574,6 @@ def resolve_sites(sources: Sequence[dict[str, Any]], api: Any,
 
 # ------------------------------------------------------------------ store
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS run (
-  run_id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,
-  state TEXT NOT NULL, config_digest TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS run_unit (
-  run_id INTEGER NOT NULL, unit_id TEXT NOT NULL, source_id TEXT NOT NULL,
-  kind TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, state TEXT NOT NULL,
-  reasons_json TEXT NOT NULL DEFAULT '[]', counts_json TEXT NOT NULL DEFAULT '{}',
-  cursor_before_json TEXT, cursor_after_json TEXT, lag_json TEXT NOT NULL DEFAULT '{}',
-  PRIMARY KEY (run_id, unit_id));
-CREATE TABLE IF NOT EXISTS unit_cursor (
-  unit_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, kind TEXT NOT NULL,
-  config_digest TEXT NOT NULL, cursor_json TEXT NOT NULL, updated_at TEXT NOT NULL,
-  updated_run INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS item (
-  unit_id TEXT NOT NULL, item_key TEXT NOT NULL, version TEXT NOT NULL,
-  content_sha256 TEXT, citation TEXT, source_time TEXT, record_json TEXT NOT NULL,
-  first_seen_run INTEGER NOT NULL, last_seen_run INTEGER NOT NULL,
-  last_changed_run INTEGER NOT NULL, last_seen_pass INTEGER NOT NULL DEFAULT 0,
-  absent_since_run INTEGER,
-  PRIMARY KEY (unit_id, item_key));
-"""
 
 
 class IngestStore:
@@ -608,7 +587,7 @@ class IngestStore:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout = 10000")
         self.db.execute("PRAGMA journal_mode = WAL")
-        self.db.executescript(_DDL)
+        _schemas.apply(self.db, _INGESTION)
         self.db.execute("INSERT OR IGNORE INTO meta VALUES ('schema', 'plx-ingest-store/v1')")
         os.chmod(self.path, 0o600)
 
@@ -1358,7 +1337,8 @@ class Ingestor:
         from integrations.mc_sources import CaptureSpec
 
         options = {k: spec[k] for k in ("scope", "knowledge_queries", "knowledge_limit",
-                                        "max_task_reads", "page_size") if k in spec}
+                                        "max_task_reads", "page_size",
+                                        "fast_poll_seconds") if k in spec}
         options["knowledge_queries"] = tuple(options.get("knowledge_queries", ()))
         try:
             captured = self.mc.capture(CaptureSpec(**options))

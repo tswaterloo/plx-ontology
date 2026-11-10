@@ -178,6 +178,32 @@ class CodeDigestTests(unittest.TestCase):
                 self.write(name, saved)
                 self.assertEqual(self.digest(), first)
 
+    def test_a_package_or_module_appearing_between_digests_is_seen(self):
+        # each walk reads the tree afresh (packages, module paths), even with every parse
+        # kept: a later digest follows what was added since
+        self.write("a", '''
+            import extra
+            from pkg import later
+
+            def root(x):
+                return extra.value(x) + later
+            ''')
+        build_keys._MODULES.clear()
+        first = build_keys.code_digest([("pkg.a", "root")])
+        self.assertIsNotNone(first)   # extra: not a repository package yet
+        (self.root / "extra").mkdir()
+        (self.root / "extra" / "__init__.py").write_text("def value(x):\n    return x\n")
+        second = build_keys.code_digest([("pkg.a", "root")])
+        self.assertNotEqual(second, first)
+        self.assertIn(("extra", "value"), build_keys.code_parts([("pkg.a", "root")]))
+        (self.root / "pkg" / "later.py").write_text("X = 1\n")
+        parts = build_keys.code_parts([("pkg.a", "root")])
+        self.assertIn(("pkg.later", "X"), parts)   # now a submodule, followed whole
+        (self.root / "extra" / "__init__.py").unlink()   # no longer a package
+        self.assertNotIn(("extra", "value"), build_keys.code_parts([("pkg.a", "root")]))
+        (self.root / "pkg" / "later.py").unlink()
+        self.assertEqual(build_keys.code_digest([("pkg.a", "root")]), first)
+
     def test_an_unreadable_module_gives_no_digest(self):
         self.write("b", "def helper(x:\n")
         self.assertIsNone(self.digest())

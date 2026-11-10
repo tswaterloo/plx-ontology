@@ -1,0 +1,26 @@
+# Weekly work-graph refresh: who does a role's work, derived from what people did over the
+# last 13 weeks (operating.autopilot_roster), per role, into a candidate roles file. It is
+# NOT the file the autopilot reads: point PLX_AUTOPILOT_ROLES_FILE at it (or copy it over)
+# once the owner has looked. Every person passes the people exclusion first (unavailable
+# guard: the role is "blocked", nothing written, exit 1). Ids stay out of the journal
+# (stdout is dropped; the exit status says whether each role completed). Read only on the
+# store. The snapshot of activity per system is plx-system-activity.service.
+[Unit]
+Description=PLX weekly work-graph refresh (role owners from what people did, 13 weeks)
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+UnsetEnvironment=PLX_WORKBENCH_API_KEY AZURE_CLIENT_SECRET
+ExecStart=/bin/bash -c 'rc=0; for r in purchasing customer_service receivables payables; do \
+  /data/venv/bin/python3 -m operating.autopilot_roster --store /data/plx-state/projection/ontology.sqlite \
+  --role $$r --days 91 --out /data/plx-state/work-graph/roles-derived.json >/dev/null || rc=1; done; exit $$rc'
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryHigh=6G
+MemoryMax=8G
+TimeoutStartSec=2h
+UMask=0077

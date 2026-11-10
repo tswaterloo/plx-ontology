@@ -130,7 +130,9 @@ def world() -> tuple[Host, dict]:
 
 def brief(h: Host, reader: str, gaps: list[dict], routing: bf.Routing, **kw) -> dict:
     who = identity(reader)
+    # these two types are off in the alert registry unless the reader switches them on
     return bf.build(inbox(*gaps), routing=routing, hidden={}, last_visit=None,
+                    enabled=("eta_slipped", "customer_order_late"),
                     involved=lambda ids: inv.derive(h, reader, SCHEMA, who, ids, **kw))
 
 
@@ -199,7 +201,7 @@ class MyBriefingTest(unittest.TestCase):
         self.assertEqual((owner["count"], owner["other_teams"], owner["yours"]), (4, 0, 1))
         # without involvement the same reader's order is the company ranking
         plain = bf.build(inbox(*g.values()), routing=OWNER_ROUTING, hidden={},
-                         last_visit=None)
+                         last_visit=None, enabled=("eta_slipped", "customer_order_late"))
         self.assertEqual(set(i["object_id"] for i in plain["items"]), set(ids))
         self.assertIsNone(plain["involvement"])
 

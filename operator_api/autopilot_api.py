@@ -59,16 +59,30 @@ class AutopilotMixin:
         found = grants() if callable(grants) else None
         return found.load() if found is not None else {"teams": {}, "managers": {}}
 
-    def _ap_visible(self, reader: Reader) -> Optional[list[dict[str, Any]]]:
+    def _ap_visible(self, reader: Reader, everyone: bool = False
+                    ) -> Optional[list[dict[str, Any]]]:
+        """The reader's visible items; ``everyone`` (the owner-open reader only, decided by
+        the caller): every person's items, still under the same audience, marking and
+        citation checks."""
         path = self._ap_queue_path()
         if path is None or not path.exists():
             return None
         queue = ap.Queue(path)
+        grants = self._ap_grants
+        if everyone:
+            from operating.proactive_commitments import owner_ids
+            mine = owner_ids(_principals(reader))
+            owners = {r[0] for r in queue.conn.execute(
+                "SELECT DISTINCT owner FROM items WHERE state = 'open'")}
+
+            def grants() -> dict[str, Any]:   # every owner one team the reader holds
+                return {"teams": {o: "\x00all" for o in owners},
+                        "managers": {o: ["\x00all"] for o in mine}}
         try:
             if self.autopilot_grant is not None:
                 may_read, held, decide = self.autopilot_grant
                 return ap.visible(queue, reader=_principals(reader), may_read=may_read,
-                                  held=held, decide=decide, grants=self._ap_grants())
+                                  held=held, decide=decide, grants=grants())
 
             def job(view: Any) -> Any:
                 access = getattr(view, "access", None)
@@ -78,7 +92,7 @@ class AutopilotMixin:
                     may_read, held = access.grant()
                     return ap.visible(queue, reader=_principals(reader), may_read=may_read,
                                       held=held, decide=access.decide,
-                                      grants=self._ap_grants())
+                                      grants=grants())
             return self.reads.run(reader, job, timeout=60)  # type: ignore[attr-defined]
         finally:
             queue.close()

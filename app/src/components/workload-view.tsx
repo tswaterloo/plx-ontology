@@ -11,7 +11,6 @@ export function WorkloadView({ data }: { data: Workload }) {
   const people = data.people ?? [];
   return (
     <div className="space-y-4" data-testid="workload">
-      <h1 className="text-lg font-semibold">Workload</h1>
       <table className="w-full text-[13px]" data-testid="workload-teams">
         <thead>
           <tr className="text-left text-muted"><th>Team</th><th>Awaiting reply</th><th>Open tasks</th><th>Alerts</th></tr>
@@ -99,7 +98,7 @@ function OwnerItems({ person, bucket, onClose }: { person: string; bucket: Owner
     return () => ctl.abort();
   }, [person, bucket]);
   return (
-    <div className="space-y-2 rounded border p-3" data-testid="owner-items">
+    <div className="space-y-2 rounded-lg border border-border p-3" data-testid="owner-items">
       <div className="flex items-center justify-between">
         <h3 className="text-[13px] font-medium">{BUCKET_WORDS[bucket]}: {person}</h3>
         <button type="button" className="text-[12px] underline" onClick={onClose}>Close</button>

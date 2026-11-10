@@ -248,6 +248,22 @@ def weekly_review_of(view: Any, week: Optional[date], *, archive: Any = None,
     return raw
 
 
+def qc_pack_of(view: Any, kind: str) -> Optional[dict[str, Any]]:
+    """The daily QC pack or the QC audit pack as this reader reads it (``operating.briefs``):
+    built from the reader's own ``plx.aggregate`` mode ``qc_compliance`` calls, every row
+    decided on its citations; the daily pack's hold rows are the reader's own alerts."""
+    held = _held(view)
+    if held is None:
+        return None
+    decide = _decide(view)
+    if kind == "daily":
+        alerts = _alerts(view)
+        with view._request():
+            return br.qc_daily_pack(view._call, held, alerts, decide=decide)
+    with view._request():
+        return br.qc_audit_pack(view._call, held, decide=decide)
+
+
 def upcoming_of(view: Any) -> Optional[list[dict[str, Any]]]:
     held = _held(view)
     if held is None:
@@ -378,14 +394,28 @@ def label_changes_of(view: Any, object_id: str) -> Optional[dict[str, Any]]:
     return lc.item_section(found.get("gaps") or (), object_id)
 
 
+def label_revisions_of(view: Any, object_id: str) -> Optional[dict[str, Any]]:
+    from operating import label_revisions as lr
+    found = view.gap_inbox(kinds=list(lr.KINDS), limit=bf_max())
+    if not isinstance(found, Mapping) or found.get("status") != "read":
+        return None
+    return lr.history(found.get("gaps") or (), object_id)
+
+
 def bf_max() -> int:
     from operating import briefing as bf
     return bf.MAX_READ
 
 
 def labour_held(reader: Reader) -> bool:
-    """Whether the reader holds hr or ops-management (the host's grants file, read now)."""
+    """Whether the reader holds hr or ops-management (the host's grants file, read now), or
+    is the owner-open reader (full read over every source and every mailbox, decided by the
+    access layer at sign-in; nothing in a request can claim it): the owner sees labour
+    hours without a separate grant."""
     from operating import labour_hours as lh
+    from operator_api.feedback import owner_open
+    if owner_open(reader.session):
+        return True
     return lh.holds_labour(getattr(reader.session, "principals", ()) or (), lh.load_grants())
 
 
@@ -500,6 +530,12 @@ class BriefsMixin:
         if raw is None:
             raise UserFacing("not_found", "Your alert list could not be read.", 404)
         return m.LabelChanges(**raw)
+
+    def label_revisions(self, reader: Reader, object_id: str) -> m.LabelRevisions:
+        raw = self._brief_run(reader, lambda view: label_revisions_of(view, object_id))
+        if raw is None:
+            raise UserFacing("not_found", "Your alert list could not be read.", 404)
+        return m.LabelRevisions(**raw)
 
     @staticmethod
     def _my_oids(reader: Reader) -> frozenset[str]:
@@ -713,6 +749,18 @@ class BriefsMixin:
         if raw is None:
             raise UserFacing("not_found", "The weekly review needs a signed-in reader.", 404)
         return brief_model(raw)
+
+    def qc_pack_dict(self, reader: Reader, kind: str) -> dict[str, Any]:
+        raw = self._brief_run(reader, lambda view: qc_pack_of(view, kind))
+        if raw is None:
+            raise UserFacing("not_found", "The QC pack needs a signed-in reader.", 404)
+        return raw
+
+    def qc_pack(self, reader: Reader, kind: str) -> m.Brief:
+        return brief_model(self.qc_pack_dict(reader, kind))
+
+    def qc_pack_text(self, reader: Reader, kind: str) -> str:
+        return br.pack_text(self.qc_pack_dict(reader, kind))
 
     def labour(self, reader: Reader) -> m.LabourPage:
         """Department and week labour hours (``operating.labour_hours``): only for a reader

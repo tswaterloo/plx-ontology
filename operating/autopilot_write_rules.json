@@ -1,0 +1,76 @@
+{
+  "schema": "plx-autopilot-write-rules/v1",
+  "note": "What an autopilot may do by itself once its workflow's write gate is live (operating/autopilot_write.py). Conservative by construction: an action kind, operation or MC approval scope not listed here is never routine; every term class an action names refuses it when its text matches; every payload field whose name holds a deny_fields fragment refuses it. Nothing here names a record, a party or a person.",
+  "fresh_from": "2026-11-06T07:00:00Z",
+  "gate": {"precision": "0.9", "min_judged": 15},
+  "rate_limits": {"per_hour": 5, "per_day": 20, "workflows": {}},
+  "contested_workflows": [],
+  "term_classes": {
+    "money": ["\\bpay(?:s|ing|ment|ments|out|outs|able|ables)?\\b", "\\brefund\\w*",
+              "\\bwire[sd]?\\b", "\\bremit\\w*", "\\bdeposits?\\b", "\\bwrite[- ]?offs?\\b",
+              "\\bcharge ?backs?\\b", "\\bcredit (?:memo|note)s?\\b", "\\bACH\\b", "\\bEFT\\b",
+              "[$€£]\\s?\\d", "\\b(?:USD|CAD|EUR|GBP)\\s?\\d", "\\binvoic\\w*",
+              "\\bbalance due\\b", "\\bamount due\\b", "\\bpast due\\b", "\\bcollections?\\b"],
+    "price": ["\\bpric(?:e|es|ed|ing)\\b", "\\bunit cost\\b", "\\bdiscount\\w*", "\\brebates?\\b",
+              "\\bsurcharges?\\b", "\\bmark-?ups?\\b", "\\bmargins?\\b", "\\bquot(?:e|es|ed|ation)\\b"],
+    "credit": ["\\bcredit\\b", "\\bpayment terms\\b", "\\bnet ?\\d{2}\\b"],
+    "permission": ["\\bpermissions?\\b", "\\baccess\\b", "\\broles?\\b", "\\bgrant\\w*",
+                   "\\badmin\\w*", "\\bsecrets?\\b", "\\bcredentials?\\b", "\\bapi[ _-]?keys?\\b",
+                   "\\btokens?\\b", "\\bpassword\\w*", "\\bsso\\b", "\\bentra\\b"],
+    "migration": ["\\bmigrat\\w*", "\\bschema\\b", "\\bcut-?over\\b", "\\bbackfill\\w*",
+                  "\\bdrop (?:table|column)\\b", "\\brestore\\b"],
+    "production_change": ["\\bproduction\\b", "\\bprod\\b", "\\bdeploy\\w*", "\\bgo[- ]live\\b",
+                          "\\bmerge\\w*", "\\bhotfix\\w*", "\\brollback\\w*", "\\bfeature flags?\\b",
+                          "\\bflags?\\b"],
+    "new_party": ["\\bnew (?:customer|vendor|supplier|account|client)s?\\b", "\\bonboard\\w*",
+                  "\\bset ?up (?:a |the )?(?:customer|vendor|supplier|account)\\b"],
+    "legal_or_people": ["\\bcontract\\w*", "\\blegal\\b", "\\blawyer\\w*", "\\bterminat\\w*",
+                        "\\bsalar\\w*", "\\bpayroll\\b", "\\bhir(?:e|ing)\\b", "\\bfir(?:e|ing)\\b"]
+  },
+  "deny_fields": ["price", "cost", "amount", "credit", "discount", "payment", "terms", "currency",
+                  "tax", "balance", "total", "limit", "blocked", "bank", "salary", "rate"],
+  "actions": {
+    "mc_approval": {
+      "label": "Approve a routine Mission Control gate",
+      "scope_kind_in": ["launch"],
+      "recommendation_in": ["approve"],
+      "deny_term_classes": ["money", "price", "credit", "permission", "migration",
+                            "production_change", "new_party", "legal_or_people"]
+    },
+    "send_mail": {
+      "label": "Send the prepared email",
+      "max_recipients": 3,
+      "known_domains_only": true,
+      "deny_term_classes": ["money", "price", "credit", "permission", "new_party",
+                            "legal_or_people"]
+    },
+    "send_teams": {
+      "label": "Post the prepared Teams message",
+      "deny_term_classes": ["money", "price", "credit", "permission", "new_party",
+                            "legal_or_people"]
+    },
+    "bc_write": {
+      "label": "Business Central entry",
+      "operations": {
+        "sales_order_create": {"require_precondition": "party", "max_lines": 20}
+      },
+      "deny_term_classes": ["money", "price", "credit", "new_party", "legal_or_people"]
+    },
+    "sage_write": {
+      "label": "Sage 300 entry",
+      "operations": {},
+      "note": "Every Sage entry an autopilot prepares (invoice entry, shipment posting, cash application) moves money: none is routine.",
+      "deny_term_classes": ["money", "price", "credit", "new_party"]
+    },
+    "portal_write": {
+      "label": "Customer Portal entry",
+      "operations": {},
+      "deny_term_classes": ["money", "price", "credit", "new_party"]
+    },
+    "filemaker_write": {
+      "label": "FileMaker entry",
+      "operations": {},
+      "deny_term_classes": ["money", "price", "credit", "new_party"]
+    }
+  }
+}

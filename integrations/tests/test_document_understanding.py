@@ -174,9 +174,13 @@ class DocumentUnderstandingTest(unittest.TestCase):
         big = extract_document(over, "text/html", original_url=URL)
         self.assertEqual((big.status, big.text, big.warnings),
                          ("unsupported", "", (f"html_exceeds_bound:{du.MAX_HTML_BYTES}",)))
+        # A legacy (Windows-1252) page is read and says so; bytes that are no text are not.
         latin = extract_document("<p>Caf\u00e9</p>".encode("latin-1"), "text/html",
                                  original_url=URL)
-        self.assertEqual((latin.status, latin.warnings),
+        self.assertEqual((latin.status, latin.text.strip(), latin.warnings),
+                         ("extracted", "Caf\u00e9", ("text_decoded_cp1252",)))
+        binary = extract_document(b"<p>\x00\x81\x8d</p>", "text/html", original_url=URL)
+        self.assertEqual((binary.status, binary.warnings),
                          ("unsupported", ("text_encoding_unsupported",)))
         blank = extract_document(b"<html><script>x()</script></html>", "text/html",
                                  original_url=URL)
@@ -1646,3 +1650,59 @@ class RaisedReadNotRememberedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TextReaderCoverageTests(unittest.TestCase):
+    """The text formats a SharePoint library holds that were left unread: Rich Text,
+    generic XML, legacy-encoded text and the OOXML template/macro packages."""
+
+    URL = "https://capture.invalid/document"
+
+    def read(self, content: bytes, mime: str, name: str):
+        return extract_document(content, mime, original_url=self.URL, filename=name)
+
+    def test_rich_text_reads_its_body_and_skips_tables_pictures_and_fields(self):
+        rtf = (b"{\\rtf1\\ansi\\ansicpg1252{\\fonttbl{\\f0 Arial;}}{\\colortbl;\\red0;}"
+               b"{\\*\\generator Writer;}{\\info{\\author Someone}}\\f0 Purchase order PO-77 "
+               b"for caf\\'e9 soap\\par Total \\u8364?120.00\\par{\\pict 89504e47}"
+               b"{\\field{\\*\\fldinst HYPERLINK x}{\\fldrslt shown}}}")
+        found = self.read(rtf, "application/rtf", "order.rtf")
+        self.assertEqual(found.status, "extracted")
+        self.assertEqual(found.text, "Purchase order PO-77 for café soap\n"
+                                     "Total €120.00\nshown")
+        self.assertEqual(self.read(b"PK\x03\x04 not rtf", "application/rtf", "x.rtf").status,
+                         "unsupported")
+
+    def test_xml_reads_character_data_and_never_expands_a_declared_entity(self):
+        xml = (b'<?xml version="1.0"?><!DOCTYPE o [<!ENTITY big "EXPANDED">]>'
+               b"<order><!-- note --><po>PO-77 &amp; &big;</po>"
+               b"<memo><![CDATA[ship <fast>]]></memo></order>")
+        found = self.read(xml, "text/xml", "order.xml")
+        self.assertEqual(found.status, "extracted")
+        self.assertEqual(found.text, "PO-77 & &big;\nship <fast>")
+        self.assertNotIn("EXPANDED", found.text)
+
+    def test_legacy_encoded_text_is_read_and_binary_bytes_fail_closed(self):
+        cp = self.read("Café order 12".encode("cp1252"), "text/plain", "n.txt")
+        self.assertEqual((cp.status, cp.text, cp.warnings),
+                         ("extracted", "Café order 12", ("text_decoded_cp1252",)))
+        u16 = self.read("Lot 4411 é".encode("utf-16"), "text/plain", "n.txt")
+        self.assertEqual((u16.status, u16.text), ("extracted", "Lot 4411 é"))
+        html = self.read("<p>Café</p>".encode("cp1252"), "text/html", "p.html")
+        self.assertEqual((html.status, html.text.strip()), ("extracted", "Café"))
+        binary = self.read(b"\x00\x01\x81\x8d\xff" * 20, "text/csv", "dump.csv")
+        self.assertEqual((binary.status, binary.warnings),
+                         ("unsupported", ("text_encoding_unsupported",)))
+
+    def test_ooxml_templates_and_macro_packages_take_the_docx_and_pptx_readers(self):
+        from integrations import doc_convert
+        for mime, name, kind in (
+                ("application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+                 "t.dotx", "docx"),
+                ("application/vnd.ms-word.document.macroEnabled.12", "d.docm", "docx"),
+                ("application/vnd.ms-powerpoint.presentation.macroEnabled.12", "p.pptm",
+                 "pptx"),
+                ("application/octet-stream", "p.ppsx", "pptx")):
+            self.assertEqual(doc_convert.convertible_kind(mime, name), kind, name)
+        self.assertIsNone(doc_convert.convertible_kind("application/vnd.ms-excel.sheet."
+                                                       "binary.macroEnabled.12", "b.xlsb"))

@@ -30,7 +30,7 @@ ISO ``deadline``) and refuses anything else (``ValueError`` codes). ``run``:
   ``must_confirm`` lists what a person must confirm: every input not current, every
   ambiguous identifier, a target read from text or missing, every unknown the agent left.
 * **Follow-ups**, shaped as the console's propose-follow-up control takes them
-  (``operator_ui.object_workspace.FOLLOW_UP_FIELDS``), each on a root or an input's
+  (``operator_api.workspace.object_workspace.FOLLOW_UP_FIELDS``), each on a root or an input's
   object with who can answer for its record (``operating.answerers``): proposed only,
   never recorded, approved or sent here; one with no object or no answerer stays a gap.
 

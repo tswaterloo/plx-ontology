@@ -26,11 +26,16 @@ export function RdBoardView({ board }: { board: RdBoard }) {
   const projects = board.projects ?? [];
   return (
     <div className="space-y-4" data-testid="rd-board">
-      <h1 className="text-lg font-semibold">R&amp;D projects <span className="ml-2 rounded bg-hover px-1 text-[11px]">Early</span></h1>
-      <p className="text-[13px] text-muted">
-        {plural(board.total, "project")}, {board.idle} idle ({board.idle_after_days}+ business days without activity). Early view: projects are grouped by outside domain until mail carries customer links, so some are suppliers. No idle alerts are sent. Only threads and records you may open. Mail only. Nothing is sent until you confirm it.
+      {projects.length === 0 ? (
+        <p className="text-[13px] text-muted">No R&amp;D or sample projects in the mail you can open.</p>
+      ) : (
+        <p className="text-[13px] text-fg">
+          {plural(board.total, "project")}, {board.idle} idle (no activity for {board.idle_after_days}+ business days).
+        </p>
+      )}
+      <p className="text-[12px] text-muted">
+        Early view, read from mail only: projects are grouped by the other company&apos;s mail domain, so some may be suppliers. No idle alerts are sent. Nothing is sent until you confirm it.
       </p>
-      {projects.length === 0 && <p className="text-[13px] text-muted">No R&amp;D or sample projects on your side.</p>}
       <ul className="space-y-3">
         {projects.map((p: RdProject) => (
           <li key={p.id} className="space-y-1 rounded-lg border border-border p-3 text-[13px]" data-testid="rd-project">

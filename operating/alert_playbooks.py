@@ -315,6 +315,10 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n}: a label or artwork change has no approval recorded.", "change": None},
     "label_change_stale": {"about": "subject", "ask": None,
         "owner": "{n}: a label or artwork change requested is not done.", "change": None},
+    # an open order on a superseded label revision (``operating.label_revisions``)
+    "label_revision_superseded": {"about": "subject", "ask": None,
+        "owner": "{n}: an open order points at a superseded label or artwork revision: "
+                 "confirm it runs on the current one.", "change": None},
     # R&D and sample projects (``operating.rd_projects``): the board's idle alert
     "rd_project": {"about": "subject", "ask": None,
         "owner": "{n}: an R&D or sample project has had no activity: send the customer a "
@@ -332,6 +336,12 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
     "chase_escalating": {"about": "subject", "ask": None,
         "owner": "A thread was chased repeatedly with no answer for {days} days: "
                  "answer it today or say who owns it.", "change": None},
+    "internal_order_chase": {"about": "subject", "ask": None,
+        "owner": "A colleague chased an order and nobody it asked has answered for {days} "
+                 "business days: answer them or say who has the answer.", "change": None},
+    "party_chase_unanswered": {"about": "subject", "ask": None,
+        "owner": "A customer or supplier chased us and nobody of ours has answered for {days} "
+                 "business days: answer it today or say who owns it.", "change": None},
     # operations (``operating.proactive_stock``): stock and freight figures are finance-marked
     "slow_moving_stock": {"about": "subject", "finance": True, "ask": None,
         "owner": "{n} has stopped moving: decide whether to sell it off, use it, return it "

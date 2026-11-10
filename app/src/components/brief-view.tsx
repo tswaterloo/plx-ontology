@@ -3,7 +3,7 @@
 import { MessageCircle } from "lucide-react";
 import Link from "next/link";
 import type { Brief, BriefFigure, BriefRow, BriefSection } from "@/lib/types";
-import { formatDate, formatMoney, objectHref, safeHref } from "@/lib/format";
+import { formatDate, formatMoney, objectHref, readable, safeHref } from "@/lib/format";
 import { SourceChips } from "./source-chip";
 import { PageHeader } from "./ui/page-header";
 import { Section } from "./ui/section";
@@ -17,7 +17,7 @@ export function mondayBefore(day: Date, weeks: number): string {
 
 /** A figure's value in its own unit: money with its currency, a percent, a count. */
 export function figureText(f: Pick<BriefFigure, "value" | "unit" | "currency">): string {
-  if (f.value == null) return "Not readable";
+  if (f.value == null) return "Not read";
   if (f.unit === "money") return f.currency ? formatMoney(f.value, f.currency) : f.value;
   if (f.unit === "percent") return `${f.value}%`;
   return f.value;
@@ -61,12 +61,15 @@ function Row({ row }: { row: BriefRow }) {
 
 function Figure({ f }: { f: BriefFigure }) {
   const delta = deltaText(f);
+  const missing = f.value == null;
+  // "Not read" already says what a "could not be read" note would
+  const note = f.note && !(missing && /^could not be read\.?$/i.test(f.note.trim())) ? f.note : null;
   return (
     <div className="rounded-lg border border-border p-3" data-testid="brief-figure">
       <p className="text-meta text-muted">{f.label}</p>
-      <p className="text-[20px] font-semibold tabular-nums">{figureText(f)}</p>
+      <p className={missing ? "py-1 text-[15px] leading-5 font-medium text-muted" : "text-[20px] font-semibold tabular-nums"}>{figureText(f)}</p>
       {delta && <p className="text-[12px] text-muted">{delta}</p>}
-      {f.note && <p className="text-[12px] text-muted">{f.note}</p>}
+      {note && <p className="text-[12px] text-muted">{note}</p>}
       <div className="mt-1">
         <SourceChips sources={f.sources} max={2} />
       </div>
@@ -81,13 +84,23 @@ const EMPTY: Record<string, string> = {
   blocked: "Not shown: the people exclusion is not loaded. This is not the same as none.",
 };
 
-export function BriefSectionView({ section }: { section: BriefSection }) {
+/** The section's own note already says what the empty line would (unread is not none; finance only): said once. */
+function saidInNote(section: BriefSection): boolean {
+  const note = (section.note ?? "").toLowerCase();
+  if (!note) return false;
+  if (section.state === "finance_marked") return note.includes("finance");
+  if (section.state === "unread" || section.state === "blocked") return note.includes("not the same as none");
+  return false;
+}
+
+/** `repeat`: the section above said this same note; it is said once, then pointed at. */
+export function BriefSectionView({ section, repeat = false }: { section: BriefSection; repeat?: boolean }) {
   const figures = section.figures ?? [];
   const rows = section.rows ?? [];
   const more = section.more ?? 0;
   return (
     <Section title={section.title} testId={`brief-section-${section.key}`}>
-      {section.note && <p className="mb-2 text-[12px] text-muted">{section.note}</p>}
+      {section.note && <p className="mb-2 text-[12px] text-muted">{repeat ? (section.state === "finance_marked" ? "Finance-marked too." : "Not read either, for the same reason.") : readable(section.note)}</p>}
       {section.state === "partial" && <p className="mb-2 text-[12px] text-muted">A read limit was reached: this section may be incomplete.</p>}
       {figures.length > 0 && (
         <div className="mb-2 grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
@@ -103,15 +116,20 @@ export function BriefSectionView({ section }: { section: BriefSection }) {
           ))}
         </ul>
       ) : (
-        figures.length === 0 && <p className="text-[13px] text-muted">{EMPTY[section.state] ?? EMPTY.empty}</p>
+        figures.length === 0 && !saidInNote(section) && <p className="text-[13px] text-muted">{EMPTY[section.state] ?? EMPTY.empty}</p>
       )}
       {more > 0 && <p className="mt-2 text-[12px] text-muted">{more} more not listed.</p>}
     </Section>
   );
 }
 
+/** Two sections in a row held back for one stated reason (unread, blocked, finance only). */
+function sameUnreadNote(prev: BriefSection | undefined, s: BriefSection): boolean {
+  return !!prev && !!s.note && prev.note === s.note && (s.state === "unread" || s.state === "blocked" || s.state === "finance_marked") && prev.state === s.state;
+}
+
 /** One brief (meeting prep or weekly review): its sections, parties and how it was read. */
-export function BriefView({ brief }: { brief: Brief; eyebrow?: string }) {
+export function BriefView({ brief, level = 1 }: { brief: Brief; eyebrow?: string; level?: 1 | 2 }) {
   const subject = brief.subject;
   const parties = brief.parties ?? [];
   const possible = brief.possible_parties ?? [];
@@ -121,9 +139,11 @@ export function BriefView({ brief }: { brief: Brief; eyebrow?: string }) {
   return (
     <div className="space-y-4" data-testid="brief">
       <PageHeader
-        title={brief.title}
+        level={level}
+        title={readable(brief.title)}
         sub={
-          (brief.when ? `${formatDate(brief.when)} · read ${formatDate(brief.as_of)}` : `Read ${formatDate(brief.as_of)}`) +
+          // the week's date is said once: in the title when it names it, else here
+          (brief.when && !readable(brief.title).includes(formatDate(brief.when)) ? `${formatDate(brief.when)} · read ${formatDate(brief.as_of)}` : `Read ${formatDate(brief.as_of)}`) +
           (brief.stored_at ? ` · kept ${formatDate(brief.stored_at)}` : "")
         }
         actions={
@@ -167,8 +187,8 @@ export function BriefView({ brief }: { brief: Brief; eyebrow?: string }) {
         </p>
       )}
       <div className="grid gap-4">
-        {brief.sections.map((s) => (
-          <BriefSectionView key={s.key} section={s} />
+        {brief.sections.map((s, i) => (
+          <BriefSectionView key={s.key} section={s} repeat={sameUnreadNote(brief.sections[i - 1], s)} />
         ))}
       </div>
       <p className="text-[12px] text-muted">{brief.basis}</p>

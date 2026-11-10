@@ -1,6 +1,6 @@
 """Live check of the console question box's one path (``workspace.console_question_one_path``):
 a two-part question about one purchase order by its number ("Why is <number> late, and
-what is missing?") through ``operator_ui.objective_box.answer`` (the only path the box
+what is missing?") through ``operator_api.workspace.objective_box.answer`` (the only path the box
 posts, ``POST /api/objective``) on the object workspace the console builds for one named
 reader of the persistent host (``scripts.eval_real_agent.ask_workspace``), with a headless
 Claude Code planner. The browser routes nothing: the server answers each part a plan or
@@ -81,7 +81,7 @@ def pick_order(workspace: Any, as_of: date) -> str | None:
 def measure(workspace: Any, question: str) -> dict[str, Any]:
     """The question through the box, each server part checked against the reader's own
     ``investigate`` / ``workspace`` answer for the same record."""
-    from operator_ui import objective_box
+    from operator_api.workspace import objective_box
 
     try:
         out = objective_box.answer(workspace, {"objective": question, "mode": "investigate"})

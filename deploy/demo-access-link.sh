@@ -6,12 +6,12 @@
 # Writes https://<PLX_APP_HOST>/#ticket=<ticket> to ~/.config/plx/workbench-access-link
 # (mode 0600). The link is never printed: open the file yourself and paste the link into
 # the browser (or into "I have an access link" on the sign-in page). The ticket is a
-# console session ticket (operator_ui.console_ticket mint) for the reader in
+# console session ticket (operator_api.workspace.console_ticket mint) for the reader in
 # PLX_EVAL_READER, signed with the API's own PLX_WORKBENCH_SESSION_SECRET, verified
 # against the host config's employee policy and Portal snapshot; the mint appends one
 # audit row to <state>/console-ticket-audit.jsonl. A ticket lives at most two hours;
 # the app session ends with it. Revoke early with:
-#   python3 -m operator_ui.console_ticket revoke --state-dir /data/plx-state \
+#   python3 -m operator_api.workspace.console_ticket revoke --state-dir /data/plx-state \
 #       --ticket-file ~/.config/plx/workbench-ticket.url
 set -euo pipefail
 TTL=${1:-120}
@@ -27,13 +27,21 @@ HOST=$(sed -n 's/^PLX_APP_HOST=//p' /etc/plx/workbench-caddy.env)
 [ -n "$HOST" ] || { echo "PLX_APP_HOST missing in /etc/plx/workbench-caddy.env" >&2; exit 2; }
 umask 077
 cd "$CHECKOUT"
+# The API signs sessions with the live-session file when its drop-in is installed
+# (deploy/systemd/host/plx-api.service.d/live-secret.conf); a ticket signed with the
+# development secret beside it is refused at sign-in, so that file wins when present.
+LIVE_SESSION_ENV=${PLX_DEPLOY_SESSION_ENV:-/etc/plx/live-session.env}
+if [ -e "$LIVE_SESSION_ENV" ] && [ ! -r "$LIVE_SESSION_ENV" ]; then
+    echo "$LIVE_SESSION_ENV exists but is not readable: the API would refuse this link" >&2; exit 2
+fi
 set -a; . "$CFG/plx.env"; . "$CFG/workbench-session.env"
+if [ -e "$LIVE_SESSION_ENV" ]; then . "$LIVE_SESSION_ENV"; fi
 # The full-read reader's claims only when that reader was asked for.
 if [ -n "${PLX_DEPLOY_READER_ENV:-}" ] && [ -f "$CFG/reader-vince.env" ]; then . "$CFG/reader-vince.env"; fi
 set +a
 TICKET_FILE="$CFG/workbench-ticket.url"
 rm -f "$TICKET_FILE"
-/data/venv/bin/python3 -m operator_ui.console_ticket mint --state-dir "$STATE" \
+/data/venv/bin/python3 -m operator_api.workspace.console_ticket mint --state-dir "$STATE" \
     --host-config "$HOST_DIR/host.json" --reader-env "$READER_ENV" \
     --ttl-minutes "$TTL" --out "$TICKET_FILE"
 # Re-point the console URL (http://127.0.0.1:PORT/#access=T) at the app (#ticket=T).

@@ -62,7 +62,7 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         from integrations.tests.test_source_mirror import BASE, KEY
         from integrations.workbench_read_api import WorkbenchReadApiClient
-        from operator_ui.tests import case_fixtures
+        from operator_api.tests import case_fixtures
 
         cls.temp = tempfile.TemporaryDirectory()
         cls.dir = Path(cls.temp.name)
@@ -104,7 +104,7 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
 
     def runtime(self):
         from operating.tests.test_ao_originals import PAGES, extractor
-        from operator_ui.tests import case_fixtures
+        from operator_api.tests import case_fixtures
 
         runtime = live_ws.offline_runtime(
             self.state, self.mirror_audience, "plx",
@@ -516,7 +516,7 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
         return argv, env, ticket
 
     def test_the_console_opens_a_mirror_case_for_its_employee_and_labels_the_mirror(self):
-        from operator_ui import case_console
+        from operator_api.workspace import case_console
         captured = {}
 
         def fake_serve(*, port, ticket_sessions, journal):
@@ -601,7 +601,7 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
     def test_an_employee_gets_an_object_workspace_resolved_per_request(self):
         """--project-ontology on live state: each verified employee gets its own object
         workspace; its grant is the runtime's employee gate, resolved per request."""
-        from operator_ui import case_console
+        from operator_api.workspace import case_console
         captured = {}
 
         def fake_serve(*, port, ticket_sessions, journal):
@@ -757,7 +757,7 @@ class LiveCheckSpecTest(unittest.TestCase):
         from integrations import workbench_read_api
         from integrations.source_mirror import SourceMirror
         from integrations.tests.test_source_mirror import BASE, KEY
-        from operator_ui.tests import case_fixtures
+        from operator_api.tests import case_fixtures
 
         spec = json.loads((ROOT / "devloop" / "live-checks" / "case.workspace_live.json")
                           .read_text("utf-8"))
@@ -1020,7 +1020,7 @@ class LiveMirrorPurchaseOrderTest(unittest.TestCase):
         after the grant change investigates anew instead of reusing the stale case."""
         from operating.cases import CaseNotFound
         from operating.mcp_server import MCPServer, local_client
-        from operator_ui.case_workspace import CaseWorkspace
+        from operator_api.workspace.case_workspace import CaseWorkspace
 
         number = "PO100777"
         opened = live_ws.CaseOpener(self.runtime, self.investigator, self.state,
@@ -2112,7 +2112,7 @@ class DisagreeingValueLiveTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from operator_ui.tests import case_fixtures
+        from operator_api.tests import case_fixtures
         real_build = case_fixtures.build_world
 
         def build_disagreeing():

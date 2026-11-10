@@ -132,7 +132,9 @@ PEOPLE_SECTIONS = frozenset({"threads", "notes", "promises", "asks", "commitment
 # Alert kinds read from people's mail, chats and meetings: dropped from every section while
 # the people exclusion is not loaded.
 PEOPLE_KINDS = PROMISE_KINDS | ASK_KINDS | frozenset({"commitment_missed", "vendor_no_reply",
-                                                   "approval_waiting", "chase_escalating"})
+                                                   "approval_waiting", "chase_escalating",
+                                                   "party_chase_unanswered",
+                                                   "internal_order_chase"})
 PEOPLE_NOTE = ("The people exclusion is not loaded, so no mail, Teams or meeting line is "
                "shown here: that is not the same as none.")
 ITEM_NOTE = ("Your item access could not be checked, so nothing is shown here: that is not "
@@ -300,11 +302,11 @@ def _row(label: str, *, detail: str | None = None, day: date | None = None,
 
 def _section(key: str, title: str, rows: list[dict[str, Any]], *, state: str | None = None,
              note: str | None = None, figures: list[dict[str, Any]] | None = None,
-             partial: bool = False) -> dict[str, Any]:
-    # every row is kept here: ``finish`` decides them for the reader, then truncates (a row
-    # the reader may not open is never counted in "more")
+             partial: bool = False, limit: int = MAX_ROWS) -> dict[str, Any]:
+    # every row is kept here: ``finish`` decides them for the reader, then truncates to
+    # ``limit`` (a row the reader may not open is never counted in "more")
     return {"key": key, "title": title, "state": state, "note": note, "rows": list(rows),
-            "more": 0, "figures": figures or [], "_partial": partial}
+            "more": 0, "figures": figures or [], "_partial": partial, "_limit": limit}
 
 
 def _handles_of(item: Mapping[str, Any]) -> list[str]:
@@ -316,8 +318,8 @@ def finish(sections: list[dict[str, Any]], decide: Decide | None, reads: "Reads"
            ) -> list[dict[str, Any]]:
     """Decide every row and figure for the reader on all its citations (``decide``: None
     means the reader's reads were decided already), drop what it may not open, then
-    truncate to ``MAX_ROWS`` and set each section's state. A decision that fails withholds
-    every section (fail closed)."""
+    truncate to each section's limit (``MAX_ROWS``) and set its state. A decision that
+    fails withholds every section (fail closed)."""
     refused: set[str] | None = set()
     if decide is not None:
         handles = sorted({h for s in sections for item in s["rows"] + s["figures"]
@@ -335,6 +337,7 @@ def finish(sections: list[dict[str, Any]], decide: Decide | None, reads: "Reads"
     out = []
     for s in sections:
         partial = s.pop("_partial", False)
+        limit = s.pop("_limit", MAX_ROWS)
         if refused is None and s["state"] is None and (s["rows"] or s["figures"]):
             s.update(state="unread", note=ITEM_NOTE, rows=[], figures=[])
         if refused:
@@ -343,7 +346,7 @@ def finish(sections: list[dict[str, Any]], decide: Decide | None, reads: "Reads"
                                  note="not readable for you")
                             if set(_handles_of(f)) & refused else f for f in s["figures"]]
         rows = s["rows"]
-        s["rows"], s["more"] = rows[:MAX_ROWS], max(0, len(rows) - MAX_ROWS)
+        s["rows"], s["more"] = rows[:limit], max(0, len(rows) - limit)
         if s["state"] is None:
             s["state"] = "partial" if partial else (
                 "shown" if rows or s["figures"] else "empty")
@@ -816,6 +819,8 @@ def meeting_brief(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
 # kinds that review discusses, built live (no agenda is kept anywhere). Vocabulary only:
 # no entry names a meeting, a record or a person.
 import re as _re
+from operating import declared_schema as _schemas
+from operating.declared_schema import briefs as _BRIEFS
 REVIEW_FAMILIES: tuple[tuple[str, str, Any, frozenset[str]], ...] = (
     ("incoming", "Incoming deliveries and ETAs", _re.compile(
         r"\b(?:incoming|inbound)\b|\betas?\b|\bcontainers?\b|\breceiving\b", _re.I),
@@ -854,7 +859,8 @@ REVIEW_FAMILIES: tuple[tuple[str, str, Any, frozenset[str]], ...] = (
                 "sync_missing", "sync_mismatch"})),
 )
 # Every standing review also sees what waits on someone of ours.
-WAITING_KINDS = frozenset({"approval_waiting", "chase_escalating", "teams_unanswered_ask"})
+WAITING_KINDS = frozenset({"approval_waiting", "chase_escalating", "teams_unanswered_ask",
+                           "party_chase_unanswered", "internal_order_chase"})
 MAX_REVIEWS = 3
 
 
@@ -1332,9 +1338,7 @@ class WeeklyArchive:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         conn = sqlite3.connect(self.path, timeout=5)
         os.chmod(self.path, 0o600)
-        conn.execute("CREATE TABLE IF NOT EXISTS weeks (reader TEXT NOT NULL, week TEXT NOT "
-                     "NULL, grant_key TEXT NOT NULL, stored_at TEXT NOT NULL, body TEXT NOT "
-                     "NULL, PRIMARY KEY (reader, week))")
+        _schemas.apply(conn, _BRIEFS)
         return conn
 
     @staticmethod
@@ -1398,3 +1402,272 @@ class WeeklyArchive:
                 conn.close()
         except Exception:  # noqa: BLE001
             return []
+
+
+# ------------------------------------------------------------------------------ QC packs
+
+QC_DAILY_SCHEMA = "plx-qc-daily/v1"
+QC_AUDIT_SCHEMA = "plx-qc-audit/v1"
+QUALITY = "quality_controlled"
+QC_MODE = "qc_compliance"
+QC_ROWS = 40             # rows an audit or daily pack section lists (one printed page)
+QC_HOLD_KINDS = frozenset({"quality_hold_aging", "lot_on_hold"})
+STATUS_WORDS = {"missed": "missed its cycle", "overdue": "overdue",
+                "upcoming": "due soon", "late": "done late"}
+QC_BASIS = ("Counted from the quality records you may read, no model call: Planner tasks of "
+            "quality plans (or titled calibration, swab, sanitation, pest control) and "
+            "FileMaker production schedule slots. A check done after its due day but before "
+            "the next one fell due is late; after that, or still open then, it missed its "
+            "cycle.")
+
+
+def _quality_marked(keys: Sequence[tuple[str, str]]) -> list[dict[str, Any]]:
+    return [{"key": k, "title": t, "state": "quality_marked", "rows": [], "more": 0,
+             "figures": [], "note": "Quality records: shown only to readers who hold "
+                                    "quality_controlled."} for k, t in keys]
+
+
+def _qc_read(reads: Reads, view: str) -> Mapping[str, Any] | None:
+    out = reads.call("plx.aggregate", {"mode": QC_MODE, "view": view,
+                                       "measure": {"op": "count"}, "object_type": "PlannerTask"})
+    return None if _failed(reads, f"QC compliance ({view})", out) else out
+
+
+def _text_of(cell: Any) -> tuple[str | None, str | None]:
+    """The words of an untrusted text envelope (clipped) and its citation."""
+    if not isinstance(cell, Mapping):
+        return None, None
+    origin = cell.get("origin") or {}
+    return _clip(cell.get("untrusted_text"), 120), (origin.get("citation") if isinstance(
+        origin.get("citation"), str) else None)
+
+
+def _counts_detail(row: Mapping[str, Any]) -> str:
+    share = row.get("on_time_share")
+    return (f"{row.get('judged', 0)} due: {row.get('on_time', 0)} on time, "
+            f"{row.get('late', 0)} late, {row.get('missed', 0)} missed, "
+            f"{row.get('overdue', 0)} overdue" + (f" ({share}% on time)" if share else ""))
+
+
+def _area_figures(checks: Mapping[str, Any]) -> list[dict[str, Any]]:
+    out = []
+    for row in [*(checks.get("by_area") or ()), {**(checks.get("totals") or {}),
+                                                 "area": "all"}]:
+        if not isinstance(row, Mapping) or not row.get("judged"):
+            continue
+        out.append(_figure(f"On time, {str(row['area']).replace('_', ' ')}",
+                           row.get("on_time_share"), unit="percent",
+                           note=_counts_detail(row)))
+    return out
+
+
+def _held_figure(out: Mapping[str, Any], *, alerts: bool) -> dict[str, Any]:
+    holds = out.get("holds") or {}
+    return _figure("Batches on quality hold", str(int(holds.get("batches_held") or 0)),
+                   unit="records", note="Counted once per batch across systems. No hold "
+                   "date is stored, so no age is shown" + ("; the aging alerts listed count "
+                                                          "from the first order waiting on "
+                                                          "the batch." if alerts else "."))
+
+
+def _left_out(out: Mapping[str, Any], key: str) -> str:
+    n = int((out.get("trimmed") or {}).get(key) or 0)
+    return f" {n} more not listed (the answer's size limit)." if n else ""
+
+
+def _release_queue(out: Mapping[str, Any] | None) -> dict[str, Any]:
+    reason = ((out or {}).get("hold_release_queue") or {}).get("reason")
+    return _section("hold_release", "Hold-release queue", [], state="not_available",
+                    note=_clip(reason, 400) or "Not available yet.")
+
+
+def _slot_rows(out: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for s in out.get("slots_not_completed") or ():
+        line, line_cite = _text_of(s.get("line"))
+        rows.append(_row(f"Slot on {line or 'an unnamed line'}", detail="past its start, "
+                         "not marked completed", day=_day(s.get("start")),
+                         object_id=s.get("object_id"),
+                         sources=[*(s.get("citations") or ()), line_cite]))
+    return rows
+
+
+def qc_daily_pack(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | None, *,
+                  today: date | None = None, decide: Decide | None = None,
+                  budget_seconds: float = BUDGET_SECONDS,
+                  clock: Callable[[], float] | None = None) -> dict[str, Any]:
+    """The daily QC pack for a quality reader: the quality checks open now (missed, overdue,
+    due within a week), open calibration, production slots past start and not completed,
+    batches on hold (the hold-aging alerts of the reader's list) and the hold-release
+    queue (not available, with its reason). A reader without quality_controlled gets every
+    section marked so and nothing is read."""
+    today = today or datetime.now(timezone.utc).date()
+    keys = (("open_checks", "Quality checks open now"), ("calibration", "Open calibration"),
+            ("slots", "Production slots not completed"), ("holds", "Batches on hold"),
+            ("hold_release", "Hold-release queue"))
+    head = {"schema": QC_DAILY_SCHEMA, "kind": "qc_daily", "title": f"Daily QC pack, "
+            f"{today.isoformat()}", "subject": None, "subject_sources": [],
+            "when": today.isoformat(), "as_of": today.isoformat(), "parties": [],
+            "possible_parties": [], "basis": QC_BASIS}
+    held = frozenset(held)
+    if QUALITY not in held:
+        return {**head, "sections": _quality_marked(keys), "gaps": []}
+    reads = Reads(call, held, budget_seconds=budget_seconds, clock=clock, declared=None)
+    reads.today = today
+    out = _qc_read(reads, "daily")
+    inbox = alerts_read(alerts, reads)
+    gated = gate_alerts(visible_alerts(alerts), decide)
+    if gated is None:
+        inbox, gated = False, []
+    hold_alerts = [g for g in gated if g["kind"] in QC_HOLD_KINDS]
+    if out is None:
+        sections = [_section(k, t, [], state="unread", note="The QC figures could not be "
+                             "read: that is not the same as none.") for k, t in keys[:3]]
+        sections.append(_alert_section("holds", "Batches on hold", hold_alerts, inbox))
+    else:
+        rows = []
+        for t in out.get("open_now") or ():
+            title, title_cite = _text_of(t.get("title"))
+            past = int(t.get("days_past_due") or 0)
+            rows.append((t.get("area"), _row(
+                title or "Untitled check", day=_day(t.get("due")), object_id=t.get("object_id"),
+                detail=f"{str(t.get('area')).replace('_', ' ')}, "
+                       f"{STATUS_WORDS.get(t.get('status'), t.get('status'))}"
+                       + (f", {past} days past due" if past else ""),
+                sources=[*(t.get("citations") or ()), title_cite])))
+        counts = out.get("open_counts") or {}
+        withheld = (out.get("checks") or {}).get("withheld")
+        check_note = ("The people exclusion is not loaded, so no Planner check is shown."
+                      if withheld else "Missed first, then overdue, then due within 7 days.")
+        sections = [
+            _section("open_checks", "Quality checks open now", [r for _a, r in rows],
+                     state="blocked" if withheld else None, limit=QC_ROWS,
+                     note=check_note + _left_out(out, "open_now"),
+                     figures=[] if withheld else [
+                         _figure("Missed, still open", str(counts.get("missed", 0)),
+                                 unit="records"),
+                         _figure("Overdue", str(counts.get("overdue", 0)), unit="records"),
+                         _figure("Due within 7 days", str(counts.get("upcoming", 0)),
+                                 unit="records")]),
+            _section("calibration", "Open calibration",
+                     [r for a, r in rows if a == "calibration"],
+                     state="blocked" if withheld else None, limit=QC_ROWS),
+            _section("slots", "Production slots not completed", _slot_rows(out),
+                     limit=QC_ROWS, note="FileMaker schedule slots of the last 30 days past "
+                     "their start day and not marked completed (the slot records no "
+                     "completion day)."),
+            _alert_section("holds", "Batches on hold", hold_alerts, inbox,
+                           figures=[_held_figure(out, alerts=True)]),
+        ]
+    sections.append(_release_queue(out))
+    sections = finish(sections, decide, reads)
+    return {**head, "sections": sections, "gaps": reads.gaps(),
+            "budget": reads.cited.budget()}
+
+
+def qc_audit_pack(call: Call, held: Iterable[str], *, today: date | None = None,
+                  decide: Decide | None = None, budget_seconds: float = BUDGET_SECONDS,
+                  clock: Callable[[], float] | None = None) -> dict[str, Any]:
+    """The QC audit pack (one printable page, ``pack_text``): on-time share of the quality
+    checks by area over the last year, by month, each recurring check with its cycle and
+    its missed, late and overdue occurrences cited, and the production schedule by line.
+    A reader without quality_controlled gets every section marked so and nothing is
+    read."""
+    today = today or datetime.now(timezone.utc).date()
+    keys = (("by_area", "Compliance by area"), ("by_month", "By month"),
+            ("series", "Each recurring check"), ("schedule", "Production schedule by line"),
+            ("holds", "Batches on hold"))
+    head = {"schema": QC_AUDIT_SCHEMA, "kind": "qc_audit",
+            "title": f"QC audit pack, as of {today.isoformat()}", "subject": None,
+            "subject_sources": [], "when": today.isoformat(), "as_of": today.isoformat(),
+            "parties": [], "possible_parties": [], "basis": QC_BASIS}
+    held = frozenset(held)
+    if QUALITY not in held:
+        return {**head, "sections": _quality_marked(keys), "gaps": []}
+    reads = Reads(call, held, budget_seconds=budget_seconds, clock=clock, declared=None)
+    reads.today = today
+    audit, monthly = _qc_read(reads, "audit"), _qc_read(reads, "compliance")
+    if audit is None or monthly is None:
+        sections = [_section(k, t, [], state="unread", note="The QC figures could not be "
+                             "read: that is not the same as none.") for k, t in keys]
+        return {**head, "sections": finish(sections, decide, reads), "gaps": reads.gaps(),
+                "budget": reads.cited.budget()}
+    checks = audit.get("checks") or {}
+    blocked = "withheld" in checks
+    window = audit.get("window") or {}
+    series = []
+    for s in audit.get("series") or ():
+        title, cite = _text_of(s.get("title"))
+        exceptions = s.get("exceptions") or ()
+        listed = "; ".join(f"{STATUS_WORDS.get(e.get('status'), e.get('status'))} "
+                           f"(due {e.get('due')})" for e in exceptions)
+        series.append(_row(title or "Untitled check", day=_day(s.get("last_due")),
+                           object_id=(exceptions[0] if exceptions else {}).get("object_id"),
+                           detail=f"{str(s.get('area')).replace('_', ' ')}, every "
+                                  f"{s.get('cycle_days')} days: " + _counts_detail(s)
+                                  + (f". {listed}" if listed else ""),
+                           sources=[h for e in exceptions for h in e.get("citations") or ()]
+                           + [cite]))
+    months = [_row(f"{m.get('month')} {str(m.get('area')).replace('_', ' ')}",
+                   detail=_counts_detail(m)) for m in reversed(
+                       (monthly.get("checks") or {}).get("by_month") or ())]
+    schedule = monthly.get("schedule") or {}
+    lines = []
+    for row in schedule.get("by_line") or ():
+        line, cite = _text_of(row.get("line"))
+        lines.append(_row(line or "Unnamed line", sources=[cite], detail=(
+            f"{row.get('judged', 0)} past start: {row.get('completed', 0)} completed, "
+            f"{row.get('not_completed', 0)} not completed; {row.get('upcoming', 0)} "
+            f"upcoming, {row.get('cancelled', 0)} cancelled")))
+    totals = schedule.get("totals") or {}
+    period = (f"Recurring checks due {window.get('from')} to {window.get('to')}; "
+              f"{int(checks.get('not_recurring') or 0)} tasks of no recurring series are not "
+              "judged.")
+    note = "The people exclusion is not loaded, so no Planner check is shown."
+    sections = [
+        _section("by_area", "Compliance by area", [], figures=_area_figures(checks),
+                 state="blocked" if blocked else None, note=note if blocked else period),
+        _section("by_month", "By month", months, limit=QC_ROWS,
+                 state="blocked" if blocked else None,
+                 note=note if blocked else "Counts of the checks listed below, newest first."),
+        _section("series", "Each recurring check", series, limit=QC_ROWS,
+                 state="blocked" if blocked else None, note=note if blocked else
+                 "Most missed first; each cites its missed, late and overdue occurrences."
+                 + _left_out(audit, "series")),
+        _section("schedule", "Production schedule by line", lines, limit=QC_ROWS,
+                 figures=[_figure("Slots completed", totals.get("completed_share"),
+                                  unit="percent", note=f"{totals.get('completed', 0)} of "
+                                  f"{totals.get('judged', 0)} slots past start")],
+                 note="FileMaker schedule slots by start day; the slot records no completion "
+                      "day, so lateness is not measured."),
+        _section("holds", "Batches on hold", [], figures=[_held_figure(audit, alerts=False)]),
+        _release_queue(audit),
+    ]
+    sections = finish(sections, decide, reads)
+    return {**head, "sections": sections, "gaps": reads.gaps(),
+            "budget": reads.cited.budget()}
+
+
+def pack_text(pack: Mapping[str, Any]) -> str:
+    """A pack as plain text for printing: each figure and line with its sources."""
+    out = [str(pack.get("title") or ""), f"As of {pack.get('as_of')}", ""]
+    for s in pack.get("sections") or ():
+        out.append(str(s.get("title") or "").upper())
+        if s.get("note"):
+            out.append(f"  {s['note']}")
+        for f in s.get("figures") or ():
+            unit = "%" if f.get("unit") == "percent" and f.get("value") is not None else ""
+            value = f.get("value") if f.get("value") is not None else "n/a"
+            out.append(f"  {f.get('label')}: {value}{unit}"
+                       + (f" ({f['note']})" if f.get("note") else ""))
+        for r in s.get("rows") or ():
+            when = f" [{r['date']}]" if r.get("date") else ""
+            out.append(f"  - {r.get('label')}{when}" + (f": {r['detail']}" if r.get("detail")
+                                                         else ""))
+            for src in (r.get("sources") or ())[:MAX_SOURCES]:
+                out.append(f"      source: {src.get('handle')}")
+        if s.get("more"):
+            out.append(f"  ... and {s['more']} more")
+        out.append("")
+    out.append(str(pack.get("basis") or ""))
+    return "\n".join(out) + "\n"

@@ -171,6 +171,22 @@ class DeltaToPostgresTests(unittest.TestCase):
         out = ontology_delta.follow(state, self.dsn, log=io.StringIO())
         self.assertEqual((out["state"], out["layers"]["applied_now"], "loaded" in out),
                          ("current", 0, False))
+        # Postgres the only store with its SQLite generation retired: the layers follow
+        # over the generation Postgres holds, nothing is loaded; one not whole is refused
+        served = state / "projection" / "ontology.sqlite"
+        served.unlink()
+        with mock.patch.dict(os.environ, {"PLX_ONTOLOGY_PG": "only",
+                                          "PLX_ONTOLOGY_DEFER": ""}):
+            out = ontology_delta.follow(state, self.dsn, log=io.StringIO())
+            self.assertEqual((out["state"], out["held"], "loaded" in out),
+                             ("current", digest, False), out)
+            with mock.patch.object(ontology_delta, "apply_listed",
+                                   side_effect=AssertionError("applied")), \
+                    mock.patch("operating.pg.ontology_load.ORDER",
+                               ("objects", "a_table_never_loaded")):
+                out = ontology_delta.follow(state, self.dsn, log=io.StringIO())
+            self.assertEqual(out["state"], "not_whole_and_no_generation")
+        served.hardlink_to(base)
         with psycopg.connect(self.dsn, autocommit=True) as pg:
             pg.execute("UPDATE ontology.load_state SET value = jsonb_set(value, "
                        "'{content_digest}', '\"sha256:other\"') WHERE name = 'generation'")
@@ -483,7 +499,9 @@ class DeltaToPostgresTests(unittest.TestCase):
     def test_over_a_postgres_base_each_cycle_brings_only_its_changes_and_nothing_folds(self):
         """``PLX_DELTA_BASE_PG``: the closure reads Postgres, each cycle's layer is applied
         in the cycle, the next cycle projects only its own changes over it, and the fold
-        has nothing to do; every owned object then holds a full build's rows."""
+        has nothing to do; every owned object then holds a full build's rows. With
+        Postgres the only store (``PLX_ONTOLOGY_PG=only``) a cycle does so with no SQLite
+        generation on disk."""
         from datetime import timedelta
         from ontology import delta
         from ontology.tests.test_delta import DeltaEquivalenceTests, normalizer
@@ -506,6 +524,20 @@ class DeltaToPostgresTests(unittest.TestCase):
                                      base_path=base, schema=fixture.schema,
                                      normalizer=normalizer, environ=environ, **options)
 
+        def retired(**options):
+            # Postgres the only store: the SQLite generation is gone (compressed cold) and
+            # the cycle projects against Postgres with no switch of its own
+            cold = base.with_name(base.name + ".cold")
+            base.rename(cold)
+            try:
+                return delta.build_delta(
+                    fixture.state, fixture.mirror_path, fixture.root / "delta",
+                    base_path=base, schema=fixture.schema, normalizer=normalizer,
+                    environ={"PLX_ONTOLOGY_PG": "only", "PLX_DELTA_BASE_PG": "0",
+                             "PLX_PG_DSN": self.dsn}, **options)
+            finally:
+                cold.rename(base)
+
         fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
         fixture.capture(T2)
         first = cycle()
@@ -513,7 +545,7 @@ class DeltaToPostgresTests(unittest.TestCase):
                          first)
         fixture.fake.set("public.app_purchase_order_line", "l1", purchase_order_id="po-b")
         fixture.capture(T2 + timedelta(hours=1))
-        second = cycle()
+        second = retired()
         self.assertEqual((second["layer"], second["postgres"]["applied_now"]), ("added", 1),
                          second)
         self.assertEqual(second["followed"]["portal_api"], 1)   # only its own change
@@ -531,6 +563,78 @@ class DeltaToPostgresTests(unittest.TestCase):
                 for part in [*_BY_OBJECT, "object_values"]:
                     self.assertEqual(_sqlite_rows(conn, part, oid), _pg_rows(cur, part, oid),
                                      f"{part}:{oid}")
+
+
+    def test_a_postgres_base_never_builds_over_a_layer_it_lacks_and_a_trim_is_said(self):
+        """Over the Postgres base: a published layer Postgres has not applied is applied
+        before the closure reads it, and while it cannot be no layer is built (the changes
+        stay open); a pointer that dropped a layer says ``partial``; back on the SQLite
+        base the next layer is cumulative again (whole)."""
+        from datetime import timedelta
+        from unittest import mock
+        from ontology import delta
+        from ontology.tests.test_delta import DeltaEquivalenceTests, normalizer
+        from ontology.tests.test_projection import T1, T2
+        from operating.pg import ontology_delta, ontology_load
+        import psycopg
+
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+        environ = {"PLX_DELTA_BASE_PG": "1", "PLX_PG_DSN": self.dsn}
+        pointer = fixture.root / "delta" / delta.POINTER
+
+        def cycle(env=environ, **options):
+            return delta.build_delta(fixture.state, fixture.mirror_path, fixture.root / "delta",
+                                     base_path=base, schema=fixture.schema,
+                                     normalizer=normalizer, environ=env, **options)
+
+        def published():
+            return json.loads(pointer.read_text(encoding="utf-8"))
+
+        refused = {"applied": False, "refused": ["generation_loading"], "layers": 1}
+        fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        fixture.capture(T2)
+        with mock.patch.object(ontology_delta, "apply_listed", return_value=refused):
+            first = cycle()   # published; its apply refused
+        self.assertEqual(first["layer"], "added", first)
+        fixture.fake.set("public.app_purchase_order_line", "l1", purchase_order_id="po-b")
+        fixture.capture(T2 + timedelta(hours=1))
+        with mock.patch.object(ontology_delta, "apply_listed", return_value=refused):
+            waiting = cycle()
+        self.assertEqual((waiting["layer"], waiting["status"]),
+                         ("none: Postgres behind the published layers", "postgres_behind"))
+        self.assertEqual(waiting["postgres_behind"], [Path(first["store"]).name])
+        self.assertEqual(published()["store"], first["store"])   # nothing published
+        caught_up = cycle()   # the missing layer applied first, then this cycle's own
+        self.assertEqual(caught_up["layer"], "added", caught_up)
+        self.assertEqual(caught_up["postgres_before"]["applied_now"], 1)
+        self.assertEqual(caught_up["followed"]["portal_api"], 1)   # the open change kept
+        with psycopg.connect(self.dsn) as pg:
+            applied = {r[0] for r in pg.execute(
+                "SELECT substr(name, 7) FROM ontology.load_state WHERE name LIKE 'delta:%'")}
+        self.assertTrue({Path(first["store"]).name, Path(caught_up["store"]).name} <= applied)
+        self.assertEqual((published()["base"], published()["partial"]), ("postgres", False))
+        # one layer kept past the ones Postgres applied: the oldest leaves, the pointer
+        # says it no longer holds every change
+        fixture.fake.set("public.app_purchase_order", "po-a", status="CLOSED")
+        fixture.capture(T2 + timedelta(hours=2))
+        with mock.patch.object(delta, "PG_KEPT_LAYERS", 1):
+            trimmed = cycle()
+        body = published()
+        self.assertEqual([Path(s).name for s in [item["store"] for item in body["layers"]]],
+                         [Path(trimmed["store"]).name, Path(caught_up["store"]).name])
+        self.assertTrue(body["partial"])
+        # back on the SQLite base (the rollback): the next layer holds every change again
+        fixture.fake.set("public.app_purchase_order_line", "l1", purchase_order_id="po-a")
+        fixture.capture(T2 + timedelta(hours=3))
+        back = cycle(env={"PLX_PG_DSN": self.dsn})
+        self.assertEqual(back["layer"], "compacted", back)
+        self.assertEqual((published()["base"], published()["partial"]), ("sqlite", False))
 
 
     def test_a_new_generation_loads_beside_the_served_one_and_swaps_in_at_once(self):

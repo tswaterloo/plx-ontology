@@ -109,6 +109,43 @@ class Resolve(unittest.TestCase):
                                   question="whats going on with po 9")
         self.assertEqual(several, [{"mention": "PO9", "groups": [[BC], [PORTAL]]}])
 
+    def test_the_system_named_for_the_number_picks_its_record(self):
+        # "the Business Central PO PO100064" was asked back as a choice between the BC and
+        # Portal records, and "Business" looked up as a supplier none of them has
+        never = lambda ids: False   # noqa: E731
+        looked: list[str] = []
+
+        def tools(name, args):
+            if name == "plx.find":
+                looked.append(args["query"])
+                return {"candidates": [{"object": {"display": "Business Tech Solutions Inc"}}]
+                        if args["query"] == "business" else []}
+            return call(name, args)
+        question = ("among the matching purchase orders in the Portal of the Business "
+                    "Central PO PO9, what is the lowest unit cost?")
+        got, several = pr.resolve(tools, found(BC, PORTAL), same=never, question=question)
+        self.assertEqual(several, [])
+        (root,) = got["roots"]
+        self.assertEqual((root["object_id"], root["named_system"], root["others"]),
+                         (BC, "Business Central", [PORTAL]))
+        self.assertIn("It is the one in Business Central", pr.brief(None, [root]))
+        for asked, want in (("status of PO9 in the portal?", PORTAL),
+                            ("portal purchase order PO9 status", PORTAL),
+                            ("bc PO9 vendor", BC)):
+            got, several = pr.resolve(tools, found(BC, PORTAL), same=never, question=asked)
+            self.assertEqual((several, got["roots"][0]["object_id"]), ([], want), asked)
+        # a system named only for a hop elsewhere in the question settles nothing, and the
+        # system's own name is never taken for a supplier
+        looked.clear()
+        got, several = pr.resolve(tools, found(BC, PORTAL), same=never,
+                                  question="PO9 lines and their Business Central receipts")
+        self.assertEqual(several, [{"mention": "PO9", "groups": [[BC], [PORTAL]]}])
+        self.assertNotIn("business", looked)
+        # a system holding none of the records leaves the choice
+        got, several = pr.resolve(tools, found(BC, PORTAL), same=never,
+                                  question="sage PO9 total")
+        self.assertEqual(several, [{"mention": "PO9", "groups": [[BC], [PORTAL]]}])
+
     def test_the_choice_names_each_record_by_its_system_and_own_values(self):
         answer = pr.choices_answer(
             call, m.AskRequest(question="why don't the invoice and PO match on PO9?"),

@@ -57,6 +57,8 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
+from operating import declared_schema as _schemas
+from operating.declared_schema import feedback as _FEEDBACK
 
 KINDS = ("answer", "alert", "page", "record", "list", "ui", "general")
 STATUSES = ("new", "accepted", "fixed", "wont_fix")
@@ -68,20 +70,6 @@ SENSITIVE = ("finance", "pii", "purchasing_prices")
 COLLEAGUE = "a colleague"
 MAX_TEXT = 4000
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS feedback (
-  id TEXT PRIMARY KEY, at TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('answer','alert','page','record','list','ui','general')),
-  reader TEXT NOT NULL, reader_name TEXT, by_admin INTEGER NOT NULL DEFAULT 0,
-  rating INTEGER, verdict TEXT, note TEXT, expected TEXT,
-  page TEXT, object_type TEXT, object_id TEXT, label TEXT,
-  item_id TEXT, answer_id TEXT, question TEXT, answer TEXT,
-  context TEXT NOT NULL DEFAULT '{}',
-  status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','accepted','fixed','wont_fix')),
-  status_by TEXT, status_at TEXT);
-CREATE INDEX IF NOT EXISTS feedback_at ON feedback (at);
-CREATE INDEX IF NOT EXISTS feedback_reader ON feedback (reader, at);
-"""
 
 
 def _now() -> datetime:
@@ -226,7 +214,7 @@ class FeedbackStore:
                 if extra.exists():
                     os.chmod(extra, 0o600)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_DDL)
+        _schemas.apply(self._conn, _FEEDBACK)
 
     @classmethod
     def for_backend(cls, backend: Any) -> "FeedbackStore":

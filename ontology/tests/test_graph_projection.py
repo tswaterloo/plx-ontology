@@ -215,11 +215,15 @@ class GraphProjectionTests(unittest.TestCase):
         self.assertIsNone(self.mail.resolve(mention["l1_handle"], OUTSIDER,
                                             tm.reader_audience(), text=True))
         # An unpaged attachment is cited at its own handle.
-        note = self.conn.execute("SELECT to_object, reason FROM links WHERE link_type = ? AND "
-                                 "from_object = ?", (ATT_LINK, self.attachment_object("ATT-2"))
+        # PO100236 names one record: the mention is the lead, and the unique_mentions step
+        # (ontology/mention_firm.py) writes its firm link beside it to the same record.
+        note = self.conn.execute("SELECT to_object, reason, tier FROM links WHERE link_type = ? "
+                                 "AND from_object = ?", (ATT_LINK, self.attachment_object("ATT-2"))
                                  ).fetchall()
-        self.assertEqual([r["to_object"] for r in note], [self.po("p3")])
-        self.assertNotIn("page=", note[0]["reason"])
+        self.assertEqual({r["to_object"] for r in note}, {self.po("p3")})
+        leads = [r for r in note if r["tier"] == "lead"]
+        self.assertEqual(len(leads), 1)
+        self.assertNotIn("page=", leads[0]["reason"])
 
     def test_a_restricted_reader_sees_only_permitted_mail_and_files_through_every_consumer(self):
         base = self.tools()
@@ -245,7 +249,8 @@ class GraphProjectionTests(unittest.TestCase):
                         "tier_floor": "lead"}, actor)
                     outputs.append(around)
                     if link_type == ATT_LINK:
-                        reached = {o["object_id"] for o in around.get("objects", [])}
+                        # a lead link's record is set apart (``possibly_related``)
+                        reached = {o["object_id"] for o in tt.with_leads(around).get("objects", [])}
                         self.assertEqual(reached, seen, (actor, root))
                 outputs.append(traverse.call("plx.timeline", {"from": root}, actor))
                 outputs.append(evidence.call("plx.documents", {"object_id": root}, actor))

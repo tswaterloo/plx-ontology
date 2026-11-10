@@ -97,6 +97,8 @@ from ontology.core import LEVELS, Actor, ValidationError
 from .cases import CitationUnresolvable, actor_label
 from .entitlements import _AGENT_PREFIXES  # "agents are never principals" (one rule)
 from .ontology_tools_evidence import DEFAULT_READ_CHARS
+from operating import declared_schema as _schemas
+from operating.declared_schema import case_originals as _CASE_ORIGINALS
 
 SCHEME = "original://"
 RECORDED_CAPTURE_SOURCE = "sharepoint-recorded-capture"
@@ -134,45 +136,6 @@ _HANDLE = re.compile(r"^original://(orig-[0-9a-f]{32})"
 MAX_EXTRACTIONS = 20  # versions per original, attach-time extraction included
 _REASON_MAX = 1000
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS original (
-  original_id TEXT PRIMARY KEY,
-  sha256 TEXT NOT NULL,
-  tenant TEXT NOT NULL,
-  classification TEXT NOT NULL,
-  audience_json TEXT NOT NULL,
-  filename TEXT NOT NULL,
-  media_type TEXT NOT NULL,
-  byte_size INTEGER NOT NULL,
-  attached_by TEXT NOT NULL,
-  attached_at TEXT NOT NULL,
-  extraction_json TEXT NOT NULL
-);
-CREATE TRIGGER IF NOT EXISTS original_no_update BEFORE UPDATE ON original
-BEGIN SELECT RAISE(ABORT, 'original_is_immutable'); END;
-CREATE TABLE IF NOT EXISTS reextraction (
-  original_id TEXT NOT NULL REFERENCES original(original_id),
-  version INTEGER NOT NULL CHECK (version >= 2),
-  extracted_at TEXT NOT NULL,
-  extracted_by TEXT NOT NULL,
-  reason TEXT NOT NULL,
-  local_ocr INTEGER NOT NULL,
-  extraction_json TEXT NOT NULL,
-  PRIMARY KEY (original_id, version)
-);
-CREATE TRIGGER IF NOT EXISTS reextraction_no_update BEFORE UPDATE ON reextraction
-BEGIN SELECT RAISE(ABORT, 'extraction_is_immutable'); END;
-CREATE TRIGGER IF NOT EXISTS reextraction_no_delete BEFORE DELETE ON reextraction
-BEGIN SELECT RAISE(ABORT, 'extraction_is_immutable'); END;
-CREATE TABLE IF NOT EXISTS original_source (
-  original_id TEXT PRIMARY KEY REFERENCES original(original_id),
-  provenance_json TEXT NOT NULL
-);
-CREATE TRIGGER IF NOT EXISTS original_source_no_update BEFORE UPDATE ON original_source
-BEGIN SELECT RAISE(ABORT, 'original_is_immutable'); END;
-CREATE TRIGGER IF NOT EXISTS original_source_no_delete BEFORE DELETE ON original_source
-BEGIN SELECT RAISE(ABORT, 'original_is_immutable'); END;
-"""
 
 
 def media_type_of(content: bytes) -> str | None:
@@ -326,7 +289,7 @@ class OriginalStore:
         # gate; None: none are served.
         self.captured = captured
         with self._connect() as db:
-            db.executescript(_DDL)
+            _schemas.apply(db, _CASE_ORIGINALS)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

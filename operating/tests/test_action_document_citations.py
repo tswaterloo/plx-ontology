@@ -415,7 +415,7 @@ class DocumentCitedProposalTests(unittest.TestCase):
         """The MCP evaluator path (``MCPServer._playbook_call`` -> ``plx.playbook_evaluate``):
         the host passes the evaluator's own ``document_rows``, so the stored reports of a
         frozen case with a document-cited proposal flag no guard failure."""
-        from operator_ui.case_console import REPORTS_FILE, report_store_for
+        from operator_api.workspace.case_console import REPORTS_FILE, report_store_for
         case_id, proposal_id = self.propose(self.mail_handle)
         state = self.h.state
         config = self.h.root / "playbook-proposals.json"

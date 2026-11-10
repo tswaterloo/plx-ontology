@@ -318,6 +318,8 @@ from ontology import identifiers, mentions
 from ontology.store_ddl import MARKINGS
 from ontology.units import (TAX_BASES, UOM_CANONICAL, currency_reading,
                             currency_token_pattern, unit_token)
+from operating import declared_schema as _schemas
+from operating.declared_schema import document_fields as _DOCUMENT_FIELDS
 
 FORMAT = "plx-document-fields/v1"
 PROFILES_PATH = Path(__file__).resolve().parent / "schema" / "document_fields.json"
@@ -2519,10 +2521,7 @@ class KeptFields:
         self._db = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
         try:
             self._db.execute("PRAGMA journal_mode = WAL")
-            self._db.execute("CREATE TABLE IF NOT EXISTS fields (key TEXT PRIMARY KEY, "
-                             "code TEXT NOT NULL, value TEXT NOT NULL, used INTEGER NOT NULL)")
-            self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, "
-                             "value TEXT NOT NULL)")
+            _schemas.apply(self._db, _DOCUMENT_FIELDS)
             row = self._db.execute("SELECT value FROM meta WHERE key = 'builds'").fetchone()
             self.build = (int(row[0]) if row else 0) + 1
             self._db.execute("INSERT OR REPLACE INTO meta VALUES ('builds', ?)",

@@ -86,8 +86,19 @@ PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentatio
 # cell transcription keeps formulas apart from cached values and cites cell
 # coordinates, which MarkItDown's table rendering does not (see
 # DOCUMENT_UNDERSTANDING.md).
-_KINDS = {PDF: "pdf", DOCX: "docx", PPTX: "pptx"}
-_SUFFIXES = {".pdf": "pdf", ".docx": "docx", ".pptx": "pptx"}
+_KINDS = {PDF: "pdf", DOCX: "docx", PPTX: "pptx",
+          # the same OOXML packages: templates, macro-enabled documents and slide shows
+          # (their macros are never read: only the text parts are)
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.template": "docx",
+          "application/vnd.ms-word.document.macroenabled.12": "docx",
+          "application/vnd.ms-word.template.macroenabled.12": "docx",
+          "application/vnd.ms-powerpoint.presentation.macroenabled.12": "pptx",
+          "application/vnd.openxmlformats-officedocument.presentationml.template": "pptx",
+          "application/vnd.openxmlformats-officedocument.presentationml.slideshow": "pptx",
+          "application/vnd.ms-powerpoint.slideshow.macroenabled.12": "pptx"}
+_SUFFIXES = {".pdf": "pdf", ".docx": "docx", ".pptx": "pptx", ".dotx": "docx",
+             ".docm": "docx", ".dotm": "docx", ".pptm": "pptx", ".potx": "pptx",
+             ".ppsx": "pptx", ".ppsm": "pptx"}
 # MarkItDown's PPTX converter writes one marker per slide.
 _SLIDE = re.compile(r"<!-- Slide number: (\d+) -->")
 

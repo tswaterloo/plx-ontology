@@ -26,9 +26,9 @@ from integrations.http import SourceHttpError
 from operating import session_identity
 from operating import status_card as sc
 from operating.case_runtime import CaseRuntime
-from operator_ui import case_console
-from operator_ui import object_workspace as objects
-from operator_ui.tests import case_fixtures
+from operator_api.workspace import case_console
+from operator_api.workspace import object_workspace as objects
+from operator_api.tests import case_fixtures
 
 ROOT = Path(__file__).resolve().parents[2]
 AS_OF = date(2026, 10, 20)
@@ -669,8 +669,8 @@ class ReferenceAndRouteTest(unittest.TestCase):
         from http.client import HTTPConnection
         from queue import Queue
         import threading
-        from operator_ui.case_workspace import CaseWorkspace
-        from operator_ui.server import make_server
+        from operator_api.workspace.case_workspace import CaseWorkspace
+        from operator_api.tests.console_harness import make_server
 
         ready: Queue = Queue(maxsize=1)
 
