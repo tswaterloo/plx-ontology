@@ -101,6 +101,43 @@ def _day(year: int, month: int, day: int) -> Optional[date]:
         return None
 
 
+# A whole calendar day a text writes with its year: ISO ``2026-11-10``, ``November 10,
+# 2026`` / ``Nov 10th 2026``, ``10 November 2026``, ``11/10/2026`` (month first, as
+# ``since`` reads it). A day without its year, or one that does not exist, is none.
+_WRITTEN_DAY = re.compile(
+    rf"(?<![\w-])(?:(\d{{4}})-(\d{{2}})-(\d{{2}})(?![\w-])"
+    rf"|({_MONTH})\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})(?!\w)"
+    rf"|(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTH}),?\s+(\d{{4}})(?!\w)"
+    rf"|(\d{{1,2}})/(\d{{1,2}})/(\d{{4}})(?![\w/]))")
+
+
+def written_days(text: str) -> frozenset[date]:
+    """The calendar days ``text`` writes in full, its year included (``_WRITTEN_DAY``)."""
+    out: set[date] = set()
+    if not isinstance(text, str):
+        return frozenset()
+    for m in _WRITTEN_DAY.finditer(text.casefold()):
+        if m[1]:
+            day = _day(int(m[1]), int(m[2]), int(m[3]))
+        elif m[4]:
+            day = _day(int(m[6]), _MONTHS[m[4].rstrip(".")], int(m[5]))
+        elif m[8]:
+            day = _day(int(m[9]), _MONTHS[m[8].rstrip(".")], int(m[7]))
+        else:
+            day = _day(int(m[12]), int(m[10]), int(m[11]))
+        if day is not None:
+            out.add(day)
+    return frozenset(out)
+
+
+def reference_days(question: str, now: Optional[datetime] = None) -> list[str]:
+    """The days a ``days`` value claim may count from without citing them (ISO, sorted):
+    each day the question writes in full (``written_days``: "days remaining as of
+    November 10, 2026") and today in the business day."""
+    days = written_days(question) | {business_today(now)}
+    return sorted(day.isoformat() for day in days)
+
+
 def _day_said(day: date, today: date) -> str:
     """A day as the answer writes it: "Aug 5" (its year too when it is not this year's).
     The window is the question's reading, not a record's value: it is written as month and

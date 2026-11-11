@@ -137,6 +137,13 @@ class UnderstandTests(unittest.TestCase):
                          "how many lots from Acme are in quarantine",
                          "glycerin lots expiring this week",
                          "how many batches of shampoo are on QC hold",
+                         # another act or record than a task's stage and owner (dev 11-10)
+                         "Who reported MC task TASK-2207?",
+                         "who rqeuseted mission control approval TASK-4639?",
+                         "who decided Mission Control approval TASK-3874",
+                         "who requested Mission Control approval TASK-1689",
+                         "PO 1194 - what lot #s were received",   # its lots, not its status
+                         "which batches came in on PO#5008",
                          "", "x" * 400, None):
             with self.subTest(question=question):
                 self.assertIsNone(fast_answer.understand(question))

@@ -212,7 +212,7 @@ def _day(value: Any) -> date | None:
 
 def date_forms(value: Any) -> list[str]:
     """The ways a day is commonly written: ISO, ``October 3, 2026``, ``Oct 3``,
-    ``3 October``, ``10/03/2026``, ``10/3``."""
+    ``3 October``, ``10/03/2026``, ``10/3``, and the compact ``20261003`` a source records."""
     day = _day(value)
     if day is None:
         return []
@@ -220,7 +220,9 @@ def date_forms(value: Any) -> list[str]:
     forms = [day.isoformat(), f"{month} {day.day}", f"{month[:3]} {day.day}",
              f"{day.day} {month}", f"{day.day} {month[:3]}",
              f"{day.month}/{day.day}/{day.year}", f"{day.month:02d}/{day.day:02d}/{day.year}",
-             f"{day.month}/{day.day}", f"{day.month:02d}/{day.day:02d}"]
+             f"{day.month}/{day.day}", f"{day.month:02d}/{day.day:02d}",
+             # as Sage records a day (its order and ship dates: ``20230906``)
+             f"{day.year:04d}{day.month:02d}{day.day:02d}"]
     if month == "september":
         forms.append(f"sept {day.day}")
     return forms

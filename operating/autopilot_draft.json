@@ -1,0 +1,7 @@
+{
+ "schema": "plx-autopilot-draft/v1",
+ "note": "Draft mode (operating/autopilot.py load_draft): per person, the workflows the autopilot prepares for them before their replay gate passed, so prepared items reach their approvals desk now. Draft only prepares: each item waits for its owner's accept; a send or write still goes through the write path's gates and the owner's confirm, unchanged. other_external is never in draft (no rule reaches the bar). An unknown workflow refuses the whole file.",
+ "people": {
+  "vince@petrasoap.com": ["internal_approval", "mc_question", "teams_chat"]
+ }
+}

@@ -1314,6 +1314,28 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/source/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Source Records
+         * @description The records citing a source (the ones read from it and the ones linked to
+         *     those), as this reader may read them. A source the reader cannot open is not
+         *     found, as on ``/api/source``; a record they cannot read is left out.
+         */
+        get: operations["source_records_api_source_records_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/suggest": {
         parameters: {
             query?: never;
@@ -1352,6 +1374,94 @@ export type paths = {
         get: operations["suggestions_api_suggestions_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/time-saved": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Time Saved
+         * @description The time the Workbench saved you each week (the owner: everyone), from your work
+         *     log: an estimate, its method stated. Counts only what was used.
+         */
+        get: operations["time_saved_api_time_saved_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trust": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Trust Page
+         * @description The Trust page: freshness per source system, answer scores per question set,
+         *     alert precision per type, the autopilot's workflows with their countdown, what is
+         *     live, gated and pending, and each system's write switch. The owner and the Team
+         *     readers only (404 for every other reader); counts, times and switches only.
+         */
+        get: operations["trust_page_api_trust_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/view-as/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View As People
+         * @description Whom the owner may view as (active in the Portal, cleared by the people
+         *     exclusion, never the owner): an opaque key and a name each. The owner only (403
+         *     for every other reader). Viewing is read only and audited.
+         */
+        get: operations["view_as_people_api_view_as_people_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/view-as/{event}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * View As Mark
+         * @description The owner starting or stopping a view as someone, written to the view-as audit
+         *     (the reads in between are audited one by one). The owner only; nothing else
+         *     changes.
+         */
+        post: operations["view_as_mark_api_view_as__event__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1517,6 +1627,27 @@ export type paths = {
          *     open. The owner may read everyone's (``everyone``).
          */
         get: operations["work_log_api_work_log_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/work-log/autopilot-days": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autopilot Days
+         * @description Your autopilot scorecard per day from your own work log: items prepared for
+         *     you, accepted, edited and rejected. Yours only.
+         */
+        get: operations["autopilot_days_api_work_log_autopilot_days_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2242,10 +2373,20 @@ export type components = {
             /** Groups */
             groups?: components["schemas"]["ApprovalGroup"][];
             /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
              * Sent
              * @constant
              */
             sent: 0;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
             /** Total */
             total: number;
             /**
@@ -2458,8 +2599,18 @@ export type components = {
             owner: boolean;
             /** People */
             people?: components["schemas"]["AutopilotPerson"][];
+            /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
             /** Roles */
             roles?: string[];
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
             switches: components["schemas"]["AutopilotSwitches"];
             /** Workflows */
             workflows?: components["schemas"]["AutopilotWorkflowRow"][];
@@ -2542,6 +2693,33 @@ export type components = {
             /** Triggers */
             triggers: components["schemas"]["AutopilotStep"][];
         };
+        /**
+         * AutopilotCountdown
+         * @description The workflow's way to its write gate (``operating.autopilot_fresh``): items judged
+         *     on fresh days against the ``need_judged`` the gate asks for, and the precision so far
+         *     against ``need_percent``. Recomputed from the counts at every read.
+         */
+        AutopilotCountdown: {
+            /** Data End */
+            data_end?: string | null;
+            /** Judged */
+            judged: number;
+            /** Matched */
+            matched: number;
+            /** Need Judged */
+            need_judged: number;
+            /** Need Percent */
+            need_percent: number;
+            /** Passes */
+            passes: boolean;
+            /**
+             * Percent
+             * @description matched / judged, one decimal; absent when nothing was judged.
+             */
+            percent?: number | null;
+            /** Window */
+            window?: string[];
+        };
         /** AutopilotDecision */
         AutopilotDecision: {
             /** At */
@@ -2578,6 +2756,16 @@ export type components = {
         };
         /** AutopilotDecisionRequest */
         AutopilotDecisionRequest: {
+            /**
+             * Bulk
+             * @description Part of a bulk decision: a live item is refused (409), never performed or offered a confirm.
+             */
+            bulk?: boolean | null;
+            /**
+             * Confirm Token
+             * @description accept of a live item: the token the first accept answered (the person confirmed it goes live).
+             */
+            confirm_token?: string | null;
             /**
              * Decision
              * @enum {string}
@@ -2656,6 +2844,11 @@ export type components = {
             autopilot: string;
             /** Citations */
             citations?: string[];
+            /**
+             * Confirm Token
+             * @description Set only in the answer to an accept of a live item without a confirm: send it back with the same accept (within 10 minutes) to perform the item.
+             */
+            confirm_token?: string | null;
             /** Created At */
             created_at: string;
             decision?: components["schemas"]["AutopilotDecision"] | null;
@@ -2669,6 +2862,16 @@ export type components = {
             item_id: string;
             /** Label */
             label: string;
+            /**
+             * Live
+             * @description An accept performs this item live now (the owner opened its kind to approved writes, or its workflow passed its gate and is switched live): it is accepted alone, after a confirm, never in a bulk accept.
+             */
+            live?: boolean | null;
+            /**
+             * Live Kinds
+             * @description The write kinds an accept would perform live.
+             */
+            live_kinds?: string[];
             /** Mine */
             mine: boolean;
             /**
@@ -2816,6 +3019,36 @@ export type components = {
              */
             percent?: number | null;
         };
+        /** AutopilotScoreDay */
+        AutopilotScoreDay: {
+            /** Accepted */
+            accepted: number;
+            /**
+             * Day
+             * @description The day (US Eastern), ISO date.
+             */
+            day: string;
+            /** Edited */
+            edited: number;
+            /**
+             * Prepared
+             * @description Items prepared for you, counted the day you first saw them.
+             */
+            prepared: number;
+            /** Rejected */
+            rejected: number;
+        };
+        /**
+         * AutopilotScorecard
+         * @description Your daily autopilot scorecard from your work log, newest day first. ``available``
+         *     False (nothing shown) while the people exclusion is not loaded.
+         */
+        AutopilotScorecard: {
+            /** Available */
+            available: boolean;
+            /** Days */
+            days?: components["schemas"]["AutopilotScoreDay"][];
+        };
         /**
          * AutopilotStep
          * @description A workflow's trigger, one condition or one action: its registry key and its words.
@@ -2944,8 +3177,15 @@ export type components = {
          *     scores, its write state and the owner's switches.
          */
         AutopilotWorkflowRow: {
+            /** @description Judged fresh items toward the write gate; absent until the scorer published a result for this role. */
+            countdown?: components["schemas"]["AutopilotCountdown"] | null;
             /** @description Replay on tuning days. */
             dev?: components["schemas"]["AutopilotScore"] | null;
+            /**
+             * Draft
+             * @description Draft mode: prepared for this person before the gate passed (operating/autopilot_draft.json). Each item waits for their accept; sends and writes keep their own gates.
+             */
+            draft?: boolean | null;
             /** @description Replay on held-out days (the write gate's counts). */
             fresh?: components["schemas"]["AutopilotScore"] | null;
             /** Last Run */
@@ -3030,8 +3270,18 @@ export type components = {
              * @description Lead-tier matches (a domain only): never read.
              */
             possible_parties?: components["schemas"]["ObjectRef"][];
+            /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
             /** Sections */
             sections: components["schemas"]["BriefSection"][];
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
             /**
              * Stored At
              * @description When a finished week's review was generated and kept; served again only while your grant is the same and every source it shows still opens for you.
@@ -5269,6 +5519,11 @@ export type components = {
              */
             auth: "entra" | "dev" | "mock";
             /**
+             * Can View As
+             * @description The owner-open reader on a server that can view as someone (/api/view-as/people).
+             */
+            can_view_as?: boolean;
+            /**
              * Data Label
              * @description Evidence label of the data served, e.g. 'source-mirror captures' or 'FIXTURE'.
              */
@@ -5286,6 +5541,11 @@ export type components = {
              * @description The owner or a feedback admin: triages every reader's feedback.
              */
             feedback_admin?: boolean;
+            /**
+             * Ops Reader
+             * @description The owner or a named Team reader (PLX_TEAM_VIEW_READERS): sees the reliability alarms and /ops.
+             */
+            ops_reader?: boolean;
             /**
              * Principal
              * @description employee:<oid>, or the fixture principals joined.
@@ -5373,6 +5633,16 @@ export type components = {
             }[];
             /** Person */
             person?: string | null;
+            /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
         };
         /**
          * MyWork
@@ -5384,10 +5654,20 @@ export type components = {
             /** Items */
             items?: components["schemas"]["MyWorkItem"][];
             /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
              * Sent
              * @constant
              */
             sent: 0;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
             /**
              * Status
              * @enum {string}
@@ -5794,6 +6074,16 @@ export type components = {
             note: string;
             /** People */
             people?: components["schemas"]["OwnerWorkloadPerson"][];
+            /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
             /** Window Days */
             window_days: number;
         };
@@ -6410,10 +6700,20 @@ export type components = {
             /** Projects */
             projects?: components["schemas"]["RdProject"][];
             /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
              * Sent
              * @constant
              */
             sent: 0;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
             /** Total */
             total: number;
             /**
@@ -6749,10 +7049,20 @@ export type components = {
             /** Lines */
             lines?: components["schemas"]["ReplyLine"][];
             /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
              * Sent
              * @constant
              */
             sent: 0;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
             /** Total */
             total: number;
             /**
@@ -6800,6 +7110,48 @@ export type components = {
              * @enum {string}
              */
             system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+        };
+        /**
+         * SourceRecord
+         * @description One record citing a source: one projected from it (``from``) or linked to such a
+         *     record (``linked``, by ``link``: the link's kind in words).
+         */
+        SourceRecord: {
+            /**
+             * How
+             * @enum {string}
+             */
+            how: "from" | "linked";
+            /** Link */
+            link?: string | null;
+            record: components["schemas"]["ObjectRef"];
+        };
+        /**
+         * SourceRecords
+         * @description The records citing one source, as this reader may read them now (``/api/source/
+         *     records``). A source the reader may not open reads as not found; a record the reader
+         *     may not read is left out. ``served`` false: this server holds no records to look in.
+         */
+        SourceRecords: {
+            /**
+             * Access Label
+             * @description 'Viewing with full-read access' when served under the reader's declared full-read grant.
+             */
+            access_label?: string | null;
+            /** Handle */
+            handle: string;
+            /** Records */
+            records?: components["schemas"]["SourceRecord"][];
+            /**
+             * Served
+             * @default true
+             */
+            served: boolean;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /**
          * SourceView
@@ -7089,6 +7441,71 @@ export type components = {
             /** Name */
             name: string;
         };
+        /**
+         * TimeSaved
+         * @description Per person and week, the minutes the Workbench saved them, from their work log: an
+         *     estimate whose ``method`` says how it is counted. A reader sees their own; the owner
+         *     may see everyone's (``all_readers``). ``available`` False (nothing shown) while the
+         *     people exclusion is not loaded.
+         */
+        TimeSaved: {
+            /**
+             * All Readers
+             * @default false
+             */
+            all_readers: boolean;
+            /** Available */
+            available: boolean;
+            /** Basis */
+            basis?: {
+                [key: string]: string;
+            };
+            /**
+             * Method
+             * @default
+             */
+            method: string;
+            /**
+             * Minutes
+             * @description Minutes per item of each basis.
+             */
+            minutes?: {
+                [key: string]: number;
+            };
+            /** People */
+            people?: components["schemas"]["TimeSavedPerson"][];
+            /** Weeks */
+            weeks?: string[];
+        };
+        /** TimeSavedPerson */
+        TimeSavedPerson: {
+            /**
+             * Mine
+             * @default false
+             */
+            mine: boolean;
+            /** Name */
+            name?: string | null;
+            /** Weeks */
+            weeks: components["schemas"]["TimeSavedWeek"][];
+        };
+        /** TimeSavedWeek */
+        TimeSavedWeek: {
+            /**
+             * Items
+             * @description How many of each basis (mail_sent, teams_sent, record) the minutes count.
+             */
+            items?: {
+                [key: string]: number;
+            };
+            /** Minutes */
+            minutes: number;
+            /**
+             * Start
+             * @description The week's Monday (US Eastern), ISO date.
+             */
+            start: string;
+        };
         /** TimelineEvent */
         TimelineEvent: {
             /** At */
@@ -7157,6 +7574,158 @@ export type components = {
              * @description What happened, e.g. 'Vendor confirmed delivery by 2026-07-02'; every date and figure in it is a cited value.
              */
             title: string;
+        };
+        /** TrustAlert */
+        TrustAlert: {
+            /**
+             * Correct
+             * @description Items right; absent when the registry's rounded rate gives no whole count.
+             */
+            correct?: number | null;
+            /** Home */
+            home: boolean;
+            /**
+             * Judged
+             * @description Items hand-checked; absent when the type was never measured.
+             */
+            judged?: number | null;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Measured On */
+            measured_on?: string | null;
+            /** Note */
+            note?: string | null;
+            /**
+             * On
+             * @description On by default (shown on My work when home).
+             */
+            on: boolean;
+            /** Percent */
+            percent?: number | null;
+            /** Type */
+            type: string;
+        };
+        /** TrustAnswerScore */
+        TrustAnswerScore: {
+            /**
+             * Accuracy
+             * @description Percent of answered runs correct.
+             */
+            accuracy?: number | null;
+            /** Answered */
+            answered: number;
+            /** At */
+            at: string;
+            /** Correct */
+            correct: number;
+            /**
+             * Coverage
+             * @description Percent of scored runs answered.
+             */
+            coverage?: number | null;
+            /** Evidence Label */
+            evidence_label: string;
+            /** Items */
+            items: number;
+            /** Runs */
+            runs: number;
+        };
+        /** TrustAnswerSet */
+        TrustAnswerSet: {
+            /** @description Absent: not measured yet. */
+            dev?: components["schemas"]["TrustAnswerScore"] | null;
+            /** @description Absent: not measured yet. */
+            held_out?: components["schemas"]["TrustAnswerScore"] | null;
+            /** Name */
+            name: string;
+        };
+        /**
+         * TrustFreshness
+         * @description One source system: the newest capture taken from it, the newest capture the served
+         *     data holds, and the lag between them.
+         */
+        TrustFreshness: {
+            /** Capture */
+            capture?: string | null;
+            /**
+             * Captured At
+             * @description The newest capture taken (the capture ledger).
+             */
+            captured_at?: string | null;
+            /**
+             * Lag Seconds
+             * @description captured_at - served_at; absent when either is unknown.
+             */
+            lag_seconds?: number | null;
+            /**
+             * Served At
+             * @description The newest capture applied to the data the app serves.
+             */
+            served_at?: string | null;
+            /**
+             * Stale
+             * @default false
+             */
+            stale: boolean;
+            /**
+             * System
+             * @enum {string}
+             */
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+        };
+        /** TrustLine */
+        TrustLine: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "live" | "gated" | "pending";
+            /** Words */
+            words: string;
+        };
+        /**
+         * TrustPage
+         * @description What a reader needs to judge the Workbench: data freshness per system, answer
+         *     scores per question set, alert precision per type, the autopilot's workflows and
+         *     what is live, gated and pending. Counts and times only.
+         */
+        TrustPage: {
+            /**
+             * Alert Rule
+             * @default
+             */
+            alert_rule: string;
+            /** Alerts */
+            alerts?: components["schemas"]["TrustAlert"][];
+            /** Answers */
+            answers?: components["schemas"]["TrustAnswerSet"][];
+            /** Autopilot */
+            autopilot?: components["schemas"]["AutopilotWorkflowRow"][];
+            /** Autopilot Note */
+            autopilot_note?: string | null;
+            /** Checked At */
+            checked_at: string;
+            /** Freshness */
+            freshness?: components["schemas"]["TrustFreshness"][];
+            /** Lines */
+            lines?: components["schemas"]["TrustLine"][];
+            /** Switches */
+            switches?: components["schemas"]["TrustSwitch"][];
+        };
+        /** TrustSwitch */
+        TrustSwitch: {
+            /**
+             * State
+             * @description none: no write path exists.
+             * @enum {string}
+             */
+            state: "on" | "off" | "none";
+            /** System */
+            system: string;
+            /** Words */
+            words: string;
         };
         /**
          * TruthFlag
@@ -7302,6 +7871,16 @@ export type components = {
         UpcomingMeetings: {
             /** Meetings */
             meetings: components["schemas"]["UpcomingMeeting"][];
+            /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
         };
         /** UploadApprove */
         UploadApprove: {
@@ -7315,6 +7894,11 @@ export type components = {
         };
         /** UploadPreview */
         UploadPreview: {
+            /**
+             * Acknowledge
+             * @description Why this upload is not a routine write, in words: the reader's confirm accepts each (the preview_hash covers them).
+             */
+            acknowledge?: string[];
             /** After */
             after: string;
             /** Before */
@@ -7337,9 +7921,10 @@ export type components = {
             size: number;
             /**
              * Status
+             * @description would_upload: approved and recorded, not made (``missing`` says why); uploaded: made through the gated write path; unknown: check SharePoint.
              * @enum {string}
              */
-            status: "prepared" | "would_upload";
+            status: "prepared" | "would_upload" | "uploaded" | "failed" | "unknown";
             /** Upload Id */
             upload_id: string;
         };
@@ -7422,6 +8007,45 @@ export type components = {
         VerdictEvent: {
             /** Text */
             text: string;
+        };
+        /** ViewAsMark */
+        ViewAsMark: {
+            /**
+             * Key
+             * @description The person's opaque view-as key.
+             */
+            key: string;
+        };
+        /** ViewAsMarked */
+        ViewAsMarked: {
+            /**
+             * Event
+             * @enum {string}
+             */
+            event: "start" | "stop";
+            /** Recorded */
+            recorded: boolean;
+        };
+        /**
+         * ViewAsPeople
+         * @description Whom the owner may view as. ``available`` False: this server cannot (no employee
+         *     resolver or people exclusion), so nobody is listed.
+         */
+        ViewAsPeople: {
+            /** Available */
+            available: boolean;
+            /** People */
+            people?: components["schemas"]["ViewAsPerson"][];
+        };
+        /** ViewAsPerson */
+        ViewAsPerson: {
+            /**
+             * Key
+             * @description An opaque handle for X-PLX-View-As; never an id.
+             */
+            key: string;
+            /** Name */
+            name: string;
         };
         /** WatchAlert */
         WatchAlert: {
@@ -7856,6 +8480,16 @@ export type components = {
             granted_teams?: string[];
             /** People */
             people?: components["schemas"]["WorkloadPerson"][];
+            /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
             /** Teams */
             teams?: components["schemas"]["WorkloadTeam"][];
         };
@@ -10925,6 +11559,55 @@ export interface operations {
             };
         };
     };
+    source_records_api_source_records_get: {
+        parameters: {
+            query: {
+                handle: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRecords"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     suggest_api_suggest_get: {
         parameters: {
             query: {
@@ -10986,6 +11669,204 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    time_saved_api_time_saved_get: {
+        parameters: {
+            query?: {
+                /** @description The owner only: every person's. */
+                everyone?: boolean;
+                weeks?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimeSaved"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trust_page_api_trust_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrustPage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    view_as_people_api_view_as_people_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewAsPeople"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    view_as_mark_api_view_as__event__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event: "start" | "stop";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ViewAsMark"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewAsMarked"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11342,6 +12223,46 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    autopilot_days_api_work_log_autopilot_days_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotScorecard"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

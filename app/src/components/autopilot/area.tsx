@@ -119,23 +119,26 @@ function Item({
   const live = itemLive(area, item);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(item.decision?.text ?? draft?.body ?? "");
-  const [confirmLive, setConfirmLive] = useState(false);
+  // the server's confirm token: set when an accept would perform the item live
+  const [confirmLive, setConfirmLive] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const decide = useCallback(
     async (decision: "accept" | "edit" | "reject" | "snooze", extra: { text?: string; until?: string } = {}) => {
-      if (decision === "accept" && live && !confirmLive) {
-        setConfirmLive(true);
-        return;
-      }
       setBusy(true);
       setError(null);
       try {
-        const out = await decideAutopilotItem(item.item_id, { decision, ...extra });
+        const token = decision === "accept" ? confirmLive : null;
+        const out = await decideAutopilotItem(item.item_id, { decision, ...extra, ...(token ? { confirm_token: token } : {}) });
+        if (decision === "accept" && out.confirm_token) {
+          // live: nothing was performed; the server asks for this accept once more
+          setConfirmLive(out.confirm_token);
+          return;
+        }
         setEditing(false);
-        setConfirmLive(false);
+        setConfirmLive(null);
         setSnoozeOpen(false);
         onDecided(out);
       } catch (e) {
@@ -144,7 +147,7 @@ function Item({
         setBusy(false);
       }
     },
-    [item.item_id, live, confirmLive, onDecided],
+    [item.item_id, confirmLive, onDecided],
   );
   const open = item.state === "waiting" || item.state === "edited";
   const act = useCallback(
@@ -258,7 +261,7 @@ function Item({
         <div className="space-y-2">
           {confirmLive && (
             <p className="border-l-[3px] border-risk pl-3" role="status">
-              This workflow is live: accepting performs it in {systemLabel(item.system)}. Accept again to confirm.
+              This item is live: accepting performs it in {systemLabel(item.system)}. Accept again to confirm.
             </p>
           )}
           <div className="flex flex-wrap gap-2">
@@ -282,7 +285,7 @@ function Item({
               Snooze
             </Button>
             {(editing || confirmLive) && (
-              <Button size="sm" variant="ghost" onClick={() => (setEditing(false), setConfirmLive(false))}>
+              <Button size="sm" variant="ghost" onClick={() => (setEditing(false), setConfirmLive(null))}>
                 Cancel
               </Button>
             )}
@@ -333,7 +336,8 @@ function QueueView({ area, filters, split, decided, onDecided }: { area: Area; f
     let failed = 0;
     for (const i of list) {
       try {
-        onDecided(await decideAutopilotItem(i.item_id, decision === "snooze" ? { decision, until: snoozeChoices()[1][0] } : { decision }));
+        // bulk: the server refuses a live item (409) instead of performing it
+        onDecided(await decideAutopilotItem(i.item_id, decision === "snooze" ? { decision, until: snoozeChoices()[1][0], bulk: true } : { decision, bulk: true }));
       } catch {
         failed += 1;
       }

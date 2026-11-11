@@ -161,6 +161,8 @@ class PgGenStore(eg.GenStore):
     def lookup(self, object_type: str, label: str) -> list[str] | None:
         if object_type not in self._names:
             self._names[object_type] = self._index(object_type, gw.NAME_PROPS)
+            while len(self._names) > self.MAX_INDEXES:
+                self._names.pop(next(iter(self._names)))
         index = self._names[object_type]
         if index is None:
             return None
@@ -170,7 +172,7 @@ class PgGenStore(eg.GenStore):
         key = (object_type, prop)
         if key not in self._by_prop:
             self._by_prop[key] = self._index(object_type, [prop])
-            if len(self._by_prop) > 64:
+            while len(self._by_prop) > self.MAX_INDEXES:
                 self._by_prop.pop(next(iter(self._by_prop)))
         index = self._by_prop[key]
         if index is None:

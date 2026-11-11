@@ -21,7 +21,7 @@ vi.mock("@/lib/api", async (orig) => ({
 
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { AccessBanner, DevBanner, OpsAlarmBanner, OpsStatus, TOOLBAR_PAGES } from "./shell";
+import { AccessBanner, DevBanner, navFor, OpsAlarmBanner, OpsStatus, TOOLBAR_PAGES } from "./shell";
 
 const me = (over: Record<string, unknown>) => ({
   status: "signed-in",
@@ -84,8 +84,8 @@ describe("ops status line", () => {
     ],
   };
 
-  it("names each missed target to the full-read owner", async () => {
-    auth.state = me({ access_label: "Viewing with full-read access" });
+  it("names each missed target to an ops reader", async () => {
+    auth.state = me({ ops_reader: true });
     api.ops = breach;
     render(<OpsStatus />);
     const line = await screen.findByTestId("ops-status");
@@ -95,7 +95,7 @@ describe("ops status line", () => {
   });
 
   it("names a capture by its system and says long delays in hours or days", async () => {
-    auth.state = me({ access_label: "Viewing with full-read access" });
+    auth.state = me({ ops_reader: true });
     api.ops = {
       ...breach,
       breaches: ["capture:sharepoint_lists", "delta_last_cycle"],
@@ -119,14 +119,14 @@ describe("ops status line", () => {
     auth.state = me({});
     api.ops = breach;
     render(<OpsStatus />);
-    auth.state = me({ access_label: "Viewing with full-read access" });
+    auth.state = me({ ops_reader: true });
     api.ops = { ...breach, status: "ok", breaches: [], checks: [] };
     render(<OpsStatus />);
     await waitFor(() => expect(screen.queryByTestId("ops-status")).toBeNull());
   });
 });
 
-describe("reliability banner on Home", () => {
+describe("reliability banner on every page", () => {
   afterEach(() => {
     auth.state = {};
     api.alarms = null;
@@ -144,8 +144,8 @@ describe("reliability banner on Home", () => {
     checks: [],
   };
 
-  it("shows the owner every open problem in red, linked to /ops", async () => {
-    auth.state = me({ access_label: "Viewing with full-read access" });
+  it("shows an ops reader every open problem in red, linked to /ops", async () => {
+    auth.state = me({ ops_reader: true });
     api.alarms = alarms;
     render(<OpsAlarmBanner />);
     const banner = await screen.findByTestId("ops-alarm-banner");
@@ -159,7 +159,7 @@ describe("reliability banner on Home", () => {
   });
 
   it("says when the checks themselves stopped", async () => {
-    auth.state = me({ access_label: "Viewing with full-read access" });
+    auth.state = me({ ops_reader: true });
     api.alarms = { ...alarms, running: false, open: [] };
     render(<OpsAlarmBanner />);
     expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("Reliability checks are not running");
@@ -169,14 +169,28 @@ describe("reliability banner on Home", () => {
     auth.state = me({});
     api.alarms = alarms;
     render(<OpsAlarmBanner />);
-    expect(api.asked).toBe(0);
+    // a full-read label alone is not the server's ops decision
     auth.state = me({ access_label: "Viewing with full-read access" });
+    api.alarms = alarms;
+    render(<OpsAlarmBanner />);
+    expect(api.asked).toBe(0);
+    auth.state = me({ ops_reader: true });
     api.alarms = { ...alarms, open: [] };
     render(<OpsAlarmBanner />);
     api.alarms = new Error("403");
     render(<OpsAlarmBanner />);
     await waitFor(() => expect(api.asked).toBe(2));
     expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
+  });
+});
+
+describe("reliability in the nav", () => {
+  it("shows to ops readers only, whatever other grant a reader holds", () => {
+    const hrefs = (m: Record<string, unknown>) => navFor(m).map((n) => n.href);
+    expect(hrefs({ ops_reader: true })).toContain("/ops");
+    expect(hrefs({ access_label: "Viewing with full-read access" })).not.toContain("/ops");
+    expect(hrefs({ feedback_admin: true })).not.toContain("/ops");
+    expect(hrefs({})).not.toContain("/ops");
   });
 });
 

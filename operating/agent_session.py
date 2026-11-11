@@ -107,7 +107,13 @@ ANSWER_GATE_RULE = (
     "x 100) with exactly two inputs in that order, all in one unit and currency; the gate "
     "recomputes each from the cells; an average or ratio may be rounded half-up to the "
     "decimals you write (an average at least to its inputs' cents, a ratio to 0.01 or a "
-    "whole percent). An expression over "
+    "whole percent). The whole days from one cited date to another (a receipt after "
+    "its expected date, a due date after its invoice date) is \"op\": \"days\" over "
+    "exactly two date fields (x0 - x1, negative when x0 is the earlier day; \"unit\": "
+    "\"day\" or none, no role); the days from a day the question writes in full, or "
+    "today, to one cited date (days left before an expiry, days past it) is \"op\": "
+    "\"days\" over that one date field with \"day\": \"<YYYY-MM-DD>\" (x0 - day, "
+    "negative once the date has passed): never a day count of your own. An expression over "
     "figures printed in cited texts is one value claim too: {\"value\": <the result>, "
     "\"op\": \"expression\", \"expression\": \"x0 - x1\", \"of\": [{\"citation\": "
     "<handle>, \"field\": \"text\", \"value\": \"<the figure as printed>\", \"quote\": "
@@ -296,7 +302,8 @@ def _value_claim(value: Mapping[str, Any], stated: Any) -> dict[str, Any] | None
         inputs = [given for given in calculation.get("inputs") or []
                   if isinstance(given, Mapping) and isinstance(given.get("l1_handle"), str)]
         op = calculation.get("op")
-        if not inputs or op not in ("expression", "count", "count_distinct", *NUMERIC_OPS):
+        if not inputs or op not in ("expression", "count", "count_distinct", "days",
+                                    *NUMERIC_OPS):
             return None
         of = []
         for given in inputs:
@@ -313,6 +320,8 @@ def _value_claim(value: Mapping[str, Any], stated: Any) -> dict[str, Any] | None
         claim = {"value": stated, "op": op, "of": of}
         if op == "expression":
             claim["expression"] = calculation.get("expression")
+        if op == "days" and "day" in calculation:
+            claim["day"] = calculation["day"]
     else:
         cites = [cite for cite in value.get("citations") or []
                  if isinstance(cite, Mapping) and isinstance(cite.get("l1_handle"), str)]
@@ -3166,7 +3175,7 @@ def _answer_value(name: str, given: Mapping[str, Any]) -> dict[str, Any] | None:
         if isinstance(given.get("quote"), str) and given["quote"].strip():
             cite["quote"] = given["quote"]
         out["citations"] = [cite]
-    elif given.get("op") in ("count", "count_distinct", "expression", *NUMERIC_OPS) \
+    elif given.get("op") in ("count", "count_distinct", "expression", "days", *NUMERIC_OPS) \
             and isinstance(given.get("of"), list):
         inputs = []
         for item in given["of"]:
@@ -3179,7 +3188,8 @@ def _answer_value(name: str, given: Mapping[str, Any]) -> dict[str, Any] | None:
                           if isinstance(item.get(key), str)})
             inputs.append(entry)
         out["calculation"] = {"op": given["op"], "inputs": inputs, **(
-            {"expression": given.get("expression")} if given["op"] == "expression" else {})}
+            {"expression": given.get("expression")} if given["op"] == "expression" else {}),
+            **({"day": given["day"]} if given["op"] == "days" and "day" in given else {})}
     else:
         return None
     for key, field_name in (("role", "quantity_role"), ("unit", "unit"),
@@ -3386,7 +3396,13 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         "value with \"calculation\" has no \"citations\" (citations_beside_calculation "
         "drops the whole answer): its inputs are its evidence. Compute nothing else (no "
         "comparison of your own): the gate checks only a count, sum, avg, min, max, "
-        "difference or ratio over cited records or such an expression, so any other result is null with a gap.",
+        "difference, ratio or days over cited records or such an expression, so any other result is null with a gap. "
+        "The whole days from one cited date to another (how late a receipt came, a "
+        "payment term from invoice to due date) is op \"days\" over exactly two date "
+        "inputs (l1_handle, field_path): x0 - x1 in whole days. The days from a day the "
+        "question writes in full, or today, to one cited date (days left before an expiry, "
+        "days since it passed) is op \"days\" over that one input with \"day\": "
+        "\"<YYYY-MM-DD>\" beside \"op\": x0 - day, negative once the date has passed.",
         "State a unit only when the cited text prints it beside the figure or the cited "
         "field's record states it, and a currency only when it is printed or recorded "
         "there; otherwise leave it out (a bare \"$\" names no currency).",

@@ -6,33 +6,50 @@ import type { OwnerWorkload, OwnerWorkloadBucket, OwnerWorkloadItems, Workload }
 
 // Who is overloaded: counts per team for everyone; per person only your own counts and
 // those of the teams the owner granted you. Counts only, never message content.
+const TH = "py-1.5 text-[12px] font-medium text-muted";
+const NUM = "py-1.5 text-right tabular-nums";
+
+/** A row's open work as a bar beside the others' (the largest fills it). */
+function Load({ n, max }: { n: number; max: number }) {
+  return (
+    <td className="w-[22%] py-1.5 pl-4" aria-hidden>
+      <span className="block h-[5px] rounded-[2px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)]">
+        <span className="block h-full rounded-[2px] bg-accent" style={{ width: `${max ? Math.round((100 * n) / max) : 0}%` }} />
+      </span>
+    </td>
+  );
+}
+
 export function WorkloadView({ data }: { data: Workload }) {
   const teams = data.teams ?? [];
   const people = data.people ?? [];
+  const sum = (r: { awaiting_reply?: number | null; tasks: number; alerts: number }) => (r.awaiting_reply ?? 0) + r.tasks + r.alerts;
+  const teamMax = Math.max(0, ...teams.map(sum));
+  const personMax = Math.max(0, ...people.map(sum));
   return (
-    <div className="space-y-4" data-testid="workload">
-      <table className="w-full text-[13px]" data-testid="workload-teams">
+    <div className="space-y-6" data-testid="workload">
+      <table className="w-full border-collapse text-[13px]" data-testid="workload-teams">
         <thead>
-          <tr className="text-left text-muted"><th>Team</th><th>Awaiting reply</th><th>Open tasks</th><th>Alerts</th></tr>
+          <tr className="border-b border-border text-left"><th className={TH}>Team</th><th className={`${TH} text-right`}>Awaiting reply</th><th className={`${TH} text-right`}>Open tasks</th><th className={`${TH} text-right`}>Alerts</th><th className={TH}><span className="sr-only">Load</span></th></tr>
         </thead>
-        <tbody>
+        <tbody className="divide-y divide-border">
           {teams.map((t) => (
-            <tr key={t.team}><td>{t.team === "not_assigned" ? "Not assigned" : t.team}</td><td>{t.suppressed || t.awaiting_reply == null ? "Not shown (under 3 people)" : t.awaiting_reply}</td><td>{t.tasks}</td><td>{t.alerts}</td></tr>
+            <tr key={t.team}><td className="py-1.5 font-medium">{t.team === "not_assigned" ? "Not assigned" : t.team}</td><td className={NUM}>{t.suppressed || t.awaiting_reply == null ? "Not shown (under 3 people)" : t.awaiting_reply}</td><td className={NUM}>{t.tasks}</td><td className={NUM}>{t.alerts}</td><Load n={sum(t)} max={teamMax} /></tr>
           ))}
         </tbody>
       </table>
       {people.length > 0 && (
         <section className="space-y-2">
-          <h2 className="text-[14px] font-medium">
+          <h2 className="text-[13px] font-semibold">
             {(data.granted_teams ?? []).length > 0 ? `People of ${(data.granted_teams ?? []).join(", ")}` : "Your counts"}
           </h2>
-          <table className="w-full text-[13px]" data-testid="workload-people">
+          <table className="w-full border-collapse text-[13px]" data-testid="workload-people">
             <thead>
-              <tr className="text-left text-muted"><th>Person</th><th>Team</th><th>Awaiting reply</th><th>Open tasks</th><th>Alerts</th></tr>
+              <tr className="border-b border-border text-left"><th className={TH}>Person</th><th className={TH}>Team</th><th className={`${TH} text-right`}>Awaiting reply</th><th className={`${TH} text-right`}>Open tasks</th><th className={`${TH} text-right`}>Alerts</th><th className={TH}><span className="sr-only">Load</span></th></tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-border">
               {people.map((p) => (
-                <tr key={p.person}><td>{p.self ? "You" : p.person}</td><td>{p.team === "not_assigned" ? "Not assigned" : p.team}</td><td>{p.awaiting_reply}</td><td>{p.tasks}</td><td>{p.alerts}</td></tr>
+                <tr key={p.person}><td className="py-1.5 font-medium">{p.self ? "You" : p.person}</td><td className="py-1.5 text-muted">{p.team === "not_assigned" ? "Not assigned" : p.team}</td><td className={NUM}>{p.awaiting_reply}</td><td className={NUM}>{p.tasks}</td><td className={NUM}>{p.alerts}</td><Load n={sum(p)} max={personMax} /></tr>
               ))}
             </tbody>
           </table>

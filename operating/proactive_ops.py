@@ -26,8 +26,13 @@ no rule names a record, a person, a customer or an item.
   length across both snapshots (``Decimal``, never converted); every figure ``finance``.
 * ``production_late``: an assembly order or batch open by its own status past the day it is
   scheduled to be made, read from the dates the schema declares (``PRODUCTION_DUE``); none
-  declared: ``blocked`` (``due_date_not_served``). Read on one record of an identity
-  cluster (BC first, else the least id).
+  declared: ``blocked`` (``due_date_not_served``). Done when any copy of its identity cluster
+  is realized or closed; otherwise judged on the copy of the system that keeps production
+  (``PRODUCTION_DUE``'s keeper; none: ``status_source_absent``), and a record neither
+  scheduled nor edited within ``active_population.ACTIVE_DAYS`` is a stale draft (``historic``).
+  Raised only when later than its type usually takes: past the ``LAG_QUANTILE`` of the days
+  its recently realized records took after their scheduled day (``LAG_MIN_HISTORY`` or
+  more; fewer: ``PRODUCTION_HIGH_DAYS``).
 * ``assembly_damage_spike``: per item (the assembly orders' ``makes`` item, its settled
   identity cluster) and unit, the damaged quantity of the last ``SPIKE_DAYS`` against the
   mean of the ``SPIKE_WINDOWS`` windows before, at ``SPIKE_FACTOR`` times or more and on at
@@ -63,7 +68,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from ontology import store as ostore
 from ontology.units import unit_token
 
-from .proactive_business import FINANCE, _currency, _day, _dec, _governing, _one, _text, _tick
+from . import active_population as active
+from .proactive_business import FINANCE, _currency, _day, _dec, _one, _text, _tick
 
 MC_OVERDUE = "mc_task_overdue"
 MC_STUCK = "mc_task_stuck"
@@ -109,13 +115,17 @@ AGED_PROPS = ("balance_due", "current_amount", *BUCKETS, "aged_as_of_date", "per
 AGED_WORSEN = Decimal("0.10")
 
 # Where a production record's due date is read: (type, due property, done-date property or
-# None, status property or None). Only what the loaded schema declares is read. The due day
-# is the day the record is scheduled to be made (FM datescheduled / datesche, the Portal
-# copies' scheduled_date; the Portal MO's scheduled_end_date and actual_end_date are never
-# filled) and done is the day it was realized. A production task has no planned or due day
-# in any source, so it is not judged.
-PRODUCTION_DUE = (("AssemblyOrder", "scheduled_date", "realized_date", "status"),
-                  ("Batch", "scheduled_date", "realized_date", "status"))
+# None, status property or None, the binding prefix of the copy that keeps its production
+# status or None for any copy). Only what the loaded schema declares is read. The due day
+# is the day the record is scheduled to be made (FM datescheduled / datesche) and done is
+# the day it was realized. FileMaker keeps production: the Portal's app copies mirror its
+# stages but lag it (on 2026-11-11, 13 of 15 sampled late alerts read a Portal copy whose
+# FM record was realized, rescheduled or deleted; the Portal MO's realized day stops in
+# August), so a cluster is judged on its FM copy's status and day, and a cluster with no FM
+# copy is not judged (``status_source_absent``). A production task has no planned or due
+# day in any source, so it is not judged.
+PRODUCTION_DUE = (("AssemblyOrder", "scheduled_date", "realized_date", "status", "portal.fm_"),
+                  ("Batch", "scheduled_date", "realized_date", "status", "portal.fm_"))
 # FM's own stages (Generated -> Allocated -> Committed -> Realized, + Cancelled) and the
 # Portal MO's open words. The MO's RELEASED is left unmapped (not evaluated): thousands of
 # MOs scheduled years back hold it with nothing realized, so it does not say open.
@@ -124,7 +134,10 @@ PRODUCTION_OPEN = frozenset({"open", "planned", "scheduled", "pending", "in prog
                              "released to floor", "generated", "allocated", "committed"})
 PRODUCTION_DONE = frozenset({"complete", "completed", "realized", "closed", "done",
                              "finished", "cancelled", "canceled", "shipped", "void"})
-PRODUCTION_HIGH_DAYS = 7
+PRODUCTION_HIGH_DAYS = 7     # the allowed lag while too few records were realized to tell
+LAG_QUANTILE = 0.9
+LAG_MIN_HISTORY = 20
+EDIT_STAMPS = active.EDIT_TIME_PROPS
 
 # the people a task or approval links (cleared against the exclusion)
 MC_TASK_PEOPLE = "MCTask.with_person"
@@ -166,8 +179,8 @@ def declared_sources() -> dict[str, Any]:
     """Every schema-dependent source these rules read, as the loaded schema declares it."""
     production = tuple(
         (t, due, done if done in _declared(t, [done]) else None,
-         status if status in _declared(t, [status]) else None)
-        for t, due, done, status in PRODUCTION_DUE if _declared(t, [due]))
+         status if status in _declared(t, [status]) else None, keeper)
+        for t, due, done, status, keeper in PRODUCTION_DUE if _declared(t, [due]))
     return {"mc_task_due": _declared(MC_TASK, MC_TASK_DUE),
             "production_due": production,
             "damage_date": tuple((t, p) for t, p in DAMAGE_DATE if _declared(t, [p])),
@@ -185,6 +198,35 @@ def _instant(raw: Any) -> datetime | None:
         return None if day is None else datetime(day.year, day.month, day.day,
                                                  tzinfo=timezone.utc)
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _lag(found: Mapping[str, Any], kept: Sequence[str], due_prop: str,
+         done_prop: str | None, as_of: date) -> int | None:
+    """Days from the scheduled to the realized day on a record's keeper copy, when it was
+    realized by ``as_of`` within the active window (a recent lag of its type)."""
+    for record in kept:
+        props = found[record]["props"]
+        due_row = _one(props.get(due_prop))
+        done_row = _one(props.get(done_prop)) if done_prop else None
+        due = _day(due_row["value"]) if due_row else None
+        done = _day(done_row["value"]) if done_row else None
+        if due is not None and done is not None and done <= as_of \
+                and (as_of - done).days <= active.ACTIVE_DAYS:
+            return max((done - due).days, 0)
+    return None
+
+
+def _percentile(values: Sequence[int], q: float) -> int | None:
+    """The ``q`` quantile of ``values`` (nearest rank), None when empty."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, -(-int(q * 100) * len(ordered) // 100) - 1))]
+
+
+def _stated(rows: Sequence[Mapping[str, Any]] | None) -> bool:
+    """Whether any of a property's rows holds a value."""
+    return any(r.get("value") not in (None, "") for r in rows or ())
 
 
 def _word(row: Mapping[str, Any] | None) -> str | None:
@@ -696,9 +738,9 @@ def production_late(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     skipped = skips()
     gaps = []
     counts: Counter = Counter()
-    for object_type, due_prop, done_prop, status_prop in sources:
+    for object_type, due_prop, done_prop, status_prop, keeper in sources:
         _tick(st)
-        props_wanted = [p for p in (due_prop, done_prop, status_prop) if p]
+        props_wanted = [p for p in (due_prop, done_prop, status_prop, *EDIT_STAMPS) if p]
         found = st.values([object_type], props_wanted)
         pairs = [(l["from_object"], l["to_object"])
                  for l in st.links([f"{object_type}.same_record_as"], settled)
@@ -707,9 +749,25 @@ def production_late(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         members: dict[str, list[str]] = defaultdict(list)
         for oid in sorted(found):
             members[root.get(oid, oid)].append(oid)
+        late: list[tuple] = []
+        lags: list[int] = []   # days from scheduled to realized, this type's recent records
         for _top, group in sorted(members.items()):
             _tick(st)
-            record = _governing(group, po_status.binding_of)
+            kept = [m for m in group
+                    if keeper is None or (po_status.binding_of(m) or "").startswith(keeper)]
+            lag = _lag(found, kept, due_prop, done_prop, as_of)
+            if lag is not None:
+                lags.append(lag)
+            # done when any copy says so: a lagging copy never reopens a realized record
+            if any(_stated(found[m]["props"].get(done_prop)) for m in group if done_prop) \
+                    or any(_word(r) in PRODUCTION_DONE for m in group if status_prop
+                           for r in found[m]["props"].get(status_prop, ())):
+                counts["done"] += 1
+                continue
+            if not kept:
+                skipped.note("status_source_absent", [min(group)], [(min(group), "[]")])
+                continue
+            record = min(kept)
             props = found[record]["props"]
             cause = [(record, "[]")]
             due_row = _one(props.get(due_prop))
@@ -720,16 +778,9 @@ def production_late(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 else:
                     counts["undated"] += 1
                 continue
-            if done_prop and any(r.get("value") not in (None, "")
-                                 for r in props.get(done_prop, ())):
-                counts["done"] += 1
-                continue
             status_row = _one(props.get(status_prop)) if status_prop else None
             status = _word(status_row)
             if status_prop:
-                if status in PRODUCTION_DONE:
-                    counts["done"] += 1
-                    continue
                 if status not in PRODUCTION_OPEN:
                     skipped.note("status_missing" if status is None else "status_unmapped",
                                  [record], cause)
@@ -740,21 +791,43 @@ def production_late(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             counts["open"] += 1
             if due >= as_of:
                 continue
+            # the one active-population rule: open on paper but neither scheduled nor
+            # edited within its window is a stale draft, counted, never current work
+            edits = [active.day_of(r) for p in EDIT_STAMPS for r in props.get(p, ())]
+            if active.inactive_reason("open", as_of=as_of, dates=[due, *edits]) \
+                    == active.HISTORIC:
+                counts["historic"] += 1
+                continue
+            late.append((record, due, status, due_row, status_row))
+        # late means later than this type's records are usually realized after their
+        # scheduled day: past the 90th percentile of its recent lags (on 2026-11-11 the
+        # median assembly order was realized 5 days after its scheduled day, so a record
+        # 2 days past it is on time); too few realized to tell: ``PRODUCTION_HIGH_DAYS``
+        allowed = _percentile(lags, LAG_QUANTILE) if len(lags) >= LAG_MIN_HISTORY else None
+        allowed = PRODUCTION_HIGH_DAYS if allowed is None else max(allowed, 1)
+        for record, due, status, due_row, status_row in late:
             days = (as_of - due).days
+            if days <= allowed:
+                counts["within_usual_lag"] += 1
+                continue
             counts["late"] += 1
             gaps.append(gap(
                 PRODUCTION, PRODUCTION, record, object_type, due_prop,
                 summary=f"{object_type} is {_plural(days, 'day')} past its due date "
-                        f"{due.isoformat()}" + (f" (status {status})" if status else ""),
+                        f"{due.isoformat()}" + (f" (status {status})" if status else "")
+                        + f"; {object_type} records are usually realized within "
+                          f"{_plural(allowed, 'day')} of it",
                 missing="When will it be finished, and which customer orders wait on it?",
                 why="The record is open by its own status (or no completion is recorded) and "
-                    "its due date has passed (due date and status cited).",
-                priority="high" if days >= PRODUCTION_HIGH_DAYS else "medium",
+                    "its due date passed longer ago than this kind of record usually takes "
+                    "(due date and status cited).",
+                priority="high" if days >= 2 * allowed else "medium",
                 about=(object_type, due_prop),
                 groups=[cites([due_row]), *([cites([status_row])] if status_row else [])],
-                event={"days": days}))
+                event={"days": days, "usual_lag_days": allowed}))
     out = result(gaps, not_evaluated=skipped)
-    out["counts"] = {k: counts.get(k, 0) for k in ("open", "late", "done", "undated")}
+    out["counts"] = {k: counts.get(k, 0) for k in ("open", "late", "done", "undated",
+                                                      "historic", "within_usual_lag")}
     return out
 
 

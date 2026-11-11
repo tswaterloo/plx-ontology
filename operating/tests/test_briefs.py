@@ -273,6 +273,45 @@ class MeetingBrief(unittest.TestCase):
         self.assertFalse([c for c in st.calls if c[0] not in (
             "plx.object", "plx.around", "plx.find")])   # no model, no write
 
+    def test_the_customers_rd_projects_one_row_each_newest_first(self):
+        st, alerts, _ = world()
+
+        def line(n, project, customer, last_on, state="waiting_on_us"):
+            g = gap("rd_project_line", f"Email:graph.mail:synth-rd-{n}", "R&D thread", "low")
+            g["event"] = {"project": project, "customer": customer, "kind": "sample_request",
+                          "state": state, "last_on": last_on}
+            return g
+        other = "Customer:bc.customers:synth-cus-2"
+        alerts["gaps"] += [line(1, "p1", CUS, "2026-10-01", "waiting_on_customer"),
+                           line(2, "p1", CUS, "2026-10-20"), line(3, "p2", CUS, "2026-10-05"),
+                           line(4, "p3", other, "2026-10-30")]
+        rows = section(self.brief(st, alerts, CUS), "rd")["rows"]
+        self.assertEqual([(r["label"], r["date"]) for r in rows],
+                         [("Sample request: waiting on us", "2026-10-20"),
+                          ("Sample request: waiting on us", "2026-10-05")])
+        self.assertEqual(len(rows[0]["sources"]), 2)     # both threads of the project cited
+        # a thread the reader may not open is no part of its project, nor cited, nor counted
+        out = br.meeting_brief(st, frozenset(FIN), alerts, CUS, now=NOW, declared=None,
+                               people=PEOPLE, decide=lambda hs: {
+                                   x: ({"reason": "no"} if "synth-rd-2" in x else None)
+                                   for x in hs})
+        rows = section(out, "rd")["rows"]
+        self.assertEqual([(r["label"], r["date"]) for r in rows],
+                         [("Sample request: waiting on us", "2026-10-05"),
+                          ("Sample request: waiting on the customer", "2026-10-01")])
+        self.assertNotIn("synth-rd-2", json.dumps(rows))
+        self.assertEqual(section(out, "rd")["more"], 0)
+        # the people exclusion unavailable: withheld; the alert list unread: said so
+        blocked = self.brief_people(st, alerts, People(unavailable="x"))
+        self.assertEqual((section(blocked, "rd")["state"], section(blocked, "rd")["rows"]),
+                         ("blocked", []))
+        self.assertEqual(section(self.brief(st, {"status": "error"}, CUS), "rd")["state"],
+                         "unread")
+
+    def brief_people(self, st, alerts, people):
+        return br.meeting_brief(st, frozenset(FIN), alerts, CUS, now=NOW, declared=None,
+                                people=people)
+
     def test_restricted_reader_sees_nothing_it_may_not(self):
         for leaky in (False, True):
             st, alerts, orders = world()

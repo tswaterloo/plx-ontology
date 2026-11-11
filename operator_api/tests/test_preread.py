@@ -131,7 +131,11 @@ class Resolve(unittest.TestCase):
         self.assertIn("It is the one in Business Central", pr.brief(None, [root]))
         for asked, want in (("status of PO9 in the portal?", PORTAL),
                             ("portal purchase order PO9 status", PORTAL),
-                            ("bc PO9 vendor", BC)):
+                            ("bc PO9 vendor", BC),
+                            # dev 11-10: asked back as a choice
+                            ("Who is PO PO9 placed with in Business Central, and is it "
+                             "released?", BC),
+                            ("is PO9 listed in the portal?", PORTAL)):
             got, several = pr.resolve(tools, found(BC, PORTAL), same=never, question=asked)
             self.assertEqual((several, got["roots"][0]["object_id"]), ([], want), asked)
         # a system named only for a hop elsewhere in the question settles nothing, and the
@@ -141,6 +145,10 @@ class Resolve(unittest.TestCase):
                                   question="PO9 lines and their Business Central receipts")
         self.assertEqual(several, [{"mention": "PO9", "groups": [[BC], [PORTAL]]}])
         self.assertNotIn("business", looked)
+        # a record noun between the number and the system is a hop, never the number's
+        got, several = pr.resolve(tools, found(BC, PORTAL), same=never,
+                                  question="PO9 receipts in Business Central")
+        self.assertEqual(several, [{"mention": "PO9", "groups": [[BC], [PORTAL]]}])
         # a system holding none of the records leaves the choice
         got, several = pr.resolve(tools, found(BC, PORTAL), same=never,
                                   question="sage PO9 total")

@@ -151,6 +151,9 @@ class Store:
     GUID = __import__("re").compile(
         r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
     MAX_NAMED = 400_000
+    # name indexes kept at once (each up to MAX_NAMED records): a recipes pass runs one
+    # Store per worker, and an unbounded cache held every type's index (8 GB OOM, 11-10)
+    MAX_INDEXES = 6
 
     def __init__(self, store: Path, samples: Mapping[str, Sequence[Sequence[str]]],
                  guard: Any, own: frozenset[str], skipped_boxes: Iterable[str]) -> None:
@@ -226,6 +229,8 @@ class Store:
                     if text:
                         index.setdefault(text, []).append(oid)
                 self._names[object_type] = index
+                while len(self._names) > self.MAX_INDEXES:
+                    self._names.pop(next(iter(self._names)))
         index = self._names[object_type]
         if index is None:
             return None

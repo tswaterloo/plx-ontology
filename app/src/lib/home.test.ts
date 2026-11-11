@@ -36,6 +36,10 @@ describe("staleLine", () => {
   it("says when the shown page was read, in Eastern time, and that it is refreshing", () => {
     expect(staleLine("2026-11-07T02:08:00Z")).toBe("As of 9:08 PM ET · refreshing");
   });
+  it("says when a kept page was read, without refreshing, when it is current", () => {
+    expect(staleLine(null, "2026-11-07T02:08:00Z")).toBe("As of 9:08 PM ET");
+    expect(staleLine("2026-11-07T02:08:00Z", "2026-11-07T03:00:00Z")).toBe("As of 9:08 PM ET · refreshing");
+  });
   it("shows nothing for a fresh page or an unreadable time", () => {
     expect(staleLine(null)).toBeNull();
     expect(staleLine("nonsense")).toBeNull();

@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import json
 import logging
+import os
 import secrets
 import time
 from typing import Any, Callable, Iterator, Literal, Optional
@@ -28,6 +29,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import feedback as fb
+from . import view_as as va
 from . import work_log as wl
 from .ask_drafts import cited_handles
 from operating.instruct import route as route_of
@@ -105,6 +107,14 @@ def origin_allowed(origin: str, headers: Any, allowed_origins: frozenset[str]) -
 # POST routes that change nothing the reader's screens show until they finish on their own
 # terms (the Ask counts its answer as a write itself)
 READ_POSTS = frozenset({"/api/ask"})
+# Writes that change only some of the reader's screens (the first part of a screen's name,
+# ``WorkspaceBackend._serving``); every other write leaves none of them current. Home marks
+# the briefing seen on each visit: My work, Autopilot and the rest stay current.
+WRITE_SCREENS: dict[str, frozenset[str]] = {
+    "/api/briefing/seen": frozenset({"briefing", "home", "suggestions"})}
+# Who besides the owner reads the reliability alarms: the Team view's readers (object ids or
+# addresses), one list for both (operator_api.team_view, 2026-11-11).
+OPS_READERS_ENV = "PLX_TEAM_VIEW_READERS"
 
 
 class AskBodyLimit:
@@ -180,12 +190,36 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     mailbox = getattr(backend, "_mailbox", None) or (lambda who: who.email)
     notes = wl.Notes(work, mailbox)
 
+    # "View as <person>" (UI-07): who the owner may view as and the audit of every view.
+    viewing = getattr(backend, "view_as", None) or va.ViewAs(audit=va.Audit(state_dir))
+
     def is_owner(who: Reader) -> bool:
         decide = getattr(backend, "_is_owner", None)
         try:
             return bool(decide(who)) if callable(decide) else fb.owner_open(who.session)
         except Exception:  # noqa: BLE001 - an undecidable reader is not the owner
             return False
+
+    def ops_reader(who: Reader) -> bool:
+        """Who reads the reliability alarms (2026-11-11, the
+        Team view's rule): the owner-open reader and the readers ``PLX_TEAM_VIEW_READERS``
+        names (object ids or addresses), decided from the signed-in session only."""
+        decide = getattr(backend, "_is_owner", None)
+        try:
+            if callable(decide) and decide(who):
+                return True
+        except Exception:  # noqa: BLE001 - an undecidable reader is not the owner
+            return False
+        named = {v.strip().lower() for v in (os.environ.get(OPS_READERS_ENV) or "").split(",")
+                 if v.strip()}
+        if not named:
+            return False
+        session = who.session
+        held = {str(v).lower() for v in getattr(session, "identities", ()) or ()}
+        employee = getattr(session, "employee", None)
+        if getattr(employee, "object_id", None):
+            held.add(str(employee.object_id).lower())
+        return bool(held & named)
 
     # ---- errors ---------------------------------------------------------------------
 
@@ -235,7 +269,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             response = problem("internal", 500, incident=_incident(error, request.url.path))
         wrote = getattr(request.state, "plx_wrote", None)
         if wrote is not None:
-            backend.reader_wrote(wrote)
+            backend.reader_wrote(*wrote)
         route = request.scope.get("route")
         ms = round((time.perf_counter() - started) * 1000, 1)
         path = getattr(route, "path", "unmatched")
@@ -254,6 +288,17 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         who = auth.authenticate(request.headers, request.cookies)
         if getattr(who.session, "warm_ahead", False):   # read-ahead serves nobody
             raise AuthRequired("sign_in_required")
+        if getattr(who.session, "view_as", False):   # only ever made below, per request
+            raise AuthRequired("sign_in_required")
+        asked = request.headers.get(va.HEADER)
+        if asked is not None:
+            # the owner viewing as someone (``operator_api.view_as``): read only, audited
+            try:
+                return viewing.reader_for(who, asked, method=request.method,
+                                          route=request.url.path, is_owner=is_owner,
+                                          reader_type=Reader)
+            except va.Refused as refused:
+                raise UserFacing("view_as_refused", refused.message, refused.status) from None
         if request.method not in ("GET", "HEAD", "OPTIONS") and \
                 request.url.path not in READ_POSTS:
             # a write: the reader's kept screens are not current (before it runs and,
@@ -262,8 +307,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             # other screens wait for a read
             wrote = getattr(backend, "reader_wrote", None)
             if wrote is not None:
-                wrote(who)
-                request.state.plx_wrote = who
+                screens = WRITE_SCREENS.get(request.url.path)
+                wrote(who, screens)
+                request.state.plx_wrote = (who, screens)
         return who
 
     # ---- auth -----------------------------------------------------------------------
@@ -286,17 +332,55 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def ops_status(who: Reader = Depends(reader)) -> dict[str, Any]:
         """The reliability alarms' last pass (``operating.ops_alarms``): open incidents,
         recent recoveries, every check and ``running`` (the pass is under 15 minutes
-        old). Owner only (403 for every other reader); unit names, ages and counts, never
-        a record or the page address. ``configured: False`` without a served state dir."""
-        is_owner = getattr(backend, "_is_owner", None)
-        if not callable(is_owner) or not is_owner(who):
-            raise UserFacing("forbidden", "Only the owner sees the reliability alarms.",
-                             403)
+        old). The owner and the Team readers only (403 for every other reader); unit names,
+        ages and counts, never a record. ``configured: False`` without a served state dir."""
+        if not ops_reader(who):
+            raise UserFacing("forbidden", "Only the owner and the Team readers see the "
+                             "reliability alarms.", 403)
         if not state_dir:
             return {"configured": False, "running": False, "open": [], "recovered": [],
                     "checks": []}
         from operating.ops_alarms import read_status
         return read_status(state_dir)
+
+    @app.get("/api/trust", response_model=m.TrustPage, tags=["trust"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def trust_page(who: Reader = Depends(reader)) -> Response:
+        """The Trust page: freshness per source system, answer scores per question set,
+        alert precision per type, the autopilot's workflows with their countdown, what is
+        live, gated and pending, and each system's write switch. The owner and the Team
+        readers only (404 for every other reader); counts, times and switches only."""
+        if not ops_reader(who):
+            raise UserFacing("not_found", "Not found.", 404)
+        from . import trust
+        page = trust.build(backend, who)
+        return JSONResponse(page.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/view-as/people", response_model=m.ViewAsPeople, tags=["identity"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def view_as_people(who: Reader = Depends(reader)) -> m.ViewAsPeople:
+        """Whom the owner may view as (active in the Portal, cleared by the people
+        exclusion, never the owner): an opaque key and a name each. The owner only (403
+        for every other reader). Viewing is read only and audited."""
+        if not is_owner(who):
+            raise UserFacing("forbidden", "Only the owner can view as someone else.", 403)
+        mine = set(getattr(who.session, "identities", ()) or ())
+        return m.ViewAsPeople(available=viewing.available,
+                              people=[m.ViewAsPerson(**p) for p in viewing.people(mine)])
+
+    @app.post("/api/view-as/{event}", response_model=m.ViewAsMarked, tags=["identity"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
+    def view_as_mark(event: Literal["start", "stop"], body: m.ViewAsMark,
+                     who: Reader = Depends(reader)) -> m.ViewAsMarked:
+        """The owner starting or stopping a view as someone, written to the view-as audit
+        (the reads in between are audited one by one). The owner only; nothing else
+        changes."""
+        try:
+            viewing.mark(who, body.key, event, is_owner=is_owner)
+        except va.Refused as refused:
+            raise UserFacing("view_as_refused", refused.message, refused.status) from None
+        return m.ViewAsMarked(recorded=True, event=event)
 
     @app.get("/api/auth/config", response_model=m.AuthConfig, tags=["auth"])
     def auth_config_route() -> m.AuthConfig:
@@ -335,7 +419,10 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     @app.get("/api/me", response_model=m.Me, tags=["identity"],
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
     def me(who: Reader = Depends(reader)) -> m.Me:
-        return backend.me(who).model_copy(update={"feedback_admin": fb.is_admin(who)})
+        return backend.me(who).model_copy(update={"feedback_admin": fb.is_admin(who),
+                                                  "ops_reader": ops_reader(who),
+                                                  "can_view_as": viewing.available
+                                                  and is_owner(who)})
 
     # ---- ask --------------------------------------------------------------------------
 
@@ -415,6 +502,10 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         yield "status", m.StatusEvent(step="understanding", message="Reading your work log",
                                       elapsed_ms=0)
         found = wl.recall(work, who.key, body.question)
+        if found["total"] == 0 and wl.asks_about_my_mail(body.question):
+            # nothing sent from the Workbench: the mail the person sent is the evidence
+            yield from backend.ask(who, body)
+            return
         text = wl.recall_answer(found)
         seen: dict[str, m.ObjectRef] = {}
         for event in found["events"]:
@@ -537,7 +628,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         each with its evidence, drafted action and decision; per role and workflow the dev
         and fresh scores, state and switches. Read only."""
         area = backend.autopilot_area(who)
-        notes.autopilot_prepared(who, area)
+        if not getattr(who.session, "view_as", False):   # nothing logged as the person viewed
+            notes.autopilot_prepared(who, area)
         return area
 
     @app.post("/api/autopilot/items/{item_id}/decision", response_model=m.AutopilotItem,
@@ -1163,6 +1255,19 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             return problem("not_found", 404)
         return JSONResponse(view.model_dump(mode="json"))
 
+    @app.get("/api/source/records", response_model=m.SourceRecords, tags=["object"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def source_records(handle: str = Query(..., min_length=3, max_length=2000),
+                       who: Reader = Depends(reader)) -> Response:
+        """The records citing a source (the ones read from it and the ones linked to
+        those), as this reader may read them. A source the reader cannot open is not
+        found, as on ``/api/source``; a record they cannot read is left out."""
+        try:
+            out = backend.source_records(who, handle)
+        except (KeyError, LookupError, ValueError):
+            return problem("not_found", 404)
+        return JSONResponse(out.model_dump(mode="json"))
+
     @app.post("/api/feedback", response_model=m.FeedbackResponse, tags=["feedback"],
               responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
     def feedback(body: m.FeedbackRequest, who: Reader = Depends(reader)) -> Response:
@@ -1273,6 +1378,40 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         out = m.WorkLogPage(events=[_work_event(r, who, everyone) for r in rows],
                             total=total, offset=offset, all_readers=everyone)
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/work-log/autopilot-days", response_model=m.AutopilotScorecard,
+             tags=["work-log"], responses={401: {"model": m.ErrorResponse}})
+    def autopilot_days(days: int = Query(14, ge=1, le=60),
+                       who: Reader = Depends(reader)) -> m.AutopilotScorecard:
+        """Your autopilot scorecard per day from your own work log: items prepared for
+        you, accepted, edited and rejected. Yours only."""
+        found = wl.autopilot_days(work, reader=who.key, days=days)
+        if found is None:
+            return m.AutopilotScorecard(available=False)
+        return m.AutopilotScorecard(available=True,
+                                    days=[m.AutopilotScoreDay(**d) for d in found])
+
+    @app.get("/api/time-saved", response_model=m.TimeSaved, tags=["work-log"],
+             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
+    def time_saved(everyone: bool = Query(False, description="The owner only: every "
+                                          "person's."),
+                   weeks: int = Query(4, ge=1, le=12),
+                   who: Reader = Depends(reader)) -> m.TimeSaved:
+        """The time the Workbench saved you each week (the owner: everyone), from your work
+        log: an estimate, its method stated. Counts only what was used."""
+        if everyone and not is_owner(who):
+            raise UserFacing("forbidden", "Only the owner sees everyone's time saved.", 403)
+        found = wl.time_saved(work, reader=None if everyone else who.key, weeks=weeks)
+        if found is None:
+            return m.TimeSaved(available=False, all_readers=everyone)
+        # the owner is never one of the people in a people view: their own row stays out
+        # of everyone's (their own view, everyone False, is theirs alone)
+        people = [m.TimeSavedPerson(name=p["name"], mine=p["reader"] == who.key,
+                                    weeks=[m.TimeSavedWeek(**w) for w in p["weeks"]])
+                  for p in found["people"] if not (everyone and p["reader"] == who.key)]
+        return m.TimeSaved(available=True, all_readers=everyone, weeks=found["weeks"],
+                           people=people, minutes=found["minutes"], basis=found["basis"],
+                           method=found["method"])
 
     @app.get("/api/work-log/threads/{thread:path}", response_model=m.WorkLogThread,
              tags=["work-log"], responses={401: {"model": m.ErrorResponse},

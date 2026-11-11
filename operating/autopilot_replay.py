@@ -209,6 +209,7 @@ def mail_received(st: Any, people: Any, who: set[str], since: str, until: str
     ids = [o for o, _t in _window(st, ("Email.received",), since, until)
            if o.startswith("Email:")]
     out = []
+    machine = it.automated_mail()   # the live feed's test (``autopilot._mail_events``)
     for start in range(0, len(ids), CHUNK):
         typed = ap._types(st, ids[start:start + CHUNK])
         mine = sorted(o for o, (_t, aud) in typed.items() if aud in boxes)
@@ -220,7 +221,7 @@ def mail_received(st: Any, people: Any, who: set[str], since: str, until: str
             if box not in who or not sender or sender in addresses_of.get(box, set()):
                 continue
             subject, text = ap._v(r, "subject"), pt._own(ap._v(r, "body_preview"))
-            if pt.automated(sender, text, subject) or it.bulk(sender, text, subject):
+            if machine(sender, text, subject):
                 continue
             out.append({"event_type": "message.received", "mailbox": box, "sender": sender,
                         "conversation_id": ap._v(r, "conversation_id") or None,
@@ -433,6 +434,16 @@ def trigger_at(item: Mapping[str, Any], event: Mapping[str, Any]) -> datetime | 
 # chat within this long of the one before it is the same reply (measured on Vince's DEV
 # days 10-26..11-05: 22 of 110 unanticipated messages followed a matched one within it)
 BURST = timedelta(minutes=10)
+
+# Scoring rules that change how a result compares with one scored before them: every
+# result names them, so a jump read beside an older run is labelled a rule change, not
+# new work prepared.
+SCORING_RULES = (
+    {"id": "teams_burst_credit", "workflow": TEAMS_WORKFLOW, "measure": "coverage",
+     "since": "2026-11-11",
+     "note": "the rest of a Teams reply typed as several messages counts as anticipated "
+             "with its matched first message (BURST); precision unchanged"},
+)
 
 
 def _credit_burst(hit: Mapping[str, Any], actions: Sequence[tuple[datetime, Mapping[str, Any]]],
@@ -896,6 +907,7 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
               "prepared_by_autopilot": dict(sorted(prepared.items())),
               "skipped": dict(sorted(skipped.items())), "actions": len(actions),
               "misses": missed, "splits": splits, "source": source,
+              "scoring_rules": [dict(r) for r in SCORING_RULES],
               "source_ends": {k: ap._iso(v) for k, v in sorted(ends.items())},
               # when the feed held each prepared MC item: the capture's own first read of
               # it (live days) or the configured feed lag (days the capture backfilled)

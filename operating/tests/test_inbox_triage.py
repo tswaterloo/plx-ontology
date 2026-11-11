@@ -214,6 +214,40 @@ class Feeds(unittest.TestCase):
         self.assertEqual(self.found(self.msgs("", n)), set())   # no sender: nothing to name
 
 
+class AutomatedMail(Feeds):
+    """``automated_mail`` is the one test triage and the autopilot share: a message's form
+    (``bulk``, the JSON report and tagged alert rules) or a feed among the mail read together."""
+
+    def test_form_or_feed_flags_a_person_does_not(self):
+        feed = self.msgs("Any-Name@synth-system.example", it.FEED_MIN)
+        machine = it.automated_mail([it.Seen(m.sender, m.to, m.subject, m.text) for m in feed],
+                                    {self.OWN.upper()})
+        self.assertTrue(machine("any-name@synth-system.example", "anything", "Case 1"))
+        # a JSON report (the whole body, under a title line repeating the subject) is one;
+        # member lines inside a person's own words are not
+        self.assertTrue(machine("ops@synth-other.example",
+                                'Report\n{\n"a": 1,\n"b": 2,\n"c": 3\n}', "Report"))
+        self.assertFalse(machine("ops@synth-other.example",
+                                 'x\n"a": 1\n"b": 2\n"c": 3', "Report"))
+        self.assertFalse(machine("pat@synth-human.example", "Can you check lot 4?", "Lot 4"))
+        # a tagged alert with no machine form is the feed's when its sender is a feed; the
+        # same tag and echo from anyone else is a person's mail
+        alert = ("[ACTION] Loop BLOCKED: job-7 waiting on the nightly sweep",
+                 "Loop BLOCKED: job-7 waiting on the nightly sweep\n- x")
+        self.assertTrue(machine("any-name@synth-system.example", alert[1], alert[0]))
+        self.assertFalse(machine("pat@synth-human.example", alert[1], alert[0]))
+        # our own message to the sender keeps it a person, whatever the case of either address
+        ours = it.Seen(self.OWN.upper(), ["ANY-NAME@synth-system.example"], "Re: Case 1", "ok")
+        machine = it.automated_mail([*feed, ours], {self.OWN})
+        self.assertFalse(machine("any-name@synth-system.example", "anything", "Case 1"))
+        # the thresholds are the caller's to set; a smaller feed needs a lower floor, and
+        # our writing to the sender still keeps it a person
+        few = feed[:5]
+        self.assertFalse(it.automated_mail(few, {self.OWN})("any-name@synth-system.example", "x", "Case 1"))
+        self.assertTrue(it.automated_mail(few, {self.OWN}, least=5)("any-name@synth-system.example", "x", "Case 1"))
+        self.assertFalse(it.automated_mail([*few, ours], {self.OWN}, least=5)("any-name@synth-system.example", "x", "Case 1"))
+
+
 class OneToOneChats(Engine):
     """The Teams capture lists a chat's members as object ids AND addresses and names a
     one-to-one chat ``19:<id>_<id>@unq.gbl.spaces``; its sender is ``{"display_name", "id"}``.

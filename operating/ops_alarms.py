@@ -1,5 +1,5 @@
 """Reliability alarms: anything in the Workbench that has stopped becomes an incident that
-pages the owner once, shows on Home and /ops, and sends a recovery notice when it clears.
+shows in the app (the shell's banner and /ops) until it recovers.
 
 ``python3 -m operating.ops_alarms run --state-dir STATE`` (``plx-ops-health.timer``, every
 5 minutes) checks:
@@ -23,17 +23,12 @@ pages the owner once, shows on Home and /ops, and sends a recovery notice when i
 * backups: ``plx-backup``'s and ``plx-restore-test``'s last result and its age.
 
 Bounds are ``ops_health.DEFAULT_TARGETS`` (``PLX_OPS_TARGETS`` overrides). A breach opens
-an incident keyed by its check; each incident is paged once, the incidents a pass opens in
-one message, through the card actions' send path (``integrations.graph_send.ActionSender``,
-from ``PLX_OPS_PAGE_FROM``, default the page address itself, which ``PLX_ACTIONS_SENDERS``
-must list). An incident recovers after two passing runs in a row and sends one recovery
-notice (only where its opening page went out). An unknown result neither opens nor closes
-one. Without ``PLX_OPS_PAGE_TO`` nothing is sent and every page is recorded ``dry_run``;
-incidents still open when it is set are paged then.
+an incident keyed by its check; an incident recovers after two passing runs in a row and
+moves to the recovered list. An unknown result neither opens nor closes one.
 
 Writes only ``<STATE>/ops-alarms/state.json`` (incidents, memory samples) and
-``status.json`` (what the API serves the owner, never the page address). Exit 0 after a
-pass whatever it found (the alarm is the page and the banner, not the unit's state), 2 with
+``status.json`` (what the API serves the ops readers). Exit 0 after a pass whatever it
+found (the alarm is the banner and /ops, not the unit's state), 2 with
 an unreadable state dir; a crash fails the unit and the API calls a status older than
 ``STALE_MINUTES`` not running. Reads no business system.
 """
@@ -60,13 +55,10 @@ STATUS_SCHEMA = "plx-ops-alarms/v1"
 EVERY_MINUTES = 5
 STALE_MINUTES = 15      # a status older than this: the checks are not running
 RECOVER_AFTER_RUNS = 2  # passing runs in a row before an incident is closed
-PAGE_ATTEMPTS = 3       # failed sends of one page before it is left as failed
 KEEP_RECOVERED = 20
-TZ = "America/New_York"
-PAGE_TO_ENV, PAGE_FROM_ENV = "PLX_OPS_PAGE_TO", "PLX_OPS_PAGE_FROM"
 IGNORE_ENV, DISK_ENV = "PLX_OPS_IGNORE_UNITS", "PLX_OPS_DISK_PATH"
-# ops_health checks that page; the rest (truth share, AI watcher, page time) stay on the
-# sidebar line only.
+# ops_health checks that open incidents; the rest (truth share, AI watcher, page time) stay
+# on the sidebar line only.
 MEMORY_CHECKS = ("memory_pressure", "memory_available")
 PAGED_HEALTH = ("delta_last_cycle", "delta_cycle_runtime", "capture:", "ingest_start",
                 "pg_follow", "proactive_last_pass", "search_follow_last_pass")
@@ -449,7 +441,7 @@ def collect(state: Path, now: datetime, environ: Mapping[str, str], probes: Prob
     return checks + disk_checks(state, t, probes, environ) + found, samples
 
 
-# ---- incidents and pages -----------------------------------------------------------------
+# ---- incidents --------------------------------------------------------------------------
 
 def _span(minutes: float) -> str:
     if minutes < 120:
@@ -460,7 +452,7 @@ def _span(minutes: float) -> str:
 
 
 def line(check: Mapping[str, Any]) -> str:
-    """One check in words for a page and the status page."""
+    """One check in words for the banner and the status page."""
     name, value, detail = check["name"], check.get("value"), check.get("detail") or ""
     if name.startswith("unit:"):
         unit = name.split(":")[-1]
@@ -482,42 +474,6 @@ def line(check: Mapping[str, Any]) -> str:
     return f"{label}: {value} {check.get('unit', '')} (target {check.get('target')})".strip()
 
 
-def _eastern(stamp: Optional[str]) -> str:
-    when = ops_health._parse(stamp)
-    if when is None:
-        return "?"
-    try:
-        from zoneinfo import ZoneInfo
-        when = when.astimezone(ZoneInfo(TZ))
-        return when.strftime("%b %-d, %-I:%M %p ET")
-    except Exception:  # noqa: BLE001 - no tz database: UTC, said so
-        return when.strftime("%b %-d, %H:%M UTC")
-
-
-def deliver(subject: str, body: str, environ: Mapping[str, str],
-            sender_factory: Callable[[Mapping[str, str]], Any]) -> dict[str, Any]:
-    """One page through the send path; ``dry_run`` (nothing built, nothing sent) without
-    ``PLX_OPS_PAGE_TO``. Never the address in the result."""
-    to = (environ.get(PAGE_TO_ENV) or "").strip()
-    sender = (environ.get(PAGE_FROM_ENV) or "").strip() or to
-    if "@" not in to:
-        return {"status": "dry_run", "missing": [f"{PAGE_TO_ENV} not set"]}
-    try:
-        out = sender_factory(environ).dispatch(
-            "send_email", sender, {"to": [to], "subject": subject, "body": body})
-    except Exception as exc:  # noqa: BLE001 - a page failing never stops the pass
-        return {"status": "failed", "missing": [type(exc).__name__]}
-    status = out.get("status") if out.get("status") in ("sent", "dry_run", "failed",
-                                                         "unknown") else "unknown"
-    return {"status": status, "missing": [str(m) for m in out.get("missing") or ()],
-            "http_status": out.get("http_status")}
-
-
-def _default_sender(environ: Mapping[str, str]) -> Any:
-    from integrations.graph_send import ActionSender
-    return ActionSender(environ)
-
-
 def _covered(key: str, by_name: Mapping[str, Check]) -> bool:
     """A check absent this pass recovers only where what would report it was read."""
     if key.startswith("unit:user:"):
@@ -530,27 +486,10 @@ def _covered(key: str, by_name: Mapping[str, Check]) -> bool:
     return True
 
 
-def _wants_page(incident: Mapping[str, Any], now: datetime) -> bool:
-    """Not paged yet; a dry run of the send path itself (sending off, the sender not
-    listed: it may ask for a token) is tried again hourly, a failed send up to
-    ``PAGE_ATTEMPTS`` times."""
-    page = incident.get("page") or {}
-    if page.get("status") is None:
-        return True
-    if page.get("status") == "dry_run":
-        if any(str(m).startswith(PAGE_TO_ENV) for m in page.get("missing") or ()):
-            return True   # nothing was built: free to check again
-        since = _minutes(now, ops_health._parse(page.get("at")))
-        return since is None or since >= 60
-    return page.get("status") == "failed" and int(page.get("attempts") or 0) < PAGE_ATTEMPTS
-
-
 def advance(held: dict[str, Any], checks: Sequence[Check], now: datetime,
-            environ: Mapping[str, str], sender_factory: Callable[[Mapping[str, str]], Any],
             only: Optional[Sequence[str]] = None) -> dict[str, Any]:
-    """Open, keep and close incidents for this pass's checks and send its pages; with
-    ``only`` (the memory pass) the incidents of other checks are neither closed nor
-    paged."""
+    """Open, keep and close incidents for this pass's checks; with ``only`` (the memory
+    pass) the incidents of other checks are not closed."""
     stamp = now.isoformat().replace("+00:00", "Z")
     incidents: dict[str, dict[str, Any]] = dict(held.get("incidents") or {})
     recovered: list[dict[str, Any]] = list(held.get("recovered") or [])
@@ -561,7 +500,7 @@ def advance(held: dict[str, Any], checks: Sequence[Check], now: datetime,
         open_ = incidents.get(c["name"])
         if open_ is None:
             incidents[c["name"]] = {"key": c["name"], "line": line(c), "opened_at": stamp,
-                                    "last_seen_at": stamp, "ok_runs": 0, "page": None}
+                                    "last_seen_at": stamp, "ok_runs": 0}
         else:
             open_.update(line=line(c), last_seen_at=stamp, ok_runs=0)
     closing = []
@@ -577,36 +516,8 @@ def advance(held: dict[str, Any], checks: Sequence[Check], now: datetime,
         incident["ok_runs"] = int(incident.get("ok_runs") or 0) + 1
         if incident["ok_runs"] >= RECOVER_AFTER_RUNS:
             closing.append(incidents.pop(key))
-    pending = [i for i in incidents.values() if _wants_page(i, now)
-               and (only is None or i["key"] in only)]
-    if pending:
-        body = "\n".join(
-            [f"{len(pending)} Workbench problem{'s' if len(pending) != 1 else ''} "
-             "need attention:", ""]
-            + [f"- {i['line']} (since {_eastern(i['opened_at'])})" for i in pending]
-            + ["", "Open /ops in the Workbench for every check. You get one message per "
-               "problem and one when it recovers."])
-        subject = (f"PLX alarm: {pending[0]['line']}" if len(pending) == 1 else
-                   f"PLX alarm: {len(pending)} problems")
-        result = deliver(subject[:150], body, environ, sender_factory)
-        for i in pending:
-            attempts = int((i.get("page") or {}).get("attempts") or 0)
-            i["page"] = dict(result, at=stamp,
-                             attempts=attempts + (result["status"] == "failed"))
-    notify = [i for i in closing if (i.get("page") or {}).get("status") in ("sent",
-                                                                          "unknown")]
-    if notify:
-        body = "\n".join(
-            [f"Recovered: {len(notify)} Workbench problem{'s' if len(notify) != 1 else ''}",
-             ""] + [f"- {i['line']} (from {_eastern(i['opened_at'])} to "
-                    f"{_eastern(stamp)})" for i in notify])
-        result = deliver(f"PLX alarm recovered: {len(notify)} problem"
-                         f"{'s' if len(notify) != 1 else ''}", body, environ, sender_factory)
     for i in closing:
         i["closed_at"] = stamp
-        i["recovery_page"] = (dict(result, at=stamp) if i in notify else
-                              {"status": "not_sent", "missing": ["opening page not sent"],
-                               "at": stamp})
     recovered = (closing[::-1] + recovered)[:KEEP_RECOVERED]
     return {"incidents": incidents, "recovered": recovered}
 
@@ -623,19 +534,13 @@ def _write(path: Path, value: Mapping[str, Any]) -> None:
 
 def _public(incident: Mapping[str, Any]) -> dict[str, Any]:
     keep = ("key", "line", "opened_at", "last_seen_at", "closed_at")
-    out = {k: incident[k] for k in keep if k in incident}
-    for k in ("page", "recovery_page"):
-        if incident.get(k):
-            out[k] = {f: incident[k].get(f) for f in ("status", "at", "missing")}
-    return out
+    return {k: incident[k] for k in keep if k in incident}
 
 
 def run_pass(state_dir: Any, *, now: Optional[datetime] = None,
              environ: Mapping[str, str] = os.environ, probes: Optional[Probes] = None,
-             dsn: Optional[str] = None,
-             sender_factory: Callable[[Mapping[str, str]], Any] = _default_sender,
-             memory_only: bool = False) -> dict[str, Any]:
-    """One pass: checks, incidents, pages; writes the alarm state and status; returns the
+             dsn: Optional[str] = None, memory_only: bool = False) -> dict[str, Any]:
+    """One pass: checks and incidents; writes the alarm state and status; returns the
     status. ``memory_only`` (``plx-ops-memory.timer``, every minute: memory can run out
     between two full passes) checks memory alone and updates the last full status's
     memory checks and incidents, never its ``checked_at``."""
@@ -660,8 +565,7 @@ def run_pass(state_dir: Any, *, now: Optional[datetime] = None,
                                             samples)
         else:
             checks, samples = collect(state, now, environ, probes or Probes(), dsn, samples)
-        held = advance(held, checks, now, environ, sender_factory,
-                       only=MEMORY_CHECKS if memory_only else None)
+        held = advance(held, checks, now, only=MEMORY_CHECKS if memory_only else None)
         held["memory_samples"] = samples
         _write(home / STATE_FILE, held)
         checked_at = now.isoformat().replace("+00:00", "Z")
@@ -682,7 +586,6 @@ def run_pass(state_dir: Any, *, now: Optional[datetime] = None,
         status = {"schema": STATUS_SCHEMA,
                   "checked_at": checked_at,
                   "every_minutes": EVERY_MINUTES,
-                  "paging": {"configured": "@" in (environ.get(PAGE_TO_ENV) or "")},
                   "open": [_public(i) for i in sorted(held["incidents"].values(),
                                                      key=lambda i: i["opened_at"])],
                   "recovered": [_public(i) for i in held["recovered"]],
@@ -703,7 +606,7 @@ def read_status(state_dir: Any, now: Optional[datetime] = None) -> dict[str, Any
             raise ValueError("status")
     except (OSError, ValueError, TypeError):
         return {"configured": True, "running": False, "checked_at": None, "open": [],
-                "recovered": [], "checks": [], "paging": {"configured": False}}
+                "recovered": [], "checks": []}
     age = _minutes(now, ops_health._parse(status.get("checked_at")))
     return dict(status, configured=True,
                 running=age is not None and age <= STALE_MINUTES)
@@ -723,8 +626,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"state dir unreadable: {args.state_dir}", file=sys.stderr)
         return 2
     status = run_pass(args.state_dir, dsn=getattr(args, "pg_dsn", None) or None,
-                      probes=Probes(), sender_factory=_default_sender,
-                      memory_only=args.cmd == "memory")
+                      probes=Probes(), memory_only=args.cmd == "memory")
     if status.get("skipped"):
         print(status["skipped"])
         return 0
@@ -732,8 +634,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if c["state"] != "ok":
             print(f"{c['state'].upper():7} {c['line']}")
     for i in status["open"]:
-        page = i.get("page") or {}
-        print(f"OPEN    {i['line']} (page {page.get('status')})")
+        print(f"OPEN    {i['line']}")
     print(f"{len(status['open'])} open, {len(status['checks'])} checks")
     return 0
 

@@ -179,6 +179,7 @@ from operating.ontology_tools_traverse import (
     TraverseTools,
     _effective_tier,
     _from_t,
+    _item_gate_sql,
     _live,
     _parse_time,
     _TIER_RANK,
@@ -263,15 +264,52 @@ def _corrected(row: Mapping[str, Any], correction: Mapping[str, Any]) -> dict[st
     return dict(row, value=correction["value"], unit=unit, currency=correction.get("currency"))
 
 
+SYSTEMS = ("bc", "sage", "filemaker", "portal", "mc", "mail", "sharepoint", "teams",
+           "meetings")
+
+
+def record_system(object_id: str) -> str | None:
+    """The source system a record comes from, as a reader names it (``SYSTEMS``), read
+    from its object id's binding (``Type:binding:key``): BC; Sage and FileMaker, served
+    through the Portal's mirrors (``portal.sage_*``, ``portal.fm_*``, ``silver``) or
+    their own bindings; the Portal's own tables; Mission Control; mail; SharePoint;
+    Teams; meetings. None for a binding of no known system, so a system argument never
+    keeps it."""
+    parts = object_id.split(":", 2)
+    return binding_system(parts[1] if len(parts) == 3 else "")
+
+
+def binding_system(binding: str) -> str | None:
+    """``record_system`` of one binding id (``portal.sage_oe_order_header``: sage)."""
+    head, _, rest = binding.partition(".")
+    if head == "gen":
+        head, _, rest = rest.partition(".")
+    if head == "bc":
+        return "bc"
+    if head == "sage" or (head in ("portal", "public") and rest.startswith("sage_")):
+        return "sage"
+    if head == "silver" or (head in ("portal", "public") and rest.startswith(("fm_", "silver_"))):
+        return "filemaker"
+    if head in ("portal", "public"):
+        return "portal"
+    return {"mission_control": "mc", "graph_mail": "mail", "sharepoint": "sharepoint",
+            "teams": "teams", "meetings": "meetings"}.get(head)
+
+
 def _members_cited(members: Sequence[str], versions: Mapping[str, Any],
                    allowed: Callable[[str], bool]) -> list[str] | None:
     """The record handle of each member a count of members counted (its live version's
-    L1 handle), so a claim of that count names the records it counts; None (nothing cited) when a member has no version, a handle the
-    reader may not open, or more members than ``MAX_CITATIONS``."""
-    if not members or len(members) > MAX_CITATIONS:
+    L1 handle), so a claim of that count names the records it counts; past
+    ``MAX_CITATIONS`` members the first ``MAX_CITATIONS`` by object id (the caller states
+    the cap as a ``citations_capped`` gap, as for value rows). None (nothing cited) when a
+    cited member has no version or a handle the reader may not open.
+
+    A count of 657 approvals once cited nothing at all (more than 50 members), so the
+    answer gate could never let the count be said (dev 11-10, every count past 50)."""
+    if not members:
         return None
     out: list[str] = []
-    for oid in members:
+    for oid in sorted(members)[:MAX_CITATIONS] if len(members) > MAX_CITATIONS else members:
         version = versions.get(oid)
         handle = version["l1_handle"] if version is not None else None
         if not isinstance(handle, str) or not handle or not allowed(handle):
@@ -709,7 +747,7 @@ class AggregateTools:
         held_sets = set(scope.marking_sets)
         for row in self.store.conn.execute(
                 "SELECT v.object_id, v.property, v.l1_handle, v.field_path, v.markings, "
-                f"{scope.gate}(v.l1_handle) AS gated FROM object_values v WHERE v.object_id IN (SELECT value FROM json_each(:ids)) "
+                f"{_item_gate_sql(scope.gate, 'v.l1_handle')} AS gated FROM object_values v WHERE v.object_id IN (SELECT value FROM json_each(:ids)) "
                 f"AND v.property IN (SELECT value FROM json_each(:props)) AND {_live('v')} "
                 + only, params):
             key = (row["object_id"], row["property"], row["l1_handle"], row["field_path"])
@@ -793,7 +831,7 @@ class AggregateTools:
                     AND l.to_object IN (SELECT value FROM json_each(:ids))
                     AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
                     AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
-                                    WHERE NOT {gate}(h.value))""",
+                                    WHERE NOT {_item_gate_sql(gate, 'h.value')})""",
                 scope.params(ids=json.dumps(sorted(set(ids))), itypes=json.dumps(sorted(
                     self.schema.identity_link_types() if self.schema else ())))):
             if _effective_tier(row) in _IDENTITY_TIERS and row[0] != row[1]:
@@ -826,7 +864,7 @@ class AggregateTools:
                          OR l.to_object IN (SELECT value FROM json_each(:ids)))
                     AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
                     AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
-                                    WHERE NOT {scope.gate}(h.value))""",
+                                    WHERE NOT {_item_gate_sql(scope.gate, 'h.value')})""",
                 scope.params(ids=json.dumps(sorted(inside)), itypes=json.dumps(sorted(
                     self.schema.identity_link_types())))):
             if _effective_tier(row) not in _IDENTITY_TIERS:
@@ -939,17 +977,21 @@ class AggregateTools:
         return undated
 
     def _origin_records(self, scope: Any, roots: Sequence[str], gaps: "_Gaps",
-                        subject: str, prop: str | None = None) -> tuple[list[str], bool]:
+                        subject: str, prop: str | None = None
+                        ) -> tuple[list[str], bool, list[set[str]]]:
         """Members one identity link joins (one record held in several systems) counted
         once: from the record of the system the others copy (``origin_rank``: a
         FileMaker or Sage record before the Portal's ETL copy of it, the Portal's before
         the BC posting of it). A cluster with no single origin stays as it is (its group
         then shows no value: ``cross_system_twins``). Second: whether a left-out copy
         states another ``prop`` value than its origin (``twin_copies_disagree``): the
-        answer counted once is then partial."""
+        answer counted once is then partial. Third: the twin clusters (``_twins``) the
+        members kept still form: a cluster that lost a copy is one record now, the others
+        are whole (no link of theirs passes through a left-out copy, which would make it
+        one cluster)."""
         clusters = self._twins(scope, roots)
         if not clusters:
-            return list(roots), False
+            return list(roots), False, []
         versions = self.walk._versions_at(scope, sorted({o for c in clusters for o in c}))
         dropped: set[str] = set()
         kept_by: dict[str, list[str]] = {}
@@ -981,7 +1023,8 @@ class AggregateTools:
                      f"a record counted once from its origin has a copy in another system "
                      f"stating another {prop}: which one is right is not settled, so the "
                      "answer is partial (plx.object shows each copy)", disagree)
-        return [o for o in roots if o not in dropped], bool(disagree)
+        return ([o for o in roots if o not in dropped], bool(disagree),
+                [c for c in clusters if not c & dropped])
 
     def _meta(self, scope: Any, sources: Iterable[str | None], types: Iterable[str] = (),
               link_types: Iterable[str] = ()) -> tuple[dict, list[dict]]:
@@ -992,9 +1035,16 @@ class AggregateTools:
         return self.walk._meta(scope, sources, types, link_types)
 
     def _sources(self, scope: Any, rows: Iterable[Mapping[str, Any]],
-                 ids: Iterable[str]) -> set[str]:
+                 ids: Iterable[str],
+                 versions: Mapping[str, Mapping[str, Any]] | None = None) -> set[str]:
+        """The sources of ``rows`` and of the versions of ``ids`` live at T. ``versions``:
+        those versions as this call already read them under ``scope``
+        (``TraverseTools._versions_at``); an id it lacks is read."""
+        ids = set(ids)
+        held = [versions[oid] for oid in ids if oid in versions] if versions else []
+        unread = sorted(ids - versions.keys()) if versions else sorted(ids)
         out = {_source_of(r["l1_handle"], r["lineage"]) for r in rows}
-        for version in self.walk._versions_at(scope, sorted(set(ids))).values():
+        for version in [*held, *self.walk._versions_at(scope, unread).values()]:
             out.add(_source_of(version["l1_handle"], version["lineage"]))
         return {s for s in out if s}
 
@@ -1172,9 +1222,9 @@ class AggregateTools:
                       WHEN l.markings NOT IN (SELECT value FROM json_each(:marks)) THEN 'marking'
                       WHEN x.audience_key NOT IN (SELECT value FROM json_each(:aud))
                         OR EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
-                                   WHERE NOT {gate}(h.value))
+                                   WHERE NOT {_item_gate_sql(gate, 'h.value')})
                         OR EXISTS (SELECT 1 FROM object_versions g WHERE g.object_id = x.object_id
-                                   AND {_from_t('g')} AND NOT {gate}(g.l1_handle))
+                                   AND {_from_t('g')} AND NOT {_item_gate_sql(gate, 'g.l1_handle')})
                         THEN 'audience'
                       ELSE 'marking' END AS reason
                     FROM links l JOIN objects x ON x.object_id = l.{other}
@@ -1240,7 +1290,9 @@ class AggregateTools:
             raise ToolError("unknown_object_type", f"no object type {object_type}",
                             "call plx.schema for the declared object types")
         filters = base._checked_filters(object_type, list(arguments.get("filters") or ()))
-        found_scope = base._scope(actor, base._as_known_at(arguments))
+        # the finder's scope taken from this call's (the same grants rule, the same T), so
+        # the members' visibility below is not read a second time under an equal scope
+        found_scope = self.walk._l8_scope(scope)
         subject = f"{object_type} matching filters"
         members: list[str] = []
         undecided: set[str] = set()
@@ -1272,12 +1324,19 @@ class AggregateTools:
         if undecided:
             from operating.ontology_tools import _filter_gaps
             gaps.extend(_filter_gaps(object_type, undecided))
-        gaps += base.unsourced_filter_gaps(object_type, filters)
+        system = arguments.get("system")
+        gaps += base.unsourced_filter_gaps(
+            object_type, filters,
+            None if system is None else (lambda binding: binding_system(binding) == system))
         if not getattr(base, "projection_built", True):
             gaps.append(_gap("not_ingested", "projection_not_built", subject,
                              "this host has no built projection store: nothing is counted"))
+        if system is not None:
+            # one system's records only, before any further visibility read of them
+            members = [oid for oid in members if record_system(oid) == system]
         unique = sorted(set(members))
-        visible = self.walk._visible_ids(scope, unique)
+        # every member passed L8's check under ``found_scope`` in the scan
+        visible = self.walk._visible_ids(scope, unique, (found_scope, unique))
         if len(visible) != len(unique):
             gaps.append(_gap("inaccessible", "marking_withheld", subject,
                              "some matching records the reader can list are not readable "
@@ -1312,6 +1371,11 @@ class AggregateTools:
         else:
             roots, root_gaps = self._filtered_root(scope, arguments, actor)
             walked = frozenset()
+        if arguments.get("system") is not None:
+            if "object_type" not in arguments:
+                raise ToolError("invalid_input", "system keeps an object_type's records",
+                                "name the object_type with the system")
+            roots = [oid for oid in roots if record_system(oid) == arguments["system"]]
         gaps = _Gaps()
         gaps.extend(root_gaps)
         # A member its source asserts removed at T is no member then (left out of every
@@ -1353,9 +1417,10 @@ class AggregateTools:
         # depends on which members the source still holds.
         root_types = {oid.split(":", 1)[0] for oid in roots}
         roots = [oid for oid in roots if oid not in asserted]
+        twins: list[set[str]] | None = None   # read with the origin records, once
         if op in ("count", "sum"):
-            roots, disagree = self._origin_records(scope, roots, gaps, prop or "members",
-                                                   prop)
+            roots, disagree, twins = self._origin_records(scope, roots, gaps,
+                                                          prop or "members", prop)
             partial = partial or disagree
         if prop is not None:
             self._require_declared(root_types, [prop], "measure",
@@ -1619,7 +1684,7 @@ class AggregateTools:
         if op in ("count", "sum"):
             # Twins (one record in two systems) would be counted or summed twice.
             group_of = {oid: key for key, group in groups.items() for oid in group["members"]}
-            for cluster in self._twins(scope, roots):
+            for cluster in (twins if twins is not None else self._twins(scope, roots)):
                 together: dict[tuple, int] = {}
                 for oid in cluster:
                     if oid in group_of:
@@ -1641,7 +1706,13 @@ class AggregateTools:
                 # each group's members, grouped or not: a count names what it counts
                 allowed = lambda h: self.base._item_allowed(actor, h)  # noqa: E731
                 cited = _members_cited(group["members"], versions, allowed)
-                if cited is not None:
+                if cited is not None and len(cited) < len(group["members"]):
+                    out["members_cited"] = cited
+                    gaps.add("unknown", "citations_capped", "members",
+                             f"a group has more members than the {MAX_CITATIONS} citations "
+                             "one answer carries; the first are cited and the count is still "
+                             "of every member (a claim citing some of them states it exactly)")
+                elif cited is not None:
                     out["members_cited"] = cited
                     twins = self._twins_cited(scope, group["members"], versions, allowed)
                     if twins:
@@ -1665,7 +1736,7 @@ class AggregateTools:
             if total > SUMMARY_FROM or offset or having is not None else None
         shown_groups = out_groups[offset:offset + MAX_GROUPS]
         truncated = offset + len(shown_groups) < total
-        meta, fresh = self._meta(scope, self._sources(scope, used_rows, roots),
+        meta, fresh = self._meta(scope, self._sources(scope, used_rows, roots, versions),
                                  root_types | dim_types if walked is not None else (),
                                  (walked or frozenset()) | {hop[0] for hop in hops})
         gaps.extend(fresh)
@@ -1815,7 +1886,8 @@ class AggregateTools:
         if len(citations) > MAX_CITATIONS:
             gaps.add("unknown", "citations_capped", subject,
                      f"a group has more inputs than the {MAX_CITATIONS} citations one answer "
-                     "carries; narrow the set to cite every input")
+                     "carries; the first are cited and the value is still over every input "
+                     "(a claim citing some of them states it exactly)")
         if citations:
             out["inputs_citations"] = citations[:MAX_CITATIONS]
         return out, incomplete

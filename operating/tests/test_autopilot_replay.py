@@ -23,7 +23,8 @@ from operating import workflows as wf
 from operating.tests.test_autopilot import (NOW, OTHER, READER, SENT, Fixture, everyone,
                                             opens_all)
 from operating.tests.test_proactive_engine import EXCLUDED_OID, OURS_OID
-from operating.tests.test_proactive_threads import APPROVER, APPROVER_OID, BOSS, OURS, mail, people
+from operating.tests.test_proactive_threads import (APPROVER, APPROVER_OID, BOSS, OURS, OUTSIDE,
+                                                    mail, people)
 
 REP = "rep@synth-supplier.example"
 DAY = datetime(SENT.year, SENT.month, SENT.day, tzinfo=timezone.utc)
@@ -1503,6 +1504,8 @@ class MCQuestions(World):
                 out = self.replayed()
                 self.assertEqual(out["prepared_by_autopilot"], {"mc_question": n})
                 self.assertEqual(out["feed_seen"], {"capture": n})
+                # every result names the scoring rules a comparison with an older run crosses
+                self.assertIn("teams_burst_credit", {r["id"] for r in out["scoring_rules"]})
                 flow = out["workflows"]["mc_question"]
                 self.assertEqual((flow["judged"], flow["matched"]), (n, n))
                 # the same questions before the capture ran live: the configured lag
@@ -1661,3 +1664,127 @@ class RoutineUpdate(World):
         due = aw.routine_due_events(st, q, ap.load_registry(), DAY.date(),
                                     people(unavailable=True))
         self.assertEqual(due, [])
+
+
+class RdStatusUpdate(World):
+    """``rd_status_update``: an R&D or sample project whose customer asked and has waited
+    on us for three business days or more gets a status update drafted as a reply in its
+    latest thread, owned by the person of ours who wrote in it; scored by that person
+    writing in the thread. The thread is read as it stood at the day's start (a later
+    answer is never read ahead); a thread we answered, one the excluded person is on and
+    an unavailable exclusion make none."""
+
+    def project(self, i: int, *, ours_last: bool = False, cc=(), answer_day: int | None = None,
+                ask: str = "Could you send us an update on the sample?") -> str:
+        customer = self.w.obj("Customer", {"name": f"Synth customer {i}"})
+        conv = f"rd-{i}"
+        steps = [(9, OUTSIDE, "Could you send a sample of the new blend?"),
+                 (8, OURS, "Samples are on their way."), (7, OUTSIDE, ask)]
+        if ours_last:
+            steps.append((6, OURS, "Thanks, we will look into it."))
+        for k, (back, who, body) in enumerate(steps):
+            ours = who == OURS
+            made = mail(self.w, SENT - timedelta(days=back), sender=who,
+                        to=(OUTSIDE,) if ours else (OURS,), cc=cc, body=body,
+                        subject=("Re: " if k else "") + f"Sample {i}", mailbox=OURS_OID,
+                        conversation=conv, n=80_000 + i * 10 + k, hour=10)
+            self.w.link("Email.sent_by_customer", made, customer)
+            self.sent(made, 10, -back - 1)
+        if answer_day is not None:
+            made = mail(self.w, SENT + timedelta(days=answer_day), sender=OURS, to=(OUTSIDE,),
+                        body="The sample ships Friday.", subject=f"Re: Sample {i}",
+                        mailbox=OURS_OID, conversation=conv, n=80_000 + i * 10 + 9, hour=11)
+            self.sent(made, 11, answer_day)
+        return conv
+
+    @staticmethod
+    def measuring() -> dict:
+        """The registry with the workflow on, as a replay that measures it runs (it ships
+        off: ``off_reason``)."""
+        reg = ap.load_registry()
+        for spec in reg["autopilots"]:
+            if spec["id"] == "rd_status_update":
+                spec.pop("enabled", None)
+        return reg
+
+    def replay(self):
+        st = pe._Store(self.dir / "s.sqlite", threads=1)
+        try:
+            return rp.replay(st, people(), role=f"person:{OURS}", out=self.dir / "out",
+                             since=DAY, until=DAY + timedelta(days=1), roles={},
+                             config=rp.load_config(), environ={}, registry=self.measuring(),
+                             end=DAY + timedelta(days=10), probe=lambda: 64.0,
+                             held_out_days=0)
+        finally:
+            st.close()
+
+    def rd_items(self):
+        q = ap.Queue(self.dir / "out" / f"person_{OURS.split('@')[0]}_synth_tenant_example"
+                     / ap.QUEUE_FILE)
+        self.addCleanup(q.close)
+        return [i for i in q.items(None, ("open", "done", "settled", "dismissed"))
+                if i["autopilot"] == "rd_status_update"]
+
+    def test_cardinality_a_waiting_project_gets_one_drafted_update_scored_by_the_thread(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                for i in range(n):
+                    # every third is answered only after the horizon: no match
+                    self.project(i, answer_day=1 if i % 3 else 5)
+                self.store()
+                out = self.replay()
+                flow = out["workflows"]["rnd_status_update"]
+                self.assertEqual(out["prepared_by_autopilot"].get("rd_status_update"), n)
+                self.assertEqual((flow["judged"], flow["matched"]),
+                                 (n, sum(1 for i in range(n) if i % 3)))
+                self.assertFalse(flow["passes_gate"] and n < ap.GATE_MIN_JUDGED)
+                items = self.rd_items()
+                self.assertEqual(len(items), n)
+                item = items[0]
+                self.assertEqual(item["owner"], OURS_OID)
+                draft = item["body"]["prepared"]["draft"]
+                self.assertEqual(draft["to"], [{"address": OUTSIDE}])
+                self.assertTrue(draft["subject"].upper().startswith("RE: SAMPLE"))
+                self.assertTrue(item["citations"])
+                text = json.dumps([i["body"] for i in items])
+                self.assertNotIn("new blend", text)              # never the thread's text
+                self.assertNotIn("ships Friday", text)           # nor a later answer
+                self.assertEqual(self.replay()["workflows"], out["workflows"])  # no double
+
+    def test_answered_excluded_unasked_and_unavailable_make_none(self):
+        from operating import autopilot_work as aw
+        self.project(1, ours_last=True)                          # we answered: waits on them
+        self.project(2, cc=(BOSS,))                              # the excluded person is on it
+        self.project(3, ask="Thank you, all received.")          # closed by the customer
+        self.project(4)                                          # the one waiting on us
+        st = self.store()
+        due = aw.rd_due_events(st, self.measuring(), DAY.date(), people())
+        self.assertEqual([e["conversation_id"] for e in due], ["rd-4"])
+        self.assertEqual(due[0]["fields"]["state"], "waiting_on_us")
+        self.assertGreaterEqual(due[0]["fields"]["days"], 3)
+        self.assertEqual(aw.rd_due_events(st, self.measuring(), DAY.date(),
+                                          people(unavailable=True)), [])
+        # it ships off: nothing is read for it
+        self.assertEqual(aw.rd_due_events(st, ap.load_registry(), DAY.date(), people()), [])
+        # two business days of waiting are not yet due
+        self.assertEqual(aw.rd_due_events(st, self.measuring(), SENT - timedelta(days=5),
+                                          people()), [])
+
+    def test_the_projects_are_read_once_a_day(self):
+        from datetime import date
+        from operating import autopilot_work as aw
+        self.project(1)
+        st = self.store()
+        q = ap.Queue(self.dir / "q.sqlite")
+        self.addCleanup(q.close)
+        calls = []
+        real = aw.rd_due_events
+        with mock.patch.object(aw, "rd_due_events",
+                               side_effect=lambda *a, **k: calls.append(a[2]) or real(*a, **k)):
+            for hours in (1, 2, 30):
+                ap.run_cycle(st, q, [], people=people(), now=DAY + timedelta(hours=hours),
+                             settle_items=False, registry=self.measuring())
+        self.assertEqual(calls, [DAY.date(), DAY.date() + timedelta(days=1)])
+        self.assertEqual(q.conn.execute("SELECT COUNT(*) FROM events WHERE json_extract(body, "
+                                        "'$.event_type') = 'record.due'").fetchone()[0], 1)

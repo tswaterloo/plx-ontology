@@ -110,6 +110,90 @@ class Classifiers(unittest.TestCase):
                                                     "the office until Monday."))
         self.assertTrue(pt.automated("a@x.example", "Please approve. To unsubscribe click"))
         self.assertFalse(pt.automated("a@x.example", "Please approve the PO.", "PO 12"))
+        # a machine's JSON report and a transactional sending service are automated; a
+        # person quoting a field or two, or writing "key: value" lines, is not
+        report = 'Dispatcher monitor\r\n\r\n{\r\n  "observed_at": "2026-10-31T07:23:36Z",\r\n' \
+                 '  "findings": [\r\n    {\r\n      "mode": "stream-C",\r\n' \
+                 '      "reason": "missing_completion"\r\n    }\r\n  ]\r\n}'
+        self.assertTrue(pt.automated("rail@ops.example", report, "Dispatcher monitor"))
+        self.assertTrue(pt.automated("onboarding@resend.dev", "Market data stale", "[ALERT]"))
+        self.assertTrue(pt.automated("x@bounce.mailgun.org", "hello", ""))
+        for text in ('Can you set "status": "ready" on lot 4?',
+                     'Fields:\n"lot": 4\n"qty": 10\nThanks',
+                     "lot: 4\nqty: 10\nstatus: ready\nship: Friday"):
+            self.assertFalse(pt.automated("buyer@customer.example", text, "Lot 4"), text)
+        self.assertFalse(pt.automated("ops@resend.dev.example.com", "hi", ""))
+        from operating import inbox_triage as it
+        # a system's tagged alert is a report when its body is one, whatever tags (a
+        # gateway's, the system's own) lead its subject, and when the preview cuts it short
+        tagged = '\u26a0 Loop BLOCKED: job-7 waiting\r\n{\r\n  "job": "job-7",\r\n' \
+                 '  "state": "blocked",\r\n  "waiting_on": "nightly sweep",\r\n  "since": "2026-1'
+        for subject in ("[ACTION] \u26a0 Loop BLOCKED: job-7 waiting",
+                        "[EXTERNAL] [ACTION] \u26a0 Loop BLOCKED: job-7 waiting"):
+            self.assertTrue(pt.automated("rail@ops.example", tagged, subject), subject)
+        # a subject tag is never a machine's mark alone: a gateway's tag on a customer's
+        # request that repeats its subject as its first line, a customer's own tag, a
+        # tagged subject with no title, a person pasting JSON inside their own words
+        for subject, text in (
+                ("[EXTERNAL] Need COA for lot 4421 for order 5512",
+                 "Need COA for lot 4421 for order 5512\nThanks, Pat"),
+                ("[EXT] Need COA for lot 4421 for order 5512",
+                 "Need COA for lot 4421 for order 5512"),
+                ("[EXT]", "Need COA for lot 4421 for order 5512"),
+                ("[Quote] Please quote 500 cases of SYN-10 by Friday",
+                 "[Quote] Please quote 500 cases of SYN-10 by Friday\nPat"),
+                ("[Quote] Please quote 500 cases of SYN-10 by Friday",
+                 "Please quote 500 cases of SYN-10 by Friday"),
+                ("[ACTION] \u26a0 Loop BLOCKED: job-7 waiting on the nigh",
+                 "\u26a0 Loop BLOCKED: job-7 waiting on the nightly sweep\r\n\r\n- x"),
+                ("[EXTERNAL] Re: Loop BLOCKED: job-7 waiting on the nightly",
+                 "Loop BLOCKED: job-7 waiting on the nightly sweep? Can you check"),
+                ("[ACTION] short", "short"),
+                ("API error", 'Hi, our API returns this:\n{\n  "orderId": 5512,\n'
+                              '  "status": 500,\n  "message": "lot 4421 unknown"\n}\nCan you check?'),
+                ("API error", '{\n  "orderId": 5512,\n  "status": 500,\n'
+                              '  "message": "lot 4421 unknown"\n}\nCan you check this?')):
+            with self.subTest(subject=subject, text=text[:20]):
+                self.assertFalse(pt.automated("buyer@customer.example", text, subject))
+                self.assertFalse(it.automated_mail()("buyer@customer.example", text, subject))
+
+
+class GatewayNotices(unittest.TestCase):
+    """A notice the mail gateway puts above the sender's words is not the sender's text:
+    the greeting under it decides who the note is for, and its words ask nothing.
+    SYNTHETIC addresses and text."""
+
+    def test_notice_above_the_greeting_is_not_the_senders_text(self) -> None:
+        from operating import autopilot as ap
+        from operating import inbox_triage as it
+        mine, recipients = {"owner@plx.example"}, ["sam@plx.example", "owner@plx.example"]
+        tip = ("You don\u2019t often get email from clerk@agency.example. Learn why this is "
+               "important\r\nHi Sam\r\n\r\nPlease submit the yearly report.")
+        self.assertTrue(ap.addressed_other(pt._own(tip), mine, recipients))
+        invoice = ("This email seems to contain an invoice or purchase order. Verify it is "
+                   "authentic directly with the vendor using your organization's trusted "
+                   "contact list before paying or taking further action.\r\n\r\n"
+                   "Dear Sam,\r\n\r\nThe goods ship Friday.")
+        self.assertTrue(ap.addressed_other(pt._own(invoice), mine, recipients))
+        self.assertTrue(pt._own(invoice).lstrip().startswith("Dear Sam"))
+        for banner in ("CAUTION: This email originated from outside the organization. "
+                       "Do not click links.\nHi Sam", "[EXTERNAL] Hi Sam"):
+            self.assertEqual(pt._own(banner), "Hi Sam")
+        # the notice alone asks nothing
+        self.assertFalse(it.direct_question(pt._own(
+            "You don't often get email from a@b.example. Learn why this is important")))
+        # a message's own words that merely start alike are kept
+        # a banner ends where the gateway's advice ends: the sender's words on its line stay
+        self.assertEqual(pt._own(
+            "CAUTION: This email originated from outside of the organization. Do not click "
+            "links or open attachments unless you recognize the sender and know the content "
+            "is safe. Hi Sam, can you check lot 4?"), "Hi Sam, can you check lot 4?")
+        for own in ("External audit is next week, can you join?",
+                    "Caution: the pallet is fragile, can you check?",
+                    "CAUTION: external pallets are fragile, can you check lot 4?",
+                    "CAUTION: outside storage is full, where do the pallets go?",
+                    "Hi Vince, you don't often get email from me. Learn why this is important"):
+            self.assertEqual(pt._own(own), own)
 
 
 class Threads(Engine):

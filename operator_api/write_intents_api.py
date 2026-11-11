@@ -37,7 +37,12 @@ class WriteIntentsMixin:
     def _wdesk(self) -> wi.WriteDesk:
         with self._write_lock:
             if self._write_desk is None:
-                self._write_desk = wi.WriteDesk.for_state_dir(getattr(self, "state_dir", None))
+                # a BC write transport exists only once the owner opened BC to approved
+                # writes (PLX_WRITES_LIVE_SYSTEMS); live_gate still needs every flag
+                from integrations import write_transports as wt
+                self._write_desk = wi.WriteDesk.for_state_dir(
+                    getattr(self, "state_dir", None),
+                    transport=wt.for_system("bc", self._writes_env()))
             if self._write_metadata is None:
                 self._write_metadata = wi.default_metadata()
             return self._write_desk

@@ -55,7 +55,24 @@ function ItemRow({ it }: { it: BriefingItem }) {
       </span>
       <span className={cn("num shrink-0 text-[12px]", it.days != null && it.days > 0 ? "text-late" : "text-muted")}>{it.days != null ? `${it.days} d` : ""}</span>
       {it.new_since_visit && <span className="sr-only">new</span>}
+      <ItemNext it={it} />
     </li>
+  );
+}
+
+/** Under an item: the next step and whom to ask, whether it is yours, and since when it shows. */
+function ItemNext({ it }: { it: BriefingItem }) {
+  const next = it.next_action?.text;
+  const contact = it.next_action?.contact;
+  const since = it.first_seen ? formatDateTime(it.first_seen).split(", ")[0] : null;
+  if (!next && !contact && !it.yours && !since) return null;
+  return (
+    <p className="col-start-3 col-end-5 -mt-0.5 truncate text-[12px] leading-4 text-muted" data-testid="fired-next">
+      {next && <span className="text-fg/80">{next}</span>}
+      {contact && <span>{next ? " · " : ""}ask {contact}</span>}
+      {it.yours && <span className="text-accent">{next || contact ? " · " : ""}yours</span>}
+      {since && <span className="text-faint">{next || contact || it.yours ? " · " : ""}since {since}</span>}
+    </p>
   );
 }
 

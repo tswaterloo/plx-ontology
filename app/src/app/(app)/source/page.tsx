@@ -4,6 +4,7 @@ import { ChevronLeft } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { AskBox } from "@/components/ask-box";
+import { citedLine, SourceRecordsPanel, useSourceRecords } from "@/components/source-records";
 import { SourceLoader, sourceKind } from "@/components/source-view";
 import { Toolbar } from "@/components/ui/toolbar";
 import type { SourceView } from "@/lib/types";
@@ -20,6 +21,8 @@ function SourceReader() {
   const quote = params.get("quote");
   const [view, setView] = useState<SourceView | null>(null);
   const router = useRouter();
+  const records = useSourceRecords(handle);
+  const onRecords = records && records !== "failed" ? records : null;
   // Ask about this document: the question goes with its citation (AskRequest.source); the
   // server reads it as this reader may, and answers about it.
   const askAbout = (question: string) =>
@@ -41,7 +44,16 @@ function SourceReader() {
         }
       />
       <div className="flex min-w-0 flex-1 flex-col">
-        <SourceLoader key={handle} handle={handle} cited={cited} quote={quote} wide onView={setView} />
+        <SourceLoader
+          key={handle}
+          handle={handle}
+          cited={cited}
+          quote={quote}
+          wide
+          onView={setView}
+          context={onRecords ? citedLine(onRecords) : null}
+          aside={<SourceRecordsPanel got={records} />}
+        />
         {/* asking about a document is offered once it opened, never under "couldn't find that" */}
         {handle && view ? (
           <section aria-label="Ask about this" className="px-5 pb-12 sm:px-8 lg:px-12">

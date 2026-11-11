@@ -40,13 +40,17 @@ import functools
 import json
 import logging
 import re
+import select
 import sqlite3
 import threading
+import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 MAX_ROUNDS = 24
 # The seconds a reconnect may take: the caller's lock is held meanwhile.
 RECONNECT_TIMEOUT_S = 5
+# How long a command left in progress is given to end after its cancel (``live``).
+ABANDON_SECONDS = 2.0
 log = logging.getLogger(__name__)
 # What a read-only statement never holds (``read_only``): any of these words, wherever it
 # stands (a string or a name that holds one only costs that statement its retry).
@@ -817,6 +821,23 @@ class PgCompatConnection:
             conn = self._conn
             # read before the probe: a lost connection's status is unknown afterwards
             status = conn.pgconn.transaction_status if not conn.closed else None
+            if status == psycopg.pq.TransactionStatus.ACTIVE:
+                # Nothing of this process runs a statement while this lock is free, so a
+                # command still in progress was abandoned part way (a tool call stopped at
+                # its limit, dev 11-11): every later statement would fail "another command
+                # is already in progress". It is cancelled and its results read (bounded),
+                # then the connection replaced; inside a transaction the loss is raised.
+                status = self._abandon(conn)
+                self._reconnect("left with a command in progress; cancelled")
+                if status in (psycopg.pq.TransactionStatus.INTRANS,
+                              psycopg.pq.TransactionStatus.INERROR):
+                    raise sqlite3.OperationalError(
+                        "postgres: a statement was abandoned inside a transaction")
+                if status is None:
+                    raise sqlite3.OperationalError(
+                        "postgres: a statement was abandoned and the connection's "
+                        "transaction state could not be read")
+                return self._conn
             if alive(conn):
                 return conn
             self._reconnect("found lost before a statement")
@@ -825,6 +846,63 @@ class PgCompatConnection:
                 raise sqlite3.OperationalError(
                     "postgres: the connection was lost inside a transaction")
             return self._conn
+
+    @staticmethod
+    def _abandon(conn: Any) -> Any:
+        """Cancel ``conn``'s command in progress and read its results within
+        ``ABANDON_SECONDS`` (checked on every pass): the transaction status after it, None
+        when that could not be learnt in time. A COPY left open is ended: ``COPY FROM
+        STDIN`` (the item gate's ``sq_calls`` load) is ended with an error, ``COPY TO``
+        data is read and dropped. The caller replaces the connection in every case and
+        logs the one line."""
+        import psycopg
+        ExecStatus = psycopg.pq.ExecStatus
+        deadline = time.monotonic() + ABANDON_SECONDS
+        try:
+            conn.cancel_safe(timeout=ABANDON_SECONDS) if hasattr(conn, "cancel_safe") \
+                else conn.cancel()
+            pgconn = conn.pgconn
+            copying = False
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                pgconn.consume_input()
+                if copying:
+                    # COPY TO data still coming: read it and drop it (-1: the copy ended)
+                    n, _ = pgconn.get_copy_data(1)
+                    if n == 0:
+                        select.select([pgconn.socket], [], [], left)
+                    elif n < 0:
+                        copying = False
+                    continue
+                if pgconn.is_busy():
+                    select.select([pgconn.socket], [], [], left)
+                    continue
+                result = pgconn.get_result()
+                if result is None:
+                    break
+                if result.status == ExecStatus.COPY_IN:
+                    # the server waits for rows: end the copy with an error (it fails
+                    # and loads nothing), then read on to its end
+                    while (sent := pgconn.put_copy_end(b"abandoned")) == 0:
+                        left = deadline - time.monotonic()   # 0: would block, try again
+                        if left <= 0:
+                            return None
+                        select.select([], [pgconn.socket], [], left)
+                    if sent < 0:
+                        return None
+                    while pgconn.flush() == 1:
+                        left = deadline - time.monotonic()
+                        if left <= 0:
+                            return None
+                        select.select([], [pgconn.socket], [], left)
+                elif result.status in (ExecStatus.COPY_OUT, ExecStatus.COPY_BOTH):
+                    copying = True
+            status = pgconn.transaction_status
+            return None if status == psycopg.pq.TransactionStatus.ACTIVE else status
+        except Exception:  # noqa: BLE001 - unknown: the caller replaces it anyway
+            return None
 
     def _lost(self) -> bool:
         from operating.pg.pool import alive

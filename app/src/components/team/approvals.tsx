@@ -7,7 +7,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Pending } from "@/components/ui/skeleton";
 import { cn } from "@/lib/cn";
 import { plural } from "@/lib/format";
-import { LoadProblem } from "@/components/ui/notice";
+import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getApprovals } from "@/lib/api";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { ActionResult, ApprovalsQueue } from "@/lib/types";
@@ -43,7 +43,8 @@ export function TeamApprovals() {
     .map((g) => ({ ...g, items: aging ? g.items.filter((i) => i.aging === aging) : g.items }))
     .filter((g) => g.items.length > 0);
   return (
-    <div className="space-y-4" data-testid="approvals-queue">
+    <div className="space-y-6" data-testid="approvals-queue">
+      <StaleNote since={queue.stale_since} readAt={queue.read_at} />
       {Object.keys(queue.by_aging ?? {}).length > 0 && (
         <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Waiting for">
           {[["all", queue.total] as const, ...Object.entries(queue.by_aging ?? {})].map(([bucket, n]) => {
@@ -59,48 +60,55 @@ export function TeamApprovals() {
       )}
       {groups.length === 0 && <EmptyState title="No approvals waiting." />}
       {groups.map((g) => (
-        <section key={g.waiting_on} className="space-y-2 rounded-lg border border-border p-3" aria-label={`Waiting on ${waitingOn(g.waiting_on)}`}>
-          <h3 className="text-[14px] font-medium">
+        <section key={g.waiting_on} aria-label={`Waiting on ${waitingOn(g.waiting_on)}`}>
+          <h3 className="border-b border-border pb-1.5 text-[13px] font-semibold">
             Waiting on {waitingOn(g.waiting_on)}
             <span className="font-normal text-muted">
               {" "}
-              · {plural(g.count, "item")} · oldest {plural(g.oldest_days, "business day")}
+              · {plural(g.count, "item")} ·{" "}
+              <span className={cn(g.oldest_days >= 5 && "text-late")}>oldest {plural(g.oldest_days, "business day")}</span>
             </span>
           </h3>
           <ul className="divide-y divide-border">
             {g.items.map((item) => (
-              <li key={item.id} className="space-y-1.5 py-2.5 text-[13px] first:pt-1 last:pb-1" data-testid="approval-item">
-                <p className="font-medium">{item.summary || "Approval waiting"}</p>
-                <p className="text-[12px] text-muted">
-                  {[
-                    plural(item.days, "business day"),
-                    CHANNEL[item.channel] ?? item.channel.replace(/_/g, " "),
-                    item.family ? item.family.replace(/_/g, " ") : null,
-                    item.asked_by ? `asked by ${item.asked_by}` : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
-                {item.object_id && (
-                  <Link className="inline-block text-[12px] font-medium hover:underline" href={`/object/${encodeURIComponent(item.object_id.split(":")[0])}/${encodeURIComponent(item.object_id)}`}>
-                    Open the message
-                  </Link>
-                )}
-                {item.nudge.body ? (
-                  <div className="rounded-lg bg-surface p-2.5">
-                    <p className="mb-1 text-[12px] text-muted">Draft nudge, not sent</p>
-                    <p className="whitespace-pre-wrap text-[13px] leading-5">{item.nudge.body}</p>
-                  </div>
-                ) : (
-                  <p className="text-[12px] text-muted">No draft nudge.</p>
-                )}
-                {item.card_id && (
-                  <CardActions
-                    card={{ id: item.card_id, subject: { label: item.summary ?? "Approval waiting" }, actions: item.offers }}
-                    state={states[item.card_id] ?? null}
-                    onDone={(r) => setStates((s) => ({ ...s, [item.card_id as string]: r }))}
-                  />
-                )}
+              <li key={item.id} className="grid grid-cols-[3px_minmax(0,1fr)] gap-x-3 py-2.5 text-[13px]" data-testid="approval-item">
+                <span className={cn("rounded-full", item.days >= 5 ? "bg-[color:var(--late)]" : item.days >= 3 ? "bg-[color:var(--risk-line)]" : "bg-border")} aria-hidden />
+                <div className="min-w-0 space-y-1">
+                  <p className="font-medium">{item.summary || "Approval waiting"}</p>
+                  <p className="text-[12px] text-muted">
+                    {[
+                      plural(item.days, "business day"),
+                      CHANNEL[item.channel] ?? item.channel.replace(/_/g, " "),
+                      item.family ? item.family.replace(/_/g, " ") : null,
+                      item.asked_by ? `asked by ${item.asked_by}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                    {item.object_id && (
+                      <>
+                        {" · "}
+                        <Link className="font-medium text-fg hover:underline" href={`/object/${encodeURIComponent(item.object_id.split(":")[0])}/${encodeURIComponent(item.object_id)}`}>
+                          Open the message
+                        </Link>
+                      </>
+                    )}
+                  </p>
+                  {item.nudge.body ? (
+                    <details className="group text-[12px]">
+                      <summary className="cursor-pointer list-none text-muted hover:text-fg [&::-webkit-details-marker]:hidden">Draft nudge, not sent</summary>
+                      <p className="mt-1 border-l-2 border-border pl-2.5 whitespace-pre-wrap text-[13px] leading-5">{item.nudge.body}</p>
+                    </details>
+                  ) : (
+                    <p className="text-[12px] text-faint">No draft nudge.</p>
+                  )}
+                  {item.card_id && (
+                    <CardActions
+                      card={{ id: item.card_id, subject: { label: item.summary ?? "Approval waiting" }, actions: item.offers }}
+                      state={states[item.card_id] ?? null}
+                      onDone={(r) => setStates((s) => ({ ...s, [item.card_id as string]: r }))}
+                    />
+                  )}
+                </div>
               </li>
             ))}
           </ul>

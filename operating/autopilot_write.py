@@ -24,14 +24,22 @@ of the audit log):
    (``gate_passed`` -> ``owner_notified`` rows), and the owner's live flag names it
    (``LIVE_ENV`` and ``LIVE_FILE``) with the master switch ``MASTER_ENV=1``. Otherwise the
    action is recorded as a ``dry_run`` with the exact request it would send.
+   A person's approval of the exact item (``Approval``) stands in for this gate: then the
+   owner's per-kind switch (``APPROVED_ENV``) decides, money or a judgment call (step 5)
+   runs only when the person acknowledged each reason, and the approver must be the item's
+   owner, cleared by the people exclusion.
 7. **Rate limit** per workflow (hour and day, live attempts in the audit log):
    ``rate_limited``.
 8. **Idempotency**: the key is the digest of the item, kind, target and exact payload; a
    key already ``done``, ``failed``, ``pending`` or ``unknown`` is never sent again
    (``duplicate``; ``pending``/``unknown`` wait for a person to reconcile).
-9. **Adapter** (``operating.autopilot_write_adapters``): ``unavailable`` when the system
-   has no write transport here; otherwise a ``pending`` row, the one request, and the
-   outcome row with the inverse request where the system can undo (``undo``).
+9. **Adapter** (``operating.autopilot_write_adapters``): the exact request and the exact
+   undo request (``undo_request``, with ``{response:...}`` placeholders for what only the
+   system's answer holds) are on every ``dry_run`` and live row; live, ``unavailable`` when
+   the system has no write transport here; otherwise a ``pending`` row, the one request,
+   and the outcome row with the filled inverse request where the system can undo
+   (``undo``). An adapter may name people it acts for (Planner assignees, event
+   attendees): they are cleared in step 4 like every recipient.
 
 The audit log (``AUDIT_FILE``) is the hash-chained append-only journal of
 ``card_actions.Journal``: what, where, why, citations, result, key, mode. Nothing in this
@@ -51,6 +59,7 @@ Evidence label of tests: ``injected-transport``; live-unverified.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
@@ -70,6 +79,7 @@ RULES_SCHEMA = "plx-autopilot-write-rules/v1"
 WRITE_GATE_FILE = "autopilot-write-gate.json"
 WRITE_GATE_SCHEMA = "plx-autopilot-write-gate/v1"
 AUDIT_FILE = "autopilot-writes/audit.jsonl"
+UNDO_FILE = "autopilot-writes/undo-store.jsonl"   # an undo's words the audit keeps as digests
 MASTER_ENV = "PLX_AUTOPILOT_WRITES"              # "1": the owner's master switch
 LIVE_ENV = "PLX_AUTOPILOT_WRITES_LIVE"           # "role:workflow,..." the owner switched on
 LIVE_FILE = "autopilot-writes-live.json"         # {"live": ["role:workflow", ...]}
@@ -77,15 +87,78 @@ KILL_ENV = "PLX_AUTOPILOT_WRITES_OFF"
 KILL_FILE = "autopilot-writes.off"
 WORKFLOW_KILL_ENV = "PLX_AUTOPILOT_WRITES_OFF_WORKFLOWS"
 WORKFLOW_KILL_FILE = "autopilot-writes-off.json"  # {"workflows": [...]}
-KINDS = ("mc_approval", "send_mail", "send_teams", "bc_write", "sage_write", "portal_write",
-         "filemaker_write")
-WRITE_SYSTEMS = {"bc": "bc_write", "sage": "sage_write", "portal": "portal_write",
-                 "filemaker": "filemaker_write"}
+APPROVED_ENV = "PLX_APPROVED_WRITES"             # kinds the owner opened to approved writes
+KINDS = ("mc_approval", "mc_task", "send_mail", "send_teams", "bc_write", "sage_write",
+         "portal_write", "filemaker_write", "planner_write", "calendar_write",
+         "sharepoint_write")
+WRITE_SYSTEMS = {"mc": "mc_task", "bc": "bc_write", "sage": "sage_write",
+                 "portal": "portal_write", "filemaker": "filemaker_write",
+                 "planner": "planner_write", "calendar": "calendar_write",
+                 "sharepoint": "sharepoint_write"}
+OWN_MAILBOX = frozenset({"calendar"})     # systems written only in the item owner's mailbox
 SETTLED = frozenset({"done", "failed"})
 UNSURE = frozenset({"pending", "unknown"})
 _EMAIL = re.compile(r"[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
 _SERVICE = re.compile(r"^(?:sp_|agent:|svc[_:-]|service[_:-])", re.IGNORECASE)
 _ROLE_FLOW = re.compile(r"^[a-z0-9_:@.-]{1,120}$")
+
+
+@dataclass(frozen=True)
+class Approval:
+    """A named person's approval of this exact item, given in the app (the approvals desk
+    or an accept in the autopilot studio). ``by``: the approver's identities (lower-case
+    email, Entra object id); ``acknowledged``: the not-routine reasons the person was shown
+    and accepted (``routine``'s exact strings: money, prices and judgment calls run only
+    when each reason was acknowledged); ``origin``: ``autopilot`` (an autopilot prepared
+    the item) or ``instruction`` (the reader typed the instruction it was drafted from).
+
+    Policy: a person approving the exact item is enough; the
+    approver must be the item's owner, the person the write acts as (an instruction's
+    reader may approve their own drafted write; an autopilot's item needs its owner's
+    approval as before); the people-exclusion guard must clear the approver (fail closed).
+    An approval replaces the replay gate only: kill switches, the people exclusion, the
+    adapter's checks, the owner's per-kind switch (``APPROVED_ENV``), rate limits and
+    idempotency all still apply."""
+
+    by: tuple[str, ...]
+    acknowledged: tuple[str, ...] = ()
+    origin: str = "autopilot"
+    # the person confirmed that this accept performs the item live (a second request in
+    # the app, after the page said so): without it an item that would go live is not
+    # performed (``needs_confirm``), so a single keystroke or a bulk accept never writes
+    confirmed_live: bool = False
+
+
+def approved_kinds(environ: Mapping[str, str]) -> set[str]:
+    """Kinds the owner opened to person-approved writes (``APPROVED_ENV``); none by
+    default, and an unknown name opens nothing."""
+    names = {k.strip() for k in str(environ.get(APPROVED_ENV) or "").split(",")}
+    return {k for k in names if k in KINDS}
+
+
+def approver_refused(guard: Any, owner: str, approval: "Approval | None") -> str | None:
+    """Why ``approval`` does not stand for this item (None: it does)."""
+    if approval is None:
+        return None
+    if approval.origin not in ("autopilot", "instruction"):
+        return "approval_origin_unknown"
+    ids = [str(i).strip().lower() for i in approval.by
+           if isinstance(i, str) and i.strip()] if isinstance(approval.by, tuple) else []
+    if not ids or len(ids) > 4:
+        return "approver_unknown"
+    if not owner or owner.lower() not in ids:
+        return "approver_not_owner"
+    if guard is None or getattr(guard, "unavailable", "unavailable"):
+        return "exclusion_unavailable"
+    try:
+        decided = [i for i in ids if guard.decides(i)]
+        if not decided:
+            return "approver_undecided"
+        if any(guard.is_excluded(i) for i in decided):
+            return "approver_excluded"
+    except Exception:  # noqa: BLE001 - a guard that cannot answer clears nobody
+        return "exclusion_error"
+    return None
 
 
 class RulesInvalid(ValueError):
@@ -131,6 +204,14 @@ def load_rules(path: Path | None = None) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ actions
 
+def _shaped(spec: Mapping[str, Any], maps: Sequence[str], lists: Sequence[str]) -> bool:
+    """Every named field is absent or of its shape (a mapping, a list): anything else makes
+    the action ``unknown`` so the executor refuses it rather than raising mid-run."""
+    return (all(spec.get(k) is None or isinstance(spec.get(k), Mapping) for k in maps)
+            and all(spec.get(k) is None or isinstance(spec.get(k), (list, tuple))
+                    for k in lists))
+
+
 def _norm_lines(payload: Mapping[str, Any]) -> dict[str, Any]:
     out = dict(payload)
     for nav in ("salesOrderLines", "purchaseOrderLines"):
@@ -157,16 +238,24 @@ def actions_of(item: Mapping[str, Any]) -> list[dict[str, Any]]:
         else:
             out.append({"kind": "unknown", "detail": str(act.get("kind"))[:40]})
     spec = work.get("write")
-    if isinstance(spec, Mapping):
+    if isinstance(spec, Mapping) and not _shaped(
+            spec, ("target", "payload", "precondition"), ("people",)):
+        out.append({"kind": "unknown", "detail": "write:malformed"})   # refused, not raised
+    elif isinstance(spec, Mapping):
         kind = WRITE_SYSTEMS.get(str(spec.get("system") or ""), "unknown")
+        target = dict(spec.get("target") or {})
+        if spec.get("system") in OWN_MAILBOX:
+            target["user"] = item.get("owner")      # never another person's mailbox
         out.append({"kind": kind, "system": spec.get("system"),
-                    "operation": spec.get("operation"),
-                    "target": dict(spec.get("target") or {}),
+                    "operation": spec.get("operation"), "target": target,
+                    "people": [p for p in spec.get("people") or () if isinstance(p, str)],
                     "payload": _norm_lines(spec.get("payload") or {}),
                     "precondition": spec.get("precondition"),
                     "reason": spec.get("reason")})
     draft = work.get("draft")
-    if isinstance(draft, Mapping) and draft.get("channel") in ("email", "mail"):
+    if isinstance(draft, Mapping) and not _shaped(draft, (), ("to", "cc", "members")):
+        out.append({"kind": "unknown", "detail": "draft:malformed"})
+    elif isinstance(draft, Mapping) and draft.get("channel") in ("email", "mail"):
         to = [t.get("address") if isinstance(t, Mapping) else t for t in draft.get("to") or ()]
         cc = [t.get("address") if isinstance(t, Mapping) else t for t in draft.get("cc") or ()]
         out.append({"kind": "send_mail", "system": "graph", "operation": "send_email",
@@ -175,9 +264,14 @@ def actions_of(item: Mapping[str, Any]) -> list[dict[str, Any]]:
                                 "subject": draft.get("subject"), "body": draft.get("body")},
                     "unknown_domains": list(draft.get("unknown_domains") or ())})
     elif isinstance(draft, Mapping) and draft.get("channel") == "teams":
-        out.append({"kind": "send_teams", "system": "graph", "operation": "teams_message",
-                    "target": {"chat_id": draft.get("chat_id")},
-                    "payload": {"chat_id": draft.get("chat_id"), "body": draft.get("body")},
+        if draft.get("team_id") or draft.get("channel_id"):
+            where = {"team_id": draft.get("team_id"), "channel_id": draft.get("channel_id")}
+            operation = "channel_message"
+        else:
+            where, operation = {"chat_id": draft.get("chat_id")}, "chat_message"
+        out.append({"kind": "send_teams", "system": "graph", "operation": operation,
+                    "target": {**where, "user": item.get("owner")},
+                    "payload": {**where, "body": draft.get("body")},
                     "people": list(draft.get("members") or ())})
     elif isinstance(draft, Mapping) and draft and "choice" not in draft:
         out.append({"kind": "unknown", "detail": f"draft:{str(draft.get('channel'))[:20]}"})
@@ -285,6 +379,15 @@ def routine(rules: Mapping[str, Any], item: Mapping[str, Any], action: Mapping[s
             lines = (action.get("payload") or {}).get("lines") or ()
             if len(lines) > int(op.get("max_lines", 0) or 10 ** 6):
                 why.append(f"lines:{len(lines)}")
+            if op.get("known_domains_only"):
+                # an address outside the tenant and the conversation is a judgment call
+                known = {d.lower() for d in known_domains}
+                sender = str(happened.get("sender") or "")
+                if "@" in sender:
+                    known.add(sender.rsplit("@", 1)[1].lower())
+                found = _EMAIL.findall("\n".join(_strings(action.get("payload"))))
+                if any(a.rsplit("@", 1)[1].lower() not in known for a in found):
+                    why.append("unknown_domain")
         deny = [f.lower() for f in rules.get("deny_fields") or ()]
         hits = sorted({k for k in _keys(action.get("payload")) if any(d in k.lower() for d in deny)})
         if hits:
@@ -563,6 +666,21 @@ def rate_limited(rules: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], wo
     return None
 
 
+def approved_rate_limited(rules: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
+                          approver: str, now: datetime) -> str | None:
+    """Person-approved writes per approver (``rate_limits.approved``; default 30 an hour,
+    200 a day): a runaway bulk accept stops."""
+    own = (rules.get("rate_limits") or {}).get("approved") or {}
+    per_hour, per_day = int(own.get("per_hour", 30)), int(own.get("per_day", 200))
+    starts = [_instant(r["at"]) for r in rows if r.get("event") == "attempt"
+              and r.get("approved_by") == approver]
+    if sum(1 for t in starts if now - t < timedelta(hours=1)) >= per_hour:
+        return f"rate_limited:{per_hour}/hour"
+    if sum(1 for t in starts if now - t < timedelta(days=1)) >= per_day:
+        return f"rate_limited:{per_day}/day"
+    return None
+
+
 def _outcomes(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     out: dict[str, str] = {}
     for row in rows:
@@ -614,9 +732,12 @@ class Executor:
                 return spec
         return None
 
-    def run(self, item: Mapping[str, Any], now: datetime) -> list[dict[str, Any]]:
+    def run(self, item: Mapping[str, Any], now: datetime, approval: Approval | None = None
+            ) -> list[dict[str, Any]]:
         """Every action of ``item``, in order; stops after the first one not ``done`` or
-        ``dry_run`` (a confirmation never goes out for an entry that did not happen)."""
+        ``dry_run`` (a confirmation never goes out for an entry that did not happen).
+        ``approval``: a person approved this exact item (``Approval``): it may then go
+        live through the owner's per-kind switch instead of the replay gate."""
         from operating import workflows as wf
         happened = (item.get("body") or {}).get("happened") or {}
         workflow = wf.of_item(str(item.get("autopilot")), happened)
@@ -627,8 +748,16 @@ class Executor:
         state_dir = self.state
         state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         stop = killed(self.environ, state_dir, workflow)
-        if not stop and self._spec(str(item.get("autopilot"))) is None:
+        if not stop and approval is None and self._spec(str(item.get("autopilot"))) is None:
             stop = "unknown_autopilot"          # no registry entry: no roles, no gate
+        if approval is not None:
+            # the approver's address first (the audit names a person), else the object id
+            ids = sorted((str(i).lower() for i in approval.by if isinstance(i, str)),
+                         key=lambda i: ("@" not in i, i)) \
+                if isinstance(approval.by, tuple) else []
+            base["approved_by"] = ids[0] if ids else None
+            base["origin"] = str(approval.origin)[:20]
+            stop = stop or approver_refused(self.guard, base["owner"], approval)
         try:
             rules = load_rules(self.rules_path)
         except RulesInvalid as error:
@@ -638,7 +767,7 @@ class Executor:
             return [self._record({**base, "status": "refused", "reasons": ["no_action"]}, now)]
         results = []
         for action in actions:
-            result = self._one(base, item, action, rules, stop, now)
+            result = self._one(base, item, action, rules, stop, now, approval)
             results.append(result)
             if result["status"] not in ("done", "dry_run"):
                 break
@@ -651,7 +780,7 @@ class Executor:
 
     def _one(self, base: Mapping[str, Any], item: Mapping[str, Any],
              action: Mapping[str, Any], rules: Mapping[str, Any] | None, stop: str | None,
-             now: datetime) -> dict[str, Any]:
+             now: datetime, approval: Approval | None = None) -> dict[str, Any]:
         kind = str(action.get("kind"))
         key = idempotency_key(item, action)
         row = {**base, "kind": kind, "system": action.get("system"),
@@ -664,37 +793,72 @@ class Executor:
         if kind not in KINDS:
             return self._record({**row, "status": "refused",
                                  "reasons": [f"unknown_action:{action.get('detail', kind)}"]}, now)
-        why = excluded(self.guard, base["owner"], _addresses(item, action), self.internal)
+        adapter = self.adapters.get(kind)
+        try:
+            acted_for = adapter.people(action) if adapter is not None else []
+        except Exception:  # noqa: BLE001 - who it acts for is unknown: clear nobody
+            acted_for = ["(undecidable)"]
+        why = excluded(self.guard, base["owner"], [*_addresses(item, action), *acted_for],
+                       self.internal)
         if why:
             return self._record({**row, "status": "excluded", "reasons": [why]}, now)
         not_routine = routine(rules, item, action, base["workflow"], self._known_domains())
-        if not_routine:
+        if approval is not None and not_routine:
+            # a person may approve money or a judgment call, each reason seen and accepted
+            unseen = [r for r in not_routine if r not in set(approval.acknowledged or ())]
+            if unseen:
+                return self._record({**row, "status": "not_routine", "reasons": unseen,
+                                     "needs_acknowledgement": True}, now)
+            row["acknowledged"] = list(not_routine)
+        elif not_routine:
             return self._record({**row, "status": "not_routine", "reasons": not_routine}, now)
-        adapter = self.adapters.get(kind)
         if adapter is None:
             return self._record({**row, "status": "unavailable",
                                  "reasons": ["no_adapter"]}, now)
         try:
             request = adapter.request(action)
+            undo_plan = adapter.undo_request(action, request)
         except wa.AdapterRefused as error:
             return self._record({**row, "status": "refused", "reasons": error.problems[:8]}, now)
-        row["request"] = _journal_safe(request)
+        row["request"] = _audit_view(kind, _journal_safe(request))
+        # the exact undo, built before anything is sent; ``{response:...}`` marks the
+        # values only the system's answer holds (``undo_waits_for``)
+        row["undo_request"] = _audit_view(kind, _journal_safe(undo_plan, wire=True))
+        row["undo_waits_for"] = wa.placeholders(undo_plan)
         row["undo_note"] = adapter.undo_note()
         gate = WriteGate(self.state / WRITE_GATE_FILE, rules)
         with self.journal.locked() as held:
+            spec = self._spec(str(item.get("autopilot")))
             mode, missing = write_state(gate, held.rows, self.environ, self.state,
                                         base["owner"], base["workflow"],
-                                        ap.item_roles(self._spec(str(item.get("autopilot")))))
+                                        ap.item_roles(spec) if spec else frozenset())
+            row["live_by"] = "gate" if mode == "live" else None
+            if approval is not None:
+                if kind in approved_kinds(self.environ):
+                    mode, missing = "live", []
+                    row["live_by"] = "approval"
+                elif mode != "live":
+                    missing = [f"approved_writes_off:{kind}", *missing]
             if mode != "live":
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "dry_run", "status": "dry_run",
                                     "reasons": missing})
+            if approval is not None and approval.confirmed_live is not True:
+                # live by approval or by the gate: a person's accept performs it only
+                # after they confirmed it goes live (nothing leaves, nothing is keyed)
+                return held.append({"event": "decision", "at": _iso(now), **row,
+                                    "mode": "dry_run", "status": "needs_confirm",
+                                    "reasons": [f"live_needs_confirm:{row['live_by']}"]})
             prior = _outcomes(held.rows).get(key)
             if prior in SETTLED or prior in UNSURE:
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "live", "status": "duplicate",
                                     "reasons": [f"already:{prior}"]})
-            limited = rate_limited(rules, held.rows, base["workflow"], now)
+            # live by a person's approval: per approver; live by the workflow's gate (a
+            # studio accept included): the workflow's own, stricter limit
+            limited = (approved_rate_limited(rules, held.rows, base["approved_by"], now)
+                       if row["live_by"] == "approval" else
+                       rate_limited(rules, held.rows, base["workflow"], now))
             if limited:
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "live", "status": "rate_limited",
@@ -712,18 +876,52 @@ class Executor:
         status = result.get("status")
         if status not in ("done", "failed", "unknown", "not_performed"):
             status = "unknown"
-        inverse = adapter.inverse(request, result) if status == "done" else None
+        inverse = wa.fill(undo_plan, result.get("response")) if status == "done" else None
+        inverse = _journal_safe(inverse, wire=True) if inverse else None
+        sealed = inverse is not None and _audit_view(kind, inverse) != inverse
+        if sealed:
+            # the undo needs the words the audit does not keep: they wait in the undo
+            # store (owner-only file) under the action's key until the undo or never
+            with Journal(self.state / UNDO_FILE).locked() as kept:
+                kept.append({"key": key, "inverse": inverse, "at": _iso(now)})
         out = {**row, "mode": "live", "status": status,
                "http_status": result.get("http_status"),
                "reasons": list(result.get("missing") or ()) + (
                    [str(result["detail"])] if result.get("detail") else []),
-               "inverse": _journal_safe(inverse) if inverse else None}
+               "inverse": _audit_view(kind, inverse) if inverse else None,
+               "inverse_sealed": sealed}
         # ``not_performed``: the sender answered a dry run, nothing left; the key stays free
         return self._record(out, now, event="outcome")
 
-    def undo(self, key: str, now: datetime) -> dict[str, Any]:
+    def live_kinds(self, item: Mapping[str, Any],
+                   rows: Sequence[Mapping[str, Any]] | None = None) -> list[str]:
+        """The kinds of ``item``'s actions an accept would perform live now (the owner's
+        per-kind switch or the workflow's passed gate), read without recording anything:
+        the page marks such an item live and leaves it out of a bulk accept. A kill switch,
+        unreadable rules or an unknown kind: none."""
+        from operating import workflows as wf
+        happened = (item.get("body") or {}).get("happened") or {}
+        workflow = wf.of_item(str(item.get("autopilot")), happened)
+        if killed(self.environ, self.state, workflow):
+            return []
+        try:
+            rules = load_rules(self.rules_path)
+        except RulesInvalid:
+            return []
+        approved = approved_kinds(self.environ)
+        spec = self._spec(str(item.get("autopilot")))
+        gate = WriteGate(self.state / WRITE_GATE_FILE, rules)
+        mode, _missing = write_state(gate, self.journal.rows() if rows is None else rows,
+                                     self.environ, self.state,
+                                     str(item.get("owner") or "").lower(), workflow,
+                                     ap.item_roles(spec) if spec else frozenset())
+        return [str(a.get("kind")) for a in actions_of(item)
+                if a.get("kind") in KINDS and (a.get("kind") in approved or mode == "live")]
+
+    def undo(self, key: str, now: datetime, by: str | None = None) -> dict[str, Any]:
         """Perform the recorded inverse of a ``done`` action once (its own key), under the
-        same kill switch. Refused when the system has no undo or it was already undone."""
+        same kill switch; ``by``: who undid it (the audit names them). Refused when the
+        system has no undo or it was already undone; two undos at once: one performs."""
         rows = self.journal.rows()
         done = [r for r in rows if r.get("event") == "outcome" and r.get("key") == key
                 and r.get("status") == "done"]
@@ -733,18 +931,34 @@ class Executor:
         if not row.get("inverse"):
             raise ValueError("the system has no undo for this action: "
                              + str(row.get("undo_note") or ""))
+        inverse = row["inverse"]
+        if row.get("inverse_sealed"):
+            kept = [r for r in Journal(self.state / UNDO_FILE).rows() if r.get("key") == key]
+            if not kept:
+                raise ValueError("the undo store has no inverse for this action")
+            inverse = kept[-1]["inverse"]
         stop = killed(self.environ, self.state, str(row.get("workflow")))
         if stop:
             raise ValueError(stop)
+        # an undo is a live write too: it needs the switch the write went out under
+        if row.get("live_by") == "approval":
+            if str(row.get("kind")) not in approved_kinds(self.environ):
+                raise ValueError(f"approved_writes_off:{row.get('kind')}")
+        elif self.environ.get(MASTER_ENV) != "1":
+            raise ValueError(f"master_switch_off:{MASTER_ENV}")
         undo_key = "undo_" + key
-        if _outcomes(rows).get(undo_key) is not None:
-            raise ValueError("already undone or in progress")
         adapter = self.adapters[row["kind"]]
         base = {k: row.get(k) for k in ("item_id", "autopilot", "owner", "workflow", "kind",
-                                        "system", "citations")}
-        self._record({**base, "key": undo_key, "of": key, "mode": "live",
-                      "status": "pending", "request": row["inverse"]}, now, event="attempt")
-        result = adapter.perform(row["inverse"], undo_key)
+                                        "system", "citations", "live_by")}
+        base["by"] = str(by)[:120] if by else None
+        with self.journal.locked() as held:
+            # checked and claimed under the lock: a second undo finds this one pending
+            if _outcomes(held.rows).get(undo_key) is not None:
+                raise ValueError("already undone or in progress")
+            held.append({"event": "attempt", "at": _iso(now), **base, "key": undo_key,
+                         "of": key, "mode": "live", "status": "pending",
+                         "request": row["inverse"]})
+        result = adapter.perform(inverse, undo_key)
         return self._record({**base, "key": undo_key, "of": key, "mode": "live",
                              "status": result.get("status") if result.get("status") in
                              ("done", "failed", "unknown") else "unknown",
@@ -762,15 +976,63 @@ class Executor:
                                 "status": status, "by": str(by)[:120]})
 
 
-def _journal_safe(request: Any) -> Any:
-    """The request as journalled: never a header that carries a credential."""
+def _journal_safe(request: Any, *, wire: bool = False) -> Any:
+    """The request as journalled: never a header that carries a credential. ``wire``
+    keeps ``body_json`` (an undo is performed from the journal, so it keeps the exact
+    wire text, e.g. BC decimals as numbers)."""
     if not isinstance(request, Mapping):
         return request
-    out = {k: v for k, v in request.items() if k != "body_json"}
+    # an upload's bytes stay out of the journal: their digest and size are kept
+    out = {k: v for k, v in request.items()
+           if (wire or k != "body_json") and k != "body_b64"}
     if isinstance(out.get("headers"), Mapping):
         out["headers"] = {k: v for k, v in out["headers"].items()
                           if k.lower() not in ("authorization", "x-api-key", "cookie")}
     return out
+
+
+_TEXT_KEYS = frozenset({"body", "content", "subject", "comment"})
+# a calendar invitation's words (its location's name too); a Planner task's assignees are
+# people's object ids: the audit keeps their digest
+_CALENDAR_TEXT = _TEXT_KEYS | {"displayname"}
+_TEXT_KINDS = {"send_mail": _TEXT_KEYS, "send_teams": _TEXT_KEYS,
+               "calendar_write": _CALENDAR_TEXT}
+
+
+def _digest_text(value: str) -> str:
+    return f"[text sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]} " \
+           f"{len(value)} chars]"
+
+
+def _audit_view(kind: str, request: Any) -> Any:
+    """A request as the audit log keeps it (``_without_text``): a message's or an
+    invitation's words and a task's assignee ids become digests; everything else stays."""
+    if not isinstance(request, Mapping):
+        return request
+    out = _without_text(request, _TEXT_KINDS[kind]) if kind in _TEXT_KINDS else dict(request)
+    body = out.get("body")
+    if kind == "planner_write" and isinstance(body, Mapping) \
+            and isinstance(body.get("assignments"), Mapping):
+        out["body"] = {**body, "assignments": {
+            f"[id sha256:{hashlib.sha256(str(k).encode()).hexdigest()[:16]}]": v
+            for k, v in body["assignments"].items()}}
+    return out
+
+
+def _without_text(request: Any, keys: frozenset = _TEXT_KEYS) -> Any:
+    """A message's request as journalled: the words (``subject``, ``body``, ``content``,
+    ``comment`` text) become their digest and length; recipients, ids and the shape stay.
+    The item and its draft hold the words; the audit log keeps what went where and which
+    text it was."""
+    def scrub(value: Any, key: str = "") -> Any:
+        if isinstance(value, Mapping):
+            return {k: scrub(v, str(k)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [scrub(v, key) for v in value]
+        if isinstance(value, str) and value and key.lower() in keys:
+            return _digest_text(value)
+        return value
+    return scrub(request) if isinstance(request, Mapping) else request
 
 
 # ------------------------------------------------------------------ status, CLI
@@ -786,6 +1048,7 @@ def status(state: Path, environ: Mapping[str, str] | None = None) -> dict[str, A
             "master_switch": env.get(MASTER_ENV) == "1",
             "killed": killed(env, state, "") is not None,
             "live_flags": len(live_flags(env, state)),
+            "approved_kinds": sorted(approved_kinds(env)),
             "gate_passing": [f"{r}:{f}" for r, f in gate.passing()],
             "pending_notices": notices(rows),
             "adapters": [a.describe() for a in wa.default_adapters(env).values()],

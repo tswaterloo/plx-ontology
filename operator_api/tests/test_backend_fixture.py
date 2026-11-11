@@ -221,8 +221,14 @@ class FixtureBackend(unittest.TestCase):
         ).status_code, 422)
 
     def test_a_po_page_and_answer_carry_its_trail_each_step_opening_for_the_reader(self):
-        body = self.ops.client.get(
-            f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}").json()
+        # the first page read of the class can be refused busy on a loaded machine (the
+        # app retries a 503 calmly); only that refusal is asked again
+        for _ in range(3):
+            got = self.ops.client.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}")
+            if got.status_code != 503:
+                break
+        self.assertEqual(got.status_code, 200, got.text[:300])
+        body = got.json()
         trail = body["trail"]
         self.assertEqual(trail["kind"], "purchase_order", trail)
         (po,) = trail["trails"]
@@ -245,6 +251,31 @@ class FixtureBackend(unittest.TestCase):
                          [body["object_id"]])
         self.assertEqual(answer["trail"]["trails"][0]["steps"], po["steps"])
 
+    def test_a_source_lists_the_records_citing_it_for_its_reader_only(self):
+        ops = self.ops.client
+        po = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}").json()
+        handle = po["facts"][0]["sources"][0]["handle"]
+        got = ops.get("/api/source/records", params={"handle": handle})
+        self.assertEqual(got.status_code, 200, got.text)
+        body = m.SourceRecords.model_validate(got.json())
+        self.assertEqual(body.handle, handle)
+        self.assertTrue(body.served)
+        # the PO this row was read into is listed first-hand, once; every listed record
+        # opens for the same reader (nothing is named that its page would not show)
+        mine = [r for r in body.records if r.record.object_id == po["object_id"]]
+        self.assertEqual([r.how for r in mine], ["from"], body)
+        self.assertEqual(len({r.record.object_id for r in body.records}), len(body.records))
+        for row in body.records:
+            self.assertNotEqual(row.record.label, row.record.object_id)
+            opened = ops.get(row.record.open_url.replace("/object/", "/api/object/", 1),
+                             params={"quick": 1})
+            self.assertEqual(opened.status_code, 200, (row, opened.text))
+        # not an L1 source, or none at all: not found, as /api/source answers
+        for bad in ("teams://x/y", "no-scheme-here", "bc://" + "x" * 2100):
+            self.assertEqual(ops.get("/api/source/records",
+                                     params={"handle": bad}).status_code,
+                             422 if len(bad) > 2000 else 404, bad)
+
     def test_a_restricted_reader_sees_nothing_through_any_route(self):
         ops = self.ops.client
         po = ops.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}").json()
@@ -264,11 +295,14 @@ class FixtureBackend(unittest.TestCase):
                                for name in m.PAGE_SECTIONS
                                for ref in (case_fixtures.PO_NUMBER,
                                            quote(po["object_id"], safe=""))),
-                             ("/api/source", {"handle": handle})):
+                             ("/api/source", {"handle": handle}),
+                             ("/api/source/records", {"handle": handle})):
             response = out.get(path, params=params)
             self.assertIn(response.status_code, (200, 404), (path, response.text))
             bodies.append(response.text)
         self.assertEqual(out.get("/api/source", params={"handle": handle}).status_code, 404)
+        self.assertEqual(out.get("/api/source/records", params={"handle": handle}).status_code,
+                         404)
         for name in m.PAGE_SECTIONS:   # no section of a record they cannot see is read
             self.assertEqual(out.get(f"/api/object-section/{name}/PurchaseOrder/"
                                      + quote(po["object_id"], safe="")).status_code, 404)

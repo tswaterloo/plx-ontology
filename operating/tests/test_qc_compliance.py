@@ -255,9 +255,19 @@ class QcCompliance(engine_tests.Engine):
         w, ids = world()
         w.build(self.store)
         book = qc.read_book(str(self.store), AS_OF, people=people())
-        alerts = {"status": "read", "gaps": [{
-            "kind": "quality_hold_aging", "summary": "Batch on hold 40 days",
-            "object_id": "Batch:fx:1", "groups": [[["api://batch/1", "Batch:fx:1"]]]}]}
+        def hold(n: int, days: int, orders: int) -> dict:
+            return {"kind": "quality_hold_aging", "id": f"g{n}",
+                    "summary": f"Batch {n} on hold {days} days",
+                    "object_id": f"Batch:fx:{n}", "event": {"days": days,
+                                                            "orders_affected": orders},
+                    "groups": [[[f"api://batch/{n}", f"Batch:fx:{n}"]]]}
+        alerts = {"status": "read", "gaps": [
+            hold(1, 40, 0), hold(2, 12, 2), hold(3, 90, 0),
+            {"kind": "assembly_blocked_by_component", "id": "g9", "summary": "Short",
+             "object_id": "AssemblyOrder:fx:9",
+             "groups": [[["api://ao/9", "AssemblyOrder:fx:9"]]]},
+            {"kind": "late_order", "id": "g8", "summary": "Late", "object_id": "SalesOrder:fx:8",
+             "groups": [[["api://so/8", "SalesOrder:fx:8"]]]}]}
         daily = br.qc_daily_pack(mode_call(book, QC), QC, alerts, today=AS_OF)
         sections = {s["key"]: s for s in daily["sections"]}
         self.assertEqual([r["object_id"] for r in sections["open_checks"]["rows"]],
@@ -266,7 +276,13 @@ class QcCompliance(engine_tests.Engine):
                          {ids["missed_open"], ids["overdue"], ids["upcoming"]})
         self.assertEqual([r["object_id"] for r in sections["slots"]["rows"]],
                          [ids["slot_open"]])
-        self.assertEqual(sections["hold_release"]["state"], "not_available")
+        # the release queue: open orders waiting first, then the longest waiting
+        self.assertEqual([r["object_id"] for r in sections["hold_release"]["rows"]],
+                         ["Batch:fx:2", "Batch:fx:3", "Batch:fx:1"])
+        self.assertEqual(sections["hold_release"]["state"], "partial")
+        self.assertIn("no hold date", sections["hold_release"]["note"])
+        self.assertEqual([r["object_id"] for r in sections["materials"]["rows"]],
+                         ["AssemblyOrder:fx:9"])
         held_figure = sections["holds"]["figures"][0]
         self.assertEqual(held_figure["value"], "1")
         self.assertIn("No hold date is stored", held_figure["note"])
@@ -288,6 +304,18 @@ class QcCompliance(engine_tests.Engine):
                                                           else None) for h in hs})
         open_rows = {s["key"]: s for s in decided["sections"]}["open_checks"]["rows"]
         self.assertNotIn(ids["missed_open"], [r["object_id"] for r in open_rows])
+        # a held batch the reader may not open is not in the queue, nor counted as more
+        queue = {s["key"]: s for s in br.qc_daily_pack(
+            mode_call(book, QC), QC, alerts, today=AS_OF,
+            decide=lambda hs: {h: ({"reason": "no"} if h == "api://batch/2" else None)
+                               for h in hs})["sections"]}["hold_release"]
+        self.assertEqual(([r["object_id"] for r in queue["rows"]], queue["more"]),
+                         (["Batch:fx:3", "Batch:fx:1"], 0))
+        # the alert list unread: the queue says so and lists nothing
+        unread = {s["key"]: s for s in br.qc_daily_pack(
+            mode_call(book, QC), QC, {"status": "failed"}, today=AS_OF)["sections"]}
+        self.assertEqual((unread["hold_release"]["state"], unread["hold_release"]["rows"]),
+                         ("unread", []))
         # a reader without quality_controlled: every section says so, nothing is read
         calls = []
         outside = br.qc_daily_pack(lambda n, a: calls.append(n) or {}, frozenset(), alerts,

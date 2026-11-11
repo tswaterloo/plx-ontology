@@ -242,3 +242,89 @@ class HostPrimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeptFactsInMemory(unittest.TestCase):
+    """The facts held in memory per process: of each store, only its two newest
+    identities (over Postgres every delta layer moves it); other stores keep theirs."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.dir, True)
+        traverse._LOADED.clear()
+        self.addCleanup(traverse._LOADED.clear)
+
+    def store(self, name: str) -> str:
+        path = self.dir / name
+        path.touch()
+        return str(path)
+
+    def keep(self, store: str, version: int) -> dict:
+        identity = {"postgres": "db", "data_version": str(version), "code": "c"}
+        traverse._save_facts(store, identity, {"audience_keys": (f"k{version}",)})
+        return identity
+
+    def test_each_store_holds_only_its_current_identity_over_many_versions(self):
+        served, layer = self.store("pg-marker"), self.store("other.sqlite")
+        other = self.keep(layer, 0)
+        self.assertEqual(traverse._load_facts(layer, other)["audience_keys"], ("k0",))
+        for count in (1, 10, 60):
+            first = None
+            for version in range(1, count + 1):
+                identity = self.keep(served, version)
+                first = first or identity
+                got = traverse._load_facts(served, identity)
+                self.assertEqual(got["audience_keys"], (f"k{version}",))
+            held = [key for key in traverse._LOADED if key[0] == served]
+            self.assertEqual(len(held), min(count, 2), count)
+            self.assertIn((layer, json.dumps(other, sort_keys=True)), traverse._LOADED)
+            self.assertEqual(traverse._load_facts(served, identity)["audience_keys"],
+                             (f"k{count}",))
+            if count > 2:   # an identity two back is not served from memory or disk
+                self.assertIsNone(traverse._load_facts(served, first))
+            self.assertEqual(len(traverse._LOADED), 1 + min(count, 2))
+
+
+class FactsReadApart(unittest.TestCase):
+    """A host's read of Postgres facts in full runs in a process of its own: no
+    credential-shaped variable in its environment, the DSN never on its command line, a
+    time limit, and a read that fails keeps nothing."""
+
+    UNREACHABLE = "host=/nonexistent-plx-socket-dir port=1 dbname=none connect_timeout=2"
+
+    def test_the_process_gets_no_credentials_and_the_dsn_only_on_its_input(self):
+        import subprocess
+        seen = {}
+        real = subprocess.Popen
+
+        def spy(args, **kwargs):
+            seen["args"], seen["env"] = args, kwargs.get("env")
+            return real(args, **kwargs)
+        with mock.patch.dict(os.environ, {"AZURE_CLIENT_SECRET": "x", "PLX_WORKBENCH_API_KEY": "y",
+                                          "SOME_TOKEN": "z", "PGOPTIONS": "-c jit=off"}), \
+                mock.patch.object(subprocess, "Popen", spy):
+            self.assertFalse(traverse._keep_pg_facts_apart(self.UNREACHABLE, ()))
+        self.assertTrue({"AZURE_CLIENT_SECRET", "PLX_WORKBENCH_API_KEY",
+                         "SOME_TOKEN"}.isdisjoint(seen["env"]))
+        self.assertEqual(seen["env"]["PGOPTIONS"], "-c jit=off")
+        self.assertNotIn("nonexistent-plx-socket-dir", " ".join(seen["args"]))
+
+    def test_a_read_past_its_time_is_stopped_and_keeps_nothing(self):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, folder, True)
+        # the process starts writing its facts file, then hangs past its time
+        hang = ("import os, pathlib, time; pathlib.Path(os.environ['PLX_PG_FACTS_DIR'], "
+                "f'..store-facts-1-2.json.{os.getpid()}.ab12.tmp').write_text('half'); "
+                "time.sleep(30)")
+        with mock.patch.object(traverse, "FACTS_APART_SECONDS", 3), \
+                mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": str(folder)}), \
+                mock.patch.object(traverse, "keep_pg_facts", return_value=False):
+            import subprocess
+            real = subprocess.Popen
+            with mock.patch.object(subprocess, "Popen", lambda args, **kw: real(
+                    [args[0], "-c", hang], **kw)):
+                import time as clock
+                started = clock.monotonic()
+                self.assertFalse(traverse._keep_pg_facts_apart(self.UNREACHABLE, ()))
+                self.assertLess(clock.monotonic() - started, 20)
+        self.assertEqual(list(folder.iterdir()), [])          # no half-written file left

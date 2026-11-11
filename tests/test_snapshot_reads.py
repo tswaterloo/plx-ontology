@@ -300,7 +300,18 @@ class HopReachTests(unittest.TestCase):
         self.assertFalse(tt._all_pass(lambda h: 1, "[not json"))
         self.assertFalse(tt._all_pass(t._gate_function(tot.FULL), '[null]'))
         self.assertTrue(tt._all_pass(lambda h: 1, None))
-        self.assertFalse(tt._all_pass(lambda h: 1 // 0, '["a://b"]'))
+        # a failing check on a handle an item ACL gates denies; the Python gate is called
+        # where the SQL one is (``_item_gate_sql``): a scheme no item ACL gates passes
+        # uncalled, a null, scheme-less or case-folded / ``_``-wildcard ACL scheme is called
+        self.assertFalse(tt._all_pass(lambda h: 1 // 0, '["sharepoint://b"]'))
+        called: list = []
+        spy = lambda h: called.append(h) or 0   # noqa: E731
+        for handle in ("SharePoint://b", "teams-chat://c", "teams-channel://d", None,
+                       "no-scheme", "graph-mail:/x"):
+            self.assertFalse(tt._all_pass(spy, json.dumps([handle])), handle)
+        self.assertTrue(tt._all_pass(spy, '["a://b", "api://public.x/1", "sage://y"]'))
+        self.assertEqual(called, ["SharePoint://b", "teams-chat://c", "teams-channel://d",
+                                  None, "no-scheme", "graph-mail:/x"])
 
 
 if __name__ == "__main__":

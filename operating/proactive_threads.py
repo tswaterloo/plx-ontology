@@ -187,14 +187,48 @@ APPROVAL_FAMILIES = (
 )
 
 
+# Notices a mail gateway puts above the sender's own words (Exchange's first-contact tip,
+# an invoice warning, an outside-sender caution): not the sender's text. Without this a
+# message whose greeting names a colleague ("Hi Sam") read as greeting no one, and the
+# notice's own words read as the message's ask.
+_GATEWAY_NOTICE = re.compile(
+    r"\A\s*(?:"
+    r"(?:Some people who received this message|You) don['\u2019]t often get email from "
+    r"\S{1,254}?\.?\s+Learn why this is important\.?"
+    r"|This email seems to contain an invoice or purchase order\.[^\r\n]{0,300}"
+    # an outside-sender caution in the gateway's own wording, then the gateway's advice
+    # sentences (links, attachments, the sender); the sender's own words after it, on the
+    # same line or the next, are kept ("CAUTION: external pallets are fragile" is a person's)
+    r"|CAUTION:[^\r\n.!?]{0,200}?\b(?:originated\s+from\s+outside|from\s+(?:an?\s+)?"
+    r"(?:external|outside)\s+(?:sender|source|address)|external\s+(?:sender|e-?mail|message)"
+    r"|outside\s+(?:of\s+)?(?:the|your|our)\s+(?:organi[sz]ation|company|network))\b"
+    r"[^\r\n.!?]{0,200}[.!?]?"
+    r"(?:[ \t]+[^\r\n.!?]{0,200}?\b(?:click|links?|attachments?|sender|safe|recogni[sz]e|"
+    r"trust\w*|phish\w*|suspicious|report)\b[^\r\n.!?]{0,200}[.!?]?)*"
+    r"|\[EXTERNAL(?: EMAIL)?\][ \t]*:?"
+    r")[ \t]*(?:\r?\n|\Z)?", re.I)
+
+
+def strip_gateway_notices(text: str) -> str:
+    """``text`` without the gateway notices it opens with (up to three, one per line)."""
+    for _ in range(3):
+        found = _GATEWAY_NOTICE.match(text)
+        if not found or not found.group(0):
+            break
+        text = text[found.end():]
+    return text
+
+
 def _own(text: Any) -> str:
-    """The text minus its quoted history (``ontology.mentions.QuotedRanges``)."""
+    """The text minus its quoted history (``ontology.mentions.QuotedRanges``) and the
+    gateway notices it opens with (``strip_gateway_notices``)."""
     from ontology.mentions import QuotedRanges
 
     if not isinstance(text, str) or not text.strip():
         return ""
     quoted = QuotedRanges(text)
-    return "".join(ch for i, ch in enumerate(text) if not quoted.contains(i))
+    return strip_gateway_notices("".join(ch for i, ch in enumerate(text)
+                                         if not quoted.contains(i)))
 
 
 def _sentences(text: str) -> Iterable[str]:
@@ -250,10 +284,67 @@ def _template(texts: Iterable[str]) -> bool:
                for i, a in enumerate(shapes) for b in shapes[i + 1:])
 
 
+# A machine's report: the message is JSON, after at most one title line that repeats its
+# subject (a gateway's tag aside), with three or more member lines ("key": value). People
+# do not write mail as JSON; a monitor, a job or a webhook does (measured 11-11 on the
+# owner's mailbox: one system's monitor sent about 970 a week, every one JSON, none
+# flagged). A person who pastes JSON writes around it (a greeting, a question, a
+# sign-off): not a report. The preview may be cut off, so the JSON need not close.
+MACHINE_BODY = re.compile(r'^[ \t]*"[A-Za-z_][\w.-]{0,60}"[ \t]*:[ \t]*\S', re.M)
+# a JSON line: a string or member (cut short or not), brackets and commas, or a scalar
+_JSON_LINE = re.compile(r'[ \t]*(?:"[^\r\n]*|[\[\]{},]+[ \t\[\]{},]*'
+                        r'|(?:-?\d[\w.+-]*|true|false|null)[ \t\]},]*)')
+# Transactional sending services' own domains: mail sent from them is an application's.
+SENDING_SERVICE = re.compile(
+    r"@(?:[\w-]+\.)*(?:resend\.dev|sendgrid\.net|mailgun\.org|amazonses\.com|"
+    r"mandrillapp\.com|sparkpostmail\.com|postmarkapp\.com|mailchimpapp\.net)$", re.I)
+# Tags a mail gateway or security filter puts in front of a subject ("[EXTERNAL] ...",
+# "[EXT]", "CAUTION: ..."): the gateway's words, not the sender's.
+GATEWAY_SUBJECT_TAG = re.compile(
+    r"\A\s*(?:\[\s*(?:EXTERNAL(?:[ \t]+(?:E-?MAIL|SENDER|MESSAGE))?|EXT|CAUTION|WARNING|"
+    r"SUSPICIOUS|SPAM|PHISH\w*|OUTSIDE(?:[ \t]+SENDER)?|NOT[ \t]+VERIFIED|UNVERIFIED|"
+    r"SECURE|ENCRYPT\w*)\s*\][ \t]*:?[ \t]*|(?:EXTERNAL|EXT|CAUTION|WARNING)[ \t]*:[ \t]*)",
+    re.I)
+_ANY_TAG = re.compile(r"\A\s*\[[^\]\r\n]{1,30}\][ \t]*:?[ \t]*")
+
+
+def subject_title(subject: str) -> str:
+    """A subject without the gateway tags in front of it (``GATEWAY_SUBJECT_TAG``)."""
+    subject = subject or ""
+    for _ in range(4):
+        found = GATEWAY_SUBJECT_TAG.match(subject)
+        if not found or not found.group(0):
+            break
+        subject = subject[found.end():]
+    return subject.strip()
+
+
+def machine_body(text: str, subject: str = "") -> bool:
+    """A JSON report: every non-blank line of the message is a JSON line, after at most one
+    first line that repeats the subject's title (gateway tags and one system tag aside, a
+    cut subject being a prefix of it), with three or more member lines."""
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    if len(MACHINE_BODY.findall(text or "")) < 3 or not lines:
+        return False
+    title = _ANY_TAG.sub("", subject_title(subject), count=1).strip()
+    first = _ANY_TAG.sub("", lines[0].strip(), count=1).strip()
+    if title and (first == title or (len(title) >= 20 and first.startswith(title))):
+        lines = lines[1:]
+    return bool(lines) and lines[0].lstrip()[:1] in "{[" \
+        and all(_JSON_LINE.fullmatch(line) for line in lines)
+
+
 def automated(sender: str, text: str, subject: str = "") -> bool:
-    """An automated sender, a notice's footer, an automatic or out-of-office reply."""
+    """An automated sender, a notice's footer, an automatic or out-of-office reply, a
+    machine's JSON report (``machine_body``), or mail from a transactional sending
+    service's own domain. A subject's bracket tag is never a machine's mark alone: a
+    gateway tags people's mail ("[EXTERNAL]") and people tag their own ("[Quote]"); a
+    system that tags its alerts is caught by its form here or as a feed
+    (``inbox_triage.feed_senders``)."""
     return bool(AUTOMATED.search(sender or "")) or bool(FOOTER.search(text or "")) \
-        or bool(AUTO_REPLY.match(subject or "")) or bool(AWAY.search(text or ""))
+        or bool(AUTO_REPLY.match(subject or "")) or bool(AWAY.search(text or "")) \
+        or machine_body(text, subject) \
+        or bool(SENDING_SERVICE.search((sender or "").strip()))
 
 
 def approval_family(text: str) -> str:

@@ -138,6 +138,13 @@ def _default_bearer(environ: Mapping[str, str]) -> Callable[[], str]:
     return bearer
 
 
+def action_bearer(environ: Mapping[str, str]) -> Callable[[], str]:
+    """The approved-action app's Graph token for the approved write transports
+    (``integrations.write_transports``: Planner, calendar, SharePoint), issued here like
+    the send's so the app's credentials are read in one place."""
+    return _default_bearer(environ)
+
+
 class ActionSender:
     """``dispatch`` one confirmed action. ``bearer`` returns a Graph token and ``post``
     sends (``live_source_guard.send_action``); both are injected in tests (a fake Graph)."""

@@ -8,7 +8,7 @@ import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Sheet } from "@/components/ui/sheet";
 import { Pending } from "@/components/ui/skeleton";
 import { getAutopilotWorkflow, setAutopilotMode } from "@/lib/api";
-import { MODES, type Filters, type Mode, filterWorkflows, modesFor, rowMode, rowPassed, rowRole, stateShown, workflowLabel } from "@/lib/autopilot";
+import { MODES, type Filters, type Mode, countdownText, filterWorkflows, modesFor, rowMode, rowPassed, rowRole, rowStateShown, workflowLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { ago, formatDateTime, plural } from "@/lib/format";
@@ -84,12 +84,45 @@ export function ModeControl({
 
 function Gate({ row }: { row: AutopilotWorkflowRow }) {
   const s = row.fresh ?? row.dev;
+  const c = row.countdown;
   return (
-    <span className="flex items-baseline gap-2">
-      <span className={cn("num text-[13px]", row.fresh ? "text-fg" : "text-muted")}>{pctText(s?.percent)}</span>
-      <span className="num text-[11px] text-faint">{s ? `n ${s.judged}` : ""}</span>
-      {!row.fresh && row.dev && <span className="text-[11px] text-faint">tuning</span>}
+    <span className="block">
+      <span className="flex items-baseline gap-2">
+        <span className={cn("num text-[13px]", row.fresh ? "text-fg" : "text-muted")}>{pctText(s?.percent)}</span>
+        <span className="num text-[11px] text-faint">{s ? `n ${s.judged}` : ""}</span>
+        {!row.fresh && row.dev && <span className="text-[11px] text-faint">tuning</span>}
+      </span>
+      {c && (
+        <span className="num block text-[11px] text-faint" data-testid="gate-countdown" title={countdownText(c) ?? undefined}>
+          {c.judged}/{c.need_judged} items
+        </span>
+      )}
     </span>
+  );
+}
+
+/** The countdown toward the write gate: a bar of judged fresh items against what the gate
+ * needs and the precision so far against its bar. */
+function Countdown({ row }: { row: AutopilotWorkflowRow }) {
+  const c = row.countdown;
+  if (!c) return <p className="text-[12px] text-muted">No fresh items judged yet: the count starts once the data refresh covers a whole new day.</p>;
+  const share = Math.min(1, c.judged / Math.max(1, c.need_judged));
+  const under = c.percent != null && c.percent < c.need_percent;
+  return (
+    <div className="space-y-1" data-testid="workflow-countdown">
+      <div className="flex items-baseline justify-between gap-3 text-[12px]">
+        <span className="num">{countdownText(c)}</span>
+        <span className={cn("shrink-0 text-[11px]", c.passes ? "text-ok" : "text-faint")}>{c.passes ? "meets the gate" : "not yet"}</span>
+      </div>
+      <div className="h-1.5 w-full rounded-[2px] bg-hover" aria-hidden>
+        <div className={cn("h-1.5 rounded-[2px]", c.passes ? "bg-ok" : under ? "bg-risk" : "bg-accent")} style={{ width: `${Math.round(share * 100)}%` }} />
+      </div>
+      {c.window?.length === 2 && (
+        <p className="num text-[11px] text-faint">
+          Judged on fresh days {formatDateTime(c.window[0])} to {formatDateTime(c.window[1])}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -128,7 +161,7 @@ export function WorkflowsView({ area, filters, builder, onChanged }: { area: Are
       </div>
       <ul className="divide-y divide-border" aria-label="Workflows">
         {rows.map((r) => {
-          const shown = stateShown(r.state, area.owner);
+          const shown = rowStateShown(r, area.owner);
           const k = `${r.role}/${r.workflow}`;
           return (
             <li key={k} className={cn("grid grid-cols-2 items-center gap-x-4 gap-y-1.5 px-3 py-2 text-[13px] hover:bg-hover/50", grid)} data-testid="autopilot-workflow">
@@ -258,15 +291,19 @@ function WorkflowSheet({ workflow, area, builder, onClose, onChanged }: { workfl
             </div>
             {(d.rows ?? []).length > 0 && (
               <section>
-                <h3 className="mb-1 text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Mode by person or role</h3>
+                <h3 className="mb-1 text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Mode and gate countdown by person or role</h3>
                 {modeError && <ErrorNotice message={modeError} />}
                 <ul className="divide-y divide-border">
                   {(d.rows ?? []).map((r) => (
-                    <li key={r.role} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                      <span>
-                        {rowRole(area, r)} <span className="num text-[12px] text-muted">{pctText((r.fresh ?? r.dev)?.percent)}</span>
-                      </span>
-                      {area.owner ? <ModeControl row={r} area={area} builder={builder || (d.modes ?? []).includes("suggest")} busy={busy} onSet={(m) => void set(r, m)} /> : <span className="text-muted">{MODES.find((m) => m.mode === rowMode(r))?.label}</span>}
+                    <li key={r.role} className="space-y-2 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                          {rowRole(area, r)} <span className="num text-[12px] text-muted">{r.dev ? `practice ${pctText(r.dev.percent)} of ${r.dev.judged}` : "no practice score"}</span>
+                          {r.draft && <span className="ml-2 text-[12px] text-accent">Draft: prepared for approval, nothing goes out without accept and confirm</span>}
+                        </span>
+                        {area.owner ? <ModeControl row={r} area={area} builder={builder || (d.modes ?? []).includes("suggest")} busy={busy} onSet={(m) => void set(r, m)} /> : <span className="text-muted">{MODES.find((m) => m.mode === rowMode(r))?.label}</span>}
+                      </div>
+                      <Countdown row={r} />
                     </li>
                   ))}
                 </ul>

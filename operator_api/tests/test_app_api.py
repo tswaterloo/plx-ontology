@@ -597,8 +597,8 @@ class ReaderWrites(unittest.TestCase):
         wrote: list = []
 
         class Recording(MockBackend):
-            def reader_wrote(self, reader):
-                wrote.append(reader.key)
+            def reader_wrote(self, reader, screens=None):
+                wrote.append((reader.key, screens))
 
         app = create_app(Recording(), DevAuth(fixture_identity("plx", ["staff:demo"]),
                                               mode="mock"), secure_cookie=False)
@@ -613,3 +613,8 @@ class ReaderWrites(unittest.TestCase):
         self.assertEqual(client.post("/api/briefing/seen").status_code, 200)
         self.assertEqual(len(wrote), 2)                # before it ran and after
         self.assertEqual(len(set(wrote)), 1)
+        # marking the briefing seen changes the briefing and Home only, not My work
+        self.assertEqual(wrote[0][1], frozenset({"briefing", "home", "suggestions"}))
+        wrote.clear()
+        client.post("/api/feedback/note", json={"note": "x"})
+        self.assertEqual({w[1] for w in wrote}, {None})   # any other write: every screen

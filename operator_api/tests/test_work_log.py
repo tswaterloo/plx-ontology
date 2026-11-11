@@ -219,6 +219,11 @@ class WorkLogApi(unittest.TestCase):
         # a business question is not routed to the log
         business = ask(self.ana, "what did I order from the supplier last month")
         self.assertFalse(business["direct_answer"].startswith("Your work log"))
+        # nothing mailed from the Workbench: what the person mailed is asked of their mail
+        mailed = ask(self.ben, "what did I send yesterday")
+        self.assertFalse(mailed["direct_answer"].startswith("Your work log"))
+        self.assertTrue(ask(self.ben, "what did I ask yesterday")["direct_answer"]
+                        .startswith("Your work log has nothing"))
 
 
 class Loops(unittest.TestCase):
@@ -300,6 +305,148 @@ class Loops(unittest.TestCase):
                               thread="nowhere", source="actions_journal")
 
 
+class TimeSaved(unittest.TestCase):
+    """O-03: per person and week, the minutes the Workbench saved, counting only work that
+    was used, each accepted-and-sent item once, weeks from Monday in US Eastern; fail closed
+    on the exclusion; a reader sees their own, the owner everyone's."""
+
+    def setUp(self):
+        self.now = datetime(2026, 11, 11, 15, 0, tzinfo=timezone.utc)   # a Wednesday
+        self.guard = Guard()
+        self.store = wl.WorkLog(None, guard=lambda: self.guard, clock=lambda: self.now)
+
+    def reader(self, who):
+        return type("R", (), {"key": f"plx:staff:{who}", "display_name": who.title(),
+                              "email": f"{who}@plx.example",
+                              "session": type("S", (), {"identities": frozenset(),
+                                                        "subject_oid": None})()})()
+
+    def put(self, who, kind, verb, item="i1", at=None, sent=True, people=(), outcome=None):
+        """``outcome``: the status Notes records on an action or write event."""
+        self.store.clock = lambda: at or self.now
+        self.store.record(self.reader(who), kind=kind, verb=verb, title="t",
+                          thread=f"autopilot:{item}" if kind == "autopilot" else
+                          f"ask:{item}" if kind == "ask" else f"card:{item}",
+                          source="x", source_id=item, people=people,
+                          detail={"status": outcome} if outcome else None,
+                          awaiting={"due": "2026-11-20T00:00:00Z"} if sent else None)
+        self.store.clock = lambda: self.now
+
+    def test_only_used_work_counts_once_by_its_weight_in_its_eastern_week(self):
+        mins = wl.saved_minutes()
+        self.assertEqual(mins, {"mail_sent": 6, "record": 5, "teams_sent": 2})
+        self.put("ana", "autopilot", "accepted", "a1")
+        self.put("ana", "autopilot", "sent", "a1")            # one item: the message only
+        self.put("ana", "autopilot", "accepted", "a2")        # accepted, no message
+        self.put("ana", "autopilot", "prepared", "a3")        # prepared, never used
+        self.put("ana", "autopilot", "rejected", "a4")
+        self.put("ana", "action", "sent", "c1", outcome="sent")             # went out
+        self.put("ana", "action", "sent", "c2", sent=False, outcome="dry_run")  # nothing went out
+        self.put("ana", "action", "messaged", "c3", sent=False, outcome="dry_run")
+        self.put("ana", "action", "messaged", "c6", sent=False, outcome="sent")  # a live Teams message
+        self.put("ana", "action", "messaged", "c7", sent=False)  # says nothing of its outcome
+        self.put("ana", "action", "dismissed", "c4", sent=False)
+        self.put("ana", "ask", "asked", "q1")
+        self.put("ana", "ask", "failed", "q2")
+        self.put("ana", "alert", "dismissed", "c5", sent=False)
+        self.put("ana", "write", "executed", "w1", outcome="written")
+        self.put("ana", "write", "executed", "w2", outcome="would_write")  # a dry-run write
+        self.put("ana", "write", "executed", "w3")                         # no outcome: nothing
+        # Sunday 11:30 PM ET is last week; Monday 12:30 AM ET is this week
+        self.put("ana", "ask", "asked", "q3", at=datetime(2026, 11, 9, 4, 30, tzinfo=timezone.utc))
+        self.put("ana", "ask", "asked", "q4", at=datetime(2026, 11, 9, 5, 30, tzinfo=timezone.utc))
+        self.put("ana", "ask", "asked", "q5", at=datetime(2026, 10, 1, tzinfo=timezone.utc))
+        self.put("ben", "ask", "asked", "q6")
+        found = wl.time_saved(self.store, reader="plx:staff:ana")
+        self.assertEqual(found["weeks"], ["2026-10-19", "2026-10-26", "2026-11-02",
+                                          "2026-11-09"])
+        [ana] = found["people"]
+        self.assertEqual(ana["weeks"][-1]["items"], {"mail_sent": 2, "record": 4,
+                                                     "teams_sent": 1})
+        self.assertEqual(ana["weeks"][-1]["minutes"], 2 * 6 + 4 * 5 + 2)
+        self.assertEqual(ana["weeks"][-2], {"start": "2026-11-02", "minutes": 5,
+                                            "items": {"record": 1}})
+        self.assertEqual([w["minutes"] for w in ana["weeks"][:2]], [0, 0])
+        self.assertIn("estimate", found["method"])
+        self.assertIn("6 min", found["method"])
+        every = wl.time_saved(self.store, reader=None)
+        self.assertEqual([p["name"] for p in every["people"]], ["Ana", "Ben"])
+
+    def test_a_dry_run_teams_message_and_a_would_write_save_nothing(self):
+        """Through the paths that log them (Notes.action, Notes.write): neither went out."""
+        notes, ana = wl.Notes(self.store, lambda who: "ana@plx.example"), self.reader("ana")
+        notes.action(ana, {"card_id": "card-1", "kind": "teams_message", "status": "dry_run",
+                           "text": "Not sent", "at": self.now.isoformat(), "seq": 1},
+                     {"to": ["dispatch@vendor.example"], "card_label": "PO 90412"}, None)
+        notes.write(ana, "executed", {"intent": {"intent_id": "wi-1", "record_id": "PO-1"},
+                                      "status": "would_write", "text": "Would set the date",
+                                      "at": self.now.isoformat(), "replayed": False})
+        events, _ = self.store.events(reader="plx:staff:ana")
+        self.assertEqual(sorted((e["kind"], e["verb"]) for e in events),
+                         [("action", "messaged"), ("write", "executed")])  # logged, as work
+        found = wl.time_saved(self.store, reader="plx:staff:ana")
+        self.assertEqual(sum(w["minutes"] for p in found["people"] for w in p["weeks"]), 0)
+        # the same two, live, count 2 + 5 minutes
+        notes.action(ana, {"card_id": "card-2", "kind": "teams_message", "status": "sent",
+                           "text": "Sent", "at": self.now.isoformat(), "seq": 2},
+                     {"to": ["dispatch@vendor.example"], "card_label": "PO 90412"}, None)
+        notes.write(ana, "executed", {"intent": {"intent_id": "wi-2", "record_id": "PO-1"},
+                                      "status": "written", "text": "Set the date",
+                                      "at": self.now.isoformat(), "replayed": False})
+        [person] = wl.time_saved(self.store, reader="plx:staff:ana")["people"]
+        self.assertEqual(person["weeks"][-1]["items"], {"teams_sent": 1, "record": 1})
+        self.assertEqual(person["weeks"][-1]["minutes"], 2 + 5)
+
+    def test_cardinality_and_the_exclusion(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.store = wl.WorkLog(None, guard=lambda: self.guard,
+                                        clock=lambda: self.now)
+                for i in range(n):
+                    self.put("ana", "ask", "asked", f"q{i}")
+                    self.put(f"p{i}", "autopilot", "sent", f"a{i}")
+                every = wl.time_saved(self.store, reader=None)
+                self.assertEqual(len(every["people"]), n + 1)
+                by = {p["name"]: p["weeks"][-1]["minutes"] for p in every["people"]}
+                self.assertEqual(by["Ana"], 5 * n)
+                self.assertEqual({by[f"P{i}"] for i in range(n)}, {6})
+                self.assertEqual(sum(p["weeks"][-1]["minutes"] for p in every["people"]),
+                                 5 * n + 6 * n)
+        # a row naming a person excluded later is no longer counted; no list, nothing
+        self.put("ana", "action", "sent", "cx", people=["colleague@plx.example"], outcome="sent")
+        before = wl.time_saved(self.store, reader="plx:staff:ana")["people"][0]
+        self.guard.is_excluded = lambda value: str(value).lower() in (
+            OID, EXCLUDED, "colleague@plx.example")
+        after = wl.time_saved(self.store, reader="plx:staff:ana")["people"][0]
+        self.assertEqual(before["weeks"][-1]["minutes"] - after["weeks"][-1]["minutes"], 6)
+        self.guard.unavailable = "not loaded"
+        self.assertIsNone(wl.time_saved(self.store, reader="plx:staff:ana"))
+
+    def test_a_reader_sees_their_own_and_only_the_owner_everyones(self):
+        backend = MockBackend()
+        backend.work_log = self.store
+        backend._is_owner = lambda who: "staff:owner" in who.key
+        ana, owner = client_for(backend, "staff:ana"), client_for(backend, "staff:owner")
+        ask(ana, "which orders are late")
+        ask(owner, "which orders are late")
+        self.store.clock = lambda: datetime.now(timezone.utc)
+        mine = ana.get("/api/time-saved").json()
+        self.assertTrue(mine["available"])
+        self.assertEqual([(p["mine"], p["weeks"][-1]["minutes"]) for p in mine["people"]],
+                         [(True, 5)])
+        self.assertEqual(ana.get("/api/time-saved", params={"everyone": True}).status_code,
+                         403)
+        # the owner's own view is theirs; in everyone's the owner is never one of the people
+        self.assertEqual([p["mine"] for p in owner.get("/api/time-saved").json()["people"]],
+                         [True])
+        every = owner.get("/api/time-saved", params={"everyone": True}).json()
+        self.assertEqual([p["mine"] for p in every["people"]], [False])   # Ana alone
+        self.assertEqual(ana.get("/api/time-saved", params={"weeks": 13}).status_code, 422)
+        self.guard.unavailable = "not loaded"
+        closed = ana.get("/api/time-saved").json()
+        self.assertEqual((closed["available"], closed["people"]), (False, []))
+
+
 class TheAutopilotReadsTheLog(engine_fixture.Fixture):
     """The autopilot engine reads the owner's own Workbench sends from the log: a message
     the owner already answered from the approvals desk gets no prepared item; one answered
@@ -327,6 +474,35 @@ class TheAutopilotReadsTheLog(engine_fixture.Fixture):
         summary = self.cycle([answered, earlier, untouched], read_work_log=True)
         self.assertEqual(summary["skipped"].get("customer_request:answered_in_workbench"), 1)
         self.assertEqual(summary["prepared"], {"customer_request": 2})
+
+    def test_an_accepted_item_answers_its_message_not_a_later_one_seen_late(self):
+        from operating.tests.test_proactive_threads import mail
+        first, later = (mail(self.w, engine_fixture.SENT, sender=OUTSIDE, to=(OURS,),
+                             body=f"Please send the COA for lot {n}.", subject="COA",
+                             mailbox=engine_fixture.OURS_OID, conversation="conv-70",
+                             n=31_000 + n, hour=hour) for n, hour in ((70, 9), (71, 13)))
+        order = self.w.obj("SalesOrder", {"order_number": "SO-70", "status": "Open"})
+        for made in (first, later):
+            self.w.link("Email.sent_by_customer", made, self.customer)
+            self.w.link("Email.mentions_order", made, order)
+        at = datetime.combine(engine_fixture.SENT, datetime.min.time(), timezone.utc)
+        store = wl.WorkLog(self.dir / "work-log", guard=lambda: Guard(),
+                           clock=lambda: at + timedelta(hours=14))
+        reader = type("R", (), {"key": "synth:ops", "display_name": "Ops", "email": OURS,
+                                "session": type("S", (), {"identities": frozenset(),
+                                                          "subject_oid": None})()})()
+        # accepted at 14:00 answering the 09:00 message; the 13:00 one reached the feed late
+        wl.Notes(store, lambda who: OURS).autopilot_decided(reader, {
+            "item_id": "ap_x", "title": "COA", "decision": {"decision": "accept", "sent": True},
+            "happened": {"conversation_id": "conv-70", "object_id": first,
+                         "at": ap._iso(at + timedelta(hours=9))},
+            "prepared": {"draft": {"to": [{"address": OUTSIDE}], "subject": "RE: COA"}}})
+        store.close()
+        summary = self.cycle([first, later], read_work_log=True)
+        self.assertEqual(summary["skipped"].get("customer_request:answered_in_workbench"), 1)
+        self.assertEqual(summary["prepared"], {"customer_request": 1})
+        prepared = [i["body"]["happened"]["object_id"] for i in self.queue().items(None)]
+        self.assertEqual(prepared, [later])
 
     def test_a_log_that_cannot_be_read_prepares_as_before(self):
         msg = self.message(63, "Please send the COA for lot 63.")

@@ -4,8 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { MyWorkList } from "@/components/my-work";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
-import { LoadProblem } from "@/components/ui/notice";
+import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getMyWork } from "@/lib/api";
+import { useStaleRefresh } from "@/lib/stale-refresh";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { MyWork } from "@/lib/types";
 
@@ -20,12 +21,12 @@ export default function MyWorkPage() {
   useEffect(() => {
     const ctl = new AbortController();
     setError(null);
-    setWork(null);
     getMyWork(ctl.signal).then(setWork, (e) => {
       if (!ctl.signal.aborted) setError(e);
     });
     return () => ctl.abort();
   }, [round]);
+  useStaleRefresh(work?.stale_since, retry);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Assist" />
@@ -33,7 +34,10 @@ export default function MyWorkPage() {
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : work ? (
-          <MyWorkList work={work} />
+          <>
+            <StaleNote since={work.stale_since} readAt={work.read_at} className="mb-2" />
+            <MyWorkList work={work} />
+          </>
         ) : (
           <Pending page label="Reading the work prepared for you" />
         )}

@@ -163,6 +163,20 @@ class Engine(Fixture):
         card = ap.card_of(item)
         self.assertEqual(card["id"], ap.CARD_PREFIX + item["item_id"])
 
+    def test_a_machine_report_prepares_nothing_a_burst_from_one_person_still_does(self):
+        # triage's automated-mail test (``inbox_triage.automated_mail``) by form: a JSON
+        # report is skipped. A cycle is no window (minutes live, a day in a replay), so 35
+        # templated messages from one sender in one cycle are not judged a feed: the same
+        # mail prepares the same work whichever way the records arrive
+        report = self.message(200, 'Monitor\n{\n  "observed_at": "2026-10-18T07:00:00Z",\n'
+                                   '  "mode": "stream-C",\n  "reason": "missing"\n}',
+                              subject="Monitor", sender="rail@synth-customer.example")
+        burst = [self.message(100 + i, f"Could you send the COA for lot {i}?",
+                              subject=f"COA {i}") for i in range(35)]
+        out = self.cycle([report, *burst])
+        self.assertEqual(out["skipped"]["automated"], 1)
+        self.assertEqual(out["prepared"], {"customer_request": 30})   # 30 an hour, rest deferred
+
     def test_a_new_po_prepares_an_order_entry_intent_only_when_every_line_resolves(self):
         self.items_known("SYN-10", "SYN-20")
         whole = self.message(2, "Please ship:\n1. SYN-10 Gallon soap: 6 cases\n"

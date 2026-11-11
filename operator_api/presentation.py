@@ -49,9 +49,17 @@ DROPPED_LABELS = frozenset({"text", "value", "field", "quote"})
 RECORD_WORDS = (("purchase order", "PO"), ("sales order", "sales order"))
 
 
+# A day a code spells with underscores (``orders_on_or_before_2020_09_16``): its ISO form.
+CODE_DAY = re.compile(r"(?<![0-9])((?:19|20)[0-9]{2})_(0[1-9]|1[0-2])_(0[1-9]|[12][0-9]|3[01])"
+                      r"(?![0-9])")
+
+
 def words(code: str) -> str:
-    """``map_coverage`` -> ``map coverage``; ``lineObjectNumber`` -> ``line object number``."""
+    """``map_coverage`` -> ``map coverage``; ``lineObjectNumber`` -> ``line object number``;
+    a day it spells keeps its ISO form (``on_or_before_2020_09_16`` -> ``on or before
+    2020-09-16``, never ``2020 09 16``)."""
     code = code.strip("`").rsplit(".", 1)[-1]
+    code = CODE_DAY.sub(r"\1-\2-\3", code)
     code = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", code)
     return re.sub(r"[_\s]+", " ", code).strip().lower()
 

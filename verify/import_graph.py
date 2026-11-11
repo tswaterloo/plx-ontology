@@ -365,6 +365,44 @@ def _literal_arguments(tree: ast.AST, function: ast.AST | None, parameter: str) 
     return literals if references == len(calls) + 1 else None  # + 1: the ``def`` itself
 
 
+def _owner_values(node: ast.AST) -> list[str] | None:
+    """The literals of a value that is an object's own module (``job.__module__``), a string
+    constant, or a conditional choosing between those; None for anything else."""
+    if isinstance(node, ast.Attribute) and node.attr == "__module__":
+        return []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.IfExp):
+        body, orelse = _owner_values(node.body), _owner_values(node.orelse)
+        return None if body is None or orelse is None else body + orelse
+    return None
+
+
+def _owner_modules(arg: ast.AST, function: ast.AST | None) -> list[str] | None:
+    """The modules an import of an object's own module names: ``import_module(f.__module__)``
+    re-imports the module that defined an object the caller already holds, so it loads
+    nothing new and links only the literals beside it. A name counts when every binding of
+    it in the enclosing function is such a value; None for anything else (dynamic)."""
+    found = _owner_values(arg)
+    if found is not None or not isinstance(arg, ast.Name) \
+            or not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return found
+    values: list[str] = []
+    assigned: set[int] = set()  # the name nodes a plain ``name = value`` binds
+    for node in _nodes(function):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == arg.id
+                                                for t in node.targets):
+            if len(node.targets) != 1 or (found := _owner_values(node.value)) is None:
+                return None
+            values += found
+            assigned.add(id(node.targets[0]))
+    for node in _nodes(function):  # any other binding (a parameter, a loop, ``+=``, ``with``)
+        if isinstance(node, ast.Name) and node.id == arg.id and not isinstance(node.ctx, ast.Load) \
+                and id(node) not in assigned or isinstance(node, ast.arg) and node.arg == arg.id:
+            return None
+    return values if assigned else None
+
+
 def _edges(tree: ast.AST, package: str, lookup: _Lookup) -> tuple[
         set[str], set[tuple[str, str]], bool, set[str], bool, set[str], set[tuple[str, str]]]:
     imports: set[str] = set()
@@ -447,6 +485,10 @@ def _edges(tree: ast.AST, package: str, lookup: _Lookup) -> tuple[
             for literal in literals:
                 link(literal)
             helpers.add(enclosing[id(node)].name)
+        elif fromlist is None and (owners := _owner_modules(arg, (
+                enclosing := enclosing or _innermost_functions(tree)).get(id(node)))) is not None:
+            for owner in owners:
+                link(owner)
         else:
             dynamic = True
     attributes = set()

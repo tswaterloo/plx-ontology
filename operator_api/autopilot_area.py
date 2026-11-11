@@ -7,22 +7,25 @@ Reads the autopilot's queue and gate files and the write path's state directory
 (``operating.autopilot_write``; ``$state_dir/autopilot-write``). Writes only the
 Workbench's own files there: item decisions (a hash-chained journal), and for the
 owner-open reader only (decided server-side) the write path's own switch files (global
-kill, per-workflow off, per role and workflow live flag). An accept runs the item through
-``autopilot_write.Executor``, the one gated write path: it records a dry run with the exact
-request unless the workflow passed its fresh gate, the owner was told and switched it on
-and the host's master switch is set. Nothing else here sends or writes.
+kill, per-workflow off, per role and workflow live flag). It records a dry run with the exact request unless the
+owner opened the action's kind to approved writes (``PLX_APPROVED_WRITES``) or the workflow
+passed its fresh gate, the owner was told and switched it on and the master switch is set. Nothing else here sends or writes.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+import hashlib
+import hmac
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from operating import autopilot as ap
+from operating import autopilot_fresh
 from operating import autopilot_write as aw
 from operating import workflows as wf
 from operating.card_actions import Journal
@@ -32,6 +35,9 @@ from .auth import Reader
 from .errors import UserFacing
 
 DECISIONS_FILE = "autopilot-writes/decisions.jsonl"
+CONFIRMS_FILE = "autopilot-writes/live-confirms.jsonl"   # offered and spent (digests)
+CONFIRM_SECONDS = 600
+BULK_LIVE = "A live item is not accepted in bulk: open it and confirm it alone."
 SNOOZE_DAYS = 30
 SYSTEM_OF_SCHEME = {"graph-mail": "mail", "teams-chat": "teams", "teams-channel": "teams",
                     "mc": "mc", "bc": "bc", "api": "portal", "sharepoint": "sharepoint",
@@ -39,7 +45,8 @@ SYSTEM_OF_SCHEME = {"graph-mail": "mail", "teams-chat": "teams", "teams-channel"
                     "meeting-transcript": "meetings", "planner-task": "planner"}
 WRITE_SYSTEM = {"bc_write": "bc", "sage_write": "sage", "portal_write": "portal",
                 "filemaker_write": "filemaker", "send_mail": "mail", "send_teams": "teams",
-                "mc_approval": "mc"}
+                "mc_approval": "mc", "mc_task": "mc", "planner_write": "planner",
+                "calendar_write": "calendar", "sharepoint_write": "sharepoint"}
 AUDIT_EVENTS = ("decision", "attempt", "outcome", "reconciled", "gate_passed", "gate_lost",
                 "owner_notified", "switch")
 NOT_OWNER = "Only the owner changes the autopilot's switches."
@@ -168,6 +175,23 @@ class AutopilotAreaMixin:
         path = self._ap_queue_path()  # type: ignore[attr-defined]
         return ap._roles(self._ap_env(), path.parent) if path else {}  # type: ignore[attr-defined]
 
+    def _apa_live_of(self, env: Mapping[str, str], state: Optional[Path]):
+        """item -> the kinds an accept would perform live (none without a state dir)."""
+        if state is None:
+            return lambda _item: []
+        executor = aw.Executor(state, environ=dict(env), adapters=self.autopilot_adapters
+                               if self.autopilot_adapters is not None else {}, guard=None)
+        rows = executor.journal.rows()
+
+        def live_of(item: Mapping[str, Any]) -> list[str]:
+            if not item.get("mine"):
+                return []
+            try:
+                return executor.live_kinds(item, rows)
+            except Exception:  # noqa: BLE001 - unknown: shown live, so it asks first
+                return ["unknown"]
+        return live_of
+
     def _apa_executor(self, state: Path) -> aw.Executor:
         env = dict(self._ap_env())  # type: ignore[attr-defined]
         guard = self.autopilot_guard
@@ -193,6 +217,11 @@ class AutopilotAreaMixin:
         return glob, off, broken
 
     # ------------------------------------------------------------ the area
+
+    def _area_read(self, reader: Reader) -> m.AutopilotArea:
+        """The area read now, never a kept copy (``WorkspaceBackend.autopilot_area`` serves
+        the reader's kept one): what a decision or a switch returns and reads from."""
+        return AutopilotAreaMixin.autopilot_area(self, reader)
 
     def autopilot_area(self, reader: Reader) -> m.AutopilotArea:
         now = datetime.now(timezone.utc)
@@ -225,6 +254,9 @@ class AutopilotAreaMixin:
                 for oid in members:
                     member_of.setdefault(str(oid).lower(), set()).add(role)
         today = now.astimezone(_LOCAL).date()
+        # which open items an accept would perform live now (the server's view: the
+        # owner's per-kind switch or a live gate), so the page asks for the confirm
+        live_of = self._apa_live_of(env, state)
         items: list[m.AutopilotItem] = []
         last_at: dict[str, str] = {}
         for item in raw_items:
@@ -258,7 +290,9 @@ class AutopilotAreaMixin:
                 owner=item["owner"], mine=item["mine"], happened=happened,
                 prepared=item["body"].get("prepared") or {}, citations=item["citations"],
                 due_at=item["due_at"], created_at=item["created_at"], today=is_today,
-                state=item_state, decision=decision))
+                state=item_state, decision=decision,
+                live_kinds=(kinds := live_of(item) if item_state in ("waiting", "edited")
+                            else []), live=bool(kinds)))
         rows = self._apa_rows(state)
         for row in rows:
             if row.get("workflow") and row.get("at"):
@@ -293,15 +327,25 @@ class AutopilotAreaMixin:
         for it in items:
             if it.state in ("waiting", "edited"):
                 open_by[it.workflow] = open_by.get(it.workflow, 0) + 1
-        for role in sorted(set(dev) | set(fresh)):
-            if not owner and role not in mine_roles:
+        # Draft (``autopilot.load_draft``): per person role, the workflows prepared before
+        # the gate passed; the fresh-day scorer's published counts give the countdown
+        # (a person role a gate document measured: a draft for someone never replayed
+        # still prepares their items, it has no scores to show here)
+        drafted = {r: f for r, f in draft_roles(ap.load_draft(env), {**dev, **fresh}).items()
+                   if r in dev or r in fresh}
+        held = _identities(reader)
+        published = (autopilot_fresh.read(state).get("roles") or {}) if state else {}
+        for role in sorted(set(dev) | set(fresh) | set(drafted)):
+            if not owner and role not in mine_roles and not (
+                    role in drafted and role[len("person:"):] in held):
                 continue
             d, f = dev.get(role) or {}, fresh.get(role) or {}
             person = None
             if role.startswith("person:"):
                 found = list((d or f).get("members") or ())
                 person = str(found[0]).lower() if len(found) == 1 else None
-            flows = set((d.get("workflows") or {})) | set((f.get("workflows") or {}))
+            flows = set((d.get("workflows") or {})) | set((f.get("workflows") or {})) | \
+                set(drafted.get(role) or ())
             for flow in sorted(flows):
                 ds, fs = _score((d.get("workflows") or {}).get(flow)), \
                     _score((f.get("workflows") or {}).get(flow))
@@ -324,12 +368,15 @@ class AutopilotAreaMixin:
                     on=not (flow in off or broken), live_flag=flag, missing=missing,
                     last_run=last_at.get(flow) or None,
                     scored_at=str(window[-1]) if window else None,
-                    open_items=open_by.get(flow, 0)))
+                    open_items=open_by.get(flow, 0),
+                    draft=flow in (drafted.get(role) or ()) and st == "dry_run",
+                    countdown=_countdown(published.get(role), flow)))
         if not dev and not fresh:
             notes.append("No replay has scored the workflows yet.")
         # items are prepared only for a workflow that passed its replay gate
         # (``autopilot.gate_from``): with none passed, that is why nothing is here
-        if not items and not ap.gate_of({"schema": ap.GATE_SCHEMA, "roles": dev})[1]:
+        if not items and not drafted and \
+                not ap.gate_of({"schema": ap.GATE_SCHEMA, "roles": dev})[1]:
             notes.insert(0, NO_GATE_PASSED)
         roles_seen = {r for r in set(dev) | set(fresh) | set(role_members)
                       if not r.startswith("person:")}
@@ -389,6 +436,7 @@ class AutopilotAreaMixin:
             text = prior.get("text") if prior.get("decision") == "edit" else None
         if text:
             row["text"] = text
+        offer = None
         if body.decision == "accept":
             if self._apa_off(env, state)[0]:
                 raise UserFacing("action_refused", "The autopilot is switched off.", 409)
@@ -397,7 +445,23 @@ class AutopilotAreaMixin:
                 prepared = {**(found["body"].get("prepared") or {}),
                             "draft": {**draft, "body": text}}
                 item = {**found, "body": {**found["body"], "prepared": prepared}}
-            results = self._apa_executor(state).run(item, now)
+            executor = self._apa_executor(state)
+            if body.bulk and executor.live_kinds(item):
+                raise UserFacing("action_refused", BULK_LIVE, 409)
+            # the owner accepting their own item is a person's approval of it: it goes
+            # live only through the owner's per-kind switch (or the workflow's passed
+            # gate), and only once they confirmed it goes live (a second accept carrying
+            # the token the first one answered); money or a judgment call still needs
+            # each reason acknowledged
+            confirmed = not body.bulk and self._apa_confirmed(
+                state, item_id, row["by"], text, body.confirm_token, now)
+            approval = aw.Approval(by=tuple(sorted(self._apa_me(reader))),
+                                   confirmed_live=confirmed)
+            results = executor.run(item, now, approval)
+            if any(r.get("status") == "needs_confirm" for r in results):
+                if body.bulk:
+                    raise UserFacing("action_refused", BULK_LIVE, 409)
+                offer = self._apa_offer(state, item_id, row["by"], text, now)
             row["outcome"] = results[0]["status"] if results else None
             row["outcomes"] = [r["status"] for r in results]
             # only the email's own result says it went out (an entry before it can be done
@@ -406,13 +470,51 @@ class AutopilotAreaMixin:
                               for r in results)
             row["reasons"] = [str(x) for r in results for x in r.get("reasons") or ()][:8]
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        journal = Journal(state / DECISIONS_FILE)
-        with journal.locked() as held:
-            held.append(row)
-        for it in self.autopilot_area(reader).items:
+        if offer is None:            # an accept waiting for its confirm is no decision yet
+            journal = Journal(state / DECISIONS_FILE)
+            with journal.locked() as held:
+                held.append(row)
+        for it in self._area_read(reader).items:
             if it.item_id == item_id:
+                it.confirm_token = offer
                 return it
         raise UserFacing("not_found", "That item is not on your list.", 404)
+
+    @staticmethod
+    def _apa_accepted(item_id: str, by: str, text: Optional[str]) -> str:
+        """What a confirm is bound to: the item, the person, the exact text accepted."""
+        return hashlib.sha256(json.dumps([item_id, by, text or ""]).encode()).hexdigest()
+
+    def _apa_offer(self, state: Path, item_id: str, by: str, text: Optional[str],
+                   now: datetime) -> str:
+        """A confirm token for this accept (the journal keeps its digest, never the token)."""
+        token = secrets.token_urlsafe(24)
+        with Journal(state / CONFIRMS_FILE).locked() as held:
+            held.append({"event": "confirm_offered", "at": _iso(now),
+                         "until": _iso(now + timedelta(seconds=CONFIRM_SECONDS)),
+                         "token": hashlib.sha256(token.encode()).hexdigest(),
+                         "accepted": self._apa_accepted(item_id, by, text)})
+        return token
+
+    def _apa_confirmed(self, state: Path, item_id: str, by: str, text: Optional[str],
+                       token: Optional[str], now: datetime) -> bool:
+        """The token an accept answered, sent back by the same person for the same item
+        and text within its time, once (it is spent here)."""
+        if not token or not (state / CONFIRMS_FILE).exists():
+            return False
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        accepted = self._apa_accepted(item_id, by, text)
+        with Journal(state / CONFIRMS_FILE).locked() as held:
+            spent = {r.get("token") for r in held.rows if r.get("event") == "confirm_spent"}
+            for r in held.rows:
+                until = _instant(r.get("until"))
+                if r.get("event") == "confirm_offered" and r.get("token") not in spent \
+                        and hmac.compare_digest(str(r.get("token")), digest) \
+                        and r.get("accepted") == accepted and until is not None \
+                        and now <= until:
+                    held.append({"event": "confirm_spent", "at": _iso(now), "token": digest})
+                    return True
+        return False
 
     def _apa_me(self, reader: Reader) -> set[str]:
         from operating.proactive_commitments import owner_ids
@@ -435,7 +537,7 @@ class AutopilotAreaMixin:
         elif path.exists():
             path.unlink()
         self._apa_switch_row(state, reader, switch="global_off", value=body.global_off)
-        return self.autopilot_area(reader).switches
+        return self._area_read(reader).switches
 
     def autopilot_workflow(self, reader: Reader, workflow: str,
                            body: m.AutopilotWorkflowSwitch) -> m.AutopilotArea:
@@ -457,7 +559,7 @@ class AutopilotAreaMixin:
                         if path.exists() else set()
                 except (OSError, ValueError, KeyError, TypeError):
                     off = set()     # unreadable: every workflow was off; rebuilt from here
-                    off |= {w.workflow for w in self.autopilot_area(reader).workflows}
+                    off |= {w.workflow for w in self._area_read(reader).workflows}
                 (off.discard if body.on else off.add)(workflow)
                 _write_json(path, {"workflows": sorted(off)})
             self._apa_switch_row(state, reader, switch="workflow_on", workflow=workflow,
@@ -488,7 +590,7 @@ class AutopilotAreaMixin:
                 _write_json(path, {"live": sorted(flags)})
             self._apa_switch_row(state, reader, switch="live", role=role, workflow=workflow,
                                  value=body.live)
-        return self.autopilot_area(reader)
+        return self._area_read(reader)
 
     # ------------------------------------------------------------ audit, undo
 
@@ -532,7 +634,8 @@ class AutopilotAreaMixin:
         """The owner undoes a live action once, through the write path's recorded inverse."""
         state = self._apa_owner_only(reader)
         try:
-            self._apa_executor(state).undo(key, datetime.now(timezone.utc))
+            self._apa_executor(state).undo(key, datetime.now(timezone.utc),
+                                           by=sorted(self._apa_me(reader))[0])
         except (ValueError, KeyError) as refused:
             raise UserFacing("action_refused", f"Not undone: {refused}"[:300], 409)
         return self.autopilot_audit(reader)
@@ -549,6 +652,40 @@ def _known_workflows() -> list[str]:
         return sorted(wf.names())
     except Exception:  # noqa: BLE001 - an unreadable catalogue only narrows the filter
         return []
+
+
+def draft_roles(draft: Mapping[str, Any], docs: Mapping[str, Mapping[str, Any]]
+                ) -> dict[str, frozenset[str]]:
+    """Person role -> its workflows in draft: an address names ``person:<address>``; a
+    person id names the person role whose members are exactly that id."""
+    out: dict[str, frozenset[str]] = {}
+    for who, flows in draft.items():
+        role = f"person:{who}"
+        if "@" not in who:
+            role = next((r for r, v in docs.items() if r.startswith("person:") and
+                         [str(x).lower() for x in v.get("members") or ()] == [who]), "")
+        if role:
+            out[role] = frozenset(out.get(role, frozenset()) | set(flows))
+    return out
+
+
+def _identities(reader: Reader) -> set[str]:
+    """The signed-in session's own identities (addresses and ids), lower case."""
+    session = getattr(reader, "session", None)
+    held = {str(v).lower() for v in getattr(session, "identities", ()) or ()}
+    employee = getattr(session, "employee", None)
+    if getattr(employee, "object_id", None):
+        held.add(str(employee.object_id).lower())
+    return held
+
+
+def _countdown(entry: Optional[Mapping[str, Any]], flow: str
+               ) -> Optional[m.AutopilotCountdown]:
+    try:
+        found = autopilot_fresh.countdown(entry, flow)
+    except Exception:  # noqa: BLE001 - unreadable rules: no countdown, never a guess
+        return None
+    return m.AutopilotCountdown(**found) if found else None
 
 
 def _principals(reader: Reader) -> str:

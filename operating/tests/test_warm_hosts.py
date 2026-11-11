@@ -152,6 +152,33 @@ class AskWorkerCountTests(unittest.TestCase):
         self.assertEqual(ask_worker_count(4, None), 4)    # unknown memory: as asked
         self.assertEqual(ask_worker_count(0, 40.0), 0)
 
+    def test_a_cgroup_limit_under_the_host_memory_caps_the_workers(self):
+        # 11-11: an eval API in an 8 GB scope counted the host's 37 GB, started four
+        # workers and was OOM-killed before its first answer
+        from operator_api.backend import ask_worker_count
+        from operator_api.serving import memory_available_gb
+        gb = 1024 ** 3
+        with tempfile.TemporaryDirectory() as tmp:
+            meminfo = Path(tmp, "meminfo")
+            meminfo.write_text(f"MemTotal: 64000000 kB\nMemAvailable: {37 * 1024 * 1024} kB\n")
+            slice_ = Path(tmp, "user.slice")
+            scope = slice_ / "eval.scope"
+            scope.mkdir(parents=True)
+            (slice_ / "memory.max").write_text(str(40 * gb))
+            (slice_ / "memory.current").write_text(str(22 * gb))
+            (scope / "memory.max").write_text(str(8 * gb))
+            (scope / "memory.current").write_text(str(1 * gb))
+            self.assertAlmostEqual(memory_available_gb(meminfo, scope), 7.0)
+            self.assertEqual(ask_worker_count(4, memory_available_gb(meminfo, scope)), 1)
+            # the slice's headroom binds when it is the smaller
+            (slice_ / "memory.current").write_text(str(38 * gb))
+            (scope / "memory.max").write_text("max")
+            self.assertAlmostEqual(memory_available_gb(meminfo, scope), 2.0)
+            # a limit that cannot be read is no limit; unreadable MemAvailable is unknown
+            (slice_ / "memory.current").write_text("garbage")
+            self.assertAlmostEqual(memory_available_gb(meminfo, scope), 37.0)
+            self.assertIsNone(memory_available_gb(Path(tmp, "none"), scope))
+
     def test_workers_memory_refused_at_start_up_start_once_it_holds_them(self):
         import threading
         import time

@@ -18,11 +18,12 @@ from unittest import mock
 from operator_api import backend as be
 from operator_api import errors
 from operator_api import models as m
+from operating import autopilot as ap
 
 
 def reader(*principals: str, mode: str = "dev"):
     return SimpleNamespace(key=",".join(sorted(principals)), mode=mode,
-                           display_name="Test Reader")
+                           display_name="Test Reader", session=SimpleNamespace())
 
 
 def page(late_total: int = 1) -> m.LateList:
@@ -221,10 +222,12 @@ class LastGoodPage(unittest.TestCase):
     def test_a_fresh_page_is_returned_without_waiting_to_be_kept(self):
         del self.backend._after                                # the real background keep
         self.reads.stuck = True
-        with mock.patch.object(be, "ACCESS_WAIT_SECONDS", 5):
+        # waiting for the stuck keep would take the whole access wait (30 s); the bound
+        # leaves room for a loaded machine without letting that wait through
+        with mock.patch.object(be, "ACCESS_WAIT_SECONDS", 30):
             started = time.monotonic()
             self.assertEqual(self.serve(reader("grp-a"), lambda: page(5)).total, 5)
-            self.assertLess(time.monotonic() - started, 1)
+            self.assertLess(time.monotonic() - started, 10)
 
 
 def slow(value, seconds=0.6, started=None):
@@ -256,7 +259,7 @@ class NeverServedCold(LastGoodPage.__base__):
 
     def wait_kept(self, who, total):
         key = (who.key, who.mode, ("late", 0, 25))
-        for _ in range(100):
+        for _ in range(400):
             held = self.backend._good.get(key)
             if held is not None and held[1].total == total and not self.backend._refreshing:
                 return
@@ -267,8 +270,8 @@ class NeverServedCold(LastGoodPage.__base__):
         who = reader("grp-a")
         self.serve(who, lambda: page(3))
         started = time.monotonic()
-        got = self.serve(who, slow(page(8)))
-        self.assertLess(time.monotonic() - started, 0.5)
+        got = self.serve(who, slow(page(8), seconds=4))
+        self.assertLess(time.monotonic() - started, 3)       # never the 4 s read
         self.assertEqual(got.total, 3)
         self.assertIsNotNone(got.stale_since)
         self.wait_kept(who, 8)
@@ -631,6 +634,313 @@ class SnapshotFirst(LastGoodPage.__base__):
                 self.assertFalse(skipped & set(calls))
 
 
+def work(*titles: str, cited: str = "graph-mail://box/msg-1@g-1") -> m.MyWork:
+    """My work with one item per title, each citing ``cited`` in its list and naming it in
+    its prepared work (a dict), as the autopilot queue keeps them."""
+    return m.MyWork(status="read", sent=0, writes=0, digest=m.MyWorkDigest(
+        **ap.digest([], datetime.now(timezone.utc))), items=[m.MyWorkItem(
+            item_id=f"i-{n}", autopilot="mail", label="Mail", title=t, mine=True,
+            happened={}, prepared={"reply_to": cited}, citations=[cited], due_at="2026-11-12T12:00:00Z",
+            created_at="2026-11-11T12:00:00Z") for n, t in enumerate(titles)])
+
+
+class OtherScreens(LastGoodPage.__base__):
+    """Owner 2026-11-11: My work, Autopilot, Meetings, Team and the QC pack served as the
+    main screens are. Each is current only while its own inputs (the autopilot queue and
+    write state, the grants, the follow-up store, the hour) are the same; a current copy
+    says when it was read (``read_at``: other people's decisions on it are as of then);
+    every handle it shows, in a list or a dict, still opens for the reader; the access
+    check runs on its own worker, never behind a long read."""
+
+    def setUp(self):
+        SnapshotFirst.setUp(self)
+        import tempfile
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.dir, True)
+        (self.dir / "autopilot").mkdir()
+        (self.dir / "autopilot" / "queue.sqlite").write_text("q1")
+        self.backend.autopilot_queue = self.dir / "autopilot" / "queue.sqlite"
+        self.backend.autopilot_write_state = self.dir / "autopilot-write"
+        self.backend.writes_environ = {}
+        self.backend.data_dir = self.dir
+        self.titles = ["first"]
+        self.calls = []
+
+        def read(backend, who):
+            if backend is self.backend:    # never an earlier test's read still running
+                self.calls.append(who.key)
+            return work(*self.titles)
+        patch = mock.patch.object(be.AutopilotMixin, "my_work", read)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def visit(self, who):
+        self.calls.clear()
+        got = self.backend.my_work(who)
+        return got, list(self.calls)
+
+    def test_my_work_is_served_from_its_snapshot_and_says_when_it_was_read(self):
+        who = reader("grp-a")
+        got, calls = self.visit(who)
+        self.assertEqual((got.read_at, got.stale_since, calls), (None, None, [who.key]))
+        self.titles = ["second"]
+        got, calls = self.visit(who)
+        self.assertEqual(([i.title for i in got.items], calls), (["first"], []))
+        self.assertRegex(got.read_at, r"^\d{4}-\d\d-\d\dT[\d:]+Z$")
+        self.assertIsNone(got.stale_since)
+
+    def test_another_persons_decision_in_the_queue_is_not_hidden_behind_the_snapshot(self):
+        """Someone else decided an item (the queue file moved, not this reader's write):
+        the kept page is served at once marked stale and read again."""
+        who = reader("grp-a")
+        self.visit(who)
+        self.titles = ["decided elsewhere"]
+        time.sleep(0.01)
+        (self.dir / "autopilot" / "queue.sqlite").write_text("q2 longer")
+        got, _ = self.visit(who)
+        self.assertEqual([i.title for i in got.items], ["first"])
+        self.assertIsNotNone(got.stale_since)
+        for _ in range(200):     # the read again off the request, kept when done
+            if not self.backend._refreshing and [i.title for i in self.visit(who)[0].items] \
+                    == ["decided elsewhere"] and not self.backend._refreshing:
+                break
+            time.sleep(0.05)
+        got, calls = self.visit(who)
+        self.assertEqual(([i.title for i in got.items], got.stale_since, calls),
+                         (["decided elsewhere"], None, []))
+        # the write state is an input too
+        touched = self.dir / "autopilot-write" / "decisions.jsonl"
+        touched.parent.mkdir(exist_ok=True)
+        touched.write_text(str(time.time()))
+        got, _ = self.visit(who)
+        self.assertIsNotNone(got.stale_since, touched.name)
+
+    def test_a_revoked_team_grant_serves_no_kept_row(self):
+        """The owner's workload grants decide whose people and items a manager sees: a
+        grant changed is an access change, so the copy kept under the old grants is
+        never served, not marked stale and not when the read is then refused busy."""
+        grants = self.dir / "workload-grants.json"
+        grants.write_text('{"teams": {"sales-person": "sales"}, "managers": {"grp-a": ["sales"]}}')
+        who = reader("grp-a")
+        for n in (1, 10):
+            with self.subTest(n=n):
+                self.backend._good.clear()
+                self.backend._refreshing.clear()
+                self.titles = ["sales-person"]
+                self.visit(who)
+                self.assertEqual(self.visit(who)[1], [])          # kept, served as kept
+                time.sleep(0.01)
+                grants.write_text('{"teams": {}, "managers": {}}' + " " * n)   # revoked
+                self.titles = ["mine only"]
+                got, calls = self.visit(who)
+                self.assertEqual(([i.title for i in got.items], got.stale_since, calls),
+                                 (["mine only"], None, [who.key]))
+                # revoked again while the read is refused busy: the refusal, never the copy
+                time.sleep(0.01)
+                grants.write_text('{"teams": {"sales-person": "sales"}, "managers": {}}')
+
+                def busy(backend, w):
+                    raise errors.BUSY
+                with mock.patch.object(be.AutopilotMixin, "my_work", busy):
+                    with self.assertRaises(errors.UserFacing):
+                        self.backend.my_work(who)
+        # a grants file that cannot be read: nothing kept is served
+        self.titles = ["fresh"]
+        self.visit(who)
+        with mock.patch.object(be, "files_stamp", side_effect=OSError("unreadable")), \
+                mock.patch.object(be.AutopilotMixin, "my_work", busy):
+            with self.assertRaises(errors.UserFacing):
+                self.backend.my_work(who)
+
+    def test_a_briefing_marked_seen_leaves_my_work_current_but_not_the_briefing(self):
+        who = reader("grp-a")
+        self.visit(who)
+        self.backend._serving(who, ("briefing", True), lambda: page(3))
+        self.backend.reader_wrote(who, frozenset({"briefing", "home"}))
+        self.assertEqual(self.visit(who)[1], [])            # My work: still its snapshot
+        calls: list = []
+        got = self.backend._serving(who, ("briefing", True),
+                                    lambda: calls.append(1) or page(4))
+        self.assertEqual((got.total, calls), (4, [1]))      # the briefing: read now
+        self.backend.reader_wrote(who)                      # any other write: every screen
+        self.assertEqual(self.visit(who)[1], [who.key])
+
+    def test_unreadable_screen_inputs_are_never_current(self):
+        who = reader("grp-a")
+        self.visit(who)
+        with mock.patch.object(be, "files_stamp", side_effect=OSError("unlistable")):
+            self.titles = ["now"]
+            got, calls = self.visit(who)
+        self.assertEqual(calls and [i.title for i in got.items], ["now"])
+        self.assertIsNone(got.read_at)
+        # a follow-up store that cannot be listed: the meetings list is read every visit
+        with self.assertRaises(OSError):
+            self.backend._screen_inputs(extra=lambda: "unreadable")()
+
+    def test_a_screen_directory_that_cannot_be_listed_stamps_nothing(self):
+        """A directory of a screen's inputs (the autopilot write state) with a part that
+        cannot be listed raises, so nothing under it is current; never an empty stamp."""
+        from operator_api.serving import files_stamp
+        state = self.dir / "autopilot-write"
+        (state / "held").mkdir(parents=True)
+        (state / "held" / "w1.json").write_text("{}")
+        before = files_stamp([state])
+        os.chmod(state / "held", 0)
+        self.addCleanup(os.chmod, state / "held", 0o700)
+        if os.access(state / "held", os.R_OK):
+            self.skipTest("a reader that ignores permissions (root)")
+        with self.assertRaises(OSError):
+            files_stamp([state])
+        os.chmod(state / "held", 0o700)
+        self.assertEqual(files_stamp([state]), before)
+
+    def test_a_handle_inside_an_items_lists_or_dicts_is_rechecked_on_every_visit(self):
+        who = reader("grp-a")
+        mailed = "graph-mail://box/msg-9@g-9"
+        self.titles = ["cited"]
+        with mock.patch.object(be.AutopilotMixin, "my_work",
+                               lambda backend, w: work("cited", cited=mailed)):
+            self.backend.my_work(who)
+        self.reads.denied.add(mailed)
+        got, calls = self.visit(who)
+        self.assertEqual(calls, [who.key])     # not served: read again for the reader
+        self.assertIn(mailed, [h for d in self.reads.decided for h in d])
+        # a dict-only handle (an action item's) is checked as well
+        from operator_api.page_parts import shown_handles
+        self.assertEqual(shown_handles(m.MyActionItems(items=[{"sources": [
+            {"handle": mailed}]}, {"note": "plain words"}])), {mailed})
+
+    def test_each_reader_gets_their_own_screen_at_any_count(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                readers = [reader(f"grp-{n}-{i}") for i in range(n)]
+                for who in readers:
+                    self.titles = [who.key]
+                    self.visit(who)
+                self.titles = ["changed"]
+                started = time.monotonic()
+                for who in readers:
+                    got, calls = self.visit(who)
+                    self.assertEqual(([i.title for i in got.items], calls), ([who.key], []))
+                self.assertLess(time.monotonic() - started, 0.02 * n + 0.5)
+
+    def test_the_warm_up_process_keeps_the_other_screens_for_a_first_visit(self):
+        """After a restart a reader's first My work opens at once from the copy the
+        warm-up process kept (marked stale, read again), never from another reader's."""
+        who, other = reader("grp-a"), reader("grp-b")
+        self.backend.yield_to_live, self.backend.warm_enabled = False, True
+        self.backend.warm_process = self.backend.warmer = None
+        self.backend._warmed, self.backend._pages_seen = {}, {}
+        qc = m.Brief(kind="qc_daily", title="QC today", as_of="2026-11-11", sections=[],
+                     basis="the reader's QC calls")
+        packs = []
+        with mock.patch.object(be, "SCREENS_AHEAD", ("my_work", ("qc_pack", "daily"))), \
+                mock.patch.object(be.BriefsMixin, "qc_pack",
+                                  lambda backend, w, kind: packs.append(kind) or qc):
+            self.assertTrue(self.backend.warm(who, force=True))
+            for _ in range(200):
+                if (who.key, who.mode, ("qc", "daily")) in self.backend._good:
+                    break
+                time.sleep(0.05)
+        self.assertIn((who.key, who.mode, ("my_work",)), self.backend._good)
+        self.assertIn((who.key, who.mode, ("qc", "daily")), self.backend._good)   # the QC pack
+        self.assertEqual(packs, ["daily"])
+        self.backend._snap_inputs().clear()      # the live process: found as kept, not current
+        self.titles = ["fresh"]
+        got, _ = self.visit(who)
+        self.assertEqual(([i.title for i in got.items], bool(got.stale_since)),
+                         (["first"], True))
+        for _ in range(200):     # the stale copy's read again, off the request, done
+            if not self.backend._refreshing:
+                break
+            time.sleep(0.05)
+        self.assertEqual(self.visit(other)[1], [other.key])   # nothing kept for another
+
+    def test_the_access_check_runs_on_its_own_worker_not_behind_a_long_read(self):
+        who = reader("grp-a")
+        self.visit(who)
+        own = Reads()
+        self.backend.access_worker = SimpleNamespace(submit=own.submit,
+                                                     stopped=threading.Event())
+        self.reads.stuck = True      # every read worker held by a long read
+        with mock.patch.object(be, "ACCESS_WAIT_SECONDS", 0.2):
+            started = time.monotonic()
+            got, calls = self.visit(who)
+        self.assertLess(time.monotonic() - started, 0.15)
+        self.assertEqual((got.items[0].title, calls), ("first", []))
+        # and it decides as the read worker would: a denied handle still refuses
+        own.denied.add("graph-mail://box/msg-1@g-1")
+        self.reads.stuck = False
+        self.assertEqual(self.visit(who)[1], [who.key])
+
+
+class InboxDigestOffTheRequest(unittest.TestCase):
+    """Every "seen" mark writes the gap inbox; its content digest reads all of it (2.7 s
+    live). A request's inputs stamp never waits for it: a state not read yet is
+    "pending" (equal to no digest) and is read once in the background; a seen mark still
+    leaves the digest as it was."""
+
+    def test_the_request_path_never_reads_the_inbox_and_a_seen_mark_changes_nothing(self):
+        import sqlite3
+        import tempfile
+        from operator_api import page_parts as pp
+        inbox = Path(tempfile.mkdtemp()) / "x.gap-inbox.sqlite"
+        self.addCleanup(__import__("shutil").rmtree, inbox.parent, True)
+        conn = sqlite3.connect(inbox)
+        conn.executescript("CREATE TABLE gaps (id, kind); CREATE TABLE visits (who, at);"
+                           "INSERT INTO gaps VALUES (1, 'po_late');")
+        conn.commit()
+        reads = []
+        real = pp._inbox_digest
+        gate = threading.Event()        # cleared: a digest read waits until set again
+        gate.set()
+
+        def slow(*args):
+            reads.append(1)
+            gate.wait(30)
+            time.sleep(0.3)
+            return real(*args)
+        with mock.patch.object(pp, "_inbox_digest", slow):
+            gate.clear()                # a request that waited for the digest takes 30 s
+            started = time.monotonic()
+            try:
+                first = pp.inbox_state(inbox, wait=False)
+                self.assertLess(time.monotonic() - started, 10)
+                self.assertEqual(first[0], "pending")
+                self.assertEqual(pp.inbox_state(inbox, wait=False)[0], "pending")  # one read
+            finally:
+                gate.set()
+            digest = pp.inbox_state(inbox)          # a page key waits for that one read
+            self.assertEqual((digest[0], len(reads)), ("content", 1))
+            self.assertEqual(pp.inbox_state(inbox, wait=False), digest)
+            conn.execute("INSERT INTO visits VALUES ('a', 1)")      # a "seen" mark
+            conn.commit()
+            self.assertEqual(pp.inbox_state(inbox, wait=False)[0], "pending")
+            self.assertEqual(pp.inbox_state(inbox), digest)        # the same findings
+            conn.execute("INSERT INTO gaps VALUES (2, 'po_late')")   # a new finding
+            conn.commit()
+            self.assertNotEqual(pp.inbox_state(inbox), digest)
+            # the backend's inputs stamp, as a request reads it, does not wait either
+            store = inbox.parent / "x"
+            store.write_bytes(b"")
+            conn.execute("INSERT INTO gaps VALUES (3, 'po_late')")
+            conn.commit()
+            backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
+            backend._lock, backend._inputs = threading.RLock(), None
+            backend.store_path, backend.pg_dsn = store, None
+            from operating import (ai_watcher, delta_overlay, ontology_host,  # noqa: F401
+                                   proactive_engine)
+            gate.clear()                # a stamp that waited for the digest takes 30 s
+            started = time.monotonic()
+            try:
+                stamp = backend.inputs_stamp()
+            finally:
+                gate.set()
+            self.assertLess(time.monotonic() - started, 10)
+            self.assertEqual(stamp[0][2][0], "pending")
+        conn.close()
+
+
 class ChangeRefreshSwitch(unittest.TestCase):
     def test_the_change_refresh_starts_only_when_switched_on(self):
         """Off by default (the live inputs move every few minutes): reading the inputs
@@ -638,7 +948,7 @@ class ChangeRefreshSwitch(unittest.TestCase):
         backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
         backend._lock = threading.RLock()
         backend.store_path = Path("/nonexistent/store.sqlite")
-        backend._served_state = lambda: ("store", 1)
+        backend._served_state = lambda wait=True: ("store", 1)
         backend._pg_load_stamp = lambda: None
         started: list = []
         backend._refresh_on_change = lambda: started.append(1)

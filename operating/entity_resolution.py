@@ -64,6 +64,17 @@ SYSTEMS = (("bc.", "Business Central"), ("portal.fm_", "FileMaker"), ("portal.sa
            ("teams", "Teams"), ("mc.", "Mission Control"))
 
 
+# A system's name as a question writes where records are held ("in Sage", "in MC"): the
+# words before it that make it that place (``mentions``), and the names, folded.
+SYSTEM_PLACE_WORDS = frozenset({"in", "into", "within", "outside", "besides", "beyond"})
+# Two words that make the system named next the place set apart ("apart from Sage", "other
+# than BC"): the records asked about are elsewhere, the system is still no record.
+SYSTEM_PLACE_PAIRS = frozenset({("apart", "from"), ("aside", "from"), ("other", "than")})
+SYSTEM_WORDS = frozenset({"sage", "bc", "business central", "filemaker", "portal",
+                          "the portal", "mission control", "mc", "teams", "microsoft teams",
+                          "sharepoint", "outlook", "planner"})
+
+
 def system_of(object_id: str) -> str:
     binding = object_id.split(":", 2)[1] if object_id.count(":") >= 2 else ""
     return next((name for prefix, name in SYSTEMS if binding.startswith(prefix)), "other")
@@ -137,6 +148,17 @@ def mentions(text: str) -> list[dict[str, Any]]:
         taken.append(lead.span)
     sentence_start = {0} | {m.end() for m in re.finditer(r"[.!?]\s+", text)}
     run: list[str] = []
+    before: tuple[str, str] = ("", "")
+    last: tuple[str, str] = ("", "")   # the two words before this one, "the" skipped
+
+    def close() -> None:
+        # "sales orders in Sage", "approvals in the Portal", "apart from Sage": the system
+        # the records are held in (or set apart), never a record named so (the vendor Sage
+        # Software, read first as the subject)
+        place = before[1] in SYSTEM_PLACE_WORDS or before in SYSTEM_PLACE_PAIRS
+        if not (place and _fold(" ".join(run)) in SYSTEM_WORDS):
+            add(" ".join(run), "name")
+
     for match in re.finditer(r"\S+", text):
         token = match.group(0).strip(",;:()\"'?!.")
         inside = any(a <= match.start() < b for a, b in taken)
@@ -146,12 +168,16 @@ def mentions(text: str) -> list[dict[str, Any]]:
                      and word not in _CALENDAR_WORDS and len(token) > 1
                      and (not re.search(r"\d", token) or len(token) <= 4))
         if name_like:
+            if not run:
+                before = last
             run.append(token)
         elif run:
-            add(" ".join(run), "name")
+            close()
             run = []
+        if word != "the":
+            last = (last[1], word)
     if run:
-        add(" ".join(run), "name")
+        close()
     return out
 
 

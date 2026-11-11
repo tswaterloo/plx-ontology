@@ -122,13 +122,20 @@ function Upload({ doc }: { doc: InstructDocument }) {
               {p}
             </p>
           ))}
-          {shown.status === "would_upload" ? (
-            <p className="text-[12px] leading-4">Approved. Recorded as a dry run.</p>
+          {shown.status === "prepared" &&
+            shown.problems.length === 0 &&
+            (shown.acknowledge ?? []).map((p, i) => (
+              <p key={`ack-${i}`} className="text-[12px] leading-4" data-testid="upload-acknowledge">
+                {p}
+              </p>
+            ))}
+          {shown.status !== "prepared" ? (
+            <p className="text-[12px] leading-4">{UPLOAD_DONE[shown.status]}</p>
           ) : (
             shown.problems.length === 0 &&
             (armed ? (
               <Button size="sm" disabled={busy} onClick={() => void run(() => approveUpload(doc.upload_id, shown.preview_hash))}>
-                Confirm upload
+                {shown.missing.length === 0 ? "Confirm: upload it now" : "Confirm upload"}
               </Button>
             ) : (
               <Button size="sm" variant="outline" onClick={() => setArmed(true)}>
@@ -146,6 +153,14 @@ function Upload({ doc }: { doc: InstructDocument }) {
     </li>
   );
 }
+
+// what an approved upload became (the server's state)
+const UPLOAD_DONE: Record<string, string> = {
+  would_upload: "Approved. Recorded as a dry run.",
+  uploaded: "Uploaded to SharePoint.",
+  failed: "Approved, but SharePoint refused the upload.",
+  unknown: "Approved, but SharePoint did not answer. Check the folder before trying again.",
+};
 
 export function InstructionPart({
   part,

@@ -1343,6 +1343,99 @@ def h_routine_update(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
             "links": [{"label": "Open the last one", "href": f"/object/{event['object_id']}"}]}
 
 
+
+# ----------------------------------------------------------------------------- R&D status
+
+def rd_due_events(st: Any, registry: Mapping[str, Any], as_of: date, people: Any
+                  ) -> list[dict[str, Any]]:
+    """``record.due`` events: an R&D or sample project (``operating.rd_projects``: one
+    customer or outside party, one kind, one item or conversation) whose latest thread, as
+    it stood at the start of ``as_of`` (no later message is read), is in one of the
+    autopilot's ``states`` (default: the customer wrote last and asked) and has been quiet
+    for ``idle_business_days`` business days or more. One event per project and latest
+    message (a project quiet for a week is one piece of work, not one a day); its owner is
+    the person of ours who wrote most in the project's threads (``owner_hint``), never a
+    role. A thread with a person of ours the exclusion does not clear is never read
+    (``rd_projects``: fail closed); the exclusion unavailable: none."""
+    from . import proactive_threads as pt
+    from . import rd_projects as rd
+    spec = next((a for a in registry["autopilots"] if a.get("on") == "record.due"
+                 and a.get("handler") == "rd_status_update" and a.get("enabled") is not False),
+                None)
+    if spec is None or people is None or getattr(people, "unavailable", None):
+        return []
+    params = spec.get("params") or {}
+    idle = int(params.get("idle_business_days", rd.IDLE_BUSINESS_DAYS))
+    states = set(params.get("states") or ("waiting_on_us",))
+    start = datetime(as_of.year, as_of.month, as_of.day, tzinfo=timezone.utc)
+    pop = rd.population(st, as_of, people)
+    counts: Counter = Counter()
+    lines = rd.project_lines(st, pop, as_of, people, counts, Counter(), before=start)
+    projects: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for line in lines:
+        projects[line["key"]].append(line)
+    out = []
+    for key, group in sorted(projects.items()):
+        group.sort(key=lambda r: (r["last_at"], r["last"]))
+        latest = group[-1]
+        waited = pt._business_days(latest["last_at"].date(), as_of)
+        owners = Counter(r["owner"] for r in group if r.get("owner"))
+        owner = max(owners, key=lambda k: (owners[k], k)) if owners else None
+        if latest["state"] not in states or waited < idle or not owner or \
+                not latest.get("contact"):
+            continue
+        t = latest["t"]
+        out.append({"event_id": ap._digest("record.due", "rd_status_update", key,
+                                           t.ident(latest["last"])),
+                    "event_type": "record.due", "object_id": latest["last"],
+                    "object_type": "Email", "at": ap._iso(start), "status": latest["state"],
+                    "owner_hint": owner, "conversation_id": latest["conversation"],
+                    "audience": pop["audience"].get(latest["last"]),
+                    "records": [latest["customer"]] if latest.get("customer") else [],
+                    "fields": {"project": key, "kind": latest["kind"],
+                               "state": latest["state"], "days": waited,
+                               "last_on": latest["last_at"].date().isoformat(),
+                               "first_on": min(r["first_at"] for r in group).date().isoformat(),
+                               "threads": len(group), "contact": latest["contact"],
+                               "subject": t.subject(latest["last"])[:200]}})
+    return out
+
+
+def h_rd_status_update(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
+    """A status update to the customer of an R&D or sample project that waits on us, as a
+    reply in its latest thread, worded from the project's kind, state and dates only (never
+    a message's text, a price, a quantity or a product name). Nothing is sent."""
+    from . import inbox_triage as it
+    from . import rd_projects as rd
+    f = event.get("fields") or {}
+    to = str(f.get("contact") or "")
+    word = rd.KIND_WORD.get(str(f.get("kind") or ""))
+    if "@" not in to or word is None:
+        return {"skip": "recipients_unknown"}
+    handle = _handle(ctx, event["object_id"])
+    if handle:
+        ctx.handles.append(handle)
+    ctx.objects.add(event["object_id"])
+    last_on = str(f.get("last_on") or "")
+    by = it._next_business_day(ctx.as_of).isoformat()
+    facts = {"last_on": last_on, "reply_by": by, "days": f.get("days")}
+    msg = draft(to, str(f.get("subject") or f"Your {word}"),
+                [f"A quick update on your {word}: we are working on it and will come back to "
+                 f"you by {say(by, ctx.as_of)}."], facts,
+                in_reply_to=event["object_id"], today=ctx.as_of)
+    if msg is None:
+        return {"skip": "draft_failed_copy_gate"}
+    return {"summary": f"Your customer's {word} has waited on us for {f.get('days')} "
+                       f"business day(s) (last message on {last_on}); a status update is "
+                       f"drafted as a reply in that thread.",
+            "object": {"object_id": event["object_id"], "project": f.get("project"),
+                       "kind": f.get("kind"), "state": f.get("state")},
+            "draft": msg,
+            "gaps": ["what is done and what is next: add it before you send"],
+            "links": [{"label": "Open the R&D board", "href": "/rd-projects"},
+                      {"label": "Open the last message", "href": f"/object/{event['object_id']}"}]}
+
+
 _ISO_DAY = re.compile(r"\b20\d{2}-\d{2}-\d{2}\b")
 
 

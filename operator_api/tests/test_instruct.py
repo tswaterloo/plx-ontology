@@ -112,6 +112,12 @@ class World(MockBackend):
         return m.SuggestResponse(query=q, suggestions=hits, took_ms=0, source="fixture")
 
 
+def acl(roles, who, *, inherited, status="read"):
+    """A recorded SharePoint permission list (``graph_read.permission_acl``): one grant."""
+    return {"status": status, "identities": [who],
+            "grants": [{"roles": list(roles), "identities": [who], "inherited": inherited}]}
+
+
 def meeting(mid, title, day, attendees, decision):
     return {"schema": mf.SCHEMA, "series": mid, "created_at": "2026-11-10T00:00:00Z",
             "summary": "", "meeting": {
@@ -240,6 +246,10 @@ class InstructApi(unittest.TestCase):
         b.writes_environ = {"PLX_EXCLUDED_PEOPLE_OIDS": EXCLUDED}
         b.actions_environ = {"PLX_EXCLUDED_PEOPLE_OIDS": EXCLUDED}
         b.write_grants = wi.WriteGrants({ANA[0]: ["bc:purchaseOrderLines"]})
+        # the SharePoint grants recorded for the quote (and its folder, by item id): Ana
+        # may add files to the folder the quote inherits its permissions from
+        self.acls = {("drive-purch", "item-quote"): acl(("write",), ANA[0], inherited=True)}
+        b.folder_acls = lambda drive, item: self.acls.get((drive, item))
         b.write_current = lambda env, company, entity_set, rid: {
             "etag": 'W/"l1"', "fields": {"id": rid, "expectedReceiptDate": "2026-11-04",
                                          "quantity": 12000}}
@@ -359,6 +369,186 @@ class InstructApi(unittest.TestCase):
         self.assertEqual(again["problems"], ["You can no longer open the folder this goes to."])
         self.assertEqual(self.ana.post(up + "/approve", json={
             "confirm": True, "preview_hash": again["preview_hash"]}).status_code, 409)
+
+    def test_an_approved_upload_is_made_through_the_write_path_only_once_opened(self):
+        """A drafted document's approved upload runs through the gated write path as the
+        reader's approval: recorded, not made, until the owner opens SharePoint to approved
+        writes (the preview says what it lacks); then made once, never a replace."""
+        from operating import autopilot_write as aw
+        from operating import autopilot_write_adapters as wa
+        from operating.tests.test_autopilot_write import Transport
+
+        class Midway(Transport):            # runs ``during`` while a request is being made
+            during = None
+
+            def __call__(self, request, key):
+                if self.during is not None:
+                    self.during()
+                return super().__call__(request, key)
+        fake = Midway()
+        b = self.backend
+
+        class Directory(Guard):             # the directory knows Ana by her object id too
+            def decides(self, value):
+                return super().decides(value) or str(value).lower() == ANA[1]
+        b.autopilot_guard = Directory()
+        b.autopilot_adapters = {"sharepoint_write": wa.SharePointAdapter(fake, environ={})}
+        source = World.source
+
+        def with_parent(me, reader, handle, offset):
+            view = source(me, reader, handle, offset)
+            if handle == FILE_H:
+                view.fields = {**view.fields, "row.parent_id": "01FOLDER"}
+            return view
+        World.source = with_parent
+        self.addCleanup(setattr, World, "source", source)
+        b.instruct_call = Model("[[DOCUMENT docx]]\nName: Ship date note\nFolder: F1\n"
+                                "PO 90412 moves to 20 November.\n[[END]]")
+        got = self.instruct(self.ana, "file a note on the new ship date",
+                            {"kind": "record", "object_type": "PurchaseOrder",
+                             "object_id": "PurchaseOrder:90412"}).json()
+        up = f"/api/instruct/uploads/{got['documents'][0]['upload_id']}"
+        closed = self.ana.get(up).json()
+        self.assertTrue(any("not opened to approved writes" in x for x in closed["missing"]),
+                        closed["missing"])
+        # SharePoint opened by the owner: the preview says approving uploads it now; a
+        # preview seen while it was closed is no confirm of a live upload
+        b.writes_environ = {**b.writes_environ, aw.APPROVED_ENV: "sharepoint_write"}
+        self.assertEqual(self.ana.post(up + "/approve", json={
+            "confirm": True, "preview_hash": closed["preview_hash"]}).status_code, 409)
+        shown = self.ana.get(up).json()
+        self.assertEqual((shown["missing"], shown["status"]), ([], "prepared"))
+        self.assertEqual(fake.calls, [])
+        # the confirm accepts the not-routine reason the preview showed, in words
+        self.assertEqual(len(shown["acknowledge"]), 1, shown)
+        self.assertIn("not a routine write", shown["acknowledge"][0])
+        fake.answers = [(201, {"id": "01NEWFILE", "eTag": "\"{A1},1\""})]
+        # a double click: the second confirm arrives while the first one's upload is
+        # being made; it runs nothing and reads as not known yet, never as a dry run
+        second = []
+        fake.during = lambda: second.append(self.ana.post(up + "/approve", json={
+            "confirm": True, "preview_hash": shown["preview_hash"]}).json())
+        done = self.ana.post(up + "/approve", json={
+            "confirm": True, "preview_hash": shown["preview_hash"]})
+        self.assertEqual((done.status_code, done.json()["status"]), (200, "uploaded"), done.text)
+        fake.during = None
+        self.assertEqual([x["status"] for x in second], ["unknown"])
+        # made: the page says so and nothing else (no "recorded, not made" beside it)
+        self.assertEqual(done.json()["missing"], [])
+        self.assertEqual(self.ana.get(up).json()["missing"], [])
+        sent = fake.calls[0][0]
+        self.assertEqual(sent["method"], "PUT")
+        self.assertIn("/drives/drive-purch/items/01FOLDER:/Ship%20date%20note.docx:/content"
+                      "?@microsoft.graph.conflictBehavior=fail", sent["url"])
+        # approved once, made once; Ben cannot see or approve it
+        self.assertEqual(self.ana.post(up + "/approve", json={
+            "confirm": True, "preview_hash": shown["preview_hash"]}).json()["status"],
+            "uploaded")
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(self.ben.post(up + "/approve", json={
+            "confirm": True, "preview_hash": shown["preview_hash"]}).status_code, 404)
+
+    def live_upload(self, text="PO 90412 moves to 20 November.",
+                    ask="file a note on the new ship date"):
+        """SharePoint opened to approved writes, a fake SharePoint, and Ana's drafted note
+        for the quote's folder (its id known): (the upload's path, the fake)."""
+        from operating import autopilot_write as aw
+        from operating import autopilot_write_adapters as wa
+        from operating.tests.test_autopilot_write import Transport
+        fake, b = Transport(), self.backend
+
+        class Directory(Guard):             # knows Ana's object id; excludes Lee
+            def decides(self, value):
+                return super().decides(value) or str(value).lower() == ANA[1]
+
+            def is_excluded(self, value):
+                return super().is_excluded(value) or str(value).lower() == "lee@plx.example"
+        b.autopilot_guard = Directory()
+        b.autopilot_adapters = {"sharepoint_write": wa.SharePointAdapter(fake, environ={})}
+        b.writes_environ = {**b.writes_environ, aw.APPROVED_ENV: "sharepoint_write"}
+        source = World.source
+
+        def with_parent(me, reader, handle, offset):
+            view = source(me, reader, handle, offset)
+            if handle == FILE_H:
+                view.fields = {**view.fields, "row.parent_id": "01FOLDER"}
+            return view
+        World.source = with_parent
+        self.addCleanup(setattr, World, "source", source)
+        b.instruct_call = Model(f"[[DOCUMENT docx]]\nName: Ship date note\nFolder: F1\n"
+                                f"{text}\n[[END]]")
+        got = self.instruct(self.ana, ask,
+                            {"kind": "record", "object_type": "PurchaseOrder",
+                             "object_id": "PurchaseOrder:90412"}).json()
+        return f"/api/instruct/uploads/{got['documents'][0]['upload_id']}", fake
+
+    def test_an_upload_needs_the_readers_own_write_access_to_the_folder(self):
+        """Reading a file in a folder is not leave to add one: the reader's own write or
+        owner grant on the folder is required at preview and again at confirm, and an
+        access not known is refused (the app's write grant never stands in)."""
+        from operating import instruct_files as files
+        up, fake = self.live_upload()
+
+        def approve(shown):
+            return self.ana.post(up + "/approve", json={
+                "confirm": True, "preview_hash": shown["preview_hash"]})
+        read_only = acl(("read",), ANA[0], inherited=True)
+        cases = {
+            "read-only, inherited from the folder": ({("drive-purch", "item-quote"): read_only},
+                                                     files.NO_WRITE),
+            # the folder's own grants decide over what the file inherits
+            "read-only on the folder itself": ({**self.acls, ("drive-purch", "01FOLDER"):
+                                                acl(("read",), ANA[0], inherited=False)},
+                                               files.NO_WRITE),
+            "write held by someone else": ({("drive-purch", "item-quote"):
+                                            acl(("write",), BEN[0], inherited=True)},
+                                           files.NO_WRITE),
+            "list read in part": ({("drive-purch", "item-quote"):
+                                   acl(("write",), ANA[0], inherited=True, status="partial")},
+                                  files.WRITE_UNKNOWN),
+            "the file's own grants only": ({("drive-purch", "item-quote"):
+                                            acl(("write",), ANA[0], inherited=False)},
+                                           files.WRITE_UNKNOWN),
+            "grant without roles": ({("drive-purch", "item-quote"): {
+                "status": "read", "grants": [{"identities": [ANA[0]], "inherited": True}]}},
+                files.WRITE_UNKNOWN),
+            "nothing recorded": ({}, files.WRITE_UNKNOWN),
+        }
+        writable = dict(self.acls)
+        for name, (acls, words) in cases.items():
+            with self.subTest(name):
+                self.acls.clear()
+                self.acls.update(acls)
+                shown = self.ana.get(up).json()
+                self.assertEqual((shown["status"], shown["problems"]), ("prepared", [words]))
+                self.assertEqual(approve(shown).status_code, 409)
+        # no grant source on the server at all: not known, refused
+        self.backend.folder_acls = None
+        self.assertEqual(self.ana.get(up).json()["problems"], [files.WRITE_UNKNOWN])
+        self.backend.folder_acls = lambda drive, item: self.acls.get((drive, item))
+        # at confirm: write access lost after the preview showed it, so a confirm of the
+        # preview it saw is refused and nothing is made
+        self.acls.clear()
+        self.acls.update(writable)
+        shown = self.ana.get(up).json()
+        self.assertEqual(shown["problems"], [])
+        self.acls[("drive-purch", "item-quote")] = read_only
+        self.assertEqual(approve(shown).status_code, 409)
+        self.assertEqual((self.ana.get(up).json()["status"], fake.calls), ("prepared", []))
+
+    def test_an_upload_naming_an_excluded_person_is_not_made(self):
+        """The document's text travels as file bytes: the addresses it names are cleared by
+        the people exclusion before an upload, as any write's people are."""
+        # (an address the materials or the person state stays in the document)
+        up, fake = self.live_upload("Lee (lee@plx.example) moves PO 90412 to 20 November.",
+                                    "file a note that lee@plx.example moves the ship date")
+        shown = self.ana.get(up).json()
+        self.assertEqual(shown["problems"], [])
+        done = self.ana.post(up + "/approve", json={
+            "confirm": True, "preview_hash": shown["preview_hash"]}).json()
+        self.assertEqual(fake.calls, [])
+        self.assertNotEqual(done["status"], "uploaded")
+        self.assertIn("person_excluded", done["missing"])
 
     def test_one_clarifying_question_then_the_draft_from_the_answer(self):
         model = self.backend.instruct_call = Model(

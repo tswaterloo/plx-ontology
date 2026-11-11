@@ -46,6 +46,14 @@ def system_words(object_id: str) -> str:
                 "another system")
 
 
+# Words that may stand between a number and the system it is in, saying only how the
+# record stands there ("PO100148 placed with ... in Business Central": dev 11-10 asked
+# which of two records though the question named the system); never a noun naming
+# another record ("PO100148's receipts in BC" stays unqualified).
+_RECORD_VERBS = (r"(?:(?:is|was|placed|placed\s+with|listed|recorded|entered|created|"
+                 r"shown|showing|set\s+up|sitting|standing)\s+)?")
+
+
 def named_system(question: str, mention: Any) -> Optional[str]:
     """The system the question names for ``mention`` (``SYSTEM_WORDS``' words): its name
     just before the number ("Business Central PO PO100064", at most ``SYSTEM_GAP_WORDS``
@@ -64,7 +72,7 @@ def named_system(question: str, mention: Any) -> Optional[str]:
         name = rf"(?<![\w])(?:{pattern})(?![\w])"
         gap = rf"{name}(?:\s+[^\s]+){{0,{SYSTEM_GAP_WORDS}}}\s*$"
         if re.search(gap, " ".join(before) + " ") or re.match(
-                rf"\s*(?:in|from|on)\s+{name}", after):
+                rf"\s*{_RECORD_VERBS}(?:in|from|on)\s+{name}", after):
             return words
     return None
 

@@ -2555,6 +2555,100 @@ class ComputedClaimAgreementTests(unittest.TestCase):
             "calculation_zero_denominator")
 
 
+    def test_the_gate_and_the_scorer_agree_on_the_days_between_two_dates(self):
+        """``days``: x0 - x1 in whole calendar days over two cited date cells, the same
+        verdict in the gate and the scorer; a non-date cell recomputes nothing."""
+        from operating import claim_checks
+        receipt = fx.handle("public.app_receipt", {"id": "r-1"}, 1)
+        order = fx.handle("public.app_purchase_order", {"id": "po-1"}, 1)
+        rows = {receipt: {"relation": "public.app_receipt", "key": {"id": "r-1"},
+                          "row": {"id": "r-1", "received_date": "2019-12-09T10:00:00Z"}},
+                order: {"relation": "public.app_purchase_order", "key": {"id": "po-1"},
+                        "row": {"id": "po-1", "expected_date": "2019-12-06",
+                                "amount": "12.5"}}}
+        evidence = {h: {"ok": True, **view} for h, view in rows.items()}
+        cells = [(receipt, "row.received_date"), (order, "row.expected_date")]
+        for cited, value, want in ((cells, "3", True), (cells, "2", False),
+                                   (cells[::-1], "-3", True), (cells[::-1], "3", False),
+                                   ([cells[0], (order, "row.amount")], "3", False)):
+            with self.subTest(cited=cited, value=value):
+                claim = {"value": value, "op": "days",
+                         "of": [{"citation": h, "field": f} for h, f in cited]}
+                handles = sorted({h for h, _f in cited})
+                gated = claim_checks.check_items(
+                    [{"id": "F1", "texts": [], "citations": [
+                        {"handle": h, "status": "resolved"} for h in handles],
+                      "value_claims": claim_checks.parse_value_claims([claim], handles, [])}],
+                    rows=rows.get)
+                calc = {"op": "days", "inputs": [{"l1_handle": h, "field_path": f}
+                                                 for h, f in cited]}
+                self.assertIsNone(sc.calculation_problem(calc))
+                result = sc.recompute(calc, evidence, {"name": "v", "value": value})
+                scored = result["code"] is None and Decimal(value) == result["value"]
+                self.assertEqual((gated["passed"], scored), (want, want), gated["failures"])
+        self.assertEqual(sc.calculation_problem({"op": "days", "inputs": [
+            {"l1_handle": receipt, "field_path": "row.received_date"}]}), "inputs")
+        # the session renders a passed days claim as an answer value and back unchanged
+        from operating import agent_session
+        claim = {"value": "3", "op": "days", "unit": "day",
+                 "of": [{"citation": h, "field": f} for h, f in cells]}
+        value = agent_session._answer_value("days_late", claim)
+        self.assertEqual(value["calculation"], {"op": "days", "inputs": [
+            {"l1_handle": h, "field_path": f} for h, f in cells]})
+        self.assertEqual(agent_session._value_claim(value, "3"), claim)
+
+    def test_the_gate_and_the_scorer_agree_on_the_days_from_a_question_day(self):
+        """``days`` over one cited date with ``day``: x0 - day, ``day`` a day the question
+        writes in full; the gate (``reference_days``) and the scorer (``gate(question=)``)
+        reach one verdict; a day the question does not write recomputes nothing; the
+        contract takes ``day`` only with one input; the session round trip keeps it."""
+        from operating import claim_checks, agent_session
+        from datetime import datetime, timezone
+        from operating.time_window import reference_days
+        lot = fx.handle("public.app_lot", {"id": "l-1"}, 1)
+        rows = {lot: {"relation": "public.app_lot", "key": {"id": "l-1"},
+                      "row": {"id": "l-1", "expiry_date": "2024-09-08"}}}
+        evidence = {h: {"ok": True, **view} for h, view in rows.items()}
+        question = "can we still use lot 505-E-5 - expiry and days remaining (as of " \
+                   "november 10, 2026)??"
+        cite = [{"l1_handle": lot, "field_path": "row.expiry_date"}]
+        for day, value, want in (("2026-11-10", "-793", True), ("2026-11-10", "-792", False),
+                                 ("2026-11-09", "-792", False)):
+            with self.subTest(day=day, value=value):
+                claim = {"value": value, "op": "days", "day": day,
+                         "of": [{"citation": lot, "field": "row.expiry_date"}]}
+                gated = claim_checks.check_items(
+                    [{"id": "F1", "texts": [], "citations": [
+                        {"handle": lot, "status": "resolved"}],
+                      "value_claims": claim_checks.parse_value_claims([claim], [lot], [])}],
+                    rows=rows.get, returned={"reference_days": reference_days(
+                        question, datetime(2026, 11, 11, 15, tzinfo=timezone.utc))})
+                calc = {"op": "days", "inputs": cite, "day": day}
+                self.assertIsNone(sc.calculation_problem(calc))
+                answer = {"format": sc.ANSWER_FORMAT, "answerability": "answerable",
+                          "values": [{"name": "days_left", "value": value,
+                                      "calculation": calc}]}
+                scored = sc.gate(answer, evidence, question=question)
+                result = scored["values"][0]["calculation"]
+                self.assertEqual((gated["passed"], result["code"] is None
+                                  and result["value"] == Decimal(value)), (want, want),
+                                 gated["failures"])
+        for calc, problem in (({"op": "days", "inputs": cite * 2, "day": "2026-11-10"},
+                               "inputs"),
+                              ({"op": "difference", "inputs": cite * 2, "day": "2026-11-10"},
+                               "op"),
+                              ({"op": "days", "inputs": cite, "day": "Nov 10"}, "day"),
+                              ({"op": "days", "inputs": cite}, "inputs")):
+            with self.subTest(calc=calc):
+                self.assertEqual(sc.calculation_problem(calc), problem)
+        claim = {"value": "-793", "op": "days", "day": "2026-11-10",
+                 "of": [{"citation": lot, "field": "row.expiry_date"}]}
+        value = agent_session._answer_value("days_left", claim)
+        self.assertEqual(value["calculation"], {"op": "days", "inputs": cite,
+                                                "day": "2026-11-10"})
+        self.assertEqual(agent_session._value_claim(value, "-793"), claim)
+
+
 CONTRACTS = json.loads((Path(__file__).resolve().parents[2] / "operating"
                         / "ontology_tool_contracts.json").read_text("utf-8"))
 

@@ -22,7 +22,8 @@
   needed", ``NO_REPLY``), not a pleasantry or an offer ("let me know if you have any
   questions", "how are you?", ``NOT_ASK``), not a question about something said already
   ("did you know?"); automated mail (an automated sender, a notice's footer, an automatic
-  reply: ``proactive_threads.automated``) and forwards are skipped and counted.
+  reply, a machine's report, a system feed: ``automated_mail``) and forwards are skipped
+  and counted.
 
   A first note (or its own follow-ups) from no known customer or supplier about no record is
   outreach, owed no reply (``unsolicited``), unless it puts a direct question to the reader
@@ -180,37 +181,70 @@ def bulk(sender: str, text: str, subject: str = "") -> bool:
         or bool(NOTICE.search(text or ""))
 
 
-def feed_senders(messages: Iterable[Any], own: Iterable[str]) -> set[str]:
+def feed_senders(messages: Iterable[Any], own: Iterable[str], *, least: int = FEED_MIN,
+                 share: float = FEED_SHARE) -> set[str]:
     """Senders whose mail is a system feed whatever its wording: many messages in the window,
     two subject templates holding nearly all of them, never a reply, and nobody here ever
     wrote to the address. Found from the mail itself (not from a name or a domain), so a
     new feed is caught the week it starts; a person writing a lot, replying or answered
-    by us is never one."""
-    own = set(own)
+    by us is never one. ``least`` messages at the fewest; ``share`` of them in two subject
+    templates and with one body sentence."""
+    own = {str(a).lower() for a in own}
     written_to: set[str] = set()
     by_sender: dict[str, list[str]] = defaultdict(list)
     body_shapes: dict[str, Counter] = defaultdict(Counter)
     for m in messages:
         if getattr(m, "channel", "mail") != "mail":
             continue
-        if m.sender in own:
-            written_to.update(m.to)
+        sender = (m.sender or "").lower()
+        if sender in own:
+            written_to.update(str(a).lower() for a in m.to)
         else:
-            by_sender[m.sender].append(m.subject or "")
-            body_shapes[m.sender].update(shapes(m.text))
+            by_sender[sender].append(m.subject or "")
+            body_shapes[sender].update(shapes(m.text))
     feeds = set()
     for sender, subjects in by_sender.items():
-        if len(subjects) < FEED_MIN or sender in written_to or not sender:
+        if len(subjects) < least or sender in written_to or not sender:
             continue
         if any(_REPLY.match(x) for x in subjects):
             continue
         templates = Counter(re.sub(r"\d[\w-]*|#\S+", "N", x.casefold()).strip() for x in subjects)
         # and one sentence of the body in nearly every message (a template, not a person's words)
         boiler = body_shapes[sender].most_common(1)
-        if sum(n for _t, n in templates.most_common(2)) >= FEED_SHARE * len(subjects) \
-                and boiler and boiler[0][1] >= FEED_SHARE * len(subjects):
+        if sum(n for _t, n in templates.most_common(2)) >= share * len(subjects) \
+                and boiler and boiler[0][1] >= share * len(subjects):
             feeds.add(sender)
     return feeds
+
+
+@dataclass(frozen=True)
+class Seen:
+    """A mail message as the automated-mail test reads it (``automated_mail``)."""
+    sender: str
+    to: Sequence[str]
+    subject: str
+    text: str
+    channel: str = "mail"
+
+
+def automated_mail(messages: Iterable[Any] = (), own: Iterable[str] = (), *,
+                   least: int = FEED_MIN, share: float = FEED_SHARE
+                   ) -> Callable[[str, str, str], bool]:
+    """The one test for machine mail that triage and the autopilot share: a message is
+    automated when its own form says so (``bulk``: an automated sender, a notice's footer,
+    an automatic reply, a machine's JSON report, a sending service's domain, a mailing's
+    padding or notice) or when its sender is a feed
+    in ``messages`` (``feed_senders``: many templated messages, never a reply, never written
+    to by ``own``). ``messages``: the mail the caller reads together (``.sender``, ``.to``,
+    ``.subject``, ``.text``), its own people's sent mail included: a window of days (triage's
+    14). No window (the autopilot's cycle: a few minutes' records live, a day's in a replay;
+    a sender would be a feed in one and not the other): the form rules alone."""
+    feeds = frozenset(feed_senders(messages, own, least=least, share=share))
+
+    def machine(sender: str, text: str, subject: str = "") -> bool:
+        return (sender or "").lower() in feeds or bulk(sender, text, subject)
+    machine.feeds = feeds   # type: ignore[attr-defined]
+    return machine
 
 
 def shapes(text: Any) -> set[str]:
@@ -497,7 +531,7 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
     for address, oid in directory.items():
         addresses_of[str(oid).lower()].add(str(address).lower())
     messages = _messages(pop, people, domains, skipped)
-    feeds = feed_senders(messages, {a for found in addresses_of.values() for a in found})
+    machine = automated_mail(messages, {a for found in addresses_of.values() for a in found})
     by_thread: dict[tuple[str, str], list[_Msg]] = defaultdict(list)
     for m in messages:
         if m.conversation:
@@ -528,7 +562,7 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
             if len(m.to) > MAX_TO:
                 counts["mailing"] += 1
                 continue
-            if bulk(m.sender, m.text, m.subject) or m.sender in feeds:
+            if machine(m.sender, m.text, m.subject):
                 counts["automated"] += 1
                 continue
             if _FORWARD.match(m.subject):

@@ -1461,10 +1461,34 @@
             "title": "Groups",
             "type": "array"
           },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
           "sent": {
             "const": 0,
             "title": "Sent",
             "type": "integer"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           },
           "total": {
             "title": "Total",
@@ -1965,12 +1989,36 @@
             "title": "People",
             "type": "array"
           },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
           "roles": {
             "items": {
               "type": "string"
             },
             "title": "Roles",
             "type": "array"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           },
           "switches": {
             "$ref": "#/components/schemas/AutopilotSwitches"
@@ -2243,6 +2291,71 @@
         "title": "AutopilotCatalog",
         "type": "object"
       },
+      "AutopilotCountdown": {
+        "additionalProperties": false,
+        "description": "The workflow's way to its write gate (``operating.autopilot_fresh``): items judged\non fresh days against the ``need_judged`` the gate asks for, and the precision so far\nagainst ``need_percent``. Recomputed from the counts at every read.",
+        "properties": {
+          "data_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data End"
+          },
+          "judged": {
+            "title": "Judged",
+            "type": "integer"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "integer"
+          },
+          "need_judged": {
+            "title": "Need Judged",
+            "type": "integer"
+          },
+          "need_percent": {
+            "title": "Need Percent",
+            "type": "number"
+          },
+          "passes": {
+            "title": "Passes",
+            "type": "boolean"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "matched / judged, one decimal; absent when nothing was judged.",
+            "title": "Percent"
+          },
+          "window": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Window",
+            "type": "array"
+          }
+        },
+        "required": [
+          "judged",
+          "matched",
+          "need_judged",
+          "need_percent",
+          "passes"
+        ],
+        "title": "AutopilotCountdown",
+        "type": "object"
+      },
       "AutopilotDecision": {
         "additionalProperties": false,
         "properties": {
@@ -2335,6 +2448,31 @@
       "AutopilotDecisionRequest": {
         "additionalProperties": false,
         "properties": {
+          "bulk": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Part of a bulk decision: a live item is refused (409), never performed or offered a confirm.",
+            "title": "Bulk"
+          },
+          "confirm_token": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "accept of a live item: the token the first accept answered (the person confirmed it goes live).",
+            "title": "Confirm Token"
+          },
           "decision": {
             "enum": [
               "accept",
@@ -2487,6 +2625,18 @@
             "title": "Citations",
             "type": "array"
           },
+          "confirm_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set only in the answer to an accept of a live item without a confirm: send it back with the same accept (within 10 minutes) to perform the item.",
+            "title": "Confirm Token"
+          },
           "created_at": {
             "title": "Created At",
             "type": "string"
@@ -2517,6 +2667,26 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "live": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An accept performs this item live now (the owner opened its kind to approved writes, or its workflow passed its gate and is switched live): it is accepted alone, after a confirm, never in a bulk accept.",
+            "title": "Live"
+          },
+          "live_kinds": {
+            "description": "The write kinds an accept would perform live.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Live Kinds",
+            "type": "array"
           },
           "mine": {
             "title": "Mine",
@@ -2870,6 +3040,64 @@
         "title": "AutopilotScore",
         "type": "object"
       },
+      "AutopilotScoreDay": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "day": {
+            "description": "The day (US Eastern), ISO date.",
+            "title": "Day",
+            "type": "string"
+          },
+          "edited": {
+            "title": "Edited",
+            "type": "integer"
+          },
+          "prepared": {
+            "description": "Items prepared for you, counted the day you first saw them.",
+            "title": "Prepared",
+            "type": "integer"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "prepared",
+          "accepted",
+          "edited",
+          "rejected"
+        ],
+        "title": "AutopilotScoreDay",
+        "type": "object"
+      },
+      "AutopilotScorecard": {
+        "additionalProperties": false,
+        "description": "Your daily autopilot scorecard from your work log, newest day first. ``available``\nFalse (nothing shown) while the people exclusion is not loaded.",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotScoreDay"
+            },
+            "title": "Days",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "AutopilotScorecard",
+        "type": "object"
+      },
       "AutopilotStep": {
         "additionalProperties": false,
         "description": "A workflow's trigger, one condition or one action: its registry key and its words.",
@@ -3182,6 +3410,17 @@
         "additionalProperties": false,
         "description": "One workflow of one role (a ``person:`` role is one person's whole day): its replay\nscores, its write state and the owner's switches.",
         "properties": {
+          "countdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotCountdown"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Judged fresh items toward the write gate; absent until the scorer published a result for this role."
+          },
           "dev": {
             "anyOf": [
               {
@@ -3192,6 +3431,18 @@
               }
             ],
             "description": "Replay on tuning days."
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Draft mode: prepared for this person before the gate passed (operating/autopilot_draft.json). Each item waits for their accept; sends and writes keep their own gates.",
+            "title": "Draft"
           },
           "fresh": {
             "anyOf": [
@@ -3384,12 +3635,36 @@
             "title": "Possible Parties",
             "type": "array"
           },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
           "sections": {
             "items": {
               "$ref": "#/components/schemas/BriefSection"
             },
             "title": "Sections",
             "type": "array"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           },
           "stored_at": {
             "anyOf": [
@@ -9402,6 +9677,11 @@
             "title": "Auth",
             "type": "string"
           },
+          "can_view_as": {
+            "description": "The owner-open reader on a server that can view as someone (/api/view-as/people).",
+            "title": "Can View As",
+            "type": "boolean"
+          },
           "data_label": {
             "description": "Evidence label of the data served, e.g. 'source-mirror captures' or 'FIXTURE'.",
             "title": "Data Label",
@@ -9440,6 +9720,11 @@
           "feedback_admin": {
             "description": "The owner or a feedback admin: triages every reader's feedback.",
             "title": "Feedback Admin",
+            "type": "boolean"
+          },
+          "ops_reader": {
+            "description": "The owner or a named Team reader (PLX_TEAM_VIEW_READERS): sees the reliability alarms and /ops.",
+            "title": "Ops Reader",
             "type": "boolean"
           },
           "principal": {
@@ -9641,6 +9926,30 @@
               }
             ],
             "title": "Person"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           }
         },
         "required": [
@@ -9663,10 +9972,34 @@
             "title": "Items",
             "type": "array"
           },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
           "sent": {
             "const": 0,
             "title": "Sent",
             "type": "integer"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           },
           "status": {
             "enum": [
@@ -10774,6 +11107,30 @@
             },
             "title": "People",
             "type": "array"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           },
           "window_days": {
             "title": "Window Days",
@@ -12270,10 +12627,34 @@
             "title": "Projects",
             "type": "array"
           },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
           "sent": {
             "const": 0,
             "title": "Sent",
             "type": "integer"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           },
           "total": {
             "title": "Total",
@@ -13122,10 +13503,34 @@
             "title": "Lines",
             "type": "array"
           },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
           "sent": {
             "const": 0,
             "title": "Sent",
             "type": "integer"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           },
           "total": {
             "title": "Total",
@@ -13231,6 +13636,84 @@
           "label"
         ],
         "title": "Source",
+        "type": "object"
+      },
+      "SourceRecord": {
+        "additionalProperties": false,
+        "description": "One record citing a source: one projected from it (``from``) or linked to such a\nrecord (``linked``, by ``link``: the link's kind in words).",
+        "properties": {
+          "how": {
+            "enum": [
+              "from",
+              "linked"
+            ],
+            "title": "How",
+            "type": "string"
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link"
+          },
+          "record": {
+            "$ref": "#/components/schemas/ObjectRef"
+          }
+        },
+        "required": [
+          "record",
+          "how"
+        ],
+        "title": "SourceRecord",
+        "type": "object"
+      },
+      "SourceRecords": {
+        "additionalProperties": false,
+        "description": "The records citing one source, as this reader may read them now (``/api/source/\nrecords``). A source the reader may not open reads as not found; a record the reader\nmay not read is left out. ``served`` false: this server holds no records to look in.",
+        "properties": {
+          "access_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "'Viewing with full-read access' when served under the reader's declared full-read grant.",
+            "title": "Access Label"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/SourceRecord"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "served": {
+            "default": true,
+            "title": "Served",
+            "type": "boolean"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "handle"
+        ],
+        "title": "SourceRecords",
         "type": "object"
       },
       "SourceView": {
@@ -13904,6 +14387,121 @@
         "title": "TeamsChat",
         "type": "object"
       },
+      "TimeSaved": {
+        "additionalProperties": false,
+        "description": "Per person and week, the minutes the Workbench saved them, from their work log: an\nestimate whose ``method`` says how it is counted. A reader sees their own; the owner\nmay see everyone's (``all_readers``). ``available`` False (nothing shown) while the\npeople exclusion is not loaded.",
+        "properties": {
+          "all_readers": {
+            "default": false,
+            "title": "All Readers",
+            "type": "boolean"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "basis": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Basis",
+            "type": "object"
+          },
+          "method": {
+            "default": "",
+            "title": "Method",
+            "type": "string"
+          },
+          "minutes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Minutes per item of each basis.",
+            "title": "Minutes",
+            "type": "object"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/TimeSavedPerson"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "weeks": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Weeks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "TimeSaved",
+        "type": "object"
+      },
+      "TimeSavedPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "mine": {
+            "default": false,
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/TimeSavedWeek"
+            },
+            "title": "Weeks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "weeks"
+        ],
+        "title": "TimeSavedPerson",
+        "type": "object"
+      },
+      "TimeSavedWeek": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "How many of each basis (mail_sent, teams_sent, record) the minutes count.",
+            "title": "Items",
+            "type": "object"
+          },
+          "minutes": {
+            "title": "Minutes",
+            "type": "integer"
+          },
+          "start": {
+            "description": "The week's Monday (US Eastern), ISO date.",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "minutes"
+        ],
+        "title": "TimeSavedWeek",
+        "type": "object"
+      },
       "TimelineEvent": {
         "additionalProperties": false,
         "properties": {
@@ -14096,6 +14694,401 @@
           "check"
         ],
         "title": "TrailStep",
+        "type": "object"
+      },
+      "TrustAlert": {
+        "additionalProperties": false,
+        "properties": {
+          "correct": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Items right; absent when the registry's rounded rate gives no whole count.",
+            "title": "Correct"
+          },
+          "home": {
+            "title": "Home",
+            "type": "boolean"
+          },
+          "judged": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Items hand-checked; absent when the type was never measured.",
+            "title": "Judged"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "measured_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured On"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "on": {
+            "description": "On by default (shown on My work when home).",
+            "title": "On",
+            "type": "boolean"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percent"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "kind",
+          "label",
+          "on",
+          "home"
+        ],
+        "title": "TrustAlert",
+        "type": "object"
+      },
+      "TrustAnswerScore": {
+        "additionalProperties": false,
+        "properties": {
+          "accuracy": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Percent of answered runs correct.",
+            "title": "Accuracy"
+          },
+          "answered": {
+            "title": "Answered",
+            "type": "integer"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "correct": {
+            "title": "Correct",
+            "type": "integer"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Percent of scored runs answered.",
+            "title": "Coverage"
+          },
+          "evidence_label": {
+            "title": "Evidence Label",
+            "type": "string"
+          },
+          "items": {
+            "title": "Items",
+            "type": "integer"
+          },
+          "runs": {
+            "title": "Runs",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "runs",
+          "items",
+          "correct",
+          "answered",
+          "evidence_label"
+        ],
+        "title": "TrustAnswerScore",
+        "type": "object"
+      },
+      "TrustAnswerSet": {
+        "additionalProperties": false,
+        "properties": {
+          "dev": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrustAnswerScore"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent: not measured yet."
+          },
+          "held_out": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrustAnswerScore"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent: not measured yet."
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "TrustAnswerSet",
+        "type": "object"
+      },
+      "TrustFreshness": {
+        "additionalProperties": false,
+        "description": "One source system: the newest capture taken from it, the newest capture the served\ndata holds, and the lag between them.",
+        "properties": {
+          "capture": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capture"
+          },
+          "captured_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest capture taken (the capture ledger).",
+            "title": "Captured At"
+          },
+          "lag_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "captured_at - served_at; absent when either is unknown.",
+            "title": "Lag Seconds"
+          },
+          "served_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest capture applied to the data the app serves.",
+            "title": "Served At"
+          },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "system": {
+            "enum": [
+              "BC",
+              "Portal",
+              "Sage",
+              "FileMaker",
+              "Email",
+              "Teams",
+              "File",
+              "MC"
+            ],
+            "title": "System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system"
+        ],
+        "title": "TrustFreshness",
+        "type": "object"
+      },
+      "TrustLine": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "live",
+              "gated",
+              "pending"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "words"
+        ],
+        "title": "TrustLine",
+        "type": "object"
+      },
+      "TrustPage": {
+        "additionalProperties": false,
+        "description": "What a reader needs to judge the Workbench: data freshness per system, answer\nscores per question set, alert precision per type, the autopilot's workflows and\nwhat is live, gated and pending. Counts and times only.",
+        "properties": {
+          "alert_rule": {
+            "default": "",
+            "title": "Alert Rule",
+            "type": "string"
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/TrustAlert"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/TrustAnswerSet"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "autopilot": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotWorkflowRow"
+            },
+            "title": "Autopilot",
+            "type": "array"
+          },
+          "autopilot_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Autopilot Note"
+          },
+          "checked_at": {
+            "title": "Checked At",
+            "type": "string"
+          },
+          "freshness": {
+            "items": {
+              "$ref": "#/components/schemas/TrustFreshness"
+            },
+            "title": "Freshness",
+            "type": "array"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/TrustLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "switches": {
+            "items": {
+              "$ref": "#/components/schemas/TrustSwitch"
+            },
+            "title": "Switches",
+            "type": "array"
+          }
+        },
+        "required": [
+          "checked_at"
+        ],
+        "title": "TrustPage",
+        "type": "object"
+      },
+      "TrustSwitch": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "description": "none: no write path exists.",
+            "enum": [
+              "on",
+              "off",
+              "none"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "system": {
+            "title": "System",
+            "type": "string"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "state",
+          "words"
+        ],
+        "title": "TrustSwitch",
         "type": "object"
       },
       "TruthFlag": {
@@ -14388,6 +15381,30 @@
             },
             "title": "Meetings",
             "type": "array"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           }
         },
         "required": [
@@ -14420,6 +15437,14 @@
       "UploadPreview": {
         "additionalProperties": false,
         "properties": {
+          "acknowledge": {
+            "description": "Why this upload is not a routine write, in words: the reader's confirm accepts each (the preview_hash covers them).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Acknowledge",
+            "type": "array"
+          },
           "after": {
             "title": "After",
             "type": "string"
@@ -14474,9 +15499,13 @@
             "type": "integer"
           },
           "status": {
+            "description": "would_upload: approved and recorded, not made (``missing`` says why); uploaded: made through the gated write path; unknown: check SharePoint.",
             "enum": [
               "prepared",
-              "would_upload"
+              "would_upload",
+              "uploaded",
+              "failed",
+              "unknown"
             ],
             "title": "Status",
             "type": "string"
@@ -14672,6 +15701,87 @@
           "text"
         ],
         "title": "VerdictEvent",
+        "type": "object"
+      },
+      "ViewAsMark": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "description": "The person's opaque view-as key.",
+            "maxLength": 40,
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "ViewAsMark",
+        "type": "object"
+      },
+      "ViewAsMarked": {
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "enum": [
+              "start",
+              "stop"
+            ],
+            "title": "Event",
+            "type": "string"
+          },
+          "recorded": {
+            "title": "Recorded",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "recorded",
+          "event"
+        ],
+        "title": "ViewAsMarked",
+        "type": "object"
+      },
+      "ViewAsPeople": {
+        "additionalProperties": false,
+        "description": "Whom the owner may view as. ``available`` False: this server cannot (no employee\nresolver or people exclusion), so nobody is listed.",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/ViewAsPerson"
+            },
+            "title": "People",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "ViewAsPeople",
+        "type": "object"
+      },
+      "ViewAsPerson": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "description": "An opaque handle for X-PLX-View-As; never an id.",
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name"
+        ],
+        "title": "ViewAsPerson",
         "type": "object"
       },
       "WatchAlert": {
@@ -15836,6 +16946,30 @@
             },
             "title": "People",
             "type": "array"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
           },
           "teams": {
             "items": {
@@ -20365,6 +21499,71 @@
         ]
       }
     },
+    "/api/source/records": {
+      "get": {
+        "description": "The records citing a source (the ones read from it and the ones linked to\nthose), as this reader may read them. A source the reader cannot open is not\nfound, as on ``/api/source``; a record they cannot read is left out.",
+        "operationId": "source_records_api_source_records_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "handle",
+            "required": true,
+            "schema": {
+              "maxLength": 2000,
+              "minLength": 3,
+              "title": "Handle",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceRecords"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Source Records",
+        "tags": [
+          "object"
+        ]
+      }
+    },
     "/api/suggest": {
       "get": {
         "description": "Typo-tolerant autocomplete over the records this reader may see.",
@@ -20461,6 +21660,265 @@
         "summary": "Suggestions",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/time-saved": {
+      "get": {
+        "description": "The time the Workbench saved you each week (the owner: everyone), from your work\nlog: an estimate, its method stated. Counts only what was used.",
+        "operationId": "time_saved_api_time_saved_get",
+        "parameters": [
+          {
+            "description": "The owner only: every person's.",
+            "in": "query",
+            "name": "everyone",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "The owner only: every person's.",
+              "title": "Everyone",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "weeks",
+            "required": false,
+            "schema": {
+              "default": 4,
+              "maximum": 12,
+              "minimum": 1,
+              "title": "Weeks",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimeSaved"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Time Saved",
+        "tags": [
+          "work-log"
+        ]
+      }
+    },
+    "/api/trust": {
+      "get": {
+        "description": "The Trust page: freshness per source system, answer scores per question set,\nalert precision per type, the autopilot's workflows with their countdown, what is\nlive, gated and pending, and each system's write switch. The owner and the Team\nreaders only (404 for every other reader); counts, times and switches only.",
+        "operationId": "trust_page_api_trust_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "summary": "Trust Page",
+        "tags": [
+          "trust"
+        ]
+      }
+    },
+    "/api/view-as/people": {
+      "get": {
+        "description": "Whom the owner may view as (active in the Portal, cleared by the people\nexclusion, never the owner): an opaque key and a name each. The owner only (403\nfor every other reader). Viewing is read only and audited.",
+        "operationId": "view_as_people_api_view_as_people_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewAsPeople"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          }
+        },
+        "summary": "View As People",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/view-as/{event}": {
+      "post": {
+        "description": "The owner starting or stopping a view as someone, written to the view-as audit\n(the reads in between are audited one by one). The owner only; nothing else\nchanges.",
+        "operationId": "view_as_mark_api_view_as__event__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event",
+            "required": true,
+            "schema": {
+              "enum": [
+                "start",
+                "stop"
+              ],
+              "title": "Event",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewAsMark"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewAsMarked"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "View As Mark",
+        "tags": [
+          "identity"
         ]
       }
     },
@@ -21077,6 +22535,62 @@
           }
         },
         "summary": "Work Log",
+        "tags": [
+          "work-log"
+        ]
+      }
+    },
+    "/api/work-log/autopilot-days": {
+      "get": {
+        "description": "Your autopilot scorecard per day from your own work log: items prepared for\nyou, accepted, edited and rejected. Yours only.",
+        "operationId": "autopilot_days_api_work_log_autopilot_days_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 14,
+              "maximum": 60,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotScorecard"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Autopilot Days",
         "tags": [
           "work-log"
         ]

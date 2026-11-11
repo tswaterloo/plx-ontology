@@ -139,33 +139,36 @@ describe("autopilot studio: review queue", () => {
     expect(api.decide).toHaveBeenLastCalledWith("i3", { decision: "reject" });
   });
 
-  it("a live workflow asks for a confirm before performing", async () => {
-    api.decide.mockResolvedValue(item({ state: "accepted", decision: { decision: "accept", at: "2026-11-10T16:00:00Z", by_you: true, outcome: "done", reasons: [], sent: false } }));
-    const live = area();
-    live.workflows![0] = { ...live.workflows![0], state: "live", live_flag: true };
+  it("a live item asks for a confirm before performing: the server answers a token and performs nothing until it comes back", async () => {
+    api.decide
+      .mockResolvedValueOnce(item({ live: true, live_kinds: ["bc_write"], confirm_token: "tok-1" }))
+      .mockResolvedValueOnce(item({ state: "accepted", decision: { decision: "accept", at: "2026-11-10T16:00:00Z", by_you: true, outcome: "done", reasons: [], sent: false } }));
+    // live from the server's view only (its kind opened to approved writes; no live workflow row)
+    const live = area({ items: area().items!.map((i) => (i.item_id === "i1" ? { ...i, live: true, live_kinds: ["bc_write"] } : i)) });
     render(<AutopilotView area={live} onReload={() => {}} />);
+    expect(detail()).toHaveTextContent("Live: accept performs it through the write path after your confirm.");
     fireEvent.click(within(detail()).getByRole("button", { name: "Accept" }));
-    expect(api.decide).not.toHaveBeenCalled();
-    expect(detail()).toHaveTextContent("This workflow is live: accepting performs it in Business Central.");
+    await waitFor(() => expect(api.decide).toHaveBeenCalledWith("i1", { decision: "accept" }));
+    expect(await within(detail()).findByText("This item is live: accepting performs it in Business Central. Accept again to confirm.")).toBeInTheDocument();
     fireEvent.click(within(detail()).getByRole("button", { name: "Confirm and perform" }));
-    expect(api.decide).toHaveBeenCalledWith("i1", { decision: "accept" });
+    await waitFor(() => expect(api.decide).toHaveBeenLastCalledWith("i1", { decision: "accept", confirm_token: "tok-1" }));
     expect(await within(detail()).findByTestId("autopilot-decision")).toHaveTextContent("Done live through the write path.");
   });
 
   it("a bulk accept leaves live items out and never performs one; bulk reject decides each selected item", async () => {
     api.decide.mockImplementation((id: string, body: { decision: string }) => Promise.resolve(item({ item_id: id, state: body.decision === "accept" ? "accepted" : "rejected", decision: { decision: body.decision as "accept", at: "2026-11-10T16:00:00Z", by_you: true, outcome: "dry_run", reasons: [], sent: false } })));
-    const live = area({ items: [...area().items!, item({ item_id: "i4", title: "Second PO", workflow: "ar_collections", roles: ["receivables"] })] });
-    live.workflows![0] = { ...live.workflows![0], state: "live", live_flag: true };
+    // i1 is live from the server's view (no live workflow row): left out of the bulk accept
+    const live = area({ items: [...area().items!.map((i) => (i.item_id === "i1" ? { ...i, live: true, live_kinds: ["bc_write"] } : i)), item({ item_id: "i4", title: "Second PO", workflow: "ar_collections", roles: ["receivables"] })] });
     render(<AutopilotView area={live} onReload={() => {}} />);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select every item of yours" }));
     expect(screen.getByText(/1 live item left out of a bulk accept/)).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole("group", { name: "With the selected" })).getByRole("button", { name: "Accept 1" }));
     await waitFor(() => expect(api.decide).toHaveBeenCalledTimes(1));
-    expect(api.decide).toHaveBeenCalledWith("i4", { decision: "accept" });
+    expect(api.decide).toHaveBeenCalledWith("i4", { decision: "accept", bulk: true });
     expect(await screen.findByRole("status")).toHaveTextContent("1 item accepted.");
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Customer PO received: PO P-1" }));
     fireEvent.click(within(screen.getByRole("group", { name: "With the selected" })).getByRole("button", { name: "Reject" }));
-    await waitFor(() => expect(api.decide).toHaveBeenLastCalledWith("i1", { decision: "reject" }));
+    await waitFor(() => expect(api.decide).toHaveBeenLastCalledWith("i1", { decision: "reject", bulk: true }));
   });
 });
 
@@ -259,5 +262,33 @@ describe("autopilot studio: workflows, modes and the owner's controls", () => {
     expect(await within(builder).findByText(/Of 30 judged over 14 days/)).toBeInTheDocument();
     expect(api.replay).toHaveBeenCalledWith("draft_1", 14);
     expect(within(builder).queryByRole("button", { name: /live/i })).toBeNull();
+  });
+});
+
+describe("Draft mode and the fresh-day countdown", () => {
+  const draftRow = {
+    role: "person:ana@plx.example", person: ME, workflow: "internal_approval", dev: { judged: 33, matched: 29, percent: 87.9 }, fresh: null, n: 33,
+    state: "dry_run" as const, on: true, live_flag: false, missing: ["gate_not_passed"], last_run: null, scored_at: null, open_items: 2, draft: true,
+    countdown: { judged: 12, matched: 11, need_judged: 15, need_percent: 90, percent: 91.7, passes: false, window: ["2026-11-06T07:00:00Z", "2026-11-12T07:00:00Z"], data_end: null },
+  };
+
+  it("a draft row says Draft with its countdown; the workflow page shows the countdown toward the gate", async () => {
+    api.detail.mockResolvedValue({
+      workflow: "internal_approval", label: "Approval requested", trigger: null, conditions: [], actions: [], autopilots: ["approval_request"],
+      mode: "draft", modes: ["off", "draft", "auto"], gate: { percent: 87.9, judged: 33, matched: 29, fresh: false, passed: false, rule: "90% right on at least 15 held-out items" },
+      rows: [draftRow, { ...draftRow, role: "owner", person: null, draft: false, countdown: null }], caught: 29, missed: 4, false_alarms: null, hours_saved: null, hours_basis: null, open_items: 2, history: [], notes: [],
+    } satisfies AutopilotWorkflowDetail);
+    render(<AutopilotView area={area({ workflows: [draftRow] })} onReload={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Workflows" }));
+    const [row] = screen.getAllByTestId("autopilot-workflow");
+    expect(row).toHaveTextContent("Draft");
+    expect(within(row).getByTestId("gate-countdown")).toHaveTextContent("12/15 items");
+    fireEvent.click(within(row).getByRole("button", { name: /Internal approval/i }));
+    const counts = await screen.findAllByTestId("workflow-countdown");
+    expect(counts).toHaveLength(1);
+    expect(counts[0]).toHaveTextContent("12 of 15 items at ≥90% · 91.7% right so far");
+    expect(counts[0]).toHaveTextContent("not yet");
+    expect(screen.getByTestId("workflow-sheet")).toHaveTextContent("No fresh items judged yet");
+    expect(screen.getByTestId("workflow-sheet")).toHaveTextContent("nothing goes out without accept and confirm");
   });
 });

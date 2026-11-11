@@ -299,9 +299,14 @@ class Execution(Base):
     def test_switches_off_never_reach_the_transport_and_only_all_on_does(self) -> None:
         desk = self.desk
         desk.transport = self.transport
-        off_cases = [{}, {wi.LIVE_FLAG: "1"}, {wi.SCOPES_FLAG: "bc"},
+        opened = {wi.APPROVED_ENV: wi.DESK_KIND}
+        off_cases = [{}, {wi.LIVE_FLAG: "1", **opened}, {wi.SCOPES_FLAG: "bc", **opened},
+                     {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Production", wi.SCOPES_FLAG: "bc",
+                      **opened},
+                     # every desk switch on but bc_write not opened to approved writes
                      {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc"},
-                     {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Production", wi.SCOPES_FLAG: "bc"}]
+                     {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc",
+                      wi.APPROVED_ENV: "send_mail,bc_writes"}]
         for n, env in enumerate(off_cases):
             iid = self.approved(po_spec(reason=f"off {n}"), ctx=self.ctx(env))
             done = desk.execute(iid, APPROVER, self.ctx(env), idempotency_key=f"off{n}" + "x" * 16)
@@ -310,7 +315,8 @@ class Execution(Base):
         self.assertEqual(wi.live_gate({}, "Production", None)[:2],
                          [f"Writing is off ({wi.LIVE_FLAG}=1 not set)",
                           f"BC write scopes are not granted ({wi.SCOPES_FLAG})"])
-        sandbox = {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc"}
+        sandbox = {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc",
+                   **opened}
         iid = self.approved(po_spec(reason="sandbox", environment="Sandbox"),
                             ctx=self.ctx(sandbox))
         done = desk.execute(iid, APPROVER, self.ctx(sandbox), idempotency_key="s" * 20)
@@ -318,7 +324,8 @@ class Execution(Base):
         self.assertIn("/Sandbox/api/v2.0/", self.transport.sent[0]["path"])
 
     def test_an_unknown_outcome_blocks_a_repeat_until_bc_is_checked(self) -> None:
-        env = {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc"}
+        env = {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc",
+               wi.APPROVED_ENV: wi.DESK_KIND}
 
         class Cut(FakeTransport):
             def send(self, request):
@@ -371,9 +378,22 @@ class Visibility(Base):
 
 class NoWriteReach(unittest.TestCase):
     """While the switches are off no code path reaches a non-GET BC call: product code
-    never constructs a write transport, and this module imports no HTTP client."""
+    hands the desk only the transport ``write_transports.for_system`` gives, which is None
+    until the owner opened BC to approved writes, and this module imports no HTTP client.
+    (Replaced 11-11 the rule "no transport is ever constructed": the decided design writes
+    on a person's approval)"""
 
-    def test_product_code_never_hands_a_transport_to_the_desk(self) -> None:
+    def test_product_code_hands_the_desk_a_transport_only_once_bc_is_opened(self) -> None:
+        from integrations import live_source_guard as guard
+        from integrations import write_transports as wt
+        self.assertIsNone(wt.for_system("bc", {}))
+        self.assertIsNone(wt.for_system("bc", {guard.WRITES_FLAG: "planner,1,all"}))
+
+        def gated(call: ast.Call) -> bool:
+            value = next(k.value for k in call.keywords if k.arg == "transport")
+            return (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+                    and value.func.attr == "for_system" and bool(value.args)
+                    and isinstance(value.args[0], ast.Constant) and value.args[0].value == "bc")
         found = []
         for path in ROOT.glob("**/*.py"):
             rel = path.relative_to(ROOT).as_posix()
@@ -385,7 +405,8 @@ class NoWriteReach(unittest.TestCase):
                 continue
             for node in ast.walk(ast.parse(text)):
                 if isinstance(node, ast.Call) and any(k.arg == "transport"
-                                                      for k in node.keywords):
+                                                      for k in node.keywords) \
+                        and not gated(node):
                     found.append(f"{rel}:{node.lineno}")
                 if isinstance(node, ast.Assign) and any(
                         isinstance(t, ast.Attribute) and t.attr == "transport"

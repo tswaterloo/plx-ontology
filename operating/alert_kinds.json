@@ -384,7 +384,7 @@
     "OPS",
     "PROD"
    ],
-   "unmeasured": "not measurable yet: blocked on the served run: the task due date is not served (/data/scratch/alert-precision-1110.md)"
+   "unmeasured": "not measurable yet: the due date is served on 1 of 4,612 Mission Control tasks (2026-11-11); 0 found on the served run 2026-11-11 (complete) (/data/scratch/alerts-1.md)"
   },
   {
    "type": "mc_task_stuck",
@@ -469,15 +469,20 @@
    "type": "production_late",
    "kind": "task_overdue",
    "label": "Production past due",
-   "precision": null,
+   "precision": {
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-11",
+    "source": "/data/scratch/alerts-1.md",
+    "note": "after the keeper-copy and usual-lag fix (804 -> 59 found): 15/15 FileMaker orders open past their scheduled day by more than the type's 90th-percentile realize lag, none realized in any copy; before the fix 2/15 (10 Portal copies whose FileMaker record was gone, 3 read on a lagging Portal copy)"
+   },
    "actionable": true,
-   "default": "off",
-   "home": false,
+   "default": "on",
+   "home": true,
    "roles": [
     "PROD",
     "OPS"
-   ],
-   "unmeasured": "not measurable yet: blocked on the served run: the production due date is not served (/data/scratch/alert-precision-1110.md)"
+   ]
   },
   {
    "type": "assembly_damage_spike",

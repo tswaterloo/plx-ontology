@@ -66,8 +66,8 @@ export function LoadProblem({ message, busy, onRetry, after = 20_000, className 
 }
 
 /** The page's age, when the server answered from its last good read: "As of 9:08 PM ET · refreshing". */
-export function StaleNote({ since, className }: { since?: string | null; className?: string }) {
-  const line = staleLine(since);
+export function StaleNote({ since, readAt, className }: { since?: string | null; readAt?: string | null; className?: string }) {
+  const line = staleLine(since, readAt);
   if (!line) return null;
   return (
     <p className={cn("text-meta text-muted", className)} data-testid="stale-page" role="status">

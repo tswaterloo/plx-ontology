@@ -211,15 +211,54 @@ class SessionSlots:
             self._cond.notify_all()
 
 
-def memory_available_gb(meminfo: Path = Path("/proc/meminfo")) -> Optional[float]:
-    """MemAvailable in GB, or None where it cannot be read."""
+def memory_available_gb(meminfo: Path = Path("/proc/meminfo"),
+                        cgroup: Optional[Path] = None) -> Optional[float]:
+    """The memory this process may still take, in GB: MemAvailable, but no more than the
+    headroom (memory.max less memory.current) of any cgroup v2 limit over it (a scope or
+    slice capped at 8 GB on a 61 GB host: 11-11 an eval API counted the host's 37 GB,
+    started four Ask workers in an 8 GB scope and was OOM-killed before its first answer).
+    ``cgroup``: this process's cgroup directory (tests; default from /proc/self/cgroup).
+    None where MemAvailable cannot be read; a limit that cannot be read is no limit."""
     try:
+        available = None
         for line in meminfo.read_text(encoding="ascii").splitlines():
             if line.startswith("MemAvailable:"):
-                return int(line.split()[1]) / (1024 * 1024)
+                available = int(line.split()[1]) / (1024 * 1024)
+                break
     except (OSError, ValueError, IndexError):
         return None
-    return None
+    if available is None:
+        return None
+    for limit, used in _cgroup_limits(cgroup):
+        available = min(available, max(0.0, (limit - used) / (1024 ** 3)))
+    return available
+
+
+def _cgroup_limits(start: Optional[Path]) -> list[tuple[int, int]]:
+    """(memory.max, memory.current) in bytes of each limited cgroup from ``start`` up."""
+    root = Path("/sys/fs/cgroup")
+    if start is None:
+        try:
+            line = next(l for l in Path("/proc/self/cgroup").read_text("ascii").splitlines()
+                        if l.startswith("0::"))
+        except (OSError, StopIteration):
+            return []
+        start = root / line[3:].strip().lstrip("/")
+    out = []
+    here = start
+    for _ in range(64):
+        try:
+            limit = (here / "memory.max").read_text("ascii").strip()
+            if limit != "max":
+                out.append((int(limit), int((here / "memory.current").read_text("ascii"))))
+        except (OSError, ValueError):
+            pass
+        if here == root or here.parent == here:
+            break
+        here = here.parent
+    return out
+
+
 # Page reads served at once: the owner thread and helpers, each its own runtime and thread
 # on one shared queue, so one slow read (a briefing read again after a visit, a cold
 # list) never holds up another reader's or another route's kept answer.
@@ -300,6 +339,9 @@ SNAPSHOT_REFRESH_KEPT = 32
 # screens again on the same read workers the live requests use. Off, a screen read under
 # older inputs is served marked stale and read again on its own next visit.
 SNAPSHOT_REFRESH = os.environ.get("PLX_SNAPSHOT_REFRESH", "") == "1"
+# A screen's own files (``files_stamp``): a directory of more files than this is never
+# current (each visit serves its kept page stale and reads it again).
+FILES_STAMP_MOST = 2000
 ACCESS_WAIT_SECONDS = 3       # reading the reader's access state to keep or serve a page
 REWARM_SECONDS = 900
 READER_CACHE_KEPT = 512
@@ -942,3 +984,43 @@ class _Watched:
                     on_call(str((message.get("params") or {}).get("name") or ""))
                 return server.handle(message, *args, **kwargs)
         return Server()
+
+
+def files_stamp(paths: Iterable[Any]) -> str:
+    """Each of ``paths`` as it stands, as one short digest: a file's change time and size
+    (a SQLite file's write-ahead log beside it), every file under a directory the same,
+    "missing" for one that is not there, None for no path. A directory of more than
+    ``FILES_STAMP_MOST`` files, or one that cannot be listed, raises (nothing current)."""
+    import hashlib
+    out: list = []
+    for path in paths:
+        if path is None:
+            out.append(None)
+            continue
+        path = Path(path)
+        if path.is_dir():
+            entries = []
+            def unlistable(error: OSError) -> None:
+                raise error
+            for root, _dirs, names in os.walk(path, onerror=unlistable):
+                for name in names:
+                    full = os.path.join(root, name)
+                    try:
+                        st = os.stat(full)
+                    except FileNotFoundError:
+                        continue   # gone while listed: the rest still says it moved
+                    entries.append((os.path.relpath(full, path), st.st_mtime_ns, st.st_size))
+                if len(entries) > FILES_STAMP_MOST:
+                    raise OSError("too many files to stamp")
+            out.append((str(path), tuple(sorted(entries))))
+            continue
+        row: list = [str(path)]
+        for one in (path, Path(str(path) + "-wal")):
+            try:
+                st = one.stat()
+                row.append((st.st_mtime_ns, st.st_size))
+            except FileNotFoundError:
+                row.append("missing")
+        out.append(tuple(row))
+    return hashlib.sha256(repr(out).encode()).hexdigest()[:24]
+

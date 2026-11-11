@@ -6,8 +6,9 @@ import { AutopilotView } from "@/components/autopilot/area";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { ThreadContext } from "@/components/work-log";
-import { LoadProblem } from "@/components/ui/notice";
+import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getAutopilot } from "@/lib/api";
+import { useStaleRefresh } from "@/lib/stale-refresh";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { AutopilotArea } from "@/lib/types";
 
@@ -37,6 +38,7 @@ function Autopilot() {
     });
     return () => ctl.abort();
   }, [round]);
+  useStaleRefresh(area?.stale_since, retry);
   useEffect(() => {
     if (!area || !item) return;
     const el = [...document.querySelectorAll<HTMLElement>("li[data-key]")].find((li) => li.dataset.key?.endsWith(`/${item}`));
@@ -51,7 +53,10 @@ function Autopilot() {
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : area ? (
-          <AutopilotView area={area} onReload={retry} />
+          <>
+            <StaleNote since={area.stale_since} readAt={area.read_at} className="mb-2" />
+            <AutopilotView area={area} onReload={retry} />
+          </>
         ) : (
           <Pending page label="Reading the autopilots" />
         )}

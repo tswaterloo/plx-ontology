@@ -148,5 +148,43 @@ class DeclaredInputsTests(unittest.TestCase):
             self.assertIn("ontology/mentions.py", sm.STEPS[step].code)
 
 
+
+class ServedCodePinTests(unittest.TestCase):
+    """``--served-code``: the served step code of a build whose tree no commit holds. Taken
+    only when it hashes to its own ``steps_digest``; anything else fails closed."""
+
+    def pin(self, payload):
+        import json
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = Path(d.name) / "pin.json"
+        path.write_text(json.dumps(payload))
+        return path
+
+    def test_a_pin_that_hashes_to_its_digest_is_the_served_code(self):
+        code = sm.code_digests()
+        got = sm.served_code(self.pin({"code": code,
+                                       "steps_digest": "steps:" + sm._sha(code)[:32]}))
+        self.assertEqual(got, code)
+        # the plan's steps_from is then that digest, and this tree against it runs nothing
+        the_plan = sm.plan("HEAD", old_code=got)
+        self.assertEqual(the_plan["steps_from"], "steps:" + sm._sha(code)[:32])
+        self.assertEqual(the_plan["steps"]["run"], {})
+
+    def test_an_edited_unknown_or_empty_pin_is_refused(self):
+        code = sm.code_digests()
+        digest = "steps:" + sm._sha(code)[:32]
+        edited = {**code, "text_index": "0" * 64}
+        for payload in ({"code": edited, "steps_digest": digest},
+                        {"code": code, "steps_digest": "steps:" + "0" * 32},
+                        {"code": code},
+                        {"code": {}, "steps_digest": "steps:" + sm._sha({})[:32]},
+                        {"code": {"text_index": 1}, "steps_digest": digest},
+                        ["not", "a", "pin"]):
+            with self.subTest(payload=str(payload)[:60]):
+                with self.assertRaisesRegex(ValueError, "served_code_unverified"):
+                    sm.served_code(self.pin(payload))
+
+
 if __name__ == "__main__":
     unittest.main()

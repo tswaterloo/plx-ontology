@@ -133,6 +133,74 @@ class ReconnectTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT 12").fetchone()[0], 12)
                 self.assertNotEqual(conn.info.backend_pid, pid)
 
+    def test_a_connection_left_with_a_command_in_progress_is_replaced(self):
+        # dev 11-11 (W-0070, eval host on Postgres): the reader's connection was left
+        # with a statement sent and its result never read; every later statement of the
+        # session failed "another command is already in progress" and every tool call
+        # answered tool_execution_failed. Nothing of this process runs a statement while
+        # the connection's lock is free, so a command in progress then is abandoned.
+        for statement in ("SELECT pg_sleep(3)", "SELECT 1"):
+            with self.subTest(left=statement):
+                before = self.conn._conn.info.backend_pid
+                self.conn._conn.pgconn.send_query(statement.encode())
+                started = time.monotonic()
+                with self.assertLogs("operating.pg.sqlite_compat", "WARNING") as logged:
+                    self.assertEqual(self.conn.execute("SELECT 13 AS n").fetchone()["n"], 13)
+                self.assertIn("command in progress", logged.output[0])
+                self.assertLess(time.monotonic() - started, 2.5)   # never waited out
+                self.assertNotEqual(self.conn._conn.info.backend_pid, before)
+                # the session is the reader's: search path and the item gate's tables
+                self.assertEqual(
+                    self.conn.execute("SELECT count(*) FROM sq_calls").fetchone()[0], 0)
+        # the readers' own queries (``conn._pg``) get a usable connection too
+        self.conn._conn.pgconn.send_query(b"SELECT 1")
+        with self.assertLogs("operating.pg.sqlite_compat", "WARNING"):
+            self.assertEqual(self.conn._pg.execute("SELECT 14").fetchone()[0], 14)
+
+    def test_a_connection_left_inside_a_copy_is_replaced_within_the_limit(self):
+        # review 797b1bff3e: a connection left in COPY FROM STDIN (the item gate loads
+        # sq_calls that way on every gated query) answered a COPY result forever and the
+        # drain spun holding the lock. Each copy direction ends within the 2 s limit.
+        cases = ((b"COPY sq_calls FROM STDIN", "SELECT count(*) AS n FROM sq_calls", 0),
+                 (b"COPY (SELECT g, repeat('x', 200) FROM generate_series(1, 200000) g) "
+                  b"TO STDOUT", "SELECT 18 AS n", 18))
+        for statement, check, want in cases:
+            with self.subTest(left=statement[:24]):
+                self.conn.execute("SELECT 1")   # the session's tables exist
+                before = self.conn._conn.info.backend_pid
+                self.conn._conn.pgconn.send_query(statement)
+                started = time.monotonic()
+                with self.assertLogs("operating.pg.sqlite_compat", "WARNING") as logged:
+                    self.assertEqual(self.conn.execute(check).fetchone()["n"], want)
+                self.assertLess(time.monotonic() - started, 3.0)
+                self.assertEqual(len(logged.output), 1)   # one line per abandoned command
+                self.assertIn("command in progress", logged.output[0])
+                self.assertNotEqual(self.conn._conn.info.backend_pid, before)
+
+    def test_an_abandoned_autocommit_write_never_runs_twice(self):
+        # the write's owner already got its interruption; the replacement runs only the
+        # caller's next statement: the row landed once or not at all
+        for statement in (b"INSERT INTO t (x) VALUES (19)",
+                          b"INSERT INTO t (x) SELECT 19 FROM pg_sleep(3)"):
+            with self.subTest(left=statement):
+                self.conn._conn.pgconn.send_query(statement)
+                with self.assertLogs("operating.pg.sqlite_compat", "WARNING"):
+                    self.assertEqual(
+                        self.conn.execute("SELECT count(*) AS n FROM t WHERE x = 19")
+                        .fetchone()["n"] in (0, 1), True)
+                self.assertIn(len([r for r in self.rows() if r == 19]), (0, 1))
+                self.conn.execute("DELETE FROM t WHERE x = 19")
+
+    def test_a_write_left_in_progress_inside_a_transaction_surfaces(self):
+        self.conn._pg.execute("BEGIN")
+        self.conn.execute("INSERT INTO t (x) VALUES (?)", (15,))
+        self.conn._conn.pgconn.send_query(b"SELECT 1")
+        with self.assertLogs("operating.pg.sqlite_compat", "WARNING"):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "inside a transaction"):
+                self.conn.execute("INSERT INTO t (x) VALUES (?)", (16,))
+        self.assertEqual(self.rows(), [])   # nothing of the transaction, nothing re-run
+        self.assertEqual(self.conn.execute("SELECT 17 AS n").fetchone()["n"], 17)
+
     def test_only_plain_reads_count_as_read_only(self):
         for sql in ("SELECT 1", "  -- c\n/* x */ with a AS (SELECT 1) SELECT * FROM a",
                     "VALUES (1)"):

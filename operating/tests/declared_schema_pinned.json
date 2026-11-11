@@ -917,6 +917,38 @@
     "CREATE TABLE labour_week (\n    department TEXT NOT NULL, week TEXT NOT NULL, run TEXT NOT NULL DEFAULT '',\n    hours TEXT NOT NULL, overtime_hours TEXT, overtime_basis TEXT, headcount_days INTEGER,\n    week_basis TEXT NOT NULL, markings TEXT NOT NULL CHECK (markings = '[\"hr\"]'),\n    sources TEXT NOT NULL CHECK (json_valid(sources)),\n    PRIMARY KEY (department, week, run))"
    ]
   ],
+  "mention_cache": [
+   [
+    "table",
+    "extracted",
+    "extracted",
+    "CREATE TABLE extracted (key TEXT PRIMARY KEY, xcode TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)"
+   ],
+   [
+    "table",
+    "groups",
+    "groups",
+    "CREATE TABLE groups (key TEXT PRIMARY KEY, value BLOB NOT NULL, used INTEGER NOT NULL)"
+   ],
+   [
+    "table",
+    "meta",
+    "meta",
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+   ],
+   [
+    "table",
+    "texts",
+    "texts",
+    "CREATE TABLE texts (key TEXT PRIMARY KEY, code TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)"
+   ],
+   [
+    "view",
+    "mentions",
+    "mentions",
+    "CREATE VIEW mentions AS SELECT key, NULL AS code, NULL AS valid_at, value, used FROM extracted WHERE xcode = '0000000000000000'"
+   ]
+  ],
   "mention_memo": [
    [
     "table",

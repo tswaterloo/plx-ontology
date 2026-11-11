@@ -451,17 +451,34 @@ class Queue:
             conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
             try:
                 rows = conn.execute(
-                    "SELECT at FROM event WHERE awaiting IS NOT NULL AND kind IN ('action', "
-                    "'autopilot') AND lower(json_extract(awaiting, '$.mailbox')) IN (SELECT "
-                    "value FROM json_each(?)) AND EXISTS (SELECT 1 FROM json_each(awaiting, '$.threads') WHERE value IN "
-                    "(SELECT value FROM json_each(?)))",
+                    "SELECT at, json_extract(awaiting, '$.answers'), json_extract(awaiting, "
+                    "'$.answered_at') FROM event WHERE awaiting IS NOT NULL AND kind IN "
+                    "('action', 'autopilot') AND lower(json_extract(awaiting, '$.mailbox')) IN "
+                    "(SELECT value FROM json_each(?)) AND EXISTS (SELECT 1 FROM "
+                    "json_each(awaiting, '$.threads') WHERE value IN (SELECT value FROM "
+                    "json_each(?)))",
                     (json.dumps(boxes), json.dumps(threads))).fetchall()
             finally:
                 conn.close()
         except sqlite3.Error:
             return False
-        return any(sent is not None and at < sent <= now
-                   for sent in (_instant(r[0]) for r in rows))
+        for raw_sent, answers, answered_at in rows:
+            sent = _instant(raw_sent)
+            if sent is None or not at < sent <= now:
+                continue
+            if answers:
+                # the send names the message it answered: that one, or one of the thread
+                # that came before it; a later message (seen late) still gets its item
+                try:
+                    named = {str(a) for a in json.loads(answers)}
+                except (TypeError, ValueError):
+                    named = set()
+                before = _instant(answered_at)
+                if str(event.get("object_id") or "") not in named and \
+                        (before is None or at > before):
+                    continue
+            return True
+        return False
 
     def rate_take(self, owner: str, hour: str, cap: int) -> bool:
         row = self.conn.execute("SELECT n FROM rate WHERE owner = ? AND hour = ?",
@@ -734,6 +751,7 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
     from . import proactive_threads as pt
     out = []
     rows = _read(st, oids, EMAIL_PROPS)
+    machine = it.automated_mail()   # triage's test; a cycle is no window: its form rules
     for oid in oids:
         row = rows.get(oid) or {}
         aud = typed[oid][1]
@@ -758,7 +776,7 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
                                    mine, domains, oid)})
             continue
         subject, text = _v(row, "subject"), pt._own(_v(row, "body_preview"))
-        if pt.automated(sender, text, subject) or it.bulk(sender, text, subject):
+        if machine(sender, text, subject):
             skipped["automated"] += 1
             continue
         to, cc = _addresses(_v(row, "to_addresses")), _addresses(_v(row, "cc_addresses"))
@@ -2073,6 +2091,7 @@ HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {
     "supplier_eta": _work("h_supplier_eta"), "desk": _work("h_desk"),
     "reply_prep": _work("h_reply_prep"), "invoice_send": _work("h_invoice_send"),
     "routine_update": _work("h_routine_update"),
+    "rd_status_update": _work("h_rd_status_update"),
     "invoice_entry": _receivables("h_invoice_entry"),
     "shipment_posting": _receivables("h_shipment_posting"),
     "cash_application": _receivables("h_cash_application"),
@@ -2144,11 +2163,17 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     directory, addresses_of, domains = _people_maps(people)
     roles = _roles(environ, queue.path.parent)
     stamp = _iso(now)
+    rd_day = None
     try:
         from . import autopilot_work as aw
         events += aw.po_due_events(st, registry, as_of, domains, directory, addresses_of)
         events += aw.invoice_due_events(st, registry, as_of, domains, directory)
         events += aw.routine_due_events(st, queue, registry, as_of, people)
+        # a project's state is read as it stood at the day's start: once a day is enough
+        # (its 90-day mail read is the slowest of these)
+        if queue.meta("rd_due_day") != as_of.isoformat():
+            events += aw.rd_due_events(st, registry, as_of, people)
+            rd_day = as_of.isoformat()
         from . import autopilot_receivables as ar
         events += ar.due_events(st, registry, as_of, people)
     except sqlite3.Error:
@@ -2157,6 +2182,8 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
         for e in events:
             summary["events_seen"] += 1
             summary["events_new"] += queue.add_event(e, stamp)
+        if rd_day:
+            queue.set_meta("rd_due_day", rd_day)
     for event in queue.pending(int(limits["max_events_per_cycle"])):
         if time.monotonic() - started > limits["cycle_seconds"]:
             summary["status"] = "partial"      # the rest stay new: the next cycle goes on
@@ -2377,6 +2404,70 @@ def gate_of(raw: Any) -> tuple[Callable[..., bool], dict[str, list[str]]]:
         for m in members:
             passed[m] |= ok
     return gate, {m: sorted(w) for m, w in passed.items() if w}
+
+
+DRAFT_FILE = Path(__file__).with_name("autopilot_draft.json")
+DRAFT_ENV = "PLX_AUTOPILOT_DRAFT_FILE"
+DRAFT_SCHEMA = "plx-autopilot-draft/v1"
+# never prepared in draft, whatever the config says: no rule reaches the gate's bar on it
+# (dev ceiling ~75-81%, 2026-11-11) and a wrong external reply costs the most
+DRAFT_NEVER = frozenset({"other_external"})
+
+
+def load_draft(environ: Mapping[str, str] | None = None) -> dict[str, list[str]]:
+    """The draft config (``autopilot_draft.json``, ``DRAFT_ENV`` overrides the path): per
+    person (an address or a person id), the workflows prepared for them in Draft before
+    their replay gate passed. Draft only prepares: an item still waits on its owner's
+    accept, and anything it sends or writes goes through the write path's own gates and
+    the owner's confirm (``autopilot_write``), unchanged. Unreadable, another schema, an
+    unknown workflow or one of ``DRAFT_NEVER``: nothing is in draft (the whole file is
+    refused, as the registry is)."""
+    env = os.environ if environ is None else environ
+    path = Path(env.get(DRAFT_ENV) or DRAFT_FILE)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, Mapping) or raw.get("schema") != DRAFT_SCHEMA:
+            return {}
+        from . import workflows as wf
+        known = wf.names()
+        out: dict[str, list[str]] = {}
+        for who, flows in (raw.get("people") or {}).items():
+            if not isinstance(flows, list) or not all(isinstance(f, str) for f in flows):
+                return {}
+            if any(f not in known or f in DRAFT_NEVER for f in flows):
+                return {}
+            out[str(who).strip().lower()] = sorted(set(flows))
+        return out
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def draft_owners(draft: Mapping[str, Sequence[str]], directory: Mapping[str, str],
+                 people: Any) -> dict[str, frozenset[str]]:
+    """Person id -> the workflows in draft for them: an address resolved through the
+    people directory, an id taken as it is; each cleared by the people exclusion (an
+    unresolved or excluded person gets nothing)."""
+    guid = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    out: dict[str, frozenset[str]] = {}
+    for who, flows in draft.items():
+        oid = who if guid.match(who) else directory.get(who, "")
+        if not oid or people is None or getattr(people, "unavailable", None) \
+                or not people.identity_clear(oid):
+            continue
+        out[oid] = frozenset(out.get(oid, frozenset()) | set(flows))
+    return out
+
+
+def with_draft(gate: Callable[..., bool], drafted: Mapping[str, frozenset[str]]
+               ) -> Callable[..., bool]:
+    """The prepare gate with Draft: a workflow in draft for its owner is prepared for them
+    (only for them: another owner of the same event still needs the replay gate)."""
+    if not drafted:
+        return gate
+
+    def drafted_gate(owner: str, workflow: str, roles: Iterable[str] = ()) -> bool:
+        return workflow in drafted.get(str(owner).lower(), ()) or gate(owner, workflow, roles)
+    return drafted_gate
 
 
 def item_roles(ap: Mapping[str, Any]) -> frozenset[str]:
@@ -2721,6 +2812,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         # follow and replay both write the queue people read: each prepares only the
         # workflows a role's replay passed, in that role (``gate_from``)
         gate, passed = gate_from(os.environ, queue.path.parent)
+        # Draft (``load_draft``): the configured people's workflows are prepared before
+        # their gate passed; an accept still goes through the write path's own gates
+        drafted = draft_owners(load_draft(), _people_maps(people)[0], people)
+        gate = with_draft(gate, drafted)
+        for oid, flows in drafted.items():
+            passed = {**passed, oid: sorted(set(passed.get(oid) or ()) | flows)}
         if not passed:                # off until a role's replay passed (``gate_from``)
             print(json.dumps({"schema": SCHEMA, "status": "off",
                               "reason": "no_workflow_passed_replay"}))

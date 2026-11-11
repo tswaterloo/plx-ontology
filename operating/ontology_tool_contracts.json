@@ -7236,6 +7236,10 @@
             ],
             "description": "Date period"
           },
+          "system": {
+            "enum": ["bc", "sage", "filemaker", "portal", "mc", "mail", "sharepoint", "teams", "meetings"],
+            "description": "Only records from this source system (\"sales orders in Sage\": sage); with object_type"
+          },
           "having": {
             "type": "object",
             "additionalProperties": false,

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getWorkLog, getWorkThread, organiseWorkThread } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { formatDateTime, objectHref } from "@/lib/format";
+import { formatDateTime, objectHref, recordLabel, typeLabel } from "@/lib/format";
 import type { WorkLogEvent, WorkLogKind } from "@/lib/types";
 
 const TZ = "America/Toronto";
@@ -84,6 +84,14 @@ export function continueHref(thread: string): string {
   }
 }
 
+/** A record's name when the log kept none: its number in words ("PO 90455"), never its key ("PurchaseOrder:demo:90455"). */
+export function recordName(r: { object_id: string; type?: string | null; label?: string | null }): string {
+  const type = r.type ?? r.object_id.split(":", 1)[0];
+  if (r.label && r.label !== r.object_id) return recordLabel(type, r.label);
+  const tail = r.object_id.split(":").pop() || "";
+  // a key with a structured tail ({"no": ...}) names nothing a person reads: its kind says what it is
+  return tail && /^[\w .-]{1,40}$/.test(tail) ? recordLabel(type, tail) : typeLabel(type);
+}
 const timeOf = (iso: string) => new Date(iso).toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: TZ });
 
 /** A sent message's follow-through, in words. */
@@ -134,14 +142,15 @@ export function WorkLogRow({ e, onChanged, showWho }: { e: WorkLogEvent; onChang
           {e.pinned && <Pin className="ml-1.5 inline size-3 text-muted" aria-label="Pinned" />}
         </div>
         <div className="mt-0.5 flex flex-wrap gap-x-2 text-[12px] leading-4 text-muted">
+          <span className="text-faint">{KIND_LABEL[e.kind] ?? e.kind}</span>
           {showWho && e.reader_name && <span>{e.reader_name}</span>}
           {(e.records ?? []).slice(0, 3).map((r) =>
             r.type ? (
               <Link key={r.object_id} href={objectHref(r.type, r.object_id)} className="hover:underline">
-                {r.label || r.object_id}
+                {recordName(r)}
               </Link>
             ) : (
-              <span key={r.object_id}>{r.label || r.object_id}</span>
+              <span key={r.object_id}>{recordName(r)}</span>
             ),
           )}
           {people.length > 0 && <span>{people.slice(0, 2).join(", ")}{people.length > 2 ? ` +${people.length - 2}` : ""}</span>}

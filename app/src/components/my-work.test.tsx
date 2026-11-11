@@ -51,7 +51,7 @@ describe("my work: Assist", () => {
     expect(within(live).queryByTestId("assist-accept")).toBeNull();
     expect(within(live).getByRole("link", { name: "Review and perform" })).toHaveAttribute("href", "/autopilot");
     fireEvent.click(within(dry).getByTestId("assist-accept"));
-    expect(api.decide).toHaveBeenCalledWith("ap_1", { decision: "accept" });
+    expect(api.decide).toHaveBeenCalledWith("ap_1", { decision: "accept", bulk: true });
     expect(await within(dry).findByRole("status")).toHaveTextContent("Dry run: your yes is recorded, nothing was sent or written.");
   });
 

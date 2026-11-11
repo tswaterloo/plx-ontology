@@ -145,7 +145,7 @@ class GenStore(egw.Store):
                     if text:
                         index.setdefault(text, []).append(oid)
                 self._by_prop[key] = index
-                if len(self._by_prop) > 64:
+                while len(self._by_prop) > self.MAX_INDEXES:
                     self._by_prop.pop(next(iter(self._by_prop)))
         index = self._by_prop[key]
         if index is None:

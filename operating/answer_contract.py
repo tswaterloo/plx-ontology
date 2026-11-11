@@ -4,6 +4,7 @@ session's answer with these exactly as the scorer does (``evals.score`` uses the
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import (ROUND_HALF_EVEN, ROUND_HALF_UP, Context, Decimal, InvalidOperation,
                      localcontext)
 import json
@@ -46,8 +47,13 @@ NUMERIC_OPS = ("sum", *STATISTIC_OPS, *PAIR_OPS)
 ROUNDED_OPS = ("avg", "ratio")
 
 
+# ``days``: the whole days from the second cited date to the first (x0 - x1), re-read as
+# calendar days (``operating.claim_checks._check_days``, ``days_between``); or from a
+# ``day`` the calculation names to its one cited date (x0 - day), a day the question
+# writes in full or today, never one of the answer's own.
+DAYS_OP = "days"
 CALCULATION_OPS = ("sum", "count", "count_distinct", "equal", "expression", *STATISTIC_OPS,
-                   *PAIR_OPS)
+                   *PAIR_OPS, DAYS_OP)
 
 
 MAX_CALCULATION_INPUTS = 100  # the oracle's chain cap (evals/oracle/families.py MAX_CHAIN)
@@ -197,21 +203,40 @@ def answer_problems(answer: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def calendar_day(cell: Any) -> date | None:
+    """The calendar day a date cell holds: an ISO day, or a timestamp's own day (its first
+    ten characters, then "T" or a space); None for anything else (a ``days`` input)."""
+    text = cell.strip() if isinstance(cell, str) else ""
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})(?:$|[T ])", text)
+    if match is None:
+        return None
+    try:
+        return date(int(match[1]), int(match[2]), int(match[3]))
+    except ValueError:
+        return None
+
+
 def calculation_problem(calc: Any, citations: Any = None) -> str | None:
     """Why an answer value's ``calculation`` is malformed (None: well formed). A value
     states its inputs in the calculation, never also in ``citations``."""
     expression = isinstance(calc, Mapping) and calc.get("op") == "expression"
+    from_day = isinstance(calc, Mapping) and calc.get("op") == DAYS_OP and "day" in calc
     if not isinstance(calc, Mapping) or set(calc) - {"op", "inputs"} - (
-            {"expression"} if expression else set()) or calc.get("op") not in CALCULATION_OPS:
+            {"expression"} if expression else set()) - ({"day"} if from_day else set()) \
+            or calc.get("op") not in CALCULATION_OPS:
         return "op"
     if expression and not isinstance(calc.get("expression"), str):
         return "expression"
+    if from_day and not (isinstance(calc["day"], str) and len(calc["day"]) == 10
+                         and calendar_day(calc["day"]) is not None):
+        return "day"
     if citations:
         return "citations_beside_calculation"
     inputs = calc.get("inputs")
     if not isinstance(inputs, list) or not (
             2 if calc["op"] == "equal" else 1) <= len(inputs) <= MAX_CALCULATION_INPUTS \
-            or (calc["op"] in PAIR_OPS and len(inputs) != 2):
+            or (calc["op"] in PAIR_OPS and len(inputs) != 2) \
+            or (calc["op"] == DAYS_OP and len(inputs) != (1 if from_day else 2)):
         return "inputs"
     for entry in inputs:
         if expression and not (isinstance(entry, Mapping) and isinstance(entry.get("value"),

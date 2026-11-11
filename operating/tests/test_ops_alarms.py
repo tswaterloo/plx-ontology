@@ -1,7 +1,7 @@
 """Reliability alarms over a made-up state dir and injected probes (no systemctl, Postgres
-or mail): every stop is an incident, each incident pages once through the send path (a
-dry run without a page address), recovers with one notice, and the owner alone reads it.
-Evidence: isolated-fixture; nothing is ever sent."""
+or mail): every stop is an incident shown in the app until it recovers, nothing is paged
+or mailed whatever the environment says, and only the ops readers (the owner and the Team
+readers) read it. Evidence: isolated-fixture; nothing is ever sent."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def healthy_units():
 
 
 class Fake:
-    """Probes and a send path that record what they were asked; never any I/O."""
+    """Probes that record what they were asked; never any I/O."""
 
     def __init__(self, system=None, user=None, pg=None, mem_gb=10.0, disk_gb=200.0):
         self.units = {"system": system if system is not None else healthy_units(),
@@ -51,7 +51,6 @@ class Fake:
             "max": 200, "clients": 40, "idle": 30, "idle_in_transaction": 0,
             "longest_idle_in_transaction_minutes": None}
         self.mem_gb, self.disk_gb = mem_gb, disk_gb
-        self.sent: list[tuple] = []
 
     def systemctl(self, scope, args):
         if self.units[scope] is None:
@@ -80,18 +79,13 @@ class Fake:
                 "processes": [{"pid": 4242, "name": "python3 -m operating.proactive",
                                "cgroup": "plx-proactive.service", "gb": 16.2}]}
 
-    def sender(self, environ):
-        fake = self
-
-        class Sender:
-            def dispatch(self, kind, sender, payload):
-                fake.sent.append((kind, sender, payload))
-                return {"status": "sent", "missing": [], "http_status": 202}
-        return Sender()
 
 
-def never(environ):
-    raise AssertionError("no page address: the send path must not be built")
+def no_send():
+    """The mail send path, made to fail the test if anything builds it."""
+    def refuse(*a, **k):
+        raise AssertionError("alarms show in the app only: nothing may be sent")
+    return mock.patch("integrations.graph_send.ActionSender", refuse)
 
 
 class AlarmPassTest(unittest.TestCase):
@@ -106,12 +100,13 @@ class AlarmPassTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def run_at(self, fake, minutes=0, environ=None, sender=None):
-        return ops_alarms.run_pass(self.root, now=NOW + timedelta(minutes=minutes),
-                                   environ=environ or {}, probes=fake.probes(),
-                                   dsn="dbname=x", sender_factory=sender or never)
+    def run_at(self, fake, minutes=0, environ=None):
+        with no_send():
+            return ops_alarms.run_pass(self.root, now=NOW + timedelta(minutes=minutes),
+                                       environ=environ or {}, probes=fake.probes(),
+                                       dsn="dbname=x")
 
-    def test_each_kind_of_stop_opens_an_incident_and_pages_as_a_dry_run(self) -> None:
+    def test_each_kind_of_stop_opens_an_incident(self) -> None:
         stale = make_state(Path(self.tmp.name) / "stale", delta_built="2030-01-01T20:00:00Z",
                            proactive="2030-01-01T12:00:00Z")
         self.root = stale
@@ -143,9 +138,8 @@ class AlarmPassTest(unittest.TestCase):
         self.assertIn("164 of 200", lines["pg_connections"])
         self.assertIn("Data refresh (delta) last finished 16 h ago", lines["delta_last_cycle"])
         for i in status["open"]:
-            self.assertEqual(i["page"]["status"], "dry_run", i)
-            self.assertEqual(i["page"]["missing"], ["PLX_OPS_PAGE_TO not set"])
-        self.assertFalse(status["paging"]["configured"])
+            self.assertNotIn("page", i)
+        self.assertNotIn("paging", status)
         written = (stale / "ops-alarms" / "status.json").read_text()
         self.assertEqual(json.loads(written)["open"], status["open"])
         # what the owner reads now
@@ -154,39 +148,49 @@ class AlarmPassTest(unittest.TestCase):
         self.assertFalse(ops_alarms.read_status(stale, now=NOW + timedelta(minutes=16))
                          ["running"])
 
-    def test_one_page_per_incident_then_one_recovery_notice(self) -> None:
-        env = {"PLX_OPS_PAGE_TO": "owner@example.test"}
+    def test_an_incident_shows_until_two_passing_runs_and_nothing_is_paged(self) -> None:
+        env = {"PLX_OPS_PAGE_TO": "owner@example.test"}   # an old setting: ignored
         fake = Fake(system=healthy_units() + [
             unit("plx-proactive.service", "failed", "failed", "oom-kill")])
-        status = self.run_at(fake, 0, env, fake.sender)
+        status = self.run_at(fake, 0, env)
         self.assertEqual([i["key"] for i in status["open"]], ["unit:plx-proactive.service"])
-        self.assertEqual(len(fake.sent), 1)
-        kind, sender, payload = fake.sent[0]
-        self.assertEqual((kind, sender, payload["to"]),
-                         ("send_email", "owner@example.test", ["owner@example.test"]))
-        self.assertIn("out of memory", payload["subject"])
-        self.assertIn("ET)", payload["body"])           # times in Eastern
+        self.assertIn("out of memory", status["open"][0]["line"])
         self.assertNotIn("owner@example.test", json.dumps(status))
-        for minutes in (5, 10):                         # still broken: no second page
-            self.run_at(fake, minutes, env, fake.sender)
-        self.assertEqual(len(fake.sent), 1)
+        for minutes in (5, 10):                         # still broken: the same incident
+            status = self.run_at(fake, minutes, env)
+        self.assertEqual(status["open"][0]["opened_at"], "2030-01-02T12:00:00Z")
+        self.assertEqual(status["open"][0]["last_seen_at"], "2030-01-02T12:10:00Z")
         fake.units["system"] = healthy_units()
-        status = self.run_at(fake, 15, env, fake.sender)
+        status = self.run_at(fake, 15, env)
         self.assertEqual(len(status["open"]), 1)        # one passing run is not recovery
-        status = self.run_at(fake, 20, env, fake.sender)
+        status = self.run_at(fake, 20, env)
         self.assertEqual(status["open"], [])
-        self.assertEqual(len(fake.sent), 2)
-        self.assertIn("recovered", fake.sent[1][2]["subject"])
-        self.assertEqual(status["recovered"][0]["recovery_page"]["status"], "sent")
-        # breaks again: a new incident, a new page
+        self.assertEqual(status["recovered"][0]["closed_at"], "2030-01-02T12:20:00Z")
+        self.assertEqual(set(status["recovered"][0]), {"key", "line", "opened_at",
+                                                       "last_seen_at", "closed_at"})
+        # breaks again: a new incident
         fake.units["system"] = healthy_units() + [
             unit("plx-proactive.service", "failed", "failed", "exit-code")]
-        self.run_at(fake, 25, env, fake.sender)
-        self.assertEqual(len(fake.sent), 3)
+        status = self.run_at(fake, 25, env)
+        self.assertEqual(status["open"][0]["opened_at"], "2030-01-02T12:25:00Z")
 
-    def test_unknown_neither_opens_nor_closes_and_dry_runs_page_once_set(self) -> None:
+    def test_a_state_written_while_paging_existed_reads_without_its_pages(self) -> None:
+        home = self.root / "ops-alarms"
+        home.mkdir()
+        (home / "state.json").write_text(json.dumps({"incidents": {"backup": {
+            "key": "backup", "line": "Nightly backup: failed", "opened_at":
+            "2030-01-02T11:00:00Z", "last_seen_at": "2030-01-02T11:00:00Z", "ok_runs": 0,
+            "page": {"status": "dry_run", "missing": ["PLX_OPS_PAGE_TO not set"]}}},
+            "recovered": []}))
+        status = self.run_at(Fake(), 0)
+        self.assertNotIn("PLX_OPS_PAGE_TO", json.dumps(status))
+        self.assertEqual(status["open"], [{"key": "backup", "line": "Nightly backup: failed",
+                                           "opened_at": "2030-01-02T11:00:00Z",
+                                           "last_seen_at": "2030-01-02T11:00:00Z"}])
+
+    def test_unknown_neither_opens_nor_closes(self) -> None:
         fake = Fake(user=[unit("plx-pg-follow.service", "failed", "failed", "exit-code")])
-        self.run_at(fake, 0)                             # dry run: nothing built
+        self.run_at(fake, 0)
         fake.units["user"] = None                        # the user manager cannot answer
         fake.pg_value = ImportError("psycopg")
         for minutes in (5, 10):
@@ -196,26 +200,12 @@ class AlarmPassTest(unittest.TestCase):
         checks = {c["name"]: c["state"] for c in status["checks"]}
         self.assertEqual((checks["units:user"], checks["pg_connections"]),
                          ("unknown", "unknown"))
-        env = {"PLX_OPS_PAGE_TO": "owner@example.test"}
-        self.run_at(fake, 15, env, fake.sender)          # set later: paged then, once
-        self.run_at(fake, 20, env, fake.sender)
-        self.assertEqual(len(fake.sent), 1)
-        self.assertIn("plx-pg-follow.service (user)", fake.sent[0][2]["body"])
-        # the send path's own dry run (sending off) is asked again hourly, not every pass
-        dry = Fake(system=healthy_units() + [unit("plx-x.service", "failed", "failed",
-                                                   "exit-code")])
-        dry_sender = lambda environ: type("S", (), {"dispatch": lambda self, *a: (
-            dry.sent.append(a), {"status": "dry_run", "missing": ["Sending is off"]})[1]})()
-        (self.root / "ops-alarms" / "state.json").unlink()
-        for minutes in (30, 35, 40, 95):
-            self.run_at(dry, minutes, env, dry_sender)
-        self.assertEqual(len(dry.sent), 2)
         # a server refusing the check's connection (too many clients) is itself a breach
         fake.pg_value = RuntimeError("too many clients")
-        status = self.run_at(fake, 25, env, fake.sender)
+        status = self.run_at(fake, 25)
         self.assertIn("pg_connections", [i["key"] for i in status["open"]])
 
-    def test_memory_pages_only_when_low_for_five_minutes(self) -> None:
+    def test_memory_opens_only_when_low_for_five_minutes(self) -> None:
         fake = Fake(mem_gb=4.0)
         status = self.run_at(fake, 0)
         self.assertNotIn("memory_available", [i["key"] for i in status["open"]])
@@ -228,45 +218,40 @@ class AlarmPassTest(unittest.TestCase):
         self.assertIn("memory_available", [i["key"] for i in status["open"]])
 
     def test_memory_under_eight_gb_warns_at_once_naming_the_top_consumers(self) -> None:
-        env = {"PLX_OPS_PAGE_TO": "owner@example.test"}
         fake = Fake(mem_gb=9.0)
-        status = self.run_at(fake, 0, env, fake.sender)
+        status = self.run_at(fake, 0)
         self.assertEqual(status["open"], [])
         self.assertEqual(getattr(fake, "consumer_reads", 0), 0)   # read only when short
         fake.mem_gb = 7.5
-        status = self.run_at(fake, 5, env, fake.sender)
+        status = self.run_at(fake, 5)
         self.assertEqual([i["key"] for i in status["open"]], ["memory_pressure"])
-        self.assertEqual(len(fake.sent), 1)
-        page = fake.sent[0][2]
-        self.assertIn("Memory pressure (early warning): 7.5 GB available (warning under "
-                      "8 GB); top cgroups: postgresql@17-main.service 12.48 GB, "
-                      "tmux-spawn-1.scope 9.5 GB; top processes: python3 -m "
-                      "operating.proactive (pid 4242, plx-proactive.service) 16.2 GB",
-                      page["body"])
-        self.assertEqual(page["to"], ["owner@example.test"])
-        # lower for five minutes: the second incident, also naming them; no repeat page
+        self.assertEqual(status["open"][0]["line"],
+                         "Memory pressure (early warning): 7.5 GB available (warning under "
+                         "8 GB); top cgroups: postgresql@17-main.service 12.48 GB, "
+                         "tmux-spawn-1.scope 9.5 GB; top processes: python3 -m "
+                         "operating.proactive (pid 4242, plx-proactive.service) 16.2 GB")
+        # lower for five minutes: the second incident, also naming them
         fake.mem_gb = 4.0
-        self.run_at(fake, 10, env, fake.sender)
-        status = self.run_at(fake, 15, env, fake.sender)
+        self.run_at(fake, 10)
+        status = self.run_at(fake, 15)
         self.assertEqual(sorted(i["key"] for i in status["open"]),
                          ["memory_available", "memory_pressure"])
-        self.assertEqual(len(fake.sent), 2)
-        self.assertIn("under 6 GB for 5 min; top cgroups", fake.sent[1][2]["body"])
-        self.assertNotIn("memory_pressure", fake.sent[1][2]["body"])
-        # two runs above 8 GB close both with one recovery notice
+        low = next(i for i in status["open"] if i["key"] == "memory_available")
+        self.assertIn("under 6 GB for 5 min; top cgroups", low["line"])
+        # two runs above 8 GB close both
         fake.mem_gb = 20.0
-        self.run_at(fake, 20, env, fake.sender)
-        status = self.run_at(fake, 25, env, fake.sender)
+        self.run_at(fake, 20)
+        status = self.run_at(fake, 25)
         self.assertEqual(status["open"], [])
-        self.assertEqual(len(fake.sent), 3)
-        self.assertIn("Recovered: 2", fake.sent[2][2]["body"])
+        self.assertEqual(sorted(i["key"] for i in status["recovered"][:2]),
+                         ["memory_available", "memory_pressure"])
 
     def test_memory_warning_holds_when_the_consumers_or_meminfo_cannot_be_read(self) -> None:
         fake = Fake(mem_gb=7.0)
         probes = fake.probes()
         probes.consumers = lambda: (_ for _ in ()).throw(PermissionError("cgroup"))
         status = ops_alarms.run_pass(self.root, now=NOW, environ={}, probes=probes,
-                                     dsn=None, sender_factory=never)
+                                     dsn=None)
         self.assertEqual([i["key"] for i in status["open"]], ["memory_pressure"])
         self.assertIn("top consumers unreadable (PermissionError)", status["open"][0]["line"])
         # meminfo unreadable or without MemAvailable: unknown, neither opens nor closes
@@ -278,34 +263,30 @@ class AlarmPassTest(unittest.TestCase):
             probes.meminfo = broken
             for minutes in (5, 10):
                 status = ops_alarms.run_pass(self.root, now=NOW + timedelta(minutes=minutes),
-                                             environ={}, probes=probes, dsn=None,
-                                             sender_factory=never)
+                                             environ={}, probes=probes, dsn=None)
             got = {c["name"]: c["state"] for c in status["checks"]}
             self.assertEqual((got["memory_pressure"], got["memory_available"]),
                              ("unknown", "unknown"))
             self.assertEqual([i["key"] for i in status["open"]], ["memory_pressure"])
 
     def test_the_minute_memory_pass_touches_only_memory_incidents(self) -> None:
-        env = {"PLX_OPS_PAGE_TO": "owner@example.test"}
+        env = {}
         fake = Fake(mem_gb=7.0)
-        # before any full pass: incidents kept and paged, the status left to the full pass
+        # before any full pass: incidents kept, the status left to the full pass
         early = ops_alarms.run_pass(self.root, now=NOW, environ=env, probes=fake.probes(),
-                                    sender_factory=fake.sender, memory_only=True)
+                                    memory_only=True)
         self.assertEqual([i["key"] for i in early["open"]], ["memory_pressure"])
         self.assertFalse((self.root / "ops-alarms" / "status.json").exists())
-        self.assertEqual(len(fake.sent), 1)
         fake.units["system"] = healthy_units() + [
             unit("plx-proactive.service", "failed", "failed", "oom-kill")]
-        full = self.run_at(fake, 1, env, fake.sender)
+        full = self.run_at(fake, 1, env)
         self.assertEqual(sorted(i["key"] for i in full["open"]),
                          ["memory_pressure", "unit:plx-proactive.service"])
-        self.assertEqual(len(fake.sent), 2)
         fake.units["system"] = healthy_units()   # fixed, but only a full pass may say so
         fake.mem_gb = 30.0
         for minute in (2, 3, 4):
             ops_alarms.run_pass(self.root, now=NOW + timedelta(minutes=minute), environ=env,
-                                probes=fake.probes(), sender_factory=fake.sender,
-                                memory_only=True)
+                                probes=fake.probes(), memory_only=True)
         status = ops_alarms.read_status(self.root, now=NOW + timedelta(minutes=4))
         self.assertEqual([i["key"] for i in status["open"]], ["unit:plx-proactive.service"])
         self.assertEqual(status["checked_at"], "2030-01-02T12:01:00Z")   # the full pass's
@@ -313,34 +294,31 @@ class AlarmPassTest(unittest.TestCase):
         names = [c["name"] for c in status["checks"]]
         self.assertEqual(names.count("memory_pressure"), 1)
         self.assertIn("units:system", names)
-        self.assertEqual(len(fake.sent), 3)                  # the memory recovery notice
-        self.assertIn("Memory pressure", fake.sent[2][2]["body"])
+        self.assertEqual([i["key"] for i in status["recovered"]], ["memory_pressure"])
         # the full checks stopped: Home still says so whatever the memory pass does
         status = ops_alarms.read_status(self.root, now=NOW + timedelta(minutes=30))
         self.assertFalse(status["running"])
         out = io.StringIO()
         probes = fake.probes()
-        with mock.patch.object(ops_alarms, "Probes", lambda: probes), \
-                mock.patch.object(ops_alarms, "_default_sender", never), \
-                mock.patch.dict(os.environ, {"PLX_OPS_PAGE_TO": ""}), redirect_stdout(out):
+        with mock.patch.object(ops_alarms, "Probes", lambda: probes), no_send(), \
+                redirect_stdout(out):
             code = ops_alarms.main(["memory", "--state-dir", str(self.root)])
         self.assertEqual(code, 0)
         self.assertIn("1 open", out.getvalue())
 
-    def test_sixty_failed_units_are_sixty_incidents_in_one_page(self) -> None:
-        env = {"PLX_OPS_PAGE_TO": "owner@example.test"}
+    def test_sixty_failed_units_are_sixty_incidents(self) -> None:
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 fake = Fake(system=healthy_units() + [
                     unit(f"plx-u{i:02d}.service", "failed", "failed", "exit-code")
                     for i in range(n)])
                 (self.root / "ops-alarms" / "state.json").unlink(missing_ok=True)
-                status = self.run_at(fake, 0, env, fake.sender)
+                status = self.run_at(fake, 0)
                 keys = [i["key"] for i in status["open"]]
                 self.assertEqual(len(keys), n)
                 self.assertEqual(len(set(keys)), n)
-                self.assertEqual(len(fake.sent), 1)
-                self.assertEqual(fake.sent[0][2]["body"].count("\n- "), n)
+                self.assertEqual(sorted(keys), [f"unit:plx-u{i:02d}.service"
+                                                for i in range(n)])
 
     def test_backups_too_old_or_never_run(self) -> None:
         t = ops_health.targets({})
@@ -356,13 +334,13 @@ class AlarmPassTest(unittest.TestCase):
             unit("plx-proactive.service", "failed", "failed", "oom-kill")])
         out = io.StringIO()
         probes = fake.probes()
-        with mock.patch.object(ops_alarms, "Probes", lambda: probes), \
-                mock.patch.object(ops_alarms, "_default_sender", never), \
-                mock.patch.dict(os.environ, {"PLX_OPS_PAGE_TO": ""}), redirect_stdout(out):
+        with mock.patch.object(ops_alarms, "Probes", lambda: probes), no_send(), \
+                mock.patch.dict(os.environ, {"PLX_OPS_PAGE_TO": "owner@example.test"}), \
+                redirect_stdout(out):
             code = ops_alarms.main(["run", "--state-dir", str(self.root), "--pg-dsn", ""])
-        self.assertEqual(code, 0)   # the page and the banner are the alarm, not the unit
-        self.assertIn("OPEN    plx-proactive.service (system): killed: out of memory "
-                      "(page dry_run)", out.getvalue())
+        self.assertEqual(code, 0)   # the banner and /ops are the alarm, not the unit
+        self.assertIn("OPEN    plx-proactive.service (system): killed: out of memory\n",
+                      out.getvalue())
         self.assertEqual(ops_alarms.main(["run", "--state-dir", str(self.root / "no")]), 2)
 
 
@@ -467,10 +445,11 @@ class CarriedSourcesTest(unittest.TestCase):
 
 
 class OpsStatusRouteTest(unittest.TestCase):
-    def test_only_the_owner_reads_the_alarms(self) -> None:
+    def test_the_owner_and_the_team_readers_read_the_alarms_and_no_one_else(self) -> None:
         from fastapi.testclient import TestClient
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
         from operator_api.app import create_app
-        from operator_api.auth import DevAuth, fixture_identity
+        from operator_api.auth import DevAuth
         from operator_api.mock import MockBackend
 
         class Owned(MockBackend):
@@ -479,28 +458,45 @@ class OpsStatusRouteTest(unittest.TestCase):
             def _is_owner(self, reader):
                 return self.owner
 
+        def client_for(backend, email):
+            session = fixture_session("plx", ["staff:demo"], channel=CHANNEL_CONSOLE,
+                                      subject_email=email)
+            client = TestClient(create_app(backend, DevAuth(lambda: session, mode="mock"),
+                                           secure_cookie=False))
+            self.assertEqual(client.get("/api/ops/status").status_code, 401)
+            client.post("/api/auth/dev-login", json={})
+            return client
+
         with tempfile.TemporaryDirectory() as tmp:
             root = make_state(Path(tmp))
             fake = Fake(system=healthy_units() + [
                 unit("plx-proactive.service", "failed", "failed", "oom-kill")])
-            ops_alarms.run_pass(root, environ={}, probes=fake.probes(), dsn=None,
-                                sender_factory=never)
-            for backend_type in (MockBackend, Owned):   # no Refused
-                backend = backend_type()
-                backend.state_dir = root
-                client = TestClient(create_app(backend, DevAuth(
-                    fixture_identity("plx", ["staff:demo"]), mode="mock"),
-                    secure_cookie=False))
-                self.assertEqual(client.get("/api/ops/status").status_code, 401)
-                client.post("/api/auth/dev-login", json={})
-                found = client.get("/api/ops/status", headers={"X-Owner": "1"})
-                self.assertEqual(found.status_code, 403)
-                self.assertNotIn("plx-proactive", found.text)
-            backend.owner = True
-            body = client.get("/api/ops/status").json()
-            self.assertTrue(body["running"])
-            self.assertEqual([i["key"] for i in body["open"]],
-                             ["unit:plx-proactive.service"])
+            with no_send():
+                ops_alarms.run_pass(root, environ={}, probes=fake.probes(), dsn=None)
+            cases = [  # backend, owner?, PLX_TEAM_VIEW_READERS, reads?
+                (MockBackend, False, "", False),           # no Refused
+                (Owned, False, "", False),
+                (Owned, False, "someone@example.test", False),
+                (MockBackend, False, " Vince@Example.test ,x@example.test", True),
+                (Owned, False, "vince@example.test", True),
+                (Owned, True, "", True)]
+            for backend_type, owner, named, reads in cases:
+                with self.subTest(backend=backend_type.__name__, owner=owner, named=named), \
+                        mock.patch.dict(os.environ, {"PLX_TEAM_VIEW_READERS": named}):
+                    backend = backend_type()
+                    backend.state_dir, backend.owner = root, owner
+                    client = client_for(backend, "vince@example.test")
+                    found = client.get("/api/ops/status", headers={"X-Owner": "1"})
+                    self.assertEqual(client.get("/api/me").json()["ops_reader"], reads)
+                    if not reads:
+                        self.assertEqual(found.status_code, 403)
+                        self.assertNotIn("plx-proactive", found.text)
+                        continue
+                    body = found.json()
+                    self.assertTrue(body["running"])
+                    self.assertEqual([i["key"] for i in body["open"]],
+                                     ["unit:plx-proactive.service"])
+                    self.assertNotIn("paging", body)
 
 
 if __name__ == "__main__":

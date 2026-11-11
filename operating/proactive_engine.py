@@ -2274,25 +2274,51 @@ _QUANTITY_SQL = (
 
 def _pg_quantity_rows(st: _Store) -> list[Any]:
     """``_quantity_rows``' rows on the Postgres ontology, which holds no packed layouts
-    (``value_layout_fields``): one cell per field, each with its own value kind, so the
-    quantity cells are read by kind (every one's ``cell_field`` its field, read in field
-    order as SQLite reads its unpacked cells); an incremental pass reads its scope's
-    records' own value sources."""
-    sql = ("SELECT s.src, c.field AS cell_field, 0 AS pos, v.object_id, o.object_type, "
-           "f.property, c.value, k.unit, k.quantity_role, v.l1_handle, k.markings "
-           "FROM value_kinds k JOIN value_cells c ON c.kind = k.kind "
+    (``value_layout_fields``): one cell per field, each with its own value kind. A whole
+    pass reads only the records of the types an identity link joins (``_identity_link_types``:
+    a dispute is two copies of one record; a lone record holds one current source), by the
+    type index, and of each only the cells of the fields the schema declares a quantity
+    (kind checked as well): the kind has no index there, so a read by kind scanned every
+    cell of the store (520M rows; 120 s statement timeout on every full run, 2026-11-11).
+    An incremental pass reads its scope's records' own value sources."""
+    base = ("SELECT s.src, c.field AS cell_field, 0 AS pos, v.object_id, o.object_type, "
+            "f.property, c.value, k.unit, k.quantity_role, v.l1_handle, k.markings ")
+    if not st.scoped:
+        sql = (base + "FROM objects o JOIN object_versions v ON v.object_id = o.object_id "
+               "JOIN value_sources s ON s.ver = v.rowid AND s.superseded_at IS NULL "
+               "JOIN value_cells c ON c.src = s.src "
+               "AND c.field IN (SELECT value FROM json_each(:fields)) "
+               "JOIN value_kinds k ON k.kind = c.kind AND k.value_type = 'quantity' "
+               "JOIN value_fields f ON f.field = c.field "
+               "WHERE o.object_type = :type AND NOT " + ostore.removed_at_sql("o.object_id"))
+        fields = json.dumps([row[0] for row in st.conn.execute(
+            "SELECT field FROM value_fields WHERE property IN (SELECT value FROM "
+            "json_each(:props))", {"props": json.dumps(_quantity_properties())})])
+        found = []
+        for object_type in sorted({t.split(".", 1)[0] for t in _identity_link_types()}):
+            found.extend(st.conn.execute(sql, {"fields": fields, "type": object_type}))
+        return found
+    sql = (base + "FROM value_kinds k JOIN value_cells c ON c.kind = k.kind "
            "JOIN value_sources s ON s.src = c.src JOIN object_versions v ON v.rowid = s.ver "
            "JOIN objects o ON o.object_id = v.object_id JOIN value_fields f ON f.field = c.field "
            "WHERE k.value_type = 'quantity' AND s.superseded_at IS NULL AND NOT "
-           + ostore.removed_at_sql("o.object_id"))
-    if not st.scoped:
-        return st.conn.execute(sql).fetchall()
+           + ostore.removed_at_sql("o.object_id")
+           + " AND v.object_id IN (SELECT value FROM json_each(:chunk))")
     found: list[Any] = []
-    sql += " AND v.object_id IN (SELECT value FROM json_each(:chunk))"
     ids = st._scope_ids
     for start in range(0, len(ids), SCOPE_CHUNK):
         found.extend(st.conn.execute(sql, {"chunk": json.dumps(ids[start:start + SCOPE_CHUNK])}))
     return found
+
+
+@functools.lru_cache(maxsize=1)
+def _quantity_properties() -> list[str]:
+    """Every property name the schema declares a quantity on some type."""
+    from ontology.schema import load_schema
+
+    return sorted({p["name"] for spec in load_schema().object_types.values()
+                   for p in spec.get("properties", ())
+                   if (p.get("value_type") or p.get("type")) == "quantity"})
 
 
 def _scoped_quantity_rows(st: _Store) -> list[Any]:

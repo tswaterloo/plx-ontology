@@ -11,6 +11,7 @@ rows; the case paths run over ``FakeWorkbench``). Nothing here is live data.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 import unittest
 
 from operating import case_verification, claim_checks
@@ -669,17 +670,17 @@ class CountsAcrossCallsTests(unittest.TestCase):
                 group = next(g for g in out["groups"]
                              if g["key"]["status"]["untrusted_text"] == "Complete")
                 self.assertEqual(group["value"], str(size))
-                cited = done[:min(size, 3)]
+                by_handle = {self.handle(oid): oid for oid in done}
+                cited = [by_handle[h] for h in group["members_cited"][:3]]
                 result = self.bound(arguments, out, cited, value=size)
-                if size <= 50:
-                    # every member listed: the count is the tool's, exact
-                    self.assertEqual(len(group["members_cited"]), size)
-                    self.assertTrue(result["passed"], result["failures"])
-                    self.assertEqual(checked(result)[0]["bound"], "exact")
-                else:
-                    # past the citation cap no member list backs it: a lower bound
-                    self.assertNotIn("members_cited", group)
-                    self.assertEqual(codes(result), ["claim_value_mismatch"])
+                # every member listed, or past the citation cap the first 50 with a
+                # citations_capped gap (as value rows are cited): the count is the
+                # tool's, exact (a count past 50 once cited nothing and bound nowhere)
+                self.assertEqual(len(group["members_cited"]), min(size, 50))
+                self.assertEqual({g["reason"] for g in out["gaps"]},
+                                 {"citations_capped"} if size > 50 else set())
+                self.assertTrue(result["passed"], result["failures"])
+                self.assertEqual(checked(result)[0]["bound"], "exact")
                 # a record of another group never binds to this one
                 other = self.bound(arguments, out, done[:1] + open_, value=size)
                 self.assertFalse(other["passed"])
@@ -814,6 +815,40 @@ class CountsAcrossCallsTests(unittest.TestCase):
         self.assertNotIn("partly_read_elsewhere", reasons)
         self.assertEqual(codes(self.bound(arguments, out, [self.fx.PO1, self.fx.PO2])),
                          ["claim_count_lower_bound"])
+
+    def test_a_partial_capture_s_own_count_is_said_as_at_least_that_count(self):
+        # dev 11-10 (G-0105/0106/0123): "approvals with status approved" = 657 over a
+        # source captured in part; the tool's count cites its first 50 members, so a
+        # lower bound could only be 50 ("count: 50") and 657 was refused. The tool's own
+        # count of the members it holds is a floor of the source's: "at least 657" binds,
+        # a bare 657, another number, or the count past another gap does not.
+        def lower(out, value, text, cited=3):
+            return self.bound(arguments, out, done[:cited], value=value, text=text)
+        for size in (1, 10, 60):
+            with self.subTest(size=size):
+                self.setUp()
+                done = self.purchase_orders(size)
+                self.partly_read("public.app_purchase_order")
+                arguments, out = self.aggregate(done)
+                self.assertEqual(out["groups"][0]["value"], str(size))
+                self.assertIn("source_partly_read", {g["reason"] for g in out["gaps"]})
+                cited = min(size, 3)
+                said = lower(out, size, f"At least {size} purchase orders.", cited)
+                self.assertTrue(said["passed"], said["failures"])
+                self.assertEqual(checked(said)[0]["bound"], "at_least")
+                self.assertEqual(codes(lower(out, size, f"{size} purchase orders.", cited)),
+                                 ["claim_count_lower_bound"])
+                self.assertFalse(lower(out, size + 1, f"At least {size + 1} purchase orders.",
+                                       cited)["passed"])
+                cut = {**out, "gaps": [*out["gaps"], {"state": "unknown", "reason": "scan_cap",
+                                                      "subject": "members", "detail": "cut"}]}
+                if size > cited:
+                    self.assertFalse(lower(cut, size, f"At least {size} purchase orders.",
+                                           cited)["passed"])
+                partial = {**out, "partial": True}
+                if size > cited:
+                    self.assertFalse(lower(partial, size, f"At least {size} purchase orders.",
+                                           cited)["passed"])
 
     # A set records whether the answer that made it held every match (set-complete): a count of a set made from an answer short of its matches
     # (a listing cut at the set size, a walk from such a set, a plx.query whose walk
@@ -953,3 +988,82 @@ class CountsAcrossCallsTests(unittest.TestCase):
                               calculations=(), returned=claim_checks.returned_evidence(
                                   "plx.query", arguments, out))
                 self.assertEqual([c.get("bound") for c in checked(result)], [bound])
+
+
+class AggregateSumBindingTests(unittest.TestCase):
+    """11-10: a total of more orders than one claim cites ("total amount of all Sage sales
+    orders dated 2023 in USD") was refused on every ask: the claim's few cited cells never
+    recompute to the total. A sum binds exact to the complete plx.aggregate sum that added
+    every input, citing only cells that sum cites, with its value and currency; anything
+    short of that fails closed."""
+
+    def setUp(self):
+        orders = [sales_order(i, f"{i}.25") for i in range(60)]
+        self.rows = dict(orders)
+        self.handles = [h for h, _ in orders]
+        self.total = str(sum(Decimal(f"{i}.25") for i in range(60)))
+
+    def summed(self, n_cited=50, gaps=("citations_capped",), value=None, arguments=None,
+               currency="USD", **result):
+        group = {"key": {}, "value": value or self.total, "inputs": 60, "markings": [],
+                 "currency": currency,
+                 "inputs_citations": [{"l1_handle": h, "field_path": "row.total_amount",
+                                       "digest": "0" * 64, "lineage": "portal_native"}
+                                      for h in self.handles[:n_cited]]}
+        answer = {"groups": [group], "partial": False,
+                  "gaps": [{"state": "unknown", "reason": r, "subject": "SalesOrder"}
+                           for r in gaps],
+                  "completeness": {"complete": True, "truncated": False, "returned": 1,
+                                   "total": 1}, "meta": {}, **result}
+        return claim_checks.returned_evidence(
+            "plx.aggregate", {"object_type": "SalesOrder",
+                              "measure": {"op": "sum", "property": "total_amount"},
+                              **(arguments or {})}, answer)
+
+    def check(self, returned, value=None, cited=None, currency="USD"):
+        cited = self.handles[:8] if cited is None else cited
+        claim = op(value or self.total, "sum",
+                   [{"citation": h, "field": "row.total_amount"} for h in cited],
+                   currency=currency)
+        return gate(f"They total {value or self.total} USD.", cited, [claim], rows=self.rows,
+                    calculations=(), returned=returned)
+
+    def test_a_capped_complete_sum_binds_and_anything_short_of_it_fails(self):
+        result = self.check(self.summed())
+        self.assertTrue(result["passed"], result["failures"])
+        # a tax basis no code grounds leaves the column's sum exact
+        self.assertTrue(self.check(self.summed(gaps=("citations_capped",
+                                                     "tax_basis_unknown")))["passed"])
+        refused = {
+            "another value": (self.summed(), {"value": "1.00"}),
+            "a cell the sum does not cite": (self.summed(),
+                                             {"cited": self.handles[52:54]}),
+            "a scan cut short": (self.summed(gaps=("citations_capped", "scan_cap")), {}),
+            "a partial answer": (self.summed(partial=True), {}),
+            "a value withheld": (self.summed(withheld={"objects": 1}), {}),
+            "a past moment": (self.summed(arguments={"as_known_at": "2020-01-01"}), {}),
+            "fewer cells than the cap": (self.summed(n_cited=49), {}),
+            "no tool sum": ({"counts": [], "currencies": {}}, {}),
+        }
+        for name, (returned, extra) in refused.items():
+            with self.subTest(case=name):
+                self.assertFalse(self.check(returned, **extra)["passed"])
+        self.assertEqual(codes(self.check(self.summed(), value="1.00")),
+                         ["claim_value_mismatch"])
+        # another currency than the sum's (and its cells') is no binding
+        self.assertFalse(self.check(self.summed(currency="CAD"))["passed"])
+        self.assertFalse(self.check(self.summed(), currency="CAD")["passed"])
+
+    def test_a_sum_entry_is_dropped_when_its_records_permissions_change(self):
+        from collections import deque
+        from operating import mcp_server
+        evidence = mcp_server._session_evidence()
+        claim_checks.returned_evidence("plx.aggregate", {
+            "object_type": "SalesOrder", "measure": {"op": "sum", "property": "total_amount"}},
+            {"groups": [], "partial": False, "gaps": [], "completeness": {"complete": True}},
+            evidence)
+        entries = self.summed()["counts"]
+        evidence["counts"].extend(entries)
+        self.assertIsInstance(evidence["counts"], deque)
+        mcp_server._drop_changed(evidence, None)   # every item changed
+        self.assertTrue(all(not e["complete"] for e in evidence["counts"]))

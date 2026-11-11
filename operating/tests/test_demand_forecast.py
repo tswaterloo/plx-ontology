@@ -237,8 +237,15 @@ class Forecast(Engine):
                          {"groups": []})                          # plx.aggregate as before
         self.assertEqual(call({"mode": "cash_forecast"}, "ops")["error"]["code"],
                          "finance_not_held")                      # the cash mode as before
-        got = call({"mode": "demand_forecast", "measure": {"op": "count"},
-                    "object_type": "SalesInvoiceLine"}, "ops")   # quantities: no finance
+        served = call({"mode": "demand_forecast", "measure": {"op": "count"},
+                       "object_type": "SalesInvoiceLine"}, "ops")
+        # the schema serves item on hand: the reorder check runs (this world states none)
+        self.assertEqual(served["reorder"]["status"], "complete", served["reorder"])
+        # a schema serving no on-hand source: blocked, naming the field it waits on
+        bare = df.DemandForecastTool(base, read=lambda path, day: df.read_book(
+            path, day, on_hand=()), wait=120.0)
+        got = bare.call({"mode": "demand_forecast", "measure": {"op": "count"},
+                         "object_type": "SalesInvoiceLine"}, "ops")   # quantities: no finance
         self.assertEqual((got["mode"], len(got["series"])), ("demand_forecast", 1), got)
         self.assertEqual(got["reorder"]["status"], "blocked")    # on hand not served
         self.assertIn("not_served_Product__quantity_on_hand", got["reorder"]["reasons"])

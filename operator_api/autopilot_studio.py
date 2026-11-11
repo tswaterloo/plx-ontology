@@ -131,7 +131,7 @@ class AutopilotStudioMixin:
 
     def autopilot_workflow_detail(self, reader: Reader, workflow: str
                                   ) -> m.AutopilotWorkflowDetail:
-        area = self.autopilot_area(reader)  # type: ignore[attr-defined]
+        area = self._area_read(reader)  # type: ignore[attr-defined]
         rows = [r for r in area.workflows if r.workflow == workflow]
         items = [i for i in area.items if i.workflow == workflow]
         specs = self._studio_specs(workflow)
@@ -195,7 +195,7 @@ class AutopilotStudioMixin:
             builder=False)
 
     def autopilot_schedules(self, reader: Reader) -> m.AutopilotSchedules:
-        area = self.autopilot_area(reader)  # type: ignore[attr-defined]
+        area = self._area_read(reader)  # type: ignore[attr-defined]
         table = wf.load().get("autopilot_workflow") or {}
         seen = {r.workflow for r in area.workflows} | {i.workflow for i in area.items}
         off = set(area.switches.workflows_off)
@@ -237,7 +237,7 @@ class AutopilotStudioMixin:
         else:
             role = body.role
             if not role:
-                rows = [r for r in self.autopilot_area(reader).workflows  # type: ignore[attr-defined]
+                rows = [r for r in self._area_read(reader).workflows  # type: ignore[attr-defined]
                         if r.workflow == workflow]
                 if len(rows) != 1:
                     raise UserFacing("bad_request", "Say which role's mode changes.", 422)

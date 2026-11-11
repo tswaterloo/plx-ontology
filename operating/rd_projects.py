@@ -46,7 +46,7 @@ not read).
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import hashlib
 import os
 import re
@@ -142,13 +142,72 @@ def rd_projects(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
     blocked = pt._blocked(people, result)
     if blocked is not None:
         return blocked
-    domains = pt._domains(people)
     pop = population(st, as_of, people)
     skipped = skips()
     if pop["dropped_unread"]:
         skipped["not_cleared_unread"] += pop["dropped_unread"]
-    directory = getattr(people, "directory", None) or {}
     counts: Counter = Counter()
+    lines = project_lines(st, pop, as_of, people, counts, skipped)
+    n_idle = idle_days()
+    gaps = []
+    projects: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for line in lines:
+        projects[line["key"]].append(line)
+    for key, group in sorted(projects.items()):
+        group.sort(key=lambda r: (r["last_at"], r["last"]))
+        for line in group:
+            _tick(st)
+            made = _line_gap(gap, cites, pop, line, key, as_of)
+            if made is None:
+                skipped["message_uncited"] += 1
+                continue
+            counts["lines"] += 1
+            gaps.append(made)
+        latest = group[-1]
+        waited = pt._business_days(latest["last_at"].date(), as_of)
+        counts["projects"] += 1
+        if latest["state"] == "closed" or waited < n_idle or not idle_alert_on():
+            continue
+        groups = [pt._cites_of(cites, pop["rows"], [r["last"]], ("sent_at", "subject", "sender"))
+                  for r in group[-MAX_LINES:]]
+        who = {"waiting_on_us": "waiting on us", "waiting_on_customer":
+               "waiting on the customer"}.get(latest["state"], "last note received")
+        subject_id = latest["customer"] or latest["last"]
+        subject_type = subject_id.split(":", 1)[0]
+        made = gap(
+            IDLE, RULE, subject_id, subject_type, f"rd|{key}",
+            summary=(f"A {KIND_WORD[latest['kind']]} project has had no activity for {waited} "
+                     f"business day(s) (last {latest['last_at'].date().isoformat()}; {who})"),
+            missing="Send the customer a status update, or close the project (nothing is "
+                    "sent until you send it)",
+            why="The project's threads were read for their latest message; none is newer than "
+                "the days shown (the messages cited).",
+            priority="medium", about=(subject_type, "rd_project"),
+            groups=groups,
+            event={"project": key, "kind": latest["kind"], "state": latest["state"],
+                   "days": waited, "last_on": latest["last_at"].date().isoformat(),
+                   "threads": len(group), "customer": latest["customer"],
+                   "party": latest["party"]})
+        if made is None:
+            skipped["message_uncited"] += 1
+            continue
+        made["requires"] = sorted({a for r in group for a in r["t"].audiences})
+        counts[IDLE] += 1
+        gaps.append(made)
+    out = result(gaps, not_evaluated=skipped)
+    out["counts"] = {k: counts[k] for k in ("threads", "projects", "lines", IDLE, "automated",
+                                            "mailing", "no_single_customer", "one_sided",
+                                            "asked_by_us", "supplier_thread")}
+    return out
+
+
+def project_lines(st: Any, pop: Mapping[str, Any], as_of: date, people: Any, counts: Counter,
+                  skipped: Counter, *, before: datetime | None = None) -> list[dict[str, Any]]:
+    """The R&D threads of the population as project lines (module doc: kind, state, owner,
+    contact, customer or party). ``before``: only the messages sent before this instant
+    count (a replay's day never reads a later message: the thread is judged as it stood)."""
+    domains = pt._domains(people)
+    directory = getattr(people, "directory", None) or {}
     since = as_of - timedelta(days=WINDOW_DAYS)
     threads: list[dict[str, Any]] = []
     for conversation in pop["members"]:
@@ -160,6 +219,8 @@ def rd_projects(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         humans = []
         first_by_us: bool | None = None
         for oid in t.messages:
+            if before is not None and t.sent(oid) >= before:
+                break
             sender, subject, text = t.sender(oid), t.subject(oid), t.text(oid)
             if pt.automated(sender, text, subject) or it.bulk(sender, text, subject):
                 counts["automated"] += 1
@@ -242,57 +303,7 @@ def rd_projects(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
                       "customer": customer, "items": items[:3], "last": last,
                       "last_at": t.sent(last), "owner": owner, "contact": contact,
                       "humans": x["humans"], "first_at": t.sent(x["humans"][0])})
-    n_idle = idle_days()
-    gaps = []
-    projects: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for line in lines:
-        projects[line["key"]].append(line)
-    for key, group in sorted(projects.items()):
-        group.sort(key=lambda r: (r["last_at"], r["last"]))
-        for line in group:
-            _tick(st)
-            made = _line_gap(gap, cites, pop, line, key, as_of)
-            if made is None:
-                skipped["message_uncited"] += 1
-                continue
-            counts["lines"] += 1
-            gaps.append(made)
-        latest = group[-1]
-        waited = pt._business_days(latest["last_at"].date(), as_of)
-        counts["projects"] += 1
-        if latest["state"] == "closed" or waited < n_idle or not idle_alert_on():
-            continue
-        groups = [pt._cites_of(cites, pop["rows"], [r["last"]], ("sent_at", "subject", "sender"))
-                  for r in group[-MAX_LINES:]]
-        who = {"waiting_on_us": "waiting on us", "waiting_on_customer":
-               "waiting on the customer"}.get(latest["state"], "last note received")
-        subject_id = latest["customer"] or latest["last"]
-        subject_type = subject_id.split(":", 1)[0]
-        made = gap(
-            IDLE, RULE, subject_id, subject_type, f"rd|{key}",
-            summary=(f"A {KIND_WORD[latest['kind']]} project has had no activity for {waited} "
-                     f"business day(s) (last {latest['last_at'].date().isoformat()}; {who})"),
-            missing="Send the customer a status update, or close the project (nothing is "
-                    "sent until you send it)",
-            why="The project's threads were read for their latest message; none is newer than "
-                "the days shown (the messages cited).",
-            priority="medium", about=(subject_type, "rd_project"),
-            groups=groups,
-            event={"project": key, "kind": latest["kind"], "state": latest["state"],
-                   "days": waited, "last_on": latest["last_at"].date().isoformat(),
-                   "threads": len(group), "customer": latest["customer"],
-                   "party": latest["party"]})
-        if made is None:
-            skipped["message_uncited"] += 1
-            continue
-        made["requires"] = sorted({a for r in group for a in r["t"].audiences})
-        counts[IDLE] += 1
-        gaps.append(made)
-    out = result(gaps, not_evaluated=skipped)
-    out["counts"] = {k: counts[k] for k in ("threads", "projects", "lines", IDLE, "automated",
-                                            "mailing", "no_single_customer", "one_sided",
-                                            "asked_by_us", "supplier_thread")}
-    return out
+    return lines
 
 
 def _line_gap(gap: Callable, cites: Callable, pop: Mapping[str, Any], line: Mapping[str, Any],

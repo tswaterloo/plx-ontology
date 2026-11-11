@@ -194,6 +194,10 @@ from operating.explanations import explain
 MAX_HANDLE = 4096
 MAX_QUERY = 200
 MAX_HOP_QUERIES = 12
+# A source's "records citing it": the records projected from it, each read through
+# plx.object for the reader, and their linked records (one plx.around hop per link type)
+MAX_CITED_HOLDERS = 5
+MAX_CITED_RECORDS = 40
 MAX_TIMELINE_ROOTS = 1 + MAX_HOP_QUERIES
 MAX_EVENTS = 200
 MAX_GAPS = 300
@@ -860,6 +864,10 @@ class ObjectWorkspace:
     def source(self, handle: str, *, text_offset: int = 0) -> dict[str, Any]:
         with self._request():
             return self._source(handle, text_offset=text_offset)
+
+    def cited_by(self, handle: str) -> dict[str, Any]:
+        with self._request():
+            return self._cited_by(handle)
 
     def investigate(self, family: str, root: str) -> dict[str, Any]:
         with self._request():
@@ -1740,6 +1748,68 @@ class ObjectWorkspace:
         return {**view, "handle": handle}
 
 
+    def _cited_by(self, handle: str) -> dict[str, Any]:
+        """The records that cite one L1 source, as this reader may read them now: the
+        records projected from it (its version's records, ``access.records_of``), each
+        read through ``plx.object`` for the reader, and the records linked to those
+        (one ``plx.around`` hop per link type, tier floor ``TIER_FLOOR``). The source is
+        decided first, as ``_source`` decides it: one the reader may not open reads as
+        not found (also when its family is served by no host here), so the list is no
+        existence oracle for a withheld source. A record ``plx.object`` does not show
+        the reader is left out without a trace; at most ``MAX_CITED_RECORDS``."""
+        if (not isinstance(handle, str) or not handle or len(handle) > MAX_HANDLE
+                or not handle.startswith(L1_SCHEMES)):
+            raise ValueError("l1_citation_handle_required")
+        if self.access.decide([handle]).get(handle) is not None:
+            raise KeyError("citation_unresolvable_for_actor")
+        self._base()  # a store from another mirror names no records either
+        holders = getattr(self.access, "records_of", None)
+        if not callable(holders):
+            return {"status": "not_served", "records": [], "truncated": False}
+        ids = sorted(holders(handle))
+        records: dict[str, dict[str, Any]] = {}
+        truncated = len(ids) > MAX_CITED_HOLDERS
+
+        def keep(item: Mapping[str, Any], how: str, link_type: str | None) -> None:
+            oid = item.get("object_id")
+            if not isinstance(oid, str) or oid in records:
+                return
+            if len(records) >= MAX_CITED_RECORDS:
+                nonlocal truncated
+                truncated = True
+                return
+            records[oid] = {"object_id": oid, "object_type": str(item.get("object_type")
+                                                                  or ""),
+                            "display": item.get("display"), "how": how,
+                            "link_type": link_type}
+
+        cards = []
+        for oid in ids[:MAX_CITED_HOLDERS]:
+            card = self._call("plx.object", {"object_id": oid})
+            if card.get("error") or not isinstance(card.get("object"), Mapping):
+                continue   # not shown to this reader (or unreadable): never named
+            keep(card["object"], "from", None)
+            cards.append((oid, card))
+        for oid, card in cards:
+            if len(records) >= MAX_CITED_RECORDS:
+                truncated = truncated or any(item.get("count") for item in
+                                             card.get("linked_counts") or ())
+                continue   # the list is full: no more hops are read
+            around = self._around(oid, card)
+            truncated = truncated or bool(around.get("truncated"))
+            for hop in around["hops"]:
+                result = hop.get("result") or {}
+                if result.get("error"):
+                    continue
+                for item in result.get("objects") or ():
+                    if isinstance(item, Mapping):
+                        keep(item, "linked", hop["link_type"])
+                if (result.get("completeness") or {}).get("truncated"):
+                    truncated = True
+        return {"status": "read", "records": list(records.values()),
+                "truncated": truncated}
+
+
 class CaseIntents:
     """Goal-2 action intents that cite a record an object was projected from.
 
@@ -2216,11 +2286,12 @@ class WorkspaceActions:
 SERVED_TOOLS = TOOLS + (DOCUMENTS_TOOL, INVESTIGATE_TOOL, AGGREGATE_TOOL)
 
 
-def _version_keys(host: Any) -> Callable[[str], str | None] | None:
-    """The audience key a cited version is kept under, as the host reads its records now:
-    the newest row-delta layer serving that version's record (a task that arrived in a
-    recent delta), else the served store (``StoreReader.version_audience``). A layer
-    decides only for the records it serves (a context record there is the served
+def _version_holders(host: Any
+                     ) -> Callable[[str], tuple[frozenset[str], str] | None] | None:
+    """(the records, their one audience key) of a cited version, as the host reads its
+    records now: the newest row-delta layer serving that version's record (a task that
+    arrived in a recent delta), else the served store (``StoreReader.version_audience``).
+    A layer decides only for the records it serves (a context record there is the served
     store's); a version none holds, or held under two keys, decides nothing (None)."""
     store = getattr(getattr(host, "tools", None), "store", None)
     base = getattr(store, "version_audience", None)
@@ -2236,19 +2307,31 @@ def _version_keys(host: Any) -> Callable[[str], str | None] | None:
     if base is None and not layers:
         return None
 
-    def keyed(handle: str) -> str | None:
+    def held(handle: str) -> tuple[frozenset[str], str] | None:
         for layer in layers:   # newest first
             found = layer.reader.version_audience(handle)
             if found is not None and found[0] & layer.serves:
                 if not found[0] <= layer.serves:
                     return None   # some of the record's objects served elsewhere: undecided
-                return found[1]
+                return frozenset(found[0]), found[1]
         found = base(handle) if base is not None else None
         if found is None:
             return None
         if overlay is not None and found[0] & getattr(overlay, "owned", frozenset()):
             return None   # a layer replaces this record and does not hold the version
-        return found[1]
+        return frozenset(found[0]), found[1]
+    return held
+
+
+def _version_keys(host: Any) -> Callable[[str], str | None] | None:
+    """The audience key a cited version is kept under (``_version_holders``)."""
+    holders = _version_holders(host)
+    if holders is None:
+        return None
+
+    def keyed(handle: str) -> str | None:
+        found = holders(handle)
+        return None if found is None else found[1]
     return keyed
 
 
@@ -2459,6 +2542,16 @@ class HostAccess:
                 for handle in todo:
                     memo[handle] = self._decide(handle, gated, policy, item_gate, keyed)
         return {handle: memo[handle] for handle in handles}
+
+    def records_of(self, handle: str) -> frozenset[str]:
+        """The records whose captured version ``handle`` (its record part, before any
+        ``#``) is, as the host reads them now (``_version_holders``); none when no one
+        record set decides. Names records only: each is read through the tools for the
+        reader before anything about it is shown (``ObjectWorkspace.cited_by``)."""
+        with self.host.per_call():
+            holders = _version_holders(self.host)
+            found = holders(handle.split("#", 1)[0]) if holders is not None else None
+        return frozenset() if found is None else found[0]
 
     @staticmethod
     def _decide(handle: str, gated: Any, policy: Any, item_gate: Callable | None,

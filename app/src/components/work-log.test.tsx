@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkLogEvent } from "@/lib/types";
-import { continueHref, WorkLogRow } from "./work-log";
+import { continueHref, recordName, WorkLogRow } from "./work-log";
 
 const api = vi.hoisted(() => ({ organiseWorkThread: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...(await original<object>()), ...api }));
@@ -36,5 +36,15 @@ describe("work log", () => {
     expect(screen.getByText("Ana")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Continue" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+  });
+
+  it("names a record the log kept without a label by its number or kind, never its key", () => {
+    render(<WorkLogRow e={sent({ kind: "autopilot", verb: "prepared", loop: null, records: [{ object_id: "PurchaseOrder:demo:90455", type: "PurchaseOrder" }] } as Partial<WorkLogEvent>)} />);
+    const row = screen.getByTestId("work-log-row");
+    expect(row).toHaveTextContent("PO 90455");
+    expect(row).toHaveTextContent("Autopilot");
+    expect(row).not.toHaveTextContent("PurchaseOrder:demo");
+    expect(recordName({ object_id: 'PurchaseOrder:bc.purchase_orders:{"no":"1"}', type: "PurchaseOrder" })).toBe("Purchase order");
+    expect(recordName({ object_id: "SalesOrder:demo:77120", type: "SalesOrder", label: "SO 77120 Glow" })).toBe("SO 77120 Glow");
   });
 });

@@ -3,7 +3,8 @@
   "note": "What an autopilot may do by itself once its workflow's write gate is live (operating/autopilot_write.py). Conservative by construction: an action kind, operation or MC approval scope not listed here is never routine; every term class an action names refuses it when its text matches; every payload field whose name holds a deny_fields fragment refuses it. Nothing here names a record, a party or a person.",
   "fresh_from": "2026-11-06T07:00:00Z",
   "gate": {"precision": "0.9", "min_judged": 15},
-  "rate_limits": {"per_hour": 5, "per_day": 20, "workflows": {}},
+  "rate_limits": {"per_hour": 5, "per_day": 20, "workflows": {},
+                  "approved": {"per_hour": 30, "per_day": 200}},
   "contested_workflows": [],
   "term_classes": {
     "money": ["\\bpay(?:s|ing|ment|ments|out|outs|able|ables)?\\b", "\\brefund\\w*",
@@ -37,6 +38,16 @@
       "deny_term_classes": ["money", "price", "credit", "permission", "migration",
                             "production_change", "new_party", "legal_or_people"]
     },
+    "mc_task": {
+      "label": "Routine Mission Control task note or label/title/priority update",
+      "operations": {
+        "task_note": {},
+        "task_update": {"require_precondition": "prior"}
+      },
+      "note": "Never money, prices, credit, permissions or judgment calls: every such term class refuses the action.",
+      "deny_term_classes": ["money", "price", "credit", "permission", "migration",
+                            "production_change", "new_party", "legal_or_people"]
+    },
     "send_mail": {
       "label": "Send the prepared email",
       "max_recipients": 3,
@@ -52,25 +63,62 @@
     "bc_write": {
       "label": "Business Central entry",
       "operations": {
-        "sales_order_create": {"require_precondition": "party", "max_lines": 20}
+        "sales_order_create": {"require_precondition": "party", "max_lines": 20},
+        "sales_order_line_create": {"require_precondition": "document"},
+        "sales_order_comment": {"require_precondition": "document"},
+        "purchase_order_comment": {"require_precondition": "document"}
       },
+      "note": "A new purchase order or a purchase line change commits spend: not routine. Lines carry no price (BC prices them from the item card); any price, cost or discount field refuses the action.",
       "deny_term_classes": ["money", "price", "credit", "new_party", "legal_or_people"]
     },
     "sage_write": {
       "label": "Sage 300 entry",
       "operations": {},
-      "note": "Every Sage entry an autopilot prepares (invoice entry, shipment posting, cash application) moves money: none is routine.",
+      "note": "The Sage integration has no write path (Sage is read through the Portal reporting replica), and every Sage entry an autopilot prepares (invoice entry, shipment posting, cash application) moves money: none is routine.",
       "deny_term_classes": ["money", "price", "credit", "new_party"]
     },
     "portal_write": {
       "label": "Customer Portal entry",
-      "operations": {},
+      "operations": {
+        "sales_order_set_customer_po": {"require_precondition": "prior"}
+      },
       "deny_term_classes": ["money", "price", "credit", "new_party"]
     },
     "filemaker_write": {
       "label": "FileMaker entry",
-      "operations": {},
+      "operations": {
+        "record_create": {},
+        "record_edit": {"require_precondition": "mod_id"}
+      },
       "deny_term_classes": ["money", "price", "credit", "new_party"]
+    },
+    "planner_write": {
+      "label": "Planner task create or update",
+      "operations": {
+        "task_create": {},
+        "task_update": {"require_precondition": "prior"}
+      },
+      "deny_term_classes": ["money", "price", "credit", "permission", "new_party",
+                            "legal_or_people"]
+    },
+    "calendar_write": {
+      "label": "Event in the owner's own calendar",
+      "operations": {
+        "event_create": {"known_domains_only": true},
+        "event_update": {"require_precondition": "prior"}
+      },
+      "deny_term_classes": ["money", "price", "credit", "permission", "new_party",
+                            "legal_or_people"]
+    },
+    "sharepoint_write": {
+      "label": "SharePoint list item create or update",
+      "operations": {
+        "list_item_create": {"known_domains_only": true},
+        "list_item_update": {"require_precondition": "prior"}
+      },
+      "note": "A file upload is never routine (its content is not read here): only a person approves one.",
+      "deny_term_classes": ["money", "price", "credit", "permission", "new_party",
+                            "legal_or_people"]
     }
   }
 }

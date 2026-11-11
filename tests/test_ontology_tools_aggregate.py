@@ -820,6 +820,17 @@ class FilterCountTests(_Base):
                 self.assertEqual(group["value"], str(n))   # 2n lines, n widgets
                 self.assertFalse(out["partial"])
                 self.assertTrue(out["completeness"]["complete"])
+                # a count of members cites them: every one, or past the cap the first
+                # MAX_CITATIONS with its gap, and the claim gate binds it exact (a count
+                # of 657 approvals once cited nothing, so no answer could say it)
+                self.assertEqual(len(group["members_cited"]), min(n, oa.MAX_CITATIONS))
+                self.assertEqual(len(set(group["members_cited"])), min(n, oa.MAX_CITATIONS))
+                self.assertEqual({g["reason"] for g in out["gaps"]},
+                                 {"citations_capped"} if n > oa.MAX_CITATIONS else set())
+                entry = claim_checks.returned_evidence(
+                    "plx.aggregate", {"object_type": "PurchaseOrderLine", "filters": widget,
+                                      "measure": {"op": "count"}}, out)["counts"][0]
+                self.assertEqual((entry["value"], entry["complete"]), (str(n), True))
         # Measured on a property every member carries, each counted record is cited: past
         # the citation cap a sample with its gap, still bound exact by the claim gate.
         out = self.count(widget, property="description")
@@ -862,9 +873,122 @@ class FilterCountTests(_Base):
                                               "measure": {"op": "count"}}, actor)
             self.assertEqual(out["groups"][0]["value"], every)
 
+    def test_a_filtered_count_reads_versions_in_its_scan_and_still_gates_each_item(self):
+        # 11-10: a count over 76k sales orders read every member's version three times
+        # (the scan, its re-check, the walk's check), 56-62 s against a 45 s cap. The scan
+        # statement now returns each record's version: the store's per-id version read is
+        # never called, every record is counted once across statement batches, and a
+        # version the item gate denies is still not counted.
+        widget = [{"property": "description", "op": "eq", "value": "widget"}]
+        self.lines(60)   # 30 widgets
+        denied = "PurchaseOrderLine:portal.app_purchase_order_line:z003"   # a widget
+        self.store.conn.execute(
+            "UPDATE object_versions SET l1_handle = 'sharepoint://site/item/3' "
+            "WHERE object_id = ?", (denied,))
+        self.tools.base.item_gate = lambda actor, handle: handle != "sharepoint://site/item/3"
+        reads = []
+        real = self.tools.base.store.visible_versions
+        with mock.patch.object(ot, "FILTER_BATCH", 7), \
+                mock.patch.object(self.tools.base.store, "visible_versions",
+                                  lambda scope, ids: reads.append(len(ids)) or real(scope, ids)):
+            out = self.count(widget)
+        [group] = out["groups"]
+        self.assertEqual(group["value"], "29")
+        self.assertNotIn("sharepoint://site/item/3", json.dumps(out))
+        self.assertEqual(reads, [])
+        # a reader whose gate admits it counts it
+        self.tools.base.item_gate = lambda actor, handle: True
+        self.assertEqual(self.count(widget)["groups"][0]["value"], "30")
+
+    def test_the_sql_item_gate_is_called_only_on_handles_an_item_acl_gates(self):
+        # 11-10: a Sage count's from-T check called the item gate on all 75k api://
+        # versions, a second statement round (7 s), though no item ACL gates api://.
+        # Only an item-ACL scheme's handle reaches the gate now; one it denies, even a
+        # later version of a record, still leaves the record out.
+        widget = [{"property": "description", "op": "eq", "value": "widget"}]
+        self.lines(20)   # 10 widgets
+        denied = "PurchaseOrderLine:portal.app_purchase_order_line:z003"   # a widget
+        # its version at T is an api:// row; a later one is a SharePoint item
+        row = dict(self.store.conn.execute(
+            "SELECT * FROM object_versions WHERE object_id = ?", (denied,)).fetchone())
+        self.store.conn.execute("UPDATE object_versions SET superseded_at = "
+                                "'2099-03-01T00:00:00Z' WHERE object_id = ?", (denied,))
+        row.update(l1_handle="sharepoint://site/item/3", recorded_at="2099-03-01T00:00:00Z",
+                   superseded_at=None, digest="later")
+        self.store.conn.execute(
+            f"INSERT INTO object_versions ({', '.join(row)}) VALUES "
+            f"({', '.join('?' * len(row))})", list(row.values()))
+        self.tools.base.item_gate = lambda actor, handle: handle != "sharepoint://site/item/3"
+        called = []
+        from operating.ontology_tools_traverse import TraverseTools
+        real = TraverseTools._gate_function
+
+        def spied(walk, actor):
+            check = real(walk, actor)
+            return lambda handle: called.append(handle) or check(handle)
+        with mock.patch.object(TraverseTools, "_gate_function", spied):
+            out = self.count(widget)
+        # left out, and the count says so rather than giving a smaller exact number
+        self.assertIsNone(out["groups"][0]["value"])
+        self.assertIn("marking_withheld", [g["reason"] for g in out["gaps"]])
+        self.assertEqual(called, ["sharepoint://site/item/3"])
+        # a reader whose gate admits it counts every widget
+        self.tools.base.item_gate = lambda actor, handle: True
+        self.assertEqual(self.count(widget)["groups"][0]["value"], "10")
+
+    def test_a_system_keeps_only_that_systems_records(self):
+        # "how many sales orders in Sage": a type several systems hold, counted in one
+        widget = [{"property": "description", "op": "eq", "value": "widget"}]
+        self.lines(4)   # Portal: two widgets
+        for i in range(3):
+            oid = f"PurchaseOrderLine:bc.purchase_order_lines:b{i}"
+            self.store.obj(oid)
+            self.store.val(oid, "description", "text", "widget")
+        def counted(**extra):
+            out = self.call("plx.aggregate", {"object_type": "PurchaseOrderLine",
+                                              "filters": widget, "measure": {"op": "count"},
+                                              **extra})
+            return out["groups"][0]["value"], out["groups"][0].get("members_cited", [])
+        self.assertEqual(counted()[0], "5")
+        value, cited = counted(system="portal")
+        self.assertEqual(value, "2")
+        self.assertTrue(cited and all("purchase_order_line" in h for h in cited))
+        self.assertEqual(counted(system="bc")[0], "3")
+        self.assertEqual(counted(system="sage")[0], "0")
+        # a restricted reader counting one system sees only what it may read (L5 sits in
+        # BC, which sales may not read), and a system's count leaves out no other
+        # system's records, so their unsourced filter is no gap of it
+        price = [{"property": "unit_price", "op": "gte", "value": "0"}]
+        found = {}
+        for actor, name in ((STAFF, "staff"), (SALES, "sales")):
+            for system in (None, "portal", "bc"):
+                out = self.call("plx.aggregate", {
+                    "object_type": "PurchaseOrderLine", "filters": price,
+                    "measure": {"op": "count"}, **({"system": system} if system else {})},
+                    actor)
+                found[name, system] = (out["groups"][0]["value"],
+                                       sorted({g["reason"] for g in out["gaps"]}))
+                if name == "sales":
+                    self.assertNotIn(self.store.handles[L5][0], json.dumps(out))
+        self.assertEqual(found, {
+            ("staff", None): ("2", ["filter_not_sourced"]),
+            ("staff", "portal"): ("2", []),     # the Portal records unit_price
+            ("staff", "bc"): ("0", ["filter_not_sourced"]),   # BC never does
+            ("sales", None): (None, ["filter_not_sourced", "marking_withheld"]),
+            ("sales", "portal"): (None, ["marking_withheld"]),
+            ("sales", "bc"): (None, ["filter_not_sourced", "marking_withheld"])})
+        self.assertEqual([oa.record_system(o) for o in (
+            "SalesOrder:portal.sage_oe_order_header:1", "SalesOrder:portal.fm_order_entry:2",
+            "SalesOrder:portal.app_sales_order:3", "SalesOrder:bc.sales_orders:4",
+            "MCApproval:mission_control.approvals:5", "X:unheard.of:6")],
+            ["sage", "filemaker", "portal", "bc", "mc", None])
+
     def test_unknown_inputs_fail_closed(self):
         widget = [{"property": "description", "op": "eq", "value": "widget"}]
         for arguments, code in (
+                ({"object_type": "PurchaseOrderLine", "filters": widget,
+                  "system": "oracle"}, "invalid_input"),
+                ({"set": self.set_of(STAFF, L1), "system": "portal"}, "invalid_input"),
                 ({"object_type": "NoSuchType", "filters": widget}, "unknown_object_type"),
                 ({"object_type": "PurchaseOrderLine",
                   "filters": [{"property": "no_such", "op": "eq", "value": "x"}]},
@@ -1475,3 +1599,27 @@ class DefaultDatesAndOrigins(_Base):
         self.assertEqual(by[self.dated]["values"]["order_date"]["value"], "2031-05-02")
         reasons = {g["reason"] for g in got["gaps"]}
         self.assertTrue({"date_not_on_record", "date_from_origin_twin"} <= reasons)
+
+
+class DayBoundTests(_Base):
+    """A bare day bounds a time filter by the whole day (dev 11-10: "approvals requested on
+    or before November 2" counted 412 of 500, the day's own after midnight left out)."""
+
+    def test_a_bare_day_bounds_times_by_the_whole_day(self):
+        times = ("2031-03-01T23:59:59Z", "2031-03-02T00:00:00Z", "2031-03-02T18:30:00Z",
+                 "2031-03-02T23:59:59.999Z", "2031-03-03T00:00:00Z")
+        for n, at in enumerate(times):
+            oid = f"PurchaseOrder:portal.app_purchase_order:day{n}"
+            self.store.obj(oid)
+            self.store.val(oid, "portal_created_at", "timestamp", at)
+
+        def count(op, value):
+            out = self.call("plx.aggregate", {"object_type": "PurchaseOrder", "measure": {
+                "op": "count"}, "filters": [{"property": "portal_created_at", "op": op,
+                                             "value": value}]})
+            return out["groups"][0]["value"]
+        self.assertEqual({op: count(op, "2031-03-02") for op in ("lte", "lt", "gte", "gt")},
+                         {"lte": "4", "lt": "1", "gte": "4", "gt": "1"})
+        # a time is compared as written
+        self.assertEqual(count("lte", "2031-03-02T12:00:00Z"), "2")
+        self.assertEqual(count("gt", "2031-03-02T12:00:00Z"), "3")

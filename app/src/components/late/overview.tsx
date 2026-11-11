@@ -34,6 +34,69 @@ function totals(items: LatePo[]): [string, number][] {
   return [...m.entries()].sort((a, b) => b[1] - a[1]);
 }
 
+/** What to do about one late PO, from what is on record about its supplier confirmation. */
+export function nextStep(p: LatePo): string {
+  switch (p.confirmation) {
+    case "none_found":
+      return "No supplier date on record: ask the supplier for one";
+    case "found_unverified":
+      return "A reply may carry the date: read it and confirm the date";
+    case "needs_check":
+      return "A confirmation names a number another order holds: check which order it is";
+    case "confirmed":
+      return "The confirmed date has passed: chase a new ship date";
+    default:
+      // the list doesn't say (the order's page decides): what the list does know, else open it
+      return p.reason?.trim() ? `${p.reason.trim()}; open the order to see where it stands` : "Open the order to see where it stands";
+  }
+}
+
+/** The late POs to act on first: longest late, then largest, each with its next step. */
+function FirstSteps({ items, onPick }: { items: LatePo[]; onPick?: (po: LatePo) => void }) {
+  const first = [...items]
+    // longest late first; on a tie the larger value, compared only within one currency
+    .sort((a, b) => (b.days_late ?? -1) - (a.days_late ?? -1) || (a.amount?.currency === b.amount?.currency ? (valueOf(b) ?? 0) - (valueOf(a) ?? 0) : 0))
+    .slice(0, 6);
+  if (first.length === 0) return null;
+  return (
+    <section data-testid="late-first">
+      <h2 className="text-[12px] font-medium text-muted">Act on first</h2>
+      <table className="mt-1 w-full text-left text-[13px]">
+        <tbody className="divide-y divide-border">
+          {first.map((p) => {
+            const label = (
+              <>
+                <span className="font-medium">{recordLabel("PurchaseOrder", p.label)}</span>
+                {p.supplier && <span className="text-muted"> {p.supplier}</span>}
+              </>
+            );
+            return (
+              <tr key={p.object_id} className="align-top">
+                <td className="max-w-[240px] truncate py-1.5 pr-3">
+                  {onPick ? (
+                    <button type="button" onClick={() => onPick(p)} className="max-w-full truncate text-left hover:underline cursor-pointer">
+                      {label}
+                    </button>
+                  ) : (
+                    <Link href={safeHref(p.open_url) ?? objectHref("PurchaseOrder", p.object_id)} className="hover:underline">
+                      {label}
+                    </Link>
+                  )}
+                </td>
+                <td className="whitespace-nowrap py-1.5 pr-3 text-right tabular-nums text-late">{typeof p.days_late === "number" ? `${p.days_late} d` : ""}</td>
+                <td className="whitespace-nowrap py-1.5 pr-3 text-right tabular-nums text-muted max-sm:hidden">
+                  {p.amount && valueOf(p) !== null ? formatMoney(p.amount.amount, p.amount.currency) : ""}
+                </td>
+                <td className="py-1.5 text-[12px] text-muted max-md:hidden">{nextStep(p)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
 /** The late list at a glance: how many, the oldest, how many have no supplier date, their value; then the chart. */
 export function LateOverview({
   items,
@@ -94,6 +157,7 @@ export function LateOverview({
         )}
       </div>
       {parts === "all" && items.length > 1 && <LateShape items={items} picked={picked} onSupplier={onSupplier} onPick={onPick} />}
+      {parts === "all" && <FirstSteps items={items} onPick={onPick} />}
     </div>
   );
 }

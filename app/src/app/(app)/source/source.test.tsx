@@ -12,7 +12,8 @@ vi.mock("next/navigation", () => ({
   }),
 }));
 const getSource = vi.fn();
-vi.mock("@/lib/api", () => ({ getSource: (...a: unknown[]) => getSource(...a) }));
+const getSourceRecords = vi.fn();
+vi.mock("@/lib/api", () => ({ getSource: (...a: unknown[]) => getSource(...a), getSourceRecords: (...a: unknown[]) => getSourceRecords(...a) }));
 
 import SourcePage from "./page";
 
@@ -77,6 +78,8 @@ describe("source page", () => {
   // braces: a hook that returns the mock would have vitest call it as a teardown
   beforeEach(() => {
     getSource.mockReset();
+    getSourceRecords.mockReset();
+    getSourceRecords.mockRejectedValue(new ApiError(404, "not_found"));
   });
   afterEach(() => {
     params.handle = "";
@@ -86,8 +89,12 @@ describe("source page", () => {
   it("opens an email as a message: header and body, never its metadata", async () => {
     params.handle = mail.handle;
     getSource.mockResolvedValue(mail);
+    getSourceRecords.mockResolvedValue({ handle: mail.handle, served: true, truncated: false, records: [{ record: { object_id: "PurchaseOrder:x:5275", type: "PurchaseOrder", label: "5275", open_url: "/object/PurchaseOrder/PurchaseOrder%3Ax%3A5275" }, how: "linked", link: "mentions" }] });
     render(<SourcePage />);
     const header = await screen.findByTestId("email-header");
+    // the records citing it: in the inspector, and named once under the title
+    expect(await screen.findByTestId("source-records-linked")).toHaveTextContent("PO 5275");
+    expect(screen.getByTestId("source-context")).toHaveTextContent("Linked to PO 5275");
     expect(header).toHaveTextContent("From");
     expect(header).toHaveTextContent("ross@example.com");
     expect(header).toHaveTextContent("keenan@example.com, carrie@example.com");

@@ -105,7 +105,7 @@ OUTCOMES = ("answered", "repair", "abstained")
 # A structured claim: one value, the L1 handle it was read from and its field (or a count
 # or sum over cited records), optional role, unit, currency, and whether it is a lead.
 CLAIM_KEYS = frozenset({"id", "value", "citation", "field", "role", "unit", "currency",
-                        "op", "of", "lead", "quote", "expression", "name", "via"})
+                        "op", "of", "lead", "quote", "expression", "name", "via", "day"})
 # A claim whose citations neither name nor link to a record the question names
 # (``gate_answer``'s ``relevant``) and whose ``via`` (a handle this session returned) does
 # not either: refused, so an answer never rests on a record unconnected to its question.
@@ -896,9 +896,13 @@ VALUE_CLAIM_FIXES = {
         "an expression input's value is the figure as written in its cited text: digits, "
         "with an optional thousands comma and fraction, and % for a printed percent"),
     "invalid_value_claim_op": (
-        "op is count, count_distinct, sum, avg, min, max, difference, ratio or expression "
-        "over 1 to 100 distinct inputs in \"of\" (difference and ratio exactly two, x0 then "
-        "x1), each {\"citation\", \"field\", \"unit\"?} (a count's a citation alone)"),
+        "op is count, count_distinct, sum, avg, min, max, difference, ratio, days or "
+        "expression over 1 to 100 distinct inputs in \"of\" (difference, ratio and days "
+        "exactly two, x0 then x1; days one with \"day\"), each {\"citation\", \"field\", "
+        "\"unit\"?} (a count's a citation alone, a days input's no unit)"),
+    "invalid_value_claim_day": (
+        "\"day\" goes only with \"op\": \"days\" over one cited date: an ISO day "
+        "(YYYY-MM-DD) the question writes in full, or today"),
     "invalid_value_claim_expression": (
         "an expression claim is {\"value\", \"op\": \"expression\", \"expression\": "
         "\"x0 - x1\", \"of\": [{\"citation\", \"field\", \"value\", \"quote\"}, ...]}"),

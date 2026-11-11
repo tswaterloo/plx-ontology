@@ -62,7 +62,8 @@ function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: Auto
   const accept = async () => {
     setBusy(true);
     try {
-      const out = await decideAutopilotItem(item.item_id, { decision: "accept" });
+      // one click is never a live write: the server refuses a live item sent this way
+      const out = await decideAutopilotItem(item.item_id, { decision: "accept", bulk: true });
       setDecided(out.decision?.outcome === "dry_run" ? "Accepted. Dry run: your yes is recorded, nothing was sent or written." : "Accepted.");
     } catch (e) {
       setDecided(plainError(e));

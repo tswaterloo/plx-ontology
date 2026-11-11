@@ -134,7 +134,8 @@ PEOPLE_SECTIONS = frozenset({"threads", "notes", "promises", "asks", "commitment
 PEOPLE_KINDS = PROMISE_KINDS | ASK_KINDS | frozenset({"commitment_missed", "vendor_no_reply",
                                                    "approval_waiting", "chase_escalating",
                                                    "party_chase_unanswered",
-                                                   "internal_order_chase"})
+                                                   "internal_order_chase",
+                                                   "rd_project_line", "rd_project_idle"})
 PEOPLE_NOTE = ("The people exclusion is not loaded, so no mail, Teams or meeting line is "
                "shown here; this section may still have items.")
 ITEM_NOTE = ("Your item access could not be checked, so nothing is shown here; this section "
@@ -678,6 +679,41 @@ def _last_notes(reads: Reads, ptype: str, party: str, now: datetime, exclude: se
                  day=_day(raw), object_id=tid, sources=[handle, s_handle, t_handle])]
 
 
+RD_NOTE = ("The customer's sample, formulation, stability and certificate threads as projects, "
+           "newest first; a status update is drafted on the R&D board.")
+RD_STATE = {"waiting_on_us": "waiting on us", "waiting_on_customer": "waiting on the customer",
+            "update_received": "update received", "closed": "closed"}
+
+
+def _rd_rows(gaps: Iterable[Mapping[str, Any]], parties: Sequence[str]) -> list[dict[str, Any]]:
+    """The R&D and sample projects of these parties (``operating.rd_projects`` lines of the
+    reader's own decided alerts, one row per project: its latest line), newest first."""
+    from operating import rd_projects as rd
+    latest: dict[str, tuple[Mapping[str, Any], Mapping[str, Any], list[str]]] = {}
+    for g in gaps:
+        event = g.get("event") if isinstance(g.get("event"), Mapping) else {}
+        if g.get("kind") != rd.LINE or event.get("customer") not in parties \
+                or event.get("kind") not in rd.KIND_WORD or event.get("state") not in RD_STATE \
+                or not isinstance(event.get("project"), str):
+            continue
+        key = event["project"]
+        cites = (latest[key][2] if key in latest else []) + _cite_handles(g)
+        if key not in latest or str(event.get("last_on") or "") > \
+                str(latest[key][1].get("last_on") or ""):
+            latest[key] = (g, event, cites)
+        else:
+            latest[key] = (latest[key][0], latest[key][1], cites)
+    rows = []
+    for g, event, cites in sorted(latest.values(), key=lambda x: (
+            str(x[1].get("last_on") or ""), x[1]["project"]), reverse=True):
+        rows.append(_row(f"{rd.KIND_WORD[event['kind']].capitalize()}: "
+                         f"{RD_STATE[event['state']]}", day=_day(event.get("last_on")),
+                         detail=f"last activity {event.get('last_on')}",
+                         object_id=g.get("object_id") if isinstance(g.get("object_id"), str)
+                         else None, sources=cites))
+    return rows
+
+
 def meeting_brief(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | None,
                   object_id: str, *, now: datetime | None = None,
                   budget_seconds: float = BUDGET_SECONDS,
@@ -765,6 +801,7 @@ def meeting_brief(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
             and (reads.finance() or g["kind"] not in FINANCE_KINDS)
             and not (blocked and g["kind"] in PEOPLE_KINDS)]
     mine = [g for g in seen if _cite_objects(g) & related] if parties else []
+    projects = _rd_rows(seen, parties)
     promises = [g for g in mine if g["kind"] in PROMISE_KINDS]
     quality = [g for g in mine if g["kind"] in QUALITY_KINDS]
     other = [g for g in mine if g["kind"] not in PROMISE_KINDS | QUALITY_KINDS]
@@ -787,6 +824,9 @@ def meeting_brief(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
         (_withheld("promises", "Open promises") if blocked else
          _alert_section("promises", "Open promises", promises, inbox)),
         _alert_section("quality", "Quality issues", quality, inbox),
+        (_withheld("rd", "R&D and sample projects") if blocked else
+         _section("rd", "R&D and sample projects", projects, state=None if inbox else "unread",
+                  note=RD_NOTE if inbox else UNREAD_NOTE)),
         (_withheld("notes", "Last meeting: notes and action items") if blocked else
          _section("notes", "Last meeting: notes and action items", notes + actions,
                   note=None if notes or actions else
@@ -1606,10 +1646,35 @@ def _left_out(out: Mapping[str, Any], key: str) -> str:
     return f" {n} more not listed (the answer's size limit)." if n else ""
 
 
-def _release_queue(out: Mapping[str, Any] | None) -> dict[str, Any]:
-    reason = ((out or {}).get("hold_release_queue") or {}).get("reason")
-    return _section("hold_release", "Hold-release queue", [], state="not_available",
-                    note=_clip(reason, 400) or "Not available yet.")
+RELEASE_NOTE = ("Batches and lots on hold that orders or receipts have waited on, the ones "
+                "with open orders waiting first, then the longest waiting. Days count from "
+                "the earliest allocated order (a batch) or the receipt (a lot): no hold date "
+                "is stored, and on-hand quantities are not served yet.")
+MATERIAL_KINDS = frozenset({"assembly_blocked_by_component", "production_late",
+                            "stock_out_risk", "shortage"})
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _release_queue(hold_alerts: Sequence[Mapping[str, Any]], read: bool) -> dict[str, Any]:
+    """The hold-release queue from the reader's own hold-aging alerts (already decided for
+    the reader): open orders waiting first, then days waited."""
+    if not read:
+        return _section("hold_release", "Hold-release queue", [], state="unread",
+                        note=UNREAD_NOTE)
+    ranked = sorted(hold_alerts, key=lambda g: (
+        -_int((g.get("event") or {}).get("orders_affected")),
+        -_int((g.get("event") or {}).get("days")), str(g.get("id"))))
+    rows = [_row(alert_label(str(g.get("kind"))), detail=_clip(g.get("summary"), 300),
+                 object_id=g.get("object_id") if isinstance(g.get("object_id"), str) else None,
+                 sources=_cite_handles(g)) for g in ranked]
+    return _section("hold_release", "Hold-release queue", rows, limit=QC_ROWS,
+                    note=RELEASE_NOTE, partial=True)
 
 
 def _slot_rows(out: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1629,13 +1694,14 @@ def qc_daily_pack(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
                   clock: Callable[[], float] | None = None) -> dict[str, Any]:
     """The daily QC pack for a quality reader: the quality checks open now (missed, overdue,
     due within a week), open calibration, production slots past start and not completed,
-    batches on hold (the hold-aging alerts of the reader's list) and the hold-release
-    queue (not available, with its reason). A reader without quality_controlled gets every
+    batches on hold (the hold-aging alerts of the reader's list), the hold-release queue
+    (those alerts ranked by the open orders waiting, then days; partial: no hold date or
+    on-hand quantity is stored) and the production-materials alerts. A reader without quality_controlled gets every
     section marked so and nothing is read."""
     today = today or datetime.now(timezone.utc).date()
     keys = (("open_checks", "Quality checks open now"), ("calibration", "Open calibration"),
             ("slots", "Production slots not completed"), ("holds", "Batches on hold"),
-            ("hold_release", "Hold-release queue"))
+            ("hold_release", "Hold-release queue"), ("materials", "Production materials"))
     head = {"schema": QC_DAILY_SCHEMA, "kind": "qc_daily", "title": f"Daily QC pack, "
             f"{today.isoformat()}", "subject": None, "subject_sources": [],
             "when": today.isoformat(), "as_of": today.isoformat(), "parties": [],
@@ -1651,6 +1717,7 @@ def qc_daily_pack(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
     if gated is None:
         inbox, gated = False, []
     hold_alerts = [g for g in gated if g["kind"] in QC_HOLD_KINDS]
+    material_alerts = [g for g in gated if g["kind"] in MATERIAL_KINDS]
     if out is None:
         sections = [_section(k, t, [], state="unread", note="The QC figures could not be "
                              "read; this section may still have figures.") for k, t in keys[:3]]
@@ -1690,7 +1757,11 @@ def qc_daily_pack(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
             _alert_section("holds", "Batches on hold", hold_alerts, inbox,
                            figures=[_held_figure(out, alerts=True)]),
         ]
-    sections.append(_release_queue(out))
+    sections.append(_release_queue(hold_alerts, inbox))
+    sections.append(_alert_section("materials", "Production materials", material_alerts,
+                                   inbox, limit=QC_ROWS,
+                                   note="Components short for an assembly, late production, "
+                                        "stock running out: your alerts of these kinds."))
     sections = finish(sections, decide, reads)
     return {**head, "sections": sections, "gaps": reads.gaps(),
             "budget": reads.cited.budget()}
@@ -1772,7 +1843,6 @@ def qc_audit_pack(call: Call, held: Iterable[str], *, today: date | None = None,
                  note="FileMaker schedule slots by start day; the slot records no completion "
                       "day, so lateness is not measured."),
         _section("holds", "Batches on hold", [], figures=[_held_figure(audit, alerts=False)]),
-        _release_queue(audit),
     ]
     sections = finish(sections, decide, reads)
     return {**head, "sections": sections, "gaps": reads.gaps(),

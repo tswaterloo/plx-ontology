@@ -236,6 +236,8 @@ export function SourceDocument({
   actions,
   wide = false,
   after,
+  aside,
+  context,
 }: {
   view: SourceView;
   text: string;
@@ -246,6 +248,10 @@ export function SourceDocument({
   actions?: React.ReactNode;
   wide?: boolean;
   after?: React.ReactNode;
+  /** more inspector parts (the full page's records citing it) */
+  aside?: React.ReactNode;
+  /** one line under the title: where it sits ("Read into PO 90412") */
+  context?: string | null;
 }) {
   const [sig, setSig] = useState(false);
   const [all, setAll] = useState(false);
@@ -291,6 +297,11 @@ export function SourceDocument({
             {title}
           </H>
           {!email && read && <p className={cn("mt-1 text-[12px] leading-4 text-muted", wide && "@min-[880px]:hidden")}>Read {read}</p>}
+          {context && (
+            <p className="mt-1 text-[13px] leading-5 text-fg/85" data-testid="source-context">
+              {context}
+            </p>
+          )}
           {actions}
         </div>
       </header>
@@ -395,6 +406,7 @@ export function SourceDocument({
               )}
             </dl>
           </section>
+          {aside}
           {!email && rest.length > 0 && (
             <section data-testid="source-more-fields">
               {/* narrow: a toggle; wide: the fields always show, so a plain heading (no dead, "collapsed" button) */}
@@ -431,6 +443,8 @@ export function SourceLoader({
   actions,
   wide = false,
   onView,
+  aside,
+  context,
 }: {
   handle: string;
   cited?: string[];
@@ -440,6 +454,8 @@ export function SourceLoader({
   actions?: (view: SourceView) => React.ReactNode;
   wide?: boolean;
   onView?: (view: SourceView) => void;
+  aside?: React.ReactNode;
+  context?: string | null;
 }) {
   const [view, setView] = useState<SourceView | null>(null);
   const [text, setText] = useState("");
@@ -517,6 +533,8 @@ export function SourceLoader({
         titleId={titleId}
         actions={actions?.(view)}
         wide={wide}
+        aside={aside}
+        context={context}
         after={
           <>
             {pager}

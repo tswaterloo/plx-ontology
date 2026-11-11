@@ -880,6 +880,18 @@ class _Scope:
 
 # --------------------------------------------------------------------------- store
 
+def _type_keys(typed: Any, tid: str, audiences: frozenset[str], every: str) -> str:
+    """The audience keys (JSON) a probe of ``tid``'s objects asks for: the reader's keys
+    that some object of the type carries (the store's kept ``audiences`` fact), else all
+    of the reader's (``every``). An object of the type carries no other key, so the
+    answer is the same; the probe walks the audience index over the type's keys only
+    (the owner's 4,488 keys walked millions of other types' rows before the first mail
+    message: 51 s for one Email binding, every cold find)."""
+    if not isinstance(typed, Mapping):
+        return every
+    return json.dumps(sorted(audiences.intersection(typed.get(tid, ()))))
+
+
 def _then(first: list[int], rest: Iterator[list[int]]) -> Iterator[list[int]]:
     """``first`` and then ``rest``; closing it closes ``rest`` (its open statement)."""
     try:
@@ -1369,7 +1381,12 @@ class StoreReader:
                         batch: int, narrowing: Sequence[tuple[str, dict[str, Any]]] = (),
                         among: Sequence[str] | None = None,
                         events: Sequence[tuple[str, str, str | None]] = (),
-                        upto: str | None = None) -> list[sqlite3.Row]:
+                        upto: str | None = None, *, versions: bool = False
+                        ) -> list[sqlite3.Row]:
+        # ``versions``: each row is the object's version current at :at with its audience
+        # key (``visible_versions``'s rows), read in the same statement, so a scan never
+        # reads its batch's versions again (11-10: a count over 76k sales orders spent
+        # 10 s of 56 s re-reading what the scan had just decided).
         # An object id begins with its type ("<Type>:..."): the type's ids are one range
         # of the object key, walked in key order and stopped at the batch, so the
         # visibility predicate is read for the rows taken, never for every object of the
@@ -1403,8 +1420,11 @@ class StoreReader:
             # only these records (a link filter's): their ids, read on the object key
             narrow += "o.object_id IN (SELECT value FROM json_each(:among)) AND "
             extra["among"] = json.dumps(list(among))
+        head = ("SELECT v.*, o.audience_key FROM objects o JOIN object_versions v "
+                "ON v.object_id = o.object_id AND " + self._at("v") + " ") if versions \
+            else "SELECT o.* FROM objects o "
         return list(self.conn.execute(
-            "SELECT o.* FROM objects o WHERE o.object_type || '' = :type "
+            head + "WHERE o.object_type || '' = :type "
             "AND o.object_id > :after AND o.object_id >= :lo AND o.object_id < :hi AND "
             + narrow + self._VISIBLE_OBJECT + "ORDER BY o.object_id LIMIT :batch",
             scope.params(type=object_type, after=after, batch=batch, lo=object_type + ":",
@@ -3165,9 +3185,10 @@ class OntologyTools:
             probes = []
             for at, (tid, binding) in enumerate(misses[start:start + 400], start):
                 params[f"tid{at}"], params[f"bid{at}"] = tid, binding
+                params[f"aud{at}"] = _type_keys(typed, tid, audiences, params["aud"])
                 probes.append(f"SELECT {at} AS at WHERE EXISTS (SELECT 1 FROM objects WHERE "
                               f"object_type = :tid{at} AND binding_id = :bid{at} AND "
-                              "audience_key IN (SELECT value FROM json_each(:aud)))")
+                              f"audience_key IN (SELECT value FROM json_each(:aud{at})))")
             found.update(misses[int(row[0])] for row in self.store.conn.execute(
                 " UNION ALL ".join(probes), params).fetchall())
         return {pair for pair in candidates
@@ -3186,15 +3207,23 @@ class OntologyTools:
         typed = self._store_fact("audiences")
         if isinstance(typed, Mapping) and not audiences.intersection(typed.get(tid, ())):
             return False
+        params = scope.params(tid=tid, bid=binding)
+        params["aud"] = _type_keys(typed, tid, audiences, params["aud"])
         return self._store_kept(("binding_readable", tid, binding, audiences), lambda: (
             self.store.conn.execute(
                 "SELECT 1 FROM objects WHERE object_type = :tid AND binding_id = :bid "
                 "AND audience_key IN (SELECT value FROM json_each(:aud)) LIMIT 1",
-                scope.params(tid=tid, bid=binding)).fetchone() is not None))
+                params).fetchone() is not None))
 
     def _store_stamp(self) -> tuple[int, int] | None:
+        """The store state the kept facts and answers are for, as ``TraverseTools``
+        stamps them: a SQLite file's data version, or on Postgres the loaded layers'
+        (``PRAGMA data_version`` through the compatibility connection). None (nothing
+        kept) for any other store. Postgres once read as None here, so its kept facts
+        were never used and every untyped find probed every unparsed binding again
+        (a 51 s mail probe in each cold call)."""
         conn = getattr(self.store, "conn", None)
-        if not isinstance(conn, sqlite3.Connection):
+        if not isinstance(conn, sqlite3.Connection) and not getattr(conn, "postgres", False):
             return None
         return (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
 
@@ -3415,13 +3444,21 @@ class OntologyTools:
         ids = sorted(set(object_ids))
         out: dict[str, sqlite3.Row] = {}
         for start in range(0, len(ids), 500):
-            versions = self.store.visible_versions(scope, ids[start:start + 500])
-            # what the item gate reads of each handle, read ahead in batches (decides
-            # nothing: every version below is still gated one by one)
-            self.prefetch_items(scope.actor, [version["l1_handle"] for version in versions])
-            for version in versions:
-                if self._item_allowed(scope.actor, version["l1_handle"]):
-                    out[version["object_id"]] = version
+            out.update(self._gated_versions(
+                scope, self.store.visible_versions(scope, ids[start:start + 500])))
+        return out
+
+    def _gated_versions(self, scope: _Scope, versions: Sequence[sqlite3.Row]
+                        ) -> dict[str, sqlite3.Row]:
+        """object_id -> version of those ``versions`` (``visible_versions``'s rows, the
+        SQL rules already applied) whose item ACL the reader passes."""
+        out: dict[str, sqlite3.Row] = {}
+        # what the item gate reads of each handle, read ahead in batches (decides
+        # nothing: every version below is still gated one by one)
+        self.prefetch_items(scope.actor, [version["l1_handle"] for version in versions])
+        for version in versions:
+            if self._item_allowed(scope.actor, version["l1_handle"]):
+                out[version["object_id"]] = version
         return out
 
     def _row_visible(self, scope: _Scope, row: Mapping[str, Any]) -> bool:
@@ -3665,16 +3702,20 @@ class OntologyTools:
         return (self._filters_as_stored(object_type, rest) + [dict(f) for f in events]
                 + [dict(f) for f in links])
 
-    def unsourced_filter_gaps(self, object_type: str, filters: Sequence[Mapping[str, Any]]
+    def unsourced_filter_gaps(self, object_type: str, filters: Sequence[Mapping[str, Any]],
+                              kept: Callable[[str], bool] | None = None
                               ) -> list[dict[str, Any]]:
         """A gap per filtered property some sources of the type never record: their
         records never match it (a supplier name only Business Central's purchase orders
         carry leaves the other systems' orders out), naming the links that reach the same
-        related records in those sources, so the filter can name them instead."""
+        related records in those sources, so the filter can name them instead. ``kept``:
+        only the bindings it keeps are asked about (a count of one system's records leaves
+        no other system's record out)."""
         if self.schema is None or object_type not in self.schema.object_types:
             return []
         spec = self.schema.object_types[object_type]
-        bindings = [b.get("id") for b in spec.get("bindings", ()) if isinstance(b, Mapping)]
+        bindings = [b.get("id") for b in spec.get("bindings", ()) if isinstance(b, Mapping)
+                    and (kept is None or kept(str(b.get("id"))))]
         props = {p["name"]: p for p in spec.get("properties", ()) if isinstance(p, Mapping)}
         out, seen = [], set()
         for f in filters:
@@ -4999,9 +5040,19 @@ class OntologyTools:
         An identifier of a kind no projected record carries (``text_only_kind``) is
         searched as text: its words stay in the query's words, and a match counts only
         when the grammar reads that same kind and value in the matched text."""
+        # A typed find's type carrying no identifier of a mention's kind holds that
+        # mention only as text ("PO#4803.pdf" of a SharePoint file: searched as the word
+        # "pdf" alone, every file name holding it read, 95 s, dev 11-10).
+        carried = None
+        if object_type is not None and self.schema is not None:
+            carried = {p.get("identifier_kind") for p in (
+                self.schema.object_types.get(object_type) or {}).get("properties") or ()
+                if isinstance(p, Mapping) and p.get("identifier_kind")}
         try:   # mentions the grammar reads in the query, never its whole-query readings
             text_only = {(m.kind, m.normalized) for m in self.grammar.find_identifiers(query)
-                         if text_only_kind(self.grammar, m.kind)} if self.grammar else set()
+                         if text_only_kind(self.grammar, m.kind)
+                         or (carried is not None and m.kind not in carried)} \
+                if self.grammar else set()
         except Exception:  # noqa: BLE001 - a query the grammar cannot read: words only
             text_only = set()
         tokens = _text_tokens(query, [k for k in keys if (k.kind, k.normalized)
@@ -5013,10 +5064,13 @@ class OntologyTools:
         def names_all(text: Any) -> bool:
             if not text_only:
                 return True
-            # Each kind here has one written form (its shape), so text without the value
-            # literally cannot name it: the grammar reads only the rows that do.
+            # Each unserved kind has one written form (its shape), so text without the
+            # value literally cannot name it: the grammar reads only the rows that do. A
+            # kind only the asked type does not carry may be written otherwise ("PO#4803"
+            # for PO4803): the grammar reads every such row.
             folded = text.casefold() if isinstance(text, str) else ""
-            if not all(value.casefold() in folded for _kind, value in text_only):
+            if not all(value.casefold() in folded for kind, value in text_only
+                       if text_only_kind(self.grammar, kind)):
                 return False
             try:
                 read = {(m.kind, m.normalized)
@@ -5325,7 +5379,7 @@ class OntologyTools:
             upto = self.store.key_ahead(object_type, after, NARROWED_SPAN) \
                 if (narrowing or events) and not listed else None
             rows = self.store.objects_of_type(scope, object_type, after, FILTER_BATCH,
-                                              narrowing, among, events, upto)
+                                              narrowing, among, events, upto, versions=True)
             left = call_limits.seconds_left()
             short = left is not None and left < SCAN_MARGIN_SECONDS
             if not rows:
@@ -5343,8 +5397,10 @@ class OntologyTools:
             after = rows[-1]["object_id"] if full or upto is None else upto
             at_end = upto is None and not full
             scanned += len(rows)
-            batch = self._visible_versions(scope, [r["object_id"] for r in rows])
-            ids = [r["object_id"] for r in rows if r["object_id"] in batch]
+            # the rows are the versions the scan's own statement read (SQL rules applied);
+            # each still passes the item gate here, as ``_visible_versions`` gates
+            batch = self._gated_versions(scope, rows)
+            ids = list(dict.fromkeys(r["object_id"] for r in rows if r["object_id"] in batch))
             if readable_count + len(ids) > FILTER_SCAN_CAP:
                 ids = ids[:FILTER_SCAN_CAP - readable_count]
                 truncated = True
@@ -6897,14 +6953,17 @@ def _filter_holds(values: list[tuple[str, Any]], spec: Mapping[str, Any],
             return value == ("true" if wanted else "false")
         return _compare_key(value_type, value) == _compare_key(value_type, wanted)
 
-    def order(value_type: str, value: Any, wanted: Any) -> int | None:
+    def order(value_type: str, value: Any, wanted: Any, day_end: bool = False) -> int | None:
         if value_type in ("decimal", "money", "quantity", "integer"):
             try:
                 a, b = Decimal(str(value)), Decimal(str(wanted))
             except InvalidOperation:
                 return None
         elif value_type in ("date", "timestamp"):
-            a, b = _parse_time(str(value)), _parse_time(str(wanted))
+            # a bare day bounds the whole day: "on or before 2026-11-02" (``lte``) holds a
+            # time later that day, "after" it (``gt``) none of them (dev 11-10: 412 of 500
+            # approvals requested on or before a day, the day's own left out)
+            a, b = _parse_time(str(value)), _parse_time(str(wanted), end_of_day=day_end)
             if a is None or b is None:
                 return None
         else:
@@ -6930,7 +6989,7 @@ def _filter_holds(values: list[tuple[str, Any]], spec: Mapping[str, Any],
         holds = {"gte": lambda sign: sign >= 0, "gt": lambda sign: sign > 0,
                  "lt": lambda sign: sign < 0, "lte": lambda sign: sign <= 0}[op]
         for value_type, value in present:
-            sign = order(value_type, value, targets[0])
+            sign = order(value_type, value, targets[0], day_end=op in ("lte", "gt"))
             if sign is not None and holds(sign):
                 return True
         return unsure

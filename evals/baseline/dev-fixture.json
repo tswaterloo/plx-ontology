@@ -902,8 +902,8 @@
   "mirror_complete": true,
   "objects": 2147,
   "relations_complete": 21,
-  "relations_required": 67,
-  "relations_unserved": 46
+  "relations_required": 162,
+  "relations_unserved": 141
  },
  "run_id": "fixture-dev-2026-10-01",
  "runner": "plx-eval-runner/1",

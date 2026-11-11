@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { BellRing, Bookmark, Bot, CalendarClock, Clock3, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
+import { Activity, BellRing, Bookmark, Bot, CalendarClock, Clock3, Gauge, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -18,6 +18,7 @@ import { PlaceIcon, SystemCode } from "./ui/glyphs";
 import { RequireAuth, useAuth } from "./auth";
 import { ThemeToggle } from "./theme";
 import { Pending } from "./ui/skeleton";
+import { ViewAsBar, ViewAsPicker } from "./view-as";
 import { ErrorNotice } from "./ui/notice";
 
 const TZ = "America/Toronto";
@@ -171,9 +172,10 @@ function lateOf(home: HomeResponse | null): number | null {
   return na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
 }
 
-/** The seven places. Team shows only to a reader with a team grant; Feedback triage is in
- * the account menu. */
-export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean; grant?: boolean }[] = [
+/** The places. Team shows only to a reader with a team grant, Reliability only to an ops
+ * reader (the owner and the Team readers), Trust likewise; Feedback triage is in the
+ * account menu. */
+export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean; grant?: boolean; ops?: boolean }[] = [
   { href: "/", label: "My work", icon: Inbox },
   { href: "/late", label: "Late POs", icon: Clock3, late: true },
   { href: "/autopilot", label: "Autopilot", icon: Bot },
@@ -182,6 +184,8 @@ export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolea
   { href: "/ask", label: "Ask", icon: MessageCircle },
   { href: "/watching", label: "Watching", icon: BellRing },
   { href: "/work-log", label: "Work log", icon: History },
+  { href: "/ops", label: "Reliability", icon: Activity, ops: true },
+  { href: "/trust", label: "Trust", icon: Gauge, ops: true },
 ];
 
 /** Whether this reader sees Team: a declared full-read grant or the owner. */
@@ -189,9 +193,15 @@ export function hasTeamGrant(me: { access_label?: string | null; feedback_admin?
   return !!(me && (me.access_label || me.feedback_admin));
 }
 
+/** Whether this reader sees the reliability alarms and /ops: the owner and the Team readers
+ * (the server decides; /api/ops/status answers 403 to anyone else). */
+export function isOpsReader(me: { ops_reader?: boolean } | null | undefined): boolean {
+  return !!me?.ops_reader;
+}
+
 /** The nav this reader sees. */
-export function navFor(me: Parameters<typeof hasTeamGrant>[0]) {
-  return NAV.filter((n) => !n.grant || hasTeamGrant(me));
+export function navFor(me: (Parameters<typeof hasTeamGrant>[0] & { ops_reader?: boolean }) | null | undefined) {
+  return NAV.filter((n) => (!n.grant || hasTeamGrant(me)) && (!n.ops || isOpsReader(me)));
 }
 
 /** Phone tabs: My work, Late POs, Ask, Meetings, then More for the rest. */
@@ -306,12 +316,12 @@ export function opsValue(c: OpsCheck) {
   return `${c.value} ${c.unit} (target ${c.target})`;
 }
 
-/** The owner's ops line: any freshness target breached (delta, captures, Postgres, proactive,
- * truth check, AI watcher, page time), polled from the public health route. Shown only to a
- * full-read reader; nothing when every target holds. */
+/** The ops line: any freshness target breached (delta, captures, Postgres, proactive,
+ * truth check, AI watcher, page time), polled from the public health route. Shown only to an
+ * ops reader; nothing when every target holds. */
 export function OpsStatus({ every = 60_000 }: { every?: number }) {
   const { state } = useAuth();
-  const owner = state.status === "signed-in" && !!state.me?.access_label;
+  const owner = state.status === "signed-in" && isOpsReader(state.me);
   const [ops, setOps] = useState<OpsHealth | null>(null);
   useEffect(() => {
     if (!owner) return;
@@ -366,12 +376,14 @@ export function eastern(iso?: string | null, now = new Date()): string {
   return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: tz })}, ${time} ET`;
 }
 
-/** The owner's red banner on Home: open reliability incidents (a stopped refresh, a failed
- * or OOM-killed unit, Postgres, disk, memory, backups), or the checks themselves not running.
- * Nothing for any other reader (the route answers 403) or when all is well. */
+/** The red alarm line across the top of every page, the only place alarms reach anyone (no
+ * paging): open reliability incidents (a stopped refresh, a failed or
+ * OOM-killed unit, Postgres, disk, memory, backups), or the checks themselves not running.
+ * Ops readers only (the owner and the Team readers); nothing for anyone else (the route
+ * answers 403) or when all is well. */
 export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; className?: string }) {
   const { state } = useAuth();
-  const owner = state.status === "signed-in" && !!state.me?.access_label;
+  const owner = state.status === "signed-in" && isOpsReader(state.me);
   const [alarms, setAlarms] = useState<OpsAlarms | null>(null);
   useEffect(() => {
     if (!owner) return;
@@ -391,7 +403,7 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
   if (open.length === 0 && alarms.running) return null;
   const text = open.length > 0
     ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.slice(0, 3).map((i) => i.line).join(" · ")}${open.length > 3 ? ` · ${open.length - 3} more` : ""}`
-    : `Reliability checks are not running${alarms.checked_at ? ` (last ${eastern(alarms.checked_at)})` : ""}; nothing would page you.`;
+    : `Reliability checks are not running${alarms.checked_at ? ` (last ${eastern(alarms.checked_at)})` : ""}; a new problem would not show here.`;
   return (
     <Link
       href="/ops"
@@ -596,7 +608,7 @@ function Avatar({ name, className }: { name: string; className?: string }) {
   );
 }
 
-function AccountMenuContent({ name, email }: { name: string; email?: string | null }) {
+function AccountMenuContent({ name, email, onViewAs }: { name: string; email?: string | null; onViewAs?: () => void }) {
   const { signOut } = useAuth();
   const router = useRouter();
   const feedback = useFeedbackDialog();
@@ -620,6 +632,11 @@ function AccountMenuContent({ name, email }: { name: string; email?: string | nu
         <Menu.Item onSelect={() => router.push("/feedback")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
           Feedback
         </Menu.Item>
+        {onViewAs && (
+          <Menu.Item onSelect={onViewAs} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="view-as-open">
+            View as someone
+          </Menu.Item>
+        )}
         <Menu.Item
           onSelect={async () => {
             await signOut();
@@ -638,9 +655,12 @@ function UserMenu() {
   const { state } = useAuth();
   const { dev } = useBanner();
   const desktop = useDesktopShell();
+  const [picking, setPicking] = useState(false);
   if (state.status !== "signed-in") return null;
   const name = state.me.display_name || "Account";
   return (
+    <>
+    {state.me.can_view_as && <ViewAsPicker open={picking} onOpenChange={setPicking} />}
     <Menu.Root>
       <Menu.Trigger aria-label={`Account: ${name}`} className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-hover max-xl:justify-center max-xl:px-0 cursor-pointer">
         <Avatar name={name} className="size-5 text-[9px]" />
@@ -650,8 +670,9 @@ function UserMenu() {
         </span>
         <MoreHorizontal className="size-4 shrink-0 text-faint max-xl:hidden" aria-hidden />
       </Menu.Trigger>
-      <AccountMenuContent name={name} email={state.me.email} />
+      <AccountMenuContent name={name} email={state.me.email} onViewAs={state.me.can_view_as ? () => setPicking(true) : undefined} />
     </Menu.Root>
+    </>
   );
 }
 
@@ -752,7 +773,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/work-log"];
+export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/trust", "/work-log"];
 
 function ShellSkeleton() {
   return (
@@ -781,6 +802,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <Sidebar />
         <main id="main" className="flex min-w-0 flex-1 flex-col overflow-y-auto pb-[calc(52px+env(safe-area-inset-bottom))] lg:pb-0" data-app-main>
           <MobileTitleBar />
+          <ViewAsBar />
+          <OpsAlarmBanner />
           {state.status === "error" ? (
             <div className="mx-auto w-full max-w-xl p-6">
               <ErrorNotice message={state.message} onRetry={refresh} />

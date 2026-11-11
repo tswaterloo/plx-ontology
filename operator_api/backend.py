@@ -92,7 +92,7 @@ from .serving import (  # noqa: F401 - re-exported
     WARM_LATE_PAGES, WARM_THREAD, WARM_IDLE_SECONDS, WARM_PAUSE_SECONDS, WARM_RECENT_PAGES,
     READER_CACHE_SECONDS, LAST_GOOD_SECONDS, SERVE_FAST_SECONDS, LAST_GOOD_KEPT,
     SNAPSHOT_FRESH_SECONDS, INPUTS_POLL_SECONDS, SNAPSHOT_RECENT_SECONDS,
-    SNAPSHOT_REFRESH_KEPT, SNAPSHOT_REFRESH,
+    SNAPSHOT_REFRESH_KEPT, SNAPSHOT_REFRESH, files_stamp,
     ACCESS_WAIT_SECONDS, REWARM_SECONDS, READER_CACHE_KEPT, CARD_WORDS_KEPT,
     KNOWN_READERS_FILE, KNOWN_READERS, GENERATION_POLL_SECONDS, FLIGHT_SECONDS,
     ORIGINAL_READS, ORIGINAL_READS_PER_READER, ORIGINAL_READ_WAIT, HOST_READ_SCHEMES,
@@ -146,18 +146,32 @@ from .page_parts import (  # noqa: F401 - re-exported
     identity_of, last_visit_of, _search_marked, merged, IMPACT_MODES, impact_change_words,
     SECTION_PLANS, PLAN_SECTIONS, POOL_SECTIONS, TRAIL_TYPES, plans_before, CUSTOMER_SUMS,
     CUSTOMER_DAYS, CUSTOMER_ROWS, _CLOSED, _cited, page_knows, _refusal, customer_summary,
-    label_timeline, page_handles, PAGE_PLANS, _PLANS_RUN, plans_once, _entries, money_of,
+    label_timeline, page_handles, shown_handles, PAGE_PLANS, _PLANS_RUN, plans_once, _entries, money_of,
     entry_sources, landed_cost_of, people_of, page_hidden, late_of, STAGE_WORDS,
     reconciled_not_found, MAX_ORDER_COPIES, order_state, page_import_days,
     sales_order_view, FULFILMENT_TYPES, LINK_RECORDS, LINK_EVIDENCE, _LINK_WORDS,
     _schema_links, link_words, link_groups, walk_whole, fulfilment_absence, RECEIPT_EVENTS,
-    record_fields, source_view, source_payload)
+    record_fields, source_view, source_payload, source_records)
 from .cli import (  # noqa: F401 - re-exported
     add_arguments, console_argv, make_auth, optional_understanding,
     default_search)
 
 
 RESUME_HOST_CHECKS = 6   # host re-reads one resumed Ask turn may make; more: withheld
+
+
+# The screens whose people and items follow the owner's workload grants
+# (``workload-grants.json``): the grants are part of the access state their kept copies are
+# checked against (``_access_later``), never an input only.
+GRANT_SCREENS = frozenset({"my_work", "autopilot", "workload", "owner_workload"})
+
+# The screens the warm-up process reads ahead through ``_serving`` after Today (a reader's
+# first visit after a restart then opens from the copy it kept on disk), one at a time on
+# ``SCREENS_AHEAD_WORKERS`` worker.
+SCREENS_AHEAD_WORKERS = 1
+SCREENS_AHEAD = ("my_work", "autopilot_area", "approvals_queue", "workload",
+                 "upcoming_meetings", "reply_triage", ("qc_pack", "daily"),
+                 ("weekly_review", None))
 
 
 def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
@@ -177,6 +191,12 @@ def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
 def _people_exclusion() -> Any:
     from .feedback import exclusion
     return exclusion()
+
+
+def _iso(at: float) -> str:
+    """A kept page's read time as the pages state it (UTC, to the second)."""
+    return datetime.fromtimestamp(at, timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z")
 
 
 def _clean_text(text: str, guard: Any) -> str:
@@ -240,6 +260,9 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         self.reads = Worker(objects_for)
         self.reads.scope = page_scope
         self.read_helpers: list[Worker] = []   # more read workers on the same queue
+        # the readers' access state for a kept page (``_access_later``) on its own worker,
+        # so a long read on every read worker never holds it up (None: on the read queue)
+        self.access_worker: Optional[Worker] = None
         self.ask_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
         self.ask_stopped = threading.Event()
         self.ask_workers: list[Worker] = []
@@ -294,6 +317,18 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         worker.stopped = self.reads.stopped
         worker.scope = page_scope
         self.read_helpers.append(worker)
+        return worker
+
+    def add_access_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
+        """The access worker (its own runtime and queue, built by the caller on the thread
+        that runs its ``loop``): the known readers' policies decided on it first
+        (``prewarm_policies``), then every kept page's access check runs on it; it stops
+        with the owner thread's."""
+        worker = Worker(objects_for)
+        worker.stopped = self.reads.stopped
+        worker.scope = page_scope
+        self.prewarm_policies(worker=worker)
+        self.access_worker = worker
         return worker
 
     def reads_idle_for(self) -> float:
@@ -451,7 +486,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         oid = getattr(getattr(session, "employee", None), "object_id", None)
         ref, exp = getattr(session, "session_ref", None), getattr(session, "expires_at", None)
         if not isinstance(oid, str) or not isinstance(ref, str) or not isinstance(exp, int) \
-                or getattr(session, "warm_ahead", False):
+                or getattr(session, "warm_ahead", False) or getattr(session, "view_as", False):
             return
         with self._lock:
             known = self.known_readers()
@@ -500,7 +535,8 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             warmed += self.warm(reader, force=True, today=today)
         return warmed
 
-    def prewarm_policies(self, seconds: float = PREWARM_SECONDS) -> int:
+    def prewarm_policies(self, seconds: float = PREWARM_SECONDS,
+                         worker: Optional[Worker] = None) -> int:
         """Decide each known reader's read policy now, on the calling thread (the read
         worker's owner, before it serves), as their first request would: the workspace,
         its policy and its page keys, kept by the workspace only while the policy's
@@ -519,7 +555,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 if self.revoked(str(held["ref"])):
                     continue
                 session = self.identity_for(oid, int(held["exp"]))
-                view = self.reads._workspace(session)
+                view = (worker or self.reads)._workspace(session)
                 with page_scope(), view._request():
                     page_key(view, ("policy",))
                     inbox_stamp(view)
@@ -545,10 +581,12 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 seen, last = now, time.monotonic()
                 self.warm_known()
 
-    def _served_state(self) -> Optional[tuple]:
+    def _served_state(self, wait: bool = True) -> Optional[tuple]:
         """The served store file's identity, the delta layer pointer's (a cycle that
         lands a layer: every page key holds the layers, ``_delta_layers``), the gap
-        inbox's findings (``inbox_state``) and the AI watcher's state (``watcher_stamp``)."""
+        inbox's findings (``inbox_state``; ``wait`` False: a state whose digest is not
+        read yet is "pending", read in the background) and the AI watcher's state
+        (``watcher_stamp``)."""
         if not self.store_path:
             return None
         from operating.ontology_host import _file_identity
@@ -556,7 +594,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         from operating import ai_watcher, delta_overlay
         return (_file_identity(self.store_path),
                 delta_overlay.pointer_stamp(delta_overlay.pointer_path(self.store_path)),
-                inbox_state(inbox_path(self.store_path)),
+                inbox_state(inbox_path(self.store_path), wait=wait),
                 ai_watcher.stamp(Path(self.store_path)))
 
     def warm(self, reader: Reader, *, force: bool = False, today: bool = True) -> bool:
@@ -567,6 +605,8 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         for it rather than reading it beside it); then, on the warm worker once it is up,
         the first late orders' pages and the pages they opened last (``today`` False:
         those only, Today being read ahead already). False when nothing was queued."""
+        if getattr(reader.session, "view_as", False):
+            return False   # the owner viewing as someone: never read ahead for them
         warmer = self.warmer
         process = self.warm_process
         if process is None and not self.warm_enabled and (
@@ -611,6 +651,14 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                           ("meetings", lambda view: self._upcoming_cached(view, reader))):
             if today:
                 self.reads.submit(reader, warm_timed(name, job), priority=WARM_PRIORITY)
+        if today and not self.yield_to_live:
+            # the warm-up process: the other screens (My work, Autopilot, Team, Meetings,
+            # the QC pack) read through ``_serving`` after Today, so each is kept on disk
+            # for this reader and their first visit after a restart opens at once (served
+            # as kept, re-checked, and read again)
+            self.reads.submit(reader, warm_timed("screens", lambda view: (
+                self._screens_pool().submit(self._screens_ahead, reader))),
+                priority=WARM_PRIORITY)
         if warmer is not None and not warmer.stopped.is_set():
             # on the read workers' own queue (the warm-up process: one worker), the pages
             # go after Today: what a reader opens first after a restart is read first
@@ -624,6 +672,30 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                     "weekly review", self._weekly_ahead(reader))),
                     priority=WARM_PRIORITY + 1 if warmer is self.reads else 0)
         return True
+
+    def _screens_pool(self) -> Any:
+        """The one worker the screens read ahead run on (``SCREENS_AHEAD_WORKERS``): every
+        known reader's queue behind it, never a thread each."""
+        with self._lock:
+            pool = self.__dict__.get("_screens_executor")
+            if pool is None:
+                from concurrent.futures import ThreadPoolExecutor
+                pool = self.__dict__["_screens_executor"] = ThreadPoolExecutor(
+                    max_workers=SCREENS_AHEAD_WORKERS, thread_name_prefix="warm-screens")
+            return pool
+
+    def _screens_ahead(self, reader: Reader) -> int:
+        """Each of ``SCREENS_AHEAD`` read for ``reader`` as their request would (one at a
+        time; one refused or failing is read when opened). How many were read."""
+        done = 0
+        for screen in SCREENS_AHEAD:
+            name, *args = (screen,) if isinstance(screen, str) else screen
+            try:
+                getattr(self, name)(reader, *args)
+                done += 1
+            except Exception:  # noqa: BLE001 - read when opened
+                continue
+        return done
 
     def _briefing_ahead(self, reader: Reader) -> Callable[[Any], Any]:
         """The briefing as Today reads it: the briefing, then each group's first page of
@@ -2393,7 +2465,8 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
 
     # ---- the last good page of each main screen, per reader ------------------------------
 
-    def _serving(self, reader: Reader, name: tuple, read: Callable[[], Any]) -> Any:
+    def _serving(self, reader: Reader, name: tuple, read: Callable[[], Any],
+                 inputs_of: Optional[Callable[[], Any]] = None) -> Any:
         """``read()`` (a main screen: Home, briefing, suggestions, late list; a record's
         page) for this reader. With a last good page of this same reader and screen (never
         another's: the key holds the reader's principals and sign-in mode) the read gets
@@ -2408,18 +2481,23 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         the reader, as ``page_key``) and served stale only while the reader's access state
         now is exactly that: a marking or grant revoked, a document re-marked, or an
         exclusion added, with the same principals refuses it. Every source handle the kept
-        page shows (``page_handles``) must also still open for the reader now (item-level
+        page shows (``shown_handles``) must also still open for the reader now (item-level
         permissions, a mailbox or a SharePoint ACL, are in no state, as
         ``ReaderCache.kept`` re-decides them). Both are read in one job on the read worker
         ahead of the screen's read; an answer that is not "the same and all open", or no
         answer in time, serves no kept page. A fresh page is returned at once and kept off
         the request path (in memory and in the page store on disk, so a restart or the
-        other processes start from it)."""
+        other processes start from it).
+
+        ``inputs_of``: what this screen reads beyond the store (``screen_inputs``: its own
+        files, such as the autopilot queue or the follow-up store, and the day); a kept
+        page is current only while it is the same, and it cannot be read, nothing is."""
         key = (reader.key, reader.mode, name)
-        inputs = self._inputs_of(reader)
-        self._remember_read(key, reader, read)
+        inputs = self._inputs_of(reader, inputs_of, name[0] if name else None)
+        self._remember_read(key, reader, read, inputs_of)
         held = self._held_good(key)
-        before = self._access_later(reader, page_handles(held[1]) if held else ())
+        before = self._access_later(reader, shown_handles(held[1]) if held else (),
+                                    screen=key[2])
         snapshot = self._snapshot(key, held, before, inputs)
         if snapshot is not None:
             if getattr(snapshot, "stale_since", None) is not None:
@@ -2462,7 +2540,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             kept = value.model_copy(deep=True)
             self._after(lambda: self._keep_good(
                 key, kept, self._state_of(self._access_result(before, ACCESS_WAIT_SECONDS)),
-                self._access_now(reader), inputs))
+                self._access_now(reader, key[2]), inputs))
         return value
 
     def _snapshot(self, key: tuple, held: Optional[tuple], before: Future,
@@ -2485,7 +2563,12 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         if now is None or now[0] != held[2] or now[1] is not True:
             return None
         if current:
-            return held[1].model_copy(deep=True)
+            # served as read then: a screen that shows other people's decisions or actions
+            # says when (``read_at``), as those may have moved since without its inputs
+            served = held[1].model_copy(deep=True)
+            if "read_at" in type(served).model_fields:
+                served.read_at = _iso(held[0])
+            return served
         return self._stale_copy(key, held, before)
 
     def inputs_stamp(self) -> Any:
@@ -2500,7 +2583,9 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         if got is not None and now - got[0] < INPUTS_POLL_SECONDS:
             return got[1]
         try:
-            stamp: Any = (self._served_state(), self._pg_load_stamp())
+            # never waits for the inbox's digest: read on the request path, it held every
+            # page after a "seen" mark for seconds
+            stamp: Any = (self._served_state(wait=False), self._pg_load_stamp())
         except Exception:  # noqa: BLE001 - unreadable inputs: nothing is current
             stamp = None
         if stamp is not None and self.store_path is None and stamp[1] is None:
@@ -2522,26 +2607,41 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                                ).fetchone()
         return (int(row[0]), str(row[1]))
 
-    def _inputs_of(self, reader: Reader) -> Any:
-        """``inputs_stamp`` with the count of the reader's own writes (``reader_wrote``);
-        None without a stamp."""
+    def _inputs_of(self, reader: Reader, inputs_of: Optional[Callable[[], Any]] = None,
+                   screen: Any = None) -> Any:
+        """``inputs_stamp`` with the count of the reader's own writes (``reader_wrote``:
+        every one, and those that name ``screen``) and the screen's own inputs
+        (``inputs_of``); None without a stamp or when the screen's own cannot be read
+        (nothing is current then)."""
         stamp = self.inputs_stamp()
         if stamp is None:
             return None
+        own = None
+        if inputs_of is not None:
+            try:
+                own = inputs_of()
+            except Exception:  # noqa: BLE001 - unreadable inputs: nothing is current
+                return None
+            if own is None:
+                return None
         with self._lock:
-            return (stamp, self.__dict__.setdefault("_reader_writes", {}).get(reader.key, 0))
+            writes = self.__dict__.setdefault("_reader_writes", {})
+            return (stamp, (writes.get(reader.key, 0), writes.get((reader.key, screen), 0)),
+                    own)
 
-    def reader_wrote(self, reader: Any) -> None:
+    def reader_wrote(self, reader: Any, screens: Optional[Iterable[str]] = None) -> None:
         """The reader changed something their own screens show (any request that is not a
         read, before and after it runs; an Ask answered): none of their kept pages is
         current any more, and the next visit reads (a page read before keeps nothing
-        current either)."""
+        current either). ``screens``: only those screens (the first part of a screen's
+        name: a briefing marked seen changes the briefing and Home, not My work)."""
         key = getattr(reader, "key", None)
         if key is None:
             return
         with self._lock:
             writes = self.__dict__.setdefault("_reader_writes", {})
-            writes[key] = writes.get(key, 0) + 1
+            for one in ([key] if screens is None else [(key, s) for s in screens]):
+                writes[one] = writes.get(one, 0) + 1
 
     def _snap_inputs(self) -> dict:
         return self.__dict__.setdefault("_good_inputs", {})
@@ -2549,13 +2649,14 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
     def _snap_reads(self) -> dict:
         return self.__dict__.setdefault("_good_reads", {})
 
-    def _remember_read(self, key: tuple, reader: Reader, read: Callable[[], Any]) -> None:
+    def _remember_read(self, key: tuple, reader: Reader, read: Callable[[], Any],
+                       inputs_of: Optional[Callable[[], Any]] = None) -> None:
         with self._lock:
             reads = self._snap_reads()
             reads.pop(key, None)
             while len(reads) >= LAST_GOOD_KEPT:
                 reads.pop(next(iter(reads)))
-            reads[key] = (reader, read, time.monotonic())
+            reads[key] = (reader, read, time.monotonic(), inputs_of)
 
     def _watch_inputs(self) -> None:
         """Start, once, the thread that reads the recent screens again when the inputs
@@ -2591,7 +2692,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                              if v[2] >= cut and (under.get(k) or (None,))[0] != stamp),
                             key=lambda kv: -kv[1][2])[:SNAPSHOT_REFRESH_KEPT]
         done = 0
-        for key, (reader, read, _) in recent:
+        for key, (reader, read, *_) in recent:
             if not self._may_read_ahead(reader):
                 continue
             # a live request first: each screen waits until the read workers are idle
@@ -2609,7 +2710,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         session = getattr(reader, "session", None)
         ref, exp = getattr(session, "session_ref", None), getattr(session, "expires_at", None)
         if not isinstance(ref, str) or not isinstance(exp, int) or exp <= time.time() \
-                or getattr(session, "warm_ahead", False):
+                or getattr(session, "warm_ahead", False) or getattr(session, "view_as", False):
             return False
         try:
             return not self.revoked(ref)
@@ -2639,9 +2740,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         now = self._access_result(before, ACCESS_WAIT_SECONDS)
         if now is None or now[0] != held[2] or now[1] is not True:
             return None
-        return held[1].model_copy(deep=True, update={
-            "stale_since": datetime.fromtimestamp(held[0], timezone.utc).isoformat(
-                timespec="seconds").replace("+00:00", "Z")})
+        return held[1].model_copy(deep=True, update={"stale_since": _iso(held[0])})
 
     def _held_good(self, key: tuple) -> Optional[tuple]:
         """The last good page of ``key``: in memory, else in the page store on disk (the
@@ -2682,7 +2781,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 value = box.result(timeout=PAGE_TIMEOUT_SECONDS)
                 self._keep_good(key, value, self._state_of(
                     self._access_result(before, ACCESS_WAIT_SECONDS)),
-                    self._access_now(reader), inputs)
+                    self._access_now(reader, key[2]), inputs)
             except Exception:  # noqa: BLE001 - the next request tries again
                 pass
             finally:
@@ -2701,27 +2800,36 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 pass
         threading.Thread(target=run, name="last-good-keep", daemon=True).start()
 
-    def _access_later(self, reader: Reader, handles: Iterable[str] = ()) -> Future:
+    def _access_later(self, reader: Reader, handles: Iterable[str] = (),
+                      screen: Any = None) -> Future:
         """(the reader's access state, every one of ``handles`` still opens for them),
         asked of the read worker ahead of the screen's own read (it runs before it, or the
         worker is stuck and it never does). The state: policy fingerprint, unrestricted,
-        people exclusion stamp, the parts ``page_key`` keys a page on."""
+        people exclusion stamp, the parts ``page_key`` keys a page on, and for a screen of
+        ``GRANT_SCREENS`` (``screen``: its name) the owner's workload grants as they stand:
+        a team grant revoked serves no copy kept under it, not even marked stale."""
         from operating.pg.permissions import _fingerprint, exclusion_stamp
         listed = sorted(set(handles))
+        granted = bool(screen) and screen[0] in GRANT_SCREENS
 
         def job(view: Any) -> tuple:
             with view._request():
                 gated, policy = view.access.reader_policy()
                 state = (_fingerprint(policy, gated),
                          bool(getattr(policy, "unrestricted", False)), exclusion_stamp(),
-                         _marks_stamp(view))
+                         _marks_stamp(view),
+                         # unreadable: raises, no state, nothing kept is served
+                         files_stamp([self._grants_file()]) if granted else None)
                 decided = view.access.decide(listed) if listed else {}
                 opens = isinstance(decided, dict) and all(
                     h in decided and decided[h] is None for h in listed)
                 return state, opens
+        worker = getattr(self, "access_worker", None)
+        if worker is None or worker.stopped.is_set():
+            worker = self.reads   # none started (tests, fixtures): ahead of the reads
         try:
-            return self.reads.submit(reader, job, priority=-1,
-                                     deadline=time.monotonic() + ACCESS_WAIT_SECONDS)
+            return worker.submit(reader, job, priority=-1,
+                                 deadline=time.monotonic() + ACCESS_WAIT_SECONDS)
         except Exception:  # noqa: BLE001 - an unreadable state is no state
             failed: Future = Future()
             failed.set_exception(LookupError("access_unread"))
@@ -2739,12 +2847,12 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             future.cancel()
             return None
 
-    def _access_now(self, reader: Reader) -> Optional[tuple]:
+    def _access_now(self, reader: Reader, screen: Any = None) -> Optional[tuple]:
         """(policy fingerprint, unrestricted, people exclusion stamp, document markings
-        stamp) of the reader now, the parts ``page_key`` keys a page on; None when it
-        cannot be read in time."""
-        return self._state_of(self._access_result(self._access_later(reader),
-                                                  ACCESS_WAIT_SECONDS))
+        stamp, the workload grants for ``screen``) of the reader now, as
+        ``_access_later``; None when it cannot be read in time."""
+        return self._state_of(self._access_result(
+            self._access_later(reader, screen=screen), ACCESS_WAIT_SECONDS))
 
     def _keep_good(self, key: tuple, value: Any, before: Optional[tuple],
                    after: Optional[tuple], inputs: Any = None) -> None:
@@ -2805,10 +2913,97 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 self._refreshing.discard(key)
 
     def _read_and_keep(self, reader: Reader, key: tuple, read: Callable[[], Any]) -> None:
-        inputs = self._inputs_of(reader)
-        before = self._access_now(reader)
+        with self._lock:   # the screen's own inputs, as its last request named them
+            served = self._snap_reads().get(key)
+        inputs = self._inputs_of(reader, served[3] if served and len(served) > 3 else None,
+                                 key[2][0] if key[2] else None)
+        before = self._access_now(reader, key[2])
         value = read()
-        self._keep_good(key, value, before, self._access_now(reader), inputs)
+        self._keep_good(key, value, before, self._access_now(reader, key[2]), inputs)
+
+    # ---- the other screens, served as the main screens are (``_serving``) ---------------
+
+    def _screen_inputs(self, *, files: Iterable[Any] = (), extra: Any = None,
+                       autopilot: bool = False) -> Callable[[], Any]:
+        """What a screen reads beyond the store (``_serving``'s ``inputs_of``): the hour
+        (lists that start now, the day's items, due dates), each of ``files`` as it stands
+        (``files_stamp``: a directory whole), ``extra()`` and, with ``autopilot``, the
+        autopilot queue's and write state's directories and every ``PLX_AUTOPILOT*``
+        setting (a path one names, as it stands)."""
+        def stamp() -> Any:
+            paths = [f() if callable(f) else f for f in files]
+            named: list = []
+            if autopilot:
+                queue = self._ap_queue_path()
+                paths += [queue.parent if queue else None, self._apa_state()]
+                env = self._ap_env()
+                named = sorted((k, str(v)) for k, v in env.items()
+                               if str(k).startswith("PLX_AUTOPILOT"))
+                paths += [v for _, v in named if v.startswith("/")]
+            own = extra() if extra is not None else None
+            if own == "unreadable":   # a store that cannot be listed: nothing is current
+                raise OSError("screen inputs unreadable")
+            return (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H"), files_stamp(paths),
+                    tuple(named), own)
+        return stamp
+
+    def _grants_file(self) -> Optional[Path]:
+        from operating import inbox_triage as it
+        return Path(self.data_dir) / it.GRANTS_FILE if self.data_dir else None
+
+    def my_work(self, reader: Reader) -> m.MyWork:
+        return self._serving(reader, ("my_work",), lambda: AutopilotMixin.my_work(
+            self, reader), self._screen_inputs(files=(self._grants_file,), autopilot=True))
+
+    def autopilot_area(self, reader: Reader) -> m.AutopilotArea:
+        return self._serving(reader, ("autopilot",), lambda: AutopilotAreaMixin.autopilot_area(
+            self, reader), self._screen_inputs(files=(self._grants_file,), autopilot=True))
+
+    def workload(self, reader: Reader) -> m.Workload:
+        return self._serving(reader, ("workload",), lambda: BriefsMixin.workload(
+            self, reader), self._screen_inputs(files=(self._grants_file,)))
+
+    def owner_workload(self, reader: Reader) -> m.OwnerWorkload:
+        return self._serving(reader, ("owner_workload",), lambda: BriefsMixin.owner_workload(
+            self, reader), self._screen_inputs(files=(
+                self._grants_file, self._system_activity_path)))
+
+    def approvals_queue(self, reader: Reader) -> m.ApprovalsQueue:
+        return self._serving(reader, ("approvals",), lambda: BriefsMixin.approvals_queue(
+            self, reader), self._screen_inputs())
+
+    def reply_triage(self, reader: Reader) -> m.ReplyTriage:
+        return self._serving(reader, ("replies",), lambda: BriefsMixin.reply_triage(
+            self, reader), self._screen_inputs())
+
+    def rd_board(self, reader: Reader) -> m.RdBoard:
+        return self._serving(reader, ("rd",), lambda: BriefsMixin.rd_board(
+            self, reader), self._screen_inputs())
+
+    def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
+        from .briefs import _follow_up_stamp
+        return self._serving(reader, ("meetings",), lambda: BriefsMixin.upcoming_meetings(
+            self, reader), self._screen_inputs(extra=lambda: _follow_up_stamp(self.state_dir)))
+
+    def my_action_items(self, reader: Reader, person: Optional[str]) -> m.MyActionItems:
+        from .briefs import _follow_up_stamp
+        return self._serving(reader, ("action_items", person),
+                             lambda: BriefsMixin.my_action_items(self, reader, person),
+                             self._screen_inputs(
+                                 extra=lambda: _follow_up_stamp(self.state_dir)))
+
+    def weekly_review(self, reader: Reader, week: Optional[date]) -> m.Brief:
+        from .briefs import WEEKLY_FILE
+        return self._serving(reader, ("weekly", week.isoformat() if week else None),
+                             lambda: BriefsMixin.weekly_review(self, reader, week),
+                             self._screen_inputs(files=(
+                                 self.data_dir / WEEKLY_FILE if self.data_dir else None,)))
+
+    def qc_pack(self, reader: Reader, kind: str) -> m.Brief:
+        if kind != "daily":
+            return BriefsMixin.qc_pack(self, reader, kind)
+        return self._serving(reader, ("qc", kind), lambda: BriefsMixin.qc_pack(
+            self, reader, kind), self._screen_inputs())
 
     def home(self, reader: Reader) -> m.Home:
         return self._serving(reader, ("home",), lambda: self._home(reader))
@@ -3323,6 +3518,14 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         """``_source``; one opened under a full-read grant is journalled."""
         return self._labelled(reader, self._source_view(reader, handle, text_offset),
                               "/api/source")
+
+    def source_records(self, reader: Reader, handle: str) -> m.SourceRecords:
+        """The records citing a source for this reader (``page_parts.source_records``),
+        read as the reader with the record pages' grant and gates; journalled under a
+        full-read grant. A source refused to the reader is not found."""
+        return self._labelled(reader, self.reads.run(
+            reader, lambda view: source_records(view, handle),
+            timeout=READ_TIMEOUT_SECONDS), "/api/source/records")
 
     def _source_view(self, reader: Reader, handle: str, text_offset: int) -> m.SourceView:
         """A cited source as this reader may open it. A captured case original or a
@@ -4574,6 +4777,11 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                 backend.identity_for = lambda oid, exp: warm_session(resolver, oid,
                                                                      expires_at=exp)
         backend.reader_mode = mode
+        # the recorded SharePoint grants an instruction's upload checks the reader's
+        # write access to its folder against (``InstructMixin._writes``)
+        backend.sharepoint_capture_dir = ctx.get("sharepoint_capture_dir")
+        if resolver is not None and not args.dev_fixture_principal:
+            backend.view_as = view_as_for(resolver, ctx.get("state_dir"))
         from operating.case_tools_host import prime_attachment_mailboxes
         try:
             prime_attachment_mailboxes(ctx.get("mail_capture_dir"))   # reader-independent
@@ -4589,6 +4797,7 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         if fixtures is None and planner is None:
             threads += [start_read_worker(backend, argv, n)
                         for n in range(max(0, getattr(args, "read_workers", 1) - 1))]
+            threads.append(start_read_worker(backend, argv, "access", access=True))
         settings = {"data_label": str(label), "state_dir": Path(ctx["state_dir"]),
                     "store_path": ctx.get("ontology_path"),
                     "freshness_bounds": ctx.get("freshness_bounds"),
@@ -4666,14 +4875,16 @@ def start_ask_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any, 
 
 
 def start_read_worker(backend: WorkspaceBackend, argv: list[str],
-                      number: int) -> threading.Thread:
+                      number: Any, access: bool = False) -> threading.Thread:
     """One more read worker: the console's builder run again on its own thread (its own
     case runtime and stores, every check again), serving reads from the read queue once
-    it is up; until then the owner thread serves them all."""
+    it is up; until then the owner thread serves them all. ``access``: the access worker
+    instead (``add_access_worker``: the kept pages' access checks only)."""
     from operator_api.workspace import case_console
 
     def serve_reads(ctx: Mapping[str, Any]) -> int:
-        backend.add_read_worker(ctx["objects_for"]).loop()
+        add = backend.add_access_worker if access else backend.add_read_worker
+        add(ctx["objects_for"]).loop()
         return 0
 
     def run_stack() -> None:
@@ -4720,3 +4931,29 @@ def start_warm_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any,
     return thread
 
 
+def view_as_for(resolver: Any, state_dir: Any) -> Any:
+    """The owner's "view as" over the served resolver (``operator_api.view_as``): the
+    candidates are the Portal snapshot's active users with an Entra object id, each viewed
+    with ``session_identity.view_as_session``; the people exclusion fails closed. A resolver
+    whose Portal input lists nobody (no snapshot) offers nobody."""
+    from operating import briefs as br
+    from operating.session_identity import view_as_session
+    from . import view_as as va
+
+    def candidates() -> list[tuple[str, str]]:
+        rows = getattr(getattr(resolver, "_portal", None), "_rows", None)
+        if not callable(rows):
+            return []
+        return [(r.entra_object_id, r.email) for r in rows()
+                if r.is_active and r.entra_object_id
+                and r.entra_tenant_id == resolver.policy.entra_tenant_id]
+
+    def excluded() -> Callable[[str], bool]:
+        people = br.env_people()
+        if people is None or getattr(people, "unavailable", "absent"):
+            raise RuntimeError("people exclusion unavailable")
+        return lambda oid: bool(people.is_excluded(oid))
+
+    return va.ViewAs(candidates=candidates, excluded=excluded,
+                     identity=lambda oid, exp: view_as_session(resolver, oid, expires_at=exp),
+                     audit=va.Audit(Path(state_dir) if state_dir else None))

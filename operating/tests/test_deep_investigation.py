@@ -842,6 +842,13 @@ class Task(unittest.TestCase):
                 self.assertNotIn(said, analysis, question)
         for said in ('"op": "count"', '"op": "sum"', "at least N", "the answer itself first"):
             self.assertIn(said, deep.method_rule())
+        # dev 11-10: "why is AO X Realized? what do its assembly orders say?" answered
+        # without saying how many there are; both methods say what such a question measures
+        for lookup in (False, True):
+            self.assertIn("linked records say (\"what do its lines say?\") is how many there "
+                          "are (a count)", deep.method_rule(lookup=lookup))
+            # dev 11-10: "on how many products?" was said as 14 component lines (7 products)
+            self.assertIn("counts the distinct X records", deep.method_rule(lookup=lookup))
 
     def test_an_unreadable_question_adds_no_analysis(self):
         none = deep.question_analysis("", "no pin")

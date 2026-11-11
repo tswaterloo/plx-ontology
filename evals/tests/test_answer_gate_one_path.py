@@ -979,6 +979,41 @@ class OneGateTests(unittest.TestCase):
                 self.assertEqual([u["reason"] for u in gated["unsupported"]],
                                  [reason or "cites_what_this_run_did_not_return"])
 
+    def test_days_count_from_the_day_the_session_question_writes(self):
+        """A ``days`` claim over one cited date counts from a ``day`` only the question the
+        decision is made against writes (or today): the MCP answer path builds the
+        reference days from that question, so the same claim passes under a question
+        that writes the day and is refused under one that does not."""
+        from datetime import timedelta
+        from operating.answer_contract import calendar_day
+        server = self.in_process(self.host())
+        session = agent_loop._Session(server)
+        found, _ = session.call("plx.find", {"query": self.item["root"]["identifier"]})
+        dated = None
+        for handle in sorted(agent_loop.evidence_handles("plx.find", found)):
+            read, is_error = session.call("plx.read", {"citation": handle})
+            fields = {} if is_error else _plain(read).get("fields") or {}
+            dated = next(((handle, key, calendar_day(value)) for key, value
+                          in sorted(fields.items()) if calendar_day(value)), None)
+            if dated:
+                break
+        self.assertIsNotNone(dated, "no dated field on a found record")
+        handle, field, day = dated
+        start = day - timedelta(days=12)
+        claim = {"id": "left", "value": "12", "op": "days", "day": start.isoformat(),
+                 "of": [{"citation": handle, "field": field}]}
+        returned = server._returned()
+        for question, passed in ((f"How many days from {start:%B} {start.day}, "
+                                  f"{start.year}?", True),
+                                 ("How many days are left?", False)):
+            with self.subTest(question=question):
+                result, gated, _ = mcp_server.answer_decision(
+                    {"claims": [claim], "question": question}, server, seen={handle},
+                    returned=returned, may_repair=False, repairs_left=0, unread=None)
+                self.assertEqual([c["id"] for c in gated["claims"]],
+                                 ["left"] if passed else [], gated["unsupported"])
+        self.assertNotIn("reference_days", returned)
+
     def test_an_unknown_or_malformed_answer_fails_closed(self):
         server = self.in_process(self.host())
         handle, field, value = self.record(server)

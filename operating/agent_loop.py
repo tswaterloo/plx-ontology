@@ -143,6 +143,7 @@ from .answer_gate import (ANSWER_BACKING, CONTRACTS, MAX_CITATIONS_PER_CLAIM,
                           STATED_GAP,
                           evidence_handles)
 from .claim_checks import OTHER_ROLES, QUANTITY_ROLES, returned_evidence
+from .time_window import reference_days
 from .mcp_server import AGENDA_TOOLS, GENERIC_TOOLS, MCPServer
 
 # The read-only generic tools a loop may call (each still listed by the server).
@@ -488,7 +489,9 @@ def run(question: str, server: MCPServer, planner: Planner,
     unshown: dict[str, tuple[dict[str, Any], dict[str, int]]] = {}
     seen: set[str] = set()
     results: dict[str, Any] = {}   # each call's whole result (None: it failed), by call key
-    returned: dict[str, Any] = {"counts": [], "currencies": {}}
+    # reference_days: what a ``days`` claim may count from uncited (``reference_days``)
+    returned: dict[str, Any] = {"counts": [], "currencies": {},
+                                "reference_days": reference_days(question)}
     # context: the conversation's size now, what the next step re-reads; billed: every
     # step's usage summed; peak: the largest conversation a step read.
     context, billed, peak, invalid = 0, 0, 0, 0

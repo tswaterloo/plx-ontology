@@ -25,7 +25,7 @@ CHANNEL = "teams:channel:synth-team/synth-channel"
 # what a schema projecting these would declare (none of them is declared today)
 DECLARED = {"mc_task_due": ("due_at",),
             "production_due": (("AssemblyOrder", "scheduled_date", "realized_date",
-                                "status"),),
+                                "status", "fx"),),
             "damage_date": (("AssemblyOrder", "fm_created_at"),),
             "ask_text": {"TeamsChatMessage": ("subject",),
                          "TeamsChannelMessage": ("subject",)}}
@@ -104,13 +104,14 @@ def aged(w: World, kind: str, then: tuple, now: tuple, *, currency: str = "CAD",
 
 
 def assembly(w: World, item: str, *, status: str = "Allocated", due: int | None = 3,
-             finished: bool = False, created: int = 5) -> str:
+             finished: bool | int = False, created: int = 5, binding: str = "fx") -> str:
+    """``finished``: realized a day ago (True) or that many days ago."""
     values = {"status": status, "fm_created_at": day(created) + "T08:00:00Z"}
     if due is not None:
         values["scheduled_date"] = day(due)
-    if finished:
-        values["realized_date"] = day(1)
-    oid = w.obj("AssemblyOrder", values, audience="api:production")
+    if finished is not False:
+        values["realized_date"] = day(1 if finished is True else finished)
+    oid = w.obj("AssemblyOrder", values, audience="api:production", binding=binding)
     w.link("AssemblyOrder.makes", oid, item)
     return oid
 
@@ -174,7 +175,7 @@ class OpsAlerts(Engine):
         self.assertEqual(summary["not_evaluated"][po.MC_STUCK],
                          {"not_judged": 1, "stage_unmapped": 1})
         # no due date declared by the schema: blocked, never a clean "nothing overdue"
-        summary = self.run_rules(World(), sources={})
+        summary = self.run_rules(World(), sources={"mc_task_due": ()})
         self.assertEqual(summary["detectors"][po.MC_OVERDUE], "blocked")
         self.assertEqual(summary["detectors"][po.MC_STUCK], "complete")
 
@@ -262,18 +263,39 @@ class OpsAlerts(Engine):
     def test_production_late_by_declared_due_date_and_status(self):
         w = World()
         item = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
-        late = assembly(w, item, due=4)
-        assembly(w, item, due=4, finished=True)
-        assembly(w, item, due=4, status="Realized")
+        late = assembly(w, item, due=10)
+        assembly(w, item, due=10, finished=True)
+        assembly(w, item, due=10, status="Realized")
         assembly(w, item, due=-4)
-        assembly(w, item, due=4, status="RELEASED")   # the MO's stale word: never open
+        assembly(w, item, due=10, status="RELEASED")   # the MO's stale word: never open
+        # within the allowed lag (too few realized to measure it: 7 days): on time
+        on_time = assembly(w, item, due=4)
+        # a mirror's copy (its id sorts first) lags the system that keeps production: a
+        # mirror alone is not judged; a realized or rescheduled keeper copy wins over a
+        # mirror copy still open and late
+        assembly(w, item, due=40, binding="a-mirror")
+        for keeper in (assembly(w, item, due=2, status="Realized"),
+                       assembly(w, item, due=-6, status="Committed")):
+            w.link("AssemblyOrder.same_record_as", assembly(w, item, due=30, binding="a-mirror"),
+                   keeper)
+        # open on paper, neither scheduled nor edited within the active window: stale
+        assembly(w, item, due=400)
         summary = self.run_rules(w)
         (gap,) = self.kinds(po.PRODUCTION)
         self.assertEqual(gap["object_id"], late)
-        self.assertIn("4 days past its due date", gap["summary"])
-        self.assertEqual(summary["not_evaluated"][po.PRODUCTION], {"status_unmapped": 1})
-        # no due date declared by the schema (today's): blocked
-        summary = self.run_rules(World(), sources={})
+        self.assertIn("10 days past its due date", gap["summary"])
+        self.assertIn("usually realized within 7 days of it", gap["summary"])
+        self.assertEqual(summary["not_evaluated"][po.PRODUCTION],
+                         {"status_unmapped": 1, "status_source_absent": 1})
+        # the allowed lag is the type's own: 20 records realized 2 days after their
+        # scheduled day make the order 4 days past its day late
+        for n in range(20):
+            assembly(w, item, due=40 + n, finished=38 + n)
+        self.run_rules(w)
+        self.assertEqual(sorted(g["object_id"] for g in self.kinds(po.PRODUCTION)),
+                         sorted([late, on_time]))
+        # no due date declared by the schema: blocked
+        summary = self.run_rules(World(), sources={"production_due": ()})
         self.assertEqual(summary["detectors"][po.PRODUCTION], "blocked")
         self.assertEqual(summary["detector_reasons"][po.PRODUCTION], ["due_date_not_served"])
 
@@ -408,7 +430,7 @@ def build_one_of_each(w: World) -> dict[str, str]:
                              ("100", "0", "100", "0", "0", 0)),
             po.AGED_AP: aged(w, "AgedPayable", ("100", "100", "0", "0", "0", 30),
                              ("100", "0", "0", "0", "100", 0)),
-            po.PRODUCTION: assembly(w, item, due=2, created=400),
+            po.PRODUCTION: assembly(w, item, due=10, created=400),
             po.DAMAGE: item,
             po.TEAMS: ask}
 

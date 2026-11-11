@@ -56,9 +56,9 @@ def lot(w: World, product: str, qty: str, expiry: str, number: str = "SYN-LOT-1"
 
 
 def assembly(w: World, start: str, components, *, status: str = "Allocated",
-             code: str = "AO-SYN1") -> str:
+             code: str = "AO-SYN1", binding: str = "fx") -> str:
     order = w.obj("AssemblyOrder", {"status": status, "start_date": start, "ao_code": code},
-                  audience="api:assembly")
+                  audience="api:assembly", binding=binding)
     for product, planned, consumed in components:
         part = w.obj("AssemblyOrderComponent", {
             "planned_quantity": (planned, "kg", "planned"),
@@ -91,7 +91,8 @@ def freight(w: World, carrier: str, amount: str, day: int, *, currency: str | No
 class OpsAlerts(Engine):
 
     def run_rules(self, w: World, **options) -> dict:
-        with mock.patch.object(ops, "declared_starts", return_value=("start_date",)):
+        with mock.patch.object(ops, "declared_starts", return_value=("start_date",)), \
+                mock.patch.object(ops, "assembly_keeper", return_value="fx"):
             return self.run_engine(w, only=list(ops.RULES),
                                    on_hand_sources=options.pop("on_hand", LOTS), **options)
 
@@ -154,6 +155,12 @@ class OpsAlerts(Engine):
         order = assembly(w, ahead(6), [(short, "80", "0"), (covered, "20", "5")])
         assembly(w, ahead(6), [(short, "500", "0")], status="Realized", code="AO-SYN2")
         odd = assembly(w, ahead(6), [(short, "1", "0")], status="Paused", code="AO-SYN3")
+        # a mirror's copy (its id sorts first) is not the record of production: alone it is
+        # not judged, and a copy the keeper realized is done whatever the mirror still says
+        assembly(w, ahead(6), [(short, "300", "0")], code="AO-SYN4", binding="a-mirror")
+        w.link("AssemblyOrder.same_record_as",
+               assembly(w, ahead(6), [(short, "400", "0")], code="AO-SYN5", binding="a-mirror"),
+               assembly(w, ahead(6), [(short, "400", "0")], status="Realized", code="AO-SYN5"))
         summary = self.run_rules(w)
         (gap,) = self.kinds(ops.ASSEMBLY_SHORT)
         self.assertEqual(gap["object_id"], order)
@@ -162,7 +169,8 @@ class OpsAlerts(Engine):
                          "short: SYNTH-ITEM needs 80 kg by then, 60 on hand or due in")
         self.assertEqual(gap["follow_up"]["priority"], "high")
         # an unknown status word is never read as open or done
-        self.assertEqual(summary["not_evaluated"][ops.ASSEMBLY_RULE], {"status_unknown": 1})
+        self.assertEqual(summary["not_evaluated"][ops.ASSEMBLY_RULE],
+                         {"status_unknown": 1, "status_source_absent": 1})
         self.assertNotEqual(gap["object_id"], odd)
         for hidden in ("api:po", "api:stock", "api:assembly"):
             self.assertEqual(self.kinds(ops.ASSEMBLY_SHORT, may_read=lambda k, h=hidden: k != h),
@@ -236,7 +244,8 @@ class OpsAlerts(Engine):
     def test_each_rule_is_blocked_naming_the_field_its_sources_do_not_serve(self):
         w = World()
         item(w, ("10",))
-        summary = self.run_engine(w, only=list(ops.RULES), on_hand_sources=())
+        with mock.patch.object(ops, "declared_starts", return_value=()):
+            summary = self.run_engine(w, only=list(ops.RULES), on_hand_sources=())
         reasons = self.read()["detector_reasons"]
         for rule in (ops.SLOW_RULE, ops.LOT_RULE, ops.ASSEMBLY_RULE):
             self.assertEqual(summary["detectors"][rule], "blocked", rule)

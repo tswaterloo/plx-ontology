@@ -146,6 +146,13 @@ class FactText(unittest.TestCase):
         task = "mc://live/tasks/TASK-3233@7e3f6f53ea5c2690-1"
         cases += [({**self.claim("stage", "merged", "row.stage", task),
                     "name": "task_3233_stage"}, "Task 3233 stage: merged"),
+                  # a day the claim's name spells stays a day (dev 11-10, G-0110)
+                  (self.claim("sage_sales_orders_on_or_before_2020_09_16", "20980", "",
+                              "api://sage.oe_order_header/%7B%22orduniq%22%3A%221%22%7D@g-4"),
+                   "Sage sales orders on or before 2020-09-16: 20980"),
+                  (self.claim("orders_2024_13_40", "3", "",
+                              "api://sage.oe_order_header/%7B%22orduniq%22%3A%221%22%7D@g-4"),
+                   "Orders 2024 13 40: 3"),
                   ({**self.claim("stage", "merged", "row.stage", task), "name": "c1"},
                    "Stage: merged")]
         for claim, want in cases:

@@ -65,6 +65,9 @@ collections (two relations, entity sets, mailboxes, drives) may be one record he
 and so count once: the claimed value must be the most records it cites that are surely
 distinct, those of one collection or those one count group a tool's identity lookup told
 apart lists (a group with a value, taken now, complete or not: their deduplicated union),
+or the value of a count group whole but for a source captured in part
+(``source_partly_read``, the citation cap beside it: every member it counted is held, so
+the source has at least that many) whose members the claim cites,
 and its item's text (and the close outcome) states it only as ``at least N`` / ``no fewer
 than N`` / ``N or more`` (``claim_count_lower_bound``).
 A ``count_distinct`` claim states how many distinct values a ``plx.aggregate``
@@ -238,6 +241,7 @@ from ontology.units import (ISO_4217, RECEIVE_ALIASES, SIGN_CURRENCIES, UOM_ALIA
 
 from . import quantity_types as _qt
 from .answer_contract import (NUMERIC_OPS, PAIR_OPS, ROUNDED_OPS, ZeroDenominator,
+                              calendar_day,
                               computed_claim)
 from .citation_schemes import HANDLE_PREFIX
 from .cases import (GAP_STATES, UnitMismatch, evaluate as _evaluate, format_unit, parse_unit,
@@ -486,7 +490,11 @@ _ID_COLUMN = re.compile(r"^(?:id[a-z0-9]*|[a-z0-9_]*_id|[a-z0-9_]*(?:code|number
 # Columns whose values are status words (status, state, order_status, approvalState).
 _STATUS_COLUMN = re.compile(r"(?:^|_)(?:[Ss]tatus|[Ss]tate|STATUS|STATE)$|[a-z0-9](?:Status|State)$")
 _CLAIM_KEYS = frozenset({"value", "citation", "field", "calculation", "role", "unit", "op",
-                         "of", "currency", "quote", "expression"})
+                         "of", "currency", "quote", "expression", "day"})
+# A ``days`` claim over ONE cited date counts from a ``day`` it does not cite (x0 - day):
+# a day the question writes in full or today (``returned["reference_days"]``,
+# ``operating.time_window.reference_days``); any other day is refused.
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 # A cited claim's ``quote``: the passage as written in the cited text that holds its value
 # (``_quote_mismatch``). It adds a check and never replaces one.
 MAX_QUOTE_CHARS = 500
@@ -499,7 +507,11 @@ COUNT_OPS = ("count", "count_distinct")
 # ``sum``, ``avg``, ``min``, ``max``, ``difference`` and ``ratio`` over one numeric field of
 # each cited cell (``_check_value_claim``), recomputed by the rule the eval scorer uses
 # (``answer_contract.computed_claim``).
-OPS = (*COUNT_OPS, *NUMERIC_OPS, "expression")
+# ``days``: the whole days from one cited date to another (x0 - x1: a receipt after its
+# expected date, a due date after its invoice date), each re-read as a calendar day.
+DAYS_OP = "days"
+DAY_UNITS = frozenset({"day", "days", "d"})
+OPS = (*COUNT_OPS, *NUMERIC_OPS, "expression", DAYS_OP)
 MAX_OP_INPUTS = 100
 MAX_VALUE_CHARS = 200
 _OP_INPUT_KEYS = frozenset({"citation", "field", "unit"})
@@ -643,6 +655,10 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
             raise ValidationError(f"value_claim_value_too_long:{index}")
         if "expression" in item and item.get("op") != "expression":
             raise ValidationError(f"invalid_value_claim:{index}")
+        if "day" in item and (item.get("op") != DAYS_OP or not isinstance(item["day"], str)
+                              or not _ISO_DAY.fullmatch(item["day"])
+                              or calendar_day(item["day"]) is None):
+            raise ValidationError(f"invalid_value_claim_day:{index}")
         claim: dict[str, Any] = {"value": text,
                                  "kind": "number" if _PLAIN_NUMBER.match(text) else "text"}
         if sum(key in item for key in ("citation", "calculation", "op")) != 1 \
@@ -657,6 +673,8 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
             claim.update(op=item["op"], of=_op_inputs(item, handles, index))
             if claim["kind"] != "number":
                 raise ValidationError(f"invalid_value_claim_value:{index}")
+            if "day" in item:
+                claim["day"] = item["day"]
             if item["op"] == "expression":
                 claim["expression"] = _expression_shape(
                     item, len(claim["of"]), index, share=_percent_unit(item.get("unit")))
@@ -722,7 +740,8 @@ def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
     op, inputs = item["op"], item["of"]
     if op not in OPS or isinstance(inputs, (str, Mapping)) or not isinstance(
             inputs, Sequence) or not 1 <= len(inputs) <= MAX_OP_INPUTS \
-            or (op in PAIR_OPS and len(inputs) != 2):
+            or (op in PAIR_OPS and len(inputs) != 2) \
+            or (op == DAYS_OP and len(inputs) != (1 if "day" in item else 2)):
         raise ValidationError(f"invalid_value_claim_op:{index}")
     keys = {"count": frozenset({"citation"}), "count_distinct": frozenset({"citation"}),
             "expression": _EXPRESSION_INPUT_KEYS}.get(op, _OP_INPUT_KEYS)
@@ -740,6 +759,11 @@ def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
             # a figure counted twice once multiplied out, never here by its copy.
             out.append(_expression_input(given, index))
             continue
+        if op == DAYS_OP:
+            field = given.get("field")
+            if not isinstance(field, str) or not _FIELD.match(field) or "unit" in given:
+                raise ValidationError(f"invalid_value_claim_field:{index}")
+            entry["field"] = field
         if op in NUMERIC_OPS:
             field, unit = given.get("field"), given.get("unit")
             if not isinstance(field, str) or not _FIELD.match(field):
@@ -1020,12 +1044,27 @@ class _Evidence:
                             for entry in records if entry.get("complete") is True]
         self.distinct = [frozenset(entry.get("records") or ()) for entry in records
                          if entry.get("complete") is True or entry.get("distinct") is True]
+        # Count entries whole but for a source captured in part (``floor``): (value, the
+        # records they list); the value is a lower bound, never exact.
+        self.floors = [(to_decimal(entry.get("value")), frozenset(entry.get("records") or ()))
+                       for entry in records if entry.get("floor") is True
+                       and entry.get("complete") is not True
+                       and entry.get("distinct") is True]
         self.value_counts = [(to_decimal(entry.get("value")),
                               frozenset(entry.get("records") or ()))
                              for entry in entries if entry.get("op") == "count_distinct"
                              and entry.get("complete") is True]
+        # complete plx.aggregate sums: (value, currency, the cells they cite)
+        self.sums = [(to_decimal(entry.get("value")), entry.get("currency"),
+                      frozenset(tuple(cell) for cell in entry.get("cells") or ()))
+                     for entry in entries if entry.get("op") == "sum"
+                     and entry.get("complete") is True]
         self.currencies: Mapping[tuple[str, str], str | None] = \
             returned.get("currencies") or {}
+        # The days a ``days`` claim may count from uncited (``_ISO_DAY`` strings).
+        self.reference_days = frozenset(
+            day for day in returned.get("reference_days") or ()
+            if isinstance(day, str) and _ISO_DAY.fullmatch(day) and calendar_day(day))
         # (handle, field) of a money cell -> (handle, field) of the cell its currency was
         # read on, when another record states it (a company's local currency).
         self.currency_cites: Mapping[tuple[str, str], tuple[str, str]] = \
@@ -1148,6 +1187,19 @@ class _Evidence:
         if typed["problem"]:
             return None, None, typed["form"], typed["problem"]
         return label, typed["type"], typed["form"], None
+
+    def tool_sum(self, claim: Mapping[str, Any]) -> bool:
+        """Whether a ``sum`` claim binds to a complete ``plx.aggregate`` sum this reader
+        was returned: the same value (Decimal) and currency (both none, or the same code),
+        every cell the claim cites one the sum cites (``_aggregate_sums``)."""
+        if claim.get("op") != "sum":
+            return False
+        value = to_decimal(claim.get("value"))
+        cells = {(given.get("citation"), given.get("field")) for given in claim.get("of") or ()
+                 if isinstance(given, Mapping)}
+        return value is not None and bool(cells) and any(
+            total == value and currency == claim.get("currency") and cells <= listed
+            for total, currency, listed in self.sums)
 
     def recomputed(self, calc: Mapping[str, Any]) -> Decimal | None:
         values: dict[str, tuple[Decimal, Any]] = {}
@@ -1589,6 +1641,8 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
         return _check_count(claim, out, handles, evidence)
     if claim.get("op") == "expression":
         return _check_expression(claim, out, handles, evidence)
+    if claim.get("op") == DAYS_OP:
+        return _check_days(claim, out, handles, evidence)
     if "calculation" in claim or claim.get("op") in NUMERIC_OPS:
         if "calculation" in claim:
             calc, name = evidence.calcs.get(claim["calculation"]), claim["calculation"]
@@ -1627,7 +1681,10 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
                     and result != to_decimal(calc.get("result")):
                 return _fail(out, "claim_uncited", f"{name} does not recompute "
                              "from its cited rows as read now")
-            if claim["kind"] != "number" or to_decimal(claim["value"]) != result:
+            if claim["kind"] != "number" or to_decimal(claim["value"]) != result \
+                    and not evidence.tool_sum(claim):
+                # a sum of more cells than one claim cites: the complete aggregate that
+                # added every one of them states it (its cited cells re-read above)
                 return _fail(out, "claim_value_mismatch",
                              f"{name} is {_plain(result)}, not {claim['value']}")
         if claim.get("op") == "ratio":
@@ -1899,6 +1956,10 @@ def _check_count(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequenc
         for record in records:
             sources[_collection(record)] = sources.get(_collection(record), 0) + 1
         floor = max([*sources.values(), *(len(cited & listed) for listed in evidence.distinct)])
+        if value is not None and any(total == value and _members_named(cited, listed, {})
+                                     for total, listed in evidence.floors):
+            # the tool's own count of every member it holds, a source read in part
+            floor = value
         if value != floor:
             return _fail(out, "claim_value_mismatch", (
                 f"the count cites {floor} records, not {claim['value']}" if len(sources) == 1
@@ -2372,6 +2433,9 @@ def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
                       into: dict[str, Any]) -> dict[str, Any]:
     measure = arguments.get("measure") if isinstance(arguments, Mapping) else None
     op = measure.get("op") if isinstance(measure, Mapping) else None
+    if tool == "plx.aggregate" and op == "sum" and isinstance(arguments, Mapping):
+        _aggregate_sums(arguments, result, into)
+        return into
     if tool != "plx.aggregate" or op not in COUNT_OPS \
             or (op == "count_distinct" and not measure.get("property")):
         return into
@@ -2393,6 +2457,16 @@ def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
     whole = (result.get("partial") is False and (not gaps or capped)
              and len(gaps) == len([gap for gap in result.get("gaps") or ()
                                    if not _age_only(gap)])
+             and not {"refused", "withheld"} & set(result)
+             and (done.get("complete") is True
+                  or done.get("reason") in GROUP_PAGE_REASONS))
+    # The same answer whole but for a source captured in part (``PARTLY_READ``): its count
+    # is still every member the tool holds, a lower bound of the source's (``floor``).
+    floor = (result.get("partial") is False
+             and any(gap.get("reason") == PARTLY_READ for gap in gaps)
+             and all(isinstance(gap, Mapping) and gap.get("state") == "unknown"
+                     and gap.get("reason") in (CITATIONS_CAPPED, PARTLY_READ)
+                     for gap in gaps)
              and not {"refused", "withheld"} & set(result)
              and (done.get("complete") is True
                   or done.get("reason") in GROUP_PAGE_REASONS))
@@ -2433,14 +2507,63 @@ def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
             _note_distinct(group, value, records, now and unique, whole, capped, into)
             continue
         distinct = now and unique and (value == len(records) or (
-            capped and value is not None and len(records) == MAX_COUNT_CITATIONS
+            (capped or floor and any(gap.get("reason") == CITATIONS_CAPPED for gap in gaps))
+            and value is not None and len(records) == MAX_COUNT_CITATIONS
             and value > len(records)))
         entry = {"value": group.get("value"), "records": records,
                  "distinct": distinct, "complete": whole and distinct}
+        if distinct and not whole and floor:
+            # whole but for a source read in part: the value is at least the source's
+            entry["floor"] = True
         if twins and distinct:
             entry["twins"] = twins
         into["counts"].append(entry)
     return into
+
+
+# Gaps that leave a sum the tool's exact total over every input: the citation cap (the
+# first inputs cited, every one added) and a source column whose tax basis no code
+# grounds (one column summed as recorded; the total is never called net or gross).
+SUM_WHOLE_GAPS = frozenset({"citations_capped", "tax_basis_unknown"})
+
+
+def _aggregate_sums(arguments: Mapping[str, Any], result: Mapping[str, Any],
+                    into: dict[str, Any]) -> None:
+    """Each group of a ``plx.aggregate`` ``sum`` as a sum entry (``op: sum``, kept with the
+    counts and bounded as they are): its value, currency and unit, the cells it cites
+    (``inputs_citations``: every input, or the first ``MAX_COUNT_CITATIONS`` past the cap)
+    and whether it is complete: the answer whole (not partial, complete, nothing refused
+    or withheld, no gap but ``SUM_WHOLE_GAPS`` and age-only ones), as known now, its cells
+    cited once each and, past the cap, exactly the cap's number of them. A sum claim
+    citing only cells of a complete entry with its value and currency binds to it
+    (``_Evidence.tool_sum``): the tool added every input in Decimal; the claim's own few
+    citations cannot (11-10: every Sage order total over more than 8 orders refused)."""
+    gaps = [gap for gap in result.get("gaps") or () if not _age_only(gap)]
+    done = result.get("completeness") or {}
+    whole = (result.get("partial") is False
+             and all(isinstance(gap, Mapping) and gap.get("reason") in SUM_WHOLE_GAPS
+                     for gap in gaps)
+             and not {"refused", "withheld"} & set(result)
+             and (done.get("complete") is True or done.get("reason") in GROUP_PAGE_REASONS)
+             and known_now(arguments, result))
+    capped = any(isinstance(gap, Mapping) and gap.get("reason") == CITATIONS_CAPPED
+                 for gap in gaps)
+    for group in result.get("groups") or ():
+        if not isinstance(group, Mapping) or not isinstance(group.get("value"), str):
+            continue
+        cells = [(c.get("l1_handle"), c.get("field_path"))
+                 for c in group.get("inputs_citations") or () if isinstance(c, Mapping)]
+        inputs = group.get("inputs")
+        listed = bool(cells) and len(set(cells)) == len(cells) and all(
+            isinstance(h, str) and isinstance(f, str) for h, f in cells) and \
+            type(inputs) is int and (inputs == len(cells) or (
+                capped and len(cells) == MAX_COUNT_CITATIONS and inputs > len(cells)))
+        into["counts"].append({
+            "op": "sum", "value": group["value"], "currency": group.get("currency"),
+            "unit": group.get("unit"), "cells": cells if listed else [],
+            # its records, so a session drops it when an item's permissions change
+            "records": sorted({h for h, _ in cells if isinstance(h, str)}),
+            "complete": whole and listed})
 
 
 def _contradict_listing(handle: Any, into: dict[str, Any]) -> None:
@@ -2574,6 +2697,10 @@ def listing_count(arguments: Any, result: Any) -> tuple[str, ...] | None:
 # states past it: a count group listing that many records under that gap alone counts more.
 MAX_COUNT_CITATIONS = 50
 CITATIONS_CAPPED = "citations_capped"
+# A gap saying only that a source's last capture read it in part: every record counted is
+# one the tool holds, so its count is a floor of the source's (records may be missing,
+# none counted is invented); the tool's own value is then a lower bound (``floor``).
+PARTLY_READ = "source_partly_read"
 # Why an aggregate returned only some of its groups, each of them whole
 # (``ontology_tools_aggregate``: a page, the groups ``having`` keeps, a size cut).
 GROUP_PAGE_REASONS = frozenset({"group_page", "result_size"})
@@ -2716,6 +2843,61 @@ def _computed_problem(claim: Mapping[str, Any], calc: Mapping[str, Any], name: s
         if claim["op"] in ROUNDED_OPS else ""
     shown = format(result, "f") if claim["op"] in ROUNDED_OPS else _plain(result)
     return "claim_value_mismatch", f"{name} is {shown}, not {claim['value']}{rounding}"
+
+
+def _cited_day(handle: str, field: str, handles: Sequence[str], evidence: "_Evidence"
+               ) -> tuple[date | None, str]:
+    """(the calendar day a cited date cell holds as re-read now, "") or (None, why not):
+    an ISO day, or a timestamp's own day (its first ten characters); a revision that moved
+    on stands only where the cell holds the same value now (``_moved_on``)."""
+    resolved = evidence.row(handle) if handle in handles else None
+    if resolved is None:
+        return None, f"{handle[:200]} is not readable now as the case recorded it"
+    if _changed(resolved):
+        current, problem = _moved_on(resolved, [field], evidence)
+        if current is None:
+            return None, problem
+        resolved = current
+    if _withheld(resolved, field):
+        return None, f"the cited {field} is withheld from this reader by a marking"
+    exists, cell = dig(resolved, field)
+    day = calendar_day(cell) if exists else None
+    if day is None:
+        return None, f"the cited {field} holds no date"
+    return day, ""
+
+
+def _check_days(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequence[str],
+                evidence: "_Evidence") -> dict[str, Any]:
+    """A ``days`` claim: the whole days from its second cited date to its first (x0 - x1,
+    negative when the first is earlier), or from its ``day`` to its one cited date (x0 -
+    day; ``day`` one of ``evidence.reference_days``, else refused), each cited date re-read
+    now (``_cited_day``), equal to the
+    claimed whole number; in days if it states a unit; no quantity role (a span of time
+    is no quantity of goods) and no currency (refused at parse)."""
+    days = []
+    for given in claim["of"]:
+        day, problem = _cited_day(given["citation"], given["field"], handles, evidence)
+        if day is None:
+            return _fail(out, "claim_value_mismatch", f"the days: {problem}")
+        days.append(day)
+    if "day" in claim:
+        if claim["day"] not in evidence.reference_days:
+            return _fail(out, "claim_value_mismatch",
+                         f"the days count from {claim['day']}, which is neither a day the "
+                         "question writes in full nor today: cite a record's date instead")
+        days.append(calendar_day(claim["day"]))
+    if "role" in claim:
+        return _fail(out, "claim_role_mismatch", "a number of days between two dates has "
+                     f"no quantity role; the claim says {claim['role']}")
+    if "unit" in claim and claim["unit"].strip().casefold() not in DAY_UNITS:
+        return _fail(out, "claim_unit_mismatch",
+                     f"the days are in days, the claim says {claim['unit']}")
+    span = (days[0] - days[1]).days
+    if to_decimal(claim["value"]) != Decimal(span):
+        return _fail(out, "claim_value_mismatch", f"from {days[1].isoformat()} to "
+                     f"{days[0].isoformat()} is {span} days, not {claim['value']}")
+    return {**out, "status": "passed", "role_basis": "calculation", "quantity_type": None}
 
 
 def _op_calculation(claim: Mapping[str, Any], handles: Sequence[str],

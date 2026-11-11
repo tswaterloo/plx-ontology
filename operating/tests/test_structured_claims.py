@@ -854,6 +854,93 @@ class OnQuestionTests(unittest.TestCase):
         self.assertEqual([c["id"] for c in decided["claims"]], ["n"])
         self.assertEqual(self.reasons(decided), [answer_gate.OFF_QUESTION])
 
+    def test_the_sessions_find_of_a_name_the_question_writes_connects_its_record(self):
+        """A chat's topic the entity index holds no name of (dev 11-10: "R&D + Marketing"
+        resolved only as the word "R&D", other records): the session's own find of the
+        name the question writes, found as exactly one record of that very name, puts
+        that record on the question, so a message linked to it stands; a find of words the
+        question does not write, of a record named otherwise, or naming two records,
+        connects nothing."""
+        import contextlib
+        import sqlite3
+        import threading
+        import types
+        from operating import mcp_server
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.executescript(
+            "CREATE TABLE object_versions (object_id TEXT, l1_handle TEXT);"
+            "CREATE TABLE link_rows (from_object TEXT, to_object TEXT, superseded_at TEXT,"
+            " binding_kind TEXT, tier TEXT);")
+        conn.executemany("INSERT INTO object_versions VALUES (?, ?)",
+                         [("Msg:2", self.LINE), ("Cust:9", self.OTHER)])
+        conn.executemany("INSERT INTO link_rows VALUES (?, ?, NULL, 'fk', 'verified')",
+                         [("Msg:2", "Chat:1"), ("Chat:1", "Cust:4")])
+        store = types.SimpleNamespace(conn=conn, lock=threading.Lock())
+        tools = types.SimpleNamespace(
+            store=store, policy=None, _as_known_at=lambda arguments: None,
+            _scope=lambda actor, at: "scope",
+            _visible_versions=lambda scope, ids: {i: {} for i in ids})
+        world = types.SimpleNamespace(
+            tools=tools, request=contextlib.nullcontext, per_call=contextlib.nullcontext,
+            policy_now=lambda actor: None)
+        question = "How many messages were posted in Teams chat R&D + Marketing?"
+        stray = [{"mention": "R&D", "status": "match",
+                  "records": [{"object_id": "Cust:9", "status": "match"}]}]
+
+        def find(query, *names, status="found", object_type="TeamsChat"):
+            return ({"query": query, "object_type": object_type},
+                    {"status": status, "candidates": [
+                        {"object": {"object_id": f"Chat:{n + 1}",
+                                    "display": {"untrusted_text": name}}}
+                        for n, name in enumerate(names)]})
+        message = {"id": "m", "value": "40", "citation": self.LINE, "field": "row.quantity"}
+
+        def decided(*finds, asked=question):
+            server = mock.MagicMock(ontology=world, _anchors={}, _anchors_whole=True,
+                                    _finds=list(finds))
+            server._resolve_anchors = mcp_server.MCPServer._resolve_anchors.__get__(server)
+            server._told_question = mcp_server.MCPServer._told_question.__get__(server)
+            server._told_question({"question": asked, "entities": stray})
+            relevant = mcp_server.MCPServer._relevance(server, asked)
+            session = mock.Mock(case_runtime=None, actor=None)
+            with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
+                    mock.patch.object(answer_gate, "gate_rows",
+                                      lambda runtime, actor, **_kw: self.view):
+                return answer_gate.gate_answer({"claims": [message]}, session,
+                                               seen={self.LINE}, returned={},
+                                               may_repair=True, relevant=relevant)
+        self.assertEqual(self.reasons(decided()), [answer_gate.OFF_QUESTION])
+        self.assertEqual([c["id"] for c in decided(find("R&D + Marketing",
+                                                        "R&D + Marketing"))["claims"]], ["m"])
+        self.assertEqual([c["id"] for c in decided(find(
+            "R&D + Marketing", "R&D + Marketing", "R&D + Marketing Team",
+            status="ambiguous"))["claims"]], ["m"])
+        for finds in ([find("R&D + Sales Team", "R&D + Marketing")],
+                      [find("R&D + Marketing", "R&D + Marketing Team")],
+                      [find("R&D + Marketing", "R&D + Marketing", "R&D + Marketing",
+                            status="ambiguous")],
+                      [find("R&D + Marketing", "R&D + Marketing", status="not_found")]):
+            with self.subTest(finds=finds[0][0]["query"]):
+                self.assertEqual(self.reasons(decided(*finds)), [answer_gate.OFF_QUESTION])
+        # A name shorter than MIN_NAME_ANCHOR_CHARS (dev 11-10 G-0018: the entity index
+        # read "Gleamin" as a customer): only a find of the type whose noun the question
+        # writes beside it connects it; an untyped find, another type's, or a question
+        # writing the name inside a longer word connects nothing.
+        short = "what is the last activity at of teams channel Gleamin in teams?"
+        self.assertEqual([c["id"] for c in decided(
+            find("Gleamin", "Gleamin", "Gleamin Prep", status="ambiguous",
+                 object_type="TeamsChannel"), asked=short)["claims"]], ["m"])
+        for finds, asked in (
+                ([find("Gleamin", "Gleamin", object_type=None)], short),
+                ([find("Gleamin", "Gleamin", object_type="PlannerTask")], short),
+                ([find("Gleamin", "Gleamin", object_type="TeamsChannel")],
+                 "what is the last activity of the Gleamins team channel?"),
+                ([find("Gle", "Gle", object_type="TeamsChannel")],
+                 "what is the last activity of teams channel Gle?")):
+            with self.subTest(asked=asked, object_type=finds[0][0]["object_type"]):
+                self.assertEqual(self.reasons(decided(*finds, asked=asked)),
+                                 [answer_gate.OFF_QUESTION])
+
     def test_a_session_stopped_at_its_cap_keeps_its_best_gated_answer(self):
         """Stopped while its submission was being decided: that submission is the host's
         to decide (``cut_submission``) and the reply is what the gate passed

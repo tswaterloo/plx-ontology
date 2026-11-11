@@ -78,6 +78,11 @@ us read-only. Read-only is enforced only here, before any I/O:
   Its token may come from a separate send app (``PLX_ACTIONS_GRAPH_CREDENTIALS``, e.g.
   ``AZURE`` -> ``AZURE_*``), issued only through ``action_credentials``;
   ``ClientCredentials.from_env`` refuses that prefix, so no read path can use it.
+* Approved writes (``write_action``): off by default. A person-approved write in a
+  system the owner opened (``PLX_WRITES_LIVE_SYSTEMS``: planner, calendar, sharepoint,
+  bc) may send one of ``WRITE_SHAPES`` (exact method, host and path; the one upload
+  query; closed headers; DELETE without a body); ``_refuse_non_read_send`` re-checks the
+  shape and the flag inside the sender (``integrations.write_transports``).
   Who may send what to whom is decided before, in ``operating.card_actions``.
 * Secrets (client secret, access tokens, download URLs) are held in
   ``Secret`` and never appear in exceptions, reprs, records or citations.
@@ -1180,6 +1185,12 @@ def _refuse_non_read_send(method: str, url: str, body: bytes | None) -> None:
             and action_send_enabled(os.environ) and _action_shape(parts.path, body):
         # An approved card action (``send_action``): re-checked here by shape and flag.
         return
+    if method in ("POST", "PATCH", "PUT", "DELETE"):
+        # An approved write (``write_action``): re-checked here by shape and flag.
+        system = write_shape(method, url)
+        if system is not None and system in writes_enabled(os.environ) \
+                and (method == "DELETE") == (not body):
+            return
     raise ReadOnlyGuardError("sender: only GET, the OAuth token POST or the MC JSON-RPC "
                              "POST may be sent")
 
@@ -1457,6 +1468,130 @@ ACTION_PATHS = (
                 r"/messages"), frozenset({"body"})),
 )
 MAX_ACTION_BODY_BYTES = 64_000
+
+
+# Approved writes (``write_action``): a person-approved autopilot or instruction write
+# (``operating.autopilot_write``, ``operating.write_intents``) in one of the systems the
+# owner opened (``PLX_WRITES_LIVE_SYSTEMS``, e.g. ``planner,bc``; none by default). Only
+# these exact method + path shapes, plain characters in every path part (a file name may
+# hold ``%20`` for a space, nothing else encoded), the one query an upload carries, and
+# the closed set of request headers. Re-checked by shape and flag inside the sender.
+WRITES_FLAG = "PLX_WRITES_LIVE_SYSTEMS"
+WRITE_SYSTEMS = frozenset({"planner", "calendar", "sharepoint", "bc"})
+WRITE_HEADERS = frozenset({"content-type", "if-match", "prefer"})
+MAX_WRITE_BODY_BYTES = 4 * 1024 * 1024 + 1024
+_W_ID = r"[A-Za-z0-9_-]{1,120}"
+_W_EVENT = r"[A-Za-z0-9_=-]{1,400}"
+_W_SITE = (r"(?:[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,5},)?"
+           r"[0-9a-fA-F-]{36},[0-9a-fA-F-]{36}")
+_W_DRIVE = r"[A-Za-z0-9!_-]{1,200}"
+_W_NAME = r"(?:[A-Za-z0-9._()-]|%20){1,200}"
+_W_GUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_W_BC_ROOT = (rf"/v2\.0/{_W_GUID}/[A-Za-z0-9_-]{{1,50}}/api/v2\.0/companies\({_W_GUID}\)")
+_W_BC_DOC = r"(?:salesOrders|purchaseOrders)"
+_W_BC_LINES = r"(?:salesOrderLines|purchaseOrderLines)"
+UPLOAD_QUERY = "@microsoft.graph.conflictBehavior=fail"
+# (system, method, host, path, query allowed)
+WRITE_SHAPES = (
+    ("planner", "POST", GRAPH_HOST, re.compile(r"/v1\.0/planner/tasks"), None),
+    ("planner", "PATCH", GRAPH_HOST, re.compile(rf"/v1\.0/planner/tasks/{_W_ID}"), None),
+    ("planner", "DELETE", GRAPH_HOST, re.compile(rf"/v1\.0/planner/tasks/{_W_ID}"), None),
+    ("calendar", "POST", GRAPH_HOST, re.compile(rf"/v1\.0/users/{_ACTION_USER}/events"), None),
+    ("calendar", "PATCH", GRAPH_HOST,
+     re.compile(rf"/v1\.0/users/{_ACTION_USER}/events/{_W_EVENT}"), None),
+    ("calendar", "DELETE", GRAPH_HOST,
+     re.compile(rf"/v1\.0/users/{_ACTION_USER}/events/{_W_EVENT}"), None),
+    ("sharepoint", "POST", GRAPH_HOST,
+     re.compile(rf"/v1\.0/sites/{_W_SITE}/lists/{_W_ID}/items"), None),
+    ("sharepoint", "PATCH", GRAPH_HOST,
+     re.compile(rf"/v1\.0/sites/{_W_SITE}/lists/{_W_ID}/items/\d{{1,12}}/fields"), None),
+    ("sharepoint", "DELETE", GRAPH_HOST,
+     re.compile(rf"/v1\.0/sites/{_W_SITE}/lists/{_W_ID}/items/\d{{1,12}}"), None),
+    ("sharepoint", "PUT", GRAPH_HOST,
+     re.compile(rf"/v1\.0/drives/{_W_DRIVE}/items/{_W_DRIVE}:/{_W_NAME}:/content"),
+     UPLOAD_QUERY),
+    ("sharepoint", "DELETE", GRAPH_HOST,
+     re.compile(rf"/v1\.0/drives/{_W_DRIVE}/items/{_W_DRIVE}"), None),
+    ("bc", "POST", BC_HOST, re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}"), None),
+    ("bc", "POST", BC_HOST,
+     re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}\({_W_GUID}\)/{_W_BC_LINES}"), None),
+    ("bc", "PATCH", BC_HOST,
+     re.compile(rf"{_W_BC_ROOT}/{_W_BC_LINES}\({_W_GUID}\)"), None),
+    ("bc", "PATCH", BC_HOST,
+     re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}\({_W_GUID}\)/{_W_BC_LINES}\({_W_GUID}\)"), None),
+    ("bc", "DELETE", BC_HOST, re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}\({_W_GUID}\)"), None),
+    ("bc", "DELETE", BC_HOST,
+     re.compile(rf"{_W_BC_ROOT}/{_W_BC_DOC}\({_W_GUID}\)/{_W_BC_LINES}\({_W_GUID}\)"), None),
+)
+
+
+def writes_enabled(environ: Mapping[str, str]) -> frozenset[str]:
+    """The systems the owner opened to approved writes (an unknown name opens nothing)."""
+    names = {n.strip().lower() for n in str(environ.get(WRITES_FLAG) or "").split(",")}
+    return frozenset(n for n in names if n in WRITE_SYSTEMS)
+
+
+def write_shape(method: str, url: str) -> str | None:
+    """The system whose approved write shape ``method url`` is, or None."""
+    if not isinstance(method, str) or not isinstance(url, str) or len(url) > 2048:
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme != "https" or port is not None or parts.username or parts.password \
+            or parts.fragment or ".." in parts.path or "//" in parts.path:
+        return None
+    path, host = parts.path, (parts.hostname or "").lower()
+    if "%" in path.replace("%20", ""):
+        return None
+    for system, verb, where, pattern, query in WRITE_SHAPES:
+        if verb == method and where == host and pattern.fullmatch(path) \
+                and (parts.query == (query or "")):
+            if "%20" in path and not (system == "sharepoint" and verb == "PUT"):
+                return None
+            return system
+    return None
+
+
+def check_write_request(method: str, url: str, headers: Mapping[str, str],
+                        body: bytes | None, *, environ: Mapping[str, str] | None = None
+                        ) -> str:
+    """Validate one approved write before I/O (the system it writes); raise
+    ``ReadOnlyGuardError``. Never a Teams posting URL from the MC go-live settings."""
+    env = os.environ if environ is None else environ
+    system = write_shape(method, url)
+    if system is None:
+        raise ReadOnlyGuardError("write: not one of the approved write shapes")
+    if system not in writes_enabled(env):
+        raise ReadOnlyGuardError(f"write: {system} is not opened ({WRITES_FLAG})")
+    for teams in _teams_urls(env):
+        if teams.strip() and teams.strip() in url:
+            raise ReadOnlyGuardError("MC_GO_LIVE_TEAMS_* URLs are never called")
+    if not isinstance(headers, Mapping) or any(
+            not isinstance(k, str) or k.lower() not in WRITE_HEADERS or not isinstance(v, str)
+            or "\r" in v or "\n" in v or len(v) > 400 for k, v in headers.items()):
+        raise ReadOnlyGuardError("write: a header outside the closed set")
+    if method == "DELETE":
+        if body:
+            raise ReadOnlyGuardError("write: DELETE carries no body")
+    elif not isinstance(body, bytes) or not 0 < len(body) <= MAX_WRITE_BODY_BYTES:
+        raise ReadOnlyGuardError("write: body missing or too large")
+    return system
+
+
+def write_action(method: str, url: str, bearer: Secret, headers: Mapping[str, str],
+                 body: bytes | None, *, environ: Mapping[str, str] | None = None,
+                 sender: "Sender | None" = None, timeout: float = 30.0
+                 ) -> tuple[int, Mapping[str, str], bytes]:
+    """Send one approved write (checked first, never retried, redirects refused); the
+    bearer never leaves the request headers. Returns (status, headers, body)."""
+    check_write_request(method, url, headers, body, environ=environ)
+    sent = {**{k: v for k, v in headers.items()}, "Authorization": f"Bearer {bearer.reveal()}",
+            "Accept": "application/json"}
+    send = sender or urllib_sender
+    return send(method, url, sent, body, timeout, 200_000)
 
 
 def action_send_enabled(environ: Mapping[str, str]) -> bool:
@@ -2502,7 +2637,8 @@ def parse_handle(handle: Any, scheme: str, parts: int) -> tuple[list[str], str, 
     return [unquote(s) for s in segments], unquote(version), extra
 
 
-__all__ = ["ALLOWED_HOSTS", "BACKOFF_CAP_SECONDS", "BC_SCOPE", "BoundedBackoff",
+__all__ = ["WRITES_FLAG", "WRITE_SHAPES", "check_write_request", "write_action",
+           "writes_enabled", "write_shape", "ALLOWED_HOSTS", "BACKOFF_CAP_SECONDS", "BC_SCOPE", "BoundedBackoff",
            "ClientCredentials", "DENIED_PATH_TOKENS",
            "DownloadIncomplete", "ERROR_CODE_TOKENS", "MESSAGE_CLASS_TOKENS",
            "MAX_RETRIES", "failure_diagnostics", "is_error_code_token", "upstream_error_code",

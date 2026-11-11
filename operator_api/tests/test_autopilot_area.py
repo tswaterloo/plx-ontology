@@ -97,6 +97,22 @@ class AutopilotArea(unittest.TestCase):
                      aw.WriteGate(self.state / aw.WRITE_GATE_FILE, rules),
                      datetime.now(timezone.utc))
 
+    def accept_live(self, client: TestClient, item_id: str, **extra) -> dict:
+        """A live accept: the first answers a confirm token and performs nothing; the
+        same accept with the token performs it."""
+        calls = len(self.bc.calls)
+        first = client.post(f"/api/autopilot/items/{item_id}/decision",
+                            json={"decision": "accept", **extra})
+        self.assertEqual(first.status_code, 200, first.text)
+        token = first.json()["confirm_token"]
+        self.assertTrue(token, first.json())
+        self.assertNotEqual((first.json()["decision"] or {}).get("outcome"), "done")
+        self.assertEqual(len(self.bc.calls), calls)            # nothing written
+        got = client.post(f"/api/autopilot/items/{item_id}/decision",
+                          json={"decision": "accept", "confirm_token": token, **extra})
+        self.assertEqual(got.status_code, 200, got.text)
+        return got.json()
+
     def test_reader_sees_only_theirs_and_owner_only_controls(self) -> None:
         owner, sam = self.client(OWNER), self.client(COLLEAGUE)
         area = owner.get("/api/autopilot").json()
@@ -223,8 +239,7 @@ class AutopilotArea(unittest.TestCase):
         self.assertEqual(self.bc.calls, [])
         owner.post(f"/api/autopilot/workflows/{FLOW}", json={"on": True})
         self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'}), (204, {})]
-        item = owner.post("/api/autopilot/items/ap_own/decision",
-                          json={"decision": "accept"}).json()
+        item = self.accept_live(owner, "ap_own")
         self.assertEqual(item["decision"]["outcome"], "done")
         self.assertEqual([c[0]["method"] for c in self.bc.calls], ["POST"])
         audit = owner.get("/api/autopilot/audit").json()
@@ -241,6 +256,68 @@ class AutopilotArea(unittest.TestCase):
         owner.post(f"/api/autopilot/workflows/{FLOW}", json={"live": False, "role": ROLE})
         owner.post("/api/autopilot/items/ap_own/decision", json={"decision": "accept"})
         self.assertEqual(len(self.bc.calls), 2)
+
+    def test_owner_accept_is_an_approval_written_once_the_kind_is_opened(self) -> None:
+        """The owner's accept of their own item is a person's approval: with the owner's
+        per-kind switch open it is written without a passed replay gate; never twice."""
+        owner = self.client(OWNER)
+        self.backend.writes_environ = {**ENV, aw.APPROVED_ENV: "bc_write"}
+        self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'})]
+        self.assertEqual(self.accept_live(owner, "ap_own")["decision"]["outcome"], "done")
+        self.assertEqual([c[0]["method"] for c in self.bc.calls], ["POST"])
+        rows = [r for r in owner.get("/api/autopilot/audit").json()["rows"]
+                if r.get("kind") == "bc_write" and r.get("status") == "done"]
+        self.assertEqual(len(rows), 1)
+        owner.post("/api/autopilot/items/ap_own/decision", json={"decision": "accept"})
+        self.assertEqual(len(self.bc.calls), 1)
+        self.assertEqual(self.client(COLLEAGUE).post(
+            "/api/autopilot/items/ap_own/decision", json={"decision": "accept"}).status_code, 404)
+
+    def test_a_live_accept_needs_its_confirm_and_a_bulk_accept_refuses_it(self) -> None:
+        """Review 8dd669edac: an item an accept would perform live (its kind opened to
+        approved writes) is marked live by the server; a single accept without the
+        confirm writes nothing, a bulk accept is refused, the confirm writes it once; a
+        token is bound to its item, person and text, and spent once."""
+        owner = self.client(OWNER)
+        listed = {i["item_id"]: i for i in owner.get("/api/autopilot").json()["items"]}
+        self.assertFalse(listed["ap_own"]["live"])               # nothing opened: dry run
+        self.backend.writes_environ = {**ENV, aw.APPROVED_ENV: "bc_write"}
+        listed = {i["item_id"]: i for i in owner.get("/api/autopilot").json()["items"]}
+        self.assertEqual((listed["ap_own"]["live"], listed["ap_own"]["live_kinds"]),
+                         (True, ["bc_write"]))
+        bulk = owner.post("/api/autopilot/items/ap_own/decision",
+                          json={"decision": "accept", "bulk": True})
+        self.assertEqual(bulk.status_code, 409, bulk.text)
+        first = owner.post("/api/autopilot/items/ap_own/decision", json={"decision": "accept"})
+        token = first.json()["confirm_token"]
+        self.assertEqual((first.json()["state"], self.bc.calls), ("waiting", []))
+        # a made-up token, the token with a bulk flag, or with other text: nothing written
+        for extra in ({"confirm_token": "x" * 32}, {"confirm_token": token, "bulk": True},
+                      {"confirm_token": token, "text": "other words"}):
+            got = owner.post("/api/autopilot/items/ap_own/decision",
+                             json={"decision": "accept", **extra})
+            self.assertIn(got.status_code, (200, 409, 422), got.text)
+            self.assertEqual(self.bc.calls, [], extra)
+        self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'})]
+        done = owner.post("/api/autopilot/items/ap_own/decision",
+                          json={"decision": "accept", "confirm_token": token}).json()
+        self.assertEqual((done["decision"]["outcome"], len(self.bc.calls)), ("done", 1))
+        self.assertFalse(done["live"])                           # decided: nothing to confirm
+        # the token is spent: sent again it is no confirm (and the key is used anyway)
+        again = owner.post("/api/autopilot/items/ap_own/decision",
+                           json={"decision": "accept", "confirm_token": token}).json()
+        self.assertEqual((again.get("confirm_token") is not None, len(self.bc.calls)),
+                         (True, 1))
+        # another item of the same owner is offered a token of its own: this item's
+        # token does not confirm it
+        q = ap.Queue(self.state.parent / "queue" / ap.QUEUE_FILE)
+        with q.conn:
+            q.add_item(queued("ap_two", OWNER[1]))
+        q.close()
+        other = owner.post("/api/autopilot/items/ap_two/decision",
+                           json={"decision": "accept", "confirm_token": token}).json()
+        self.assertTrue(other["confirm_token"])
+        self.assertEqual(len(self.bc.calls), 1)
 
     def test_a_send_is_logged_only_when_the_email_itself_went_out(self) -> None:
         """A customer PO: the BC entry is done but the confirmation email is not. The first
@@ -280,10 +357,7 @@ class AutopilotArea(unittest.TestCase):
             self.backend.autopilot_adapters = {
                 "bc_write": wa.BCAdapter(self.bc, environ=ENV), "send_mail": adapter}
             self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'})]
-            got = owner.post(f"/api/autopilot/items/{item_id}/decision",
-                             json={"decision": "accept"})
-            self.assertEqual(got.status_code, 200, got.text)
-            return got.json()["decision"], mail.calls
+            return self.accept_live(owner, item_id)["decision"], mail.calls
 
         q = ap.Queue(self.state.parent / "queue" / ap.QUEUE_FILE)
         with q.conn:

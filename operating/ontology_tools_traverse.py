@@ -162,7 +162,7 @@ import sqlite3
 import threading
 import time
 from types import SimpleNamespace
-from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, MutableMapping, Sequence
 
 from ontology import store_ddl
 from ontology.mentions import corroboration_handles, corroboration_objects, reader_view
@@ -475,11 +475,25 @@ def _from_t(alias: str) -> str:
             f"OR plx_l9_time({alias}.superseded_at) > :t)")
 
 
+def _item_gate_sql(gate: str, column: str) -> str:
+    """SQL: the item gate ``gate`` (``TraverseTools._gate_function``: L8's
+    ``OntologyTools._item_allowed``) of the handle in ``column``, called only on a handle
+    of a scheme an item ACL may gate (``_ITEM_ACL_SCHEMES``): a handle of any other scheme
+    passes that rule without a read, so it passes here without a call (a 75k-record
+    count read every version's gate in a second statement round, 7 s, 11-10). A
+    ``LIKE`` matches at least the handles the rule gates (``_`` matches any character,
+    SQLite folds case), so no gated handle skips the call; a null or scheme-less text
+    is still the gate's (it denies)."""
+    held = " OR ".join(f"{column} LIKE '{scheme}://%'" for scheme in sorted(_ITEM_ACL_SCHEMES))
+    return (f"(CASE WHEN {column} LIKE '%://%' AND NOT ({held}) THEN 1 = 1 "
+            f"ELSE {gate}({column}) END)")
+
+
 def _visible_object(alias: str, gate: str | None) -> str:
     """SQL: object ``alias`` is readable at T (see the module docstring). ``gate`` None:
     everything but the item gate, which the caller then applies to the handles of the
     object's versions from T on (``_hop_reach``)."""
-    gated = "" if gate is None else f"OR NOT {gate}(v2.l1_handle) "
+    gated = "" if gate is None else f"OR NOT {_item_gate_sql(gate, 'v2.l1_handle')} "
     return (f"{alias}.audience_key IN (SELECT value FROM json_each(:aud)) "
             f"AND EXISTS (SELECT 1 FROM object_versions v1 WHERE v1.object_id = {alias}.object_id "
             f"AND {_live('v1')}) "
@@ -490,10 +504,25 @@ def _visible_object(alias: str, gate: str | None) -> str:
             f"AND {document_marks.sql(alias + '.object_id')}")
 
 
+# ``_item_gate_sql``'s rule in Python: a handle a ``LIKE '<scheme>://%'`` of an item-ACL
+# scheme matches (``_`` any character, ASCII case folded as SQLite does).
+_ITEM_GATED_HANDLE = re.compile(
+    "|".join("".join("." if ch == "_" else re.escape(ch) for ch in scheme) + "://"
+             for scheme in sorted(_ITEM_ACL_SCHEMES)), re.IGNORECASE | re.ASCII | re.DOTALL)
+
+
+def _item_gated(handle: Any) -> bool:
+    """Whether ``_item_gate_sql`` calls the item gate on ``handle``: any value but a
+    text with ``://`` whose scheme no item ACL gates (that one passes uncalled)."""
+    return (not isinstance(handle, str) or "://" not in handle
+            or _ITEM_GATED_HANDLE.match(handle) is not None)
+
+
 def _all_pass(check: Callable[[Any], int], encoded: Any) -> bool:
     """Whether every handle of a JSON handle list passes the item gate ``check``, as
-    ``NOT EXISTS (... json_each(list) WHERE NOT gate(value))`` decides it; a list that
-    does not parse fails (closed)."""
+    ``NOT EXISTS (... json_each(list) WHERE NOT gate(value))`` decides it, the gate
+    called only where ``_item_gate_sql`` calls it (``_item_gated``); a list that does
+    not parse fails (closed)."""
     if encoded is None:
         return True
     try:
@@ -503,7 +532,7 @@ def _all_pass(check: Callable[[Any], int], encoded: Any) -> bool:
     members = (value.values() if isinstance(value, dict)
                else value if isinstance(value, list) else (value,))
     try:
-        return all(check(h) for h in members)
+        return all(check(h) for h in members if _item_gated(h))
     except Exception:  # noqa: BLE001 - a failing check denies
         return False
 
@@ -512,7 +541,7 @@ def _visible_value(alias: str, gate: str | None) -> str:
     """SQL: value row ``alias`` is live at T, held, gated, and no later row of the
     same property carries a marking the reader lacks. ``gate`` None: not item-gated
     here; the caller gates each row's ``l1_handle`` (``_displays``)."""
-    gated = "" if gate is None else f"AND {gate}({alias}.l1_handle) "
+    gated = "" if gate is None else f"AND {_item_gate_sql(gate, alias + '.l1_handle')} "
     return (f"{_live(alias)} AND {alias}.markings IN (SELECT value FROM json_each(:marks)) "
             f"{gated}AND NOT EXISTS (SELECT 1 FROM object_values w "
             f"WHERE w.object_id = {alias}.object_id AND w.property = {alias}.property "
@@ -757,7 +786,8 @@ class TraverseTools:
                                      _background_prime(kept, cell_families,
                                                        read=lambda families: (
                                                            self._pg_prime_reader(
-                                                               families, layers))))
+                                                               families, layers,
+                                                               apart=True))))
                     return False
             if os.path.getsize(kept[0]) < LAZY_MIN_BYTES:   # a small store: read them now
                 self.prime(cell_families)
@@ -768,21 +798,23 @@ class TraverseTools:
         return False
 
     def _pg_prime_reader(self, cell_families: Sequence[str],
-                         layers: Path | None = None) -> None:
+                         layers: Path | None = None, *, apart: bool = False) -> None:
         """The facts of the database's data version kept: by one process of the host at a
         time (a lock beside the marker file; the others then find them kept), folded from
         an earlier version's facts over the delta layers applied since
         (``catch_up_pg_facts``, seconds a layer) when it can, else read in full by
         ``prime`` on a Postgres reader of its own (this one's lock stays free for the
-        calls meanwhile)."""
+        calls meanwhile). ``apart``: in a process of its own (``_keep_pg_facts_apart``),
+        so a serving process never holds a whole read's rows."""
         text = getattr(self.store, "text_reader", None)
         try:   # the host's word index generation, as ``prime_pg_facts`` is given it
             text_store = next((row[2] for row in text.conn.execute("PRAGMA database_list")
                                if row[1] == "main"), None) if text is not None else None
         except sqlite3.Error:
             text_store = None
-        keep_pg_facts(self.store.conn.dsn, cell_families, text_store=text_store or None,
-                      layers=layers, only=bool(getattr(self.store, "only", False)))
+        keep = _keep_pg_facts_apart if apart else keep_pg_facts
+        keep(self.store.conn.dsn, cell_families, text_store=text_store or None,
+             layers=layers, only=bool(getattr(self.store, "only", False)))
 
     def _kept_facts(self, store: str, identity: Mapping[str, Any],
                     cell_families: Sequence[str]) -> bool:
@@ -1095,10 +1127,16 @@ class TraverseTools:
         return _L8Scope(scope.actor, scope.audience_keys, scope.held, scope.marking_sets,
                         scope.sources, scope.at)
 
-    def _visible_ids(self, scope: _Scope, ids: Iterable[str]) -> set[str]:
+    def _visible_ids(self, scope: _Scope, ids: Iterable[str],
+                     admitted: tuple[_L8Scope, Collection[str]] | None = None) -> set[str]:
         """Ids L8's visibility check (``OntologyTools._visible_versions``) admits
         and that also pass these from-T rule (every version from T on is
-        held and passes the item gate): never wider than plx.object."""
+        held and passes the item gate): never wider than plx.object.
+
+        ``admitted``: (an L8 scope, the ids L8's check already admitted under it in this
+        call). When it is this call's very scope, L8's check is not read again (the same
+        rule, the same reader: a 76k-record count read it twice, 10 s); any other scope
+        is checked anew."""
         ids = sorted(set(ids))
         if not ids:
             return set()
@@ -1117,7 +1155,10 @@ class TraverseTools:
                 f"(SELECT value FROM json_each(:ids)) AND {_visible_object('o', None)}",
                 scope.params(ids=json.dumps(ids)))
             strict = {row[0] for row in rows if _all_pass(check, row[1])}
-        return strict & set(self.base._visible_versions(self._l8_scope(scope), sorted(strict)))
+        l8 = self._l8_scope(scope)
+        if admitted is not None and admitted[0] == l8:
+            return strict & set(admitted[1])
+        return strict & set(self.base._visible_versions(l8, sorted(strict)))
 
     def _captured_after(self, scope: _Scope, ids: Iterable[str]) -> set[str]:
         """Those of ``ids`` this reader may read now whose every version was recorded
@@ -1249,7 +1290,7 @@ class TraverseTools:
             if allowed(row):
                 by_object.setdefault(row["object_id"], {}).setdefault(row["property"], row)
         idents: dict[str, sqlite3.Row] = {}
-        gated = "" if gate is None else f"AND {gate}(i.l1_handle) "
+        gated = "" if gate is None else f"AND {_item_gate_sql(gate, 'i.l1_handle')} "
         for row in self.store.conn.execute(
                 "SELECT i.* FROM identifiers i WHERE i.object_id IN "
                 f"(SELECT value FROM json_each(:ids)) AND i.role = 'primary' AND {_live('i')} "
@@ -1390,7 +1431,7 @@ class TraverseTools:
         if not _open:
             gate = scope.gate if gate is None else gate
         evidence = ("" if _open else f"""AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
-                                WHERE NOT {gate}(h.value))""")
+                                WHERE NOT {_item_gate_sql(gate, 'h.value')})""")
         handles = (f""", (SELECT json_group_array(v3.l1_handle) FROM object_versions v3
                      WHERE v3.object_id = x.object_id AND {_from_t('v3')}) AS x_handles"""
                    if _open else "")
@@ -1792,7 +1833,7 @@ class TraverseTools:
         # what the gate reads of each handle read ahead in batches (decides nothing: every
         # handle is still gated one by one below), instead of one read per handle
         self.base.prefetch_items(scope.actor, sorted(handles))
-        failed = conn.execute(f"SELECT 1 FROM json_each(?) WHERE NOT {scope.gate}(value) "
+        failed = conn.execute(f"SELECT 1 FROM json_each(?) WHERE NOT {_item_gate_sql(scope.gate, 'value')} "
                               "LIMIT 1", (listed,)).fetchone() is not None
         with lock:
             if len(cache) >= SLICE_GATE_KEPT:
@@ -2096,7 +2137,7 @@ class TraverseTools:
                 "WHERE w.object_id IN (SELECT value FROM json_each(:ids)) AND w.property IN "
                 f"(SELECT value FROM json_each(:props)) AND {_from_t('w')} AND "
                 "(w.markings NOT IN (SELECT value FROM json_each(:marks)) "
-                f"OR ({_live('w')} AND NOT {scope.gate}(w.l1_handle)))", params):
+                f"OR ({_live('w')} AND NOT {_item_gate_sql(scope.gate, 'w.l1_handle')}))", params):
             withheld.setdefault(row["object_id"], set()).add(row["property"])
         passing: set[str] = set()
         undecided: set[str] = set()
@@ -2298,7 +2339,7 @@ class TraverseTools:
                         WHERE l.from_object = :from_object AND l.binding_kind = 'mention'
                         AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
                         AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
-                                        WHERE NOT {scope.gate}(h.value))
+                                        WHERE NOT {_item_gate_sql(scope.gate, 'h.value')})
                         AND {_visible_object('x', scope.gate)}
                         GROUP BY g.value""",
                     scope.params(from_object=from_object,
@@ -2360,7 +2401,7 @@ class TraverseTools:
                                      WHERE eo.object_id IN (SELECT value FROM json_each(:roots)))
                 AND (:types IS NULL OR e.event_type IN (SELECT value FROM json_each(:types)))
                 AND {_live('e')} AND e.markings IN (SELECT value FROM json_each(:marks))
-                AND {gate}(e.l1_handle)
+                AND {_item_gate_sql(gate, 'e.l1_handle')}
                 AND NOT EXISTS (SELECT 1 FROM event_objects eo2 JOIN objects o
                                 ON o.object_id = eo2.object_id WHERE eo2.event_id = e.event_id
                                 AND NOT ({_visible_object('o', gate)}))
@@ -2902,7 +2943,11 @@ def _load_facts(store: str, identity: Mapping[str, Any]) -> dict[Any, Any] | Non
     reader adds facts to it), decoded once per process per identity: every reader's host
     in a serving process opens the same generation and the same delta layers. The last
     ``_LOADED_KEPT`` store files are held (the served generation and its layers: keeping
-    one alone made a generation and a layer evict each other on every call)."""
+    one alone made a generation and a layer evict each other on every call), and of each
+    store file only its two newest identities (hosts on either side of a layer switch):
+    the kept file beside a store holds one identity, so an older one can never be read
+    again, and over Postgres every delta layer moves the identity every few minutes
+    (eight dead versions of ~20 MB facts each were held)."""
     key = (store, json.dumps(dict(identity), sort_keys=True))
     with _LOADED_LOCK:
         held = _LOADED.pop(key, None)
@@ -2912,6 +2957,9 @@ def _load_facts(store: str, identity: Mapping[str, Any]) -> dict[Any, Any] | Non
         held = _read_facts(store, identity)
         if held is not None:
             with _LOADED_LOCK:
+                # the newest two of a store (a layer switch: a host on each side)
+                for older in [k for k in _LOADED if k[0] == store and k != key][:-1]:
+                    del _LOADED[older]
                 _LOADED[key] = held
                 while len(_LOADED) > _LOADED_KEPT:
                     _LOADED.pop(next(iter(_LOADED)))
@@ -2968,7 +3016,9 @@ def _save_facts(store: str, identity: Mapping[str, Any], facts: Mapping[Any, Any
                        "facts": _encode_facts(facts)}, sort_keys=True)
     if len(text) > FACTS_MAX_BYTES:
         return
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    # the writer's pid in the name: a facts process stopped mid-write has its own removed
+    # (``_keep_pg_facts_apart``)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -3811,9 +3861,11 @@ FACTS_PARTS_PER_WORKER = 3
 
 def keep_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
                   text_store: str | Path | None = None, layers: str | Path | None = None,
-                  only: bool = False, log: Any = None, loud: bool = False) -> bool:
+                  only: bool = False, log: Any = None, loud: bool = False,
+                  whole: bool = True) -> bool:
     """``prime_pg_facts``' work; ``loud``: raise :class:`FactsNotKept` instead of
-    returning False when nothing could be kept."""
+    returning False when nothing could be kept. ``whole`` False: kept already or folded
+    over the layers since (``catch_up_pg_facts``) only, never read in full."""
     from operating import ontology_tools_evidence
     from operating.pg.ontology_reader import PgStoreReader
     families = tuple(ontology_tools_evidence.STORE_DOCUMENT_FAMILIES
@@ -3841,6 +3893,8 @@ def keep_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
             return True   # kept meanwhile (another process, or a fold)
         if catch_up_pg_facts(dsn, layers, log=log):
             return True
+        if not whole:
+            return False
         try:
             identity, facts = _read_pg_facts_parallel(
                 dsn, families, text_store=text_store, only=only)
@@ -3863,6 +3917,88 @@ def keep_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
             print(f"prime_pg_facts: kept version {identity[1].get('data_version')} in "
                   f"{time.monotonic() - started:.0f}s", file=log, flush=True)
         return True
+
+
+# How long a whole facts read in its own process may take before it is stopped (its
+# statements' own limit, and room to keep them).
+FACTS_APART_SECONDS = FACTS_STATEMENT_TIMEOUT_MS / 1000 + 600
+
+
+def _keep_pg_facts_apart(dsn: str, cell_families: Sequence[str] | None = None, *,
+                         text_store: str | Path | None = None,
+                         layers: str | Path | None = None, only: bool = False) -> bool:
+    """``keep_pg_facts`` with a read in full in a process of its own, waited for: a read
+    in full builds and drops gigabytes of rows, and a serving process that read them
+    itself kept most of its peak resident even after ``_trim_heap`` (2.7-2.8 GB after a
+    7.3 GB peak). The process ends with the read and hands all of it back; this one
+    loads only the kept facts. A fold over the layers since the kept version (seconds,
+    an earlier version's facts and the layers' objects) runs here first.
+
+    The process gets this one's environment without any credential-shaped variable
+    (``twin.credential_names.KEYLESS``; Postgres's own ``PG*`` settings stay: it reads
+    Postgres), the DSN on its standard input, never on its command line, and
+    ``FACTS_APART_SECONDS``: past that it is stopped and nothing is kept. Where no process
+    can be started the read runs here."""
+    import subprocess
+    import sys
+    try:
+        if keep_pg_facts(dsn, cell_families, text_store=text_store, layers=layers,
+                         only=only, whole=False):
+            return True
+    except Exception:  # noqa: BLE001 - not folded here: the process below reads it
+        pass
+    from twin.credential_names import KEYLESS
+    root = str(Path(__file__).resolve().parents[1])
+    env = {k: v for k, v in os.environ.items() if k.startswith("PG") or not KEYLESS.match(k)}
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (root, env.get("PYTHONPATH")) if p)
+    job = json.dumps({"dsn": dsn, "families": None if cell_families is None
+                      else list(cell_families),
+                      "text_store": None if text_store is None else str(text_store),
+                      "layers": None if layers is None else str(layers), "only": bool(only)})
+    try:
+        child = subprocess.Popen(
+            [sys.executable, "-c", "from operating import ontology_tools_traverse as t; "
+             "t._keep_pg_facts_child()"], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, cwd=root)
+    except OSError:
+        return keep_pg_facts(dsn, cell_families, text_store=text_store, layers=layers,
+                             only=only)
+    try:
+        child.communicate(job.encode(), timeout=FACTS_APART_SECONDS)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
+        _drop_temp_of(child.pid)
+        return False
+    return child.returncode == 0
+
+
+def _drop_temp_of(pid: int) -> None:
+    """Remove what a stopped facts process ``pid`` left half written in the facts folder
+    (``_save_facts``' temporary files carry the writer's pid)."""
+    folder = Path(os.environ.get("PLX_PG_FACTS_DIR")
+                  or Path.home() / ".cache" / "plx" / "pg-facts")
+    try:
+        for left in folder.glob(f".{FACTS_PREFIX}*.{pid}.*.tmp"):
+            left.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _keep_pg_facts_child() -> None:
+    """The process ``_keep_pg_facts_apart`` starts: the job on standard input; exit 0
+    when the facts are kept."""
+    import sys
+    try:
+        job = json.loads(sys.stdin.read())
+        families = job["families"]
+        kept = keep_pg_facts(job["dsn"], None if families is None else tuple(families),
+                             text_store=job["text_store"], layers=job["layers"],
+                             only=bool(job["only"]))
+    except Exception:  # noqa: BLE001 - nothing kept, as a failed read in the host
+        kept = False
+    raise SystemExit(0 if kept else 1)
 
 
 def _store_identity_of(dsn: str) -> tuple[str, dict[str, Any]] | None:

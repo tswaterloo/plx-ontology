@@ -7,16 +7,16 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { AnswerCard } from "@/components/answer-card";
 import { AskBox } from "@/components/ask-box";
 import { loadHome, loadLate } from "@/components/shell";
-import { lateFigure } from "@/components/ui/glyphs";
+import { lateFigure, StatusGlyph, SystemCode } from "@/components/ui/glyphs";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { cn } from "@/lib/cn";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
-import { recordLabel } from "@/lib/format";
+import { ago, formatDateTime, recordLabel, SYSTEM_LABEL } from "@/lib/format";
 import { takePending } from "@/lib/pending";
 import { useSaved } from "@/lib/saved";
 import { useThread } from "@/lib/thread";
 import { getWorkThread } from "@/lib/api";
-import type { Answer, LatePo } from "@/lib/types";
+import type { Answer, Freshness, LatePo } from "@/lib/types";
 
 /** The conversation column and the answer's rail share this frame, and the composer lines up with the column. */
 const FRAME = "mx-auto w-full max-w-[1048px] px-4 sm:px-8";
@@ -26,10 +26,46 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 className="mb-2 text-[12px] leading-4 font-medium text-muted">{children}</h2>;
 }
 
+const CAPTURE_WORDS: Record<string, string> = { failed: "last read failed", never_captured: "never read", partial: "partly read" };
+
+/** What Ask reads from, and how current each system is: an answer is only as fresh as these. */
+function Reads({ freshness }: { freshness: Freshness | null }) {
+  const rows = freshness?.sources ?? [];
+  return (
+    <section aria-label="What Ask reads" data-testid="ask-reads">
+      <SectionTitle>What it reads now</SectionTitle>
+      {freshness === null ? (
+        <div className="skeleton h-3.5 w-40" />
+      ) : rows.length === 0 ? (
+        <p className="text-[13px] text-muted">No source has been read yet.</p>
+      ) : (
+        <ul className="divide-y divide-border border-y border-border">
+          {rows.map((r) => {
+            const off = r.stale || r.capture === "failed" || r.capture === "never_captured";
+            const word = (r.capture && CAPTURE_WORDS[r.capture]) || (r.as_of ? ago(r.as_of) : "time not recorded");
+            return (
+              <li key={r.system} className="flex items-center gap-2.5 py-1.5 text-[13px]" title={r.as_of ? formatDateTime(r.as_of) : undefined}>
+                <SystemCode system={r.system} size={16} />
+                <span className="min-w-0 flex-1 truncate">{SYSTEM_LABEL[r.system as keyof typeof SYSTEM_LABEL] ?? r.system}</span>
+                {off && <StatusGlyph status="risk" size={12} />}
+                <span className={cn("shrink-0 text-[12px] tabular-nums", off ? "text-[color:var(--late)]" : "text-muted")}>{word}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p className="mt-2 text-[12px] leading-[18px] text-muted">
+        Answers cite the record behind each figure and list what isn&apos;t on record. You see only what you may open.
+      </p>
+    </section>
+  );
+}
+
 /** Where to start: the oldest late orders, the questions the demo verifies, and the reader's saved ones. */
 function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => void }) {
   const [late, setLate] = useState<LatePo[] | null>(null);
   const [examples, setExamples] = useState<string[]>(VERIFIED_EXAMPLES);
+  const [freshness, setFreshness] = useState<Freshness | null>(null);
   const saved = useSaved().filter((s) => s.kind === "question");
 
   useEffect(() => {
@@ -41,8 +77,9 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
       .then((h) => {
         if (!live) return;
         if (h.examples?.length) setExamples(h.examples.slice(0, 6));
+        setFreshness(h.freshness ?? { sources: [] });
       })
-      .catch(() => undefined);
+      .catch(() => live && setFreshness({ sources: [] }));
     return () => {
       live = false;
     };
@@ -53,7 +90,7 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
   const row = "group flex min-h-9 w-full items-center gap-3 rounded-lg px-2 py-1 text-left text-[13px] hover:bg-hover cursor-pointer";
 
   return (
-    <div className="grid grid-cols-1 gap-x-10 gap-y-8 md:grid-cols-2">
+    <div className="grid grid-cols-1 gap-x-10 gap-y-8 md:grid-cols-2 xl:grid-cols-3">
       <section className="min-w-0" aria-label="Late orders to ask about">
         <SectionTitle>Late orders</SectionTitle>
         {late === null ? (
@@ -126,6 +163,7 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
           </section>
         )}
       </div>
+      <Reads freshness={freshness} />
     </div>
   );
 }

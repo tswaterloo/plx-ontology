@@ -9,6 +9,7 @@ models as the real backend's, so a shape the contract does not allow fails here 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import re
 import secrets
 import threading
@@ -80,6 +81,8 @@ OBJECTS: list[dict[str, Any]] = [
     {"object_id": "Item:demo:BAR-LAV-100", "type": "Item",
      "label": "BAR-LAV-100 Lavender soap bar 100 g", "sublabel": "Item · finished good",
      "aliases": ["lavender", "soap bar"]},
+    {"object_id": "AssemblyOrder:demo:AO-7712", "type": "AssemblyOrder", "label": "AO-7712",
+     "sublabel": "BAR-LAV-100 · 12,000 EA · for SO 77120", "aliases": ["ao-7712"]},
     {"object_id": "Lot:demo:L-24-0917", "type": "Lot", "label": "Lot L-24-0917",
      "sublabel": "BAR-LAV-100 · received 2 Oct", "aliases": ["l-24-0917"]},
 ]
@@ -329,6 +332,55 @@ def _vendor_fact(label: str, value: str, field: str, table: str = "vendors") -> 
 def _mail(n: str, label: str, quote_text: str, hours: float) -> m.Source:
     return src("Email", f"graph-mail://demo/messages/{n}", label, quote_text=quote_text,
                hours=hours)
+
+
+def _r(kind: str, oid: str, label: str) -> m.ObjectRef:
+    return m.ObjectRef(object_id=oid, type=kind, label=label, open_url=obj_url(kind, oid))
+
+
+# The other records' people, links and activity, as the real page reads them (fixture only).
+RECORD_EXTRAS: dict[str, dict[str, Any]] = {
+    "SalesOrder:demo:77120": {
+        "related": [_r("Customer", "Customer:demo:glow", "Glow Botanicals"),
+                    _r("AssemblyOrder", "AssemblyOrder:demo:AO-7712", "AO-7712"),
+                    _r("PurchaseOrder", "PurchaseOrder:demo:90412", "PO 90412")],
+        "people": [m.Person(name="Nadia Haddad", role="Customer buyer",
+                            organisation="Glow Botanicals", sources=[MAIL2]),
+                   m.Person(name="Sam Okafor", role="Account manager", organisation="PLX",
+                            sources=[PORTAL])],
+        "timeline": [m.TimelineEvent(at="2026-10-02T14:00:00Z", system="Portal",
+                                     title="Order entered", source=PORTAL),
+                     m.TimelineEvent(at="2026-10-22T09:40:00Z", system="Teams",
+                                     title="Purchasing flags the lavender bars", source=TEAMS),
+                     m.TimelineEvent(at="2026-10-27T16:20:00Z", system="Email",
+                                     title="We asked Maple Leaf to confirm 4 Nov", source=MAIL2)],
+        "linked": [m.LinkedItem(kind="teams", label="#purchasing thread",
+                                at="2026-10-22T09:40:00Z", source=TEAMS)]},
+    "AssemblyOrder:demo:AO-7712": {
+        "related": [_r("SalesOrder", "SalesOrder:demo:77120", "SO 77120"),
+                    _r("PurchaseOrder", "PurchaseOrder:demo:90412", "PO 90412"),
+                    _r("Item", "Item:demo:BAR-LAV-100", "BAR-LAV-100 Lavender soap bar 100 g")],
+        "people": [m.Person(name="Priya Nair", role="Planner", organisation="PLX",
+                            sources=[PORTAL])],
+        "timeline": [m.TimelineEvent(at="2026-10-03T13:00:00Z", system="BC",
+                                     title="Assembly order released", source=PO_ROW),
+                     m.TimelineEvent(at="2026-10-21T13:12:00Z", system="Email",
+                                     title="Bars it needs delayed to 4 Nov", source=MAIL)]},
+    "Item:demo:BAR-LAV-100": {
+        "related": [_r("PurchaseOrder", "PurchaseOrder:demo:90412", "PO 90412"),
+                    _r("SalesOrder", "SalesOrder:demo:77120", "SO 77120"),
+                    _r("Lot", "Lot:demo:L-24-0917", "Lot L-24-0917"),
+                    _r("Supplier", "Supplier:demo:maple-leaf", "Maple Leaf Soapworks")],
+        "timeline": [m.TimelineEvent(at="2026-10-02T15:00:00Z", system="BC",
+                                     title="Lot L-24-0917 received", source=PO_LINE)],
+        "linked": [m.LinkedItem(kind="document", label="Quote 2026 (PDF)", source=FILE)]},
+    "Lot:demo:L-24-0917": {
+        "related": [_r("Item", "Item:demo:BAR-LAV-100", "BAR-LAV-100 Lavender soap bar 100 g")],
+        "people": [m.Person(name="Ana Example", role="QC lead", organisation="PLX",
+                            sources=[TEAMS])],
+        "timeline": [m.TimelineEvent(at="2026-10-02T15:00:00Z", system="BC",
+                                     title="Received", source=PO_LINE)]},
+}
 
 
 PARTY_PAGES: dict[str, dict[str, Any]] = {
@@ -1077,6 +1129,8 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
             if obj["object_id"] in ("Customer:demo:glow", "SalesOrder:demo:77120",
                                     "SalesOrder:demo:77131") else None,
             hidden=HIDDEN_FINANCE if po else NO_HIDDEN, freshness=FRESH)
+        for key, value in RECORD_EXTRAS.get(obj["object_id"], {}).items():
+            setattr(page, key, value)
         party = PARTY_PAGES.get(obj["object_id"])
         if party is not None:
             page.status = party["status"]
@@ -1159,6 +1213,33 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
                             kind="record" if s.fields else "text", title=s.label,
                             text=s.quote, fields=s.fields, as_of=s.as_of,
                             text_offset=text_offset)
+
+    def label_revisions(self, reader: Reader, object_id: str) -> m.LabelRevisions:
+        """The fixture holds no label files: none on any record."""
+        return m.LabelRevisions(object_id=object_id, revisions=0, unapproved_current=0)
+
+    def source_records(self, reader: Reader, handle: str) -> m.SourceRecords:
+        """The fixture records whose pages cite ``handle``: the purchase order its own BC
+        and Portal rows were read into (``from``), any other page citing it (``linked``).
+        A source the fixture does not hold is not found, as ``source`` answers."""
+        self.source(reader, handle, 0)   # KeyError: not a source of the fixture
+        own = {H_PO: "PurchaseOrder:demo:90412", H_PO_LINE: "PurchaseOrder:demo:90412",
+               H_PORTAL: "PurchaseOrder:demo:90412"}
+        out: list[m.SourceRecord] = []
+        for obj in OBJECTS:
+            try:
+                page = self.object_page(reader, obj["type"], obj["object_id"])
+            except KeyError:
+                continue
+            if handle not in json.dumps(page.model_dump(mode="json")):
+                continue
+            ref = m.ObjectRef(object_id=page.object_id, type=page.type, label=page.label,
+                              open_url=obj_url(page.type, page.object_id))
+            mine = own.get(handle) == page.object_id
+            out.append(m.SourceRecord(record=ref, how="from" if mine else "linked",
+                                      link=None if mine else "mentions"))
+        out.sort(key=lambda r: r.how != "from")
+        return m.SourceRecords(handle=handle, records=out)
 
     def answer_context(self, reader: Reader, answer_id: str) -> dict[str, Any]:
         with self._lock:

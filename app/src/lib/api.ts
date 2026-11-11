@@ -5,6 +5,7 @@
 
 import { ApiError, apiErrorFrom } from "./errors";
 import { SseParser } from "./sse";
+import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
 import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
@@ -37,6 +38,8 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   AutopilotItem,
   AutopilotSwitches,
   AutopilotWorkflowSwitch,
+  AutopilotScorecard,
+  TrustPage,
   AutopilotCatalog,
   AutopilotDraftKept,
   AutopilotMode,
@@ -71,6 +74,7 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   ObjectSection,
   SectionName,
   SourceView,
+  SourceRecords,
   SuggestResponse,
   Suggestions,
   ImpactPanel,
@@ -80,7 +84,9 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   WatchRuleDraft,
   WatchRuleDeleted,
   WatchReadResult,
+  TimeSaved,
   UploadPreview,
+  ViewAsPeople,
 } from "./types";
 
 type TokenProvider = () => Promise<string | null>;
@@ -100,14 +106,24 @@ async function headers(extra: Record<string, string>): Promise<Record<string, st
   return h;
 }
 
+/** The view-as header for a read while the owner views as someone; a write then is refused here. */
+function viewAsHeader(path: string, method: string): Record<string, string> {
+  const v = viewingAs();
+  if (!v || ownPath(path)) return {};
+  if (method !== "GET" && method !== "HEAD") throw new ApiError(403, "view_as_refused");
+  return { [VIEW_AS_HEADER]: v.key };
+}
+
 async function call(path: string, init: RequestInit & { json?: unknown } = {}): Promise<Response> {
   const { json, ...rest } = init;
+  const as = viewAsHeader(path, (rest.method ?? "GET").toUpperCase());
   const res = await fetch(path, {
     credentials: "same-origin",
     ...rest,
     headers: await headers({
       Accept: "application/json",
       ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...as,
     }),
     body: json !== undefined ? JSON.stringify(json) : rest.body,
   });
@@ -127,12 +143,25 @@ export function getMe(signal?: AbortSignal): Promise<Me> {
   return getJson<Me>("/api/me", signal);
 }
 
+/** Whom the owner may view as (the owner only). */
+export function getViewAsPeople(signal?: AbortSignal): Promise<ViewAsPeople> {
+  return getJson<ViewAsPeople>("/api/view-as/people", signal);
+}
+
+/** Audit the owner starting or stopping a view as someone; never blocks the switch. */
+export async function markViewAs(event: "start" | "stop", key: string): Promise<void> {
+  await call(`/api/view-as/${event}`, { method: "POST", json: { key } }).catch(() => undefined);
+}
+
 export async function devLogin(ticket?: string): Promise<DevLoginResponse> {
   const t = ticket?.trim();
   return (await (await call("/api/auth/dev-login", { method: "POST", json: t ? { ticket: t } : {} })).json()) as DevLoginResponse;
 }
 
 export async function logout(): Promise<void> {
+  const was = viewingAs();
+  setViewingAs(null);
+  if (was) await markViewAs("stop", was.key);
   await call("/api/auth/logout", { method: "POST" }).catch(() => undefined);
 }
 
@@ -159,15 +188,13 @@ export async function getOpsHealth(signal?: AbortSignal): Promise<OpsHealth | nu
   return body.ops ?? null;
 }
 
-/** One reliability incident (operating/ops_alarms.py): paged once, a recovery notice when it clears. */
+/** One reliability incident (operating/ops_alarms.py): shown in the app until it recovers; never paged. */
 export interface OpsIncident {
   key: string;
   line: string;
   opened_at: string;
   last_seen_at?: string;
   closed_at?: string;
-  page?: { status: string; at?: string; missing?: string[] } | null;
-  recovery_page?: { status: string; at?: string; missing?: string[] } | null;
 }
 
 export interface OpsAlarms {
@@ -175,13 +202,12 @@ export interface OpsAlarms {
   running: boolean;
   checked_at?: string | null;
   every_minutes?: number;
-  paging?: { configured: boolean };
   open: OpsIncident[];
   recovered: OpsIncident[];
   checks: (OpsCheck & { line?: string })[];
 }
 
-/** The reliability alarms' last pass: the owner only (403 for every other reader). */
+/** The reliability alarms' last pass: the owner and the Team readers (403 for every other reader). */
 export function getOpsAlarms(signal?: AbortSignal): Promise<OpsAlarms> {
   return getJson<OpsAlarms>("/api/ops/status", signal);
 }
@@ -571,6 +597,12 @@ export function getSource(handle: string, textOffset = 0, signal?: AbortSignal):
   return getJson<SourceView>(`/api/source?handle=${encodeURIComponent(handle)}${off}`, signal);
 }
 
+/** The records citing a source, as this reader may read them (404 when the source isn't theirs to open). */
+export function getSourceRecords(handle: string, signal?: AbortSignal): Promise<SourceRecords> {
+  if (!handle || handle.length < 3 || handle.length > 2000) return Promise.reject(new ApiError(404, "not_found"));
+  return getJson<SourceRecords>(`/api/source/records?handle=${encodeURIComponent(handle)}`, signal);
+}
+
 /** The app's version, attached to every piece of feedback (never anything else about the browser). */
 export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "0.1.0";
 
@@ -620,6 +652,7 @@ const ASK_EVENTS = new Set(["understanding", "status", "sources", "verdict", "to
  * becomes an `error` event so the UI never shows half-parsed content.
  */
 export async function* ask(req: AskRequest, signal?: AbortSignal): AsyncGenerator<AskEvent> {
+  viewAsHeader("/api/ask", "POST");
   const res = await fetch("/api/ask", {
     method: "POST",
     credentials: "same-origin",
@@ -683,6 +716,21 @@ export function getWorkLog(filters: WorkLogFilters = {}, signal?: AbortSignal): 
   for (const [k, v] of Object.entries(filters)) if (v !== undefined && v !== "" && v !== false) q.set(k, String(v));
   const tail = q.toString();
   return getJson<WorkLogPage>(`/api/work-log${tail ? `?${tail}` : ""}`, signal);
+}
+
+/** The time the Workbench saved you each week (the owner may ask for everyone's): an estimate with its method. */
+/** Your autopilot scorecard per day: prepared, accepted, edited, rejected. */
+export function getAutopilotDays(days = 14, signal?: AbortSignal): Promise<AutopilotScorecard> {
+  return getJson<AutopilotScorecard>(`/api/work-log/autopilot-days?days=${days}`, signal);
+}
+
+/** The Trust page: freshness, answer scores, alert precision, autopilot, switches. */
+export function getTrust(signal?: AbortSignal): Promise<TrustPage> {
+  return getJson<TrustPage>("/api/trust", signal);
+}
+
+export function getTimeSaved(everyone = false, signal?: AbortSignal): Promise<TimeSaved> {
+  return getJson<TimeSaved>(`/api/time-saved${everyone ? "?everyone=true" : ""}`, signal);
 }
 
 const threadPath = (thread: string) => `/api/work-log/threads/${thread.split("/").map(encodeURIComponent).join("/")}`;

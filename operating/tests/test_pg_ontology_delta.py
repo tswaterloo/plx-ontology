@@ -284,6 +284,52 @@ class DeltaToPostgresTests(unittest.TestCase):
         self.assertFalse(tt.fold_layer_facts(self.dsn, layer, [], before - 1,
                                              (f"delta:{Path(layer).name}", "delta_layers")))
 
+    def test_a_host_reads_the_facts_whole_in_a_process_of_its_own(self):
+        """A host over a version with no facts kept reads them off the request path in a
+        process of its own (a whole read's rows never stay in a serving process): this
+        process reads nothing whole, the facts are kept, and a later host loads them at
+        once. A read that cannot run keeps nothing and says so."""
+        from unittest import mock
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1
+        from operating import ontology_tools as ot, ontology_tools_evidence as ev
+        from operating import ontology_tools_traverse as tt
+        from operating.pg import ontology_load
+        from operating.pg.ontology_reader import PgStoreReader
+
+        facts_dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, facts_dir, True)
+        self.enterContext(mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": facts_dir}))
+        tt._LOADED.clear()
+        self.addCleanup(tt._LOADED.clear)
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        ontology_load.load(fixture.full("gen1.sqlite"), self.dsn, workers=1, replace=True,
+                           log=io.StringIO())
+
+        def opened():
+            reader = PgStoreReader.open(self.dsn, only=False)
+            self.addCleanup(reader.close)
+            return tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy("plx", {})))
+
+        families = ev.STORE_DOCUMENT_FAMILIES
+        tt._BACKGROUND.clear()
+        host = opened()
+        whole = AssertionError("read whole in the serving process")
+        with mock.patch.object(tt, "_read_pg_facts_parallel", side_effect=whole):
+            self.assertFalse(host.prime_lazily(families))       # read in the background
+            self.assertTrue(host._pending[2].wait(300))
+        tt._LOADED.clear()
+        later = opened()
+        self.assertTrue(later.prime_lazily(families))           # kept: loaded at once
+        self.assertIn("audience_keys", later.store.facts[1])
+        import psycopg
+        gone = psycopg.conninfo.make_conninfo(self.dsn, dbname=f"{self.name}_no_such_db")
+        self.assertFalse(tt._keep_pg_facts_apart(gone, families))
+
     def test_a_host_folds_the_layers_since_the_kept_version_instead_of_reading_it_whole(self):
         """A layer applied without its facts kept (a follower that did not fold): the
         host's background read folds the facts kept for the version before it over the

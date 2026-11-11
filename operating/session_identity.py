@@ -126,7 +126,13 @@ PROOF_EVAL = "eval_principal"
 # It serves nothing: every served path and audit record refuses it (``intent_identity``,
 # ``describe``, the session journal), and it expires with the session it follows.
 PROOF_WARM = "warm_ahead"
-_EXPIRING = (PROOF_TICKET, PROOF_ENTRA, PROOF_EVAL, PROOF_WARM)
+# The owner's "view as" (operator_api.view_as): an employee resolved again so the owner-open
+# reader sees exactly what that employee's own screens show. It reads and writes nothing as
+# them: ``intent_identity`` refuses it (no intent, action or write can carry it), the app
+# serves it only on a short list of read routes and never remembers or reads ahead for it,
+# and it expires within minutes.
+PROOF_VIEW_AS = "owner_view_as"
+_EXPIRING = (PROOF_TICKET, PROOF_ENTRA, PROOF_EVAL, PROOF_WARM, PROOF_VIEW_AS)
 
 _CLAIMS = frozenset({"v", "aud", "uid", "email", "entraTenantId", "entraObjectId",
                      "author", "iat", "exp", "jti"})
@@ -432,6 +438,10 @@ class SessionIdentity:
     def warm_ahead(self) -> bool:
         return self.proof == PROOF_WARM
 
+    @property
+    def view_as(self) -> bool:
+        return self.proof == PROOF_VIEW_AS
+
     def expired(self, now: int | None = None) -> bool:
         if self.expires_at is None:
             return False
@@ -449,6 +459,8 @@ class SessionIdentity:
         """
         if self.warm_ahead:
             raise SessionIdentityRefused("warm_session_serves_nothing")
+        if self.view_as:
+            raise SessionIdentityRefused("view_as_session_writes_nothing")
         if self.expired():
             raise SessionIdentityRefused("session_expired")
         if actor != self.actor:
@@ -561,6 +573,33 @@ def warm_session(resolver: Any, object_id: str, *, expires_at: int,
         tenant=resolver.policy.tenant, channel=CHANNEL_CONSOLE, author_kind=AUTHOR_HUMAN,
         proof=PROOF_WARM, employee=principal, principals=frozenset({principal.principal}),
         expires_at=int(expires_at), client="plx-workbench-app-warm",
+        access=entitlement.full_read_code(),
+        identities=frozenset({i for i in entitlement.source_identities
+                              if isinstance(i, str) and i.strip()
+                              and not i.startswith("group:")} | {principal.object_id}))
+
+
+def view_as_session(resolver: Any, object_id: str, *, expires_at: int,
+                    now: int | None = None) -> SessionIdentity:
+    """The identity the owner views one employee's screens with (``PROOF_VIEW_AS``):
+    resolved now exactly as that employee's sign-in is (an inactive, unverified or excluded
+    employee is refused), so it sees what they see and nothing more; it writes nothing
+    (``intent_identity`` refuses it) and expires at ``expires_at``."""
+    if not isinstance(resolver, EmployeePermissionResolver):
+        raise SessionIdentityRefused("employee_entitlements_not_configured")
+    if (int(time.time()) if now is None else int(now)) >= int(expires_at):
+        raise SessionIdentityRefused("session_expired")
+    try:
+        principal = EmployeePrincipal(resolver.policy.entra_tenant_id, object_id)
+    except ValueError:
+        raise SessionIdentityRefused("employee_principal_invalid") from None
+    entitlement = resolver.resolve(principal)
+    if entitlement.actor is None:
+        raise SessionIdentityRefused(entitlement.denied_reason or "denied")
+    return SessionIdentity(
+        tenant=resolver.policy.tenant, channel=CHANNEL_CONSOLE, author_kind=AUTHOR_HUMAN,
+        proof=PROOF_VIEW_AS, employee=principal, principals=frozenset({principal.principal}),
+        expires_at=int(expires_at), client="plx-workbench-app-view-as",
         access=entitlement.full_read_code(),
         identities=frozenset({i for i in entitlement.source_identities
                               if isinstance(i, str) and i.strip()
@@ -696,7 +735,7 @@ def bind_state_dir(state_dir: str | Path, *, fixture: bool, dev: bool = False) -
 
 __all__ = ["DEFAULT_CLIENT", "INTENT_IDENTITY_SCHEMA", "STATE_LABEL_FILE", "AUTHOR_AGENT", "AUTHOR_HUMAN", "CHANNEL_AUTHOR", "CHANNEL_CONSOLE", "CHANNEL_MCP",
            "PROOF_CONFIGURED", "PROOF_ENTRA", "PROOF_EVAL", "PROOF_FIXTURE", "PROOF_TICKET",
-           "PROOF_WARM", "warm_session", "SESSION_TICKET_AUDIENCE",
+           "PROOF_VIEW_AS", "PROOF_WARM", "view_as_session", "warm_session", "SESSION_TICKET_AUDIENCE",
            "SESSION_TICKET_SECRET_ENV", "SESSION_TICKET_TTL_SECONDS", "SessionIdentity",
            "SessionIdentityRefused", "REPLAY_GUARD_FILE", "TicketReplayGuard", "bind_state_dir", "check_runtime", "employee_session", "fixture_session",
            "intent_identity", "mint_session_ticket", "replay_guard_for", "session_secret",

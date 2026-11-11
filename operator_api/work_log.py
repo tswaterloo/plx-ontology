@@ -455,16 +455,24 @@ class WorkLog:
 
 
 def awaiting_reply(mailbox: Optional[str], to: Sequence[str], *, subject: Any = None,
-                   threads: Sequence[Any] = (), at: Optional[datetime] = None
+                   threads: Sequence[Any] = (), at: Optional[datetime] = None,
+                   answers: Sequence[Any] = (), answered_at: Any = None
                    ) -> Optional[dict[str, Any]]:
-    """The loop a sent message opens (None without a mailbox or a recipient)."""
+    """The loop a sent message opens (None without a mailbox or a recipient). ``answers``:
+    the message it answered (and ``answered_at``, when that one arrived), so a later
+    message of the thread is not taken as answered by it."""
     if not mailbox or not to:
         return None
     sent = at or _now()
-    return {"mailbox": mailbox.lower(), "to": sorted({a.lower() for a in to}),
-            "threads": [str(t) for t in threads if t],
-            "subject": str(subject)[:200] if subject else None,
-            "due": _iso(sent + timedelta(hours=REPLY_HOURS))}
+    out = {"mailbox": mailbox.lower(), "to": sorted({a.lower() for a in to}),
+           "threads": [str(t) for t in threads if t],
+           "subject": str(subject)[:200] if subject else None,
+           "due": _iso(sent + timedelta(hours=REPLY_HOURS))}
+    named = [str(a) for a in answers if a]
+    if named:
+        out["answers"] = named
+        out["answered_at"] = str(answered_at) if answered_at else None
+    return out
 
 
 # ---- continue -------------------------------------------------------------------------------
@@ -517,6 +525,16 @@ def asks_about_my_work(question: str) -> bool:
     """Whether a question is about the asker's own work in the Workbench (answered from
     their log); a question about the business records is not."""
     return bool(_MINE.search(question or ""))
+
+
+_MAILED = re.compile(r"\b(?:send|sent|e-?mail(?:ed)?|mail(?:ed)?|repl(?:y|ied)|forward(?:ed)?)\b",
+                     re.IGNORECASE)
+
+
+def asks_about_my_mail(question: str) -> bool:
+    """Whether a question about the asker's own work asks what they mailed: with nothing in
+    their log, their sent mail answers it (the Ask path), not an empty log."""
+    return asks_about_my_work(question) and bool(_MAILED.search(question or ""))
 
 
 def _window(question: str, now: datetime) -> tuple[Optional[datetime], Optional[datetime], str]:
@@ -752,7 +770,9 @@ class Notes:
                       awaiting=awaiting_reply(self.mailbox(reader), [a for a in to if a],
                                               subject=draft.get("subject"),
                                               threads=[happened.get("conversation_id")],
-                                              at=self.store.clock()))
+                                              at=self.store.clock(),
+                                              answers=[happened.get("object_id")],
+                                              answered_at=happened.get("at")))
 
     def action(self, reader: Any, result: Any, row: Optional[Mapping[str, Any]],
                card: Optional[Mapping[str, Any]]) -> None:
@@ -775,7 +795,7 @@ class Notes:
                                 "object_type": subject.get("type")
                                 or subject.get("object_type"),
                                 "label": subject.get("label")}),
-                  people=to,
+                  people=to, detail={"status": data["status"]},
                   awaiting=awaiting_reply(self.mailbox(reader), row.get("to") or (),
                                           subject=row.get("subject"),
                                           threads=[row.get("in_reply_to")],
@@ -792,6 +812,7 @@ class Notes:
                   title=data.get("text") or f"{intent.get('operation')} in "
                                             f"{str(intent.get('system') or '').upper()}",
                   thread=f"write:{iid}", source="write_intents", source_id=iid,
+                  detail={"status": data.get("status")},
                   records=[{"object_id": intent["record_id"],
                             "type": intent.get("entity_set"), "label": None}]
                   if intent.get("record_id") else ())
@@ -809,3 +830,174 @@ class Notes:
                   title=data.get("label") or data["object_id"],
                   thread=thread if valid_thread(thread) else "record:watch/unknown",
                   source="watchlists", source_id=data["object_id"], records=_ref(data))
+
+
+# ---- time saved (O-03) ------------------------------------------------------------------------
+
+# What one event of the log saved its person, in the minutes the same work takes by hand
+# (``operating.autopilot_replay.MINUTES``, the weights the day-coverage measure uses): the
+# basis it counts under and that basis's words. Everything else (reading, dismissing,
+# snoozing, watching, notes, a dry-run send) saves nothing and is not counted.
+SAVED_BASIS: dict[tuple[str, str], str] = {
+    ("autopilot", "sent"): "mail_sent", ("action", "sent"): "mail_sent",
+    ("action", "replied"): "mail_sent", ("action", "forwarded"): "mail_sent",
+    ("action", "messaged"): "teams_sent", ("autopilot", "accepted"): "record",
+    ("write", "executed"): "record", ("ask", "asked"): "record"}
+SAVED_WORDS = {"mail_sent": "messages sent from a prepared draft",
+               "teams_sent": "Teams messages sent from a prepared draft",
+               "record": "lookups and entries done for you (an accepted autopilot item "
+                         "without a message, a write made live, an answered Ask)"}
+SAVED_METHOD = ("An estimate, not a measurement: each thing the Workbench did for a person "
+                "counts the minutes the same work takes by hand in the autopilot replay's "
+                "weights ({weights}). Only work that was used counts: a message actually "
+                "sent (a dry run counts nothing), an autopilot item accepted, a write "
+                "made live in the business system (a would-write counts nothing), an Ask "
+                "answered. Reading, dismissing and watching count "
+                "nothing. Weeks start Monday, US Eastern.")
+SAVED_TZ = "America/New_York"
+
+
+def saved_minutes() -> dict[str, int]:
+    from operating.autopilot_replay import MINUTES
+    return {b: int(MINUTES[b]) for b in sorted(set(SAVED_BASIS.values()))}
+
+
+def _week_start(at: datetime) -> str:
+    from zoneinfo import ZoneInfo
+    local = at.astimezone(ZoneInfo(SAVED_TZ))
+    return (local.date() - timedelta(days=local.weekday())).isoformat()
+
+
+def _outcome(row: Mapping[str, Any]) -> Optional[str]:
+    """The status an action or write event recorded (``Notes.action``/``Notes.write``)."""
+    try:
+        detail = json.loads(row["detail"] or "null")
+    except (TypeError, ValueError):
+        return None
+    status = detail.get("status") if isinstance(detail, dict) else None
+    return status if isinstance(status, str) else None
+
+
+def _went_out(row: Mapping[str, Any]) -> bool:
+    """An action counts only when its message was sent, a write only when it was written
+    live: a dry run (``dry_run``), a would-write record or an event that does not say how
+    it ended counts nothing. A mail event logged before the outcome was recorded counts
+    when it opened a reply loop, which only a sent message does."""
+    if row["kind"] == "action":
+        status = _outcome(row)
+        if status is None:
+            return row["verb"] in ("sent", "replied", "forwarded") and bool(row["awaiting"])
+        return status == "sent"
+    if row["kind"] == "write":
+        return _outcome(row) == "written"
+    return True
+
+
+def time_saved(store: "WorkLog", *, reader: Optional[str], weeks: int = 4,
+               now: Optional[datetime] = None) -> Optional[dict[str, Any]]:
+    """Per person and week (``weeks`` of them, the current one last), the minutes the
+    Workbench saved them (``SAVED_BASIS``) and how many of each basis; ``reader``: only
+    theirs, None: everyone's (the owner's view). None while the people exclusion cannot
+    decide (fail closed). An autopilot item accepted and then sent counts once, as the
+    message."""
+    from zoneinfo import ZoneInfo
+    guard = store.guard()
+    if guard is None or getattr(guard, "unavailable", "absent"):
+        return None
+    weeks = max(1, min(int(weeks), 12))
+    now = now or store.clock()
+    local = now.astimezone(ZoneInfo(SAVED_TZ))
+    first = local.date() - timedelta(days=local.weekday() + 7 * (weeks - 1))
+    starts = [(first + timedelta(days=7 * i)).isoformat() for i in range(weeks)]
+    since = datetime(first.year, first.month, first.day,
+                     tzinfo=ZoneInfo(SAVED_TZ)).astimezone(timezone.utc)
+    pairs = " OR ".join("(kind = ? AND verb = ?)" for _ in SAVED_BASIS)
+    args: list[Any] = [_iso(since)] + [v for pair in SAVED_BASIS for v in pair]
+    where = f"at >= ? AND ({pairs})"
+    if reader is not None:
+        where += " AND reader = ?"
+        args.append(reader)
+    with store._lock:
+        rows = store._conn.execute(
+            "SELECT seq, at, reader, reader_name, kind, verb, source_id, people, awaiting, "
+            "detail "
+            f"FROM event WHERE {where} ORDER BY seq", args).fetchall()
+    sent_items = {(r["reader"], r["source_id"]) for r in rows
+                  if r["kind"] == "autopilot" and r["verb"] == "sent"}
+    weights = saved_minutes()
+    people: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        if _row_excluded(guard, r):
+            continue
+        if not _went_out(r):
+            continue   # a dry run, a would-write or an outcome not on the event
+        if r["kind"] == "autopilot" and r["verb"] == "accepted" \
+                and (r["reader"], r["source_id"]) in sent_items:
+            continue   # counted once, as its message
+        at = _instant(r["at"])
+        if at is None:
+            continue
+        week = _week_start(at)
+        if week not in starts:
+            continue
+        basis = SAVED_BASIS[(r["kind"], r["verb"])]
+        person = people.setdefault(r["reader"], {
+            "reader": r["reader"], "name": r["reader_name"],
+            "weeks": {s: {"minutes": 0, "items": {}} for s in starts}})
+        slot = person["weeks"][week]
+        slot["minutes"] += weights[basis]
+        slot["items"][basis] = slot["items"].get(basis, 0) + 1
+    out = []
+    for person in people.values():
+        out.append({"reader": person["reader"], "name": person["name"],
+                    "weeks": [{"start": s, **person["weeks"][s]} for s in starts]})
+    out.sort(key=lambda p: (-p["weeks"][-1]["minutes"], -sum(w["minutes"]
+                                                              for w in p["weeks"]),
+                            str(p["name"] or "")))
+    words = ", ".join(f"{SAVED_WORDS[b].split(' (')[0]} {m} min"
+                      for b, m in weights.items())
+    return {"weeks": starts, "people": out, "minutes": weights,
+            "basis": dict(SAVED_WORDS), "method": SAVED_METHOD.format(weights=words)}
+
+
+SCORECARD_VERBS = ("prepared", "accepted", "edited", "rejected")
+
+
+def autopilot_days(store: "WorkLog", *, reader: str, days: int = 14,
+                   now: Optional[datetime] = None) -> Optional[list[dict[str, Any]]]:
+    """The reader's daily autopilot scorecard from their own log, newest day first (US
+    Eastern days, ``days`` of them, today included): items prepared for them (logged when
+    first shown), accepted, edited and rejected. An item is counted once per verb (its
+    first event of that verb). None while the people exclusion cannot decide (fail
+    closed)."""
+    from zoneinfo import ZoneInfo
+    guard = store.guard()
+    if guard is None or getattr(guard, "unavailable", "absent"):
+        return None
+    days = max(1, min(int(days), 60))
+    tz = ZoneInfo(SAVED_TZ)
+    today = (now or store.clock()).astimezone(tz).date()
+    first = today - timedelta(days=days - 1)
+    since = datetime(first.year, first.month, first.day, tzinfo=tz).astimezone(timezone.utc)
+    marks = ",".join("?" for _ in SCORECARD_VERBS)
+    with store._lock:
+        rows = store._conn.execute(
+            "SELECT seq, at, reader, reader_name, kind, verb, source_id, people, awaiting, "
+            f"detail FROM event WHERE at >= ? AND reader = ? AND kind = 'autopilot' AND "
+            f"verb IN ({marks}) ORDER BY seq",
+            [_iso(since), reader, *SCORECARD_VERBS]).fetchall()
+    slots = {(first + timedelta(days=i)).isoformat(): dict.fromkeys(SCORECARD_VERBS, 0)
+             for i in range(days)}
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        if _row_excluded(guard, r):
+            continue
+        at = _instant(r["at"])
+        key = (r["verb"], str(r["source_id"]))
+        if at is None or key in seen:
+            continue
+        seen.add(key)
+        day = at.astimezone(tz).date().isoformat()
+        if day in slots:
+            slots[day][r["verb"]] += 1
+    return [{"day": d, **slots[d]} for d in sorted(slots, reverse=True)]

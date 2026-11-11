@@ -8,7 +8,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { CardActions } from "@/components/card-actions";
 import { Pending } from "@/components/ui/skeleton";
-import { LoadProblem } from "@/components/ui/notice";
+import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getMeetingFollowUp, getMyActionItems } from "@/lib/api";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { cn } from "@/lib/cn";
@@ -366,5 +366,10 @@ export function MyActionItemsPanel({ person }: { person?: string | null }) {
   if (error instanceof ApiError && error.status === 404) return <p className="text-[13px] text-muted">No meeting follow-ups are kept on this server.</p>;
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
   if (!data) return <Pending label="Reading your action items" />;
-  return <MyActionItemsView items={data.items as unknown as Action[]} person={person} />;
+  return (
+    <>
+      <StaleNote since={data.stale_since} readAt={data.read_at} className="mb-2" />
+      <MyActionItemsView items={data.items as unknown as Action[]} person={person} />
+    </>
+  );
 }

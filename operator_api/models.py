@@ -36,6 +36,19 @@ def _optional(schema: dict) -> None:
     generated client types it optional (absent or null), never required."""
     schema.pop("default", None)
 
+def _stale_since() -> Any:
+    return Field(None, json_schema_extra=_optional, description=(
+        "Set when the server serves the last page it read for this same reader instead of "
+        "reading it now: when that page was read (ISO). It is read again in the background."))
+
+
+def _read_at() -> Any:
+    return Field(None, json_schema_extra=_optional, description=(
+        "Set when this page is the one read for this same reader a moment ago, served as "
+        "kept: when it was read (ISO). Other people's decisions and actions it shows are "
+        "as of then."))
+
+
 
 # ---- errors ---------------------------------------------------------------------------
 
@@ -86,6 +99,34 @@ class Me(_Model):
     feedback_admin: bool = Field(False, json_schema_extra=_optional,
                                  description="The owner or a feedback admin: triages every "
                                              "reader's feedback.")
+    can_view_as: bool = Field(False, json_schema_extra=_optional,
+                              description="The owner-open reader on a server that can view "
+                                          "as someone (/api/view-as/people).")
+    ops_reader: bool = Field(False, json_schema_extra=_optional,
+                             description="The owner or a named Team reader "
+                                         "(PLX_TEAM_VIEW_READERS): sees the reliability "
+                                         "alarms and /ops.")
+
+
+class ViewAsPerson(_Model):
+    key: str = Field(description="An opaque handle for X-PLX-View-As; never an id.")
+    name: str
+
+
+class ViewAsMark(_Model):
+    key: str = Field(max_length=40, description="The person's opaque view-as key.")
+
+
+class ViewAsMarked(_Model):
+    recorded: bool
+    event: Literal["start", "stop"]
+
+
+class ViewAsPeople(_Model):
+    """Whom the owner may view as. ``available`` False: this server cannot (no employee
+    resolver or people exclusion), so nobody is listed."""
+    available: bool
+    people: list[ViewAsPerson] = Field(default_factory=list)
 
 
 class DevLoginRequest(_Model):
@@ -1404,6 +1445,27 @@ class SourceView(_Model):
                           "declared full-read grant.")
 
 
+class SourceRecord(_Model):
+    """One record citing a source: one projected from it (``from``) or linked to such a
+    record (``linked``, by ``link``: the link's kind in words)."""
+    record: ObjectRef
+    how: Literal["from", "linked"]
+    link: Optional[str] = None
+
+
+class SourceRecords(_Model):
+    """The records citing one source, as this reader may read them now (``/api/source/
+    records``). A source the reader may not open reads as not found; a record the reader
+    may not read is left out. ``served`` false: this server holds no records to look in."""
+    handle: str
+    records: list[SourceRecord] = Field(default_factory=list)
+    truncated: bool = False
+    served: bool = True
+    access_label: Optional[str] = Field(
+        None, description="'Viewing with full-read access' when served under the reader's "
+                          "declared full-read grant.")
+
+
 # ---- feedback --------------------------------------------------------------------------
 
 _APP_VERSION = Field(None, max_length=40, pattern=r"^[A-Za-z0-9._+-]+$",
@@ -2186,6 +2248,8 @@ class MyActionItems(_Model):
     """One person's meeting action items (only that person and each meeting's organiser)."""
     person: Optional[str] = None
     items: list[dict[str, Any]]
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 class RecordPack(_Model):
@@ -2255,6 +2319,8 @@ class ApprovalsQueue(_Model):
     groups: list[ApprovalGroup] = Field(default_factory=list)
     sent: Literal[0]
     writes: Literal[0]
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 class ReplyLine(_Model):
@@ -2288,6 +2354,8 @@ class ReplyTriage(_Model):
     lines: list[ReplyLine] = Field(default_factory=list)
     sent: Literal[0]
     writes: Literal[0]
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 class WorkloadTeam(_Model):
@@ -2315,6 +2383,8 @@ class Workload(_Model):
     teams: list[WorkloadTeam] = Field(default_factory=list)
     people: list[WorkloadPerson] = Field(default_factory=list)
     granted_teams: list[str] = Field(default_factory=list)
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 class WorkloadGrants(_Model):
@@ -2370,6 +2440,8 @@ class RdBoard(_Model):
     projects: list[RdProject] = Field(default_factory=list)
     sent: Literal[0]
     writes: Literal[0]
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 class OwnerWorkloadPerson(_Model):
@@ -2402,6 +2474,8 @@ class OwnerWorkload(_Model):
     people: list[OwnerWorkloadPerson] = Field(default_factory=list)
     coverage: list[SystemCoverage] = Field(default_factory=list)
     note: str
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 class OwnerWorkloadItem(_Model):
@@ -2642,6 +2716,8 @@ class Brief(_Model):
         None, description="When a finished week's review was generated and kept; served "
                           "again only while your grant is the same and every source it shows "
                           "still opens for you.")
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 class MeetingInvitee(_Model):
@@ -2690,6 +2766,8 @@ class UpcomingMeeting(_Model):
 
 class UpcomingMeetings(_Model):
     meetings: list[UpcomingMeeting]
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 # ---- approve-to-write (operating.write_intents) -------------------------------------------
@@ -2784,6 +2862,8 @@ class MyWork(_Model):
     digest: MyWorkDigest
     sent: Literal[0]
     writes: Literal[0]
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 AutopilotState = Literal["off", "dry_run", "passed_awaiting_owner", "live_held", "live"]
@@ -2796,6 +2876,21 @@ class AutopilotScore(_Model):
     matched: int
     percent: Optional[float] = Field(None, description="matched / judged, one decimal; "
                                      "absent when nothing was judged.")
+
+
+class AutopilotCountdown(_Model):
+    """The workflow's way to its write gate (``operating.autopilot_fresh``): items judged
+    on fresh days against the ``need_judged`` the gate asks for, and the precision so far
+    against ``need_percent``. Recomputed from the counts at every read."""
+    judged: int
+    matched: int
+    need_judged: int
+    need_percent: float
+    percent: Optional[float] = Field(None, description="matched / judged, one decimal; "
+                                     "absent when nothing was judged.")
+    passes: bool
+    window: list[str] = Field(default_factory=list)
+    data_end: Optional[str] = None
 
 
 class AutopilotWorkflowRow(_Model):
@@ -2818,6 +2913,14 @@ class AutopilotWorkflowRow(_Model):
     last_run: Optional[str] = None
     scored_at: Optional[str] = None
     open_items: int = 0
+    draft: Optional[bool] = Field(None, json_schema_extra=_optional,
+                                  description="Draft mode: prepared for this person before "
+                        "the gate passed (operating/autopilot_draft.json). Each item waits "
+                        "for their accept; sends and writes keep their own gates.")
+    countdown: Optional[AutopilotCountdown] = Field(
+        None, json_schema_extra=_optional,
+        description="Judged fresh items toward the write gate; absent until the scorer "
+                    "published a result for this role.")
 
 
 class AutopilotDecision(_Model):
@@ -2855,6 +2958,16 @@ class AutopilotItem(_Model):
     today: bool = Field(description="Prepared or due today (Toronto day), or past due.")
     state: AutopilotItemState
     decision: Optional[AutopilotDecision] = None
+    live: Optional[bool] = Field(None, description="An accept performs this item live now (the "
+                       "owner opened its kind to approved writes, or its workflow passed "
+                       "its gate and is switched live): it is accepted alone, after a "
+                       "confirm, never in a bulk accept.")
+    live_kinds: list[str] = Field(default_factory=list, description="The write kinds an "
+                                  "accept would perform live.")
+    confirm_token: Optional[str] = Field(None, description="Set only in the answer to an "
+                                         "accept of a live item without a confirm: send it "
+                                         "back with the same accept (within 10 minutes) to "
+                                         "perform the item.")
 
 
 class AutopilotPerson(_Model):
@@ -2887,6 +3000,8 @@ class AutopilotArea(_Model):
     known_workflows: list[str] = Field(default_factory=list, description=(
         "every workflow the autopilot knows (``operating.workflows``), scored or not: the "
         "workflow filter offers them before any is scored or prepared"))
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
 
 
 class AutopilotDecisionRequest(_Model):
@@ -2896,6 +3011,11 @@ class AutopilotDecisionRequest(_Model):
     until: Optional[str] = Field(None, max_length=40, description="snooze: until when "
                                  "(ISO instant, at most 30 days ahead).")
     note: Optional[str] = Field(None, max_length=500)
+    confirm_token: Optional[str] = Field(None, max_length=80, description="accept of a "
+                                         "live item: the token the first accept answered "
+                                         "(the person confirmed it goes live).")
+    bulk: Optional[bool] = Field(None, description="Part of a bulk decision: a live item is "
+                       "refused (409), never performed or offered a confirm.")
 
 
 class AutopilotSwitchRequest(_Model):
@@ -3232,6 +3352,123 @@ class WorkLogPage(_Model):
     all_readers: bool = False
 
 
+class TrustFreshness(_Model):
+    """One source system: the newest capture taken from it, the newest capture the served
+    data holds, and the lag between them."""
+    system: System
+    captured_at: Optional[str] = Field(None, description="The newest capture taken (the "
+                                       "capture ledger).")
+    served_at: Optional[str] = Field(None, description="The newest capture applied to the "
+                                     "data the app serves.")
+    lag_seconds: Optional[int] = Field(None, description="captured_at - served_at; absent "
+                                       "when either is unknown.")
+    stale: bool = False
+    capture: Optional[str] = None
+
+
+class TrustAnswerScore(_Model):
+    at: str
+    runs: int
+    items: int
+    correct: int
+    answered: int
+    accuracy: Optional[float] = Field(None, description="Percent of answered runs correct.")
+    coverage: Optional[float] = Field(None, description="Percent of scored runs answered.")
+    evidence_label: str
+
+
+class TrustAnswerSet(_Model):
+    name: str
+    dev: Optional[TrustAnswerScore] = Field(None, description="Absent: not measured yet.")
+    held_out: Optional[TrustAnswerScore] = Field(None, description="Absent: not measured "
+                                                 "yet.")
+
+
+class TrustAlert(_Model):
+    type: str
+    kind: str
+    label: str
+    on: bool = Field(description="On by default (shown on My work when home).")
+    home: bool
+    judged: Optional[int] = Field(None, description="Items hand-checked; absent when the "
+                                  "type was never measured.")
+    correct: Optional[int] = Field(None, description="Items right; absent when the "
+                                   "registry's rounded rate gives no whole count.")
+    percent: Optional[float] = None
+    measured_on: Optional[str] = None
+    note: Optional[str] = None
+
+
+class TrustLine(_Model):
+    state: Literal["live", "gated", "pending"]
+    words: str
+
+
+class TrustSwitch(_Model):
+    system: str
+    state: Literal["on", "off", "none"] = Field(description="none: no write path exists.")
+    words: str
+
+
+class TrustPage(_Model):
+    """What a reader needs to judge the Workbench: data freshness per system, answer
+    scores per question set, alert precision per type, the autopilot's workflows and
+    what is live, gated and pending. Counts and times only."""
+    checked_at: str
+    freshness: list[TrustFreshness] = Field(default_factory=list)
+    answers: list[TrustAnswerSet] = Field(default_factory=list)
+    alert_rule: str = ""
+    alerts: list[TrustAlert] = Field(default_factory=list)
+    autopilot: list[AutopilotWorkflowRow] = Field(default_factory=list)
+    autopilot_note: Optional[str] = None
+    lines: list[TrustLine] = Field(default_factory=list)
+    switches: list[TrustSwitch] = Field(default_factory=list)
+
+
+class AutopilotScoreDay(_Model):
+    day: str = Field(description="The day (US Eastern), ISO date.")
+    prepared: int = Field(description="Items prepared for you, counted the day you first "
+                          "saw them.")
+    accepted: int
+    edited: int
+    rejected: int
+
+
+class AutopilotScorecard(_Model):
+    """Your daily autopilot scorecard from your work log, newest day first. ``available``
+    False (nothing shown) while the people exclusion is not loaded."""
+    available: bool
+    days: list[AutopilotScoreDay] = Field(default_factory=list)
+
+
+class TimeSavedWeek(_Model):
+    start: str = Field(description="The week's Monday (US Eastern), ISO date.")
+    minutes: int
+    items: dict[str, int] = Field(default_factory=dict, description="How many of each basis "
+                                  "(mail_sent, teams_sent, record) the minutes count.")
+
+
+class TimeSavedPerson(_Model):
+    name: Optional[str] = None
+    mine: bool = False
+    weeks: list[TimeSavedWeek]
+
+
+class TimeSaved(_Model):
+    """Per person and week, the minutes the Workbench saved them, from their work log: an
+    estimate whose ``method`` says how it is counted. A reader sees their own; the owner
+    may see everyone's (``all_readers``). ``available`` False (nothing shown) while the
+    people exclusion is not loaded."""
+    available: bool
+    all_readers: bool = False
+    weeks: list[str] = Field(default_factory=list)
+    people: list[TimeSavedPerson] = Field(default_factory=list)
+    minutes: dict[str, int] = Field(default_factory=dict, description="Minutes per item of "
+                                    "each basis.")
+    basis: dict[str, str] = Field(default_factory=dict)
+    method: str = ""
+
+
 class WorkLogTurn(_Model):
     question: str
     answer: Optional[dict[str, Any]] = Field(description="The answer as you saw it; null "
@@ -3381,7 +3618,12 @@ class UploadPreview(_Model):
     problems: list[str]
     missing: list[str]
     preview_hash: str
-    status: Literal["prepared", "would_upload"]
+    acknowledge: list[str] = Field(default_factory=list, description=(
+        "Why this upload is not a routine write, in words: the reader's confirm accepts "
+        "each (the preview_hash covers them)."))
+    status: Literal["prepared", "would_upload", "uploaded", "failed", "unknown"] = Field(
+        description="would_upload: approved and recorded, not made (``missing`` says why); "
+                    "uploaded: made through the gated write path; unknown: check SharePoint.")
 
 
 class UploadApprove(_Model):

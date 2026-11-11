@@ -109,13 +109,9 @@ class ExtractionCache(DocumentMemo):
         try:
             self._db.execute("PRAGMA journal_mode = WAL")
             self._db.execute("PRAGMA synchronous = NORMAL")
-            self._db.execute("CREATE TABLE IF NOT EXISTS extracted (key TEXT PRIMARY KEY, "
-                             "xcode TEXT NOT NULL, value BLOB NOT NULL, used INTEGER NOT NULL)")
-            for table, extra in (("texts", "code TEXT NOT NULL, "), ("groups", "")):
-                self._db.execute(f"CREATE TABLE IF NOT EXISTS {table} (key TEXT PRIMARY KEY, "
-                                 f"{extra}value BLOB NOT NULL, used INTEGER NOT NULL)")
-            self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, "
-                             "value TEXT NOT NULL)")
+            from operating import declared_schema
+            from operating.declared_schema import mention_cache as declared
+            declared_schema.apply(self._db, declared)
             self._db.execute("INSERT OR REPLACE INTO meta VALUES ('format', ?)", (FORMAT,))
             self.for_step(None)
             self._db.execute("BEGIN")

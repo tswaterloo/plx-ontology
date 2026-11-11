@@ -18,7 +18,8 @@ source serves leaves it ``blocked`` with ``not_served_<Type>__<property>`` reaso
 * ``expiring_lot_stock``: a lot with quantity on hand (an ``ON_HAND`` source of lots) whose
   expiry falls within ``LOT_DAYS`` (30 high, 60 medium), with the open customer orders (the
   one sales-order definition) that name its item and could use it.
-* ``assembly_component_shortfall``: an open assembly order starting within
+* ``assembly_component_shortfall``: an open assembly order (judged on the copy that keeps
+  production, ``assembly_keeper``; done or deleted in any copy: not open) starting within
   ``ASSEMBLY_HORIZON_DAYS`` whose components (planned less consumed) need more than is on
   hand plus inbound on open purchase orders (``proactive_business.inbound_flows``) by its
   start date, the orders before it in start-date order served first. ``REQUIRES_GRANT``.
@@ -90,7 +91,9 @@ ASSEMBLY = "AssemblyOrder"
 ASSEMBLY_TWINS = "AssemblyOrder.same_record_as"
 ASSEMBLY_DAYS = ("fm_created_at", "portal_created_at")
 ASSEMBLY_CODES = ("ao_code", "mo_code", "code")
-START_PROPS = ("start_date",)       # the assembly order's own planned start (not served yet)
+# the assembly order's planned start: its own start date where a source fills it (the Portal
+# MO's never is), else the day the system that keeps production scheduled it to be made
+START_PROPS = ("start_date", "scheduled_date")
 # an assembly order still to be made (its components not yet picked); another word is
 # not judged (``status_unknown``), a done or cancelled one is never claimed
 OPEN_ASSEMBLY = frozenset({"generated", "allocated", "committed", "created", "scheduled",
@@ -202,8 +205,17 @@ def declares(object_type: str, prop: str | None = None, link: str | None = None)
     return link is None or link in schema.link_types
 
 
+def assembly_keeper() -> str | None:
+    """The binding prefix of the assembly order copy that keeps production (its status and
+    scheduled day): ``proactive_ops.PRODUCTION_DUE``'s, one definition for both rules."""
+    from . import proactive_ops
+
+    return next((keeper for t, *_rest, keeper in proactive_ops.PRODUCTION_DUE
+                 if t == ASSEMBLY), None)
+
+
 def declared_starts() -> tuple[str, ...]:
-    """The assembly order start-date properties the schema declares (none today)."""
+    """The assembly order start-date properties the schema declares."""
     return tuple(p for p in START_PROPS if declares(ASSEMBLY, p))
 
 
@@ -624,13 +636,22 @@ def assembly_component_shortfall(st: Any, as_of: date, *, gap: Callable, cites: 
         groups[root.get(oid, oid)].append(oid)
     from . import po_status
     orders: dict[str, tuple] = {}   # governing record -> (start day, start row, code row)
+    keeper = assembly_keeper()
     for top, members in sorted(groups.items()):
         pb._tick(st)
-        record = pb._governing(members, po_status.binding_of)
+        # done or deleted in any copy: a lagging copy never reopens it
+        if any(found[m]["props"].get("deleted_at") or any(
+                (pb._word(r) or "").replace(" ", "_") in DONE_ASSEMBLY
+                for r in found[m]["props"].get("status", ())) for m in members):
+            continue
+        kept = [m for m in members
+                if keeper is None or (po_status.binding_of(m) or "").startswith(keeper)]
+        if not kept:
+            skipped.note("status_source_absent", [min(members)], [(min(members), "[]")])
+            continue
+        record = min(kept)
         props = found[record]["props"]
         word = (pb._word(pb._one(props.get("status"))) or "").replace(" ", "_")
-        if props.get("deleted_at") or word in DONE_ASSEMBLY:
-            continue
         if word not in OPEN_ASSEMBLY:
             skipped.note("status_unknown", [record], [(record, "[]")])
             continue

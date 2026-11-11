@@ -38,8 +38,28 @@ def _docs():
 # The Portal skeleton only: curated domain files and other sources' generated files
 # (generated/graph_*, generated/bc_*: the BC files bind through curated BC types) belong
 # to other modules and are tested there, so these tests stay valid whatever
-# ontology/schema/domains/ holds.
-_DOCS = [(name, doc) for name, doc in s.load_documents() if name.startswith("generated/portal_")]
+# ontology/schema/domains/ holds. Of the raw-link files (domains/raw_links_*.json, written
+# by scripts/gen_raw_links.py, not curated) the skeleton keeps the links between its own
+# generated types: the generated Sage types' payroll row markings follow their GL-account
+# links (overrides/markings.json row_markings), and a link to a curated type belongs to
+# the tests of that type.
+def _skeleton_documents():
+    docs = s.load_documents()
+    portal = [(name, doc) for name, doc in docs if name.startswith("generated/portal_")]
+    types = {t["id"] for _, doc in portal for t in doc.get("object_types", [])}
+    bindings = {b["id"] for _, doc in portal for t in doc.get("object_types", [])
+                for b in t.get("bindings", [])}
+
+    def own(link):
+        return {link["from"], link["to"]} <= types and all(
+            {b.get("from_binding"), b.get("to_binding")} - {None} <= bindings
+            for b in link.get("bindings", []))
+    raw = [(name, dict(doc, link_types=[link for link in doc["link_types"] if own(link)]))
+           for name, doc in docs if name.startswith("domains/raw_links_")]
+    return portal + [(name, doc) for name, doc in raw if doc["link_types"]]
+
+
+_DOCS = _skeleton_documents()
 _CATALOG = s.load_catalog()
 _COVERAGE = json.loads(s.COVERAGE_PATH.read_text())
 
@@ -427,7 +447,12 @@ class ValidatorTests(unittest.TestCase):
 
     def test_identifier_kinds_must_exist_when_the_registry_is_present(self):
         docs = _docs() + [("domains/example_orders.json", example())]
-        registry = {"format": "plx-identifiers/v1", "kinds": {"so_number": {}}}
+        # The skeleton's own kinds (its raw links compare Sage numbers by kind) are held.
+        own = {pair["identifier_kind"] for _, doc in _docs() for link in doc.get("link_types", [])
+               for b in link.get("bindings", []) for pair in b.get("pairs", [])
+               if "identifier_kind" in pair}
+        registry = {"format": "plx-identifiers/v1",
+                    "kinds": {"so_number": {}, **{kind: {} for kind in own}}}
         errs = errors_of(lambda: compile_docs(docs, identifiers=registry))
         self.assertTrue(any("unknown identifier kind 'customer_erp_code'" in e for e in errs), errs)
         registry["kinds"].update({"customer_erp_code": {}, "customer_po": {}})
@@ -597,9 +622,9 @@ class DigestTests(unittest.TestCase):
         docs = [(name, json.loads(json.dumps(doc, indent=4))) for name, doc in reversed(_docs())]
         rng = random.Random(7)
         for _, doc in docs:
-            rng.shuffle(doc["object_types"])
-            rng.shuffle(doc["link_types"])
-            for t in doc["object_types"]:
+            rng.shuffle(doc.get("object_types", []))   # a raw-link file holds links only
+            rng.shuffle(doc.get("link_types", []))
+            for t in doc.get("object_types", []):
                 rng.shuffle(t["properties"])
         self.assertEqual(first, compile_docs(docs).digest)
         with tempfile.TemporaryDirectory() as tmp:  # the file-loading path, skeleton only
@@ -608,6 +633,10 @@ class DigestTests(unittest.TestCase):
             for other in (Path(tmp) / "generated").glob("*.json"):
                 if not other.name.startswith("portal_"):
                     other.unlink()
+            (Path(tmp) / "domains").mkdir()
+            for name, doc in _docs():   # the skeleton's own raw links, as files
+                if name.startswith("domains/"):
+                    (Path(tmp) / name).write_text(json.dumps(doc))
             self.assertEqual(first, s.load_schema(tmp, catalog=_CATALOG).digest)
 
     def test_digest_changes_with_content(self):
@@ -795,7 +824,9 @@ enum OrderState {
         units = {"contracts": [{"id": "order-total-unit", "relation": "public.app_order",
                                 "column": "total", "unit": "CAD-cents"}]}
         # A toy Portal: the real money.json and names.json name relations it does not have.
-        overrides = dataclasses.replace(gen.OVERRIDES, money={}, names={})
+        # The same for markings.json's per-relation columns (its payroll rules among them).
+        overrides = dataclasses.replace(gen.OVERRIDES, money={}, names={},
+                                        relation_markings={})
         docs, coverage = gen.generate(self._catalog(), facts, contracts, units,
                                       {"fm_x": ("customer_id", "customerId")}, overrides)
         self.assertEqual(list(docs), ["portal_not_served_f_o.json", "portal_not_served_s_z.json",

@@ -36,12 +36,17 @@ export function refreshingLine(checkedOn?: string | null): string {
   return `Some checks are re-running on the latest data${when}. Results appear here when they finish.`;
 }
 
-/** A page served from the last good read because a fresh one did not come in time: "As of 9:08 PM ET · refreshing". */
-export function staleLine(staleSince?: string | null): string | null {
-  const t = staleSince ? new Date(staleSince) : null;
+/**
+ * A page served from the last good read because a fresh one did not come in time: "As of
+ * 9:08 PM ET · refreshing". With only ``readAt`` (the reader's page read a moment ago,
+ * served as kept): "As of 9:08 PM ET", as other people's decisions on it are as of then.
+ */
+export function staleLine(staleSince?: string | null, readAt?: string | null): string | null {
+  const at = staleSince || readAt;
+  const t = at ? new Date(at) : null;
   if (!t || Number.isNaN(t.getTime())) return null;
   const clock = t.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
-  return `As of ${clock} ET · refreshing`;
+  return staleSince ? `As of ${clock} ET · refreshing` : `As of ${clock} ET`;
 }
 
 /** The local hour from which Home opens with "Your morning". */

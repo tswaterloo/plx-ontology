@@ -52,6 +52,7 @@ from .case_tools_host import PageNotRead, PagedRead
 from .ontology_host import CaseHostTools, check_marking_grants
 from . import capability_guards, injection_guard, source_reads
 from .claim_checks import MAX_QUOTE_CHARS, PAGE_TEXT, returned_evidence
+from .time_window import reference_days
 from .action_path import ActionPath
 from .build_steps import ReviewsIfPresent
 from .goal2_mc_approval import load_approver_roster, load_bucket_audiences
@@ -1835,6 +1836,9 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
     # final screen (``agent_session.gate_final_reply``) uses the question it posed.
     asked = answer.get("question") if isinstance(answer, dict) and isinstance(
         answer.get("question"), str) else ""
+    # The days a ``days`` claim may count from uncited: those the question writes in full,
+    # and today (``time_window.reference_days``).
+    returned = {**returned, "reference_days": reference_days(asked)}
     gated = answer_gate.gate_answer(claims_only, server, seen=seen, returned=returned,
                                     may_repair=may_repair, unread=unread, read_values=True,
                                     relevant=relevant)
@@ -2020,14 +2024,58 @@ def _anchor_keys(mentions: Iterable[Any]) -> frozenset[str]:
     return frozenset(anchors)
 
 
+# A name an agent's own find connects (``_found_on_question``): long enough to be a name
+# the question writes, never a word of it ("R&D + Marketing" is 11). A shorter name
+# (``MIN_ANCHOR_CHARS`` up) connects only from a find of one object type whose noun the
+# question writes beside it: "teams channel Gleamin" (dev 11-10: G-0018, the entity index
+# read "Gleamin" as the customer and the supplier, and the gate refused the channel's own
+# date as off the question).
+MIN_NAME_ANCHOR_CHARS = 8
+
+
+def _type_noun(object_type: str) -> str | None:
+    """The noun of an object type's name as a question writes it: its last word
+    ("TeamsChannel" -> "channel", "MCTask" -> "task"), or None for a name with none."""
+    words = re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+", object_type or "")
+    return words[-1].casefold() if words and words[-1].isalpha() and len(words[-1]) > 2 \
+        else None
+
+
+def _names_by_type(asked: str, name: str, object_type: Any) -> bool:
+    """Whether the question writes ``name`` whole (as its own words, never inside a
+    longer word) and, within a few words before it, the noun of ``object_type``
+    ("teams channel Gleamin", "the Gleamin channel" too)."""
+    noun = _type_noun(object_type) if isinstance(object_type, str) else None
+    words = re.findall(r"[0-9A-Za-z]+", name)
+    if noun is None or not words:
+        return False
+    named = r"\b" + r"\W+".join(re.escape(word) for word in words) + r"\b"
+    near = r"(?:\W+\w+){0,2}?\W+"
+    pattern = rf"\b{re.escape(noun)}s?{near}{named}|{named}{near}{re.escape(noun)}s?\b"
+    return re.search(pattern, asked, re.IGNORECASE) is not None
+
+
+def _display_text(candidate: Mapping[str, Any]) -> str:
+    """A find candidate's display text (its record's name or title as recorded)."""
+    obj = candidate.get("object")
+    display = obj.get("display") if isinstance(obj, Mapping) else None
+    text = display.get("untrusted_text") if isinstance(display, Mapping) else None
+    return text if isinstance(text, str) else ""
+
+
 def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]]
                        ) -> tuple[list[Any], set[str]]:
     """What this session's own finds (``finds``: arguments, result) resolved of the
     question ``asked``: (mentions, record ids). Only a find the question itself decides:
     a ``mode: entities`` find of text the question writes, whose things the resolver
     matched or derived; or a find of an identifier the question writes
-    (``find_identifiers``), found as exactly one record. A find of any other words adds
-    nothing, so an agent's own search never widens what the question names."""
+    (``find_identifiers``), found as exactly one record; or a find of a name the question
+    writes whole (at least ``MIN_NAME_ANCHOR_CHARS`` letters and digits, or a shorter one a
+    find of one object type reads where the question names that type, ``_names_by_type``)
+    that exactly one candidate is named (its display text, as letters and digits, is that name): the
+    things the entity index holds no names of (a Teams chat's topic, a task's title).
+    A find of any other words adds nothing, so an agent's own search never widens what
+    the question names."""
     from ontology.identifiers import find_identifiers
     said = _letters_digits(asked)
     codes = {_letters_digits(mention.text) for mention in find_identifiers(asked)}
@@ -2047,10 +2095,25 @@ def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]
             continue
         query = _letters_digits(str(arguments.get("query") or ""))
         candidates = [c for c in result.get("candidates") or () if isinstance(c, Mapping)]
-        if query not in codes or result.get("status") != "found" or len(candidates) != 1:
-            continue
-        oid = (candidates[0].get("object") or {}).get("object_id") \
-            if isinstance(candidates[0].get("object"), Mapping) else None
+        if query in codes:
+            if result.get("status") != "found" or len(candidates) != 1:
+                continue
+            picked = candidates[0]
+        else:
+            # A name the question writes whole (a chat's topic, a task's title: things the
+            # entity index does not hold), found as exactly one record of that very name.
+            if len(query) < MIN_ANCHOR_CHARS or query not in said \
+                    or result.get("status") not in ("found", "ambiguous"):
+                continue
+            if len(query) < MIN_NAME_ANCHOR_CHARS and not _names_by_type(
+                    asked, str(arguments.get("query") or ""), arguments.get("object_type")):
+                continue
+            named = [c for c in candidates if _letters_digits(_display_text(c)) == query]
+            if len(named) != 1:
+                continue
+            picked = named[0]
+        oid = (picked.get("object") or {}).get("object_id") \
+            if isinstance(picked.get("object"), Mapping) else None
         if isinstance(oid, str):
             mentions.append(arguments.get("query"))
             ids.add(oid)

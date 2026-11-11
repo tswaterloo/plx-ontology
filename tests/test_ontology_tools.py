@@ -466,6 +466,34 @@ class FindTests(ContractMixin, unittest.TestCase):
         doc = self.ok(self.t, "plx.find", {"query": "quality report"})
         self.assertEqual(doc["candidates"][0]["object"]["object_id"], DOC)
 
+    def test_a_typed_find_reads_a_mention_its_type_never_carries_as_text(self):
+        # dev 11-10: "PO#4803.pdf" of a SharePoint file was searched as the word "pdf"
+        # alone (the PO number taken as an identifier no file carries): every PDF's name
+        # read, 95 s, live. The mention stays in the type's text query, its written form
+        # read by the grammar ("PO#4821" is PO4821).
+        from ontology import identifiers
+        store = build()
+        for n, name in enumerate(("PO#4821.pdf", "Receipt 4821-9.pdf", "PO#4822.pdf"), 2):
+            oid, handle = f"Document:sharepoint.docs:d-{n}", f"sharepoint://drive-1/item-{n}@e"
+            store.obj(oid, "sharepoint:drive-1", handle, "sharepoint",
+                      recorded="2099-01-10T00:00:00Z")
+            store.val(oid, "file_name", "text", name, handle, "row.name", "sharepoint",
+                      recorded="2099-01-10T00:00:00Z")
+        store.conn.commit()
+        t = tools(store, grammar=identifiers, item_gate=lambda actor, handle: True)
+        asked, real = [], t.store.text_matches
+        with mock.patch.object(t.store, "text_matches",
+                               lambda scope, words, *a, **k: asked.append(words)
+                               or real(scope, words, *a, **k)):
+            found = self.ok(t, "plx.find", {"query": "PO#4821.pdf", "object_type": "Document"})
+        self.assertEqual([c["object"]["object_id"] for c in found["candidates"]],
+                         ["Document:sharepoint.docs:d-2"])
+        # every word query holds the number: none reads every name holding "pdf"
+        self.assertTrue(asked and all("4821" in words for words in asked), asked)
+        # untyped, the number still finds its purchase order by its identifier
+        whole = self.ok(t, "plx.find", {"query": "PO#4821"})
+        self.assertIn(PO, [c["object"]["object_id"] for c in whole["candidates"]])
+
     def test_text_with_an_identifier_mention_returns_both_without_a_winner(self):
         result = self.ok(self.t, "plx.find", {"query": "Re: PO#4821 confirmation for blue"})
         self.assertEqual(result["status"], "ambiguous")
@@ -632,6 +660,63 @@ class FindTests(ContractMixin, unittest.TestCase):
         # facts of another store state claiming the type holds nothing are not used
         self.assertTrue(named(whole, {"PurchaseOrder": ()}, stale=True))
         self.assertFalse(named(whole, {"PurchaseOrder": ()}))
+
+    def test_a_postgres_store_keeps_its_binding_answers_per_state(self):
+        """On Postgres (the compatibility connection, not a SQLite one) the readable check
+        behind an unparsed carrier is kept per store state as on SQLite: the second find
+        probes no binding again, a new state (a delta layer) probes again, and the answer
+        to a reader holding none of the binding's keys stays no. It once read no stamp
+        there, so every untyped find probed every binding (a 51 s mail probe each)."""
+        class PgLike:   # the compatibility connection's shape: execute, postgres, changes
+            postgres = True
+
+            def __init__(self, conn):
+                self._conn, self.version, self.probes = conn, 1, 0
+
+            def execute(self, sql, *args):
+                if re.match(r"(?is)^PRAGMA\s+data_version\s*$", sql.strip()):
+                    return self._conn.execute(f"SELECT {self.version}")
+                if "binding_id = :bid" in sql:
+                    self.probes += 1
+                return self._conn.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+            def __setattr__(self, name, value):   # row_factory and the like: the wrapped
+                if name in ("_conn", "version", "probes"):
+                    object.__setattr__(self, name, value)
+                else:
+                    setattr(self._conn, name, value)
+
+        whole = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales"}})
+        other = ot.ReadPolicy(tenant="plx", audiences={"bc:*": {"sales"}})
+        store = build()
+        store.conn.execute("INSERT INTO store_meta VALUES ('build_report', ?)", (json.dumps(
+            {"gaps": [{"code": "parse_not_identifier",
+                       "where": "PurchaseOrder.po_number@portal.app_purchase_order",
+                       "count": 1, "samples": []}]}),))
+        store.conn.commit()
+        for policy, expected in ((whole, True), (other, False)):
+            conn = PgLike(store.conn)
+            reader = ot.OntologyTools(ot.StoreReader(conn), policy, clock=lambda: NOW,
+                                      schema=SCHEMA, grammar=FixtureGrammar(),
+                                      item_gate=gate_denying())
+            self.assertIsNotNone(reader._store_stamp())
+            seen = []
+            for version in (1, 1, 2):
+                conn.version = version
+                before = conn.probes
+                result = self.ok(reader, "plx.find", {"query": "PO 99999"}, SALES)
+                seen.append((any("PurchaseOrder.po_number" in g["detail"]
+                                 for g in result["gaps"]
+                                 if g["reason"] == "identifier_unparsed"),
+                             conn.probes - before))
+            self.assertEqual([named for named, _ in seen], [expected] * 3, policy)
+            self.assertEqual(seen[1][1], 0, seen)   # same state: the kept answer
+            if expected:
+                self.assertGreater(seen[0][1], 0, seen)
+                self.assertGreater(seen[2][1], 0, seen)   # a new state reads again
 
     def test_unparsed_carriers_over_many_bindings_are_probed_alike(self):
         """The readable checks of many bindings run in batches (one statement for up to

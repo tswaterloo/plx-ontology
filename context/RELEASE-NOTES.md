@@ -15,6 +15,29 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.17 (2026-11-11)
+
+Added:
+- **One Workbench app** for every module: My work, Ask, record and source pages, meetings, Autopilot, the work log and the approvals desk.
+- **Do from Ask:** "draft a reply to this email" and similar requests draft from what you have open; drafts go to the approvals desk, and nothing is sent or written until you confirm.
+- **Autopilot studio:** review queue, workflows with modes and gate scores, a builder with replay over past days, schedules and an audit log with undo. A workflow can go Auto only after 90% or better on 15 judged items from fresh days.
+- **Meetings** as an agenda or a week, with a prep sheet per meeting.
+- **Source pages** list every record that cites the source.
+- **View as:** the owner can see a colleague's My work, alerts and drafts, read-only and audited.
+- A plain-language README with picture diagrams of each workflow, and a narrated demo video on made-up data.
+
+Changed:
+- The ontology is served from Postgres and kept current by row deltas; schema changes apply in place to the affected units only.
+
+Must keep working:
+- Every company fact in an answer is cited; general knowledge is labelled and uncited.
+- Nothing is sent or written without a person's confirm, per item.
+- The people exclusion fails closed.
+
+Known gaps:
+- Write scopes per system are pending, so most writes run as dry runs.
+- Meeting transcripts are not connected yet.
+
 ## v0.16 (2026-10-31)
 
 Fixed:

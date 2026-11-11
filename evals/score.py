@@ -298,8 +298,10 @@ from evals import measure as measuring
 from operating.answer_contract import (  # noqa: F401 - the scorer's answer contract
     ANSWER_FORMAT, ANSWERABILITY, ACTION_TOOL, _JSON_FENCE, MAX_VALUES, MAX_CITATIONS,
     CALCULATION_OPS, MAX_CALCULATION_INPUTS, canonical, answer_candidate, parse_answer,
-    answer_problems, calculation_problem, NUMERIC_OPS, ZeroDenominator, computed_claim)
+    answer_problems, calculation_problem, NUMERIC_OPS, ZeroDenominator, calendar_day,
+    computed_claim)
 
+from operating.time_window import written_days
 TRANSCRIPT_FORMAT = "plx-eval-transcript/v1"
 SCORE_FORMAT = "plx-eval-score/v1"
 # 2: the read gap is a scorer outcome (``read_gap``), on every path.
@@ -1017,7 +1019,7 @@ def gate(answer: Mapping[str, Any], evidence: Mapping[str, Any],
         text = _value_text(value.get("value"))
         if isinstance(value.get("calculation"), Mapping):
             per_value[index] = _calculation_claims(index, value, text, evidence, items,
-                                                   calculations)
+                                                   calculations, written_days(question or ""))
             continue
         cites = list(value.get("citations") or [])
         if text is None or not cites:
@@ -1145,15 +1147,17 @@ def _item_claims(items: Sequence[Mapping[str, Any]], item_id: str) -> list[Mappi
 
 def _calculation_claims(index: int, value: Mapping[str, Any], text: str | None,
                         evidence: Mapping[str, Any], items: list[dict[str, Any]],
-                        calculations: list[dict[str, Any]]) -> dict[str, Any]:
+                        calculations: list[dict[str, Any]],
+                        reference: frozenset = frozenset()) -> dict[str, Any]:
     """The gate's claims of a calculated answer value: each input cell as read (its value
     and stated unit, checked against the cell and its contract) and, for a number, the
     result as a recorded calculation the gate recomputes (so the prose may state it).
-    Not recomputable: no claim, the value fails on its ``calculation`` code."""
+    Not recomputable: no claim, the value fails on its ``calculation`` code.
+    ``reference``: the days the question writes in full (a ``days`` value's ``day``)."""
     from operating.claim_checks import MAX_CLAIMS, ROLES, parse_value_claims
     from ontology.types import ValidationError
     calc = value["calculation"]
-    result = recompute(calc, evidence, value)
+    result = recompute(calc, evidence, value, reference)
     entry: dict[str, Any] = {"claims": [], "malformed": None, "calculation": result}
     if result["code"]:
         return entry
@@ -1381,7 +1385,8 @@ def _recompute_expression(calc: Mapping[str, Any], evidence: Mapping[str, Any],
 
 
 def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any],
-              stated: Mapping[str, Any] | None = None) -> dict[str, Any]:
+              stated: Mapping[str, Any] | None = None,
+              reference: frozenset = frozenset()) -> dict[str, Any]:
     """An answer value's calculation recomputed from the harness re-reads, Decimal only:
     ``value`` (a Decimal, or a boolean for ``equal``), ``unit``/``currency`` (the inputs'
     one unit and currency, never mixed), ``inputs`` (the records, ``cite_identity``; for an
@@ -1394,6 +1399,28 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any],
                            "cells": [], "code": None}
     if calc["op"] == "expression":
         return _recompute_expression(calc, evidence, out)
+    if calc["op"] == "days":
+        # the whole days from the second cited date to the first, as the claim gate
+        # recomputes them (``claim_checks._check_days``)
+        rows, days = _rows(evidence), []
+        for given in calc["inputs"]:
+            view, identity = rows(given["l1_handle"]), cite_identity(given["l1_handle"])
+            exists, cell = _dig(view, given["field_path"]) if view is not None \
+                else (False, None)
+            day = calendar_day(cell) if exists and "row" in view else None
+            if identity is None or day is None:
+                return {**out, "code": "calculation_input_unresolved"}
+            out["inputs"].append(identity)
+            out["cells"].append(cell)
+            days.append(day)
+        if "day" in calc:
+            # from a day the question writes in full (``reference``), never one of the
+            # answer's own; the harness knows no "today" of the run
+            day = calendar_day(calc["day"])
+            if day is None or day not in reference:
+                return {**out, "code": "calculation_input_unresolved"}
+            days.append(day)
+        return {**out, "value": Decimal((days[0] - days[1]).days)}
     if calc["op"] == "count_distinct":
         # Its value is a tool's count of distinct values over records it cites a sample
         # of: nothing the harness re-reads recomputes it.

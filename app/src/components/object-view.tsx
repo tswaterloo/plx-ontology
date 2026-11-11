@@ -38,6 +38,8 @@ import { DoneRing, lateFigure, OpenRing, StatusGlyph, SystemCode } from "./ui/gl
 import { Toolbar, ToolbarButton } from "./ui/toolbar";
 import { useCommandPalette } from "./command-palette";
 import { LoadProblem, StaleNote } from "./ui/notice";
+import { Situation } from "./record/situation";
+import { OnRecord } from "./record/on-record";
 import { KindSections } from "./record/kind-sections";
 import { STATUS_INK, StatusBadge, StatusWord } from "./ui/status-badge";
 
@@ -1280,7 +1282,9 @@ if (c.signal.aborted) return;
       {header}
       {tabs}
       {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
+      <Situation obj={obj} />
       {figures}
+      <OnRecord obj={obj} />
       {isParty && <PartyPulse obj={obj} />}
       <KindSections obj={obj} />
       {(isPo || isAo || isSalesOrder || isCustomer || (obj.proposals ?? []).length > 0) && (

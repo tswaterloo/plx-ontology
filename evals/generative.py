@@ -72,6 +72,11 @@ MAX_LIST = 8
 MAX_TABLE = 90_000
 MIN_SIBLINGS = 6
 OUTLIER = Decimal(3)
+# The identifier properties among ``gw.NAME_PROPS``: another way to name the same record in
+# a set fact's member forms (``forms``); never a free-text name or title.
+ID_PROPS = frozenset(("po_number", "order_number", "invoice_number", "ao_code", "batch_code",
+                      "receipt_number", "shipment_number", "quote_number", "pr_number",
+                      "lot_number", "release_number", "bc_number", "code", "number"))
 DOCUMENT_TYPES = ("CertificateOfAnalysis", "PackingSlip", "SupplierInvoice",
                   "SupplierConfirmation", "CustomerPoDocument", "DeliveryReceipt",
                   "FreightBill", "ForwarderQuote", "DecisionRecord", "SharePointFile",
@@ -374,6 +379,18 @@ class Generator:
             return None
         hits = self.source.lookup(gw.object_type(oid), named[0])
         return self._unique(oid, named[0], hits)
+
+    def forms(self, oid: str, name: str) -> list[str]:
+        """``name`` and the record's other identifiers (``ID_PROPS``): every way a reader
+        may name it. A sales invoice the set names by its order number (``order_number``
+        comes first in ``NAME_PROPS``) is as rightly named by its invoice number."""
+        out, rows = [name], self.rows([oid]).get(oid) or []
+        for row in rows:
+            value = re.sub(r"\s+", " ", str(row.get("value") or "")).strip()
+            if row.get("property") in ID_PROPS and 3 <= len(value) <= 40 and \
+                    value not in out and gw._one(rows, row["property"]):
+                out.append(value)
+        return out
 
     def key_label(self, oid: str, rows: Sequence[Mapping[str, Any]]
                   ) -> tuple[str, str] | None:
@@ -738,7 +755,7 @@ class Generator:
             named = {k: self.label(k) for k in lacking}
             if len(lacking) <= MAX_LIST and all(named.values()):
                 facts = [self.fact("set", lacking, id="members",
-                                   members=[[named[k]] for k in lacking])]
+                                   members=[self.forms(k, named[k]) for k in lacking])]
             else:
                 facts = [self.fact("number", lacking, id="count", value=str(len(lacking)),
                                    label=[noun])]
@@ -776,7 +793,7 @@ class Generator:
             noun = gw.plural(gw.noun(kid_type))
             q = f"What are the 3 {noun} of {self.say(oid, label)} with the highest {gw.words(prop)}?"
             facts = [self.fact("set", top, [money[prop][k] for k in top], id="top",
-                               members=[[named[k]] for k in top]),
+                               members=[self.forms(k, named[k]) for k in top]),
                      self.fact("number", top[:1], [money[prop][top[0]]], id="max",
                                value=gw.fmt(vals[0]), label=[gw.words(prop)])]
             return Question("ranking", q, facts, oid, label, hops=[hop.link.id],
@@ -801,7 +818,7 @@ class Generator:
         noun = self.hop_noun(other)
         q = (f"Which {noun} appears on the most {gw.plural(gw.noun(kid_type))} of "
              f"{self.say(oid, label)}, and on how many?")
-        facts = [self.fact("set", [top], id="top", members=[[name]]),
+        facts = [self.fact("set", [top], id="top", members=[self.forms(top, name)]),
                  self.fact("number", [k for k in kids if top in self.walker.execute([k], other)],
                            id="count", value=str(n), label=[gw.plural(gw.noun(kid_type))])]
         return Question("ranking", q, facts, oid, label, hops=[hop.link.id, other.link.id],
@@ -837,7 +854,7 @@ class Generator:
         noun = gw.plural(gw.noun(gw.object_type(kid)))
         q = (f"Is there a {gw.noun(gw.object_type(kid))} of {self.say(oid, label)} whose "
              f"{gw.words(prop)} is out of line with the other {noun}?")
-        facts = [self.fact("set", [kid], [amounts[prop][kid]], id="outlier", members=[[name]]),
+        facts = [self.fact("set", [kid], [amounts[prop][kid]], id="outlier", members=[self.forms(kid, name)]),
                  self.fact("number", [kid], [amounts[prop][kid]], id="value",
                            value=gw.fmt(value), label=[gw.words(prop)])]
         return Question("anomaly", q, facts, oid, label, hops=[hop.link.id],
@@ -893,7 +910,7 @@ class Generator:
         named = {c: self.label(c) for c in current}
         if len(current) <= MAX_LIST and all(named.values()):
             facts = [self.fact("set", current, id="affected",
-                               members=[[named[c]] for c in sorted(current)])]
+                               members=[self.forms(c, named[c]) for c in sorted(current)])]
         else:
             q = q.replace("which ", "how many ", 1)
             facts = [self.fact("number", current, id="count", value=str(len(current)),
@@ -1196,7 +1213,87 @@ def _number_ok(fact: Mapping[str, Any], text: str) -> bool:
     for got in _numbers(text):
         if (money and _cents(got) == _cents(want)) or got == want:
             return True
+    return not money and _count_spelled(fact, text, want)
+
+
+# A small count written out ("One unit of measure, CSE, is used ..."): the word right before
+# the fact's label is its figure. Only a word count followed by the label within two words is
+# read, so "one of those lines" never counts as a figure of "units of measure".
+_SPELLED = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+            "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+            "seventeen", "eighteen", "nineteen", "twenty")
+
+
+def _count_spelled(fact: Mapping[str, Any], text: str, want: Decimal) -> bool:
+    from evals import live_ops as lo
+    from evals import score as scoring
+    if want != want.to_integral_value() or not 0 <= want < len(_SPELLED):
+        return False
+    word, labels = _SPELLED[int(want)], lo._label_stems(fact)
+    for clause in lo._clauses(text):
+        words = [w.casefold() for w in scoring._WORD.findall(clause)]
+        stemmed = [scoring._stem(w) for w in words]
+        for at, said in enumerate(words):
+            if said != word:
+                continue
+            for gap in (1, 2, 3):
+                if any(stemmed[at + gap:at + gap + len(s)] == list(s) for s in labels):
+                    return True
     return False
+
+
+# The words that say a count or amount is none when the fact's label follows within
+# three words ("no sales orders", "none of the emails", "zero approvals").
+_NONE_WORDS = frozenset({"no", "none", "zero", "nothing", "0"})
+
+
+def _said_none(fact: Mapping[str, Any], text: str) -> bool:
+    """Whether ``text`` says the fact's thing is none: a none word with the fact's label
+    within three words after it, in a clause that does not leave the matter open. A "no"
+    about anything else ("the count named no order records", "no field gives a reason")
+    is no answer of none (dev 11-10: three refusals and an answer graded wrong on it)."""
+    from evals import live_ops as lo
+    from evals import score as scoring
+    labels = lo._label_stems(fact)
+    if not labels:
+        return False
+    for clause in lo._clauses(text):
+        if lo.UNDECIDED.search(clause):
+            continue
+        words = [w.casefold() for w in scoring._WORD.findall(clause)]
+        stemmed = [scoring._stem(w) for w in words]
+        for at, said in enumerate(words):
+            if said not in _NONE_WORDS:
+                continue
+            for gap in (1, 2, 3):
+                if any(stemmed[at + gap:at + gap + len(s)] == list(s) for s in labels):
+                    return True
+                # "purchase orders without a receipt: none" (never "no" after it)
+                if said != "no" and any(at - gap - len(s) >= 0 and stemmed[
+                        at - gap - len(s):at - gap] == list(s) for s in labels):
+                    return True
+    return False
+
+
+# An identifier written as letters then digits ("PO4499"), which a reader may write with
+# "#", a space or a hyphen between them ("PO#4499", "PO 4499", "PO-4499").
+_LETTERS_DIGITS = re.compile(r"([A-Za-z]{1,4})(\d{2,})")
+
+
+def _member_in(text: str, form: str) -> bool:
+    """Whether ``text`` names a set member's ``form``: as written (``live_ops._form_in``),
+    or an identifier of letters then digits with "#", a space or a hyphen between them and
+    its digits optionally zero-padded, never inside a longer code (dev 11-10: "PO#4499"
+    graded as missing PO4499, "PO#0784" as missing PO784)."""
+    from evals import live_ops as lo
+    if lo._form_in(text, form):
+        return True
+    parts = _LETTERS_DIGITS.fullmatch(form.strip())
+    if parts is None:
+        return False
+    # FileMaker's receipt lines pad a PO number with zeros ("PO#0784" is PO784)
+    return re.search(rf"(?<![A-Za-z0-9]){re.escape(parts[1])}(?:#|\s|-|\s#)?0*"
+                     rf"{re.escape(parts[2])}(?![0-9])", text, re.I) is not None
 
 
 def _fact_state(fact: Mapping[str, Any], text: str, answered: bool, question: str) -> str:
@@ -1205,18 +1302,19 @@ def _fact_state(fact: Mapping[str, Any], text: str, answered: bool, question: st
     if kind == "number":
         if _number_ok(fact, text):
             return "ok"
-        if Decimal(str(fact["value"])) == 0 and lo.stated(
-                {"kind": "absent", "accept": NONE_FORMS}, text, []):
+        if Decimal(str(fact["value"])) == 0 and _said_none(fact, text):
             return "ok"
         if fact.get("label") and lo.contradicted(dict(fact, contradicts=fact.get(
-                "contradicts", NONE_FORMS if Decimal(str(fact["value"])) else [])),
-                text, [], question):
+                "contradicts", [])), text, [], question):
             return "wrong"
+        if fact.get("label") and "contradicts" not in fact and Decimal(str(fact["value"])) \
+                and not lo._labelled_numbers(text, fact) and _said_none(fact, text):
+            return "wrong"   # a count or amount answered with none
         return "miss"
-    if kind == "date":
+    if kind in ("date", "text"):
         return "ok" if lo.stated(fact, text, []) else "miss"
     if kind == "set":
-        hit = sum(any(lo._form_in(text, form) for form in member)
+        hit = sum(any(_member_in(text, form) for form in member)
                   for member in fact["members"])
         if hit == len(fact["members"]):
             return "ok"

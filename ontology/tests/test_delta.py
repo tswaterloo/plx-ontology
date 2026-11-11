@@ -536,6 +536,20 @@ class HandleTests(unittest.TestCase):
         self.assertEqual(delta.record_of_handle(handles[6])[1], ("item", "b!ArixYskX",
                                                                  "01QVQSKBX7"))
 
+    def test_a_person_citation_is_no_mail_record(self):
+        # the closure met graph-mail://people/person/<key> (sender parties) and took
+        # "people" for a mailbox the exclusion guard cannot decide: the whole cycle failed
+        from ontology import delta
+        from ontology.people_directory import person_handle
+        for handle in (person_handle(None, "a" * 64) + "@ck",
+                       "graph-mail://people/person/" + "b" * 64,
+                       "graph-mail://0211d86b-8ede-4c1f-9a5e-0d1f2a3b4c5d/person/"
+                       "0211d86b-8ede-4c1f-9a5e-0d1f2a3b4c5d@ck"):
+            with self.subTest(handle=handle[:40]):
+                self.assertIsNone(delta.record_of_handle(handle))
+        self.assertEqual(delta.record_of_handle("graph-mail://0211d86b/AAkALgAA@CQ"),
+                         ("graph_mail", ("0211d86b", "AAkALgAA")))
+
 
 if __name__ == "__main__":
     unittest.main()

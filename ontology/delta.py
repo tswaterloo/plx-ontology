@@ -155,6 +155,11 @@ def record_of_handle(handle: str) -> tuple[str, Any] | None:
     if handle.startswith("graph-mail://"):
         rest = handle[len("graph-mail://"):].split("#", 1)[0]
         mailbox, _, tail = rest.partition("/")
+        if tail.startswith("person/"):
+            # a person's citation (``people_directory``: ``graph-mail://people/person/<key>``
+            # for an outside contact, ``<object id>/person/<object id>`` for staff) names
+            # no message: no mail record, and ``people`` is no mailbox to decide
+            return None
         message = tail.rsplit("@", 1)[0]
         return ("graph_mail", (mailbox, message)) if mailbox and message else None
     scheme, sep, rest = handle.partition("://")

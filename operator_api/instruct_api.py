@@ -35,7 +35,8 @@ import functools
 import re
 import secrets
 import time
-from typing import Any, Iterator, Mapping, Optional
+from pathlib import Path
+from typing import Any, Callable, Iterator, Mapping, Optional
 from urllib.parse import quote
 
 from operating import card_actions as ca
@@ -308,7 +309,7 @@ class InstructMixin:
 
     def _own_autopilot_item(self, reader: Reader, item_id: str) -> Optional[dict[str, Any]]:
         try:
-            area = self.autopilot_area(reader)  # type: ignore[attr-defined]
+            area = self._area_read(reader)  # type: ignore[attr-defined]  # fresh, never kept
         except Exception:  # noqa: BLE001 - no area: no item
             return None
         for item in area.items:
@@ -672,14 +673,79 @@ class InstructMixin:
             except (KeyError, LookupError, ValueError, PermissionError):
                 target = None
         name = files.file_name(doc.get("name"), kind)
+        # the people the document names: cleared by the people exclusion before an upload
+        people = sorted({a.lower() for a in _ADDRESS.findall(str(doc.get("content") or ""))})
         row = self._uploads().prepare(reader.key, name=name, kind=kind, data=data,
-                                      target=target)
+                                      target=target, people=people)
         return m.InstructDocument(name=name, kind=kind, size=row["size"],
                                   digest=row["digest"], upload_id=row["upload_id"],
                                   download_url=f"/api/instruct/files/{row['file_id']}",
                                   folder=target.folder if target else None)
 
     # ---- uploads -------------------------------------------------------------------------
+
+    def _writes(self, reader: Reader) -> Any:
+        """Whether the reader holds a write or owner role on an upload's target folder now
+        (``files.folder_writable`` over the SharePoint grants recorded for the folder and
+        its anchor file); None when not known. ``folder_acls`` (drive, item id) -> the
+        recorded permission list, or None; else the SharePoint capture under
+        ``sharepoint_capture_dir``; neither: not known."""
+        acls = getattr(self, "folder_acls", None) or self._captured_acls()
+        identities = frozenset(getattr(reader.session, "identities", ()) or ()) \
+            | {i for i in (getattr(reader.session, "subject_oid", None),) if i}
+
+        def writes(target: Mapping[str, Any]) -> Optional[bool]:
+            from integrations.live_source_guard import parse_handle
+            if acls is None:
+                return None
+            try:
+                (drive, item), _v, _x = parse_handle(
+                    str(target.get("anchor") or "").split("#", 1)[0], "sharepoint", 2)
+                if drive != target.get("drive"):
+                    return None
+                parent = str(target.get("parent") or "")
+                return files.folder_writable(acls(drive, parent) if parent else None,
+                                             acls(drive, item), identities)
+            except Exception:  # noqa: BLE001 - permissions that cannot be read: not known
+                return None
+        return writes
+
+    def _captured_acls(self) -> Optional[Callable[[str, str], Any]]:
+        """The SharePoint capture's recorded permission list for a drive item (its
+        current version), read-only; None without a capture on this server."""
+        folder = getattr(self, "sharepoint_capture_dir", None)
+        if not folder:
+            return None
+        from integrations import capture_sharepoint as cs
+        if not cs.store_exists(Path(folder)):
+            return None
+
+        def acl(drive: str, item: str) -> Any:
+            store = cs.SharePointCaptureStore.open_read_only(Path(folder))
+            try:
+                row = store.current(drive, item)
+            finally:
+                store.close()
+            return (row or {}).get("source_acl")
+        return acl
+
+    def _acknowledge(self, reader: Reader, upload: Mapping[str, Any]) -> tuple[str, ...]:
+        """The not-routine reasons the write path's rules give this upload now: the ones
+        the preview shows and the reader's confirm accepts (none known: none accepted, and
+        the write path stops it as not routine)."""
+        found = self._upload_item(reader, upload)
+        if found is None:
+            return ()
+        from operating import autopilot_write as aw
+        from operating import workflows as wf
+        item, executor, _me = found
+        try:
+            rules = aw.load_rules(executor.rules_path)
+            action = aw.actions_of(item)[0]
+            return tuple(aw.routine(rules, item, action, wf.of_item("instruction", {}),
+                                    executor._known_domains()))
+        except Exception:  # noqa: BLE001 - rules unreadable: nothing acknowledged
+            return ()
 
     def _opens(self, reader: Reader) -> Any:
         def opens(handle: str) -> bool:
@@ -690,15 +756,77 @@ class InstructMixin:
             return True
         return opens
 
+    def _upload_item(self, reader: Reader, upload: Mapping[str, Any]
+                     ) -> Optional[tuple[dict[str, Any], Any, Any]]:
+        """The approved upload as a write-path item drafted from the reader's instruction
+        (``autopilot_write``: SharePoint ``file_upload``, never a replace), with its
+        executor and the reader's ids; None without a write-path state on this server."""
+        import base64
+        from operating import autopilot_write as aw
+        state = self._apa_state() if hasattr(self, "_apa_state") else None  # type: ignore[attr-defined]
+        target = upload.get("target") or {}
+        data = self._uploads().file(reader.key, upload["file_id"])
+        if state is None or data is None:
+            return None
+        me = tuple(sorted(self._apa_me(reader)))  # type: ignore[attr-defined]
+        owner = next((i for i in me if "@" in i), me[0])
+        item = {"item_id": upload["upload_id"], "autopilot": "instruction", "owner": owner,
+                "title": "Upload " + upload["name"], "citations": [target.get("anchor", "")],
+                "body": {"label": "Upload a drafted document", "happened": {},
+                         "prepared": {"write": {
+                             "system": "sharepoint", "operation": "file_upload",
+                             "target": {"drive_id": target.get("drive", ""),
+                                        "parent_id": target.get("parent", "")},
+                             "payload": {"name": upload["name"],
+                                         "content_type": files.MEDIA.get(
+                                             upload["kind"], "application/octet-stream"),
+                                         "content_b64": base64.b64encode(data).decode()},
+                             # the addresses the document names (its text travels only as
+                             # bytes): the people exclusion clears them before an upload
+                             "people": list(upload.get("people") or ())}}}}
+        return item, self._apa_executor(state), me  # type: ignore[attr-defined]
+
+    def _upload_missing(self, reader: Reader, upload: Mapping[str, Any]) -> Optional[list[str]]:
+        """What a live upload lacks now (empty: approving it uploads it); None: no write
+        path on this server (the desk's own wording)."""
+        found = self._upload_item(reader, upload)
+        if found is None:
+            return None
+        item, executor, _me = found
+        missing = []
+        if not (upload.get("target") or {}).get("parent"):
+            missing.append("The folder's SharePoint id is not known: open a file in that "
+                           "folder again.")
+        if "sharepoint_write" not in executor.live_kinds(item):
+            missing.append("SharePoint is not opened to approved writes (the owner's "
+                           "PLX_APPROVED_WRITES lacks sharepoint_write).")
+        adapter = executor.adapters.get("sharepoint_write")
+        why = adapter.unavailable() if adapter is not None else "no SharePoint write path"
+        if why:
+            missing.append(str(why))
+        return missing
+
     def upload_preview(self, reader: Reader, upload_id: str) -> m.UploadPreview:
         upload = self._uploads().get(reader.key, upload_id)
         if upload is None:
             raise UserFacing("not_found", "That upload is not one of yours.", 404)
-        shown = files.UploadDesk.preview(upload, self._opens(reader))
+        if upload["status"] == "prepared":
+            missing = self._upload_missing(reader, upload)
+        elif upload.get("ran"):
+            missing = list(upload.get("reasons") or ())    # what the write path said
+        else:
+            # approved, the write path not run: a live one is being made; else recorded
+            missing = [] if upload["status"] == "unknown" else None
+        shown = files.UploadDesk.preview(
+            upload, self._opens(reader), missing, writes=self._writes(reader),
+            acknowledge=self._acknowledge(reader, upload)
+            if upload["status"] == "prepared" else ())
         return m.UploadPreview(upload_id=upload_id, name=upload["name"], kind=upload["kind"],
                                size=upload["size"], digest=upload["digest"],
                                folder=(upload.get("target") or {}).get("folder"),
-                               status=upload["status"], **{k: shown[k] for k in (
+                               status=upload["status"],
+                               acknowledge=shown["acknowledge_words"],
+                               **{k: shown[k] for k in (
                                    "before", "after", "problems", "missing",
                                    "preview_hash")})
 
@@ -709,16 +837,39 @@ class InstructMixin:
         upload = self._uploads().get(reader.key, upload_id)
         if upload is None:
             raise UserFacing("not_found", "That upload is not one of yours.", 404)
-        shown = files.UploadDesk.preview(upload, self._opens(reader))
+        if upload["status"] != "prepared":
+            return self.upload_preview(reader, upload_id)      # approved once, run once
+        # re-checked now as at preview: the reader opens the folder, holds write access
+        # to it, and the hash covers what a live upload lacks and what the confirm accepts
+        shown = files.UploadDesk.preview(upload, self._opens(reader),
+                                         self._upload_missing(reader, upload),
+                                         writes=self._writes(reader),
+                                         acknowledge=self._acknowledge(reader, upload))
         try:
-            self._uploads().approve(reader.key, upload, shown, confirm=body.confirm,
-                                    preview_hash=body.preview_hash)
+            mine = self._uploads().approve(reader.key, upload, shown, confirm=body.confirm,
+                                           preview_hash=body.preview_hash)
         except files.FileRefused as refused:
             words = {"not_confirmed": "Nothing is done without your confirm.",
                      "problems": " ".join(shown["problems"]),
                      "preview_changed": "The upload changed since you saw it: preview it "
                                         "again."}[refused.code]
             raise UserFacing("action_refused", words, 409) from None
+        # only the request that recorded the approval runs it (a double click's second
+        # request reads the state the first one leaves)
+        found = self._upload_item(reader, upload) if mine else None
+        if found is not None:
+            from datetime import datetime, timezone
+            from operating import autopilot_write as aw
+            item, executor, me = found
+            # the reader's confirm of a preview that said it uploads now is their
+            # confirm that it goes live; one that said it does not stays a dry run
+            results = executor.run(item, datetime.now(timezone.utc), aw.Approval(
+                by=me, origin="instruction", confirmed_live=bool(shown.get("live")),
+                # the not-routine reasons the confirmed preview showed (its hash covers them)
+                acknowledged=tuple(shown["acknowledge"])))
+            last = results[-1] if results else {"status": "refused", "reasons": ["no_action"]}
+            self._uploads().record_outcome(reader.key, upload_id, str(last.get("status")),
+                                           list(last.get("reasons") or ()))
         return self.upload_preview(reader, upload_id)
 
     def instruct_file(self, reader: Reader, file_id: str) -> tuple[bytes, str]:

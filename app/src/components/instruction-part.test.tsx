@@ -121,4 +121,20 @@ describe("InstructionPart", () => {
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ confirm: true, preview_hash: "h1" });
     expect(screen.getByTestId("upload-preview").textContent).toContain("Recorded as a dry run.");
   });
+
+  it("says approving uploads now when nothing is missing, and shows the upload made", async () => {
+    const ack = "Adding a file to SharePoint is not a routine write: your confirm approves this one upload.";
+    replies = [{ ...PREVIEW, missing: [], acknowledge: [ack] }, { ...PREVIEW, missing: [], acknowledge: [], status: "uploaded" }];
+    render(<InstructionPart part={DRAFTED} answerId="abc123" onInstruct={vi.fn()} />);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Preview upload" })));
+    // what the confirm accepts is shown before it
+    expect(screen.getByTestId("upload-acknowledge").textContent).toBe(ack);
+    fireEvent.click(screen.getByRole("button", { name: "Approve upload" }));
+    expect(calls("/api/instruct/uploads/up_1/approve")).toHaveLength(0);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Confirm: upload it now" })));
+    expect(calls("/api/instruct/uploads/up_1/approve")).toHaveLength(1);
+    expect(screen.getByTestId("upload-preview").textContent).toContain("Uploaded to SharePoint.");
+    expect(screen.getByTestId("upload-preview").textContent).not.toContain("recorded, not made");
+    expect(screen.queryByTestId("upload-acknowledge")).toBeNull();
+  });
 });

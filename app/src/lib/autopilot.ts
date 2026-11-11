@@ -1,6 +1,6 @@
 // The autopilot area's words and views: labels for roles, systems, workflows and states,
 // and the filter/split over prepared items (pure, so the views are tested without a page).
-import type { AutopilotArea, AutopilotItem, AutopilotWorkflowRow } from "./types";
+import type { AutopilotArea, AutopilotCountdown, AutopilotItem, AutopilotWorkflowRow } from "./types";
 import type { Status } from "./status";
 
 const ROLE: Record<string, string> = {
@@ -55,6 +55,22 @@ export function stateShown(state: AutopilotWorkflowRow["state"], owner: boolean)
     default:
       return { status: "neutral", label: "Dry run" };
   }
+}
+
+/** A row's state in words: Draft when it is prepared for its person before its gate. */
+export function rowStateShown(row: Pick<AutopilotWorkflowRow, "state" | "draft">, owner: boolean): { status: Status; label: string } {
+  if (row.draft && row.state === "dry_run") return { status: "new", label: "Draft" };
+  return stateShown(row.state, owner);
+}
+
+/** The gate countdown in one line, in judged fresh items: "12 of 15 items at ≥90% · 91.7% right
+ * so far". Null before the scorer published anything for the role. */
+export function countdownText(c: AutopilotCountdown | null | undefined): string | null {
+  if (!c) return null;
+  const need = `${c.need_percent % 1 === 0 ? c.need_percent.toFixed(0) : c.need_percent}%`;
+  const items = c.judged < c.need_judged ? `${c.judged} of ${c.need_judged} items at ≥${need}` : `${c.judged} items (${c.need_judged} needed) at ≥${need}`;
+  const pct = c.percent == null ? "none judged yet" : `${c.percent.toFixed(1)}% right so far`;
+  return `${items} · ${pct}${c.passes ? ": meets the gate" : ""}`;
 }
 
 export const ITEM_STATE: Record<AutopilotItem["state"], string> = {
@@ -127,9 +143,10 @@ export function filterWorkflows(area: AutopilotArea, f: Filters): AutopilotWorkf
   );
 }
 
-/** Whether accepting this item performs it live (a live row reaches the item's owner). */
+/** Whether accepting this item performs it live: the server says so (the owner opened its
+ * kind to approved writes, or its workflow is live), or a live row reaches the item's owner. */
 export function itemLive(area: AutopilotArea, item: AutopilotItem): boolean {
-  return (area.workflows ?? []).some(
+  return item.live === true || (area.workflows ?? []).some(
     (w) => w.workflow === item.workflow && w.state === "live" && (w.person === item.owner || (item.roles ?? []).includes(w.role)),
   );
 }

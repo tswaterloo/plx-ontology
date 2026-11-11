@@ -104,6 +104,19 @@ _FRAME = re.compile(r"\b(since|before|after|between|last (?:week|month|year|quar
                     r"in (?:19|20)\d\d|yesterday|today|this (?:week|month|year))\b")
 
 
+# A task question about another act or record than its stage and owner (dev 11-10: "who
+# requested Mission Control approval TASK-1689" answered with the task's stage and owner):
+# who reported, requested, decided, approved, created or assigned it, or its approval.
+_TASK_OTHER_ACT = re.compile(r"\b(report\w*|request\w*|rqe\w*|decid\w*|decision\w*|"
+                             r"approv\w*|reject\w*|creat\w*|assign\w*|submit\w*|"
+                             r"raise\w*|filed|opened|closed|signed)\b")
+
+
+# A purchase order question asking for the lots, batches or serials received on it, not
+# where it stands (dev 11-10: "PO 1194 - what lot #s were received" answered its status).
+_PO_OTHER_THING = re.compile(r"\b(lots?|lot\s*#s?|lot\s*numbers?|batch\w*|serials?)\b")
+
+
 @dataclass(frozen=True)
 class Intent:
     name: str
@@ -442,6 +455,10 @@ def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
     if len(matched) != 1:
         return None
     intent = matched[0]
+    if intent.name == "task_status" and _TASK_OTHER_ACT.search(folded):
+        return None   # who reported, requested or decided it: not its stage and owner
+    if intent.name == "po_status" and _PO_OTHER_THING.search(folded):
+        return None   # the lots or batches it brought in: not where the order stands
     rank, top = _rank(question, folded)
     if rank is not None and rank[0] not in RANKS_BY.get(intent.name, ()):
         return None     # a ranking this family cannot do: never an unranked list

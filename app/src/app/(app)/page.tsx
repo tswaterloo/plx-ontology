@@ -5,13 +5,15 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HiddenNotice } from "@/components/answer-parts";
-import { loadHome, loadLate, MobileAccount, MobileSearch, OpsAlarmBanner } from "@/components/shell";
+import { loadHome, loadLate, MobileAccount, MobileSearch } from "@/components/shell";
 import { ReplyList } from "@/components/reply-list";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
 import { Pending, SlowNote } from "@/components/ui/skeleton";
 import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
+import { NeedsMe } from "@/components/needs-me";
 import { isPutAway } from "@/lib/actions";
+import { useStaleRefresh } from "@/lib/stale-refresh";
 import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
@@ -238,6 +240,8 @@ function Today() {
     return () => c.abort();
   }, []);
   useEffect(() => load(), [load]);
+  const reloadHome = useCallback(() => void load(), [load]);
+  useStaleRefresh(home?.stale_since, reloadHome);
 
   const loadBriefing = useCallback(() => {
     const c = new AbortController();
@@ -427,7 +431,6 @@ function Today() {
         </div>
       )}
 
-      <OpsAlarmBanner />
       <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing || !suggestionsRead ? { "data-pending": "" } : {})}>
         {morning && (
@@ -443,6 +446,7 @@ function Today() {
             ))}
           </div>
         )}
+        <NeedsMe />
         <PreparedWork items={[]} />
         {error ? (
           <div className="p-4">

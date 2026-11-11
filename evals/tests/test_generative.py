@@ -117,6 +117,31 @@ def build(seed=5, source=None, items=120):
     return gen.build(generator, items=items, seed=seed, dev_share=0.1, generation="g1")
 
 
+class NumberedSource(FakeSource):
+    """POs that also carry an order number: a record with two identifiers."""
+
+    def rows(self, ids):
+        return {i: _rows(i) + ([{"property": "order_number", "value_type": "identifier",
+                                 "value": f"OR{POS.index(i) + 1:04d}"}] if i in POS else [])
+                for i in ids}
+
+
+class MemberFormsTest(unittest.TestCase):
+    def test_a_set_member_is_named_by_any_identifier_of_its_record(self):
+        # dev 11-10: the set named a sales invoice by its order number; the answer named it
+        # by its invoice number, the same record, and was graded as missing it
+        generator = gen.Generator(LINKS, NumberedSource(), AS_OF, TYPES)
+        self.assertEqual(generator.forms(POS[0], "PX0001"), ["PX0001", "OR0001"])
+        # a free-text name or a date is never another form
+        self.assertEqual(generator.forms(SUP[0], "Acme Oils"), ["Acme Oils"])
+        top = {"id": "top", "kind": "set", "members": [generator.forms(POS[0], "PX0001")],
+               "records": ["h1"], "allowed": ["api"]}
+        self.assertEqual(gen.grade(item([top]), ans("Order OR0001 has the most."), OWNER)[
+            "outcome"], "correct")
+        self.assertNotEqual(gen.grade(item([top]), ans("Order OR0002 has the most."), OWNER)[
+            "outcome"], "correct")
+
+
 class GenerativeBuildTest(unittest.TestCase):
     def test_the_same_seed_builds_the_same_set_and_another_seed_another(self):
         first, stats = build(seed=5)
@@ -435,6 +460,18 @@ class GraderTest(unittest.TestCase):
     def outcome(self, facts, answer, markings=OWNER):
         return gen.grade(item(facts), answer, markings)["outcome"]
 
+    def test_a_day_written_as_the_source_records_it_compactly_is_that_day(self):
+        # graph dev 11-10 GW-0065: "OR1000131263 ... with order date 20230906 in Sage"
+        day = {"id": "latest", "kind": "date", "value": "2023-09-06"}
+        for said in ("Sales order OR1000131263 has order date 20230906.",
+                     "It was ordered on 2023-09-06."):
+            with self.subTest(said=said):
+                self.assertEqual(self.outcome([day], ans(said)), "correct")
+        for said in ("Sales order OR1000131263 has order date 20230907.",
+                     "It is sales order OR20230906.", "Its number is 202309061."):
+            with self.subTest(said=said):
+                self.assertNotEqual(self.outcome([day], ans(said)), "correct")
+
     def test_correct_incomplete_wrong_and_no_answer(self):
         self.assertEqual(self.outcome([SET], ans("PX0004, PX0005 and PX0006 have none.")),
                          "correct")
@@ -454,6 +491,69 @@ class GraderTest(unittest.TestCase):
         self.assertEqual(self.outcome([NONE], ans("None: every PO has a receipt.")),
                          "correct")
         self.assertEqual(self.outcome([NONE], ans("PX0004 is missing its receipt.")), "wrong")
+
+    def test_a_text_fact_is_graded_by_its_value(self):
+        # walk "which record is the latest" facts are text; they once always graded missing
+        latest = {"id": "latest_record", "kind": "text", "value": "PX0005",
+                  "records": ["h5"], "allowed": ["api"]}
+        self.assertEqual(self.outcome([latest], ans("The latest is PX0005.")), "correct")
+        self.assertEqual(self.outcome([latest], ans("The latest is PX0004.")), "wrong")
+
+    def test_a_small_count_written_out_before_its_label_is_its_figure(self):
+        # dev 11-10: "One unit of measure, CSE, ..." graded wrong on the "2" of a line
+        uom = {"id": "count", "kind": "number", "value": "1", "records": ["h1"],
+               "allowed": ["api"], "label": ["units of measure", "measure"]}
+        said = ("One unit of measure, CSE, is used for the pads product. It appears on two "
+                "invoice lines; one of those lines invoices 2 in unit CSE.")
+        self.assertEqual(self.outcome([uom], ans(said)), "correct")
+        self.assertEqual(self.outcome([uom], ans("Two units of measure are used.")), "wrong")
+        # a spelled word that is not the label's figure is never read as it
+        self.assertNotEqual(self.outcome([uom], ans("One of the lines uses 3 units of measure.")),
+                            "correct")
+        self.assertEqual(self.outcome([COUNT], ans("There are three purchase orders.")),
+                         "correct")
+
+    def test_none_against_a_count_is_read_only_of_the_counted_thing(self):
+        # dev 11-10: refusals ("the count named no order records it was taken from") and
+        # answers ("no field on its record gives a reason") graded as answering none
+        for said in ("Not settled: the count of purchase orders, because the count named no "
+                     "order records it was taken from.",
+                     "Its status is Active, but no field on its record gives a reason."):
+            with self.subTest(said=said):
+                verdict = gen.grade(item([COUNT]), ans(said), OWNER)
+                self.assertEqual(verdict["facts"], {"count": "miss"})
+                self.assertNotIn("fact_contradicted", verdict["codes"])
+        for said in ("There are no purchase orders.", "None of the purchase orders match.",
+                     "Purchase orders matching: none."):
+            with self.subTest(said=said):
+                verdict = gen.grade(item([COUNT]), ans(said), OWNER)
+                self.assertEqual(verdict["facts"], {"count": "wrong"})
+        zero = dict(COUNT, value="0")
+        self.assertEqual(self.outcome([zero], ans("There are no purchase orders.")),
+                         "correct")
+        self.assertNotEqual(self.outcome([zero], ans("No field gives a reason.")), "correct")
+        # a figure stays the answer when one is given
+        self.assertEqual(self.outcome([COUNT], ans("No delay: there are 3 purchase orders.")),
+                         "correct")
+
+    def test_an_identifier_member_is_read_in_a_readers_spelling(self):
+        # dev 11-10: "PO#4499 has the highest total cost" graded as missing PO4499
+        outlier = {"kind": "set", "id": "outlier", "members": [["PO4499"]],
+                   "records": ["api://x"], "allowed": ["api"]}
+        for said in ("PO#4499 has the highest total cost.", "PO 4499 stands out.",
+                     "PO-4499 stands out.", "PO4499 stands out."):
+            with self.subTest(said=said):
+                self.assertEqual(self.outcome([outlier], ans(said)), "correct")
+        padded = {**outlier, "members": [["809", "PO784"]]}
+        for said in ("Lot 1618 came in on purchase order PO#0784.", "It came in on PO784."):
+            with self.subTest(said=said):
+                self.assertEqual(self.outcome([padded], ans(said)), "correct")
+        for said in ("It came in on PO#07841.", "It came in on PO#1784."):
+            with self.subTest(said=said):
+                self.assertNotEqual(self.outcome([padded], ans(said)), "correct")
+        for said in ("PO#44991 stands out.", "XPO4499 stands out.", "PO#4498 stands out."):
+            with self.subTest(said=said):
+                self.assertNotEqual(self.outcome([outlier], ans(said)), "correct")
 
     def test_a_withheld_fact_must_be_refused_never_stated(self):
         reader = ["purchasing_prices"]

@@ -3384,6 +3384,132 @@ class AskClaimFormTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValidationError):
                 claim_checks.parse_value_claims([bad], handles, [])
 
+    def test_the_days_between_two_cited_dates_are_recomputed_from_the_cells(self):
+        """wf dev 11-10: "how many days late did PO X come in", "how many days terms is
+        that" were left null, no op could state a day span. ``days`` is x0 - x1 in whole
+        calendar days over two cited date cells re-read now (a timestamp's own day),
+        negative when x0 is earlier; in days or no unit, no role, no currency; anything
+        else refused."""
+        po = "api://public.app_purchase_order/%7B%22id%22%3A%22po-1%22%7D@g-1"
+        rc = "api://public.app_receipt/%7B%22id%22%3A%22r-1%22%7D@g-1"
+        rows = {po: {"relation": "public.app_purchase_order", "key": {"id": "po-1"},
+                     "row": {"id": "po-1", "expected_date": "2019-12-06",
+                             "order_date": "2019-11-29T14:02:00Z", "note": "soon",
+                             "total": "12.50"}},
+                rc: {"relation": "public.app_receipt", "key": {"id": "r-1"},
+                     "row": {"id": "r-1", "received_date": "2019-12-09"}}}
+        handles = [rc, po]
+        late = [{"citation": rc, "field": "row.received_date"},
+                {"citation": po, "field": "row.expected_date"}]
+
+        def run(text, claim, read=rows):
+            return gate(text, handles, [claim], rows=read, calculations=())
+        for text, claim in (
+                ("It came in 3 days late.", op("3", "days", late)),
+                ("It came in 3 days late.", op("3", "days", late, unit="days")),
+                ("The span is -3 days.", op("-3", "days", late[::-1])),
+                ("It took 10 days.", op("10", "days", [
+                    late[0], {"citation": po, "field": "row.order_date"}]))):
+            with self.subTest(text=text, value=claim["value"]):
+                result = run(text, claim)
+                self.assertTrue(result["passed"], result["failures"])
+        for name, text, claim, code in (
+                ("wrong span", "It came in 4 days late.", op("4", "days", late),
+                 "claim_value_mismatch"),
+                ("reversed", "It came in 3 days late.", op("3", "days", late[::-1]),
+                 "claim_value_mismatch"),
+                ("not a date", "3 days.", op("3", "days", [
+                    late[0], {"citation": po, "field": "row.note"}]), "claim_value_mismatch"),
+                ("a number is no date", "3 days.", op("3", "days", [
+                    late[0], {"citation": po, "field": "row.total"}]),
+                 "claim_value_mismatch"),
+                ("no such cell", "3 days.", op("3", "days", [
+                    late[0], {"citation": po, "field": "row.due_date"}]),
+                 "claim_value_mismatch"),
+                ("a quantity role", "3 days.", op("3", "days", late, role="received"),
+                 "claim_role_mismatch"),
+                ("another unit", "3 weeks.", op("3", "days", late, unit="weeks"),
+                 "claim_unit_mismatch")):
+            with self.subTest(case=name):
+                self.assertEqual(codes(run(text, claim)), [code])
+        # re-read now: the receipt's date moved, the same claim fails
+        moved = {**rows, rc: {**rows[rc], "row": {"id": "r-1", "received_date": "2019-12-10"}}}
+        self.assertEqual(codes(run("It came in 3 days late.", op("3", "days", late),
+                                   read=moved)), ["claim_value_mismatch"])
+        for bad in (op("3", "days", late[:1]), op("3", "days", late + late[:1]),
+                    op("3", "days", [late[0], late[0]]),
+                    op("3", "days", [{**late[0], "unit": "day"}, late[1]]),
+                    op("3", "days", [{"citation": rc}, late[1]]),
+                    op("3", "days", late, currency="USD"), op("three", "days", late)):
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                claim_checks.parse_value_claims([bad], handles, [])
+
+    def test_days_from_a_day_the_question_writes_or_today_to_one_cited_date(self):
+        """wf dev 11-11: "can we still use lot 505-E-5 - expiry and days remaining (as of
+        november 10, 2026)" left days_left null: no op counted from a day no record holds.
+        ``days`` over ONE cited date with ``day`` is x0 - day, and ``day`` must be a day
+        the question writes in full or today (``returned["reference_days"]``, built from
+        the session's own question by ``time_window.reference_days``); any other day, a
+        day with two inputs or with another op, or a malformed day is refused."""
+        from datetime import datetime, timezone
+        from operating.time_window import reference_days, written_days
+        lot = "api://public.app_lot/%7B%22id%22%3A%22l-1%22%7D@g-1"
+        rows = {lot: {"relation": "public.app_lot", "key": {"id": "l-1"},
+                      "row": {"id": "l-1", "expiry_date": "2024-09-08", "note": "soon"}}}
+        expiry = [{"citation": lot, "field": "row.expiry_date"}]
+        question = "can we still use lot 505-E-5 - expiry and days remaining (as of " \
+                   "november 10, 2026)??"
+        now = datetime(2026, 11, 11, 15, tzinfo=timezone.utc)
+        returned = {"reference_days": reference_days(question, now)}
+        self.assertEqual(returned["reference_days"], ["2026-11-10", "2026-11-11"])
+
+        def days(value, day, inputs=expiry, **more):
+            return {**op(value, "days", inputs, **more), "day": day}
+
+        def run(text, claim, read=rows, given=returned):
+            return gate(text, [lot], [claim], rows=read, calculations=(), returned=given)
+        for text, claim in (("It is past its expiry: -793 days remaining.",
+                             days("-793", "2026-11-10")),
+                            ("-794 days remaining today.", days("-794", "2026-11-11")),
+                            ("-793 days.", days("-793", "2026-11-10", unit="days"))):
+            with self.subTest(value=claim["value"], day=claim["day"]):
+                result = run(text, claim)
+                self.assertTrue(result["passed"], result["failures"])
+        for name, claim, given, code in (
+                ("a day the question does not write", days("-792", "2026-11-09"), returned,
+                 "claim_value_mismatch"),
+                ("wrong count", days("-792", "2026-11-10"), returned, "claim_value_mismatch"),
+                ("no reference days at all", days("-793", "2026-11-10"), None,
+                 "claim_value_mismatch"),
+                ("a reference that is no ISO day", days("-793", "2026-11-10"),
+                 {"reference_days": ["November 10, 2026", 20261110]}, "claim_value_mismatch"),
+                ("not a date cell", days("1", "2026-11-10", [
+                    {"citation": lot, "field": "row.note"}]), returned, "claim_value_mismatch")):
+            with self.subTest(case=name):
+                self.assertEqual(codes(run(f"{claim['value']} days.", claim, given=given)),
+                                 [code])
+        # re-read now: the expiry moved, the same claim fails
+        moved = {lot: {**rows[lot], "row": {**rows[lot]["row"], "expiry_date": "2024-09-09"}}}
+        self.assertEqual(codes(run("-793 days.", days("-793", "2026-11-10"), read=moved)),
+                         ["claim_value_mismatch"])
+        for bad in (days("3", "2026-11-10", expiry + [{"citation": lot, "field": "row.id"}]),
+                    {**op("3", "difference", expiry + [{"citation": lot, "field": "row.id"}]),
+                     "day": "2026-11-10"},
+                    {"value": "3", "citation": lot, "field": "row.expiry_date",
+                     "day": "2026-11-10"},
+                    days("3", "2026-11-31"), days("3", "11/10/2026"), days("3", 20261110),
+                    days("3", "2026-11-10T00:00:00Z"), op("3", "days", expiry)):
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                claim_checks.parse_value_claims([bad], [lot], [])
+        # the question's own days: written in full with their year, never a bare day
+        for text, want in (("as of November 10, 2026", {"2026-11-10"}),
+                           ("from 10 Nov. 2026 to 2026-12-01", {"2026-11-10", "2026-12-01"}),
+                           ("due 3/4/2025?", {"2025-03-04"}),
+                           ("as of Nov 10", set()), ("PO-2026-11-10", set()),
+                           ("on 2026-02-30", set()), ("", set())):
+            with self.subTest(text=text):
+                self.assertEqual({d.isoformat() for d in written_days(text)}, want)
+
     def test_a_margin_and_its_percent_hold_over_cited_revenue_and_ledger_cost(self):
         """A margin over cited revenue and booked ledger cost (signed negative) is an
         expression in the revenue's currency; its percent is the share margin / revenue

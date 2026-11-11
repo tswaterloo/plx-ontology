@@ -53,16 +53,15 @@ export default function TeamPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Team" />
-      <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-6">
+      <div className="mx-auto w-full max-w-6xl space-y-10 px-6 py-6">
         {!me || (!team && !labour.data && !labour.error) ? <Pending page label="Checking your access" /> : null}
         {leaving ? <Pending page label="Opening My work" testId="team-leaving" /> : null}
         {team && (
+          <div className="grid grid-cols-1 gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
           <section id="approvals" aria-labelledby="approvals-title" className="scroll-mt-16 space-y-3">
             <h2 id="approvals-title" className="text-[15px] font-semibold">Approvals waiting on others</h2>
             <TeamApprovals />
           </section>
-        )}
-        {team && (
           <section id="workload" aria-labelledby="workload-title" className="scroll-mt-16 space-y-3">
             <h2 id="workload-title" className="text-[15px] font-semibold">Workload</h2>
             {workload.error ? (
@@ -76,6 +75,7 @@ export default function TeamPage() {
               <Pending label="Counting open work" />
             )}
           </section>
+          </div>
         )}
         {labourOn && labour.data && (
           <section id="labour" aria-labelledby="labour-title" className="scroll-mt-16 space-y-3" data-testid="team-labour">

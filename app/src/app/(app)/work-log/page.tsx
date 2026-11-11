@@ -6,6 +6,8 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { LoadProblem } from "@/components/ui/notice";
 import { SlowNote } from "@/components/ui/skeleton";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
+import { AutopilotScorecardPanel } from "@/components/autopilot-scorecard";
+import { TimeSavedPanel } from "@/components/time-saved";
 import { KIND_LABEL, WorkLogRow } from "@/components/work-log";
 import { getWorkLog, type WorkLogFilters } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -85,6 +87,14 @@ function WorkLog() {
     return (pinned.page?.events ?? []).filter((e) => !seen.has(e.thread) && seen.add(e.thread));
   }, [pinned.page]);
   const closedLog = main.page && main.page.total === null;
+  // how many of each kind the unfiltered list holds (kept while a kind is picked, so the counts stay put)
+  const [counts, setCounts] = useState<Partial<Record<WorkLogKind, number>> | null>(null);
+  useEffect(() => {
+    if (kind || !main.page) return;
+    const c: Partial<Record<WorkLogKind, number>> = {};
+    for (const e of main.page.events ?? []) c[e.kind] = (c[e.kind] ?? 0) + 1;
+    setCounts(c);
+  }, [kind, main.page]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
@@ -127,6 +137,7 @@ function WorkLog() {
               className={cn("h-7 rounded-md px-2 text-[12px] cursor-pointer", kind === k ? "bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg")}
             >
               {k ? KIND_LABEL[k] : "All"}
+              {k && counts ? <span className={cn("ml-1 tabular-nums", counts[k] ? "text-muted" : "text-faint")}>{counts[k] ?? 0}</span> : null}
             </button>
           ))}
         </div>
@@ -147,6 +158,8 @@ function WorkLog() {
         <SlowNote className="px-6 pt-3" />
       ) : (
         <div className="pb-8" data-testid="work-log">
+          {!record && !query && !kind && <TimeSavedPanel everyone={everyone} />}
+          {!everyone && !record && !query && !kind && <AutopilotScorecardPanel />}
           {!everyone && !record && !query && !kind && open.length > 0 && (
             <section aria-label="Waiting for a reply" className="pt-3">
               <h2 className="px-6 pb-1.5 text-[12px] font-medium text-muted">

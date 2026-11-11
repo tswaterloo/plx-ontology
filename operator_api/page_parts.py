@@ -65,8 +65,9 @@ def inbox_stamp(view: Any) -> Optional[tuple]:
     return None if path is None else inbox_state(inbox_path(path))
 
 
-def inbox_state(inbox: Path) -> tuple:
-    """``inbox_content`` of the inbox file as it is now."""
+def inbox_state(inbox: Path, wait: bool = True) -> tuple:
+    """``inbox_content`` of the inbox file as it is now (``wait`` False: never waits
+    for its digest, see there)."""
     out = []
     for file in (inbox, inbox.with_name(inbox.name + "-wal")):
         try:
@@ -74,7 +75,7 @@ def inbox_state(inbox: Path) -> tuple:
             out.append((found.st_mtime_ns, found.st_size))
         except OSError:
             out.append(None)
-    return inbox_content(inbox, tuple(out))
+    return inbox_content(inbox, tuple(out), wait=wait)
 
 
 # What a "seen" mark writes (``proactive_engine.record_visit``): left out of the inbox's
@@ -82,20 +83,50 @@ def inbox_state(inbox: Path) -> tuple:
 INBOX_VISIT_TABLES = frozenset({"visits"})
 _INBOX_CONTENT: dict[tuple, tuple] = {}   # (inbox, file state) -> its content stamp
 _INBOX_CONTENT_LOCK = threading.Lock()
+_INBOX_READING: dict[tuple, threading.Lock] = {}   # one digest read at a time per state
 
 
-def inbox_content(inbox: Path, files: tuple) -> tuple:
+def inbox_content(inbox: Path, files: tuple, wait: bool = True) -> tuple:
     """A digest of every table of the inbox but the "seen" marks, read once per file
     state ``files`` (the file's and its write-ahead log's change time and size); the file
     state itself when there is no inbox or it cannot be read (a change is then a new
-    key, as any write is)."""
+    key, as any write is). Callers asking for one state at once wait for the one read.
+
+    ``wait`` False (a request's inputs stamp): a state not read yet answers
+    ``("pending", files)`` at once and is read in the background. Every "seen" mark
+    writes the inbox, and reading all of it (116 MB, 2.7 s, 2026-11-11) on the request
+    that next looked made every reader's next page wait; a pending state equals no
+    digest, so a page kept under the digest is served marked stale meanwhile."""
     if files[0] is None:
         return files
     key = (str(inbox), files)
     with _INBOX_CONTENT_LOCK:
         held = _INBOX_CONTENT.get(key)
+        reading = _INBOX_READING.setdefault(key, threading.Lock()) if held is None else None
     if held is not None:
         return held
+    if not wait:
+        def background() -> None:
+            try:
+                inbox_content(inbox, files)
+            except Exception:  # noqa: BLE001 - the next request reads it
+                pass
+        if not reading.locked():
+            threading.Thread(target=background, name="inbox-digest", daemon=True).start()
+        return ("pending",) + files
+    with reading:
+        with _INBOX_CONTENT_LOCK:
+            held = _INBOX_CONTENT.get(key)
+        if held is not None:
+            return held
+        try:
+            return _inbox_digest(inbox, key, files)
+        finally:
+            with _INBOX_CONTENT_LOCK:
+                _INBOX_READING.pop(key, None)
+
+
+def _inbox_digest(inbox: Path, key: tuple, files: tuple) -> tuple:
     try:
         conn = sqlite3.connect(f"file:{inbox}?mode=ro", uri=True, timeout=30)
     except sqlite3.Error:
@@ -451,6 +482,34 @@ def page_handles(value: Any) -> set[str]:
             for child in item:
                 walk(child)
         elif hasattr(item, "model_fields"):
+            for name in type(item).model_fields:
+                walk(getattr(item, name))
+    walk(value)
+    return found
+
+
+def shown_handles(value: Any) -> set[str]:
+    """Every source handle a served screen shows: each ``Source``'s, and every string that
+    is a citation handle anywhere in it (an item's ``citations``, a handle in its prepared
+    work or its event, a meeting item's dict), so a kept screen is served only while each
+    still opens for the reader."""
+    from operating.citation_schemes import HANDLE_PREFIX
+    cited = re.compile(HANDLE_PREFIX)
+    found: set[str] = set()
+
+    def walk(item: Any) -> None:
+        if isinstance(item, str):
+            if cited.match(item):
+                found.add(item)
+        elif isinstance(item, m.Source):
+            found.add(item.handle)
+        elif isinstance(item, Mapping):
+            for child in item.values():
+                walk(child)
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            for child in item:
+                walk(child)
+        elif hasattr(type(item), "model_fields"):
             for name in type(item).model_fields:
                 walk(getattr(item, name))
     walk(value)
@@ -1012,6 +1071,25 @@ def record_fields(row: Mapping[str, Any], limit: int = 60) -> dict[str, str]:
 def source_view(view: Any, handle: str, text_offset: int) -> m.SourceView:
     got = view.source(handle, text_offset=text_offset)   # KeyError: not this reader's
     return source_payload(handle, got, text_offset)
+
+
+def source_records(view: Any, handle: str) -> m.SourceRecords:
+    """The records citing ``handle`` as this reader may read them (``ObjectWorkspace.
+    cited_by``: the source decided first, each record read through the tools)."""
+    got = view.cited_by(handle)   # KeyError: not this reader's source
+    out = []
+    for item in got.get("records") or ():
+        kind = str(item.get("object_type") or "Record")
+        link = item.get("link_type")
+        out.append(m.SourceRecord(
+            record=m.ObjectRef(object_id=item["object_id"], type=kind,
+                               label=presentation.record_label(plain(item.get("display")),
+                                                               kind, item["object_id"])[:200],
+                               open_url=object_url(kind, item["object_id"])),
+            how="linked" if item.get("how") == "linked" else "from",
+            link=presentation.plain_words(str(link).replace("_", " ")) if link else None))
+    return m.SourceRecords(handle=handle, records=out, truncated=bool(got.get("truncated")),
+                           served=got.get("status") == "read")
 
 
 def source_payload(handle: str, got: Mapping[str, Any], text_offset: int) -> m.SourceView:

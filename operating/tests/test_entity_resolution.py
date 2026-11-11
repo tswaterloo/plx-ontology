@@ -120,6 +120,40 @@ class Mentions(unittest.TestCase):
         self.assertEqual([(m["text"], m["kind"]) for m in got],
                          [("AB-CD-12X", "code"), ("Acme Labs", "name")])
 
+    def test_the_system_a_question_counts_in_is_no_mention(self):
+        # dev 11-10 (G-0110/0112): "sales orders in Sage" read the vendor Sage Software
+        # first, as the question's subject; the place records are held is no record
+        for text, names in (
+                ("As of October 19, 2026, how many sales orders in Sage had order date "
+                 "on or before that day?", []),
+                ("How many approvals in Mission Control are open for Acme Labs?",
+                 ["Acme Labs"]),
+                ("How much did we pay Sage Software in BC last year?", ["Sage Software"]),
+                ("How many invoices from Sage are open?", ["Sage"]),
+                ("Which orders of Sage Holdings are open?", ["Sage Holdings"]),
+                ("How many orders are in Sage Holdings' name?", ["Sage Holdings"])):
+            with self.subTest(text=text):
+                self.assertEqual([m["text"] for m in er.mentions(text)], names)
+
+    def test_a_system_set_apart_or_named_with_the_is_no_mention(self):
+        # novel dev 11-11: "apart from Sage" prefetched the vendor Sage Software, and every
+        # "in the Portal" / "outside the Portal" read "Portal" as a record's name (a gate
+        # relevance anchor); a name that only starts with a system word is still one
+        for text, names in (
+                ("Where else does the sales order OR1000151212 show up, apart from Sage?",
+                 ["sales order OR1000151212"]),
+                ("Is the product PA-RC-60 in the Portal connected to anything in another "
+                 "system? What?", ["PA-RC-60"]),
+                ("What do we have on the customer Acme Labs outside the Portal?",
+                 ["Acme Labs"]),
+                ("Anything on Acme Labs other than BC, aside from Teams or besides MC?",
+                 ["Acme Labs"]),
+                ("Which suppliers other than BC Hydro are late?", ["BC Hydro"]),
+                ("How many invoices from Sage are open?", ["Sage"]),
+                ("Is the Portal Group a customer?", ["Portal Group"])):
+            with self.subTest(text=text):
+                self.assertEqual([m["text"] for m in er.mentions(text)], names)
+
     def test_a_short_text_is_its_own_mention(self):
         self.assertEqual([(m["text"], m["kind"]) for m in er.mentions("acme")],
                          [("acme", "name")])

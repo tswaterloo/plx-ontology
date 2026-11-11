@@ -27,9 +27,10 @@ row, and a repeated click never does the thing twice.
   approval, builds the request and validates it against $metadata again, journals
   ``pending`` and then the outcome. Live writing needs every one of: the owner's flag
   (``LIVE_FLAG``, or ``SANDBOX_FLAG`` for the configured sandbox environment), the record
-  that Vince granted the write scopes (``SCOPES_FLAG``), and a write transport. No write
-  transport exists in this build and none is constructed by product code, so the outcome
-  is always ``would_write`` with what is missing. An ``unknown`` outcome blocks a repeat
+  that Vince granted the write scopes (``SCOPES_FLAG``), and a write transport. The API
+  hands the desk ``integrations.write_transports.for_system("bc")``: None until the owner
+  opened BC to approved writes (``PLX_WRITES_LIVE_SYSTEMS``), so until then the outcome is
+  ``would_write`` with what is missing. An ``unknown`` outcome blocks a repeat
   until a person checked BC.
 
 Nothing in this module sends HTTP; ``current`` and ``transport`` are injected.
@@ -496,6 +497,20 @@ def live_gate(environ: Mapping[str, str], environment: str, transport: Any) -> l
     return missing
 
 
+APPROVED_ENV = "PLX_APPROVED_WRITES"   # ``autopilot_write.APPROVED_ENV``: kinds opened
+DESK_KIND = "bc_write"
+
+
+def desk_gate(environ: Mapping[str, str], environment: str, transport: Any) -> list[str]:
+    """``live_gate`` and the owner's per-kind switch every approved write needs: the desk
+    writes BC only when ``bc_write`` is in ``PLX_APPROVED_WRITES``."""
+    missing = live_gate(environ, environment, transport)
+    if DESK_KIND not in {k.strip() for k in str(environ.get(APPROVED_ENV) or "").split(",")}:
+        missing.insert(0, f"BC writes are not opened to approved writes ({APPROVED_ENV} "
+                          f"lacks {DESK_KIND})")
+    return missing
+
+
 def _status_text(row: Mapping[str, Any]) -> str:
     status = row["status"]
     return {"prepared": "Prepared, waiting for approval",
@@ -685,7 +700,7 @@ class WriteDesk:
                  "current_etag": current_etag, "changes": changes,
                  "lines": self._lines(intent, ctx), "warnings": warnings,
                  "problems": problems, "request": request, "undo": undo,
-                 "live_missing": live_gate(ctx.environ, env, self.transport)}
+                 "live_missing": desk_gate(ctx.environ, env, self.transport)}
         found["preview_hash"] = _digest({"intent": intent, "etag": current_etag,
                                          "request": request, "warnings": warnings})
         return found
@@ -860,7 +875,7 @@ class WriteDesk:
             raise WriteRefused(["The record changed since the approval: approve it again."],
                                409)
         request = found["request"]
-        missing = live_gate(ctx.environ, intent["environment"], self.transport)
+        missing = desk_gate(ctx.environ, intent["environment"], self.transport)
         with self.journal.locked() as held:
             now_rows = [r for r in held.rows if r["intent_id"] == intent_id]
             if any(r["status"] in ("would_write", "written", "failed") for r in now_rows):

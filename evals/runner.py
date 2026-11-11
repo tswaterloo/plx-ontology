@@ -161,6 +161,7 @@ from operating.agent_environment import agent_environment
 from operating.answer_gate import ANSWER_BACKING, DOCUMENT_READ_RULE
 from operating import tool_results
 from evals import score as scoring
+from operating import eval_results as results_file
 from operating.agent_session import (  # noqa: F401 - the shared agent session path
     MAX_RESULT_CHARS, ANSWER_GATE_RULE, ANSWER_GATE_TOOL, answer_gate_record,
     FINAL_REPLY_FORMAT, WITHHELD_REASON, CERTAINTY, ANSWER_KEYS, NOTE_REASON,
@@ -1569,6 +1570,12 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--case-tools", action="store_true",
                      help="also allow tools that write the run's disposable case store "
                           "(never action tools); default: read-only tools only")
+    run.add_argument("--results-file", type=Path, default=None,
+                     help="keep this run's counts as the set's latest (operating.eval_results; "
+                          f"default ${results_file.RESULTS_ENV} when set)")
+    run.add_argument("--set", dest="set_name", default=None,
+                     help="the question set's name in the results file (default: the "
+                          "items path's name)")
     run.add_argument("--evidence-label", choices=EVIDENCE_LABELS, required=True,
                      help="live-captures only when --state-dir holds live L1 captures")
     args = parser.parse_args(argv)
@@ -1633,6 +1640,13 @@ def main(argv: list[str] | None = None) -> int:
         summary = public_summary(scores, args.split, items.refused)
         summary["vs_manual"] = _vs_manual(scores)
         print(json.dumps(summary, indent=1, sort_keys=True))
+        keep = args.results_file or results_file.path_for(None)
+        if keep is not None:
+            # the Trust page's latest score for this set and split (counts only)
+            results_file.record(keep, args.set_name or args.items.stem, args.split,
+                                summary["outcomes"],
+                                items=len({s["item_id"] for s in scores}),
+                                evidence_label=args.evidence_label, runner=RUNNER_VERSION)
     except (RunnerError, scoring.ScoreError, measuring.MeasureError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
