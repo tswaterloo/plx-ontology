@@ -9,6 +9,7 @@ import { cn } from "@/lib/cn";
 import { useShortcut } from "@/lib/platform";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
 import { recordLabel, safeHref, typeLabel } from "@/lib/format";
+import { currentPageQuery, scopedToPage } from "@/lib/page-context";
 import { stashPending } from "@/lib/pending";
 import { arrange, type Arranged } from "./ask-box";
 import { PlaceIcon, SystemCode } from "./ui/glyphs";
@@ -137,7 +138,9 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
       else if (it.kind === "record") router.push(safeHref(it.s.open_url) ?? "/");
       else {
         stashPending(it.q, []);
-        router.push(`/ask?q=${encodeURIComponent(it.q)}`);
+        // the page it was typed on goes with a line about it or an instruction ("reply to
+        // this" on an email); a plain question is asked of everything
+        router.push(`/ask?q=${encodeURIComponent(it.q)}${scopedToPage(it.q) ? currentPageQuery() : ""}`);
       }
     },
     [onOpenChange, router],

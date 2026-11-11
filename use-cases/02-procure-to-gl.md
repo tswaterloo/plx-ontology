@@ -54,7 +54,7 @@ Supplier PO → receipt → invoice → G/L, for packaging and screening.
 ### Understanding the process
 
 - **What did Vince ask about the map's structure, and what must people clarify before more cases?**
-  - A good answer: Vince asked whether the map's structure is what is needed before he, Ricardo and others submit more use cases. The assessment asks people to clarify document precedence and roles (specifier, procurer, payer, owner, approver), currency, UOM, cost allocation and authority, not to write the ontology. Its read answers make it dev-exposed, never a held-out case.
+  - A good answer: The map's author asked whether its structure is what is needed before others submit more use cases. The assessment asks people to clarify document precedence and roles (specifier, procurer, payer, owner, approver), currency, UOM, cost allocation and authority, not to write the ontology. Its read answers make it dev-exposed, never a held-out case.
 
 ## Open questions for the business
 

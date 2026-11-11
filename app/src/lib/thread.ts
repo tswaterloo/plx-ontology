@@ -5,7 +5,7 @@ import type { Turn } from "@/components/answer-card";
 import { ask } from "./api";
 import type { Attachment } from "./attachments";
 import { noticeKind, plainError } from "./errors";
-import type { Answer, AskEvent, HistoryTurn } from "./types";
+import type { Answer, AskEvent, AskRequest, HistoryTurn } from "./types";
 
 /** The progress steps a turn keeps (the latest). */
 export const MAX_STEPS = 8;
@@ -94,9 +94,10 @@ export function useThread() {
   }, []);
 
   /** Ask; `objectId` scopes the question to one record (a pick, or an object page),
-   *  `source` to one document (a mail, attachment or file the reader has open). */
+   *  `source` to one document (a mail, attachment or file the reader has open); `extra`
+   *  carries the page's context and an instruction's continuation (the one box's "do"). */
   const run = useCallback(
-    async (question: string, objectId?: string, source?: string, files: Attachment[] = []) => {
+    async (question: string, objectId?: string, source?: string, files: Attachment[] = [], extra: Pick<AskRequest, "context" | "mode" | "instruction"> = {}) => {
       ctrl.current?.abort();
       const c = new AbortController();
       ctrl.current = c;
@@ -115,6 +116,7 @@ export function useThread() {
             ...(objectId ? { object_id: objectId } : {}),
             ...(source ? { source: source.slice(0, 4096) } : {}),
             ...(files.length ? { attachments: files.map((f) => ({ name: f.name, data: f.data })) } : {}),
+            ...extra,
           },
           c.signal,
         )) {

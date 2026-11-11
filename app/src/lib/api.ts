@@ -44,7 +44,6 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   AutopilotSchedules,
   AutopilotWorkflowDetail,
   AutopilotWorkflowDraft,
-  AssistDraft,
   Workload,
   OwnerWorkload,
   OwnerWorkloadBucket,
@@ -81,6 +80,7 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   WatchRuleDraft,
   WatchRuleDeleted,
   WatchReadResult,
+  UploadPreview,
 } from "./types";
 
 type TokenProvider = () => Promise<string | null>;
@@ -375,10 +375,17 @@ export async function decideAutopilotItem(itemId: string, body: AutopilotDecisio
   return (await (await call(`/api/autopilot/items/${encodeURIComponent(itemId)}/decision`, { method: "POST", json: body })).json()) as AutopilotItem;
 }
 
-/** Assist: a line you typed ("tell Sam the PO 1234 is late") drafted as a message with
- * recipients, subject and body, each fact cited. Nothing is sent. */
-export async function assistDraft(intent: string): Promise<AssistDraft> {
-  return (await (await call("/api/autopilot/assist", { method: "POST", json: { intent } })).json()) as AssistDraft;
+/** A drafted document's upload to SharePoint: before and after, re-checked as you now. */
+export function getUpload(uploadId: string, signal?: AbortSignal): Promise<UploadPreview> {
+  return getJson<UploadPreview>(`/api/instruct/uploads/${encodeURIComponent(uploadId)}`, signal);
+}
+
+/** Approve the upload you previewed (your second, Confirm click). */
+export async function approveUpload(uploadId: string, previewHash: string): Promise<UploadPreview> {
+  return (await (await call(`/api/instruct/uploads/${encodeURIComponent(uploadId)}/approve`, {
+    method: "POST",
+    json: { confirm: true, preview_hash: previewHash },
+  })).json()) as UploadPreview;
 }
 
 /** Owner only: the write path's global kill switch. */

@@ -107,8 +107,19 @@ def draft_card(card_id: str, draft: Mapping[str, Any],
         card["draft"] = {"channel": "email", "to": None,
                          "subject": draft.get("email_subject") or title,
                          "body": str(draft.get("body") or ""), "facts": list(facts)}
+        thread = draft.get("in_reply_to")
+        if isinstance(thread, str) and thread.startswith("graph-mail://"):
+            # a reply to a message in the reader's own mailbox (``operator_api.instruct_api``):
+            # the desk offers it in the thread, its recipients read from the message itself
+            to = draft.get("to")
+            card["draft"]["to"] = {"address": to, "source": thread} \
+                if isinstance(to, str) and "@" in to else None
+            card["draft"]["facts"].append({"fact": "last_vendor_message", "value": title,
+                                           "citation": thread})
     else:
         card["action"] = {"text": " ".join(str(draft.get("body") or "").split())[:500]}
+        # a Teams note from the desk carries the drafted words, not the headline
+        card["teams_draft"] = {"body": str(draft.get("body") or "")[:4000]}
     return card
 
 
@@ -189,6 +200,11 @@ class AskDraftsMixin:
             return None
         try:
             if self.ask_withheld(reader, cited_handles(answer)):
+                return None
+            # an instruction's meetings are re-checked by their own rule
+            # (``operator_api.instruct_api``)
+            again = getattr(self, "instruction_withheld", None)
+            if again is not None and again(reader, answer):
                 return None
         except Exception:  # noqa: BLE001 - undecidable: no card
             return None

@@ -82,6 +82,8 @@ WINDOW_DAYS = 14
 WAIT_BUSINESS_DAYS = 1                   # asked yesterday or before: due today
 BOILER_MIN = 3                           # a sentence in this many of a sender's threads
 MAX_TO = 5                               # a message To more people is a mailing
+FEED_MIN = 30                            # a sender's messages in the window to be judged a feed
+FEED_SHARE = 0.9                         # held by its two commonest subject templates, one body sentence in nearly all
 SUBJECT_CHARS = 60
 MAX_THREAD = 400
 CHUNK = 500
@@ -176,6 +178,39 @@ def bulk(sender: str, text: str, subject: str = "") -> bool:
     return pt.automated(sender, text, subject) or bool(PADDING.search(text or "")) \
         or bool(BULK_LOCAL.match(sender or "")) or bool(BULK_DOMAIN.search(sender or "")) \
         or bool(NOTICE.search(text or ""))
+
+
+def feed_senders(messages: Iterable[Any], own: Iterable[str]) -> set[str]:
+    """Senders whose mail is a system feed whatever its wording: many messages in the window,
+    two subject templates holding nearly all of them, never a reply, and nobody here ever
+    wrote to the address. Found from the mail itself (not from a name or a domain), so a
+    new feed is caught the week it starts; a person writing a lot, replying or answered
+    by us is never one."""
+    own = set(own)
+    written_to: set[str] = set()
+    by_sender: dict[str, list[str]] = defaultdict(list)
+    body_shapes: dict[str, Counter] = defaultdict(Counter)
+    for m in messages:
+        if getattr(m, "channel", "mail") != "mail":
+            continue
+        if m.sender in own:
+            written_to.update(m.to)
+        else:
+            by_sender[m.sender].append(m.subject or "")
+            body_shapes[m.sender].update(shapes(m.text))
+    feeds = set()
+    for sender, subjects in by_sender.items():
+        if len(subjects) < FEED_MIN or sender in written_to or not sender:
+            continue
+        if any(_REPLY.match(x) for x in subjects):
+            continue
+        templates = Counter(re.sub(r"\d[\w-]*|#\S+", "N", x.casefold()).strip() for x in subjects)
+        # and one sentence of the body in nearly every message (a template, not a person's words)
+        boiler = body_shapes[sender].most_common(1)
+        if sum(n for _t, n in templates.most_common(2)) >= FEED_SHARE * len(subjects) \
+                and boiler and boiler[0][1] >= FEED_SHARE * len(subjects):
+            feeds.add(sender)
+    return feeds
 
 
 def shapes(text: Any) -> set[str]:
@@ -462,6 +497,7 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
     for address, oid in directory.items():
         addresses_of[str(oid).lower()].add(str(address).lower())
     messages = _messages(pop, people, domains, skipped)
+    feeds = feed_senders(messages, {a for found in addresses_of.values() for a in found})
     by_thread: dict[tuple[str, str], list[_Msg]] = defaultdict(list)
     for m in messages:
         if m.conversation:
@@ -492,7 +528,7 @@ def inbox_triage(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
             if len(m.to) > MAX_TO:
                 counts["mailing"] += 1
                 continue
-            if bulk(m.sender, m.text, m.subject):
+            if bulk(m.sender, m.text, m.subject) or m.sender in feeds:
                 counts["automated"] += 1
                 continue
             if _FORWARD.match(m.subject):

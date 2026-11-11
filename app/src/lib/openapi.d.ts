@@ -278,27 +278,6 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/api/autopilot/assist": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Autopilot Assist
-         * @description Draft the message a line you typed asks for: recipients, subject and body, each
-         *     fact from your Ask's gated answer with its sources. Nothing is sent.
-         */
-        post: operations["autopilot_assist_api_autopilot_assist_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/autopilot/audit": {
         parameters: {
             query?: never;
@@ -877,6 +856,67 @@ export type paths = {
         get: operations["home_api_home_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/instruct/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Instruct File
+         * @description A document an instruction made for you.
+         */
+        get: operations["instruct_file_api_instruct_files__file_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/instruct/uploads/{upload_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Upload Preview
+         * @description A document's upload to SharePoint: before and after, re-checked as you now.
+         */
+        get: operations["upload_preview_api_instruct_uploads__upload_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/instruct/uploads/{upload_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Approve
+         * @description Approve the upload you previewed (your confirm, for that preview). Recorded as
+         *     would upload: this build has no SharePoint upload path.
+         */
+        post: operations["upload_approve_api_instruct_uploads__upload_id__approve_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2082,6 +2122,8 @@ export type components = {
             follow_ups?: string[];
             freshness: components["schemas"]["Freshness"];
             hidden: components["schemas"]["Hidden"];
+            /** @description When the box was told to do something: its question, exact writes, documents or proposed workflow (the drafts are in ``drafts``). */
+            instruction?: components["schemas"]["InstructPart"] | null;
             /** Latency Ms */
             latency_ms: number;
             /**
@@ -2297,6 +2339,11 @@ export type components = {
              */
             id: string;
             /**
+             * In Reply To
+             * @description The message in your own mailbox a reply goes to (its citation).
+             */
+            in_reply_to?: string | null;
+            /**
              * Kind
              * @enum {string}
              */
@@ -2314,6 +2361,11 @@ export type components = {
             sent: false;
             /** Title */
             title: string;
+            /**
+             * To
+             * @description The address a reply is drafted to.
+             */
+            to?: string | null;
         };
         /** AskRequest */
         AskRequest: {
@@ -2322,10 +2374,19 @@ export type components = {
              * @description Files and images the person attached (PDF, .xlsx, .csv, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.
              */
             attachments?: components["schemas"]["AskAttachment"][];
+            /** @description The page the box was opened on (a meeting, an autopilot item, a page); an email or file goes in ``source``, a record in ``object_id``. */
+            context?: components["schemas"]["InstructContext"] | null;
             /** Conversation Id */
             conversation_id?: string | null;
             /** History */
             history?: components["schemas"]["HistoryTurn"][];
+            /** @description An answer to the question an instruction asked, or the meetings to use: continues that instruction. */
+            instruction?: components["schemas"]["InstructFollowUp"] | null;
+            /**
+             * Mode
+             * @description The person's pick when the box asked whether to do it or answer it.
+             */
+            mode?: ("do" | "ask") | null;
             /**
              * Object Id
              * @description Ask about this record (object page).
@@ -2338,83 +2399,6 @@ export type components = {
              * @description Ask about this document: the citation of a mail, attachment or file the person has open or picked; read for them as they may read it.
              */
             source?: string | null;
-        };
-        /** AssistChoice */
-        AssistChoice: {
-            /**
-             * Mention
-             * @description A name as typed that matches several people.
-             */
-            mention: string;
-            /** Options */
-            options: components["schemas"]["AssistRecipient"][];
-        };
-        /**
-         * AssistDraft
-         * @description A drafted message for a line the person typed. Never sent: the person edits, copies
-         *     or opens it in their own mail or Teams.
-         */
-        AssistDraft: {
-            /**
-             * Body
-             * @description Null when the copy check refused it (see gaps).
-             */
-            body?: string | null;
-            /**
-             * Channel
-             * @enum {string}
-             */
-            channel: "mail" | "teams";
-            /** Choices */
-            choices?: components["schemas"]["AssistChoice"][];
-            /**
-             * Facts
-             * @description Every fact the body lists, each with its sources.
-             */
-            facts?: components["schemas"]["Fact"][];
-            /** Gaps */
-            gaps?: string[];
-            /** Intent */
-            intent: string;
-            /**
-             * Questions
-             * @description The Ask questions answered for the facts.
-             */
-            questions?: string[];
-            /**
-             * Sent
-             * @default false
-             * @constant
-             */
-            sent: false;
-            /** Subject */
-            subject?: string | null;
-            /** To */
-            to?: components["schemas"]["AssistRecipient"][];
-            /**
-             * Withheld
-             * @description People the line names who may not be drafted to (left out, never named).
-             * @default 0
-             */
-            withheld: number;
-        };
-        /** AssistRecipient */
-        AssistRecipient: {
-            /** Address */
-            address: string;
-            /**
-             * Name
-             * @description The first name the address states.
-             */
-            name?: string | null;
-        };
-        /** AssistRequest */
-        AssistRequest: {
-            /**
-             * Intent
-             * @description One line: what to send and to whom ("tell <name> the lot for order X is on hold").
-             */
-            intent: string;
         };
         /** AtRisk */
         AtRisk: {
@@ -4581,6 +4565,198 @@ export type components = {
             partial_reason?: string | null;
             /** Unknown */
             unknown?: string[];
+        };
+        /**
+         * InstructContext
+         * @description The page the instruction was typed on, attached by the app: an email (its citation),
+         *     a record, a meeting, an autopilot item, or just the page.
+         */
+        InstructContext: {
+            /** Handle */
+            handle?: string | null;
+            /** Item Id */
+            item_id?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "email" | "source" | "record" | "meeting" | "autopilot" | "page";
+            /** Meeting Id */
+            meeting_id?: string | null;
+            /** Object Id */
+            object_id?: string | null;
+            /** Object Type */
+            object_type?: string | null;
+            /** Page */
+            page?: string | null;
+        };
+        /**
+         * InstructDocument
+         * @description A document made as a file, and its upload to SharePoint as a draft you approve
+         *     (``/api/instruct/uploads/{upload_id}``).
+         */
+        InstructDocument: {
+            /** Digest */
+            digest: string;
+            /** Download Url */
+            download_url: string;
+            /**
+             * Folder
+             * @default null
+             */
+            folder: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "docx" | "xlsx" | "pdf";
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+            /** Upload Id */
+            upload_id: string;
+        };
+        /**
+         * InstructFollowUp
+         * @description An answer to the question an instruction asked, or the meetings to use.
+         */
+        InstructFollowUp: {
+            /** Answer */
+            answer?: string | null;
+            /** Instruction Id */
+            instruction_id: string;
+            /** Use */
+            use?: string[];
+        };
+        /** InstructMeeting */
+        InstructMeeting: {
+            /** Day */
+            day: string;
+            /** Meeting Id */
+            meeting_id: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * InstructPart
+         * @description What an instruction came back with beside its drafts: one question (or, when it
+         *     was unclear whether to do it or answer it, ``route``), exact writes, documents or a
+         *     proposed workflow; and what continuing it needs (its words, page, your answers, the
+         *     meetings used and offered). Nothing is sent, written or uploaded until a person
+         *     approves it.
+         */
+        InstructPart: {
+            /** Answers */
+            answers?: string[];
+            /** Context */
+            context?: {
+                [key: string]: unknown;
+            };
+            /** Documents */
+            documents?: components["schemas"]["InstructDocument"][];
+            /**
+             * Meetings
+             * @description Meetings you attended that may hold context.
+             */
+            meetings?: components["schemas"]["InstructMeeting"][];
+            /** Meetings Used */
+            meetings_used?: string[];
+            /**
+             * Proposed
+             * @description Meetings whose notes the question proposes to use.
+             */
+            proposed?: components["schemas"]["InstructMeeting"][];
+            /**
+             * Question
+             * @default null
+             */
+            question: string | null;
+            /** Read */
+            read?: components["schemas"]["InstructRead"][];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "question" | "drafted" | "workflow" | "route";
+            /** Text */
+            text: string;
+            /** @default null */
+            workflow: components["schemas"]["InstructWorkflow"] | null;
+            /** Writes */
+            writes?: components["schemas"]["InstructWrite"][];
+        };
+        /**
+         * InstructRead
+         * @description Something the instruction read for you, as you may open it.
+         */
+        InstructRead: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "email" | "record" | "meeting" | "work_log" | "attachment";
+            /** Label */
+            label: string;
+            /**
+             * Open Url
+             * @default null
+             */
+            open_url: string | null;
+        };
+        /** InstructStep */
+        InstructStep: {
+            /** Kind */
+            kind: string;
+            /** Params */
+            params?: {
+                [key: string]: unknown;
+            };
+            /** Words */
+            words: string;
+        };
+        /**
+         * InstructWorkflow
+         * @description A recurring instruction as a proposed autopilot workflow: Draft mode, never live
+         *     until the owner keeps it and switches it on.
+         */
+        InstructWorkflow: {
+            /** Actions */
+            actions: components["schemas"]["InstructStep"][];
+            /** Conditions */
+            conditions?: components["schemas"]["InstructStep"][];
+            /** Label */
+            label: string;
+            /**
+             * Mode
+             * @default draft
+             * @constant
+             */
+            mode: "draft";
+            trigger: components["schemas"]["InstructStep"];
+        };
+        /**
+         * InstructWrite
+         * @description An exact change prepared on the write desk (``/api/writes/{intent_id}``): each field
+         *     as it is now and as it would be. A grant holder other than you approves it there.
+         */
+        InstructWrite: {
+            /** Changes */
+            changes?: components["schemas"]["WriteChange"][];
+            /**
+             * Intent Id
+             * @default null
+             */
+            intent_id: string | null;
+            /** Label */
+            label: string;
+            /** Problems */
+            problems?: string[];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "prepared" | "refused";
         };
         /**
          * ItemFeedbackRequest
@@ -7127,6 +7303,46 @@ export type components = {
             /** Meetings */
             meetings: components["schemas"]["UpcomingMeeting"][];
         };
+        /** UploadApprove */
+        UploadApprove: {
+            /**
+             * Confirm
+             * @description True only from the person's second (Confirm) click.
+             */
+            confirm: boolean;
+            /** Preview Hash */
+            preview_hash: string;
+        };
+        /** UploadPreview */
+        UploadPreview: {
+            /** After */
+            after: string;
+            /** Before */
+            before: string;
+            /** Digest */
+            digest: string;
+            /** Folder */
+            folder?: string | null;
+            /** Kind */
+            kind: string;
+            /** Missing */
+            missing: string[];
+            /** Name */
+            name: string;
+            /** Preview Hash */
+            preview_hash: string;
+            /** Problems */
+            problems: string[];
+            /** Size */
+            size: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "prepared" | "would_upload";
+            /** Upload Id */
+            upload_id: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -8409,66 +8625,6 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    autopilot_assist_api_autopilot_assist_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AssistRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AssistDraft"];
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Unprocessable Entity */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Service Unavailable */
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9818,6 +9974,166 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    instruct_file_api_instruct_files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_preview_api_instruct_uploads__upload_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadPreview"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_approve_api_instruct_uploads__upload_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadApprove"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadPreview"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

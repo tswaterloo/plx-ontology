@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AssistBox } from "@/components/autopilot/assist";
 import { CardActions } from "@/components/card-actions";
 import { Button } from "@/components/ui/button";
 import { decideAutopilotItem, getAutopilot, prepareMyWorkWrite } from "@/lib/api";
@@ -226,7 +225,12 @@ export function MyWorkList({ work }: { work: MyWork }) {
       <aside className="space-y-8 lg:border-l lg:border-border lg:pl-6">
         <section className="space-y-2">
           <h2 className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Ask for something else</h2>
-          <AssistBox compact />
+          <p className="text-[13px] leading-5 text-muted">
+            Type it in the Ask box on any page, for example &ldquo;reply to this&rdquo; or &ldquo;chase this supplier every Monday&rdquo;. The page you are on goes with it, and the drafts come back here and to your approvals.
+          </p>
+          <a className="text-[13px] text-accent hover:underline" href="/ask">
+            Open the Ask box
+          </a>
         </section>
         {byAutopilot.length > 0 && (
           <section>

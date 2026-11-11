@@ -16,6 +16,7 @@ import { EvidenceTrailCard, trailNextAction, trailStepCount } from "./evidence-t
 import { Feedback } from "./feedback";
 import { ProposalCards } from "./proposal-cards";
 import { AskDrafts, AttachmentNotes } from "./ask-drafts";
+import { InstructionPart, type InstructAsk } from "./instruction-part";
 import { AskOrganizer } from "./ask-organize";
 import { Inlines, RichText } from "./rich-text";
 import { CiteNumbers, EvidenceDrawer, SourceChips, sourceName } from "./source-chip";
@@ -635,7 +636,7 @@ function whoToAsk(a: Answer): string | null {
   return null;
 }
 
-export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void }) {
+export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct }: { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void }) {
   const a = turn.answer;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
   const u = turn.understanding;
@@ -800,6 +801,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
             ))}
             <AttachmentNotes items={a.attachments ?? []} />
             <AskDrafts drafts={a.drafts ?? []} />
+            {a.instruction && <InstructionPart part={a.instruction} answerId={a.answer_id} onInstruct={onInstruct} />}
             {ask && (
               <section data-testid="who-to-ask">
                 <SectionTitle>Next step</SectionTitle>

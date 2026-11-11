@@ -30,6 +30,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import feedback as fb
 from . import work_log as wl
 from .ask_drafts import cited_handles
+from operating.instruct import route as route_of
 from . import models as m
 from .auth import SESSION_COOKIE, AuthRequired, DevAuth, Reader
 from .errors import BUSY, UserFacing
@@ -360,9 +361,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             started, steps = time.perf_counter(), []
             failed: Optional[str] = None
             try:
-                events = (my_work_answer(who, body) if wl.asks_about_my_work(body.question)
+                # one box: a line asking for something done goes to the instruction
+                # engine (``instruct_api``), a question to the cited answer path
+                route = route_of(body.question, mode=body.mode,
+                                 continuing=body.instruction is not None)
+                events = (my_work_answer(who, body) if route == "ask"
+                          and wl.asks_about_my_work(body.question)
                           and not body.object_id and not body.source
-                          else backend.ask(who, body))
+                          else backend.ask(who, body) if route == "ask"
+                          else backend.instruct_ask(who, body))
                 for event, payload in events:
                     if event not in m.ASK_EVENTS:
                         continue
@@ -547,14 +554,32 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         notes.autopilot_decided(who, item)
         return item
 
-    @app.post("/api/autopilot/assist", response_model=m.AssistDraft, tags=["actions"],
-              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
-                         422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
-    def autopilot_assist(body: m.AssistRequest,
-                         who: Reader = Depends(reader)) -> m.AssistDraft:
-        """Draft the message a line you typed asks for: recipients, subject and body, each
-        fact from your Ask's gated answer with its sources. Nothing is sent."""
-        return backend.autopilot_assist(who, body)
+    @app.get("/api/instruct/uploads/{upload_id}", response_model=m.UploadPreview,
+             tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                          404: {"model": m.ErrorResponse}})
+    def upload_preview(upload_id: str, who: Reader = Depends(reader)) -> m.UploadPreview:
+        """A document's upload to SharePoint: before and after, re-checked as you now."""
+        return backend.upload_preview(who, upload_id)
+
+    @app.post("/api/instruct/uploads/{upload_id}/approve", response_model=m.UploadPreview,
+              tags=["actions"], responses={401: {"model": m.ErrorResponse},
+                                           404: {"model": m.ErrorResponse},
+                                           409: {"model": m.ErrorResponse}})
+    def upload_approve(upload_id: str, body: m.UploadApprove,
+                       who: Reader = Depends(reader)) -> m.UploadPreview:
+        """Approve the upload you previewed (your confirm, for that preview). Recorded as
+        would upload: this build has no SharePoint upload path."""
+        return backend.upload_approve(who, upload_id, body)
+
+    @app.get("/api/instruct/files/{file_id}", tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def instruct_file(file_id: str, who: Reader = Depends(reader)) -> Response:
+        """A document an instruction made for you."""
+        from operating.instruct_files import MEDIA
+        data, kind = backend.instruct_file(who, file_id)
+        return Response(data, media_type=MEDIA.get(kind, "application/octet-stream"),
+                        headers={"Cache-Control": "no-store",
+                                 "Content-Disposition": f'attachment; filename="{file_id}.{kind}"'})
 
     @app.post("/api/autopilot/switches", response_model=m.AutopilotSwitches,
               tags=["actions"], responses={401: {"model": m.ErrorResponse},
@@ -1283,6 +1308,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         for turn in resumed.get("turns") or ():
             try:
                 held = backend.ask_withheld(who, cited_handles(turn["answer"] or {}))
+                again = getattr(backend, "instruction_withheld", None)
+                held = held or (again(who, turn["answer"] or {}) if again else None)
             except Exception:  # noqa: BLE001 - undecidable: withheld
                 held = "undecided"
             if held:

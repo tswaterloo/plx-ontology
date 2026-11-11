@@ -1130,6 +1130,17 @@
           "hidden": {
             "$ref": "#/components/schemas/Hidden"
           },
+          "instruction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstructPart"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the box was told to do something: its question, exact writes, documents or proposed workflow (the drafts are in ``drafts``)."
+          },
           "latency_ms": {
             "title": "Latency Ms",
             "type": "integer"
@@ -1651,6 +1662,18 @@
             "title": "Id",
             "type": "string"
           },
+          "in_reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The message in your own mailbox a reply goes to (its citation).",
+            "title": "In Reply To"
+          },
           "kind": {
             "enum": [
               "email",
@@ -1678,6 +1701,18 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The address a reply is drafted to.",
+            "title": "To"
           }
         },
         "required": [
@@ -1701,6 +1736,17 @@
             "title": "Attachments",
             "type": "array"
           },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstructContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The page the box was opened on (a meeting, an autopilot item, a page); an email or file goes in ``source``, a record in ``object_id``."
+          },
           "conversation_id": {
             "anyOf": [
               {
@@ -1721,6 +1767,33 @@
             "maxItems": 12,
             "title": "History",
             "type": "array"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstructFollowUp"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An answer to the question an instruction asked, or the meetings to use: continues that instruction."
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "do",
+                  "ask"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The person's pick when the box asked whether to do it or answer it.",
+            "title": "Mode"
           },
           "object_id": {
             "anyOf": [
@@ -1759,169 +1832,6 @@
           "question"
         ],
         "title": "AskRequest",
-        "type": "object"
-      },
-      "AssistChoice": {
-        "additionalProperties": false,
-        "properties": {
-          "mention": {
-            "description": "A name as typed that matches several people.",
-            "title": "Mention",
-            "type": "string"
-          },
-          "options": {
-            "items": {
-              "$ref": "#/components/schemas/AssistRecipient"
-            },
-            "title": "Options",
-            "type": "array"
-          }
-        },
-        "required": [
-          "mention",
-          "options"
-        ],
-        "title": "AssistChoice",
-        "type": "object"
-      },
-      "AssistDraft": {
-        "additionalProperties": false,
-        "description": "A drafted message for a line the person typed. Never sent: the person edits, copies\nor opens it in their own mail or Teams.",
-        "properties": {
-          "body": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null when the copy check refused it (see gaps).",
-            "title": "Body"
-          },
-          "channel": {
-            "enum": [
-              "mail",
-              "teams"
-            ],
-            "title": "Channel",
-            "type": "string"
-          },
-          "choices": {
-            "items": {
-              "$ref": "#/components/schemas/AssistChoice"
-            },
-            "title": "Choices",
-            "type": "array"
-          },
-          "facts": {
-            "description": "Every fact the body lists, each with its sources.",
-            "items": {
-              "$ref": "#/components/schemas/Fact"
-            },
-            "title": "Facts",
-            "type": "array"
-          },
-          "gaps": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Gaps",
-            "type": "array"
-          },
-          "intent": {
-            "title": "Intent",
-            "type": "string"
-          },
-          "questions": {
-            "description": "The Ask questions answered for the facts.",
-            "items": {
-              "type": "string"
-            },
-            "title": "Questions",
-            "type": "array"
-          },
-          "sent": {
-            "const": false,
-            "default": false,
-            "title": "Sent",
-            "type": "boolean"
-          },
-          "subject": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subject"
-          },
-          "to": {
-            "items": {
-              "$ref": "#/components/schemas/AssistRecipient"
-            },
-            "title": "To",
-            "type": "array"
-          },
-          "withheld": {
-            "default": 0,
-            "description": "People the line names who may not be drafted to (left out, never named).",
-            "minimum": 0.0,
-            "title": "Withheld",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "intent",
-          "channel"
-        ],
-        "title": "AssistDraft",
-        "type": "object"
-      },
-      "AssistRecipient": {
-        "additionalProperties": false,
-        "properties": {
-          "address": {
-            "title": "Address",
-            "type": "string"
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The first name the address states.",
-            "title": "Name"
-          }
-        },
-        "required": [
-          "address"
-        ],
-        "title": "AssistRecipient",
-        "type": "object"
-      },
-      "AssistRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "intent": {
-            "description": "One line: what to send and to whom (\"tell <name> the lot for order X is on hold\").",
-            "maxLength": 300,
-            "minLength": 1,
-            "title": "Intent",
-            "type": "string"
-          }
-        },
-        "required": [
-          "intent"
-        ],
-        "title": "AssistRequest",
         "type": "object"
       },
       "AtRisk": {
@@ -7537,6 +7447,478 @@
           "mode"
         ],
         "title": "ImpactPanel",
+        "type": "object"
+      },
+      "InstructContext": {
+        "additionalProperties": false,
+        "description": "The page the instruction was typed on, attached by the app: an email (its citation),\na record, a meeting, an autopilot item, or just the page.",
+        "properties": {
+          "handle": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Handle"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "kind": {
+            "enum": [
+              "email",
+              "source",
+              "record",
+              "meeting",
+              "autopilot",
+              "page"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "meeting_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Id"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "maxLength": 700,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "InstructContext",
+        "type": "object"
+      },
+      "InstructDocument": {
+        "additionalProperties": false,
+        "description": "A document made as a file, and its upload to SharePoint as a draft you approve\n(``/api/instruct/uploads/{upload_id}``).",
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Folder"
+          },
+          "kind": {
+            "enum": [
+              "docx",
+              "xlsx",
+              "pdf"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "size",
+          "digest",
+          "download_url",
+          "upload_id"
+        ],
+        "title": "InstructDocument",
+        "type": "object"
+      },
+      "InstructFollowUp": {
+        "additionalProperties": false,
+        "description": "An answer to the question an instruction asked, or the meetings to use.",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "maxLength": 600,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "instruction_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Instruction Id",
+            "type": "string"
+          },
+          "use": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Use",
+            "type": "array"
+          }
+        },
+        "required": [
+          "instruction_id"
+        ],
+        "title": "InstructFollowUp",
+        "type": "object"
+      },
+      "InstructMeeting": {
+        "additionalProperties": false,
+        "properties": {
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id",
+          "title",
+          "day"
+        ],
+        "title": "InstructMeeting",
+        "type": "object"
+      },
+      "InstructPart": {
+        "additionalProperties": false,
+        "description": "What an instruction came back with beside its drafts: one question (or, when it\nwas unclear whether to do it or answer it, ``route``), exact writes, documents or a\nproposed workflow; and what continuing it needs (its words, page, your answers, the\nmeetings used and offered). Nothing is sent, written or uploaded until a person\napproves it.",
+        "properties": {
+          "answers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/InstructDocument"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "meetings": {
+            "description": "Meetings you attended that may hold context.",
+            "items": {
+              "$ref": "#/components/schemas/InstructMeeting"
+            },
+            "title": "Meetings",
+            "type": "array"
+          },
+          "meetings_used": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Meetings Used",
+            "type": "array"
+          },
+          "proposed": {
+            "description": "Meetings whose notes the question proposes to use.",
+            "items": {
+              "$ref": "#/components/schemas/InstructMeeting"
+            },
+            "title": "Proposed",
+            "type": "array"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question"
+          },
+          "read": {
+            "items": {
+              "$ref": "#/components/schemas/InstructRead"
+            },
+            "title": "Read",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "question",
+              "drafted",
+              "workflow",
+              "route"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstructWorkflow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "writes": {
+            "items": {
+              "$ref": "#/components/schemas/InstructWrite"
+            },
+            "title": "Writes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "text"
+        ],
+        "title": "InstructPart",
+        "type": "object"
+      },
+      "InstructRead": {
+        "additionalProperties": false,
+        "description": "Something the instruction read for you, as you may open it.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "email",
+              "record",
+              "meeting",
+              "work_log",
+              "attachment"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "open_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Url"
+          }
+        },
+        "required": [
+          "kind",
+          "label"
+        ],
+        "title": "InstructRead",
+        "type": "object"
+      },
+      "InstructStep": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "words"
+        ],
+        "title": "InstructStep",
+        "type": "object"
+      },
+      "InstructWorkflow": {
+        "additionalProperties": false,
+        "description": "A recurring instruction as a proposed autopilot workflow: Draft mode, never live\nuntil the owner keeps it and switches it on.",
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/InstructStep"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/InstructStep"
+            },
+            "title": "Conditions",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "mode": {
+            "const": "draft",
+            "default": "draft",
+            "title": "Mode",
+            "type": "string"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/InstructStep"
+          }
+        },
+        "required": [
+          "label",
+          "trigger",
+          "actions"
+        ],
+        "title": "InstructWorkflow",
+        "type": "object"
+      },
+      "InstructWrite": {
+        "additionalProperties": false,
+        "description": "An exact change prepared on the write desk (``/api/writes/{intent_id}``): each field\nas it is now and as it would be. A grant holder other than you approves it there.",
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/WriteChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Intent Id"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "prepared",
+              "refused"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "status"
+        ],
+        "title": "InstructWrite",
         "type": "object"
       },
       "ItemFeedbackRequest": {
@@ -14014,6 +14396,112 @@
         "title": "UpcomingMeetings",
         "type": "object"
       },
+      "UploadApprove": {
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "description": "True only from the person's second (Confirm) click.",
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "preview_hash": {
+            "maxLength": 64,
+            "title": "Preview Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirm",
+          "preview_hash"
+        ],
+        "title": "UploadApprove",
+        "type": "object"
+      },
+      "UploadPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "string"
+          },
+          "before": {
+            "title": "Before",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "preview_hash": {
+            "title": "Preview Hash",
+            "type": "string"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "prepared",
+              "would_upload"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id",
+          "name",
+          "kind",
+          "size",
+          "digest",
+          "before",
+          "after",
+          "problems",
+          "missing",
+          "preview_hash",
+          "status"
+        ],
+        "title": "UploadPreview",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -16600,78 +17088,6 @@
         ]
       }
     },
-    "/api/autopilot/assist": {
-      "post": {
-        "description": "Draft the message a line you typed asks for: recipients, subject and body, each\nfact from your Ask's gated answer with its sources. Nothing is sent.",
-        "operationId": "autopilot_assist_api_autopilot_assist_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AssistRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AssistDraft"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Autopilot Assist",
-        "tags": [
-          "actions"
-        ]
-      }
-    },
     "/api/autopilot/audit": {
       "get": {
         "description": "The write path's audit log, newest first, with undo where the system has one.\nOwner only (403 for every other reader).",
@@ -18601,6 +19017,213 @@
         "summary": "Home",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/instruct/files/{file_id}": {
+      "get": {
+        "description": "A document an instruction made for you.",
+        "operationId": "instruct_file_api_instruct_files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Instruct File",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/instruct/uploads/{upload_id}": {
+      "get": {
+        "description": "A document's upload to SharePoint: before and after, re-checked as you now.",
+        "operationId": "upload_preview_api_instruct_uploads__upload_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "upload_id",
+            "required": true,
+            "schema": {
+              "title": "Upload Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Preview",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/instruct/uploads/{upload_id}/approve": {
+      "post": {
+        "description": "Approve the upload you previewed (your confirm, for that preview). Recorded as\nwould upload: this build has no SharePoint upload path.",
+        "operationId": "upload_approve_api_instruct_uploads__upload_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "upload_id",
+            "required": true,
+            "schema": {
+              "title": "Upload Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadApprove"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Approve",
+        "tags": [
+          "actions"
         ]
       }
     },

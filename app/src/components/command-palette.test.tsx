@@ -59,4 +59,24 @@ describe("the command bar's Enter", () => {
     await typeAndEnter("904", /PO 90455/);
     expect(nav.push).toHaveBeenCalledWith("/ask?q=904");
   });
+
+  it("asks a plain question of everything, even on a record page", async () => {
+    window.history.pushState({}, "", "/object/PurchaseOrder/PurchaseOrder%3A90412");
+    try {
+      await typeAndEnter("what ships next week", /Lavender bar/);
+      expect(nav.push).toHaveBeenLastCalledWith("/ask?q=what%20ships%20next%20week");
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("takes the open record along for an instruction", async () => {
+    window.history.pushState({}, "", "/object/PurchaseOrder/PurchaseOrder%3A90412");
+    try {
+      await typeAndEnter("chase the supplier", /Lavender bar/);
+      expect(nav.push).toHaveBeenLastCalledWith("/ask?q=chase%20the%20supplier&object=PurchaseOrder%3A90412");
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
 });

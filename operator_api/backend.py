@@ -68,7 +68,7 @@ from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
 from .autopilot_studio import AutopilotStudioMixin
-from .assist_api import AssistMixin
+from .instruct_api import InstructMixin
 from .ask_drafts import AskDraftsMixin, draft_models
 from .write_intents_api import WriteIntentsMixin
 from .briefs import BriefsMixin
@@ -189,7 +189,8 @@ def _clean_text(text: str, guard: Any) -> str:
 # ---- the backend ---------------------------------------------------------------------
 
 class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin,
-                       AutopilotAreaMixin, AutopilotStudioMixin, AssistMixin, WatchMixin,
+                       AutopilotAreaMixin, AutopilotStudioMixin, InstructMixin,
+                       WatchMixin,
                        AskDraftsMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,

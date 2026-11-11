@@ -174,6 +174,45 @@ class Triage(Engine):
                 top = it.triage(gaps, AS_OF)["lines"][0]
                 self.assertEqual(top["chases"], 2)   # the repeat chases rank first
 
+class Feeds(unittest.TestCase):
+    """A system feed is found from the mail itself (templates, no replies, never written to),
+    not from a name or domain (``feed_senders``); a person who writes as often is not one."""
+
+    OWN = "me@synth-own.example"
+
+    @staticmethod
+    def msgs(sender, n, *, subject=lambda i: f"Case {i} needs review",
+             body=lambda i: f"Case {i}: please confirm this record is correct in the system.",
+             to=("me@synth-own.example",)):
+        return [it._Msg(oid=f"o-{sender}-{i}", channel="mail", owner="p", audience="a",
+                        sender=sender, to=list(to), at=None, subject=subject(i), text=body(i),
+                        conversation=f"c-{i}", ident=f"{sender}-{i}") for i in range(n)]
+
+    def found(self, *batches):
+        return it.feed_senders([m for b in batches for m in b], {self.OWN})
+
+    def test_n_1_10_60_a_feed_is_found_from_the_mail_whatever_its_name(self):
+        for n in (1, 10, it.FEED_MIN, 60):
+            with self.subTest(n=n):
+                feed = self.msgs("any-name@synth-system.example", n)
+                person = self.msgs("pat@synth-human.example", n,
+                                   subject=lambda i: f"topic {'abcdefghij'[i % 10]}{'klmnopqrst'[i // 3 % 10]} {i}",
+                                   body=lambda i: f"Can you check item {'zyxwvutsrq'[i % 10]} with supplier {i * 7} soon?")
+                want = {"any-name@synth-system.example"} if n >= it.FEED_MIN else set()
+                self.assertEqual(self.found(feed, person), want)
+
+    def test_replies_or_our_own_writing_to_the_sender_keep_it_a_person(self):
+        n = it.FEED_MIN + 5
+        replies = self.msgs("a@synth-system.example", n, subject=lambda i: f"Re: Case {i}")
+        self.assertEqual(self.found(replies), set())
+        feed = self.msgs("b@synth-system.example", n)
+        ours = self.msgs(self.OWN, 1, to=("b@synth-system.example",))
+        self.assertEqual(self.found(feed, ours), set())
+        self.assertEqual(self.found(feed), {"b@synth-system.example"})
+        no_template = self.msgs("c@synth-system.example", n, body=lambda i: f"Note {'abcdefghij'[i % 10]}{i * 13} about lot {i * 31}.")
+        self.assertEqual(self.found(no_template), set())
+        self.assertEqual(self.found(self.msgs("", n)), set())   # no sender: nothing to name
+
 
 class OneToOneChats(Engine):
     """The Teams capture lists a chat's members as object ids AND addresses and names a

@@ -141,14 +141,26 @@ function Ask() {
   const scope = params.get("object");
   // the document the question is about ("Ask about this" on a source page)
   const source = params.get("source") ?? undefined;
+  // the meeting, autopilot item or page the box was opened on: its context goes with the line
+  const meetingId = params.get("meeting");
+  const itemId = params.get("item");
+  const pagePath = params.get("page");
+  const page = meetingId
+    ? { context: { kind: "meeting" as const, meeting_id: meetingId } }
+    : itemId
+      ? { context: { kind: "autopilot" as const, item_id: itemId } }
+      : pagePath
+        ? { context: { kind: "page" as const, page: pagePath.slice(0, 300) } }
+        : {};
 
   useEffect(() => {
     const key = `${q}\u0000${scope}\u0000${source}`;
     if (q && started.current !== key) {
       started.current = key;
       if (turns.length > 0) reset();
-      void run(q, scope ?? takePending(q)[0]?.object_id, source);
+      void run(q, scope ?? takePending(q)[0]?.object_id, source, [], page);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- page follows the same URL params
   }, [q, scope, source, run, reset, turns.length]);
 
   // "Continue" from the work log: the session's turns as they were answered; a follow-up
@@ -175,7 +187,7 @@ function Ask() {
     <AskBox
       size={empty ? "lg" : "md"}
       dropUp={!empty}
-      onSubmit={(question, pins, files) => run(question, pins[0]?.object_id, pins.length ? undefined : source, files)}
+      onSubmit={(question, pins, files) => run(question, pins[0]?.object_id, pins.length ? undefined : source, files, pins.length ? {} : page)}
       attachable
       busy={busy}
       onStop={stop}
@@ -231,6 +243,7 @@ function Ask() {
                   onRetry={() => run(t.question)}
                   onPick={busy ? undefined : (c) => run(`I mean ${c.label}`, c.object_id)}
                   onAsk={busy ? undefined : (next) => run(next)}
+                  onInstruct={busy ? undefined : (next, extra) => run(next, extra.object_id ?? undefined, extra.source ?? undefined, [], { context: extra.context, mode: extra.mode, instruction: extra.instruction })}
                 />
               </section>
             ))}

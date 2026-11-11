@@ -496,6 +496,10 @@ class AskDraft(_Model):
     actions: list["CardActionOffer"] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list, description="What the draft lacks "
                                "before it can be done, in words.")
+    in_reply_to: Optional[str] = Field(None, json_schema_extra=_optional, description=(
+        "The message in your own mailbox a reply goes to (its citation)."))
+    to: Optional[str] = Field(None, json_schema_extra=_optional,
+                              description="The address a reply is drafted to.")
     sent: Literal[False] = False
 
 
@@ -552,6 +556,10 @@ class AnswerPayload(_Model):
         default_factory=list, json_schema_extra=_optional,
         description="Emails and actions the question asked to have drafted; each is done "
                     "only from its preview with your explicit confirm.")
+    instruction: Optional["InstructPart"] = Field(
+        None, json_schema_extra=_optional,
+        description="When the box was told to do something: its question, exact writes, "
+                    "documents or proposed workflow (the drafts are in ``drafts``).")
 
 
 # ---- ask (SSE) -------------------------------------------------------------------------
@@ -593,6 +601,17 @@ class AskRequest(_Model):
         default_factory=list, max_length=5,
         description="Files and images the person attached (PDF, .xlsx, .csv, text, PNG, "
                     "JPEG, GIF, WebP): up to five, 10 MB together.")
+    context: Optional["InstructContext"] = Field(
+        None, json_schema_extra=_optional,
+        description="The page the box was opened on (a meeting, an autopilot item, a page); "
+                    "an email or file goes in ``source``, a record in ``object_id``.")
+    mode: Optional[Literal["do", "ask"]] = Field(
+        None, json_schema_extra=_optional,
+        description="The person's pick when the box asked whether to do it or answer it.")
+    instruction: Optional["InstructFollowUp"] = Field(
+        None, json_schema_extra=_optional,
+        description="An answer to the question an instruction asked, or the meetings to "
+                    "use: continues that instruction.")
 
     @model_validator(mode="after")
     def _attachments_fit(self) -> "AskRequest":
@@ -2879,41 +2898,6 @@ class AutopilotDecisionRequest(_Model):
     note: Optional[str] = Field(None, max_length=500)
 
 
-class AssistRequest(_Model):
-    intent: str = Field(min_length=1, max_length=300, description="One line: what to send "
-                        "and to whom (\"tell <name> the lot for order X is on hold\").")
-
-
-class AssistRecipient(_Model):
-    address: str
-    name: Optional[str] = Field(None, description="The first name the address states.")
-
-
-class AssistChoice(_Model):
-    mention: str = Field(description="A name as typed that matches several people.")
-    options: list[AssistRecipient]
-
-
-class AssistDraft(_Model):
-    """A drafted message for a line the person typed. Never sent: the person edits, copies
-    or opens it in their own mail or Teams."""
-    intent: str
-    channel: Literal["mail", "teams"]
-    to: list[AssistRecipient] = Field(default_factory=list)
-    choices: list[AssistChoice] = Field(default_factory=list)
-    withheld: int = Field(0, ge=0, description="People the line names who may not be "
-                                              "drafted to (left out, never named).")
-    subject: Optional[str] = None
-    body: Optional[str] = Field(None, description="Null when the copy check refused it "
-                                                  "(see gaps).")
-    facts: list[Fact] = Field(default_factory=list, description="Every fact the body lists, "
-                                                              "each with its sources.")
-    gaps: list[str] = Field(default_factory=list)
-    questions: list[str] = Field(default_factory=list, description="The Ask questions "
-                                                                   "answered for the facts.")
-    sent: Literal[False] = False
-
-
 class AutopilotSwitchRequest(_Model):
     global_off: bool
 
@@ -3291,6 +3275,121 @@ class WorkLogSave(_Model):
     object_id: Optional[str] = Field(None, max_length=400)
 
 
+# ---- instruct: tell it to do anything, anywhere ----------------------------------------
+
+class InstructContext(_Model):
+    """The page the instruction was typed on, attached by the app: an email (its citation),
+    a record, a meeting, an autopilot item, or just the page."""
+    kind: Literal["email", "source", "record", "meeting", "autopilot", "page"]
+    handle: Optional[str] = Field(None, max_length=4096)
+    object_type: Optional[str] = Field(None, max_length=60)
+    object_id: Optional[str] = Field(None, max_length=700)
+    meeting_id: Optional[str] = Field(None, max_length=200)
+    item_id: Optional[str] = Field(None, max_length=200)
+    page: Optional[str] = Field(None, max_length=300)
+
+
+class InstructFollowUp(_Model):
+    """An answer to the question an instruction asked, or the meetings to use."""
+    instruction_id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    answer: Optional[str] = Field(None, max_length=600)
+    use: list[str] = Field(default_factory=list, max_length=3)
+
+
+class InstructRead(_Model):
+    """Something the instruction read for you, as you may open it."""
+    kind: Literal["email", "record", "meeting", "work_log", "attachment"]
+    label: str
+    open_url: Optional[str] = None
+
+
+class InstructMeeting(_Model):
+    meeting_id: str
+    title: str
+    day: str
+
+
+class InstructStep(_Model):
+    kind: str
+    words: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class InstructWorkflow(_Model):
+    """A recurring instruction as a proposed autopilot workflow: Draft mode, never live
+    until the owner keeps it and switches it on."""
+    label: str
+    trigger: InstructStep
+    conditions: list[InstructStep] = Field(default_factory=list)
+    actions: list[InstructStep]
+    mode: Literal["draft"] = "draft"
+
+
+class InstructWrite(_Model):
+    """An exact change prepared on the write desk (``/api/writes/{intent_id}``): each field
+    as it is now and as it would be. A grant holder other than you approves it there."""
+    intent_id: Optional[str] = None
+    label: str
+    changes: list[WriteChange] = Field(default_factory=list)
+    problems: list[str] = Field(default_factory=list)
+    status: Literal["prepared", "refused"]
+
+
+class InstructDocument(_Model):
+    """A document made as a file, and its upload to SharePoint as a draft you approve
+    (``/api/instruct/uploads/{upload_id}``)."""
+    name: str
+    kind: Literal["docx", "xlsx", "pdf"]
+    size: int
+    digest: str
+    download_url: str
+    upload_id: str
+    folder: Optional[str] = None
+
+
+class InstructPart(_Model):
+    """What an instruction came back with beside its drafts: one question (or, when it
+    was unclear whether to do it or answer it, ``route``), exact writes, documents or a
+    proposed workflow; and what continuing it needs (its words, page, your answers, the
+    meetings used and offered). Nothing is sent, written or uploaded until a person
+    approves it."""
+    status: Literal["question", "drafted", "workflow", "route"]
+    text: str
+    question: Optional[str] = None
+    proposed: list[InstructMeeting] = Field(default_factory=list, description="Meetings "
+                                            "whose notes the question proposes to use.")
+    meetings: list[InstructMeeting] = Field(default_factory=list, description="Meetings you "
+                                            "attended that may hold context.")
+    writes: list[InstructWrite] = Field(default_factory=list)
+    documents: list[InstructDocument] = Field(default_factory=list)
+    workflow: Optional[InstructWorkflow] = None
+    read: list[InstructRead] = Field(default_factory=list)
+    context: dict[str, Any] = Field(default_factory=dict)
+    answers: list[str] = Field(default_factory=list)
+    meetings_used: list[str] = Field(default_factory=list)
+
+
+class UploadPreview(_Model):
+    upload_id: str
+    name: str
+    kind: str
+    size: int
+    digest: str
+    folder: Optional[str] = None
+    before: str
+    after: str
+    problems: list[str]
+    missing: list[str]
+    preview_hash: str
+    status: Literal["prepared", "would_upload"]
+
+
+class UploadApprove(_Model):
+    confirm: bool = Field(description="True only from the person's second (Confirm) click.")
+    preview_hash: str = Field(max_length=64)
+
+
 # AskDraft names CardActionOffer before it is defined
 AskDraft.model_rebuild()
 AnswerPayload.model_rebuild()
+AskRequest.model_rebuild()

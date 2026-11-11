@@ -23,7 +23,7 @@ from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
 from .autopilot_studio import AutopilotStudioMixin
-from .assist_api import AssistMixin
+from .instruct_api import InstructMixin
 from .ask_drafts import AskDraftsMixin
 from .write_intents_api import WriteIntentsMixin
 from .watch import MockWatchMixin
@@ -522,7 +522,8 @@ def _pick(question: str) -> tuple[str, Any]:
 
 
 class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
-                  AutopilotStudioMixin, AssistMixin, MockWatchMixin, AskDraftsMixin):
+                  AutopilotStudioMixin, InstructMixin, MockWatchMixin,
+                  AskDraftsMixin):
     data_label = LABEL
 
     # the demo's autopilot studio (``mock_studio.install``, ``serve --mock`` only)
