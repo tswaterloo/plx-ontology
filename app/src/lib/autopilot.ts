@@ -141,3 +141,45 @@ export function rowRole(area: AutopilotArea, row: AutopilotWorkflowRow): string 
 
 export const pct = (s: { percent?: number | null; judged: number } | null | undefined) =>
   s && s.percent != null ? `${s.percent.toFixed(1)}%` : "—";
+
+// ---- the studio: modes and due words -------------------------------------------------
+
+export type Mode = "off" | "suggest" | "draft" | "auto" | "watch";
+
+export const MODES: { mode: Mode; label: string; words: string }[] = [
+  { mode: "off", label: "Off", words: "Nothing is prepared, for every person and role of this workflow." },
+  { mode: "suggest", label: "Suggest", words: "Says what is open and what to do next, learned from your history." },
+  { mode: "draft", label: "Draft", words: "Prepares the work; you edit and approve each one." },
+  { mode: "auto", label: "Auto", words: "Acts on your click, after its preview." },
+  { mode: "watch", label: "Watch", words: "Acts by itself and shows what it did, with undo. Only after its gate passed." },
+];
+
+/** A row's mode as the switches set it: off, auto (the role's live flag), else draft. */
+export function rowMode(row: AutopilotWorkflowRow): Mode {
+  if (!row.on) return "off";
+  return row.live_flag ? "auto" : "draft";
+}
+
+/** Whether a row's held-out gate passed (it may go Auto, or Watch where the server has it). */
+export const rowPassed = (row: AutopilotWorkflowRow) => row.state !== "dry_run" && row.state !== "off" && row.fresh != null;
+
+/** The modes a row may be set to: off and draft always; auto and watch after its gate;
+ * suggest and watch only where the server has the builder. */
+export function modesFor(row: AutopilotWorkflowRow, builder: boolean): Set<Mode> {
+  const out = new Set<Mode>(["off", "draft"]);
+  const passed = rowPassed(row);
+  if (passed) out.add("auto");
+  if (builder) out.add("suggest");
+  if (builder && passed) out.add("watch");
+  return out;
+}
+
+/** "in 40 min", "in 3 h", "2 h overdue", "3 days overdue". */
+export function dueWords(iso: string, now: Date = new Date()): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const mins = Math.round((t - now.getTime()) / 60_000);
+  const span = (m: number) => (m < 60 ? `${m} min` : m < 48 * 60 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`);
+  if (mins >= 0) return `in ${span(Math.max(1, mins))}`;
+  return `${span(-mins)} overdue`;
+}

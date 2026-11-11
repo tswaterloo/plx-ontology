@@ -120,6 +120,7 @@ class MCQuestions:
         self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30,
                                     check_same_thread=False)
         self._home: frozenset[str] | None = None
+        self._live_since: Any = None
 
     def home_domains(self) -> frozenset[str]:
         """The domains MC writes full addresses in (task event actors and addressees): the
@@ -204,6 +205,60 @@ class MCQuestions:
                 "answered_at": str(answer.get("answeredAt") or ""),
                 "answered_by": str(answer.get("answeredBy") or "").strip().lower(),
                 "withdrawn_at": str(withdrawn.get("at") or withdrawn.get("withdrawnAt") or "")}
+
+    # the capture units an MC approval or question and its answer are read from
+    UNITS = ("approvals", "task_events")
+
+    def known_to(self) -> Any:
+        """Until when the capture holds MC approvals and task events: the earlier of the two
+        units' last write (a run in progress writes as it reads). A unit never run: the epoch
+        (nothing known, so no MC item is judged). None only for a capture without a runs
+        table (an older layout): its end is unknown and the caller sets no bound."""
+        try:
+            got = [self.conn.execute(
+                "SELECT max(updated_at) FROM runs WHERE kind = ? AND unit LIKE ?",
+                (self.KIND, f"%/{unit}")).fetchone() for unit in self.UNITS]
+        except sqlite3.OperationalError:
+            return None
+        ends = [ap._instant(g[0]) if g and g[0] else None for g in got]
+        if any(e is None for e in ends):
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return min(ends)
+
+    # an MC record type -> its folder in the capture (the native key names scope and id)
+    CAPTURED_AS = {"MCApproval": ("approvals", "id"), "MCTaskEvent": ("task_events", "event_id")}
+
+    def first_held(self, otype: str, native_key: str, happened: Any) -> Any:
+        """When the live MC feed first held this record: its first captured version's time,
+        only when the capture was already reading MC live when the record happened (a record
+        from before was read by the first sweep's backfill, which says nothing of the feed's
+        cadence). Else None, and the caller falls back to the configured feed lag. A capture
+        without version times or runs (an older layout) is None too."""
+        folder = self.CAPTURED_AS.get(otype)
+        try:
+            raw = json.loads(native_key)
+        except (TypeError, ValueError):
+            return None
+        if folder is None or not isinstance(raw, Mapping) or happened is None:
+            return None
+        scope, rid = raw.get("scope"), raw.get(folder[1])
+        if not isinstance(scope, str) or not isinstance(rid, str) or not scope or not rid \
+                or "/" in scope or "/" in rid:
+            return None
+        try:
+            if self._live_since is None:
+                got = self.conn.execute("SELECT min(started_at) FROM runs WHERE kind = ?",
+                                        (self.KIND,)).fetchone()
+                self._live_since = ap._instant(got[0] if got else None) or False
+            if not self._live_since or happened < self._live_since:
+                return None
+            got = self.conn.execute(
+                "SELECT min(recorded_at) FROM versions WHERE kind = ? AND path = ?",
+                (self.KIND, f"{scope}/{folder[0]}/{rid}")).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        held = ap._instant(got[0] if got else None)
+        return held if held is not None and held >= happened else None
 
     def close(self) -> None:
         self.conn.close()

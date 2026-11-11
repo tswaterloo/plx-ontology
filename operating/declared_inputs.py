@@ -91,7 +91,8 @@ def inputs() -> dict[str, Any]:
             ("PurchaseOrderLine",), (*order, *pe.RECEIPT_LINKS), 4,
             (*po_twins, "ReceiptLine.same_record_as")),
         "receipt_without_qc": Inputs(
-            ("Receipt",), ("ReceiptLine.line_of", *pe.declared_qc_links()), 2),
+            ("Receipt",), ("ReceiptLine.line_of", *pe.declared_qc_links()), 2,
+            ("ReceiptLine.same_record_as",)),
         "expired_quote": Inputs(quotes, (), 0),
         "conflicting_quantity": Inputs((ANY,), (), 0, identity),
         "late_order": Inputs(

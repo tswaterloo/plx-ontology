@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Answer, Hidden, Source } from "@/lib/types";
+import type { Answer, Fact, Hidden, Source } from "@/lib/types";
 import { AnswerCard, bulletFact, lateRows, type Turn } from "./answer-card";
 import { ConflictCard, HiddenNotice } from "./answer-parts";
 import { ObjectView } from "./object-view";
@@ -149,6 +149,24 @@ describe("AnswerCard", () => {
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(card).toHaveAttribute("aria-busy", "false");
+  });
+
+  it("shows an Ask's drafts in full, an email's send only behind its preview, and nothing sent on render", async () => {
+    const fetch = vi.fn(() => new Promise(() => undefined));
+    vi.stubGlobal("fetch", fetch);
+    const drafts: Answer["drafts"] = [
+      { id: "ask:a1:0", kind: "email", title: "Late shipment", email_subject: "Late shipment", body: "Hello [supplier name],\nPlease confirm a ship date.", details: [], actions: [{ kind: "send_email", label: "Send email", outbound: true }], missing: ["Add the recipient's address before sending."], sent: false },
+      { id: "ask:a1:1", kind: "payment", title: "Pay the freight invoice", email_subject: null, body: "What: Pay the freight invoice\nAmount: [amount]", details: [{ label: "What", value: "Pay the freight invoice" }, { label: "Amount", value: "[amount]" }], actions: [{ kind: "assign", label: "Assign", outbound: false }], missing: [], sent: false },
+    ];
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...answer, drafts } }} />);
+    const shown = screen.getAllByTestId("ask-draft");
+    expect(shown[0]).toHaveTextContent("Please confirm a ship date.");
+    expect(within(shown[1]).getByTestId("ask-draft-details")).toHaveTextContent("Amount[amount]");
+    // the send opens its preview first; no confirm is ever posted from rendering or opening it
+    await userEvent.click(within(shown[0]).getByTestId("action-send_email"));
+    const urls = fetch.mock.calls.map((c) => String((c as unknown[])[0]));
+    expect(urls.some((u) => u.includes("/api/actions/preview"))).toBe(true);
+    expect(urls.some((u) => u.includes("/api/actions/confirm"))).toBe(false);
   });
 
   it("renders markdown as text (never literal ** or list dashes), the lead first and the rest as facts", () => {
@@ -717,6 +735,44 @@ describe("AnswerCard: the analyst's shape", () => {
     expect(bulletFact("Payment terms NET30.", facts, new Set())).toBe(2);
     // each fact lends its chips once
     expect(bulletFact("Payment terms NET30.", facts, new Set([2]))).toBeNull();
+  });
+
+  it("shows the general part in its own labelled section: no chip, no fact line, and the cited fact keeps its line", () => {
+    // "Is PO 4501 confirmed by the supplier, and how should I chase it?"
+    const heading = "General knowledge (not from PLX records)";
+    const fact: Fact = { text: "PO 4501 has no supplier confirmation.", sources: [{ ...bc, handle: "bc://po/4501", label: "PO 4501" }], check: "passed" };
+    const mixed: Answer = {
+      ...answer,
+      outcome: "answered",
+      direct_answer: [
+        "PO 4501 has no supplier confirmation yet.",
+        "",
+        heading,
+        "- If PO 4501 is not confirmed, the supplier should be chased by phone.",
+        "- Ask for a written confirmation with a ship date.",
+        "- Escalate after a week.",
+        "- Keep a note of each call.",
+        "- Copy the buyer.",
+        "- Check the PO terms.",
+      ].join("\n"),
+      facts: [fact, { text: "Ordered quantity: 2400 kg", sources: [bc], check: "value_matches_record" }, { text: "Expected receipt date: 2026-06-25", sources: [bc], check: "value_matches_record" }, { text: "Payment terms: NET30", sources: [mail], check: "lead" }, { text: "Buyer: Ana", sources: [bc], check: "passed" }],
+      not_found: [],
+      follow_ups: [],
+    };
+    render(<AnswerCard turn={{ id: "t", question: "Is PO 4501 confirmed by the supplier, and how should I chase it?", phase: "done", streamed: "", answer: mixed }} />);
+    const general = screen.getByTestId("general-part");
+    expect(within(general).getByRole("heading")).toHaveTextContent(heading);
+    expect(general).toHaveTextContent("chased by phone");
+    expect(within(general).queryAllByTestId("source-chip")).toHaveLength(0);
+    expect(screen.queryAllByTestId("answer-bullet")).toHaveLength(0);
+    const list = screen.getByTestId("fact-list");
+    expect(list).not.toHaveTextContent("chased by phone");
+    expect(list).toHaveTextContent("PO 4501 has no supplier confirmation.");
+    // the six general lines never push the five cited facts behind "show all"
+    expect(within(list).getAllByRole("listitem")).toHaveLength(5);
+    expect(screen.getByTestId("direct-answer")).not.toHaveTextContent(heading);
+    // words alone never lend a fact's chip
+    expect(bulletFact("The supplier has no confirmation for this order yet.", [{ ...fact, text: "The supplier has not sent a confirmation yet." }], new Set())).toBeNull();
   });
 
   it("follow-up chips do nothing while another question is running", () => {

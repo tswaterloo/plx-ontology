@@ -8,7 +8,7 @@ import { cn } from "@/lib/cn";
 import { currencyCode, fieldKey, fieldLabel, fieldValue, formatDate, formatDateTime, formatMoney, isInternalField, isUnsetDate, recordKind, safeHref, sourceHref, SYSTEM_LABEL } from "@/lib/format";
 import type { Source, SourceSystem } from "@/lib/types";
 import { mailField, SourceLoader } from "./source-view";
-import { SystemTile } from "./ui/glyphs";
+import { SystemCode } from "./ui/glyphs";
 import { Sheet } from "./ui/sheet";
 
 function known(system: string): system is SourceSystem {
@@ -139,7 +139,7 @@ export function SourcePreview({ source }: { source: Source }) {
   return (
     <div className="space-y-2.5 text-[13px] leading-5">
       <div className="flex min-w-0 items-center gap-2">
-        <SystemTile system={source.system} size={18} />
+        <SystemCode system={source.system} size={18} />
         <span className="shrink-0 text-[12px] font-medium">{sys}</span>
         {shownName && <span className="min-w-0 truncate text-[12px] text-muted">{shownName}</span>}
         {source.as_of && <span className="ml-auto shrink-0 pl-2 text-[11px] tabular-nums text-faint">{formatDate(source.as_of, { short: true })}</span>}
@@ -219,7 +219,7 @@ export function SourceChip({ source, className, record }: { source: Source; clas
   const chipClass =
     n !== undefined
       ? cn(
-          "relative -top-px mx-px inline-flex h-4 min-w-4 items-center justify-center rounded-[5px] bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-1 align-middle font-sans text-[10.5px] leading-none font-medium tabular-nums text-muted",
+          "relative -top-px mx-px inline-flex h-4 min-w-4 items-center justify-center rounded-[3px] bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-1 align-middle font-sans text-[10.5px] leading-none font-medium tabular-nums text-muted",
           opens && "cursor-pointer hover:bg-accent hover:text-accent-fg focus-visible:bg-accent focus-visible:text-accent-fg",
           // on a phone the token stays text-sized in the line; an invisible margin makes it easy to tap
           opens && "max-sm:after:absolute max-sm:after:-inset-x-1.5 max-sm:after:-inset-y-3 max-sm:after:content-['']",
@@ -359,10 +359,10 @@ export function SourceListRow({ source, n }: { source: Source; n: number }) {
         aria-label={`Source ${n}: ${system ? SYSTEM_LABEL[system] : "source"}, ${name}`}
         data-testid="answer-source"
       >
-        <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[5px] bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-1 text-[10.5px] font-medium tabular-nums text-muted group-hover:bg-accent group-hover:text-accent-fg">
+        <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[3px] bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-1 text-[10.5px] font-medium tabular-nums text-muted group-hover:bg-accent group-hover:text-accent-fg">
           {n}
         </span>
-        <SystemTile system={source.system} size={16} />
+        <SystemCode system={source.system} size={16} />
         <span className="min-w-0 flex-1 truncate">
           <span className="text-fg">{what}</span>
           <span className="text-muted">, {system ? SYSTEM_LABEL[system] : "source"}</span>

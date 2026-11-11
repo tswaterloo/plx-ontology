@@ -20,6 +20,8 @@ model does.
   must be grounded in them (``query_understanding._grounded_text``). An ungrounded
   restatement, a reply that is not the JSON asked for, no free session or no reply
   within ``SECONDS`` is None: the question goes on as typed (the fallback).
+* **Scope.** The model also says whether PLX's records, general knowledge or both answer
+  the question (``general_answer``); anything else it says is ``company``.
 * **Display.** The answer keeps the person's own question; the restatement is shown as
   how it was read.
 
@@ -61,7 +63,19 @@ the earlier questions. Then reply with JSON only, no other text:
 {"rewrite": "<the question restated as one clear, complete question in plain business \
 English>", "route": "lookup" | "investigate", "status": "<3 to 8 words saying what \
 you will look up, e.g. Looking up late purchase orders>", "recipe": "<one recipe name \
-below that answers the whole question, or null>"}
+below that answers the whole question, or null>", "scope": "company" | "general" | "mixed"}
+
+scope says what answers the question:
+- company: PLX's own records (its orders, items, lots, customers, suppliers, people, \
+costs, inventory, mail or files).
+- general: general knowledge, reasoning, math or writing, with nothing from PLX's \
+records: explaining a concept, industry practice, a calculation from figures the \
+question gives, planning advice, or drafting an email, policy or job description that \
+names no PLX record.
+- mixed: both, such as PLX's own figures judged against general practice, or a draft \
+about a PLX record the question names.
+When unsure between company and anything else, say company; a general question gets \
+recipe null.
 
 Recipes (ready answers the Workbench computes from its records):
 - late_list: the list of the reader's late purchase orders, all of them, with nothing \
@@ -95,6 +109,9 @@ class Reading:
     status: str
     seconds: float
     recipe: Optional[str] = None
+    # what answers it (``general_answer.SCOPES``): anything the model did not say is
+    # "company", the evidence path (``general_answer.scope_of`` decides the route)
+    scope: str = "company"
 
     @property
     def changed(self) -> bool:
@@ -300,9 +317,11 @@ class FrontDoor:
             status = status.strip()[:80] if isinstance(status, str) and status.strip() \
                 and _status_grounded(status, question, earlier) else "Reading your question"
             recipe = reply.get("recipe")
+            scope = reply.get("scope")
             return Reading(question, " ".join(rewrite.split()), route, status,
                            time.monotonic() - started,
-                           recipe if recipe in RECIPES else None)
+                           recipe if recipe in RECIPES else None,
+                           scope if scope in ("general", "mixed") else "company")
         finally:
             with self._lock:
                 self._busy -= 1

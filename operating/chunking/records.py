@@ -38,6 +38,10 @@ DENY_CATEGORIES = ("ids", "hashes", "secrets")
 
 
 def load_config(path: Path = CONFIG) -> dict[str, Any]:
+    """``record_text.json``. The raw Portal/Sage types' text is read by its ``rule`` (raw
+    rows words-only); ``ontology/schema/overrides/business.json`` gives their readable
+    names (:func:`type_title`), never a second list of their fields (a raw row chunked
+    twice, and as human text, if it did)."""
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema") != "plx-record-text/v2" or not isinstance(data.get("rule"), dict) \
             or not isinstance(data.get("deny"), dict) or \
@@ -179,6 +183,13 @@ def text_plan(config: Mapping[str, Any], types: Mapping[str, Mapping[str, Any]]
         if any(entry.values()):
             plan[type_id] = entry
     return plan
+
+
+def type_title(object_type: str) -> str:
+    """A record type's readable name in a chunk title: a raw type's declared business label
+    (``ontology.raw_business``), else the type id."""
+    from ontology.raw_business import label_of
+    return label_of(object_type) or object_type
 
 
 def record_kind(audience_key: str) -> str:
@@ -339,12 +350,13 @@ class RecordChunker(ProjectionChunker):
                        if (held := parse_markings(m)) is not None and set(held) <= set(marks)]
                 id_labels = [hd.id_label(k, v) for k, v in own][:4]
                 keys = [f"{k}:{v}" for k, v in own]
-                type_name = oid.split(":", 1)[0]
+                type_id = oid.split(":", 1)[0]
+                type_name = type_title(type_id)   # its readable name, for the title only
                 title = f"{type_name} {own[0][1]}" if own else type_name
                 prop = row["property"].replace("_", " ")
                 about = f"the {prop} of {title}"
                 short = row["property"] in labels or row["property"] in json_props
-                kind = WORDS_KIND if self.raw_types.match(type_name) else (
+                kind = WORDS_KIND if self.raw_types.match(type_id) else (
                     own_kind if own_kind == "list_item" or human(
                         value, short, self.words_only) else WORDS_KIND)
                 for index, piece in enumerate(pack(normalise(value))):

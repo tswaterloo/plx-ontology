@@ -197,7 +197,7 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
 
 
 def aggregate_modes(table: Mapping[str, dict[str, Any]], tools: OntologyTools, *,
-                    prime: bool = True) -> dict[str, dict[str, Any]]:
+                    prime: bool = True, store_path: Any = None) -> dict[str, dict[str, Any]]:
     """The modes of ``plx.aggregate`` (a call naming ``mode``), apart from the table:
     plx.aggregate itself is served by ``CaseHostTools`` (``AggregateTools``), never by the
     table, so a mode registered on the table would never be reached. ``cash_forecast``:
@@ -214,9 +214,12 @@ def aggregate_modes(table: Mapping[str, dict[str, Any]], tools: OntologyTools, *
     reader (``operating.qc_compliance``), its book read on the first question of a day.
     Each wraps the one before:
     a call naming its mode is its own, any other goes on, and one naming no known mode is
-    refused."""
+    refused. ``store_path``: the projection path the host serves (``served_path``: the
+    books' store and people exclusion on Postgres, which lists no database file)."""
     from . import (business_documents, cash_forecast, demand_forecast, margin_variance,
                    proactive_sales, qc_compliance, who_knows)
+    if store_path is not None and getattr(tools, "served_path", None) is None:
+        tools.served_path = store_path   # type: ignore[attr-defined]
 
     def unknown(arguments: Any, actor: Any) -> dict[str, Any]:
         return _error("invalid_input", "mode must be cash_forecast, demand_forecast, "
@@ -1230,7 +1233,8 @@ class CaseHostTools:
         if name == "plx.aggregate" and isinstance(arguments, dict) and "mode" in arguments:
             table = self.table
             if self._modes is None or self._modes[0] is not table:
-                self._modes = (table, aggregate_modes(table, tools))
+                self._modes = (table, aggregate_modes(table, tools,
+                                                      store_path=self.store_path))
             return self._modes[1]["plx.aggregate"]["handler"](arguments, actor)
         if name in ANSWER_TOOLS:
             if self._answers is None or self._answers.base is not tools:

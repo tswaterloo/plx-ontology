@@ -9,7 +9,7 @@ import { lateness, type Status } from "@/lib/status";
 import type { EtaCheck, EvidenceTrail, MaterialRow, NextAction, PoTrail, Source, TrailStep } from "@/lib/types";
 import { EtaPill } from "./eta-confirmed";
 import { EvidenceDrawer } from "./source-chip";
-import { OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
+import { OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 import { StatusBadge, StatusWord } from "./ui/status-badge";
 
 /** What each step kind is, in words, and its dot's status colour. */
@@ -130,9 +130,9 @@ function Step({ step, group, last }: { step: TrailStep; group?: TrailStep[]; las
     </time>
   ) : null;
   return (
-    <li className={cn("relative grid grid-cols-[18px_minmax(0,1fr)] gap-x-3", !last && "pb-3.5")} data-testid="trail-step" data-kind={step.kind}>
-      {!last && <span className="absolute top-[24px] bottom-[3px] left-[8.5px] w-px bg-border-strong" aria-hidden />}
-      <SystemTile system={step.source?.system} size={18} className="mt-[2px]" />
+    <li className={cn("relative grid grid-cols-[40px_minmax(0,1fr)] gap-x-2", !last && "pb-3.5")} data-testid="trail-step" data-kind={step.kind}>
+      {!last && <span className="absolute top-[22px] bottom-[3px] left-[0.5px] w-px bg-border-strong" aria-hidden />}
+      <SystemCode system={step.source?.system} size={18} className="mt-[2px]" />
       <div className="min-w-0">
         <StepSource source={step.source} label={`${kind.label}: ${title}. Open the evidence`} aside={date}>
           {body}
@@ -409,7 +409,7 @@ export function trailNextAction(trail: EvidenceTrail | null | undefined): NextAc
   return t.length === 1 ? (t[0].next_action ?? null) : null;
 }
 
-/** How many steps the trail shows (after merging), for "How we know (N steps)". */
+/** How many steps the trail shows (after merging), for "Evidence (N steps)". */
 export function trailStepCount(trail: EvidenceTrail | null | undefined): number {
   if (!trail) return 0;
   const n = (trail.trails ?? []).reduce((acc, t) => acc + shapeSteps(t.steps ?? []).length + (t.verdict || (t.steps ?? []).some((s) => s.kind === "verdict") ? 1 : 0), 0);
@@ -418,7 +418,7 @@ export function trailStepCount(trail: EvidenceTrail | null | undefined): number 
 }
 
 /**
- * "How we know": the verdict, then the steps behind it newest first (four, then "Show all"),
+ * "Evidence": the verdict, then the steps behind it newest first (four, then "Show all"),
  * each opening its evidence in the drawer. `bare`: no card frame or title (inside an
  * answer's disclosure or a record page section). `inPage`: the page header names the record.
  */
@@ -445,7 +445,7 @@ export function EvidenceTrailCard({
   const whyVerdict = steps.find((s) => s.kind === "verdict");
   return (
     <section className="space-y-4" aria-label="Evidence" data-testid="evidence-trail">
-      {!bare && <h2 className="text-[12px] font-medium leading-4 text-muted">How we know</h2>}
+      {!bare && <h2 className="text-[12px] font-medium leading-4 text-muted">Evidence</h2>}
       {/^how we know/i.test(trail.title) ? <p className="sr-only">{trail.title}</p> : <p className="text-[12px] leading-4 text-muted">{readable(trail.title)}</p>}
       <Materials rows={rows} />
       {gaps.length > 0 && (

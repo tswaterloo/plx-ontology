@@ -7,8 +7,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { AnswerCard } from "@/components/answer-card";
 import { AskBox } from "@/components/ask-box";
 import { loadHome, loadLate } from "@/components/shell";
-import { AgeRing } from "@/components/ui/glyphs";
-import { Monogram } from "@/components/ui/monogram";
+import { lateFigure } from "@/components/ui/glyphs";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { cn } from "@/lib/cn";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
@@ -16,7 +15,8 @@ import { recordLabel } from "@/lib/format";
 import { takePending } from "@/lib/pending";
 import { useSaved } from "@/lib/saved";
 import { useThread } from "@/lib/thread";
-import type { LatePo } from "@/lib/types";
+import { getWorkThread } from "@/lib/api";
+import type { Answer, LatePo } from "@/lib/types";
 
 /** The conversation column and the answer's rail share this frame, and the composer lines up with the column. */
 const FRAME = "mx-auto w-full max-w-[1048px] px-4 sm:px-8";
@@ -60,7 +60,7 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
           <div className="space-y-2 pt-1">
             {[0, 1, 2, 3].map((i) => (
               <div key={i} className="flex items-center gap-3 px-2">
-                <div className="skeleton size-7 rounded-[8px]" />
+                <div className="skeleton size-7 rounded-[3px]" />
                 <div className="skeleton h-3.5 flex-1" />
               </div>
             ))}
@@ -75,15 +75,13 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
               return (
                 <li key={p.object_id}>
                   <button type="button" onClick={() => onAsk(q, p.object_id)} className={row} title={q}>
-                    <Monogram name={p.supplier} size={28} />
                     <span className="min-w-0 flex-1 truncate">
                       <span className="font-medium">{po}</span>
                       {p.supplier && <span className="text-muted"> {p.supplier}</span>}
                     </span>
                     {p.days_late != null && (
-                      <span className="flex shrink-0 items-center gap-1.5 text-[12px] font-medium tabular-nums">
+                      <span className={cn("flex shrink-0 items-center gap-1.5 text-[12px] font-medium num", lateFigure(p.days_late))}>
                         {p.days_late}d
-                        <AgeRing days={p.days_late} size={13} />
                       </span>
                     )}
                   </button>
@@ -135,7 +133,7 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
 function Ask() {
   const params = useSearchParams();
   const router = useRouter();
-  const { turns, run, stop, reset, busy } = useThread();
+  const { turns, run, stop, reset, busy, seed } = useThread();
   const started = useRef<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const lastTurn = useRef<HTMLElement>(null);
@@ -153,6 +151,20 @@ function Ask() {
     }
   }, [q, scope, source, run, reset, turns.length]);
 
+  // "Continue" from the work log: the session's turns as they were answered; a follow-up
+  // carries their history and conversation id like any other.
+  const resumeId = params.get("c");
+  const resumed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!resumeId || q || resumed.current === resumeId) return;
+    resumed.current = resumeId;
+    const c = new AbortController();
+    getWorkThread(`ask:${resumeId}`, c.signal)
+      .then((t) => seed((t.resume.turns ?? []).map((x) => ({ question: x.question, answer: (x.answer ?? null) as unknown as Answer | null, withheld: x.withheld }))))
+      .catch(() => undefined);
+    return () => c.abort();
+  }, [resumeId, q, seed]);
+
   // A new question scrolls to its own top: the answer then grows below it, never under the reader's eyes.
   useEffect(() => {
     if (turns.length > 1) lastTurn.current?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -163,7 +175,8 @@ function Ask() {
     <AskBox
       size={empty ? "lg" : "md"}
       dropUp={!empty}
-      onSubmit={(question, pins) => run(question, pins[0]?.object_id, pins.length ? undefined : source)}
+      onSubmit={(question, pins, files) => run(question, pins[0]?.object_id, pins.length ? undefined : source, files)}
+      attachable
       busy={busy}
       onStop={stop}
       autoFocus={!q}

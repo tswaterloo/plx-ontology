@@ -285,6 +285,21 @@ LAST_GOOD_SECONDS = 12 * 3600   # a main screen's last good page is served stale
 # under 2 s): the read goes on and keeps its page for the next request.
 SERVE_FAST_SECONDS = 1.2
 LAST_GOOD_KEPT = 400
+# Snapshot first (owner 2026-11-11: every page under 1 s): a main screen's last good page
+# read under the inputs served now (``WorkspaceBackend.inputs_stamp``: the store, its delta
+# layers, the gap inbox) and younger than this is served as it is, no read started; one
+# read under other inputs is served marked ``stale_since`` while it is read again.
+SNAPSHOT_FRESH_SECONDS = 600
+INPUTS_POLL_SECONDS = 2.0      # the inputs stamp is read at most this often
+# On an inputs change, the screens read within this long are read again off the request,
+# one at a time, at most SNAPSHOT_REFRESH_KEPT of them (newest first).
+SNAPSHOT_RECENT_SECONDS = 3600
+SNAPSHOT_REFRESH_KEPT = 32
+# Off unless PLX_SNAPSHOT_REFRESH=1: on the live store the inputs move every few minutes
+# (delta layers, migration writes), and each move would read up to SNAPSHOT_REFRESH_KEPT
+# screens again on the same read workers the live requests use. Off, a screen read under
+# older inputs is served marked stale and read again on its own next visit.
+SNAPSHOT_REFRESH = os.environ.get("PLX_SNAPSHOT_REFRESH", "") == "1"
 ACCESS_WAIT_SECONDS = 3       # reading the reader's access state to keep or serve a page
 REWARM_SECONDS = 900
 READER_CACHE_KEPT = 512
@@ -831,9 +846,18 @@ def fan_out(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reade
                     state["halted"] = True
                 failed.append(error)
 
+    # a caller reading as of one moment (``ontology_tools.snapshot_reads``: a record
+    # page's margin) has its helpers read as of that moment too
+    from operating.ontology_tools import current_snapshot, joined_snapshot
+    snap = current_snapshot()
+
+    def helper(view: Any) -> None:
+        with joined_snapshot(snap):
+            drain(wrap(view._call))
+
     helpers = []
     for _ in range(min(width, count) - 1):
-        future = submit(jobs, stopped, reader, lambda view: drain(wrap(view._call)), priority)
+        future = submit(jobs, stopped, reader, helper, priority)
         if deadline is not None:
             future.plx_deadline = deadline   # type: ignore[attr-defined]
         helpers.append(future)

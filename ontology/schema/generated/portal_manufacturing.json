@@ -9,7 +9,7 @@
  "object_types": [
   {
    "id": "RelPublicAppAssemblyOrderDamage",
-   "description": "Generated raw type: one record of the Portal reporting-API relation public.app_assembly_order_damage (Prisma model AssemblyOrderDamage). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal assembly order damage record: a damage record of an assembly order in the Portal (component, damage type, quantity, description). Generated raw type: one record of the Portal reporting-API relation public.app_assembly_order_damage (Prisma model AssemblyOrderDamage). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -258,11 +258,15 @@
      "lines": "7553-7572",
      "note": "model AssemblyOrderDamage @@map(\"app_assembly_order_damage\")"
     }
+   ],
+   "display": [
+    "assembly_order_id",
+    "id"
    ]
   },
   {
    "id": "RelPublicAppAssemblyOrderStatus",
-   "description": "Generated raw type: one record of the Portal reporting-API relation public.app_assembly_order_status (Prisma model AssemblyOrderStatus). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal assembly order status update: a status update of an assembly order in the Portal (quantities made and left, crew size, times). Generated raw type: one record of the Portal reporting-API relation public.app_assembly_order_status (Prisma model AssemblyOrderStatus). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -544,6 +548,10 @@
      "lines": "7574-7596",
      "note": "model AssemblyOrderStatus @@map(\"app_assembly_order_status\")"
     }
+   ],
+   "display": [
+    "assembly_order_id",
+    "id"
    ]
   },
   {
@@ -1560,7 +1568,7 @@
   },
   {
    "id": "RelPublicAppBatchSchedule",
-   "description": "Generated raw type: one record of the Portal reporting-API relation public.app_batch_schedule (Prisma model BatchSchedule). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal batch schedule entry: a scheduled bulk batch slot in the Portal (line, bulk product, dates, status). Generated raw type: one record of the Portal reporting-API relation public.app_batch_schedule (Prisma model BatchSchedule). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -1798,6 +1806,10 @@
      "lines": "7598-7616",
      "note": "model BatchSchedule @@map(\"app_batch_schedule\")"
     }
+   ],
+   "display": [
+    "batch_name",
+    "id"
    ]
   },
   {
@@ -3081,7 +3093,7 @@
   },
   {
    "id": "RelPublicAppProductionTask",
-   "description": "Generated raw type: one record of the Portal reporting-API relation public.app_production_task (Prisma model ProductionTask). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal production task: a production task logged in the Portal against an assembly order (type, category, start and finish, hours, quantity). Generated raw type: one record of the Portal reporting-API relation public.app_production_task (Prisma model ProductionTask). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -3297,6 +3309,10 @@
      "lines": "7632-7655",
      "note": "model ProductionTask @@map(\"app_production_task\")"
     }
+   ],
+   "display": [
+    "mo_id",
+    "id"
    ]
   },
   {
@@ -6330,7 +6346,7 @@
   },
   {
    "id": "RelSilverAssemblyOrderDamage",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.assembly_order_damage. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver assembly order damage: the Portal's cleaned silver copy of a FileMaker assembly order damage record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.assembly_order_damage. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -6601,11 +6617,15 @@
      "commit": "52c9116f77ab",
      "note": "silver.assembly_order_damage is an approved reporting-API relation (manifest domain manufacturing)."
     }
+   ],
+   "display": [
+    "assembly_order_id",
+    "id"
    ]
   },
   {
    "id": "RelSilverAssemblyOrderItems",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.assembly_order_items. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver assembly order item: the Portal's cleaned silver copy of a FileMaker assembly order items record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.assembly_order_items. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -6878,11 +6898,15 @@
      "commit": "52c9116f77ab",
      "note": "silver.assembly_order_items is an approved reporting-API relation (manifest domain manufacturing)."
     }
+   ],
+   "display": [
+    "assembly_order_id",
+    "id"
    ]
   },
   {
    "id": "RelSilverAssemblyOrderStatuses",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.assembly_order_statuses. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver assembly order statuse: the Portal's cleaned silver copy of a FileMaker assembly order statuses record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.assembly_order_statuses. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7135,11 +7159,15 @@
      "commit": "52c9116f77ab",
      "note": "silver.assembly_order_statuses is an approved reporting-API relation (manifest domain manufacturing)."
     }
+   ],
+   "display": [
+    "assembly_order_id",
+    "id"
    ]
   },
   {
    "id": "RelSilverBatchSchedule",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.batch_schedule. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver batch schedule: the Portal's cleaned silver copy of a FileMaker batch schedule record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.batch_schedule. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7359,11 +7387,15 @@
      "commit": "52c9116f77ab",
      "note": "silver.batch_schedule is an approved reporting-API relation (manifest domain manufacturing)."
     }
+   ],
+   "display": [
+    "batch_name",
+    "id"
    ]
   },
   {
    "id": "RelSilverBatches",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.batches. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver batche: the Portal's cleaned silver copy of a FileMaker batches record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.batches. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -8332,11 +8364,16 @@
      "commit": "52c9116f77ab",
      "note": "silver.batches is an approved reporting-API relation (manifest domain manufacturing)."
     }
+   ],
+   "display": [
+    "mo_id",
+    "batch_name",
+    "id"
    ]
   },
   {
    "id": "RelSilverManufacturingOrders",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.manufacturing_orders. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver manufacturing order: the Portal's cleaned silver copy of a FileMaker manufacturing orders record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.manufacturing_orders. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -8733,11 +8770,14 @@
      "commit": "52c9116f77ab",
      "note": "silver.manufacturing_orders is an approved reporting-API relation (manifest domain manufacturing)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
    "id": "RelSilverProductionTasks",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.production_tasks. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver production task: the Portal's cleaned silver copy of a FileMaker production tasks record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.production_tasks. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -8949,6 +8989,10 @@
      "commit": "52c9116f77ab",
      "note": "silver.production_tasks is an approved reporting-API relation (manifest domain manufacturing)."
     }
+   ],
+   "display": [
+    "mo_id",
+    "id"
    ]
   }
  ],

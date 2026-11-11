@@ -243,9 +243,14 @@ class BcCaptures(Reopenable):
     def _record(self, relation: str, row: sqlite3.Row) -> CapturedRecord:
         path = BC_KIND.canonical_path([unquote(p) for p in str(row["path"]).split("/")])
         payload = json.loads(row["payload"])
+        held = payload["row"]
+        if relation in BC_FIELD_PAGES and isinstance(held, dict) and "id" not in held:
+            # A field page row is stored under its parent record's API v2.0 id (the
+            # record path, so the citation names it): that id is the row's key.
+            held = {**held, "id": path[3]}
         return CapturedRecord(
             source=SOURCE, relation=relation, record_key=f"{path[1]}/{path[3]}",
-            row=payload["row"], l1_handle=make_handle(BC_KIND, path, self.generation,
+            row=held, l1_handle=make_handle(BC_KIND, path, self.generation,
                                                       row["capture_id"]),
             field_prefix="row", digest=row["digest"], recorded_at=row["recorded_at"],
             superseded_at=row["superseded_at"], last_seen_at=row["last_seen_at"],

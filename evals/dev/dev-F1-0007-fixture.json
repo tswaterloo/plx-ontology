@@ -19,7 +19,7 @@
  "as_known_at": {
   "time": "2099-01-02T03:04:05Z",
   "l1_generations": {
-   "portal_api": "8a5851cbdc2e491a"
+   "portal_api": "3e2441a266431c3d"
   }
  },
  "closed_transaction": true,
@@ -137,7 +137,7 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f1_chain@305211c73a11",
+  "id": "oracle:f1_chain@8656201efb4b",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
    "devloop/CONTEXT/03-PORTAL.md#3.8 app_manufacturing_order.mo_code = FM assembly_order.nameamo_c",
@@ -150,7 +150,7 @@
    "devloop/CONTEXT/03-PORTAL.md#3.8 canonicalizeStatus Realized or date_realized, not deleted"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
-  "query_digest": "841cbcbabc59efdab92b19149fefcfcf58d317ecf00431994d6d95f3d9e94b25"
+  "query_digest": "5ab252f72787dd17964eb6178a3965d3c5a16a8a4196127fc800a5aef3925851"
  },
  "label": {
   "status": "oracle_only",

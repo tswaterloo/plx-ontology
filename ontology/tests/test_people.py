@@ -174,6 +174,16 @@ class LinksTest(unittest.TestCase):
         self.assertEqual(got, set())
         self.assertEqual(counts["Email.sent_by_person:no_person"], 1)
 
+    def test_an_excluded_teams_participant_gets_no_participant_link(self):
+        members = [{"id": GONE, "display_name": "x", "email": "gone@ours.example"},
+                   {"id": ANA.upper(), "display_name": "y", "email": None}]
+        got, counts = self.links([
+            (_value("TeamsChat:1", json.dumps(members)), "participants"),
+            (_value("TeamsChannel:1", json.dumps(members[:1])), "participants")])
+        # The staff member links; the excluded one is no Person, so nothing names them.
+        self.assertEqual(got, {("TeamsChat:1", "TeamsChat.with_person", f"Person:{ANA}")})
+        self.assertEqual(counts["TeamsChannel.with_person:no_person"], 1)
+
     def test_a_name_two_staff_share_links_nothing(self):
         found, _ = pd.people([box(ANA, "lee@ours.example"), box(BEN, "lee@ours2.example")],
                              {}, PeopleExclusion([GONE]))
@@ -188,6 +198,14 @@ class LinksTest(unittest.TestCase):
     def test_outside_contact_is_no_local_part_match(self):
         got, _ = self.links([(_value("MCTask:4", "buyer"), "assignee")])
         self.assertEqual(got, set())
+
+    def test_teams_participants_name_people_by_entra_id_only(self):
+        oid = "0f0e0d0c-0b0a-4908-8706-050403020100"
+        value = json.dumps([{"id": oid.upper(), "display_name": "A", "email": "a@x.test"},
+                            {"id": "not-a-guid", "email": "b@x.test"}, "loose", {"email": None}])
+        self.assertEqual(pl.keys("participants", value), [("oid", oid)])
+        self.assertEqual(pl.keys("participants", "not json"), [])
+        self.assertEqual(pl.FAMILIES["TeamsChat"]["participants"][0], "TeamsChat.with_person")
 
     def test_link_row_cites_values_not_keys(self):
         _kind, holder = self.people.judge("address", "ana@ours.example")

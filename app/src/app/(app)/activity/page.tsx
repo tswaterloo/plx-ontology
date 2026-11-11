@@ -1,11 +1,10 @@
 "use client";
 
-import { Check, Clock3, ListChecks, X, type LucideIcon } from "lucide-react";
+import { Check, Clock3, ListChecks, Mail, MessageCircle, X, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { SystemTile } from "@/components/ui/glyphs";
 import { LoadProblem } from "@/components/ui/notice";
-import { SlowNote } from "@/components/ui/skeleton";
+import { Pending } from "@/components/ui/skeleton";
 import { StatusWord } from "@/components/ui/status-badge";
 import { Toolbar } from "@/components/ui/toolbar";
 import { actionChip } from "@/lib/actions";
@@ -29,16 +28,16 @@ const KIND: Record<string, string> = {
   assign: "Assigned",
 };
 
-/** Tasks drawn as the app draws its places: a white glyph on a grey tile. */
+/** A task by a plain line glyph. */
 const TASK: Record<string, LucideIcon> = { create_follow_up: ListChecks, mark_done: Check, snooze: Clock3, dismiss: X };
 
 function KindTile({ kind }: { kind: string }) {
-  if (kind === "teams_message") return <SystemTile system="Teams" size={32} />;
-  const Icon = TASK[kind];
-  if (!Icon) return <SystemTile system="Email" size={32} />;
+  const Icon = kind === "teams_message" ? MessageCircle : (TASK[kind] ?? Mail);
+  // the source's own colour: Teams and Mail by their ink, the Workbench's own tasks in the accent
+  const ink = kind === "teams_message" ? "var(--sys-teams-ink)" : TASK[kind] ? "var(--accent)" : "var(--sys-mail-ink)";
   return (
-    <span className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-[linear-gradient(180deg,#90939b,#72757e)] text-white shadow-[inset_0_-1px_0_rgb(0_0_0/0.12)]" aria-hidden>
-      <Icon className="size-[17px]" strokeWidth={2.2} />
+    <span className="flex size-8 shrink-0 items-center" style={{ color: ink }} aria-hidden>
+      <Icon className="size-4" strokeWidth={1.8} />
     </span>
   );
 }
@@ -71,7 +70,7 @@ function Row({ r }: { r: ActionLogRow }) {
   const cites = (r.citations ?? []).length;
   return (
     <li
-      className="grid grid-cols-[32px_minmax(0,1fr)_auto] items-start gap-x-3 lg:items-center rounded-[10px] px-3 py-2.5 hover:bg-hover lg:grid-cols-[32px_minmax(0,1fr)_minmax(0,240px)_184px_80px]"
+      className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-start gap-x-3 lg:items-center rounded-[3px] px-3 py-2.5 hover:bg-hover lg:grid-cols-[44px_minmax(0,1fr)_minmax(0,240px)_184px_80px]"
       data-testid="actions-log-row"
       title={`${formatDateTime(r.at)}, by ${r.actor}. Fingerprint ${r.payload_hash.slice(0, 12)}`}
     >
@@ -106,8 +105,8 @@ function Empty() {
     <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
       <div className="w-full max-w-[340px] space-y-1.5" aria-hidden>
         {["w-[90%]", "w-[62%]", "w-[40%]"].map((w, i) => (
-          <div key={i} className={cn("flex items-center gap-3 rounded-[10px] bg-bg px-3 py-2.5 shadow-lift", i === 1 && "opacity-60", i === 2 && "opacity-30")}>
-            <span className="size-8 shrink-0 rounded-[9px] bg-surface-2" />
+          <div key={i} className={cn("flex items-center gap-3 rounded-[3px] bg-bg px-3 py-2.5 shadow-lift", i === 1 && "opacity-60", i === 2 && "opacity-30")}>
+            <span className="size-8 shrink-0 rounded-[3px] bg-surface-2" />
             <span className="flex-1 space-y-1.5">
               <span className={cn("block h-2.5 rounded-full bg-surface-2", w)} />
               <span className="block h-2 w-1/2 rounded-full bg-[color-mix(in_srgb,var(--fg)_5%,transparent)]" />
@@ -158,35 +157,22 @@ export default function ActivityPage() {
         title={
           <>
             Activity
-            {rows && rows.length > 0 && <span className="ml-2 text-[13px] font-normal tracking-normal tabular-nums text-faint"><span className="sr-only">, </span>{rows.length}</span>}
+            {rows && rows.length > 0 && <span className="ml-2 text-[13px] font-normal tracking-normal num text-faint"><span className="sr-only">, </span>{rows.length}</span>}
           </>
         }
-        className="bg-[color-mix(in_srgb,var(--list)_90%,transparent)]"
+        className="bg-list"
       />
       {error ? (
         <div className="p-5">
           <LoadProblem message={error} onRetry={load} />
         </div>
       ) : !rows ? (
-        <>
-        <SlowNote className="px-5 pt-3" />
-        <ul className="space-y-1 px-2 pt-3 sm:px-3" aria-busy="true" aria-label="Loading activity">
-          {Array.from({ length: 7 }).map((_, i) => (
-            <li key={i} className="flex items-center gap-3 px-3 py-2.5">
-              <span className="skeleton size-8 rounded-[9px]" />
-              <span className="flex-1 space-y-2">
-                <span className={cn("skeleton block h-3", ["w-1/2", "w-2/5", "w-1/3"][i % 3])} />
-                <span className={cn("skeleton block h-2.5", ["w-1/3", "w-1/4"][i % 2])} />
-              </span>
-            </li>
-          ))}
-        </ul>
-        </>
+        <Pending page label="Reading your activity" testId="activity-pending" />
       ) : rows.length === 0 ? (
         <Empty />
       ) : (
         <div className="pb-8" data-testid="actions-log">
-          <div className="hidden h-8 grid-cols-[32px_minmax(0,1fr)_minmax(0,240px)_184px_80px] items-end gap-x-3 px-6 pb-1 text-[11px] leading-4 text-faint lg:grid" aria-hidden>
+          <div className="hidden h-8 grid-cols-[44px_minmax(0,1fr)_minmax(0,240px)_184px_80px] items-end gap-x-3 px-6 pb-1 text-[11px] leading-4 text-faint lg:grid" aria-hidden>
             <span />
             <span>Action</span>
             <span>Record</span>
@@ -197,7 +183,7 @@ export default function ActivityPage() {
             <section key={d.key} aria-label={d.label}>
               <div className="sticky top-[52px] z-10 flex h-9 items-end bg-list px-6 pb-1.5">
                 <h2 className="text-[12px] font-medium text-muted">
-                  {d.label} <span className="font-normal tabular-nums text-faint">{d.rows.length}</span>
+                  {d.label} <span className="font-normal num text-faint">{d.rows.length}</span>
                 </h2>
               </div>
               <ul className="px-3">

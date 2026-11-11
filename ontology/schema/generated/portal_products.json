@@ -9,7 +9,7 @@
  "object_types": [
   {
    "id": "RelPublicAppApprovalRecord",
-   "description": "Generated raw type: one record of the Portal reporting-API relation public.app_approval_record (Prisma model ApprovalRecord). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal approval record: an approval of a Portal record (who approved which record and file version, when). Generated raw type: one record of the Portal reporting-API relation public.app_approval_record (Prisma model ApprovalRecord). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -214,6 +214,10 @@
      "lines": "1145-1173",
      "note": "model ApprovalRecord @@map(\"app_approval_record\")"
     }
+   ],
+   "display": [
+    "record_id",
+    "id"
    ]
   },
   {
@@ -1992,7 +1996,7 @@
   },
   {
    "id": "RelPublicAppSupplierProductTier",
-   "description": "Generated raw type: one record of the Portal reporting-API relation public.app_supplier_product_tier (Prisma model SupplierProductTier). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal supplier price tier: a quantity price tier of a supplier product in the Portal. Generated raw type: one record of the Portal reporting-API relation public.app_supplier_product_tier (Prisma model SupplierProductTier). Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -2178,6 +2182,9 @@
      "lines": "1768-1784",
      "note": "model SupplierProductTier @@map(\"app_supplier_product_tier\")"
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
@@ -6389,7 +6396,7 @@
   },
   {
    "id": "RelSilverBulkProducts",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.bulk_products. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver bulk product: the Portal's cleaned silver copy of a FileMaker bulk products record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.bulk_products. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -6576,11 +6583,14 @@
      "commit": "52c9116f77ab",
      "note": "silver.bulk_products is an approved reporting-API relation (manifest domain products)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
    "id": "RelSilverFinishedProductItems",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.finished_product_items. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver finished product item: the Portal's cleaned silver copy of a FileMaker finished product items record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.finished_product_items. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -6900,11 +6910,14 @@
      "commit": "52c9116f77ab",
      "note": "silver.finished_product_items is an approved reporting-API relation (manifest domain products)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
    "id": "RelSilverFinishedProducts",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.finished_products. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver finished product: the Portal's cleaned silver copy of a FileMaker finished products record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.finished_products. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7163,11 +7176,14 @@
      "commit": "52c9116f77ab",
      "note": "silver.finished_products is an approved reporting-API relation (manifest domain products)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
    "id": "RelSilverPackaging",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.packaging. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver packaging: the Portal's cleaned silver copy of a FileMaker packaging record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.packaging. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7467,11 +7483,14 @@
      "commit": "52c9116f77ab",
      "note": "silver.packaging is an approved reporting-API relation (manifest domain products)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
    "id": "RelSilverPackagingSuppliers",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.packaging_suppliers. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver packaging supplier: the Portal's cleaned silver copy of a FileMaker packaging suppliers record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.packaging_suppliers. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7686,11 +7705,14 @@
      "commit": "52c9116f77ab",
      "note": "silver.packaging_suppliers is an approved reporting-API relation (manifest domain products)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
    "id": "RelSilverRawMaterialSuppliers",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.raw_material_suppliers. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver raw material supplier: the Portal's cleaned silver copy of a FileMaker raw material suppliers record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.raw_material_suppliers. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7960,11 +7982,14 @@
      "commit": "52c9116f77ab",
      "note": "silver.raw_material_suppliers is an approved reporting-API relation (manifest domain products)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
    "id": "RelSilverRawMaterials",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.raw_materials. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver raw material: the Portal's cleaned silver copy of a FileMaker raw materials record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.raw_materials. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -8407,6 +8432,9 @@
      "commit": "52c9116f77ab",
      "note": "silver.raw_materials is an approved reporting-API relation (manifest domain products)."
     }
+   ],
+   "display": [
+    "id"
    ]
   }
  ],

@@ -108,13 +108,25 @@ def quantity_holders(builder, projector):
 
 class MigrationReviewTests(unittest.TestCase):
 
+    TRIPWIRE = "1"
+
     def setUp(self):
+        # the guard both ways: the tripwire (an undeclared read fails) and a build's
+        # default (held rows out of sight), which must read alike otherwise
+        tripwire = mock.patch.dict("os.environ", {"PLX_STEP_TRIPWIRE": self.TRIPWIRE})
+        tripwire.start()
+        self.addCleanup(tripwire.stop)
         import psycopg
         from operating import build_steps
         original = build_steps.post_project
+        # The migration mechanics below change PurchaseOrderLine as a type no step reads.
+        # supply_pegging reads it (its own requirement is proven in
+        # test_a_second_code_only_migration_and_one_after_a_revert_apply), so these builds
+        # run every other step.
         patcher = mock.patch.object(
             build_steps, "post_project",
-            lambda *a, **k: {**original(*a, **k), "same_number": same_number})
+            lambda *a, **k: {**{n: f for n, f in original(*a, **k).items()
+                                if n != "supply_pegging"}, "same_number": same_number})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.name, self.dsn = pg_testdb.create_db()
@@ -285,6 +297,8 @@ class MigrationReviewTests(unittest.TestCase):
         self.assertTrue([k for k in stepped if before.get(k) != after.get(k)])
 
     def test_a_step_reading_an_undeclared_type_fails_the_step_build(self):
+        if self.TRIPWIRE != "1":
+            self.skipTest("the tripwire's own refusal")
         from ontology.step_migrate import STEPS, Spec, UndeclaredRead
 
         self.load()
@@ -312,6 +326,8 @@ class MigrationReviewTests(unittest.TestCase):
                                steps={"quantity_holders": quantity_holders})
 
     def test_a_step_reading_a_property_held_by_an_undeclared_type_fails_the_step_build(self):
+        if self.TRIPWIRE != "1":
+            self.skipTest("the tripwire's own refusal")
         from ontology.step_migrate import Spec, UndeclaredRead
 
         self.load()
@@ -384,9 +400,16 @@ class MigrationReviewTests(unittest.TestCase):
         from ontology.schema_migrate import diff
         from operating.pg import ontology_migrate
 
+        from ontology.step_migrate import present_steps
+
         self.load()
         forced = diff(self.old, self.old, force=["b:t.gold_line"])
         self.assertEqual(forced["refused"], [])
+        # with the pegging step built, the same line change is no unit-only migration: the
+        # step reading the lines must run again, and the unit diff refuses it alone
+        pegged = diff(self.old, self.old, force=["b:t.gold_line"],
+                      present=[*present_steps(), "supply_pegging"])
+        self.assertIn("step_input_changed:supply_pegging:PurchaseOrderLine", pegged["refused"])
         for name in ("code-1.sqlite", "code-2.sqlite"):   # a code-only change, twice
             applied = ontology_migrate.apply_migration(
                 self.unit_layer(forced, self.old, name), self.dsn)
@@ -433,6 +456,12 @@ class MigrationReviewTests(unittest.TestCase):
                 "AND link_id COLLATE \"C\" < %s", ("crb-po-", "crb-po.")))
             pg.rollback()
         self.assertIn("link_rows_by_id", plan)
+
+
+class MigrationReviewTestsDefaultGuard(MigrationReviewTests):
+    """The same, with a build's default guard (no tripwire)."""
+
+    TRIPWIRE = "0"
 
 
 if __name__ == "__main__":

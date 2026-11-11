@@ -31,6 +31,9 @@ NOT_DECLARED = {
     "ontology/project_incremental.py", "ontology/delta.py", "ontology/reviews.py",
     "ontology/schema_migrate.py", "ontology/step_migrate.py", "ontology/store_ddl.py",
     "operating/ai_watcher.py", "operating/proactive_engine.py", "operating/pg/migrate.py",
+    # build-side projection stores added by migration-next (scratch SQLite the build writes and drops)
+    "ontology/mention_cache.py", "ontology/step_layer_workers.py", "ontology/store.py",
+    "ontology/unit_layer_fit.py",
 }
 
 

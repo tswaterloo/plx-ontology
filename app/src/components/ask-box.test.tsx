@@ -136,7 +136,7 @@ describe("AskBox autocomplete", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledWith("why is Northbay Soap Co. late", [
       { object_id: "Customer:northbay", type: "Customer", label: "Northbay Soap Co." },
-    ]);
+    ], []);
   });
 
   it("drops a pin whose name was edited out of the question", async () => {
@@ -149,7 +149,7 @@ describe("AskBox autocomplete", () => {
     fireEvent.keyDown(box, { key: "Tab" });
     type(box, "something else");
     fireEvent.keyDown(box, { key: "Enter" });
-    expect(onSubmit).toHaveBeenCalledWith("something else", []);
+    expect(onSubmit).toHaveBeenCalledWith("something else", [], []);
   });
 
   it("Escape closes the list and Enter then submits", async () => {
@@ -161,7 +161,7 @@ describe("AskBox autocomplete", () => {
     fireEvent.keyDown(box, { key: "Escape" });
     expect(box).toHaveAttribute("aria-expanded", "false");
     fireEvent.keyDown(box, { key: "Enter" });
-    expect(onSubmit).toHaveBeenCalledWith("northbya", []);
+    expect(onSubmit).toHaveBeenCalledWith("northbya", [], []);
   });
 
   it("a failed lookup shows no list and no error text", async () => {

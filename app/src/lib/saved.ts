@@ -3,9 +3,11 @@
 // Saved items live in this browser (localStorage), one list per signed-in
 // person, and that person's list is deleted on sign-out, so a shared device
 // never shows one person's saved questions to the next. With nobody signed in
-// there is no list and nothing can be saved.
+// there is no list and nothing can be saved. Each Save and Unsave is also kept
+// in the person's work log on the server (best effort: the browser list stands).
 
 import { useSyncExternalStore } from "react";
+import { logSaved } from "./api";
 
 export interface SavedItem {
   key: string; // "q:<question>" or "o:<type>/<id>"
@@ -108,10 +110,15 @@ export function useSaved(): SavedItem[] {
 export function toggleSaved(item: Omit<SavedItem, "at">): boolean {
   if (!user) return false;
   const items = read();
-  if (items.some((s) => s.key === item.key)) {
-    write(items.filter((s) => s.key !== item.key));
-    return false;
-  }
-  write([{ ...item, at: new Date().toISOString() }, ...items]);
-  return true;
+  const saved = !items.some((s) => s.key === item.key);
+  write(saved ? [{ ...item, at: new Date().toISOString() }, ...items] : items.filter((s) => s.key !== item.key));
+  // "o:<type>/<id>": a record; "q:<question>": a question
+  const record = item.kind === "object" ? /^o:([^/]+)\/(.+)$/.exec(item.key) : null;
+  void logSaved({
+    saved,
+    kind: item.kind,
+    label: item.label.slice(0, 300) || "Saved",
+    ...(record ? { object_type: record[1], object_id: record[2] } : {}),
+  }).catch(() => undefined);
+  return saved;
 }

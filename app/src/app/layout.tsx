@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import { Host_Grotesk } from "next/font/google";
+import { GeistMono } from "geist/font/mono";
 import { AuthProvider } from "@/components/auth";
 import { StyleNonce } from "@/components/nonce";
 import { ThemeProvider } from "@/components/theme";
@@ -10,6 +11,7 @@ import "./globals.css";
 // Host Grotesk: a crisp grotesque with tabular figures, at home at 12 to 13 px in a dense app.
 // The variable font, so Windows can set body text a touch heavier (globals.css). Served from
 // the app itself (next/font fetches it at build time), so the CSP's font-src 'self' holds.
+// Geist Mono (bundled with the geist package, served locally) sets only the PLX of the wordmark.
 const sans = Host_Grotesk({ subsets: ["latin"], variable: "--font-host", display: "swap" });
 
 export const metadata: Metadata = {
@@ -25,8 +27,8 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f6f5" },
-    { media: "(prefers-color-scheme: dark)", color: "#1f1f22" },
+    { media: "(prefers-color-scheme: light)", color: "#f5f6f8" },
+    { media: "(prefers-color-scheme: dark)", color: "#1c1f24" },
   ],
 };
 
@@ -35,7 +37,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // proxy's fresh CSP nonce (src/proxy.ts).
   const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
-    <html lang="en-CA" suppressHydrationWarning className={sans.variable}>
+    <html lang="en-CA" suppressHydrationWarning className={`${sans.variable} ${GeistMono.variable}`}>
       <head>
         {/* Removes an access link's #ticket= before the router records the URL. */}
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: TICKET_BOOT_SCRIPT }} />

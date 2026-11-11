@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { MeetingFollowUpView, MyActionItemsView, statusText, type Action, type FollowUp } from "./follow-up";
+import { groupActions, MeetingFollowUpView, MyActionItemsView, statusText, type Action, type FollowUp } from "./follow-up";
 
 const cite = (t: string) => [`transcript://granola/m1@abc#t=${t}`];
 const actions: Action[] = [
@@ -37,8 +37,33 @@ describe("meeting follow-up", () => {
 
   it("lists my items with their meeting and status", () => {
     render(<MyActionItemsView items={[{ ...actions[0], meeting: "Ops weekly", meeting_id: "m1" }]} />);
-    expect(screen.getByText("Ops weekly").getAttribute("href")).toBe("/meetings/m1");
+    // the row and the "open by meeting" rail both link the meeting
+    const links = screen.getAllByText("Ops weekly").map((e) => e.closest("a")?.getAttribute("href"));
+    expect(links).toEqual(["/meetings/m1", "/meetings/m1"]);
     expect(statusText(actions[0])).toBe("Overdue, due 2099-01-02");
     expect(statusText(actions[2])).toBe("Done: purchase order created");
+  });
+
+  it("groups items overdue first, done last, by due date against today; counts agree", () => {
+    const today = new Date(2099, 0, 5);
+    const items: Action[] = [
+      { ...actions[2] },
+      { ...actions[1], id: "later", due: "2099-01-20" },
+      { ...actions[1], id: "undated" },
+      { ...actions[1], id: "week", due: "2099-01-08" },
+      { ...actions[1], id: "past", due: "2099-01-04" },
+      { ...actions[0] },
+    ];
+    expect(groupActions(items, today).map((g) => [g.key, g.items.map((a) => a.id)])).toEqual([
+      ["overdue", ["past", "a1"]],
+      ["week", ["week"]],
+      ["later", ["later"]],
+      ["undated", ["undated"]],
+      ["done", ["a3"]],
+    ]);
+    render(<MyActionItemsView items={items} today={today} />);
+    expect(screen.getAllByTestId("action-item")).toHaveLength(6);
+    const figures = Object.fromEntries([...document.querySelectorAll("dl div")].map((d) => [d.querySelector("dt")?.textContent, d.querySelector("dd")?.textContent]));
+    expect(figures).toMatchObject({ Open: "5", Overdue: "2", "Due this week": "1", Done: "1" });
   });
 });

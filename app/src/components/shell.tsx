@@ -5,7 +5,7 @@ import { BellRing, Bookmark, Bot, CalendarClock, Clock3, History, Inbox, Message
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { getHome, getLateList, getOpsHealth, type OpsCheck, type OpsHealth } from "@/lib/api";
+import { getHome, getLateList, getOpsAlarms, getOpsHealth, type OpsAlarms, type OpsCheck, type OpsHealth } from "@/lib/api";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
 import { plainServerNote, SYSTEM_LABEL } from "@/lib/format";
@@ -14,8 +14,7 @@ import { stashPending } from "@/lib/pending";
 import { useShortcut } from "@/lib/platform";
 import { useSaved } from "@/lib/saved";
 import type { HomeResponse, LatePo } from "@/lib/types";
-import { PlaceTile, SystemTile } from "./ui/glyphs";
-import { Monogram } from "./ui/monogram";
+import { PlaceIcon, SystemCode } from "./ui/glyphs";
 import { RequireAuth, useAuth } from "./auth";
 import { ThemeToggle } from "./theme";
 import { Pending } from "./ui/skeleton";
@@ -23,38 +22,38 @@ import { ErrorNotice } from "./ui/notice";
 
 const TZ = "America/Toronto";
 
-/** The bench: an oak top on two legs, the legs in the text colour. */
-export function BenchMark({ className }: { className?: string }) {
+/**
+ * The cube mark: a block with one corner cut away, in the app's three accents (cyan top,
+ * blue lit face, navy shaded face). Flat polygons on no tile; the same drawing as the
+ * favicon and install icons. Sized in em so it follows the wordmark.
+ */
+export function CubeMark({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 32 32" aria-hidden className={cn("size-[18px] shrink-0", className)}>
-      <g transform="translate(0 -1.7)">
-        <path className="fill-oak" d="M3.5 9h25a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-25A1.5 1.5 0 0 1 2 13.5v-3A1.5 1.5 0 0 1 3.5 9z" />
-        <path fill="currentColor" d="M7.6 15h4.2l-2.6 10.6a1 1 0 0 1-1 .8H5.3a.8.8 0 0 1-.8-1z M20.2 15h4.2l3.1 10.4a.8.8 0 0 1-.8 1h-2.9a1 1 0 0 1-1-.8z" />
-      </g>
+    <svg viewBox="0 0 20.78 24" className={cn("h-[1.2em] w-auto shrink-0", className)} aria-hidden focusable="false" data-testid="cube-mark">
+      <polygon points="10.39,12 15.59,15 10.39,18 5.2,15" fill="#4FDCEA" />
+      <polygon points="10.39,12 5.2,15 5.2,9 10.39,6" fill="var(--cube-right)" />
+      <polygon points="10.39,12 15.59,15 15.59,9 10.39,6" fill="#4DA8FF" />
+      <polygon points="10.39,0 20.78,6 15.59,9 10.39,6 5.2,9 0,6" fill="#4FDCEA" />
+      <polygon points="20.78,18 10.39,24 10.39,18 15.59,15 15.59,9 20.78,6" fill="var(--cube-right)" />
+      <polygon points="0,18 10.39,24 10.39,18 5.2,15 5.2,9 0,6" fill="#4DA8FF" />
     </svg>
   );
 }
 
-/** The app icon in small: the white bench on its forest tile. */
-export function AppIcon({ className }: { className?: string }) {
-  return (
-    <span className={cn("flex size-[22px] shrink-0 items-center justify-center rounded-[6px] bg-gradient-to-b from-[#2e8a5f] to-[#1b5e40] text-white shadow-[inset_0_-1px_0_rgb(0_0_0/0.15)]", className)} aria-hidden>
-      <svg viewBox="0 0 32 32" className="size-[15px]">
-        <g transform="translate(0 -1.7)">
-          <path fill="#fff" d="M3.5 9h25a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-25A1.5 1.5 0 0 1 2 13.5v-3A1.5 1.5 0 0 1 3.5 9z" />
-          <path fill="currentColor" d="M7.6 15h4.2l-2.6 10.6a1 1 0 0 1-1 .8H5.3a.8.8 0 0 1-.8-1z M20.2 15h4.2l3.1 10.4a.8.8 0 0 1-.8 1h-2.9a1 1 0 0 1-1-.8z" />
-        </g>
-      </svg>
-    </span>
-  );
-}
-
+/**
+ * The wordmark: the cube, then PLX/workbench in Geist Mono with the slash in the bright blue
+ * (--brand-slash: #4DA8FF on dark, #2E8FF0 on light, 3:1 or better either way). Every part
+ * after the cube carries data-wm="rest", so the collapsed sidebar can show the cube alone.
+ * Sizes are in em, so the sign-in page can scale it.
+ */
 export function Logo({ className }: { className?: string }) {
   return (
-    <span className={cn("inline-flex items-center gap-2 text-[14px] leading-5 font-semibold tracking-[-0.01em] text-fg", className)}>
-      <AppIcon />
-      <span>
-        PLX <span className="font-normal text-muted">Workbench</span>
+    <span className={cn("inline-flex items-center gap-[0.5em] font-mark text-[14px] leading-5 text-fg", className)}>
+      <CubeMark />
+      <span data-wm="rest" className="inline-flex items-baseline">
+        <span className="font-semibold tracking-[-0.04em]">PLX</span>
+        <span className="px-[0.12em] font-medium text-brand-slash" aria-hidden>/</span>
+        <span className="text-[0.93em] font-normal tracking-[-0.01em] text-muted">workbench</span>
       </span>
     </span>
   );
@@ -182,7 +181,7 @@ export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolea
   { href: "/team", label: "Team", icon: Users, grant: true },
   { href: "/ask", label: "Ask", icon: MessageCircle },
   { href: "/watching", label: "Watching", icon: BellRing },
-  { href: "/activity", label: "Activity", icon: History },
+  { href: "/work-log", label: "Work log", icon: History },
 ];
 
 /** Whether this reader sees Team: a declared full-read grant or the owner. */
@@ -226,7 +225,7 @@ function SyncStatus({ home }: { home: HomeResponse | null }) {
         title={`Updated ${when(f.as_of)}`}
         data-testid="home-freshness"
       >
-        <RefreshCw className="size-[14px] shrink-0 text-faint" strokeWidth={2} aria-hidden />
+        <RefreshCw className={cn("size-[14px] shrink-0", behind.length ? "text-faint" : "text-live")} strokeWidth={2} aria-hidden />
         <span className="min-w-0 text-[12px] leading-4 max-xl:hidden">
           <span className="block text-muted">Updated {when(f.as_of, true)}</span>
           {behind.length > 0 && <span className="block truncate text-faint">{behind.map((s) => name(s.system)).join(" and ")} behind</span>}
@@ -236,8 +235,9 @@ function SyncStatus({ home }: { home: HomeResponse | null }) {
         <Menu.Content side="top" align="start" sideOffset={6} className="z-50 w-72 rounded-xl bg-raised p-1.5 shadow-pop" data-testid="sync-detail">
           {sources.map((s) => (
             <div key={s.system} className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-row">
-              <SystemTile system={s.system} size={18} />
+              <SystemCode system={s.system} size={18} />
               <span className="flex-1 truncate">{name(s.system)}</span>
+              {!(s.stale || s.capture === "failed") && s.as_of && <span className="size-1.5 shrink-0 bg-live" aria-hidden data-testid="fresh-mark" />}
               <span className={cn("text-meta tabular-nums", s.stale || s.capture === "failed" ? "text-fg" : "text-muted")}>
                 {s.as_of ? when(s.as_of) : "never"}
                 {(s.stale || s.capture === "failed") && " · behind"}
@@ -261,6 +261,7 @@ const OPS_LABEL: Record<string, string> = {
   api_reachable: "API",
   ingest_start: "Update restarts",
   config_keys_ignored: "Ignored settings",
+  search_follow_last_pass: "Search index",
 };
 
 const CAPTURE_LABEL: Record<string, string> = {
@@ -272,6 +273,10 @@ const CAPTURE_LABEL: Record<string, string> = {
   sharepoint: "SharePoint files",
   sharepoint_lists: "SharePoint lists",
   teams: "Teams",
+  sage: "Sage",
+  filemaker: "FileMaker",
+  calendar: "Calendar",
+  planner: "Planner",
 };
 
 /** "Last update cycle", "SharePoint lists capture"; an unknown name in words, never its raw id. */
@@ -350,6 +355,57 @@ export function OpsStatus({ every = 60_000 }: { every?: number }) {
   );
 }
 
+/** "12:36 PM ET" today, "Nov 9, 12:36 PM ET" before: the owner reads times in Eastern. */
+export function eastern(iso?: string | null, now = new Date()): string {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  const tz = "America/New_York";
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz });
+  const day = (x: Date) => x.toLocaleDateString("en-CA", { timeZone: tz });
+  if (day(d) === day(now)) return `${time} ET`;
+  return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: tz })}, ${time} ET`;
+}
+
+/** The owner's red banner on Home: open reliability incidents (a stopped refresh, a failed
+ * or OOM-killed unit, Postgres, disk, memory, backups), or the checks themselves not running.
+ * Nothing for any other reader (the route answers 403) or when all is well. */
+export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; className?: string }) {
+  const { state } = useAuth();
+  const owner = state.status === "signed-in" && !!state.me?.access_label;
+  const [alarms, setAlarms] = useState<OpsAlarms | null>(null);
+  useEffect(() => {
+    if (!owner) return;
+    let live = true;
+    const ctl = new AbortController();
+    const load = () => getOpsAlarms(ctl.signal).then((a) => live && setAlarms(a), () => live && setAlarms(null));
+    load();
+    const id = setInterval(load, every);
+    return () => {
+      live = false;
+      ctl.abort();
+      clearInterval(id);
+    };
+  }, [owner, every]);
+  if (!owner || !alarms || !alarms.configured) return null;
+  const open = alarms.open ?? [];
+  if (open.length === 0 && alarms.running) return null;
+  const text = open.length > 0
+    ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.slice(0, 3).map((i) => i.line).join(" · ")}${open.length > 3 ? ` · ${open.length - 3} more` : ""}`
+    : `Reliability checks are not running${alarms.checked_at ? ` (last ${eastern(alarms.checked_at)})` : ""}; nothing would page you.`;
+  return (
+    <Link
+      href="/ops"
+      role="alert"
+      title={text}
+      className={cn("flex items-center gap-1.5 border-b border-late-line bg-late-soft px-5 py-1 text-[12px] leading-4 text-late hover:underline", className)}
+      data-testid="ops-alarm-banner"
+    >
+      <TriangleAlert className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+      <span className="min-w-0 truncate">{text}</span>
+    </Link>
+  );
+}
+
 function NavItem({ href, label, count, onNavigate }: { href: string; label: string; count?: number | null; onNavigate?: () => void }) {
   const path = usePathname();
   const on = isOn(path, href);
@@ -360,14 +416,14 @@ function NavItem({ href, label, count, onNavigate }: { href: string; label: stri
       aria-current={on ? "page" : undefined}
       title={label}
       className={cn(
-        "group flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] leading-none max-xl:justify-center max-xl:px-0",
-        on ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] font-medium text-fg" : "text-fg/90 hover:bg-hover",
+        "group flex h-7 items-center gap-2.5 rounded-r-[2px] border-l-2 px-2 text-[13px] leading-none max-xl:justify-center max-xl:px-0",
+        on ? "border-accent bg-nav-on font-medium text-fg" : "border-transparent text-fg/90 hover:bg-hover",
       )}
     >
-      <PlaceTile href={href} />
+      <PlaceIcon href={href} className={on ? undefined : "opacity-85 group-hover:opacity-100"} />
       <span className="flex-1 truncate max-xl:sr-only">{label}</span>
       {typeof count === "number" && count > 0 && (
-        <span className="text-[12px] tabular-nums text-muted max-xl:hidden" aria-label={`${count} late`}>
+        <span className="num text-[12px] text-muted max-xl:hidden" aria-label={`${count} late`}>
           {count}
         </span>
       )}
@@ -402,11 +458,10 @@ function LateBySupplier() {
               key={name}
               href={on ? "/" : `/?supplier=${encodeURIComponent(name)}`}
               aria-current={on ? "true" : undefined}
-              className={cn("flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px]", on ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] font-medium" : "text-fg/90 hover:bg-hover")}
+              className={cn("flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px]", on ? "bg-nav-on font-medium" : "text-fg/90 hover:bg-hover")}
             >
-              <Monogram name={name} size={20} />
               <span className="flex-1 truncate">{name}</span>
-              <span className="text-[12px] tabular-nums text-muted">{n}</span>
+              <span className="num text-[12px] text-muted">{n}</span>
             </Link>
           );
         })}
@@ -445,7 +500,7 @@ function Sidebar() {
     <aside className="hidden w-[60px] shrink-0 flex-col border-r border-border bg-sidebar lg:flex xl:w-[240px]" aria-label="Sidebar">
       <div className="flex h-[52px] shrink-0 items-center justify-center xl:justify-start xl:px-5">
         <Link href="/" aria-label="PLX Workbench, My work">
-          <Logo className="max-xl:[&>span:last-child]:hidden" />
+          <Logo className="max-xl:[&>[data-wm=rest]]:hidden max-xl:text-[16px]" />
         </Link>
       </div>
       <div className="px-3">
@@ -533,7 +588,7 @@ function initialsOf(name: string) {
 function Avatar({ name, className }: { name: string; className?: string }) {
   return (
     <span
-      className={cn("flex size-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-[#7d8794] to-[#5c6672] text-[10px] font-semibold text-white", className)}
+      className={cn("flex size-6 shrink-0 items-center justify-center rounded-[3px] bg-surface-2 text-[10px] font-semibold text-muted", className)}
       aria-hidden
     >
       {initialsOf(name) || "?"}
@@ -613,7 +668,7 @@ function TabBar() {
   return (
     <nav
       aria-label="Main"
-      className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-[color-mix(in_srgb,var(--bg-subtle)_88%,transparent)] pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
+      className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-bg-subtle pb-[env(safe-area-inset-bottom)] lg:hidden"
       data-testid="tab-bar"
     >
       <div className="mx-auto grid h-[52px] max-w-md grid-cols-5">
@@ -685,7 +740,7 @@ function MobileTitleBar() {
   const path = usePathname();
   if (path === "/" || TOOLBAR_PAGES.some((p) => path === p || path.startsWith(`${p}/`))) return null;
   return (
-    <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-[color-mix(in_srgb,var(--bg-subtle)_88%,transparent)] px-4 backdrop-blur-xl lg:hidden">
+    <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-bg-subtle px-4 lg:hidden">
       <Link href="/" aria-label="My work">
         <Logo />
       </Link>
@@ -697,12 +752,12 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot"];
+export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/work-log"];
 
 function ShellSkeleton() {
   return (
     <div className="mx-auto w-full max-w-[1200px] px-4 pt-8 sm:px-8">
-      <Pending label="Signing in" />
+      <Pending label="Signing in" after={600} />
     </div>
   );
 }

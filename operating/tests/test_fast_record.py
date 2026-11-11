@@ -157,6 +157,100 @@ class RecordStatusTests(unittest.TestCase):
             with self.assertRaises(fast_answer.Unanswerable, msg=str(kwargs)):
                 _run(_answers(then=False, **kwargs), as_of=SENT)
 
+    def test_a_record_not_held_as_written_is_found_in_its_other_forms(self):
+        ao = 'AssemblyOrder:portal.fm_assembly_order:{"id":1}'
+        cpo = 'CustomerPurchaseOrder:portal.sage_oe_order_header.ponumber:{"orduniq":"7"}'
+        item = 'Product:bc.items:{"id":"8739"}'
+        held = {"AO-26278A": [_candidate(ao, H, "AssemblyOrder", "AO-26278A")],
+                "8739": [_candidate(item, H, "Product", "8739"),
+                         _candidate(cpo, H_SAGE, "CustomerPurchaseOrder", "8739")]}
+
+        def answers(name, args):
+            if name == "plx.find":
+                return {"candidates": held.get(args["query"], [])}
+            return _answers()(name, args)
+        draft, reads = _run(answers, token="AO26278A")
+        self.assertEqual([a["query"] for n, a in reads.calls if n == "plx.find"],
+                         ["AO26278A", "AO-26278A"])
+        self.assertTrue(draft.sentences[0].startswith("Assembly order AO-26278A:"))
+        # the number alone is read only as a record its document word names: the
+        # customer's PO, never the product coded the same number
+        draft, _reads = _run(answers, token="CPO8739")
+        self.assertEqual(draft.roots[0]["object_type"], "CustomerPurchaseOrder")
+        with self.assertRaises(fast_answer.Unanswerable):
+            _run(answers, token="XY8739")        # a word no type's initials end with
+        with self.assertRaises(fast_answer.Unanswerable):
+            _run(answers, token="MC3025-GR")     # no other form: not found stays not found
+
+    def test_one_product_in_many_systems_its_own_code_before_a_reference(self):
+        bc = 'Product:bc.items:{"id":"1"}'
+        own = 'Product:portal.app_product:{"id":"a"}'
+        ref = 'Product:portal.app_product:{"id":"b"}'
+        sage = 'Product:portal.sage_ic_item:{"itemno":"DVS-016"}'
+        candidates = [_candidate(bc, H, "Product", "DVS-016"),
+                      _candidate(own, H, "Product", "DVS-016"),
+                      dict(_candidate(ref, H, "Product", "DVS-016"),
+                           matched={"identifier_kind": "erp_item_code", "normalized": "DVS-016",
+                                    "raw": _cell("DVS-016", H, "row.erp_code")}),
+                      dict(_candidate(sage, H_SAGE, "Product", "DVS-016"),
+                           matched={"identifier_kind": "erp_item_code", "normalized": "DVS-016",
+                                    "raw": _cell("DVS-016", H_SAGE, "row.itemno")})]
+        card = [_value("name", "text", _cell("Zogic Euca 4L", H, "row.name")),
+                _value("description", "text", _cell("long free text", H, "row.description"))]
+        draft, _reads = _run(_answers(candidates=candidates, card=card), token="DVS-016")
+        self.assertEqual(len(draft.sentences), 3)    # BC, the Portal's own, Sage's own
+        self.assertNotIn(ref, [r["object_id"] for r in draft.roots])
+        self.assertIn("name Zogic Euca 4L", draft.sentences[0])
+        self.assertNotIn("free text", " ".join(draft.sentences))
+        # two records of one system are two records: the reader's choice, never picked
+        with self.assertRaises(fast_answer._Choice):
+            _run(_answers(candidates=candidates + [_candidate(
+                'Product:bc.items:{"id":"2"}', H, "Product", "DVS-016")], card=card),
+                token="DVS-016")
+
+    def test_a_record_that_says_nothing_is_said_through_the_one_record_carrying_it(self):
+        cpo = 'CustomerPurchaseOrder:portal.sage_oe_order_header.ponumber:{"orduniq":"7"}'
+        link = {"link_type": "SalesOrder.references_customer_po", "direction": "reverse",
+                "count": 1, "tiers": {"verified": 1}}
+
+        def answers(links, objects):
+            def run(name, args):
+                if name == "plx.find":
+                    return {"candidates": [_candidate(cpo, H_SAGE, "CustomerPurchaseOrder",
+                                                      "8739")]}
+                if name == "plx.object" and args["object_id"] == cpo:
+                    return {"values": [_value("po_text", "identifier", "8739", H_SAGE)],
+                            "linked_counts": links}
+                if name == "plx.around":
+                    return {"objects": objects}
+                return _answers()(name, args)
+            return run
+        so = {"object_id": SO, "object_type": "SalesOrder",
+              "display": _cell("OR1000154182", H, "row.order_number")}
+        draft, reads = _run(answers([link], [so]), token="8739")
+        self.assertEqual(len(draft.sentences), 1)
+        self.assertTrue(draft.sentences[0].startswith(
+            "Sales order OR1000154182 references customer purchase order 8739:"))
+        self.assertIn("READY_TO_SHIP", draft.sentences[0])
+        # a lead link, two links, or two carrying records: nothing is said
+        for links, objects in (([dict(link, tiers={"lead": 1})], [so]),
+                               ([link, dict(link, link_type="X.y")], [so]),
+                               ([link], [so, dict(so, object_id=SO_SAGE)])):
+            with self.assertRaises(fast_answer.Unanswerable):
+                _run(answers(links, objects), token="8739")
+
+
+    def test_a_card_quantity_is_never_said_a_name_is_as_held(self):
+        card = [_value("ordered_pieces", "quantity", "5000", unit="each",
+                       quantity_role="ordered"),
+                _value("name", "text", _cell("Z101 Spray  4G/Cse", H, "row.desc"))]
+        draft, _reads = _run(_answers(card=card))
+        said = {v["name"]: v for v in draft.values}
+        # its role contract is the source's (a planned yield, ordered pieces): the gate
+        # refuses a card's quantity whose role the card cannot settle
+        self.assertNotIn("ordered_pieces", said)
+        self.assertEqual(said["name"]["value"], "Z101 Spray  4G/Cse")   # the cell's own text
+
 
 if __name__ == "__main__":
     unittest.main()

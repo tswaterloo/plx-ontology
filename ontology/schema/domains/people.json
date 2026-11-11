@@ -483,6 +483,261 @@
      ]
     }
    ]
+  },
+  {
+   "id": "TeamsChat.with_person",
+   "from": "TeamsChat",
+   "to": "Person",
+   "name": "with_person",
+   "reverse_name": "teams_chats",
+   "cardinality": "N:M",
+   "description": "A Person who is a member of the captured chat (its participants: the Entra object id of each member, the work address when the member has one), corroborated. Exact matches only (ontology/people_links.py); never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "teams.chats",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "TeamsChannel.with_person",
+   "from": "TeamsChannel",
+   "to": "Person",
+   "name": "with_person",
+   "reverse_name": "teams_channels",
+   "cardinality": "N:M",
+   "description": "A Person who is a member of the captured channel (its participants: the Entra object id of each member, the work address when the member has one), corroborated. Exact matches only (ontology/people_links.py); never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "teams.channels",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PurchaseOrder.buyer",
+   "from": "PurchaseOrder",
+   "to": "Person",
+   "name": "buyer",
+   "reverse_name": "purchase_orders_bought",
+   "cardinality": "N:M",
+   "description": "The PO's buyer: BC purchaser code or the FileMaker requisitioner, matched to one staff Person's address local part; a lead (a code or name is no identity).",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "from_binding": "bc.purchase_orders",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "from_binding": "portal.fm_generated_purchase_order",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
+  },
+  {
+   "id": "SalesOrder.sales_rep",
+   "from": "SalesOrder",
+   "to": "Person",
+   "name": "sales_rep",
+   "reverse_name": "sales_orders_represented",
+   "cardinality": "N:M",
+   "description": "The order's salesperson: BC salesperson code matched to one staff Person's address local part; a lead.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "from_binding": "bc.sales_orders",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
+  },
+  {
+   "id": "Customer.account_owner",
+   "from": "Customer",
+   "to": "Person",
+   "name": "account_owner",
+   "reverse_name": "customer_accounts",
+   "cardinality": "N:M",
+   "description": "The customer's account owner: BC salespersonCode matched to one staff Person's address local part; a lead. The Portal account_manager_id names an app_user whose address the reporting API does not serve, so it links nobody yet.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "from_binding": "bc.customers",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
+  },
+  {
+   "id": "PlannerTask.assigned_to",
+   "from": "PlannerTask",
+   "to": "Person",
+   "name": "assigned_to",
+   "reverse_name": "planner_tasks_assigned",
+   "cardinality": "N:M",
+   "description": "Each staff Person the Planner task is assigned to, by Entra object id: corroborated.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.planner_tasks",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
+  },
+  {
+   "id": "MCTask.assigned_to",
+   "from": "MCTask",
+   "to": "Person",
+   "name": "assigned_to",
+   "reverse_name": "mc_tasks_assigned",
+   "cardinality": "N:M",
+   "description": "The Mission Control task's assignee: an address, or a bare name that is one staff Person's address local part; corroborated.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "mission_control.tasks",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/owner_links.py",
+       "note": "with_owners step: an owner field naming exactly one staff Person, by Entra object id or address (corroborated) or by a code or name matching one address local part (lead); never an excluded person (PLX_EXCLUDED_PEOPLE_OIDS)."
+      }
+     ],
+     "written_by_step": "with_owners"
+    }
+   ]
   }
  ]
 }

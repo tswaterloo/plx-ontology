@@ -122,5 +122,59 @@ class TestBatchLineageTests(unittest.TestCase):
         self.assertEqual(codes, {"BC-26119A"})
 
 
+class PlannedDayTests(unittest.TestCase):
+    """The planned and finish days the stock and production alerts read, the day as written:
+    the Portal MO's and batch record's own columns, and the scheduled and realized days the
+    FileMaker AO and batch rows carry (ISO dates in the capture); a FileMaker AO has no
+    planned start. A production task carries the day it ran, a damage entry the day it was
+    entered."""
+
+    ROWS = {"public.app_manufacturing_order": [
+                {"id": "m1", "mo_code": "MO-LX8K2Z", "scheduled_start_date": "2026-11-09T00:00:00.000Z",
+                 "scheduled_end_date": "2026-11-12T00:00:00.000Z", "actual_end_date": None},
+                {"id": "m2", "mo_code": "MO-LX8K30", "scheduled_start_date": "next week"}],
+            "public.assembly_order": [{"id": 1, "nameamo_c": "AO-26005B", "status": "Allocated",
+                                       "datescheduled": "2026-11-09", "daterealized": None}],
+            "public.batch": [{"id": 12000, "namebatch_c": "BC-26119A", "status": "Realized",
+                              "datesche": "2026-11-03", "daterealized": "2026-11-04"}],
+            "public.app_batch_record": [{"id": "r1", "batch_name": "BC-26119A",
+                                         "date_scheduled": "2026-11-10T00:00:00.000Z",
+                                         "date_completed": "2026-11-11T00:00:00.000Z"}],
+            "public.assembly_order_damage": [{"id": 5, "idassembly": 1, "qtydamaged": "2",
+                                              "dateentered": "2026-11-12"}],
+            "public.production": [{"id": 7, "categorymo": "AO", "type": "Filling",
+                                   "datestart": "2026-11-11", "timestart": "08:00:00"}]}
+
+    def test_planned_days_come_from_the_portal_columns_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "store.sqlite"
+            report = build_store(path, load_schema(), {"portal_api": Source(self.ROWS)},
+                                 normalizer=identifiers.normalize,
+                                 clock=lambda: datetime(2026, 11, 8, tzinfo=timezone.utc))
+            conn = sqlite3.connect(str(path))
+            try:
+                days = {(oid, prop): value for oid, prop, value in conn.execute(
+                    "SELECT object_id, property, value FROM object_values WHERE property IN "
+                    "('start_date', 'scheduled_end_date', 'actual_end_date', 'scheduled_date', "
+                    "'realized_date', 'task_date', 'date_entered')")}
+            finally:
+                conn.close()
+        mo = 'AssemblyOrder:portal.app_manufacturing_order:{"id":"m1"}'
+        ao = 'AssemblyOrder:portal.fm_assembly_order:{"id":1}'
+        batch = 'Batch:portal.fm_batch:{"id":12000}'
+        self.assertEqual(days, {
+            (ao, "scheduled_date"): "2026-11-09", (ao, "realized_date"): None,
+            (batch, "scheduled_date"): "2026-11-03", (batch, "realized_date"): "2026-11-04",
+            ('Batch:portal.app_batch_record:{"id":"r1"}', "realized_date"): "2026-11-11",
+            ('AssemblyOrderDamage:portal.fm_assembly_order_damage:{"id":5}', "date_entered"):
+                "2026-11-12",
+            (mo, "start_date"): "2026-11-09", (mo, "scheduled_end_date"): "2026-11-12",
+            (mo, "actual_end_date"): None,   # an open order: the source's null, kept as null
+            ('Batch:portal.app_batch_record:{"id":"r1"}', "scheduled_date"): "2026-11-10",
+            ('ProductionTask:portal.fm_production_ao:{"id":7}', "task_date"): "2026-11-11"})
+        # Free text in a planned-day column is a gap, never a day.
+        self.assertIn("parse_not_iso_date", {g["code"] for g in report["gaps"]})
+
+
 if __name__ == "__main__":
     unittest.main()

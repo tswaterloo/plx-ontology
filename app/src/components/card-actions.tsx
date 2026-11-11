@@ -8,7 +8,7 @@ import type { ActionKind, ActionPayload, ActionPreview, ActionResult, CardAction
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Button } from "./ui/button";
-import { StatusGlyph, SystemTile } from "./ui/glyphs";
+import { StatusGlyph, SystemCode } from "./ui/glyphs";
 import { Sheet } from "./ui/sheet";
 
 const bare = "h-10 w-full min-w-0 bg-transparent text-[13px] text-fg placeholder:text-faint focus:outline-none dark:[color-scheme:dark]";
@@ -283,7 +283,7 @@ export function ActionDialog({
           <span className="font-normal text-muted">{card.subject.label}</span>
         </>
       }
-      icon={channel ? <SystemTile system={channel} size={20} /> : undefined}
+      icon={channel ? <SystemCode system={channel} size={20} /> : undefined}
       bodyClassName="bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))] pt-4"
       footer={
         <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">

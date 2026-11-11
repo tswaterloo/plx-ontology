@@ -7,6 +7,8 @@ re-exported there."""
 from __future__ import annotations
 
 import re
+import threading
+import time
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from . import models as m
@@ -42,18 +44,66 @@ def suggest_phrases(q: str) -> list[tuple[int, str]]:
 
 
 SAME_RECORD_ASKS = 12   # records a suggestion list asks about, at most
-SAME_RECORD_SECONDS = 5   # past this, copies without a shared code stay apart
+SAME_RECORD_SECONDS = 1.5   # past this, copies without a shared code stay apart
+SAME_RECORD_KEEP_SECONDS = 600   # a record's copies, as one reader walked them, kept this long
 
 
-def same_records(view: Any, object_ids: Sequence[str]) -> set[frozenset[str]]:
+class SameRecordMemo:
+    """Each record's verified same-record copies as one reader walked them (``plx.around``),
+    kept ``SAME_RECORD_KEEP_SECONDS`` per reader: typing a name asks about the same records
+    keystroke after keystroke, and each walk is two store reads. A kept answer only ever
+    joins two suggestions the reader was already shown, so it reveals nothing; a link made
+    since shows its copies apart until it expires."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self.lock = threading.Lock()
+        self.clock = clock
+        self.kept: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}
+
+    def get(self, reader: str, oid: str) -> Optional[frozenset[str]]:
+        with self.lock:
+            hit = self.kept.get((reader, oid))
+        if hit is None or self.clock() - hit[0] > SAME_RECORD_KEEP_SECONDS:
+            return None
+        return hit[1]
+
+    def put(self, reader: str, oid: str, others: Iterable[str]) -> None:
+        now = self.clock()
+        with self.lock:
+            if len(self.kept) > 20000:
+                self.kept = {k: v for k, v in self.kept.items()
+                             if now - v[0] <= SAME_RECORD_KEEP_SECONDS}
+            self.kept[(reader, oid)] = (now, frozenset(others))
+
+    def pairs(self, reader: str, object_ids: Sequence[str]) -> set[frozenset[str]]:
+        """The pairs among ``object_ids`` the kept walks join (an id not kept joins none)."""
+        ids = list(dict.fromkeys(object_ids))[:SAME_RECORD_ASKS]
+        wanted, out = set(ids), set()
+        for oid in ids:
+            for other in self.get(reader, oid) or ():
+                if other in wanted and other != oid:
+                    out.add(frozenset((oid, other)))
+        return out
+
+    def missing(self, reader: str, object_ids: Sequence[str]) -> list[str]:
+        ids = list(dict.fromkeys(object_ids))[:SAME_RECORD_ASKS]
+        return [oid for oid in ids if self.get(reader, oid) is None]
+
+
+def same_records(view: Any, object_ids: Sequence[str], *,
+                 memo: Optional[SameRecordMemo] = None, reader: str = ""
+                 ) -> set[frozenset[str]]:
     """Pairs of ``object_ids`` this reader reads as one record in two systems: a verified
     ``<Type>.same_record_as`` link, walked as the reader (``plx.around``: its grants and
-    the link's markings). Only ids the reader was already shown are asked about."""
+    the link's markings). Only ids the reader was already shown are asked about; with
+    ``memo`` each record's walk is kept for ``reader`` as it is read, and a kept one is
+    not walked again."""
+    memo = memo if memo is not None else SameRecordMemo()
     ids = list(dict.fromkeys(object_ids))[:SAME_RECORD_ASKS]
-    wanted, pairs = set(ids), set()
     with view._request():
-        for oid in ids:
+        for oid in memo.missing(reader, ids):
             kind = oid.split(":", 1)[0]
+            others: set[str] = set()
             for direction in ("forward", "reverse"):
                 got = view._call("plx.around", {
                     "from": oid, "tier_floor": "verified", "limit": 20,
@@ -61,9 +111,10 @@ def same_records(view: Any, object_ids: Sequence[str]) -> set[frozenset[str]]:
                               "direction": direction}]})
                 for obj in got.get("objects") or ():
                     other = obj.get("object_id") if isinstance(obj, Mapping) else None
-                    if other in wanted and other != oid:
-                        pairs.add(frozenset((oid, other)))
-    return pairs
+                    if isinstance(other, str) and other != oid:
+                        others.add(other)
+            memo.put(reader, oid, others)
+    return memo.pairs(reader, ids)
 
 
 # The identifier labels an order's entity carries for its party's code ("Supplier V08380":

@@ -6,6 +6,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { getAlertKinds, getBriefing, getBriefingItems } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { objectHref, recordLabel, safeHref } from "@/lib/format";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { AlertKinds, AlertType, Briefing, BriefingItem } from "@/lib/types";
@@ -18,15 +19,17 @@ export function standing(t: Pick<AlertType, "default" | "precision" | "home">): 
   return `Off · ${measured}`;
 }
 
-/** Where a kind shows: On or Off for an alert, else its page (said once when the kind's own name is that page). */
-function surfaceWord(k: { label: string; surface: string; types: Pick<AlertType, "default">[] }): string {
-  if (k.surface === "alert") return k.types.some((t) => t.default === "on") ? "On" : "Off";
+/** Whether a kind is on (any of its types on by default) and, for a kind that shows on a
+ * page of its own, that page (not repeated when the kind's own name is that page). */
+export function surfaceWord(k: { label: string; surface: string; types: Pick<AlertType, "default">[] }): string {
+  const on = k.types.some((t) => t.default === "on") ? "On" : "Off";
+  if (k.surface === "alert") return on;
   const where = k.surface === "weekly" ? "Weekly review" : "Data health";
-  return where.toLowerCase() === k.label.trim().toLowerCase() ? "" : where;
+  return where.toLowerCase() === k.label.trim().toLowerCase() ? on : `${on} · ${where}`;
 }
 
 /** One alert type's items, read when asked for: a count on Watching opens what it counts. */
-function TypeItems({ type, count }: { type: string; count: number }) {
+export function TypeItems({ type, count, more: label }: { type: string; count: number; more?: string }) {
   const [items, setItems] = useState<BriefingItem[] | null>(null);
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -45,7 +48,7 @@ function TypeItems({ type, count }: { type: string; count: number }) {
   if (!items)
     return (
       <button type="button" onClick={() => read(0)} disabled={busy} aria-busy={busy || undefined} className="text-[12px] font-medium text-fg underline underline-offset-2 hover:no-underline disabled:text-muted cursor-pointer">
-        {busy ? "Reading" : `Show ${count}`}
+        {busy ? "Reading" : (label ?? `Show ${count}`)}
       </button>
     );
   return (
@@ -78,19 +81,24 @@ function TypeItems({ type, count }: { type: string; count: number }) {
  * now. On kinds that are not on My work, and off kinds, wait here; a kind is on for
  * everyone only once a check of 15 live items finds 90% right.
  */
-export function AlertKindsSection() {
-  const [reg, setReg] = useState<AlertKinds | null>(null);
-  const [briefing, setBriefing] = useState<Briefing | null>(null);
-  const [error, setError] = useState<unknown>(null);
+export function AlertKindsSection({ data, compact = false }: { data?: { reg: AlertKinds | null; briefing: Briefing | null; error: unknown; retry: () => void }; compact?: boolean } = {}) {
+  const [ownReg, setReg] = useState<AlertKinds | null>(null);
+  const [ownBriefing, setBriefing] = useState<Briefing | null>(null);
+  const [ownError, setError] = useState<unknown>(null);
   const [round, setRound] = useState(0);
-  const retry = useCallback(() => setRound((n) => n + 1), []);
+  const ownRetry = useCallback(() => setRound((n) => n + 1), []);
   useEffect(() => {
+    if (data) return;
     const ctl = new AbortController();
     setError(null);
     getAlertKinds(ctl.signal).then(setReg, (e) => !ctl.signal.aborted && setError(e));
     getBriefing(ctl.signal).then(setBriefing, () => undefined);
     return () => ctl.abort();
-  }, [round]);
+  }, [round, data]);
+  const reg = data ? data.reg : ownReg;
+  const briefing = data ? data.briefing : ownBriefing;
+  const error = data ? data.error : ownError;
+  const retry = data ? data.retry : ownRetry;
   const counts = useMemo(() => {
     const out = new Map<string, number>();
     for (const g of briefing?.status === "read" ? (briefing.groups ?? []) : []) out.set(g.event_type, g.count);
@@ -106,7 +114,7 @@ export function AlertKindsSection() {
   }, [reg, counts]);
   return (
     <section aria-labelledby="alerts-title" id="alerts" className="scroll-mt-16 space-y-2">
-      <h2 id="alerts-title" className="text-[15px] font-semibold">Alerts</h2>
+      <h2 id="alerts-title" className={compact ? "text-[11px] font-semibold tracking-[0.04em] text-muted uppercase" : "text-[15px] font-semibold"}>{compact ? "Alert kinds" : "Alerts"}</h2>
       {error ? (
         <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
       ) : !reg ? (
@@ -118,7 +126,7 @@ export function AlertKindsSection() {
           {groups.map((k) => (
             <li key={k.kind} className="py-2">
               <details>
-                <summary className="flex cursor-pointer items-baseline gap-3 text-[13px]">
+                <summary className={cn("flex cursor-pointer items-baseline gap-3", compact ? "text-[12px]" : "text-[13px]")}>
                   <span className="min-w-0 flex-1 font-medium text-fg">{k.label}</span>
                   <span className="shrink-0 tabular-nums text-muted">{k.n > 0 ? k.n : ""}</span>
                   <span className="shrink-0 text-[12px] text-faint">{surfaceWord(k)}</span>

@@ -11,6 +11,7 @@ import { Pending } from "@/components/ui/skeleton";
 import { LoadProblem } from "@/components/ui/notice";
 import { getMeetingFollowUp, getMyActionItems } from "@/lib/api";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
+import { cn } from "@/lib/cn";
 import type { ActionResult, CardActionOffer } from "@/lib/types";
 
 export interface Person { name?: string | null; address?: string | null }
@@ -51,7 +52,7 @@ function Records({ records }: { records?: Linked[] }) {
   return (
     <span className="flex flex-wrap gap-2 text-[12px]">
       {linked.map((r) => (
-        <Link key={r.object_id} href={`/object/${encodeURIComponent(r.type ?? "")}/${encodeURIComponent(r.object_id ?? "")}`} className="rounded bg-hover px-1.5 hover:underline">
+        <Link key={r.object_id} href={`/object/${encodeURIComponent(r.type ?? "")}/${encodeURIComponent(r.object_id ?? "")}`} className="font-medium text-accent hover:underline" onClick={(e) => e.stopPropagation()}>
           {r.label ?? r.value}
         </Link>
       ))}
@@ -146,21 +147,190 @@ export function MeetingFollowUpView({ followUp }: { followUp: FollowUp }) {
   );
 }
 
-export function MyActionItemsView({ items, person }: { items: Action[]; person?: string | null }) {
+const DAY = 86_400_000;
+
+function dueIn(a: Action, today: Date): number | null {
+  if (!a.due) return null;
+  const d = new Date(`${a.due.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : Math.round((d.getTime() - today.getTime()) / DAY);
+}
+
+function dueText(n: number | null): string {
+  if (n == null) return "no date";
+  if (n === 0) return "today";
+  if (n === 1) return "tomorrow";
+  if (n === -1) return "yesterday";
+  return n < 0 ? `${-n} days ago` : `in ${n} days`;
+}
+
+const PREPARED: Record<Prepared["kind"], string> = {
+  message: "Draft message ready",
+  document_pack: "Document pack ready",
+  write_intent: "Entry prepared (dry run)",
+  planner_task: "Planner task proposed",
+  answer: "Answered from the records",
+};
+
+type Group = { key: string; title: string; items: Action[]; tone?: string };
+
+/** Action items grouped by when they are due, overdue first; done last. */
+export function groupActions(items: Action[], today: Date): Group[] {
+  const groups: Group[] = [
+    { key: "overdue", title: "Overdue", items: [], tone: "text-late" },
+    { key: "week", title: "Due this week", items: [] },
+    { key: "later", title: "Later", items: [] },
+    { key: "undated", title: "No due date", items: [] },
+    { key: "done", title: "Done", items: [] },
+  ];
+  const at = (k: string) => groups.find((g) => g.key === k)!.items;
+  for (const a of items) {
+    const n = dueIn(a, today);
+    if (a.status === "done") at("done").push(a);
+    else if (a.status === "overdue" || (n != null && n < 0)) at("overdue").push(a);
+    else if (n == null) at("undated").push(a);
+    else if (n <= 7) at("week").push(a);
+    else at("later").push(a);
+  }
+  return groups.filter((g) => g.items.length > 0);
+}
+
+function ActionRow({ a, today }: { a: Action; today: Date }) {
+  const [open, setOpen] = useState(false);
+  const n = dueIn(a, today);
+  const late = a.status !== "done" && (a.status === "overdue" || (n != null && n < 0));
   return (
-    <div className="space-y-3" data-testid="my-action-items">
-      <h2 className="text-[20px] font-semibold">{person ? `Action items for ${person}` : "My action items"}</h2>
-      {items.length === 0 ? <p className="text-[13px] text-muted">No action item from a recorded meeting.</p> : (
-        <ul className="divide-y divide-border">
-          {items.map((a) => (
-            <li key={a.id} className="flex flex-wrap items-baseline justify-between gap-2 py-2 text-[13px]">
-              <span>{a.text}{" "}
-                {a.meeting_id && <Link className="text-muted hover:underline" href={`/meetings/${encodeURIComponent(a.meeting_id)}`}>{a.meeting}</Link>}
-              </span>
-              <span className={a.status === "overdue" ? "text-bad" : "text-muted"}>{statusText(a)}</span>
-            </li>
+    <li className={cn("border-b border-border text-[13px]", a.status === "done" && "text-muted")} data-testid="action-item">
+      <div className="grid cursor-pointer grid-cols-[18px_minmax(0,1fr)_150px_120px_170px] items-baseline gap-x-4 py-2 hover:bg-hover" onClick={() => setOpen((o) => !o)}>
+        <span aria-hidden className={cn("mt-1 size-3 rounded-full border-[1.5px]", a.status === "done" ? "border-ok bg-ok" : late ? "border-late" : "border-border-strong")} />
+        <span className="min-w-0">
+          <span className={cn("font-medium", a.status === "done" && "line-through decoration-faint")}>{a.text}</span>
+          <span className="mt-0.5 flex flex-wrap items-baseline gap-x-3 text-[12px] text-muted">
+            {a.meeting_id && (
+              <Link className="hover:underline" href={`/meetings/${encodeURIComponent(a.meeting_id)}`} onClick={(e) => e.stopPropagation()}>
+                {a.meeting}
+                {a.meeting_start && <span className="num"> · {a.meeting_start.slice(5, 10).replace("-", "/")}</span>}
+              </Link>
+            )}
+            <Records records={a.records} />
+          </span>
+        </span>
+        <span className="truncate">{a.owner?.name ?? <span className="text-faint">No owner</span>}</span>
+        <span className={cn("num text-[12px]", late ? "text-late" : "text-muted")}>
+          {a.status === "done" ? "done" : dueText(n)}
+          {a.due && <span className="block text-faint">{a.due.slice(0, 10)}</span>}
+        </span>
+        <span className="text-[12px] text-muted">
+          {a.status === "done" ? (a.evidence?.[0]?.what ?? "marked done") : a.prepared ? <span className="text-accent">{PREPARED[a.prepared.kind]}</span> : "Nothing prepared"}
+        </span>
+      </div>
+      {open && (
+        <div className="space-y-2 pb-3 pl-[34px]" data-testid="action-item-detail">
+          {a.said_by && (
+            <p className="text-[12px] text-muted">
+              Said by {a.said_by}
+              {a.at ? ` at ${a.at} in the recording` : ""}
+            </p>
+          )}
+          {a.prepared && a.status !== "done" && <PreparedWork work={a.prepared} />}
+          {a.evidence?.map((e) => (
+            <p key={e.what} className="text-[12px]">
+              Evidence: {e.what}
+            </p>
           ))}
-        </ul>
+        </div>
+      )}
+    </li>
+  );
+}
+
+export function MyActionItemsView({ items, person, today = new Date() }: { items: Action[]; person?: string | null; today?: Date }) {
+  const day = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const groups = groupActions(items, day);
+  const count = (k: string) => groups.find((g) => g.key === k)?.items.length ?? 0;
+  const open = items.filter((a) => a.status !== "done");
+  const byMeeting = new Map<string, { id?: string; n: number }>();
+  const byPerson = new Map<string, number>();
+  for (const a of open) {
+    const m = a.meeting ?? "Unnamed meeting";
+    byMeeting.set(m, { id: a.meeting_id, n: (byMeeting.get(m)?.n ?? 0) + 1 });
+    const p = a.owner?.name ?? "No owner";
+    byPerson.set(p, (byPerson.get(p) ?? 0) + 1);
+  }
+  return (
+    <div className="space-y-4" data-testid="my-action-items">
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-3">
+        <h2 className="text-[15px] font-semibold">{person ? `Action items for ${person}` : "Action items from your meetings"}</h2>
+        <dl className="flex gap-7 text-[12px]">
+          {[
+            ["Open", open.length, ""],
+            ["Overdue", count("overdue"), count("overdue") ? "text-late" : ""],
+            ["Due this week", count("week"), ""],
+            ["Done", count("done"), "text-ok"],
+          ].map(([label, n, tone]) => (
+            <div key={label as string}>
+              <dt className="text-muted">{label}</dt>
+              <dd className={cn("num text-[15px] font-semibold", tone as string)}>{n}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+      {items.length === 0 ? (
+        <p className="text-[13px] text-muted">No action item from a recorded meeting.</p>
+      ) : (
+        <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_260px]">
+          <div className="min-w-0 space-y-5">
+            <div className="grid grid-cols-[18px_minmax(0,1fr)_150px_120px_170px] gap-x-4 border-b border-border pb-1 text-[11px] font-medium tracking-[0.02em] text-faint uppercase">
+              <span />
+              <span>Action item · meeting · records</span>
+              <span>Owner</span>
+              <span>Due</span>
+              <span>Prepared</span>
+            </div>
+            {groups.map((g) => (
+              <section key={g.key} aria-label={g.title}>
+                <h3 className={cn("flex items-baseline gap-2 text-[12px] font-semibold", g.tone)}>
+                  {g.title}
+                  <span className="num font-normal text-muted">{g.items.length}</span>
+                </h3>
+                <ul>
+                  {g.items.map((a) => (
+                    <ActionRow key={a.id} a={a} today={day} />
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
+          <aside className="space-y-6 text-[13px]">
+            <div>
+              <h3 className="mb-1.5 text-[12px] font-semibold tracking-[0.02em] text-muted uppercase">Open by meeting</h3>
+              <ul className="divide-y divide-border">
+                {[...byMeeting.entries()].map(([m, v]) => (
+                  <li key={m} className="flex justify-between gap-3 py-1.5">
+                    {v.id ? (
+                      <Link className="truncate hover:underline" href={`/meetings/${encodeURIComponent(v.id)}`}>
+                        {m}
+                      </Link>
+                    ) : (
+                      <span className="truncate">{m}</span>
+                    )}
+                    <span className="num text-muted">{v.n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h3 className="mb-1.5 text-[12px] font-semibold tracking-[0.02em] text-muted uppercase">Open by person</h3>
+              <ul className="divide-y divide-border">
+                {[...byPerson.entries()].sort((a, b) => b[1] - a[1]).map(([p, n]) => (
+                  <li key={p} className="flex justify-between gap-3 py-1.5">
+                    <span className="truncate">{p}</span>
+                    <span className="num text-muted">{n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </aside>
+        </div>
       )}
     </div>
   );

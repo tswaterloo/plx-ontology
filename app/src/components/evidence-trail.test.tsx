@@ -38,7 +38,7 @@ const po: PoTrail = {
   not_found: [],
 };
 
-const trail: EvidenceTrail = { kind: "purchase_order", title: "How we know: PO 300001", trails: [po], hidden_steps: 2, hidden_message: "2 more steps in places you can't open." };
+const trail: EvidenceTrail = { kind: "purchase_order", title: "Evidence for PO 300001", trails: [po], hidden_steps: 2, hidden_message: "2 more steps in places you can't open." };
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -210,7 +210,7 @@ describe("EvidenceTrailCard", () => {
     expect(screen.getByTestId("direct-answer")).toHaveTextContent("17 days late");
     expect(screen.queryByTestId("evidence-trail")).toBeNull();
     render(<AnswerCard turn={{ ...turn, id: "t2", answer: { ...answer, trail } }} />);
-    expect(screen.getByTestId("evidence-trail")).toHaveTextContent("How we know: PO 300001");
+    expect(screen.getByTestId("evidence-trail")).toHaveTextContent("Evidence for PO 300001");
   });
 
   it("renders a why trail: its four step kinds in order, each opening its source, the verdict, the hidden count and the suggestion", () => {

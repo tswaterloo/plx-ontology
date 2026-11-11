@@ -787,6 +787,27 @@ class LinkTests(ProjectionCase):
         self.assertEqual((differ[0]["from_value"], differ[0]["to_value"]),
                          ("PO3003", "PO3999"))
 
+    def test_a_composite_foreign_key_links_only_where_every_pair_matches(self):
+        # The same two pairs as a foreign key (one composite key, e.g. team and channel):
+        # PO_C's FM_3 matches on the id and not on the number, so it is another record,
+        # never a contradicted candidate; PO_A's FM_1 matches on both and is verified.
+        schema = compiled_schema()
+        forged = copy.deepcopy(schema.link_types["PurchaseOrder.same_record_as"])
+        forged["bindings"] = [dict(forged["bindings"][0], kind="fk")]
+        original, schema.link_types["PurchaseOrder.same_record_as"] = (
+            schema.link_types["PurchaseOrder.same_record_as"], forged)
+        self.addCleanup(schema.link_types.__setitem__, "PurchaseOrder.same_record_as", original)
+        path = Path(self.tmp.name) / "composite-fk.sqlite"
+        with MirrorCaptures(self.mirror_path) as captures:
+            build_store(path, schema, {"portal_api": captures}, normalizer=normalizer,
+                        clock=lambda: T2)
+        store = self.store(path)
+        self.assertEqual(store.links(FINANCE, object_id=PO_C,
+                                     link_type="PurchaseOrder.same_record_as"), [])
+        self.assertIn((FM_1, "verified"), [
+            (l["to_object"], l["tier"]) for l in store.links(
+                FINANCE, object_id=PO_A, link_type="PurchaseOrder.same_record_as")])
+
     def test_property_conflict_is_recorded_on_the_same_record_link(self):
         verified = next(l for l in self.links(object_id=PO_A,
                                               link_type="PurchaseOrder.same_record_as")

@@ -261,7 +261,7 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
     <section className={className} data-testid="suggestions">
       <div className="mb-1 flex items-baseline justify-between gap-3">
         <h2 className="text-[12px] font-medium text-muted">Follow-ups</h2>
-        {data && data.total > 0 && <span className="text-[12px] tabular-nums text-faint">{data.total}</span>}
+        {data && data.total > 0 && <span className="text-[12px] num text-faint">{data.total}</span>}
       </div>
       <StaleNote since={data?.stale_since} className="mb-1 text-[12px]" />
       {error ? (

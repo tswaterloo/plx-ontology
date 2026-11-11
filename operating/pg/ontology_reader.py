@@ -867,6 +867,16 @@ class PgStoreReader(StoreReader):
                     return None
             return odd
 
+    link_odd_cap = LINK_ODD_CAP
+
+    def link_odd_of(self, objects: Sequence[str]) -> list[str] | None:
+        """``link_odd`` among the links from or to ``objects`` alone (``LINK_ODD_OWNED_SQL``,
+        by their indexes); None: more than ``LINK_ODD_CAP``."""
+        with self.conn._lock, self.conn._pg.cursor() as cur:
+            cur.execute(LINK_ODD_OWNED_SQL, {"owned": list(objects)})
+            odd = list(cur.fetchone()[0] or [])
+        return None if len(odd) > LINK_ODD_CAP else odd
+
     def slice_rows(self, kind: str, schemes: Sequence[str], *,
                    key_range: tuple[str | None, str | None] | None = None,
                    odd: Sequence[str] | None = None,
@@ -880,10 +890,8 @@ class PgStoreReader(StoreReader):
         if kind != "link":
             return None
         if odd is None and objects is not None:
-            with self.conn._lock, self.conn._pg.cursor() as cur:
-                cur.execute(LINK_ODD_OWNED_SQL, {"owned": list(objects)})
-                odd = list(cur.fetchone()[0] or [])
-            if len(odd) > LINK_ODD_CAP:
+            odd = self.link_odd_of(objects)
+            if odd is None:
                 return None
         if odd is None:
             odd = self.link_odd()

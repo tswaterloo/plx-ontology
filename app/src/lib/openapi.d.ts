@@ -340,6 +340,26 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/autopilot/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autopilot Catalog
+         * @description The triggers, conditions and actions the workflow builder offers.
+         */
+        get: operations["autopilot_catalog_api_autopilot_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/autopilot/items/{item_id}/decision": {
         parameters: {
             query?: never;
@@ -356,6 +376,26 @@ export type paths = {
          *     workflow passed the fresh gate and the owner switched it live.
          */
         post: operations["autopilot_decide_api_autopilot_items__item_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autopilot Schedules
+         * @description The workflows that run on a schedule, as the reader may see them.
+         */
+        get: operations["autopilot_schedules_api_autopilot_schedules_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -383,7 +423,7 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/api/autopilot/workflows/{workflow}": {
+    "/api/autopilot/workflows": {
         parameters: {
             query?: never;
             header?: never;
@@ -393,11 +433,78 @@ export type paths = {
         get?: never;
         put?: never;
         /**
+         * Autopilot Draft
+         * @description Keep a drafted workflow (owner only). It starts in Draft mode, never live.
+         */
+        post: operations["autopilot_draft_api_autopilot_workflows_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/workflows/{workflow}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Autopilot Workflow Detail
+         * @description One workflow: trigger, conditions, actions, gate, mode, per role its row, what it
+         *     caught and missed, its history (owner). A reader outside its roles gets 404.
+         */
+        get: operations["autopilot_workflow_detail_api_autopilot_workflows__workflow__get"];
+        put?: never;
+        /**
          * Autopilot Workflow
          * @description Switch a workflow off or on, or a role's workflow live (only after its fresh
          *     gate passed) or back to dry run. Owner only (403 for every other reader).
          */
         post: operations["autopilot_workflow_api_autopilot_workflows__workflow__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/workflows/{workflow}/mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Autopilot Set Mode
+         * @description Set a workflow's mode (owner only): off, draft, or auto with approval (after its
+         *     fresh gate passed for the role). A mode this server lacks is refused (409).
+         */
+        put: operations["autopilot_set_mode_api_autopilot_workflows__workflow__mode_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autopilot/workflows/{workflow}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Autopilot Replay
+         * @description Try a workflow on past days: caught, missed and false alarms. Owner only; nothing
+         *     is sent or written.
+         */
+        post: operations["autopilot_replay_api_autopilot_workflows__workflow__replay_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1355,6 +1462,75 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/work-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Work Log
+         * @description Your work log, newest first: what you asked, read, dismissed, approved, sent,
+         *     noted, saved and watched, with the records and people involved. Search with ``q``;
+         *     ``record`` is the record page's section; ``waiting``: your sent messages still
+         *     open. The owner may read everyone's (``everyone``).
+         */
+        get: operations["work_log_api_work_log_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/work-log/saved": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Work Log Saved
+         * @description A Save or Unsave on a record page or a question, kept in your work log.
+         */
+        post: operations["work_log_saved_api_work_log_saved_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/work-log/threads/{thread}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Work Log Thread
+         * @description One of your threads with what continuing it reopens: an Ask session's turns as
+         *     you saw them, an autopilot item, a card, a write; and your other work on its
+         *     records.
+         */
+        get: operations["work_log_thread_api_work_log_threads__thread__get"];
+        put?: never;
+        /**
+         * Work Log Organise
+         * @description Name, pin, attach to a case or close one of your own threads.
+         */
+        post: operations["work_log_organise_api_work_log_threads__thread__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workload": {
         parameters: {
             query?: never;
@@ -1876,6 +2052,11 @@ export type components = {
              * @description Why the assistant could not work the question (its usage limit, its sign-in, its time limit or an error), in words; the answer then shows what the records read without it show. Null when it ran.
              */
             assistant_unavailable?: string | null;
+            /**
+             * Attachments
+             * @description The question's attachments: what was read and what was not, and why.
+             */
+            attachments?: components["schemas"]["AskAttachmentNote"][];
             /** Conflicts */
             conflicts?: components["schemas"]["Conflict"][];
             /** Conversation Id */
@@ -1887,6 +2068,11 @@ export type components = {
             did_you_mean?: components["schemas"]["ObjectRef"][];
             /** Direct Answer */
             direct_answer: string;
+            /**
+             * Drafts
+             * @description Emails and actions the question asked to have drafted; each is done only from its preview with your explicit confirm.
+             */
+            drafts?: components["schemas"]["AskDraft"][];
             /** Facts */
             facts?: components["schemas"]["Fact"][];
             /**
@@ -1924,7 +2110,7 @@ export type components = {
              * @description Records the answer is about.
              */
             subjects?: components["schemas"]["ObjectRef"][];
-            /** @description How we know (optional: older clients ignore it). */
+            /** @description The evidence trail (optional: older clients ignore it). */
             trail?: components["schemas"]["EvidenceTrail"] | null;
         };
         /** ApprovalGroup */
@@ -2042,8 +2228,100 @@ export type components = {
             /** Values */
             values?: string[];
         };
+        /**
+         * AskAttachment
+         * @description A file or image attached to one question (``operating.ask_attachments``): read in
+         *     memory for that answer only, never stored.
+         */
+        AskAttachment: {
+            /**
+             * Data
+             * @description The file's bytes, base64 (8 MB a file, 10 MB together).
+             */
+            data: string;
+            /** Name */
+            name: string;
+        };
+        /**
+         * AskAttachmentNote
+         * @description What the answer and the saved Ask say of an attachment: never its content.
+         */
+        AskAttachmentNote: {
+            /** Digest */
+            digest: string;
+            /**
+             * Kind
+             * @default null
+             */
+            kind: ("pdf" | "spreadsheet" | "text" | "image") | null;
+            /** Name */
+            name: string;
+            /**
+             * Note
+             * @description Why it was not read, or read in part.
+             * @default null
+             */
+            note: string | null;
+            /** Read */
+            read: boolean;
+            /** Size */
+            size: number;
+        };
+        /**
+         * AskDraft
+         * @description A draft the Ask wrote because the question asked for one: an email the person edits
+         *     and sends from its preview with one explicit confirm (``/api/actions/preview`` and
+         *     ``/api/actions/confirm``, ``card_id`` = ``id``, the approve-to-send desk), or an
+         *     action (a payment, a record change, an approval) shown in full, which the person
+         *     files as a follow-up or assigns to a colleague for approval through the same desk.
+         *     Nothing is sent, paid or written by the Ask itself.
+         */
+        AskDraft: {
+            /** Actions */
+            actions?: components["schemas"]["CardActionOffer"][];
+            /** Body */
+            body: string;
+            /**
+             * Details
+             * @description An action's details, each shown before any confirm.
+             */
+            details?: components["schemas"]["DraftDetail"][];
+            /**
+             * Email Subject
+             * @default null
+             */
+            email_subject: string | null;
+            /**
+             * Id
+             * @description The card id the approve-to-send desk takes.
+             */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "email" | "payment" | "record_change" | "approval";
+            /**
+             * Missing
+             * @description What the draft lacks before it can be done, in words.
+             */
+            missing?: string[];
+            /**
+             * Sent
+             * @default false
+             * @constant
+             */
+            sent: false;
+            /** Title */
+            title: string;
+        };
         /** AskRequest */
         AskRequest: {
+            /**
+             * Attachments
+             * @description Files and images the person attached (PDF, .xlsx, .csv, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.
+             */
+            attachments?: components["schemas"]["AskAttachment"][];
             /** Conversation Id */
             conversation_id?: string | null;
             /** History */
@@ -2185,6 +2463,11 @@ export type components = {
         AutopilotArea: {
             /** Items */
             items?: components["schemas"]["AutopilotItem"][];
+            /**
+             * Known Workflows
+             * @description every workflow the autopilot knows (``operating.workflows``), scored or not: the workflow filter offers them before any is scored or prepared
+             */
+            known_workflows?: string[];
             /** Notes */
             notes?: string[];
             /** Owner */
@@ -2258,6 +2541,23 @@ export type components = {
             /** Workflow */
             workflow?: string | null;
         };
+        /**
+         * AutopilotCatalog
+         * @description What the builder offers: the triggers, conditions and actions the registry knows.
+         */
+        AutopilotCatalog: {
+            /** Actions */
+            actions: components["schemas"]["AutopilotStep"][];
+            /**
+             * Builder
+             * @description False: this server shows the catalog but does not keep or replay a drafted workflow yet.
+             */
+            builder: boolean;
+            /** Conditions */
+            conditions: components["schemas"]["AutopilotStep"][];
+            /** Triggers */
+            triggers: components["schemas"]["AutopilotStep"][];
+        };
         /** AutopilotDecision */
         AutopilotDecision: {
             /** At */
@@ -2278,6 +2578,12 @@ export type components = {
             outcome?: string | null;
             /** Reasons */
             reasons?: string[];
+            /**
+             * Sent
+             * @description The item's email went out: its own send action's result is done (an entry before it may have succeeded while the send did not).
+             * @default false
+             */
+            sent: boolean;
             /**
              * Text
              * @description The edited draft.
@@ -2305,6 +2611,57 @@ export type components = {
              * @description snooze: until when (ISO instant, at most 30 days ahead).
              */
             until?: string | null;
+        };
+        /** AutopilotDraftKept */
+        AutopilotDraftKept: {
+            /**
+             * Mode
+             * @default draft
+             * @enum {string}
+             */
+            mode: "off" | "suggest" | "draft" | "auto" | "watch";
+            /** Problems */
+            problems?: string[];
+            /**
+             * Workflow
+             * @description The draft's id; it starts in Draft mode, never live.
+             */
+            workflow: string;
+        };
+        /**
+         * AutopilotGate
+         * @description The write gate's reading of one workflow: held-out (fresh) replay when scored, else
+         *     the tuning replay; ``passed`` only from the fresh gate.
+         */
+        AutopilotGate: {
+            /**
+             * Fresh
+             * @description The counts are the held-out replay's.
+             * @default false
+             */
+            fresh: boolean;
+            /**
+             * Judged
+             * @default 0
+             */
+            judged: number;
+            /**
+             * Matched
+             * @default 0
+             */
+            matched: number;
+            /**
+             * Passed
+             * @default false
+             */
+            passed: boolean;
+            /** Percent */
+            percent?: number | null;
+            /**
+             * Rule
+             * @description What passing takes, in words.
+             */
+            rule: string;
         };
         /**
          * AutopilotItem
@@ -2361,6 +2718,19 @@ export type components = {
             /** Workflow */
             workflow: string;
         };
+        /** AutopilotModeRequest */
+        AutopilotModeRequest: {
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "off" | "suggest" | "draft" | "auto" | "watch";
+            /**
+             * Role
+             * @description draft/auto: the role (or person: role) it applies to.
+             */
+            role?: string | null;
+        };
         /** AutopilotPerson */
         AutopilotPerson: {
             /** Id */
@@ -2378,6 +2748,78 @@ export type components = {
              */
             you: boolean;
         };
+        /**
+         * AutopilotReplay
+         * @description A workflow tried on past days: what it would have prepared against what people did.
+         *     Nothing is sent or written by a replay.
+         */
+        AutopilotReplay: {
+            /** Caught */
+            caught: number;
+            /** Days */
+            days: number;
+            /** False Alarms */
+            false_alarms: number;
+            /** Items */
+            items?: components["schemas"]["AutopilotReplayItem"][];
+            /** Judged */
+            judged: number;
+            /** Missed */
+            missed: number;
+            /** Workflow */
+            workflow: string;
+        };
+        /** AutopilotReplayItem */
+        AutopilotReplayItem: {
+            /** At */
+            at: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "caught" | "missed" | "false_alarm";
+            /** Title */
+            title: string;
+            /** Why */
+            why?: string | null;
+        };
+        /** AutopilotReplayRequest */
+        AutopilotReplayRequest: {
+            /** Days */
+            days: number;
+        };
+        /** AutopilotSchedule */
+        AutopilotSchedule: {
+            /**
+             * Cadence
+             * @description When it runs, in words.
+             */
+            cadence: string;
+            /**
+             * Checks
+             * @description What each run looks at, in words.
+             */
+            checks: string;
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Last Run */
+            last_run?: string | null;
+            /** Next Run */
+            next_run?: string | null;
+            /** On */
+            on: boolean;
+            /** Workflow */
+            workflow: string;
+        };
+        /** AutopilotSchedules */
+        AutopilotSchedules: {
+            /** Notes */
+            notes?: string[];
+            /** Schedules */
+            schedules?: components["schemas"]["AutopilotSchedule"][];
+        };
         /** AutopilotScore */
         AutopilotScore: {
             /** Judged */
@@ -2389,6 +2831,26 @@ export type components = {
              * @description matched / judged, one decimal; absent when nothing was judged.
              */
             percent?: number | null;
+        };
+        /**
+         * AutopilotStep
+         * @description A workflow's trigger, one condition or one action: its registry key and its words.
+         */
+        AutopilotStep: {
+            /**
+             * Kind
+             * @description The registry's key: an event ('message.received'), a condition ('side_in') or a handler ('order_entry').
+             */
+            kind: string;
+            /** Params */
+            params?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Words
+             * @description The step in plain words.
+             */
+            words: string;
         };
         /** AutopilotSwitchRequest */
         AutopilotSwitchRequest: {
@@ -2414,6 +2876,83 @@ export type components = {
             master_switch: boolean;
             /** Workflows Off */
             workflows_off?: string[];
+        };
+        /**
+         * AutopilotWorkflowDetail
+         * @description One workflow as the studio shows it: what starts it, what it checks and does, its
+         *     gate, its mode, per role its row, what it caught and missed, and its history.
+         */
+        AutopilotWorkflowDetail: {
+            /** Actions */
+            actions?: components["schemas"]["AutopilotStep"][];
+            /** Autopilots */
+            autopilots?: string[];
+            /**
+             * Caught
+             * @description Replay items it got right.
+             */
+            caught?: number | null;
+            /** Conditions */
+            conditions?: components["schemas"]["AutopilotStep"][];
+            /**
+             * False Alarms
+             * @description Null: not counted by this gate.
+             */
+            false_alarms?: number | null;
+            gate: components["schemas"]["AutopilotGate"];
+            /** History */
+            history?: components["schemas"]["AutopilotAuditRow"][];
+            /** Hours Basis */
+            hours_basis?: string | null;
+            /**
+             * Hours Saved
+             * @description Null: not measured.
+             */
+            hours_saved?: number | null;
+            /** Label */
+            label: string;
+            /**
+             * Missed
+             * @description Replay items it got wrong or missed.
+             */
+            missed?: number | null;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "off" | "suggest" | "draft" | "auto" | "watch";
+            /**
+             * Modes
+             * @description The modes this server can set for it now (watch only after its gate passed).
+             */
+            modes: ("off" | "suggest" | "draft" | "auto" | "watch")[];
+            /** Notes */
+            notes?: string[];
+            /**
+             * Open Items
+             * @default 0
+             */
+            open_items: number;
+            /** Rows */
+            rows?: components["schemas"]["AutopilotWorkflowRow"][];
+            /** @description Null when no registered autopilot feeds it (a workflow seen in replay only). */
+            trigger?: components["schemas"]["AutopilotStep"] | null;
+            /** Workflow */
+            workflow: string;
+        };
+        /** AutopilotWorkflowDraft */
+        AutopilotWorkflowDraft: {
+            /** Actions */
+            actions: components["schemas"]["AutopilotStep"][];
+            /** Conditions */
+            conditions?: components["schemas"]["AutopilotStep"][];
+            /** Label */
+            label: string;
+            /** Person */
+            person?: string | null;
+            /** Role */
+            role?: string | null;
+            trigger: components["schemas"]["AutopilotStep"];
         };
         /**
          * AutopilotWorkflowRow
@@ -2609,7 +3148,7 @@ export type components = {
             rows?: components["schemas"]["BriefRow"][];
             /**
              * State
-             * @description finance_marked / quality_marked: shown only to a reader holding finance / quality_controlled (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, which is not the same as none; blocked: the people exclusion is not loaded, so no mail, Teams, meeting or Planner line is shown; not_available: the data it needs is not captured yet (the note says what).
+             * @description finance_marked / quality_marked: shown only to a reader holding finance / quality_controlled (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, so the section may still have items; blocked: the people exclusion is not loaded, so no mail, Teams, meeting or Planner line is shown; not_available: the data it needs is not captured yet (the note says what).
              * @enum {string}
              */
             state: "shown" | "empty" | "partial" | "finance_marked" | "quality_marked" | "unread" | "blocked" | "not_available";
@@ -2956,7 +3495,7 @@ export type components = {
              * @description What happened; every date and figure is cited.
              */
             summary: string;
-            /** @description How we know, read as this reader (top items only). */
+            /** @description The evidence trail, read as this reader (top items only). */
             trail?: components["schemas"]["EvidenceTrail"] | null;
             /** Why */
             why?: string | null;
@@ -3346,6 +3885,13 @@ export type components = {
              */
             timed_out?: number | null;
         };
+        /** DraftDetail */
+        DraftDetail: {
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
+        };
         /** DraftFact */
         DraftFact: {
             /** Fact */
@@ -3460,7 +4006,7 @@ export type components = {
         };
         /**
          * EvidenceTrail
-         * @description How we know: the steps, records and messages that led to the answer, each opening
+         * @description The evidence trail: the steps, records and messages that led to the answer, each opening
          *     its source; a purchase order's lateness trail, a customer order's materials, or the
          *     answer's dated, checked claims.
          */
@@ -4588,6 +5134,47 @@ export type components = {
             follow_up: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * MeetingInvitee
+         * @description One person on a calendar invitation, as the invitation lists them (directory facts
+         *     every employee sees; the people exclusion decided before it is shown).
+         */
+        MeetingInvitee: {
+            /** Address */
+            address?: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Outside
+             * @description Their address is outside the mailbox's domain.
+             * @default false
+             */
+            outside: boolean;
+            /** Response */
+            response?: ("accepted" | "declined" | "tentativelyaccepted" | "none" | "notresponded" | "organizer") | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "organizer" | "required" | "optional" | "resource";
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+        };
+        /**
+         * MeetingOpenItem
+         * @description An open action item from an earlier meeting of the same series (the meeting
+         *     autopilot's tracked items the reader may see).
+         */
+        MeetingOpenItem: {
+            /** Date */
+            date?: string | null;
+            /** Detail */
+            detail?: string | null;
+            /** Label */
+            label: string;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
         };
         /** Money */
         Money: {
@@ -6476,9 +7063,60 @@ export type components = {
         };
         /** UpcomingMeeting */
         UpcomingMeeting: {
+            /**
+             * Agenda
+             * @description The invitation's body preview, clipped.
+             */
+            agenda?: string | null;
+            /**
+             * All Day
+             * @default false
+             */
+            all_day: boolean;
+            /** Attendees */
+            attendees?: components["schemas"]["MeetingInvitee"][];
             /** Brief Url */
             brief_url: string;
+            /** End */
+            end?: string | null;
+            /**
+             * Is Organizer
+             * @default false
+             */
+            is_organizer: boolean;
+            /**
+             * Join Url
+             * @description The Teams join link (teams.microsoft.com only).
+             */
+            join_url?: string | null;
+            /** Location */
+            location?: string | null;
             object: components["schemas"]["ObjectRef"];
+            /**
+             * Online
+             * @default false
+             */
+            online: boolean;
+            /** Open Items */
+            open_items?: components["schemas"]["MeetingOpenItem"][];
+            organizer?: components["schemas"]["MeetingInvitee"] | null;
+            /**
+             * Parties
+             * @description Customers and suppliers it is linked to.
+             */
+            parties?: components["schemas"]["ObjectRef"][];
+            /**
+             * People Withheld
+             * @description The people exclusion is not loaded: no organizer, attendee or agenda shown.
+             * @default false
+             */
+            people_withheld: boolean;
+            /**
+             * Private
+             * @description A private or confidential event: its time only.
+             * @default false
+             */
+            private: boolean;
             /** Sources */
             sources?: components["schemas"]["Source"][];
             /** Start */
@@ -6806,6 +7444,190 @@ export type components = {
             rules: components["schemas"]["WatchRule"][];
             /** Unread */
             unread: number;
+        };
+        /** WorkLogEvent */
+        WorkLogEvent: {
+            /** At */
+            at: string;
+            /** Case Id */
+            case_id?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "ask" | "alert" | "autopilot" | "action" | "write" | "watch" | "note" | "save";
+            loop?: components["schemas"]["WorkLogLoop"] | null;
+            /** Mine */
+            mine: boolean;
+            /** People */
+            people?: string[];
+            /**
+             * Pinned
+             * @default false
+             */
+            pinned: boolean;
+            /**
+             * Reader Name
+             * @description Who did it (the owner's view).
+             */
+            reader_name?: string | null;
+            /** Records */
+            records?: components["schemas"]["WorkLogRecord"][];
+            /** Seq */
+            seq: number;
+            /**
+             * Source
+             * @description The store the item lives in (actions_journal, autopilot_queue, write_intents, watchlists, feedback, ai_watcher, ask, saved).
+             */
+            source: string;
+            /** Source Id */
+            source_id?: string | null;
+            /**
+             * Thread
+             * @description What "continue" reopens (GET /api/work-log/threads/{thread}).
+             */
+            thread: string;
+            /** Thread Name */
+            thread_name?: string | null;
+            /** Title */
+            title: string;
+            /** Verb */
+            verb: string;
+        };
+        /**
+         * WorkLogLoop
+         * @description A sent message's follow-through: waiting, answered (a reply arrived), overdue (no
+         *     reply inside the window: ``nudge`` and a follow-up to ask for) or closed by you.
+         */
+        WorkLogLoop: {
+            /** Answered At */
+            answered_at?: string | null;
+            /** Due */
+            due?: string | null;
+            /**
+             * Follow Up
+             * @description A question for Ask that drafts the follow-up (nothing is sent).
+             */
+            follow_up?: string | null;
+            /** Nudge */
+            nudge?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "waiting" | "answered" | "overdue" | "closed";
+        };
+        /** WorkLogOrganise */
+        WorkLogOrganise: {
+            /** Case Id */
+            case_id?: string | null;
+            /**
+             * Closed
+             * @description Close a waiting loop yourself.
+             */
+            closed?: boolean | null;
+            /** Name */
+            name?: string | null;
+            /** Pinned */
+            pinned?: boolean | null;
+        };
+        /** WorkLogPage */
+        WorkLogPage: {
+            /**
+             * All Readers
+             * @default false
+             */
+            all_readers: boolean;
+            /** Events */
+            events: components["schemas"]["WorkLogEvent"][];
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /**
+             * Total
+             * @description Null when the log cannot be shown (the people exclusion list is not loaded: fail closed).
+             */
+            total: number | null;
+        };
+        /** WorkLogRecord */
+        WorkLogRecord: {
+            /** Label */
+            label?: string | null;
+            /** Object Id */
+            object_id: string;
+            /** Type */
+            type?: string | null;
+        };
+        /** WorkLogResume */
+        WorkLogResume: {
+            /** Href */
+            href: string;
+            /**
+             * Turns
+             * @description An Ask session's turns, oldest first, as you saw them.
+             */
+            turns?: components["schemas"]["WorkLogTurn"][];
+        };
+        /**
+         * WorkLogSave
+         * @description The record page's or Ask's Save (kept in the browser too).
+         */
+        WorkLogSave: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "object" | "question";
+            /** Label */
+            label: string;
+            /** Object Id */
+            object_id?: string | null;
+            /** Object Type */
+            object_type?: string | null;
+            /** Saved */
+            saved: boolean;
+        };
+        /** WorkLogThread */
+        WorkLogThread: {
+            /** Case Id */
+            case_id?: string | null;
+            /** Closed At */
+            closed_at?: string | null;
+            /** Events */
+            events: components["schemas"]["WorkLogEvent"][];
+            /** Name */
+            name?: string | null;
+            /**
+             * Pinned
+             * @default false
+             */
+            pinned: boolean;
+            /**
+             * Related
+             * @description Your other work on the same records.
+             */
+            related?: components["schemas"]["WorkLogEvent"][];
+            resume: components["schemas"]["WorkLogResume"];
+            /** Thread */
+            thread: string;
+        };
+        /** WorkLogTurn */
+        WorkLogTurn: {
+            /**
+             * Answer
+             * @description The answer as you saw it; null (``withheld`` says why) when a source it cites is no longer open to you.
+             */
+            answer: {
+                [key: string]: unknown;
+            } | null;
+            /** At */
+            at: string;
+            /** Question */
+            question: string;
+            /** Withheld */
+            withheld?: string | null;
         };
         /**
          * Workload
@@ -7752,6 +8574,35 @@ export interface operations {
             };
         };
     };
+    autopilot_catalog_api_autopilot_catalog_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotCatalog"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     autopilot_decide_api_autopilot_items__item_id__decision_post: {
         parameters: {
             query?: never;
@@ -7814,6 +8665,35 @@ export interface operations {
             };
         };
     };
+    autopilot_schedules_api_autopilot_schedules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotSchedules"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     autopilot_global_api_autopilot_switches_post: {
         parameters: {
             query?: never;
@@ -7856,6 +8736,115 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    autopilot_draft_api_autopilot_workflows_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotWorkflowDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotDraftKept"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_workflow_detail_api_autopilot_workflows__workflow__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotWorkflowDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7941,6 +8930,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_set_mode_api_autopilot_workflows__workflow__mode_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotModeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotWorkflowDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    autopilot_replay_api_autopilot_workflows__workflow__replay_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutopilotReplayRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutopilotReplay"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -9830,6 +10952,211 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WatchRuleDeleted"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    work_log_api_work_log_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                kind?: ("ask" | "alert" | "autopilot" | "action" | "write" | "watch" | "note" | "save") | null;
+                record?: string | null;
+                thread?: string | null;
+                since?: string | null;
+                until?: string | null;
+                case_id?: string | null;
+                pinned?: boolean;
+                waiting?: boolean;
+                /** @description The owner only: every person's. */
+                everyone?: boolean;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkLogPage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    work_log_saved_api_work_log_saved_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkLogSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkLogPage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    work_log_thread_api_work_log_threads__thread__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkLogThread"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    work_log_organise_api_work_log_threads__thread__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkLogOrganise"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkLogThread"];
                 };
             };
             /** @description Unauthorized */

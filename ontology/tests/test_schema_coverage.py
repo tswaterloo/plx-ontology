@@ -154,6 +154,47 @@ class Source:
                               digest, T, None, T, f"api:{rel}")
 
 
+class GlAccountFormsProject(unittest.TestCase):
+    """Two Sage GL accounts whose numbers meet once formatted (made-up numbers, shaped as
+    Sage writes them): an account key carrying two digits past its formatted number
+    (9999901000001 shows as 99999-01-0000) and the account whose own key is that formatted
+    number without separators. An AR row naming the shared formatted number is ambiguous
+    and links to neither at verified; a GL row naming an account key links to that one."""
+
+    A = {"acctid": "9999901000001", "acctfmttd": "99999-01-0000"}
+    B = {"acctid": "99999010000", "acctfmttd": "99999-01-0000"}
+    C = {"acctid": "9999001", "acctfmttd": "99990-01"}
+
+    def test_a_formatted_number_two_accounts_share_links_neither_firmly(self):
+        global KEYS
+        rows = {"sage.gl_account": [self.A, self.B, self.C],
+                "sage.ar_oblj": [{"_sage_pk": "shared", "idglacct": "99999-01-0000  "},
+                                 {"_sage_pk": "own", "idglacct": "99990-01"}],
+                "sage.gl_je_detail": [{"_sage_pk": "j1", "acctid": "99999010000    "}]}
+        held = KEYS
+        KEYS = {**held, "sage.gl_account": "acctid", "sage.ar_oblj": "_sage_pk",
+                "sage.gl_je_detail": "_sage_pk"}
+        self.addCleanup(lambda: globals().__setitem__("KEYS", held))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "store.sqlite"
+            build_store(path, schema.load_schema(), {"portal_api": Source(rows)},
+                        normalizer=identifiers.normalize,
+                        clock=lambda: datetime(2026, 10, 2, tzinfo=timezone.utc))
+            conn = sqlite3.connect(str(path))
+            self.addCleanup(conn.close)
+            got = {(f.split(":", 2)[2], lt, t.split(":", 2)[2], tier) for f, lt, t, tier in
+                   conn.execute("SELECT from_object, link_type, to_object, tier FROM links "
+                                "WHERE link_type LIKE '%.gl_account%'")}
+        acct = lambda a: json.dumps({"acctid": a["acctid"]}, separators=(",", ":"))
+        shared = [g for g in got if g[0] == '{"_sage_pk":"shared"}']
+        self.assertEqual({g[2] for g in shared}, {acct(self.A), acct(self.B)})
+        self.assertNotIn("verified", {g[3] for g in shared})
+        self.assertEqual({g[2:] for g in got if g[0] == '{"_sage_pk":"own"}'},
+                         {(acct(self.C), "verified")})
+        self.assertEqual({g[2:] for g in got if g[0] == '{"_sage_pk":"j1"}'},
+                         {(acct(self.B), "verified")})
+
+
 class UnservedRelations(unittest.TestCase):
     def test_every_unserved_relation_has_one_not_served_declaration_with_an_ask(self):
         catalog = schema.load_catalog()
@@ -270,14 +311,17 @@ class BoundRelationsProject(unittest.TestCase):
                 # Portal-native quotes are never authority (R1): their values never win and
                 # a link joining them to other records reads as a lead; the Portal's own
                 # foreign key from a quote's line to its quote is that key, a link.
-                # a record reached only by a lead link is set apart (possibly_related)
-                out = with_leads(self.call("plx.around", **{
-                    "from": QUOTE, "tier_floor": "lead",
-                    "path": [{"link_type": link_type, "direction": direction}]}))
-                self.assertEqual([o["object_id"] for o in out["objects"]], [expected])
-                (edge,) = out["edges"]
+                out = self.call("plx.around", **{"from": QUOTE, "tier_floor": "lead", "path": [
+                    {"link_type": link_type, "direction": direction}]})
+                # A record reached only by a lead is listed apart as possibly related,
+                # never in the answer's objects (ae3cfbfc91).
+                held = out.get("possibly_related", {}) if tier == "lead" else out
+                if tier == "lead":
+                    self.assertEqual((out["objects"], out["edges"]), ([], []))
+                self.assertEqual([o["object_id"] for o in held["objects"]], [expected])
+                (edge,) = held["edges"]
                 self.assertEqual(edge["tier"], tier)
-                (reached,) = out["objects"]
+                (reached,) = held["objects"]
                 self.assertTrue(reached["display"]["origin"]["citation"].startswith("api://"))
 
 

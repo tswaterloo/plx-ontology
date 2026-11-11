@@ -368,6 +368,22 @@ class BcOnlyProjectionTests(unittest.TestCase):
         self.assertNotIn("due_by", due)
         self.assertIn(due["gap"]["reason"], ("no_due_date", "due_date_unproven"))
 
+    def test_an_item_card_gives_its_on_hand_quantity_in_its_base_unit(self):
+        """Product.quantity_on_hand is BC's item inventory, a decimal in the item's base unit
+        (what the stock-out check reads); an item card without the field has no value."""
+        fake = purchase_world()
+        fake.data[(MAN, "items")][0]["inventory"] = "#37.5"
+        w = BcWorld(self, fake)
+        conn = sqlite3.connect(w.store_path)
+        try:
+            rows = conn.execute(
+                "SELECT o.native_key, v.value, v.unit, v.quantity_role FROM object_values v "
+                "JOIN objects o ON o.object_id = v.object_id WHERE o.object_type = 'Product' "
+                "AND v.property = 'quantity_on_hand' AND v.value IS NOT NULL").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([r[1:] for r in rows], [("37.5", "EA", "actual")])
+
     def test_three_way_price_compares_one_stated_tax_basis_in_a_known_currency(self):
         """BC line prices take their tax basis from the header's pricesIncludeTax and a
         blank currencyCode the company's local currency (companyInformation); the PO vs
@@ -950,6 +966,34 @@ class ContactRelationTests(unittest.TestCase):
                                         if m != "pii"}))
         self.assertEqual(reached(customer_id, "Contact.bc_customer"), set())
         self.assertEqual(w.call("plx.find", {"query": "pat@acme.test"}).get("objects", []), [])
+
+    def test_a_company_contact_is_never_its_own_company_and_people_stay_in_their_book(self):
+        """As BC serves them, a company contact carries its own number as companyNumber:
+        that key resolves (to itself) yet is no link. A person contact links to its
+        company in its own book only; the same numbers in the other book are another
+        company's records."""
+        fake = tb.FakeBc({}, companies=tb.CO)
+        for c, company in ((1, MAN), (2, DIST)):
+            fake.data[(company, "contacts")] = [
+                record(gid(c, 60), number="CT1", type="Company", displayName="Acme",
+                       companyNumber="CT1", companyName="Acme"),
+                record(gid(c, 61), number="CT2", type="Person", displayName="Pat",
+                       companyNumber="CT1", companyName="Acme"),
+                record(gid(c, 62), number="CT3", type="Company", displayName="Solo",
+                       companyNumber="CT3", companyName="Solo")]
+        w = BcWorld(self, fake, entity_sets=("contacts",))
+        rows = w.reader.conn.execute(
+            "SELECT from_object, to_object, tier FROM links WHERE link_type = "
+            "'Contact.of_company' AND superseded_at IS NULL").fetchall()
+
+        def contact(c: int, kind: int) -> str:
+            return f'Contact:bc.contacts:{{"id":"{gid(c, kind)}"}}'
+
+        self.assertEqual(sorted(tuple(r) for r in rows), sorted(
+            [(contact(1, 61), contact(1, 60), "verified"),
+             (contact(2, 61), contact(2, 60), "verified")]))
+        self.assertGreater(w.build["counts"].get("links.cross_company_not_linked", 0), 0)
+        self.assertEqual(w.gaps("bc_company_unknown"), set())
 
 
 class FieldPageGapTests(unittest.TestCase):

@@ -984,6 +984,133 @@ class LateListCountTest(unittest.TestCase):
         self.assertEqual(answer.list_total, 150)
 
 
+class LateWhileTheCheckReruns(unittest.TestCase):
+    """Live (2026-11-11): "is anything late" answered "the late-order check is being
+    re-run ... can't be listed yet" while the Late page listed the late orders. A check
+    that is re-running or did not run on the newest data answers from its last completed
+    result (the Late page's read, each order's sources decided for the reader now) with an
+    "as of" line; with none either, the Ask goes on to a live read (the agent path)."""
+
+    PO, HIDDEN = "PurchaseOrder:bc.purchase_orders:p1", "PurchaseOrder:bc.purchase_orders:p2"
+
+    def backend(self, held_gaps, *, refused=()):
+        import contextlib
+        from types import MethodType, SimpleNamespace
+        refreshing = {"status": "read", "run_at": "2026-11-11T08:00:00Z", "gaps": [],
+                      "refreshing": ["late_or_unconfirmed_po"],
+                      "checked_on": "2026-11-10T08:00:00Z"}
+
+        class Access:
+            def decide(self, handles):
+                # p2's handle refused; any other handle allowed; an unknown one undecided
+                return {h: ({"reason": "restricted"} if h in refused else None)
+                        for h in handles if h.startswith("bc://")}
+
+        view = SimpleNamespace(access=Access(), _request=contextlib.nullcontext,
+                               _can_open=lambda handle: True,
+                               gap_inbox=lambda limit=None: refreshing)
+        fake = SimpleNamespace(
+            _attention_cached=lambda _view: (dict(refreshing), {}, {}),
+            test_named=frozenset, today=None, freshness=lambda _base=None: m.Freshness(),
+            _source=be.WorkspaceBackend._source,
+            _late_held=lambda _view: (refreshing, held_gaps, {self.PO: "PO 1001",
+                                                              self.HIDDEN: "PO 1002"}, {}))
+        for name in ("_late_fallback", "late_job"):
+            setattr(fake, name, MethodType(getattr(be.WorkspaceBackend, name), fake))
+        fake.reads = SimpleNamespace(run=lambda reader, job, timeout=None: job(view))
+        return fake, view
+
+    def gap(self, oid, handle, days):
+        return {"object_id": oid, "object_type": "PurchaseOrder", "kind": "late_order",
+                "days_late": days, "summary": "Past its need date", "citations": [handle]}
+
+    def ask(self, fake):
+        got = be.WorkspaceBackend._late_ask(fake, None, m.AskRequest(question="is anything late"),
+                                            "c1", lambda: 0)
+        try:
+            while True:
+                next(got)
+        except StopIteration as done:
+            return done.value
+
+    def test_the_last_completed_result_answers_with_an_as_of_line(self):
+        held = [self.gap(self.PO, "bc://x/purchaseOrders/p1@1", 30),
+                self.gap(self.HIDDEN, "bc://x/purchaseOrders/p2@1", 20),
+                self.gap("PurchaseOrder:bc.purchase_orders:p3", "mystery://p3@1", 10)]
+        fake, _ = self.backend(held, refused={"bc://x/purchaseOrders/p2@1"})
+        answer = self.ask(fake)
+        self.assertEqual(answer.outcome, "answered")
+        self.assertNotIn("can't", answer.direct_answer)
+        self.assertTrue(answer.direct_answer.startswith(
+            "1 purchase order you can see is late at the last completed late-order check "
+            "(2026-11-10)."), answer.direct_answer)
+        self.assertIn("re-running on newer data", answer.direct_answer)
+        # the refused and the undecided order are never named or counted
+        self.assertEqual([s.object_id for s in answer.subjects], [self.PO])
+        self.assertNotIn("1002", answer.model_dump_json())
+
+    def test_no_completed_result_goes_on_to_a_live_read(self):
+        fake, _ = self.backend([])
+        self.assertIsNone(self.ask(fake))
+
+    def test_an_order_that_cites_nothing_is_not_shown(self):
+        # All() over no citations let an uncited order through
+        uncited = {**self.gap(self.HIDDEN, "x", 20), "citations": []}
+        fake, view = self.backend([self.gap(self.PO, "bc://x/purchaseOrders/p1@1", 30),
+                                   uncited])
+        late, total = fake._late_fallback(view)
+        self.assertEqual(total, 1)
+        self.assertEqual([p.object_id for p in late], [self.PO])
+        fake, view = self.backend([uncited])
+        self.assertEqual(fake._late_fallback(view), ([], 0))
+
+
+class ResumedAskHostSources(unittest.TestCase):
+    """On resume a captured mail original or SharePoint file the
+    store leaves to the reader's host (``item_refused``) was counted as open. It is read
+    through the reader's host again; refused there, no host, or too many: withheld."""
+
+    MAIL, FILE = "original://mail/m1@1", "sharepoint://site/doc1@1"
+
+    def backend(self, opens, *, serves=True):
+        import contextlib
+        from types import MethodType, SimpleNamespace
+        from operator_api.workspace.object_workspace import ITEM_REFUSED, _withheld
+        reads = []
+
+        def read_source(session, handle, offset):
+            reads.append(handle)
+            if handle not in opens:
+                raise KeyError("citation_unresolvable_for_actor")
+            return {"text": "x"}
+
+        fake = SimpleNamespace(
+            feedback_grant=lambda reader, handles: (frozenset(), {
+                h: (_withheld(ITEM_REFUSED) if "://" in h and not h.startswith("bc://")
+                    else None) for h in handles}),
+            agent_ask=SimpleNamespace(serves=lambda session: serves,
+                                      read_source=read_source),
+            _original_reads=lambda reader: contextlib.nullcontext())
+        for name in ("ask_withheld", "_host_opens"):
+            setattr(fake, name, MethodType(getattr(be.WorkspaceBackend, name), fake))
+        return fake, reads
+
+    def test_a_host_source_is_read_again_through_the_readers_host(self):
+        from types import SimpleNamespace
+        reader = SimpleNamespace(key="staff:ana", session=None)
+        fake, reads = self.backend({self.MAIL, self.FILE})
+        self.assertIsNone(fake.ask_withheld(reader, ["bc://x/p1@1", self.MAIL, self.FILE]))
+        self.assertEqual(reads, [self.MAIL, self.FILE])
+        fake, _ = self.backend({self.MAIL})        # the site access was revoked
+        self.assertEqual(fake.ask_withheld(reader, [self.MAIL, self.FILE]), "withheld")
+        fake, _ = self.backend({self.MAIL, self.FILE}, serves=False)   # no host
+        self.assertEqual(fake.ask_withheld(reader, [self.MAIL]), "withheld")
+        many = [f"sharepoint://site/d{i}@1" for i in range(be.RESUME_HOST_CHECKS + 1)]
+        fake, reads = self.backend(set(many))
+        self.assertEqual(fake.ask_withheld(reader, many), "withheld")
+        self.assertEqual(reads, [])
+
+
 class OrdersAtRiskTests(unittest.TestCase):
     """Vince's "customer order -> which materials are late": the late list names the
     customer orders a late PO holds up, and "which customer orders are at risk from late
@@ -1495,8 +1622,9 @@ class KnownReaderWarmTests(unittest.TestCase):
         self.assertEqual(backend.warm_known(), 1)
         self.assertEqual(made, [("29e05178-0bd1-49b9-be6e-b01be1975f70", now + 3600)])
         # Today first on the read workers (Home, the briefing and its groups, the
-        # suggestion cards, the late list), then the pages on the warm worker
-        self.assertEqual((backend.reads.jobs.qsize(), backend.warmer.jobs.qsize()), (4, 1))
+        # suggestion cards, the late list, the upcoming meetings), then the pages and
+        # last week's review on the warm worker
+        self.assertEqual((backend.reads.jobs.qsize(), backend.warmer.jobs.qsize()), (5, 2))
         # signed out: never read ahead for again
         backend.forget_reader(be.Reader(SimpleNamespace(
             principals=frozenset(), employee=SimpleNamespace(

@@ -93,6 +93,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
+import functools
 import json
 import re
 import sqlite3
@@ -751,13 +752,14 @@ def mention_link_types(link_types: Mapping[str, Mapping[str, Any]]
     """``(document type, target type) -> link type id`` of every declared link type
     with a ``mention`` binding (``ontology/schema/domains/documents.json``:
     ``Email.mentions_<type>``); a key join's binding (``key``, ``ontology.key_links``) and a
-    confirming path's (``confirm``) are no mention. A mention of a type with no declared link is not
+    confirming path's (``confirm``) and a binding a named step writes (``written_by_step``)
+    are no mention. A mention of a type with no declared link is not
     stored (counted ``undeclared_target``)."""
     out: dict[tuple[str, str], str] = {}
     for link_id in sorted(link_types):
         link = link_types[link_id]
         if any(b.get("kind") == BINDING_KIND and not b.get("key") and not b.get("confirm")
-               for b in link.get("bindings", ())):
+               and not b.get("written_by_step") for b in link.get("bindings", ())):
             out.setdefault((link["from"], link["to"]), link_id)
     return out
 
@@ -851,7 +853,43 @@ def _store_candidates(conn: Any, mention: Mapping[str, Any], exclude: str,
         if aliases is not None:
             reviewed += [row for row in aliases.rows(conn, kind, value)
                          if row["object_id"] != exclude]
-    return rows + beside_index(reviewed, rows)
+    found = rows + beside_index(reviewed, rows)
+    # A number names the record that holds it as its own (an order number names the
+    # order); a record that only refers to it (an invoice's order number) is reached
+    # through that record's links, never as a mention of its own. It answers only when
+    # no record holds the number itself, and then as a lead via the reference.
+    owners = _kind_owners()
+    if any(not is_reference(row) and row["object_type"] == owners.get(row["identifier_kind"])
+           for row in found):
+        found = [row for row in found if not is_reference(row)]
+    return found
+
+
+@functools.lru_cache(maxsize=1)
+def _kind_owners() -> dict[str, str]:
+    """identifier kind -> the object type whose own number it is (identifiers.json)."""
+    from ontology import identifiers
+    return {kind: identifiers.kind_spec(kind)["object_type"] for kind in identifiers.kinds()
+            if identifiers.kind_spec(kind).get("object_type")}
+
+
+@functools.lru_cache(maxsize=1)
+def _reference_properties() -> frozenset[tuple[str, str]]:
+    """(object type, property) of every identifier property declared ``identifies:
+    reference`` (a number naming another record: an invoice's order number)."""
+    from ontology.schema import load_schema
+    return frozenset((tid, p["name"]) for tid, t in load_schema().object_types.items()
+                     for p in t.get("properties", ())
+                     if p.get("identifier_kind") and p.get("identifies") == "reference")
+
+
+def is_reference(row: Any) -> bool:
+    """Whether an identifier-index row holds a number its record refers to, not its own."""
+    try:
+        key = (row["object_type"], row["property"])
+    except (KeyError, IndexError):
+        return False
+    return key in _reference_properties()
 
 
 def mention_candidates(conn: Any, mention: Mapping[str, Any], source: Any,
@@ -1397,6 +1435,9 @@ def _store_link(document: Document, mention: Mapping[str, Any], source: Any, cit
     if mention["external_assertion"]:
         why_not.append({"feature": "external_assertion", "agrees": False,
                         "cannot_confirm": list(EXTERNAL_UNCONFIRMABLE)})
+    if is_reference(row):
+        why_not.append({"feature": "via_reference", "agrees": False,
+                        "property": row["property"], "matched_kind": row["identifier_kind"]})
     evidence = list(dict.fromkeys([document.citation, mention["citation"], row["l1_handle"],
                                    *cited_handles]))
     return {"link_id": link_id, "link_type": link_type, "from_object": source["object_id"],
@@ -1453,6 +1494,9 @@ MENTION_FEATURES: Mapping[str, Mapping[str, Any]] = {
                   "Portal order's stored FM PO number and the FM order's own number); "
                   "never a number shape alone"},
     "quoted_history": {"role": "veto", "detail": "the span is quoted history"},
+    "via_reference": {"role": "veto",
+                      "detail": "the number is one the target refers to (e.g. an invoice's "
+                                "order number), not its own: a lead via that reference"},
     "label_kind_conflict": {"role": "veto",
                             "detail": "the label assigns another identifier kind"},
 }

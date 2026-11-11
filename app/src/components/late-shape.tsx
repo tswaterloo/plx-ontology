@@ -5,8 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { formatDate, formatMoney, objectHref, plural, recordLabel, safeHref } from "@/lib/format";
 import type { LatePo } from "@/lib/types";
-import { AgeRing } from "./ui/glyphs";
-import { Monogram } from "./ui/monogram";
+import { lateFigure } from "./ui/glyphs";
 
 /**
  * The late list drawn: one dot per late PO on a days-late axis, stacked where they share a
@@ -221,7 +220,6 @@ export function LateShape({
         </div>
         {shown && (
           <p className="mt-3 flex min-h-8 min-w-0 items-center gap-2.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_4%,transparent)] px-2.5 py-1.5 text-[13px] leading-5" aria-live="polite" data-testid="late-readout">
-            <Monogram name={shown.supplier} size={20} />
             <Link
               ref={go}
               href={hrefOf(shown)}
@@ -235,12 +233,11 @@ export function LateShape({
               {recordLabel("PurchaseOrder", shown.label)}
             </Link>
             {shown.supplier && <span className="min-w-0 truncate text-muted">{shown.supplier}</span>}
-            <span className="ml-auto inline-flex shrink-0 items-center gap-1.5 tabular-nums">
-              <AgeRing days={shown.days_late ?? 0} size={13} />
+            <span className={cn("ml-auto inline-flex shrink-0 items-center gap-1.5 tabular-nums", lateFigure(shown.days_late))}>
               {shown.days_late} days late
             </span>
             {shown.due_date && <span className="hidden shrink-0 text-muted sm:inline">needed {formatDate(shown.due_date, { short: true })}</span>}
-            {shown.amount && !shown.amount_suspect && <span className="hidden shrink-0 tabular-nums text-muted md:inline">{formatMoney(shown.amount.amount, shown.amount.currency)}</span>}
+            {shown.amount && !shown.amount_suspect && <span className="hidden shrink-0 num text-muted md:inline">{formatMoney(shown.amount.amount, shown.amount.currency)}</span>}
           </p>
         )}
       </div>
@@ -252,15 +249,14 @@ export function LateShape({
             {suppliers.map(([name, r]) => {
               const n = r[0] + r[1] + r[2];
               const head = (
-                <span className="grid h-8 grid-cols-[20px_minmax(0,9.5rem)_minmax(0,1fr)_2rem] items-center gap-2.5 px-2 text-[13px]">
-                  <Monogram name={name} size={20} />
+                <span className="grid h-8 grid-cols-[minmax(0,9.5rem)_minmax(0,1fr)_2rem] items-center gap-2.5 px-2 text-[13px]">
                   <span className={cn("truncate", picked === name && "font-semibold")}>{name}</span>
                   <span className="flex h-2 min-w-0 gap-px" aria-hidden>
                     {r.map((c, b) =>
                       c ? <span key={b} className={cn("h-full first:rounded-l-full last:rounded-r-full", AGE_BANDS[b].cls)} style={{ width: `${(c / most) * 100}%` }} /> : null,
                     )}
                   </span>
-                  <span className="text-right tabular-nums">{n}</span>
+                  <span className="text-right num">{n}</span>
                 </span>
               );
               return (

@@ -20,7 +20,7 @@
  "as_known_at": {
   "time": "2099-01-02T03:04:05Z",
   "l1_generations": {
-   "portal_api": "8a5851cbdc2e491a",
+   "portal_api": "3e2441a266431c3d",
    "bc": "356893480932f904"
   }
  },
@@ -210,7 +210,7 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f1_chain@305211c73a11",
+  "id": "oracle:f1_chain@8656201efb4b",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
    "devloop/CONTEXT/03-PORTAL.md#3.2/3.5 BC document No. (BC API v2.0 number, exact)",
@@ -227,7 +227,7 @@
    "BC API v2.0 salesInvoices status Paid"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
-  "query_digest": "c2c8a8039211e07cc2c19afd9367ab854fb0909c0a1a19993fd368f3ff87be1d"
+  "query_digest": "a16b04584cba0bf65961b9d2fbed4ab57d203e6eefb6dc73930b2b0d51dfee79"
  },
  "label": {
   "status": "oracle_only",

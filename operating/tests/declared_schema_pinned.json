@@ -266,6 +266,12 @@
    ],
    [
     "table",
+    "routine",
+    "routine",
+    "CREATE TABLE routine (owner TEXT NOT NULL, series TEXT NOT NULL,\n                at TEXT NOT NULL, message TEXT NOT NULL, recipients TEXT NOT NULL,\n                greeted INTEGER NOT NULL,\n                PRIMARY KEY (owner, series, at))"
+   ],
+   [
+    "table",
     "sent",
     "sent",
     "CREATE TABLE sent (owner TEXT NOT NULL, thread TEXT NOT NULL,\n                counterpart TEXT NOT NULL, at TEXT NOT NULL,\n                PRIMARY KEY (owner, thread, counterpart, at))"
@@ -1243,6 +1249,50 @@
     "signal_reads",
     "signal_reads",
     "CREATE TABLE signal_reads (reader TEXT NOT NULL, alert_id TEXT NOT NULL,\n  at TEXT NOT NULL, PRIMARY KEY (reader, alert_id))"
+   ]
+  ],
+  "work_log": [
+   [
+    "index",
+    "event_reader",
+    "event",
+    "CREATE INDEX event_reader ON event (reader, seq)"
+   ],
+   [
+    "index",
+    "event_thread",
+    "event",
+    "CREATE INDEX event_thread ON event (reader, thread, seq)"
+   ],
+   [
+    "table",
+    "event",
+    "event",
+    "CREATE TABLE event (\n  seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,\n  reader TEXT NOT NULL, reader_name TEXT,\n  kind TEXT NOT NULL, verb TEXT NOT NULL, title TEXT NOT NULL, detail TEXT,\n  thread TEXT NOT NULL, source TEXT NOT NULL, source_id TEXT,\n  records TEXT NOT NULL DEFAULT '[]', people TEXT NOT NULL DEFAULT '[]',\n  awaiting TEXT, once TEXT UNIQUE)"
+   ],
+   [
+    "table",
+    "event_record",
+    "event_record",
+    "CREATE TABLE event_record (seq INTEGER NOT NULL, object_id TEXT NOT NULL,\n  PRIMARY KEY (object_id, seq))"
+   ],
+   [
+    "table",
+    "thread",
+    "thread",
+    "CREATE TABLE thread (reader TEXT NOT NULL, thread TEXT NOT NULL,\n  name TEXT, pinned INTEGER NOT NULL DEFAULT 0, case_id TEXT, closed_at TEXT,\n  at TEXT NOT NULL, PRIMARY KEY (reader, thread))"
+   ],
+   [
+    "trigger",
+    "event_no_delete",
+    "event",
+    "CREATE TRIGGER event_no_delete BEFORE DELETE ON event\nBEGIN SELECT RAISE(ABORT, 'work_log_is_append_only'); END"
+   ],
+   [
+    "trigger",
+    "event_no_update",
+    "event",
+    "CREATE TRIGGER event_no_update BEFORE UPDATE ON event\nBEGIN SELECT RAISE(ABORT, 'work_log_is_append_only'); END"
    ]
   ]
  }

@@ -7,13 +7,13 @@ import { buildHistory, facets, filterHistory, type HistoryKind, type HistoryRow 
 import type { LinkedItem, SourceSystem, TimelineEvent } from "@/lib/types";
 import { SectionTitle } from "./record/parts";
 import { EvidenceDrawer } from "./source-chip";
-import { SystemTile } from "./ui/glyphs";
+import { SystemCode } from "./ui/glyphs";
 
 const SHOWN = 30;
 
 function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button type="button" aria-pressed={on} onClick={onClick} className={cn("cursor-pointer rounded-full border px-2.5 py-0.5 text-[12px] leading-5", on ? "border-fg bg-hover text-fg" : "border-border text-muted hover:bg-hover")}>
+    <button type="button" aria-pressed={on} onClick={onClick} className={cn("cursor-pointer rounded-[3px] border px-2.5 py-0.5 text-[12px] leading-5", on ? "border-fg bg-hover text-fg" : "border-border text-muted hover:bg-hover")}>
       {children}
     </button>
   );
@@ -23,7 +23,7 @@ function Row({ r }: { r: HistoryRow }) {
   const [open, setOpen] = useState(false);
   const body = (
     <>
-      <SystemTile system={r.system} size={16} className="mt-[2px]" />
+      <SystemCode system={r.system} size={16} className="mt-[2px]" />
       <span className="min-w-0 flex-1">
         <span className="block text-[13px] leading-5">{r.count > 1 ? `${r.title} ×${r.count}` : r.title}</span>
         {r.summary && r.count === 1 && <span className="block truncate text-[12px] leading-4 text-muted">{readable(r.summary)}</span>}

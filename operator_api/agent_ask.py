@@ -101,9 +101,11 @@ PREREAD_HEADING = ("Tool output already read for you, as this reader, before the
 
 def app_prompt(question: str, route: str | None = None) -> str:
     """The app's Ask task: the scoreboard's ``ask_prompt`` unchanged, then
-    ``APP_READER_RULE``."""
+    ``APP_READER_RULE`` and the house prose style (``prose_style.PROSE_STYLE_RULE``)."""
     from operating import agent_session as runner
-    return runner.ask_prompt(question, route) + "\n\n" + APP_READER_RULE
+    from operating.prose_style import PROSE_STYLE_RULE
+    return (runner.ask_prompt(question, route) + "\n\n" + APP_READER_RULE + "\n\n"
+            + PROSE_STYLE_RULE)
 
 
 class ReaderRefused(LookupError):

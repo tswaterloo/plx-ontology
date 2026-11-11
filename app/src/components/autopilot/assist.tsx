@@ -22,7 +22,7 @@ export function mailtoOf(d: AssistDraft, body: string): string {
   return `mailto:${to}?${q}`;
 }
 
-export function AssistBox() {
+export function AssistBox({ compact = false }: { compact?: boolean } = {}) {
   const [line, setLine] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,8 +52,8 @@ export function AssistBox() {
     setCopied(true);
   };
   return (
-    <section className="space-y-3 rounded-lg border border-border p-3" aria-label="Assist" data-testid="assist">
-      <form className="flex flex-col gap-2 sm:flex-row" onSubmit={(e) => void run(e)}>
+    <section className={compact ? "space-y-3" : "space-y-3 rounded-lg border border-border p-3"} aria-label="Assist" data-testid="assist">
+      <form className={compact ? "flex flex-col gap-2" : "flex flex-col gap-2 sm:flex-row"} onSubmit={(e) => void run(e)}>
         <label className="sr-only" htmlFor="assist-line">
           What should be sent, and to whom
         </label>
@@ -67,7 +67,7 @@ export function AssistBox() {
           placeholder="Tell Sam the lot for order 1234 is on hold"
           onChange={(e) => setLine(e.target.value)}
         />
-        <Button type="submit" disabled={busy || !line.trim()} className="w-full sm:w-auto">
+        <Button type="submit" size={compact ? "sm" : "md"} variant={compact ? "secondary" : "primary"} disabled={busy || !line.trim()} className={compact ? "self-start" : "w-full sm:w-auto"}>
           {busy ? "Drafting…" : "Draft"}
         </Button>
       </form>

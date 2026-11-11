@@ -12,8 +12,7 @@ import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref 
 import { briefingKind } from "@/lib/status";
 import type { Briefing, BriefingGroup, BriefingItem, BriefingItems, BriefingView, LatePo } from "@/lib/types";
 import { ItemFeedback, MarkedLine, WrongReason, type ItemVerdict } from "./item-feedback";
-import { AgeRing, StatusGlyph } from "./ui/glyphs";
-import { Monogram } from "./ui/monogram";
+import { lateEdge, lateFigure, StatusGlyph } from "./ui/glyphs";
 import { StatusWord } from "./ui/status-badge";
 import { StaleNote } from "./ui/notice";
 
@@ -127,15 +126,15 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
     <li className="group relative" data-testid={testId}>
       <div
         className={cn(
-          "flex gap-3 rounded-[10px] px-3 py-2.5 transition-colors duration-100 hover:bg-hover",
+          "flex gap-3 rounded-[3px] px-3 py-2.5 transition-colors duration-100 hover:bg-hover",
           "has-[a[data-row-link]:focus-visible]:ring-2 has-[a[data-row-link]:focus-visible]:ring-ring/50",
           item.acknowledged && "opacity-70",
+          kind.status === "late" && typeof days === "number" && lateEdge(days),
         )}
       >
-        <Monogram name={supplier} size={32} />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
-            <Link href={href} className="shrink-0 text-[13px] leading-[18px] font-semibold outline-none after:absolute after:inset-0 after:rounded-[10px]" data-row-link>
+            <Link href={href} className="shrink-0 text-[13px] leading-[18px] font-semibold outline-none after:absolute after:inset-0 after:rounded-[3px]" data-row-link>
               {recordLabel(item.object_type, item.subject_label)}
             </Link>
             {supplier && <span className="min-w-0 truncate text-[13px] leading-[18px] text-fg/80">{supplier}</span>}
@@ -147,9 +146,9 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
                 {kind.label}
               </span>
             )}
-            <span className="ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 font-medium tabular-nums">
+            <span className={cn("ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 font-medium tabular-nums", kind.status === "late" && lateFigure(days))}>
               {typeof days === "number" && `${days}d`}
-              {kind.status === "late" && typeof days === "number" ? <AgeRing days={days} size={13} /> : <StatusGlyph status={kind.status} size={13} />}
+              {kind.status !== "late" && <StatusGlyph status={kind.status} size={13} />}
             </span>
           </div>
           <div className="mt-0.5 flex items-baseline gap-2.5 text-[12px] leading-4 text-muted">
@@ -244,10 +243,10 @@ function Group({ group, top, view, loadItems, byId }: { group: BriefingGroup; to
   if (top.length === 0 && rows.length === 0)
     return (
       <section data-testid="briefing-group" aria-label={group.label} className="px-2">
-        <div className="flex h-10 items-center gap-3 rounded-[10px] px-3 hover:bg-hover">
+        <div className="flex h-10 items-center gap-3 rounded-[3px] px-3 hover:bg-hover">
           <StatusGlyph status={kind.status} size={13} />
           <span className="min-w-0 truncate text-[13px]">
-            {group.label} <span className="text-[12px] tabular-nums text-faint">{group.count}</span>
+            {group.label} <span className="text-[12px] num text-faint">{group.count}</span>
           </span>
           {group.new_since_visit > 0 && (
             <span className="inline-flex shrink-0 items-center gap-1 text-[12px] text-muted">
@@ -269,7 +268,7 @@ function Group({ group, top, view, loadItems, byId }: { group: BriefingGroup; to
     <section data-testid="briefing-group" aria-label={group.label}>
       <div className="sticky top-[92px] z-10 flex h-9 items-end gap-3 bg-list px-5 pb-1.5 lg:top-[92px]">
         <h2 className="min-w-0 truncate text-[12px] font-medium text-muted">
-          {group.label} <span className="font-normal tabular-nums text-faint">{group.count}</span>
+          {group.label} <span className="font-normal num text-faint">{group.count}</span>
         </h2>
         <span className="ml-auto flex shrink-0 items-center gap-3 text-[12px] text-muted">
           {group.new_since_visit > 0 && (
@@ -360,7 +359,7 @@ function Fold({ title, children }: { title: string; children: React.ReactNode })
 
 const TAB_LABEL: Record<string, string> = { po_late: "Late", po_undated: "No due date", po_due: "Due soon", eta_slipped: "Date slipped", vendor_no_reply: "No reply" };
 const TAB = "relative flex h-full shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap cursor-pointer";
-const TAB_ON = "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:rounded-full after:bg-fg";
+const TAB_ON = "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent";
 
 /**
  * The full briefing (/briefing): tabs for all, new since the last visit and each type; every
@@ -435,7 +434,7 @@ export function BriefingCard({
         <StaleNote since={briefing.stale_since} />
         <p className="flex flex-wrap items-baseline gap-x-1.5" data-testid="briefing-heading">
           {briefing.counts_exact === false && <span className="text-[13px] text-muted">at least </span>}
-          <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] tabular-nums">{briefing.count}</span>{" "}
+          <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] num">{briefing.count}</span>{" "}
           <span className="text-[13px] text-muted">
             {briefing.count === 1 ? "item needs" : "items need"} attention{sinceVisit ? " since your last visit" : ""}
           </span>
@@ -458,14 +457,14 @@ export function BriefingCard({
         <div className="sticky top-[52px] z-20 border-b border-border bg-list">
           <div className="flex h-10 gap-4 overflow-x-auto px-5 [mask-image:linear-gradient(to_right,#000_calc(100%-40px),transparent)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
             <button type="button" role="tab" aria-selected={!sinceVisit && tab === "all"} onClick={() => (setTab("all"), choose("all"))} className={cn(TAB, !sinceVisit && tab === "all" ? TAB_ON : "text-muted hover:text-fg")}>
-              All <span className="text-[12px] font-normal tabular-nums text-faint">{briefing.count}</span>
+              All <span className="text-[12px] font-normal num text-faint">{briefing.count}</span>
             </button>
             <button type="button" role="tab" aria-selected={sinceVisit} title="New since your last visit" onClick={() => (setTab("all"), choose("since_visit"))} className={cn(TAB, sinceVisit ? TAB_ON : "text-muted hover:text-fg")}>
               New{" "}<span className="sr-only">since your last visit</span> <span className="text-[12px] font-normal tabular-nums text-faint">{briefing.new_since_visit}</span>
             </button>
             {ordered.map((g) => (
               <button key={g.event_type} type="button" role="tab" aria-selected={tab === g.event_type} onClick={() => setTab(g.event_type)} className={cn(TAB, tab === g.event_type ? TAB_ON : "text-muted hover:text-fg")}>
-                {TAB_LABEL[g.event_type] ?? g.label} <span className="text-[12px] font-normal tabular-nums text-faint">{g.count}</span>
+                {TAB_LABEL[g.event_type] ?? g.label} <span className="text-[12px] font-normal num text-faint">{g.count}</span>
               </button>
             ))}
           </div>
@@ -504,7 +503,7 @@ export function BriefingCard({
         <BriefingCountsSection briefing={briefing} />
         <section className="-mt-2">
           {types.length > 0 && (
-            <Fold title="What was checked">
+            <Fold title="Checks run">
               <ul className="space-y-1.5 text-[12px] leading-[18px]" data-testid="briefing-checks">
                 {types.map((t) => (
                   <li key={t.event_type} className="flex gap-2">

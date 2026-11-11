@@ -105,7 +105,7 @@ class RecordPage(unittest.TestCase):
 
     def test_not_found_is_said_against_what_the_trail_shows(self):
         step = lambda kind, title: m.TrailStep(kind=kind, title=title, check="lead")  # noqa
-        trail = m.EvidenceTrail(kind="purchase_order", title="How we know", trails=[
+        trail = m.EvidenceTrail(kind="purchase_order", title="Evidence", trails=[
             m.PoTrail(subject=m.ObjectRef(object_id="o", type="PurchaseOrder", label="106093",
                                           open_url="/o"),
                       steps=[step("follow_up", "Email: Billing Invoice"),
@@ -118,7 +118,7 @@ class RecordPage(unittest.TestCase):
         got = be.reconciled_not_found(items, trail)
         self.assertEqual(got[0].where_it_would_live,
                          "Ask Finance. Not on record in the systems searched; 2 messages in "
-                         "How we know mention it (not confirmed as this order's)")
+                         "Evidence mention it (not confirmed as this order's)")
         self.assertEqual(got[1], items[1])   # nothing on the trail talks about it
         self.assertEqual(be.reconciled_not_found(items, None), items)
 

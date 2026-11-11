@@ -9,15 +9,19 @@ vi.mock("./auth", () => ({
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/", useRouter: () => ({ push: () => undefined }) }));
 
-const api = vi.hoisted(() => ({ ops: null as unknown }));
+const api = vi.hoisted(() => ({ ops: null as unknown, alarms: null as unknown, asked: 0 }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getOpsHealth: () => Promise.resolve(api.ops),
+  getOpsAlarms: () => {
+    api.asked += 1;
+    return api.alarms instanceof Error ? Promise.reject(api.alarms) : Promise.resolve(api.alarms);
+  },
 }));
 
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { AccessBanner, DevBanner, OpsStatus, TOOLBAR_PAGES } from "./shell";
+import { AccessBanner, DevBanner, OpsAlarmBanner, OpsStatus, TOOLBAR_PAGES } from "./shell";
 
 const me = (over: Record<string, unknown>) => ({
   status: "signed-in",
@@ -119,6 +123,60 @@ describe("ops status line", () => {
     api.ops = { ...breach, status: "ok", breaches: [], checks: [] };
     render(<OpsStatus />);
     await waitFor(() => expect(screen.queryByTestId("ops-status")).toBeNull());
+  });
+});
+
+describe("reliability banner on Home", () => {
+  afterEach(() => {
+    auth.state = {};
+    api.alarms = null;
+    api.asked = 0;
+  });
+  const alarms = {
+    configured: true,
+    running: true,
+    checked_at: "2030-01-02T17:00:00Z",
+    open: [
+      { key: "unit:plx-proactive.service", line: "plx-proactive.service (system): killed: out of memory", opened_at: "2030-01-02T16:40:00Z" },
+      { key: "delta_last_cycle", line: "Data refresh (delta) last finished 3 days ago (target 15 min)", opened_at: "2030-01-02T16:40:00Z" },
+    ],
+    recovered: [],
+    checks: [],
+  };
+
+  it("shows the owner every open problem in red, linked to /ops", async () => {
+    auth.state = me({ access_label: "Viewing with full-read access" });
+    api.alarms = alarms;
+    render(<OpsAlarmBanner />);
+    const banner = await screen.findByTestId("ops-alarm-banner");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent("2 reliability problems");
+    expect(banner).toHaveTextContent("killed: out of memory");
+    expect(banner).toHaveAttribute("href", "/ops");
+    // one calm line: no second row, nothing that blinks or pulses
+    expect(banner.querySelectorAll(".block")).toHaveLength(0);
+    expect(banner.outerHTML).not.toMatch(/animate-|rounded-full/);
+  });
+
+  it("says when the checks themselves stopped", async () => {
+    auth.state = me({ access_label: "Viewing with full-read access" });
+    api.alarms = { ...alarms, running: false, open: [] };
+    render(<OpsAlarmBanner />);
+    expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("Reliability checks are not running");
+  });
+
+  it("is never asked for by other readers and says nothing when all is well or refused", async () => {
+    auth.state = me({});
+    api.alarms = alarms;
+    render(<OpsAlarmBanner />);
+    expect(api.asked).toBe(0);
+    auth.state = me({ access_label: "Viewing with full-read access" });
+    api.alarms = { ...alarms, open: [] };
+    render(<OpsAlarmBanner />);
+    api.alarms = new Error("403");
+    render(<OpsAlarmBanner />);
+    await waitFor(() => expect(api.asked).toBe(2));
+    expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
   });
 });
 

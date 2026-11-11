@@ -521,8 +521,8 @@ class QcComplianceTool:
         from .cash_forecast import _Books
 
         self.base, self.wait = base, wait
-        row = base.store.conn.execute("PRAGMA database_list").fetchone()
-        self.books = _Books(str(row[2]), read)
+        from .cash_forecast import store_file
+        self.books = _Books.shared(store_file(base), read)
 
     def key(self, as_of: dt.date) -> tuple:
         meta = self.base._store_meta() if hasattr(self.base, "_store_meta") else {}

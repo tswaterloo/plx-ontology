@@ -9,6 +9,8 @@ BC item ledger entries, the real projector, the compiled schema and the step; no
   (``PLX-AO-<AO name>``).
 * A number naming no record, a form naming a day, and any other number link nothing.
 * A re-run replaces its own rows.
+* Each link keeps its keys (``ontology.link_keys``): the entry's document number and the
+  named record's key (its FileMaker id, its own code), each held in the store where cited.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ontology import identifiers, schema
+from ontology import identifiers, link_keys, schema
 from ontology import posting_links as pl
 from ontology.project import CapturedRecord, build_store
 
@@ -115,6 +117,21 @@ class PostingLinks(unittest.TestCase):
         counts = self.report["post_project"]["trace_postings"]["counts"]
         self.assertEqual((counts["firm"], counts["no_record"], counts["names_no_record"]),
                          (2, 1, 1))
+
+    def test_each_link_keeps_both_keys_held_where_cited(self):
+        cited = {}
+        for link_type in ("ItemLedgerEntry.posted_by_batch",
+                          "ItemLedgerEntry.posted_by_assembly_order"):
+            report = link_keys.audit(self.conn, link_type)
+            self.assertEqual((report["counts"]["keys_recorded"],
+                              report["counts"]["key:value_held"]), (1, 2), report)
+            (reason,) = self.conn.execute("SELECT reason FROM links WHERE link_type = ?",
+                                          (link_type,)).fetchone()
+            cited[link_type] = [(k["field_path"], k["raw"]) for k in link_keys.keys(reason)]
+        self.assertEqual(cited["ItemLedgerEntry.posted_by_batch"][0],
+                         ("row.documentNumber", "PLX-BAT-70101"))
+        self.assertEqual(cited["ItemLedgerEntry.posted_by_batch"][1][0], "native_key.id")
+        self.assertEqual(cited["ItemLedgerEntry.posted_by_assembly_order"][1][1], "AO-99123K")
 
     def test_a_rerun_replaces_its_own_rows(self):
         class Builder:

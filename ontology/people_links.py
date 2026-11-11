@@ -13,7 +13,8 @@ Every link is an **exact** match of a stored key, ``corroborated``:
 * an Entra object id (lower case) that is exactly one staff Person's: the ``id`` of a
   Teams message's ``from`` when its ``kind`` is ``user`` (``*.sent_by_person``) and a
   ``PlannerTask``'s ``created_by``, ``completed_by`` and ``assignees``
-  (``PlannerTask.with_person``);
+  (``PlannerTask.with_person``), and each participant ``id`` of a Teams chat or channel
+  (``TeamsChat.with_person``, ``TeamsChannel.with_person``);
 * a Mission Control task's ``assignee``/``accountable_owner``, a bare name (no ``@``),
   that is exactly the local part of one staff Person's address at our own domains and
   of no other staff Person's (``MCTask.with_person``).
@@ -56,6 +57,8 @@ FAMILIES: dict[str, dict[str, tuple[str, str]]] = {
                 "attendees": ("Meeting.with_person", "attendees")},
     "TeamsChatMessage": {"from": ("TeamsChatMessage.sent_by_person", "teams_user")},
     "TeamsChannelMessage": {"from": ("TeamsChannelMessage.sent_by_person", "teams_user")},
+    "TeamsChat": {"participants": ("TeamsChat.with_person", "participants")},
+    "TeamsChannel": {"participants": ("TeamsChannel.with_person", "participants")},
     "PlannerTask": {"created_by": ("PlannerTask.with_person", "oid"),
                     "completed_by": ("PlannerTask.with_person", "oid"),
                     "assignees": ("PlannerTask.with_person", "oids")},
@@ -112,6 +115,14 @@ def keys(how: str, value: Any) -> list[tuple[str, str]]:
             found = _oid(held.get("id"))
             return [("oid", found)] if found else []
         return []
+    if how == "participants":
+        listed = _json(value)
+        out: list[tuple[str, str]] = []
+        for item in listed if isinstance(listed, list) else []:
+            if isinstance(item, dict):
+                found = _oid(item.get("id"))
+                out.extend([("oid", found)] if found else [])
+        return out
     if how == "oid":
         found = _oid(value)
         return [("oid", found)] if found else []

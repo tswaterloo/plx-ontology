@@ -22,10 +22,13 @@ from . import ask_progress, models as m, presentation, proposals
 from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
+from .autopilot_studio import AutopilotStudioMixin
 from .assist_api import AssistMixin
+from .ask_drafts import AskDraftsMixin
 from .write_intents_api import WriteIntentsMixin
 from .watch import MockWatchMixin
 from .auth import Reader
+from .errors import UserFacing
 
 LABEL = "FIXTURE: synthetic demo data (isolated-fixture), not real PLX records"
 NOW = datetime(2026, 10, 29, 14, 5, tzinfo=timezone.utc)
@@ -190,7 +193,7 @@ def _po_trail(oid: str, label: str, *, state: str, days: int | None, verdict: st
               eta: m.EtaCheck, steps: list[m.TrailStep]) -> m.EvidenceTrail:
     ref = m.ObjectRef(object_id=oid, type="PurchaseOrder", label=label,
                       open_url=obj_url("PurchaseOrder", oid))
-    return m.EvidenceTrail(kind="purchase_order", title=f"How we know: {label}", trails=[
+    return m.EvidenceTrail(kind="purchase_order", title=f"Evidence for {label}", trails=[
         m.PoTrail(subject=ref, state=state, days_late=days, verdict=verdict, eta=eta,
                   steps=steps)])
 
@@ -300,6 +303,111 @@ CONFLICT_DATE = m.Conflict(field="Expected receipt date", subject="PO 90412", va
     m.ConflictValue(value="2026-10-24", source=PORTAL, trusted=False,
                     why="The Portal's promised date was entered later by hand and "
                         "Business Central was not updated.")])
+
+
+# ---- the demo's supplier and customer pages (fixture) ---------------------------------
+
+def _po_ref(n: str) -> m.ObjectRef:
+    return m.ObjectRef(object_id=f"PurchaseOrder:demo:{n}", type="PurchaseOrder",
+                       label=f"PO {n}", open_url=obj_url("PurchaseOrder",
+                                                         f"PurchaseOrder:demo:{n}"))
+
+
+def _so_row(n: str, day: str, status: str, amount: str) -> m.OrderRow:
+    oid = f"SalesOrder:demo:{n}"
+    return m.OrderRow(object_id=oid, label=f"SO {n}", open_url=obj_url("SalesOrder", oid),
+                      date=day, status=status, amount=m.Money(amount=amount, currency="CAD"),
+                      sources=[src("BC", f"bc://demo/salesOrders/{n}", f"BC sales order {n}")])
+
+
+def _vendor_fact(label: str, value: str, field: str, table: str = "vendors") -> m.Fact:
+    """A party's field as the real page states it: "Label: value", cited to that field."""
+    return m.Fact(text=f"{label}: {value}", sources=[src(
+        "BC", f"bc://demo/{table}/{field}", f"BC {table[:-1]} card", fields={field: value})])
+
+
+def _mail(n: str, label: str, quote_text: str, hours: float) -> m.Source:
+    return src("Email", f"graph-mail://demo/messages/{n}", label, quote_text=quote_text,
+               hours=hours)
+
+
+PARTY_PAGES: dict[str, dict[str, Any]] = {
+    "Supplier:demo:maple-leaf": {
+        "status": m.ObjectStatus(state="late", text="Late by 12 days: PO 90412",
+                                 sources=[PO_ROW]),
+        "facts": [_vendor_fact("Code", "V-1042", "number"),
+                  _vendor_fact("Currency", "CAD", "currency"),
+                  _vendor_fact("Payment terms", "Net 30", "payment_terms_code"),
+                  _vendor_fact("Blocked", "No", "blocked")],
+        "related": [_po_ref("90412"), _po_ref("90477"), _po_ref("90503"), _po_ref("90398")],
+        "late_lines": [m.LateLine(line="PO number: 90412", item="BAR-LAV-100",
+                                  quantity="12000 EA", due_date="2026-10-17", days_late=12,
+                                  sources=[PO_LINE])],
+        "people": [m.Person(name="Jordan Lee", role="Sales and order desk",
+                            organisation="Maple Leaf Soapworks", sources=[MAIL]),
+                   m.Person(name="Priya Nair", role="Accounts receivable",
+                            organisation="Maple Leaf Soapworks", sources=[MAIL2]),
+                   m.Person(name="Dana Ortiz", role="Buyer", organisation="PLX",
+                            sources=[PORTAL])],
+        "timeline": [
+            m.TimelineEvent(at="2026-10-27T16:20:00Z", system="Email",
+                            title="We asked to confirm 4 Nov for PO 90412", source=MAIL2),
+            m.TimelineEvent(at="2026-10-22T09:40:00Z", system="Teams",
+                            title="Purchasing flags PO 90412 against SO 77120", source=TEAMS),
+            m.TimelineEvent(at="2026-10-21T13:12:00Z", system="Email",
+                            title="Maple Leaf moves PO 90412 to 4 Nov",
+                            summary="Soap line down for maintenance", source=MAIL),
+            m.TimelineEvent(at="2026-10-14T15:05:00Z", system="BC",
+                            title="PO 90477 received in full", source=PO_ROW),
+            m.TimelineEvent(at="2026-09-26T15:00:00Z", system="BC", title="PO 90412 released",
+                            source=PO_ROW)],
+        "linked": [
+            m.LinkedItem(kind="email", label="Re: PO 90412 ship date", at="2026-10-27T16:20:00Z",
+                         source=MAIL2),
+            m.LinkedItem(kind="email", label="Line maintenance: revised ship dates",
+                         at="2026-10-21T13:12:00Z", source=MAIL),
+            m.LinkedItem(kind="teams", label="#purchasing: Maple Leaf delay",
+                         at="2026-10-22T09:40:00Z", source=TEAMS),
+            m.LinkedItem(kind="document", label="Quote 2026 (PDF)", source=FILE)],
+    },
+    "Customer:demo:glow": {
+        "status": m.ObjectStatus(state="at_risk", text="SO 77120 at risk: waits on PO 90412",
+                                 sources=[PO_ROW]),
+        "facts": [_vendor_fact("Code", "C-2210", "number", "customers"),
+                  _vendor_fact("Currency", "CAD", "currency", "customers"),
+                  _vendor_fact("Payment terms", "Net 45", "payment_terms_code", "customers")],
+        "customer": m.CustomerSummary(
+            revenue=[m.CustomerAmount(label="Invoiced (excluding tax)",
+                                      period="last 12 months (since 2025-11-11)",
+                                      money=m.Money(amount="1840.00", currency="CAD"),
+                                      count=3, system="BC", sources=[INV])],
+            # the same three orders the margin section reads (264 + 1,104 + 472 = 1,840)
+            orders_total=4, open_orders=2,
+            open_list=[_so_row("77120", "2026-10-02", "Open", "264.00"),
+                       _so_row("77152", "2026-11-09", "Released", "412.00")],
+            recent_orders=[_so_row("77131", "2026-10-20", "Invoiced", "1104.00"),
+                           _so_row("77102", "2026-09-22", "Invoiced", "472.00")]),
+        "people": [m.Person(name="Nadia Haddad", role="Purchasing",
+                            organisation="Glow Botanicals",
+                            sources=[_mail("msg-6012", "Email from Glow Botanicals, 9 Nov",
+                                           "Could you split SO 77120?", 40)]),
+                   m.Person(name="Claire Dubois", role="Account manager", organisation="PLX",
+                            sources=[PORTAL])],
+        "timeline": [
+            m.TimelineEvent(at="2026-11-09T14:10:00Z", system="Email",
+                            title="Glow asks to split SO 77120",
+                            source=_mail("msg-6012", "Email from Glow Botanicals, 9 Nov",
+                                         "Could you split SO 77120?", 40)),
+            m.TimelineEvent(at="2026-11-09T16:00:00Z", system="BC", title="SO 77152 entered",
+                            source=INV),
+            m.TimelineEvent(at="2026-10-20T15:30:00Z", system="BC",
+                            title="SO 77131 invoiced, CAD 1,104.00", source=INV)],
+        "linked": [m.LinkedItem(kind="email", label="Split shipment for SO 77120?",
+                                at="2026-11-09T14:10:00Z",
+                                source=_mail("msg-6012", "Email from Glow Botanicals, 9 Nov",
+                                             "Could you split SO 77120?", 40))],
+    },
+}
 
 
 def _late_answer(question: str) -> dict[str, Any]:
@@ -413,9 +521,69 @@ def _pick(question: str) -> tuple[str, Any]:
     return "other", _unknown_answer
 
 
-class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin, AssistMixin,
-                  MockWatchMixin):
+class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
+                  AutopilotStudioMixin, AssistMixin, MockWatchMixin, AskDraftsMixin):
     data_label = LABEL
+
+    # the demo's autopilot studio (``mock_studio.install``, ``serve --mock`` only)
+    studio_demo: Any = None
+
+    def _ap_visible(self, reader: Reader, everyone: bool = False) -> Any:
+        if self.studio_demo is not None:
+            return self.studio_demo.visible(reader)
+        return super()._ap_visible(reader, everyone)
+
+    def _studio_modes(self, passed: bool) -> list[str]:
+        if self.studio_demo is None:
+            return super()._studio_modes(passed)
+        return ["off", "suggest", "draft", "auto"] + (["watch"] if passed else [])
+
+    def autopilot_workflow_detail(self, reader: Reader, workflow: str
+                                  ) -> m.AutopilotWorkflowDetail:
+        detail = super().autopilot_workflow_detail(reader, workflow)
+        demo = self.studio_demo
+        if demo is not None:
+            if workflow in demo.modes:
+                detail.mode = demo.modes[workflow]
+            if detail.caught:
+                detail.hours_saved = round(detail.caught * 6 / 60, 1)
+                detail.hours_basis = "Demo figure: 6 minutes per item it got right."
+        return detail
+
+    def autopilot_set_mode(self, reader: Reader, workflow: str,
+                           body: m.AutopilotModeRequest) -> m.AutopilotWorkflowDetail:
+        demo = self.studio_demo
+        if demo is None or body.mode not in ("suggest", "watch"):
+            if demo is not None:
+                demo.modes.pop(workflow, None)
+            return super().autopilot_set_mode(reader, workflow, body)
+        detail = self.autopilot_workflow_detail(reader, workflow)
+        if body.mode not in detail.modes:
+            raise UserFacing("action_refused", "Watch is only for a workflow that passed its "
+                             "gate.", 409)
+        demo.modes[workflow] = body.mode
+        detail.mode = body.mode
+        return detail
+
+    def autopilot_catalog(self, reader: Reader) -> m.AutopilotCatalog:
+        out = super().autopilot_catalog(reader)
+        out.builder = self.studio_demo is not None
+        return out
+
+    def autopilot_draft(self, reader: Reader, body: m.AutopilotWorkflowDraft
+                        ) -> m.AutopilotDraftKept:
+        demo = self.studio_demo
+        if demo is None:
+            return super().autopilot_draft(reader, body)
+        key = f"draft_{len(demo.drafts) + 1}"
+        demo.drafts[key] = body.model_dump()
+        return m.AutopilotDraftKept(workflow=key)
+
+    def autopilot_replay(self, reader: Reader, workflow: str,
+                         body: m.AutopilotReplayRequest) -> m.AutopilotReplay:
+        if self.studio_demo is None:
+            return super().autopilot_replay(reader, workflow, body)
+        return self.studio_demo.replay(workflow, body.days)
 
     def __init__(self, *, step_delay: float = 0.0) -> None:
         self.step_delay = step_delay
@@ -684,8 +852,10 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
                             "ops-management grant.", weeks=[], trend=[], alerts=[])
 
     def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
-        """The demo world holds no calendar: nothing to prepare."""
-        return m.UpcomingMeetings(meetings=[])
+        """The demo calendar (``mock_meetings``) through the real reader."""
+        from . import mock_meetings
+        from .briefs import upcoming_entry
+        return m.UpcomingMeetings(meetings=[upcoming_entry(e) for e in mock_meetings.upcoming()])
 
     def approvals_queue(self, reader: Reader) -> m.ApprovalsQueue:
         return m.ApprovalsQueue(as_of="2026-01-05", total=0, sent=0, writes=0)
@@ -730,23 +900,27 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
         from .briefs import _viewer
         from .errors import UserFacing
         if not self.state_dir:
-            raise UserFacing("not_found", "No meeting follow-ups are kept here.", 404)
+            from . import mock_meetings
+            return m.MyActionItems(person=person, items=mock_meetings.action_items())
         return m.MyActionItems(person=person, items=mf.my_items(
             mf.FollowUps(self.state_dir, self.meeting_people), _viewer(reader, frozenset()), person))
 
     def meeting_brief(self, reader: Reader, object_type: str, object_id: str) -> m.Brief:
+        """The demo calendar's prep brief (``mock_meetings``) through the real builder."""
+        from . import mock_meetings
+        from .briefs import brief_model
         from .errors import UserFacing
-        raise UserFacing("not_found", "That record is not one you can open.", 404)
+        raw = mock_meetings.brief(object_id) if object_type in ("CalendarEvent", "Customer",
+                                                                 "Supplier") else None
+        if raw is None:
+            raise UserFacing("not_found", "That record is not one you can open.", 404)
+        return brief_model(raw)
 
     def weekly_review(self, reader: Reader, week: Any) -> m.Brief:
-        """The real builder over no records: every figure reads as not readable."""
-        from operating import briefs as br
+        """A synthetic finished week (``mock_meetings.weekly``) in the builder's own shape."""
+        from . import mock_meetings
         from .briefs import brief_model
-
-        def call(tool: str, args: dict) -> dict:
-            return {"error": {"code": "not_served", "message": "the demo serves no records"}}
-        return brief_model(br.weekly_review(call, frozenset(), {"status": "not_configured"},
-                                            week=week))
+        return brief_model(mock_meetings.weekly(week))
 
     def qc_pack_dict(self, reader: Reader, kind: str) -> dict[str, Any]:
         """The real builder over no records and no markings: every section is marked."""
@@ -842,7 +1016,7 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
                     quick: bool = False) -> m.ObjectPage:
         obj = next((o for o in OBJECTS if o["object_id"] == object_id
                     or (o["type"].lower() == object_type.lower()
-                        and object_id.lower() in o["aliases"])), None)
+                        and object_id.lower() in (*o["aliases"], o["label"].lower()))), None)
         if obj is None:
             raise KeyError("object_not_found")
         po = obj["object_id"] == "PurchaseOrder:demo:90412"
@@ -902,6 +1076,17 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
             if obj["object_id"] in ("Customer:demo:glow", "SalesOrder:demo:77120",
                                     "SalesOrder:demo:77131") else None,
             hidden=HIDDEN_FINANCE if po else NO_HIDDEN, freshness=FRESH)
+        party = PARTY_PAGES.get(obj["object_id"])
+        if party is not None:
+            page.status = party["status"]
+            page.facts = party["facts"]
+            page.related = party.get("related", page.related)
+            page.late_lines = party.get("late_lines", [])
+            page.people = party["people"]
+            page.timeline = party["timeline"]
+            page.linked = party["linked"]
+            page.customer = party.get("customer", page.customer)
+            page.hidden = NO_HIDDEN
         page.proposals = proposals.for_page(page)   # drafts only: never sent
         return page
 

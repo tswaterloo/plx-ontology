@@ -36,3 +36,16 @@ describe("Watching alert counts", () => {
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
   });
 });
+
+describe("Watching alert kind rows", () => {
+  it("say On or Off on every row, a page-surface kind included", async () => {
+    const { surfaceWord } = await import("./alert-kinds");
+    const on = [{ default: "on" as const }];
+    const off = [{ default: "off" as const }];
+    expect(surfaceWord({ label: "Data health", surface: "data_health", types: on })).toBe("On");
+    expect(surfaceWord({ label: "Data health", surface: "data_health", types: off })).toBe("Off");
+    expect(surfaceWord({ label: "Stale records", surface: "data_health", types: on })).toBe("On · Data health");
+    expect(surfaceWord({ label: "Week", surface: "weekly", types: off })).toBe("Off · Weekly review");
+    expect(surfaceWord({ label: "Late PO", surface: "alert", types: off })).toBe("Off");
+  });
+});

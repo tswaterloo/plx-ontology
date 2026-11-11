@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { LateShape } from "@/components/late-shape";
-import { AgeRing, OpenRing } from "@/components/ui/glyphs";
+import { OpenRing } from "@/components/ui/glyphs";
 import { cn } from "@/lib/cn";
 import { formatMoney, objectHref, recordLabel, safeHref } from "@/lib/format";
 import { valueOf } from "@/lib/late";
@@ -16,7 +16,7 @@ function Figure({ label, glyph, value, unit, caption, testId }: { label: string;
         {label}
       </div>
       <div className="mt-1 flex items-baseline gap-1.5 whitespace-nowrap">
-        <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] tabular-nums">{value}</span>
+        <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] num">{value}</span>
         {unit && <span className="text-[13px] text-muted">{unit}</span>}
       </div>
       {caption && <div className="mt-0.5 truncate text-[12px] leading-4 text-muted">{caption}</div>}
@@ -66,7 +66,6 @@ export function LateOverview({
         {oldest && typeof oldest.days_late === "number" && (
           <Figure
             label="Oldest"
-            glyph={<AgeRing days={oldest.days_late} size={12} />}
             value={String(oldest.days_late)}
             unit={oldest.days_late === 1 ? "day" : "days"}
             caption={

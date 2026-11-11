@@ -89,6 +89,7 @@ DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_release
 MAX_RECORDS = 12          # business records one handler reads around its event
 MAX_LINES = 50            # order lines one availability check reads
 SUMMARY_CHARS = 160
+WORK_LOG_ENV = "PLX_WORK_LOG_DIR"  # where the Workbench keeps its work log
 REPLY_HOURS = 72          # an answer counts within this many hours (the replay's horizon)
 TEXT_CHARS = 4000
 
@@ -420,6 +421,47 @@ class Queue:
             if then is not None and then <= at and (floor is None or then > floor):
                 return True
         return False
+
+    def work_log_path(self) -> Path:
+        """The Workbench work log beside this queue (``<state>/work-log``; the API's
+        ``PLX_WORK_LOG_DIR`` overrides), read only."""
+        override = os.environ.get(WORK_LOG_ENV)
+        return (Path(override) if override else self.path.parent.parent / "work-log") \
+            / "work-log.sqlite"
+
+    def answered_in_workbench(self, mailboxes: Iterable[str], event: Mapping[str, Any],
+                              now: datetime) -> bool:
+        """Whether the owner (their ``mailboxes``) already answered this message from the
+        Workbench (the approvals desk or an accepted autopilot item; the work log's
+        follow-through loop names the mailbox and the thread or message it answered) after
+        it arrived and by ``now``:
+        then no item is prepared. Only the owner's own sends are read, as a yes or no; an
+        unreadable or absent log answers no (an item is prepared, as before)."""
+        at = _instant(event.get("at"))
+        threads = [str(t) for t in (event.get("conversation_id"), event.get("message_id"))
+                   if t]
+        boxes = sorted({str(b).lower() for b in mailboxes if b and "@" in str(b)})
+        if event.get("event_type") != "message.received" or not boxes or at is None \
+                or not threads:
+            return False
+        path = self.work_log_path()
+        if not path.exists():
+            return False
+        try:
+            conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
+            try:
+                rows = conn.execute(
+                    "SELECT at FROM event WHERE awaiting IS NOT NULL AND kind IN ('action', "
+                    "'autopilot') AND lower(json_extract(awaiting, '$.mailbox')) IN (SELECT "
+                    "value FROM json_each(?)) AND EXISTS (SELECT 1 FROM json_each(awaiting, '$.threads') WHERE value IN "
+                    "(SELECT value FROM json_each(?)))",
+                    (json.dumps(boxes), json.dumps(threads))).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+        return any(sent is not None and at < sent <= now
+                   for sent in (_instant(r[0]) for r in rows))
 
     def rate_take(self, owner: str, hour: str, cap: int) -> bool:
         row = self.conn.execute("SELECT n FROM rate WHERE owner = ? AND hour = ?",
@@ -824,7 +866,7 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
                 "intents": intents_of("", text), "side": "internal",
                 "records": records[:MAX_RECORDS], "group": group, "cleared": cleared,
                 "asks": bool(it.reply_ask(text) or it.direct_question(text)),
-                "closing": closing(text), "handles": _handles_of(row)[:3]})
+                "closing": closing(text, chat=True), "handles": _handles_of(row)[:3]})
     return out
 
 
@@ -882,10 +924,22 @@ CLOSING_SIGNATURE = re.compile(r"\b(?:kindest|warmest|best)\s+(?:regards|wishes)
                                r"\bsent\s+from\s+my\b", re.I)
 
 
-def closing(text: Any) -> bool:
+# A chat message's casual lead-in before its acknowledgement ("lol okay thanks", "Sure will
+# do!", "yep will do"), and a bare apology ("Sorry bout that"). Measured on dev Teams items
+# (Vince, Stephen, purchasing, customer service; 2026-10-26..11-05): such notes were answered
+# 2 times in 6 against about 9 in 10 for the rest. Chat only: mail was not measured.
+CHAT_LEAD = r"(?:(?:sure|yes|yep|yeah|yup|lol|haha|ah|oh|ok(?:ay)?|k)\b[,!.]?\s*)"
+CLOSING_ACK_CHAT = re.compile(CLOSING_ACK.pattern.replace(
+    r"[,.!\n]\s*)?(?:ok(?:ay)?|", r"[,.!\n]\s*)?" + CHAT_LEAD + r"?(?:ok(?:ay)?|", 1), re.I)
+CLOSING_SORRY_CHAT = re.compile(r"^\W*" + CHAT_LEAD + r"?(?:sorry|my\s+bad|apologies)\b"
+                                r"(?:\s+(?:a)?bout\s+that)?\W*$", re.I)
+
+
+def closing(text: Any, *, chat: bool = False) -> bool:
     """Whether a message's own text closes its loop (``CLOSING_ACK`` / ``CLOSING_STEP``): a
     short note that asks nothing (``reply_ask``, ``direct_question``) and carries no question
-    mark before its sign-off. A reply to it is not owed."""
+    mark before its sign-off. A reply to it is not owed. ``chat``: a Teams message, whose
+    acknowledgement may follow a casual lead-in or be a bare apology (``CLOSING_ACK_CHAT``)."""
     from . import inbox_triage as it
     own = it.URL.sub(" ", it.FIRST_CONTACT.sub(" ", text if isinstance(text, str) else ""))
     for found in it.SIGNOFF.finditer(own):
@@ -898,6 +952,8 @@ def closing(text: Any) -> bool:
         return False
     if len(re.findall(r"[A-Za-z]{2,}", own)) > CLOSING_WORDS:
         return False
+    if chat and (CLOSING_ACK_CHAT.search(own) or CLOSING_SORRY_CHAT.match(own)):
+        return True
     return bool(CLOSING_ACK.search(own) or CLOSING_STEP.search(own))
 
 
@@ -1097,7 +1153,13 @@ def _record_events(st: Any, otype: str, kind: str, oids: Sequence[str],
         # own time plus the feed's lag when that is earlier
         seen = cycle_at
         happened = _instant(_v(row, spec.get("time") or ""))
-        if cycle_at is not None and lag is not None and happened is not None:
+        held = _first_held(st, otype, oid, happened) \
+            if cycle_at is not None and lag is not None else None
+        if held is not None:
+            # the live feed's own first read of it (the MC capture's version time): its
+            # cadence that day, a fast poll's minutes or a stalled feed's hours alike
+            seen = held
+        elif cycle_at is not None and lag is not None and happened is not None:
             seen = min(cycle_at, happened + lag)
         event = {"event_type": kind, "object_id": oid, "object_type": otype,
                  "audience": typed[oid][1], "at": _v(row, spec.get("time") or ""),
@@ -1141,9 +1203,21 @@ def _record_events(st: Any, otype: str, kind: str, oids: Sequence[str],
                 continue
         if seen is not None and lag is not None:
             event["seen_at"] = _iso(seen)
+            event["seen_from"] = "capture" if held is not None else "feed_lag"
         event["event_id"] = _digest(kind, oid, _version_digest(st, oid))
         out.append(event)
     return out
+
+
+def _first_held(st: Any, otype: str, oid: str, happened: datetime | None) -> datetime | None:
+    """A replay: when the live MC feed first held an MC record (``MCQuestions.first_held``),
+    else None (no capture reader, a backfilled record or no version time)."""
+    reader = getattr(st, "autopilot_mc", None)
+    if reader is None or happened is None or otype not in getattr(reader, "CAPTURED_AS", {}):
+        return None
+    got = st.conn.execute("SELECT native_key FROM objects WHERE object_id = ?",
+                          (oid,)).fetchone()
+    return reader.first_held(otype, got[0], happened) if got else None
 
 
 def _question_event(st: Any, oid: str, event: dict[str, Any], seen: datetime | None,
@@ -1295,6 +1369,16 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
         return (sorted(set(found)), None) if found else ([], "assignee_unknown")
     if rule == "approvers":
         found = sorted(decided) if decided else _approvers(directory)
+        # a request goes to someone other than the person who asked for it whenever anyone
+        # else can decide: the project's other recent deciders, else the other approvers
+        # (3 of them in projects only he had decided in); the asker keeps it only
+        # when no one else can decide. An asker the directory does not know changes nothing.
+        asker = str(directory.get(str((event.get("fields") or {}).get("requested_by") or "")
+                                  .strip().lower()) or "").lower()
+        if asker and asker in {o.lower() for o in found}:
+            others = [o for o in found if o.lower() != asker] or [
+                o for o in _approvers(directory) if o.lower() != asker]
+            found = others or found
         return (found, None) if found else ([], "approvers_unknown")
     if rule == "addressee":
         if event.get("event_type") != "question.asked":
@@ -2019,14 +2103,19 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
               only_owners: Iterable[str] | None = None,
               gate: Callable[..., bool] | None = None,
               rate_by_event_hour: bool = False,
-              feed_lag: Mapping[str, timedelta] | None = None) -> dict[str, Any]:
+              feed_lag: Mapping[str, timedelta] | None = None,
+              read_work_log: bool = False) -> dict[str, Any]:
     """One cycle: type the changed records, store each event once, prepare the work of each
     new event every matching autopilot declares, settle items their evidence closed.
     ``only_owners``: prepare only for these people (a replay of one role); ``gate(owner,
     workflow, roles)``: prepare only what passes it (the live cycle and a replay into a
     queue: the workflows a role's replay passed, in that role, ``gate_from``).
     ``rate_by_event_hour``: the hourly cap counts each event in the hour it happened (a
-    replay runs one cycle per past day; live, a cycle's hour is the one it runs in)."""
+    replay runs one cycle per past day; live, a cycle's hour is the one it runs in).
+    ``read_work_log``: skip a message the owner already answered from the Workbench
+    (``Queue.answered_in_workbench``). Live only: the ``follow`` command alone passes it;
+    every other caller (a replay, its catch-up ``_drain``, tests) never opens the log, so a
+    replay never learns what the Workbench did after the day it judges."""
     environ = os.environ if environ is None else environ
     registry = registry or load_registry()
     now = now or datetime.now(timezone.utc)
@@ -2083,7 +2172,8 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                                  directory=directory, addresses_of=addresses_of, roles=roles,
                                  domains=domains, as_of=as_of, now=now, summary=summary,
                                  only_owners=None if only_owners is None else set(only_owners),
-                                 gate=gate, rate_by_event_hour=rate_by_event_hour)
+                                 gate=gate, rate_by_event_hour=rate_by_event_hour,
+                                 read_work_log=read_work_log)
         with queue.conn:
             queue.mark(event["event_id"], state, reason, stamp)
     summary["discover_seconds"] = round(discovered - started, 2)
@@ -2097,8 +2187,8 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
              people: Any, directory: Mapping[str, str], addresses_of: Mapping[str, set[str]],
              roles: Mapping[str, list[str]], domains: Sequence[str], as_of: date,
              now: datetime, summary: dict[str, Any], only_owners: set[str] | None = None,
-             gate: Callable[..., bool] | None = None, rate_by_event_hour: bool = False
-             ) -> tuple[str, str | None]:
+             gate: Callable[..., bool] | None = None, rate_by_event_hour: bool = False,
+             read_work_log: bool = False) -> tuple[str, str | None]:
     from . import workflows as wf
     limits = registry["limits"]
     if event.get("event_type") == "message.received" and not event.get("cleared"):
@@ -2166,6 +2256,11 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 continue
             if queue.thread_item_open(owner, ap["id"], event):
                 summary["skipped"][f"{ap['id']}:thread_item_open"] += 1
+                continue
+            if read_work_log and queue.answered_in_workbench(
+                    {owner, *addresses_of.get(owner, ())}, event, now):
+                # live only (an explicit opt-in): a replay never reads the Workbench
+                summary["skipped"][f"{ap['id']}:answered_in_workbench"] += 1
                 continue
             if not queue.rate_take(owner, hour, int(limits["per_owner_per_hour"])):
                 summary["skipped"][f"{ap['id']}:rate_limited"] += 1
@@ -2528,9 +2623,44 @@ def _plain(summary: dict[str, Any]) -> dict[str, Any]:
 
 # ----------------------------------------------------------------------------- CLI
 
-def _store(path: str) -> Any:
+# Which store a replay or score reads (``_store``): the SQLite generation file alone, or the
+# Postgres ontology the API reads in mode 1 (current to the last delta layer applied).
+STORE_SOURCES = ("sqlite", "postgres")
+
+
+def _store(path: str, source: str | None = None) -> Any:
+    """The store at ``path`` (``proactive_engine._Store``, its reads through
+    ``proactive_engine._connect``). ``source``: ``"postgres"`` turns on the API's mode 1
+    (``PLX_ONTOLOGY_PG=1``) in this process, so every read runs on Postgres through the
+    compat layer (``operating.pg.sqlite_compat``) when Postgres holds the generation at
+    ``path``; ``"sqlite"`` turns it off, so only the file is read; None: as the environment
+    says. The store opened must be the one asked for: Postgres not serving that
+    generation (not loaded, a load in progress, unreachable) is ``store_source_mismatch``,
+    never a quiet read of the older SQLite file."""
+    from ontology import store as ostore
     from . import proactive_engine as pe
-    return pe._Store(Path(path), threads=4)
+    from .pg import ontology_reader
+    if source is not None and source not in STORE_SOURCES:
+        raise ValueError(f"unknown store source {source!r}")
+    if source == "postgres" and not ontology_reader.enabled():
+        os.environ[ontology_reader.ENV] = "1"
+    elif source == "sqlite":
+        if ontology_reader.pg_only():
+            raise ostore.StoreError("store_source_mismatch", "postgres_only")
+        os.environ.pop(ontology_reader.ENV, None)
+    st = pe._Store(Path(path), threads=4)
+    if source is not None and store_source(st)["store"] != source:
+        st.close()
+        raise ostore.StoreError("store_source_mismatch", f"{source}_not_served")
+    return st
+
+
+def store_source(st: Any) -> dict[str, Any]:
+    """Which store ``st`` reads and what it held when opened (a SQLite generation's content
+    digest; Postgres: its generation's digest and data version), for a result's
+    provenance."""
+    return {"store": "sqlite" if isinstance(st.conn, sqlite3.Connection) else "postgres",
+            "stamp": st.digest}
 
 
 def _drain(st: Any, queue: Queue, people: Any, registry: Mapping[str, Any],
@@ -2597,7 +2727,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if a.command == "follow":
             ids, taken = layer_ids(store, queue, st.digest)
-            summary = run_cycle(st, queue, ids, people=people, registry=registry, gate=gate)
+            summary = run_cycle(st, queue, ids, people=people, registry=registry, gate=gate,
+                                read_work_log=True)
             summary["workflows_on"] = {"owners": len(passed),
                                        "workflows": sorted({w for v in passed.values()
                                                             for w in v})}

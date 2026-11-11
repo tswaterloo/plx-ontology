@@ -2158,5 +2158,47 @@ class DocumentLinkTypesTests(unittest.TestCase):
         self.assertEqual(("FreightBill", "SalesInvoice") in declared, DOCUMENT_MIGRATION)
 
 
+class MidLineLabelTests(unittest.TestCase):
+    """A certificate that runs several labelled fields on one line (made-up text)."""
+
+    def read(self, text):
+        found = document_fields.extract_fields(text.encode(), "text/plain", filename="c.txt")
+        self.assertEqual(found["profile"], "certificate_of_analysis")
+        return {k: v.get("value") for k, v in found["fields"].items()}
+
+    def test_a_label_after_a_value_on_the_same_line_is_read(self):
+        got = self.read("Certificate of Analysis\nSupplier: Acme Ltd\n"
+                        "Manufacturing: 2026-10-02 Lot Number: 26292E Expiry Date: 2028-10-01\n")
+        self.assertEqual(got["lot"], "26292E")
+        self.assertEqual(got["manufacture_date"], "2026-10-02")
+        self.assertEqual(got["expiry_date"], "2028-10-01")
+
+    def test_a_product_lot_label_is_the_lot(self):
+        got = self.read("Certificate of Analysis\nBatch size: 400 Product Lot Number: 26292E\n")
+        self.assertEqual(got["lot"], "26292E")
+
+    def test_label_words_in_prose_or_after_a_qualifying_word_are_no_read(self):
+        got = self.read("Certificate of Analysis\nSupplier: Acme Ltd\n"
+                        "Please quote the lot number when you call, 24 hours a day.\n"
+                        "Cases packed 12 Bulk Lot Number: B77\n"
+                        "Shipped 2026-10-05 Retest Date: 2027-10-05\n")
+        self.assertIsNone(got["lot"])
+        self.assertIsNone(got["expiry_date"])
+
+    def test_a_mid_line_value_stops_at_its_token_shape(self):
+        got = self.read("Certificate of Analysis\nSupplier: Acme Ltd\n"
+                        "Packed 5 Manufacturing: 2026-10-02 Tested by QC\n"
+                        "Qty 5 Lot: 99 Tested 2026-01-01\n")
+        self.assertEqual(got["lot"], "99")
+        self.assertEqual(got["manufacture_date"], "2026-10-02")
+
+    def test_a_mid_line_label_is_read_only_for_a_class_that_opts_in(self):
+        found = document_fields.extract_fields(
+            b"Invoice\nInvoice No: INV-1\nOrder 55 Date: 2026-01-01\n", "text/plain",
+            filename="i.txt")
+        self.assertEqual(found["profile"], "supplier_invoice")
+        self.assertIsNone(found["fields"].get("document_date", {}).get("value"))
+
+
 if __name__ == "__main__":
     unittest.main()

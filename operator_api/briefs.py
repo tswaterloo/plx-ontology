@@ -20,6 +20,13 @@ from .auth import Reader
 from .errors import UserFacing
 
 BRIEF_TIMEOUT_SECONDS = 90
+# A finished week is kept for its reader (``WeeklyArchive``) once read whole, so it is read
+# with a longer budget than a live brief's: cut at 15 s it was never kept and every visit
+# read it again, cut again (11-10: 20 s per visit, shipped and invoiced unread). A visit
+# waits at most ``KEPT_WEEK_BUDGET_SECONDS`` (inside the route's ``BRIEF_TIMEOUT_SECONDS``);
+# the read-ahead, off the request path, reads it whole with ``WARM_WEEK_BUDGET_SECONDS``.
+KEPT_WEEK_BUDGET_SECONDS = 45.0
+WARM_WEEK_BUDGET_SECONDS = 300.0
 
 
 def _sources(raw: Any) -> list[m.Source]:
@@ -141,6 +148,21 @@ def _follow_ups(state_dir: Any) -> Any:
     return mf.FollowUps(state_dir) if state_dir else None
 
 
+def _follow_up_stamp(state_dir: Any) -> Optional[str]:
+    """The follow-up store as it stands (each record file and its change time), so a new,
+    changed or closed action item is a new upcoming-meetings page key; None without a
+    store, ``"unreadable"`` when it cannot be listed (never a stale page for it)."""
+    import hashlib
+    store = _follow_ups(state_dir)
+    if store is None:
+        return None
+    try:
+        entries = sorted((p.name, p.stat().st_mtime_ns) for p in Path(store.dir).glob("*"))
+    except OSError:
+        return "unreadable"
+    return hashlib.sha256(repr(entries).encode()).hexdigest()[:16]
+
+
 def with_carried_items(brief: Any, held: frozenset[str], who: Any, state_dir: Any) -> Any:
     """The meeting brief with the open action items of the series' earlier meetings (meeting
     follow-ups the reader may see) in its "Last meeting" section."""
@@ -215,17 +237,22 @@ def _grant_key(view: Any, held: frozenset[str]) -> Optional[str]:
         parts = [str(_fingerprint(policy, gated)), str(bool(getattr(policy, "unrestricted",
                                                                        False))),
                  str(exclusion_stamp()), ",".join(sorted(held))]
-    except Exception:  # noqa: BLE001 - an undecidable grant keeps nothing
+    except Exception as error:  # noqa: BLE001 - an undecidable grant keeps nothing
+        import logging
+        logging.getLogger("operator_api").info("weekly review not kept: grant undecided "
+                                               "(%s)", type(error).__name__)
         return None
     return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
 
 
 def weekly_review_of(view: Any, week: Optional[date], *, archive: Any = None,
-                     reader: Optional[str] = None,
-                     today: Optional[date] = None) -> Optional[dict[str, Any]]:
+                     reader: Optional[str] = None, today: Optional[date] = None,
+                     kept_budget: float = KEPT_WEEK_BUDGET_SECONDS
+                     ) -> Optional[dict[str, Any]]:
     """The weekly review as this reader reads it; a finished week is kept in ``archive``
     for ``reader`` and served from it while the grant is the same and every source it
-    shows still opens for the reader."""
+    shows still opens for the reader. A finished week not kept yet is read with
+    ``kept_budget`` (a live brief's budget otherwise)."""
     held = _held(view)
     if held is None:
         return None
@@ -240,11 +267,23 @@ def weekly_review_of(view: Any, week: Optional[date], *, archive: Any = None,
         if kept is not None:
             return kept
     alerts = _alerts(view, resolved=True)
+    kept = archive is not None and bool(reader) and grant is not None \
+        and start + timedelta(days=7) <= today
     with view._request():
         raw = br.weekly_review(view._call, held, alerts, week=start, today=today,
-                               decide=decide, people=br.env_people())
+                               decide=decide, people=br.env_people(),
+                               budget_seconds=kept_budget if kept
+                               else br.BUDGET_SECONDS)
+    import logging
+    log = logging.getLogger("operator_api")
     if archive is not None and reader and grant:
-        archive.put(reader, start, grant, raw, today)
+        if archive.put(reader, start, grant, raw, today):
+            log.info("weekly review of %s kept", start.isoformat())
+        elif kept:
+            log.info("weekly review not kept: %s", "cut by its budget"
+                     if (raw.get("budget") or {}).get("stopped") else "archive unwritable")
+    elif archive is not None:
+        log.info("weekly review not kept: %s", "no reader" if not reader else "no grant")
     return raw
 
 
@@ -264,12 +303,61 @@ def qc_pack_of(view: Any, kind: str) -> Optional[dict[str, Any]]:
         return br.qc_audit_pack(view._call, held, decide=decide)
 
 
-def upcoming_of(view: Any) -> Optional[list[dict[str, Any]]]:
+def upcoming_of(view: Any, who: Any = None, state_dir: Any = None
+                ) -> Optional[list[dict[str, Any]]]:
+    """The reader's calendar from the start of today (business time) for two weeks, each meeting
+    with the open action items of its series' earlier meetings the reader may see."""
+    from datetime import datetime
     held = _held(view)
     if held is None:
         return None
+    from zoneinfo import ZoneInfo
+    from operating.time_window import BUSINESS_TZ
+    since = datetime.now(ZoneInfo(BUSINESS_TZ)).replace(hour=0, minute=0, second=0,
+                                                        microsecond=0)
     with view._request():
-        return br.upcoming_meetings(view._call, held)
+        raw = br.upcoming_meetings(view._call, held, people=br.env_people(), since=since)
+    store = _follow_ups(state_dir) if who is not None else None
+    if store is not None:
+        from operating import meeting_followup as mf
+        viewer = _viewer(who, held)
+        for e in raw:
+            if e.get("private") or e.get("people_withheld"):
+                continue
+            meeting = {"title": e.get("label"), "start": e.get("start") or "",
+                       "organizer": e.get("organizer") or {}}
+            try:
+                e["open_items"] = mf.carried_items(store, meeting, viewer)[:10]
+            except Exception:  # noqa: BLE001 - an unreadable store shows no item
+                e["open_items"] = []
+    return raw
+
+
+def upcoming_model(view: Any, who: Any = None, state_dir: Any = None) -> m.UpcomingMeetings:
+    """``upcoming_of`` as the route's model (no meeting for a reader without a grant)."""
+    raw = upcoming_of(view, who, state_dir) or []
+    return m.UpcomingMeetings(meetings=[upcoming_entry(e) for e in raw])
+
+
+def upcoming_entry(e: Mapping[str, Any]) -> m.UpcomingMeeting:
+    def invitee(p: Any) -> Optional[m.MeetingInvitee]:
+        if not isinstance(p, Mapping):
+            return None
+        return m.MeetingInvitee(**{**p, "sources": _sources(p.get("sources"))})
+    attendees = [a for a in (invitee(p) for p in e.get("attendees") or ()) if a]
+    parties = [r for r in (_ref(p.get("object_id"), p.get("label"))
+                           for p in e.get("parties") or ()) if r]
+    return m.UpcomingMeeting(
+        object=_ref(e["object_id"], e["label"]), start=e.get("start"), end=e.get("end"),
+        all_day=bool(e.get("all_day")), location=e.get("location"),
+        online=bool(e.get("online")), join_url=e.get("join_url"), agenda=e.get("agenda"),
+        organizer=invitee(e.get("organizer")), attendees=attendees,
+        is_organizer=bool(e.get("is_organizer")), private=bool(e.get("private")),
+        people_withheld=bool(e.get("people_withheld")), parties=parties,
+        open_items=[m.MeetingOpenItem(label=i["label"], detail=i.get("detail"),
+                                      date=i.get("date"), sources=_sources(i.get("sources")))
+                    for i in e.get("open_items") or ()],
+        brief_url=brief_url(e["object_id"]), sources=_sources(e.get("sources")))
 
 
 PACK_CARD = "pack:"
@@ -739,6 +827,26 @@ class BriefsMixin:
         data_dir = getattr(self, "data_dir", None)
         return br.WeeklyArchive(data_dir / WEEKLY_FILE) if data_dir is not None else None
 
+    def _weekly_ahead(self, reader: Reader) -> Any:
+        """Last week's review for ``reader`` as ``/api/brief/weekly`` reads it, kept in the
+        archive (read whole once, served from there after); nothing when no archive."""
+        archive = self._weekly_archive()
+
+        def job(view: Any) -> None:
+            if archive is None:
+                return
+            try:
+                weekly_review_of(view, None, archive=archive, reader=reader.key,
+                                 kept_budget=WARM_WEEK_BUDGET_SECONDS)
+            except Exception as error:  # noqa: BLE001 - read when opened instead
+                import logging
+                import traceback
+                where = traceback.extract_tb(error.__traceback__)[-1]
+                logging.getLogger("operator_api.warm").info(
+                    "weekly review not read ahead: %s at %s:%s", type(error).__name__,
+                    Path(where.filename).name, where.lineno)
+        return job
+
     def weekly_review(self, reader: Reader, week: Optional[date]) -> m.Brief:
         archive = self._weekly_archive()
         try:
@@ -768,8 +876,23 @@ class BriefsMixin:
         return m.LabourPage(**labour_page_of(getattr(self, "state_dir", None), reader))
 
     def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
-        raw = self._brief_run(reader, upcoming_of) or []
-        return m.UpcomingMeetings(meetings=[m.UpcomingMeeting(
-            object=_ref(e["object_id"], e["label"]), start=e.get("start"),
-            brief_url=brief_url(e["object_id"]), sources=_sources(e.get("sources")))
-            for e in raw])
+        return self._brief_run(reader, lambda view: self._upcoming_cached(view, reader)) \
+            or m.UpcomingMeetings(meetings=[])
+
+    def _upcoming_cached(self, view: Any, who: Any = None) -> m.UpcomingMeetings:
+        """The reader's upcoming meetings as read last for them this hour (``page_key``:
+        their policy, the store state and the exclusion; the hour, as the list starts
+        now; the reader themself and the follow-up store as it stands, as each meeting
+        carries the open action items this reader may see), when every source it shows
+        still opens for them; else read now and kept."""
+        from datetime import datetime, timezone
+        from .backend import page_key
+        from .page_parts import page_handles
+        state_dir = getattr(self, "state_dir", None)
+        hour = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
+        with view._request():
+            key = page_key(view, ("upcoming_meetings", hour, getattr(who, "key", None),
+                                  _follow_up_stamp(state_dir) if who is not None else None))
+        return self.page_cache.kept(view, key, lambda: upcoming_model(view, who, state_dir),
+                                    page_handles,
+                                    copy=lambda model: model.model_copy(deep=True))

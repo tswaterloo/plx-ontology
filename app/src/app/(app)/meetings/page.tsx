@@ -37,7 +37,7 @@ function Meetings() {
             aria-selected={view === v.view}
             className={cn(
               "relative flex items-center text-[13px]",
-              view === v.view ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:rounded-full after:bg-fg" : "text-muted hover:text-fg",
+              view === v.view ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
             )}
           >
             {v.label}

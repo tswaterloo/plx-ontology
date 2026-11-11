@@ -556,7 +556,13 @@ class CapturedPageTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         path = Path(tmp.name) / "store.sqlite"
         with BcCaptures(h.db) as bc:
-            self.assertEqual(len(bc.field_page_records(ids.YOUR_REFERENCE_SET)), 2)
+            pages = bc.field_page_records(ids.YOUR_REFERENCE_SET)
+            self.assertEqual(len(pages), 2)
+            # The row's key (binding bc.purchase_order_references) is the order id the
+            # page is stored under, from its record path; the captured fields are kept.
+            self.assertEqual({r.row["id"] for r in pages},
+                             {r.record_key.split("/", 1)[1] for r in pages})
+            self.assertEqual({r.row["Your_Reference"] for r in pages}, {"PO7001", ""})
             self.assertEqual(bc.field_page_records(ids.YOUR_REFERENCE_SET,
                                                    "2000-01-01T00:00:00+00:00"), [])
             with self.assertRaises(ProjectionError):

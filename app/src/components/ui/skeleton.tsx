@@ -34,10 +34,22 @@ export function Skeleton({ className }: { className?: string }) {
 }
 
 /** The one way a part of a page says it is loading: what is being read, in words. */
-export function Pending({ label, className, testId }: { label: string; className?: string; testId?: string }) {
+/** A wait in words. ``page``: the whole page is waiting, so the words sit centred in the
+ * pane (a bare line at the content column's edge reads as misplaced). */
+/** ``after``: say nothing for the first ``after`` ms (a wait that is usually over by then
+ * never flashes its words, nor sits in the page as a second loading line). */
+export function Pending({ label, className, testId, page, after = 0 }: { label: string; className?: string; testId?: string; page?: boolean; after?: number }) {
   const slow = useSlow();
+  const shown = useSlow(after) || after <= 0;
+  if (!shown) return null;
   return (
-    <p role="status" aria-label={label} className={cn("py-2 text-meta text-muted", className)} data-testid={testId} data-pending="">
+    <p
+      role="status"
+      aria-label={label}
+      className={cn("py-2 text-meta text-muted", page && "flex min-h-[40vh] flex-col items-center justify-center text-center", className)}
+      data-testid={testId}
+      data-pending=""
+    >
       <span>{label}</span>
       {slow && <span className="mt-1 block text-faint" data-testid="slow-note">{SLOW_WORDS}</span>}
     </p>

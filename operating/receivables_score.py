@@ -213,6 +213,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "the store)")
     p.add_argument("--budget-seconds", type=float, default=200.0,
                    help="stop after this long (resumable: rerun to go on)")
+    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None,
+                   help="the SQLite generation at --store, or the Postgres ontology the API "
+                        "reads in mode 1 (refused when it does not hold that generation)")
     a = p.parse_args(argv)
     if a.sheet_readings:
         import os
@@ -225,7 +228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if people is None or getattr(people, "unavailable", None):
         print(json.dumps({"status": "blocked", "reason": "people_exclusion_unavailable"}))
         return 2
-    st = ap._store(a.store)
+    st = ap._store(a.store, a.source)
     registry = ap.load_registry()
     flows = WORKFLOWS if a.workflow == "all" else (a.workflow,)
     status = "complete"

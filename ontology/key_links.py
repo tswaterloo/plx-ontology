@@ -43,6 +43,12 @@ The schema declares every join: a link type with a ``mention`` binding carrying 
   **corroborated**, and a candidate whose party is unknown is a **lead**; a candidate of
   another party is never linked (PO numbers repeat across customers).
 
+Every link keeps the keys it was decided on (``ontology.link_keys``): the
+``exact_identifier`` feature cites, per end, the version and field the value was read
+from and the source's own text of it (``raw``), the identifier rows the join compared;
+a confirmed lead names the stored lead (``stored_lead.link_id``). The link carries those
+identifiers' markings with its ends', so a reader shown the link may read its keys.
+
 Stdlib only.
 """
 
@@ -98,22 +104,40 @@ def _range(object_type: str, binding: str) -> tuple[str, str]:
     return start, _end(start)
 
 
+Key = tuple[str, str, dict[str, Any], str]   # object, compared value, citation, markings
+
+
 def _held(conn: Any, kind: str, object_type: str, binding: str, field: str | None = None
-          ) -> list[tuple[str, str]]:
+          ) -> list[Key]:
+    """(object, normalized value, citation, markings) of each current identifier row; an
+    object holding one value in several rows is cited by its first (handle, field)."""
     lo, hi = _range(object_type, binding)
-    return [(r[0], r[1]) for r in _q(
-        conn, "SELECT object_id, normalized, field_path FROM identifiers WHERE "
-              "identifier_kind = ? AND superseded_at IS NULL AND object_id >= ? AND "
-              "object_id < ?", [kind, lo, hi]) if field is None or r[2] == field]
+    out: dict[tuple[str, str], Key] = {}
+    for r in _q(conn, "SELECT object_id, normalized, field_path, l1_handle, raw, markings "
+                      "FROM identifiers WHERE identifier_kind = ? AND superseded_at IS NULL "
+                      "AND object_id >= ? AND object_id < ?", [kind, lo, hi]):
+        if field is not None and r[2] != field:
+            continue
+        held = out.get((r[0], r[1]))
+        if held is None or (r[3], r[2]) < (held[2]["l1_handle"], held[2]["field_path"]):
+            out[(r[0], r[1])] = (r[0], r[1], {"l1_handle": r[3], "field_path": r[2],
+                                              "raw": r[4]}, r[5])
+    return list(out.values())
 
 
-def _system_ids(conn: Any, object_type: str, binding: str) -> list[tuple[str, str]]:
+def _system_ids(conn: Any, object_type: str, binding: str) -> list[Key]:
+    """(object, system id, citation, markings) of the binding's records: the id is the
+    record's native key, cited on its current version."""
     out = []
-    for oid, native in _q(conn, "SELECT object_id, native_key FROM objects WHERE "
-                                "object_type = ? AND binding_id = ?", [object_type, binding]):
+    for oid, native, handle in _q(
+            conn, "SELECT o.object_id, o.native_key, v.l1_handle FROM objects o JOIN "
+                  "object_versions v ON v.object_id = o.object_id AND v.superseded_at IS NULL "
+                  "WHERE o.object_type = ? AND o.binding_id = ?", [object_type, binding]):
         key = json.loads(native)
         if isinstance(key, Mapping) and isinstance(key.get("id"), str):
-            out.append((oid, key["id"].strip().lower()))
+            out.append((oid, key["id"].strip().lower(),
+                        {"l1_handle": handle, "field_path": "native_key.id", "raw": key["id"]},
+                        "[]"))
     return out
 
 
@@ -208,26 +232,31 @@ class FirmParties(Parties):
             [oid, step.lstrip("~"), *CONFIRMING])}
 
 
+Found = tuple[str, str, str, list, list, str]   # from, to, tier, reason, why_not, markings
+
+
 def _confirms(conn: Any, lid: str, link: Mapping[str, Any], b: Mapping[str, Any],
-              parties: Parties, counts: Counter) -> list[tuple[str, str, str, list, list]]:
-    """(from, to, tier, reason, why_not) of one declared confirming path."""
+              parties: Parties, counts: Counter) -> list[Found]:
+    """(from, to, tier, reason, why_not, markings) of one declared confirming path."""
     confirm = b["confirm"]
     lo, hi = _range(link["from"], b["from_binding"])
     to_lo, to_hi = _range(link["to"], b["to_binding"])
     out = []
-    for frm, to in _q(conn, "SELECT from_object, to_object FROM link_rows WHERE link_type = ? "
-                            "AND tier = 'lead' AND superseded_at IS NULL AND from_object >= ? "
-                            "AND from_object < ?", [lid, lo, hi]):
+    for frm, to, lead in _q(conn, "SELECT from_object, to_object, link_id FROM link_rows WHERE "
+                                  "link_type = ? AND tier = 'lead' AND superseded_at IS NULL "
+                                  "AND from_object >= ? AND from_object < ? ORDER BY link_id",
+                            [lid, lo, hi]):
         if not to_lo <= to < to_hi:
             continue
         reached = parties.of(frm, confirm["path"], confirm["twin"])
         if not reached:
             counts["no_path"] += 1
         elif to in reached:
-            out.append((frm, to, FIRM, [{"feature": "stored_lead", "agrees": True},
+            out.append((frm, to, FIRM, [{"feature": "stored_lead", "agrees": True,
+                                         "link_id": lead},
                                         {"feature": "confirming_path", "agrees": True,
                                          "via": list(confirm["path"]),
-                                         "twin": confirm["twin"]}], []))
+                                         "twin": confirm["twin"]}], [], "[]"))
             counts["firm"] += 1
         else:
             counts["path_disagrees"] += 1
@@ -235,8 +264,8 @@ def _confirms(conn: Any, lid: str, link: Mapping[str, Any], b: Mapping[str, Any]
 
 
 def _joins(conn: Any, lid: str, link: Mapping[str, Any], b: Mapping[str, Any],
-           parties: Parties, counts: Counter) -> list[tuple[str, str, str, list, list]]:
-    """(from, to, tier, reason, why_not) of one declared key join."""
+           parties: Parties, counts: Counter) -> list[Found]:
+    """(from, to, tier, reason, why_not, markings) of one declared key join."""
     key = b["key"]
     from_type, to_type = link["from"], link["to"]
     fb, tb = b["from_binding"], b["to_binding"]
@@ -244,21 +273,21 @@ def _joins(conn: Any, lid: str, link: Mapping[str, Any], b: Mapping[str, Any],
     system = key.get("to") == SYSTEM_ID
     if system:
         held_to = _system_ids(conn, to_type, tb)
-        held_from = [(o, v.strip().lower()) for o, v in _held(conn, key["from"], from_type, fb,
-                                                              key.get("from_field"))]
+        held_from = [(o, v.strip().lower(), cite, marks) for o, v, cite, marks
+                     in _held(conn, key["from"], from_type, fb, key.get("from_field"))]
     else:
         held_to = _held(conn, key.get("to") or key["from"], to_type, tb, key.get("to_field"))
         held_from = _held(conn, key["from"], from_type, fb, key.get("from_field"))
-    by_value: dict[str, list[str]] = defaultdict(list)
-    for oid, value in held_to:
-        by_value[value].append(oid)
+    by_value: dict[str, dict[str, tuple[dict[str, Any], str]]] = defaultdict(dict)
+    for oid, value, cite, marks in held_to:
+        by_value[value].setdefault(oid, (cite, marks))
     scoped = key.get("company") == "same_bc_company"
     company_from = _companies(conn, from_type, fb) if scoped else {}
     company_to = _companies(conn, to_type, tb) if scoped else {}
     party = key.get("party")
     same_party = key.get("targets") == "same_party"
-    out = []
-    for oid, value in held_from:
+    out: list[Found] = []
+    for oid, value, from_cite, from_marks in held_from:
         if not system and len(_DIGIT.findall(value)) < min_digits:
             counts["not_an_identifier"] += 1
             continue
@@ -275,6 +304,12 @@ def _joins(conn: Any, lid: str, link: Mapping[str, Any], b: Mapping[str, Any],
         reason = [{"feature": "exact_identifier", "agrees": True,
                    "identifier_kind": key["from"], "normalized": value,
                    "to": SYSTEM_ID if system else (key.get("to") or key["from"])}]
+
+        def row(t: str, tier: str, why: list, features: list) -> Found:
+            """The link to ``t``: the join feature cites the keys of both ends."""
+            to_cite, to_marks = by_value[value][t]
+            keyed = [{**features[0], "citations": [from_cite, to_cite]}, *features[1:]]
+            return (oid, t, tier, keyed, why, mentions._marks(from_marks, to_marks))
         if party:
             mine = parties.of(oid, party["from"], party["twin"])
             agree, unknown = [], []
@@ -288,25 +323,25 @@ def _joins(conn: Any, lid: str, link: Mapping[str, Any], b: Mapping[str, Any],
             reason = reason + [{"feature": "same_party", "agrees": True,
                                 "via": party["twin"]}]
             if same_party:
-                out += [(oid, t, FIRM, reason, []) for t in agree]
+                out += [row(t, FIRM, [], reason) for t in agree]
                 if len(unknown) <= MAX_LEADS:
-                    out += [(oid, t, LEAD, reason[:1], [{"feature": "party_unknown",
-                                                         "agrees": None}]) for t in unknown]
+                    out += [row(t, LEAD, [{"feature": "party_unknown", "agrees": None}],
+                                reason[:1]) for t in unknown]
                 counts["firm" if agree else ("lead" if unknown else "other_party_only")] += 1
                 continue
             targets = agree or (unknown if len(unknown) <= MAX_LEADS else [])
             if not agree:
-                out += [(oid, t, LEAD, reason[:1], [{"feature": "party_unknown",
-                                                     "agrees": None}]) for t in targets]
+                out += [row(t, LEAD, [{"feature": "party_unknown", "agrees": None}],
+                            reason[:1]) for t in targets]
                 counts["lead" if targets else "other_party_only"] += 1
                 continue
         if one_record(conn, targets):
-            out += [(oid, t, FIRM, reason + [{"feature": "unique_record", "agrees": True}], [])
+            out += [row(t, FIRM, [], reason + [{"feature": "unique_record", "agrees": True}])
                     for t in targets]
             counts["firm"] += 1
         elif len(targets) <= MAX_LEADS:
-            out += [(oid, t, LEAD, reason, [{"feature": "ambiguous_target", "agrees": None,
-                                             "candidates": len(targets)}]) for t in targets]
+            out += [row(t, LEAD, [{"feature": "ambiguous_target", "agrees": None,
+                                   "candidates": len(targets)}], reason) for t in targets]
             counts["lead"] += 1
         else:
             counts["several_records"] += 1
@@ -318,24 +353,25 @@ def key_links(conn: Any, links: Mapping[str, Mapping[str, Any]], schema: Any = N
     """The rows of every declared key join (module docstring) and the outcome counts."""
     counts: Counter[str] = Counter()
     parties = Parties(conn, schema)
-    found: list[tuple[str, str, str, str, list, list]] = []
+    found: list[tuple[str, str, str, str, list, list, str]] = []
     for lid, b in declared(links):
         tally: Counter[str] = Counter()
-        for frm, to, tier, reason, why_not in _joins(conn, lid, links[lid], b, parties, tally):
-            found.append((lid, frm, to, tier, reason, why_not))
+        for frm, to, tier, reason, why_not, marks in _joins(conn, lid, links[lid], b, parties,
+                                                            tally):
+            found.append((lid, frm, to, tier, reason, why_not, marks))
         counts.update({f"{lid}:{k}": v for k, v in tally.items()})
     firm_parties = FirmParties(conn, schema)
     for lid, b in confirmations(links):
         tally = Counter()
-        for frm, to, tier, reason, why_not in _confirms(conn, lid, links[lid], b, firm_parties,
-                                                        tally):
-            found.append((lid, frm, to, tier, reason, why_not))
+        for frm, to, tier, reason, why_not, marks in _confirms(conn, lid, links[lid], b,
+                                                               firm_parties, tally):
+            found.append((lid, frm, to, tier, reason, why_not, marks))
         counts.update({f"{lid}:confirm:{k}": v for k, v in tally.items()})
     oids = {f for _l, f, *_x in found} | {t for _l, _f, t, *_x in found}
     versions = _versions(conn, oids)
     rejected = _rejected(conn, {f for _l, f, *_x in found})
     out: dict[str, dict[str, Any]] = {}
-    for lid, frm, to, tier, reason, why_not in found:
+    for lid, frm, to, tier, reason, why_not, marks in found:
         a, z = versions.get(frm), versions.get(to)
         if a is None or z is None:
             continue
@@ -345,13 +381,15 @@ def key_links(conn: Any, links: Mapping[str, Mapping[str, Any]], schema: Any = N
         link_id = PREFIX + _digest(frm, lid, to)
         if link_id in out and (out[link_id]["tier"] == FIRM or tier != FIRM):
             continue
+        keys = [c for f in reason for c in f.get("citations", ())]
         out[link_id] = {
             "link_id": link_id, "link_type": lid, "from_object": frm, "to_object": to,
             "tier": tier, "binding_kind": BINDING_KIND, "link_contract": None,
             "reason": _canon(reason), "why_not": _canon(why_not),
-            "evidence_handles": _canon(list(dict.fromkeys([a["l1_handle"], z["l1_handle"]]))),
+            "evidence_handles": _canon(list(dict.fromkeys(
+                [a["l1_handle"], z["l1_handle"], *(c["l1_handle"] for c in keys)]))),
             "reviewed_by": None, "reviewed_at": None, "review_action_id": None,
-            "markings": mentions._marks(a["markings"], z["markings"]),
+            "markings": mentions._marks(a["markings"], z["markings"], marks),
             "recorded_at": max(a["recorded_at"], z["recorded_at"]), "superseded_at": None}
     counts["links"] = len(out)
     return [out[k] for k in sorted(out)], counts

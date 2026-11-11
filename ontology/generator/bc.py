@@ -500,6 +500,19 @@ def facts(pin_doc: Mapping[str, Any], docs: Sequence[tuple[str, Mapping[str, Any
                                                        "target entity type of two sets"})
                 continue
             target = targets[0]
+            # A column that names the set's containing header names nothing else: BC's
+            # $metadata declares vendorPayment.customerPaymentJournal on journalId, the
+            # column a vendor payment names its own vendorPaymentJournal by (contained),
+            # so that constraint pairs a vendor journal id with customer journal ids and
+            # can never hold (0 links in the served store, 2026-11-08).
+            header_cols = {BC_LINE_PARENT_FIELD.get(name, "documentId")
+                           for parent in entry["parents"] if parent in in_scope}
+            if nav["constraints"] and target not in entry["parents"] and \
+                    {c for c, _ in nav["constraints"]} & header_cols:
+                navigation_not_bound.append({"from": name, "navigation": nav["name"],
+                                             "reason": "constraint column names the "
+                                                       "containing header"})
+                continue
             if nav["constraints"]:
                 cols, refs = [c for c, _ in nav["constraints"]], [r for _, r in nav["constraints"]]
                 tier, how = "verified", f"NavigationProperty {nav['name']} ReferentialConstraint"

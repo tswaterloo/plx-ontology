@@ -3,15 +3,17 @@
 import { Pending } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { AlertKindsSection } from "@/components/watching/alert-kinds";
+import { AlertFeed, FiredKind, firedKinds } from "@/components/watching/fired";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadProblem } from "@/components/ui/notice";
 import { Toolbar } from "@/components/ui/toolbar";
-import { compileRule, createRule, deleteRule, getWatchlist, markAlertsRead, setFollowing } from "@/lib/api";
+import { compileRule, createRule, deleteRule, getAlertKinds, getBriefing, getWatchlist, markAlertsRead, setFollowing } from "@/lib/api";
 import { ruleParams } from "@/lib/rule-params";
+import { cn } from "@/lib/cn";
 import { ApiError, plainError } from "@/lib/errors";
-import { formatDateTime, objectHref, typeLabel } from "@/lib/format";
-import type { WatchAlert, Watchlist, WatchRuleDraft } from "@/lib/types";
+import { objectHref, typeLabel } from "@/lib/format";
+import type { AlertKinds, Briefing, Watchlist, WatchRuleDraft } from "@/lib/types";
 
 const EXAMPLES = ["Tell me when any order over $50k slips", "Alert me if a supplier is late twice in a month", "Tell me when a duplicate supplier invoice over $10k is found"];
 
@@ -19,22 +21,9 @@ function said(err: unknown): string {
   return err instanceof ApiError && err.detail && err.status < 500 ? err.detail : plainError(err);
 }
 
-function AlertRow({ a }: { a: WatchAlert }) {
-  const href = a.record.type ? objectHref(a.record.type, a.record.object_id) : null;
-  return (
-    <li className="flex items-start gap-3 py-2.5">
-      <span aria-hidden className={a.read ? "mt-1.5 size-2 shrink-0 rounded-full" : "mt-1.5 size-2 shrink-0 rounded-full bg-accent"} />
-      <div className="min-w-0 flex-1">
-        <p className="text-[13px] leading-5 text-fg">{href ? <Link href={href} className="hover:underline">{a.sentence}</Link> : a.sentence}</p>
-        <p className="text-[12px] text-muted">
-          {formatDateTime(a.at)} · {a.origin === "rule" ? `Rule: ${a.rule_text ?? ""}` : `Following ${a.about.label ?? typeLabel(a.about.type ?? "")}`}
-        </p>
-      </div>
-    </li>
-  );
-}
-
-/** Watching: the records you follow, your alert rules in plain words and your alerts. */
+/** Watching: what fired first (per alert kind, its count, what is new and its records;
+ * then your rules' and follows' alerts by day), with your rules, follows and the alert
+ * kinds' standing in the rail. */
 export default function WatchingPage() {
   const [data, setData] = useState<Watchlist | null>(null);
   const [problem, setProblem] = useState<unknown>(null);
@@ -49,6 +38,20 @@ export default function WatchingPage() {
     getWatchlist().then(setData, setProblem);
   }, []);
   useEffect(load, [load]);
+  const [reg, setReg] = useState<AlertKinds | null>(null);
+  const [briefing, setBriefing] = useState<Briefing | null>(null);
+  const [kindsError, setKindsError] = useState<unknown>(null);
+  const [round, setRound] = useState(0);
+  const retryKinds = useCallback(() => setRound((n) => n + 1), []);
+  useEffect(() => {
+    const ctl = new AbortController();
+    setKindsError(null);
+    getAlertKinds(ctl.signal).then(setReg, (e) => !ctl.signal.aborted && setKindsError(e));
+    getBriefing(ctl.signal).then(setBriefing, () => undefined);
+    return () => ctl.abort();
+  }, [round]);
+  const fired = useMemo(() => firedKinds(reg, briefing), [reg, briefing]);
+  const ruleInput = useRef<HTMLInputElement>(null);
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -79,31 +82,73 @@ export default function WatchingPage() {
         title={
           <>
             Watching
-            {data && data.unread > 0 && <span className="ml-2 text-[13px] font-normal tabular-nums text-faint"><span className="sr-only">, </span>{data.unread} new</span>}
+            {data && data.unread > 0 && <span className="ml-2 text-[13px] font-normal num text-faint"><span className="sr-only">, </span>{data.unread} new</span>}
           </>
         }
         actions={
-          unread.length > 0 ? (
-            <button type="button" className="inline-flex h-8 items-center rounded-lg px-2.5 text-[13px] font-medium hover:bg-hover cursor-pointer" onClick={() => run(async () => { await markAlertsRead(unread); load(); })}>
-              Mark all read
-            </button>
-          ) : null
+          <>
+            {unread.length > 0 && (
+              <button type="button" className="inline-flex h-8 items-center rounded-lg px-2.5 text-[13px] font-medium hover:bg-hover cursor-pointer" onClick={() => run(async () => { await markAlertsRead(unread); load(); })}>
+                Mark all read
+              </button>
+            )}
+            {data?.configured !== false && (
+              <button type="button" className="ml-1 inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] cursor-pointer" onClick={() => ruleInput.current?.focus()}>
+                New rule
+              </button>
+            )}
+          </>
         }
       />
-      <div className="mx-auto w-full max-w-3xl space-y-10 overflow-y-auto px-6 py-8">
+      <div className="w-full overflow-y-auto px-6 py-5">
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}
-        {!data && !problem && <Pending label="Reading your rules" />}
         {data && !data.configured && <EmptyState title="Watchlists are off on this server." />}
-
-        <AlertKindsSection />
-
-        {data?.configured !== false && (
-        <>
+        <div className="flex flex-wrap items-end gap-x-10 gap-y-3 border-b border-border pb-4" data-testid="watching-figures">
+          {(
+            [
+              ["Firing now", briefing?.status === "read" ? briefing.count : null, ""],
+              ["New since your visit", briefing?.status === "read" ? briefing.new_since_visit : null, "text-accent"],
+              ["Kinds firing", reg ? `${fired.length} of ${reg.kinds.length}` : null, ""],
+              ["From your rules and follows", data ? data.alerts.length : null, ""],
+              ["Following", data ? data.follows.length : null, ""],
+            ] as const
+          ).map(([k, v, tone]) => (
+            <div key={k}>
+              <p className="text-[12px] text-muted">{k}</p>
+              <p className={cn("num text-[19px] leading-6", typeof v === "number" && v > 0 && tone)}>{v ?? "·"}</p>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-10 pt-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="min-w-0 space-y-8">
+            <section aria-labelledby="fired-title">
+              <h2 id="fired-title" className="text-[15px] font-semibold">What fired</h2>
+              {kindsError ? (
+                <LoadProblem message={plainError(kindsError)} onRetry={retryKinds} />
+              ) : !reg || !briefing ? (
+                <Pending label="Reading what fired" />
+              ) : fired.length === 0 ? (
+                <p className="mt-1 text-[13px] text-muted">Nothing fired on the alert kinds you can see.</p>
+              ) : (
+                <div className="divide-y divide-border">{fired.map((f) => <FiredKind key={f.kind} f={f} />)}</div>
+              )}
+            </section>
+            {data?.configured !== false && (
+              <section aria-labelledby="rule-alerts">
+                <h2 id="rule-alerts" className="mb-1 text-[15px] font-semibold">From your rules and follows</h2>
+                {!data ? <Pending label="Reading your alerts" /> : data.alerts.length === 0 ? <p className="text-[13px] text-muted">None yet. A rule or a follow shows its changes here.</p> : <AlertFeed alerts={data.alerts} />}
+              </section>
+            )}
+          </div>
+          <aside className="space-y-8 lg:border-l lg:border-border lg:pl-6">
+            {data?.configured !== false && (
+            <>
         <section aria-labelledby="new-rule" className="space-y-3">
-          <h2 id="new-rule" className="text-[15px] font-semibold">New alert rule</h2>
-          <p className="text-[13px] text-muted">Write it in plain words. You see what it will do before it is kept; it only reads what you may read.</p>
-          <div className="flex gap-2">
+          <h2 id="new-rule" className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">New alert rule</h2>
+          <p className="text-[12px] text-muted">In plain words. You see what it will do before it is kept; it reads only what you may read.</p>
+          <div className="flex flex-col gap-2">
             <input
+              ref={ruleInput}
               aria-label="Alert rule in plain words"
               value={text}
               maxLength={300}
@@ -112,7 +157,7 @@ export default function WatchingPage() {
               placeholder={EXAMPLES[0]}
               className="h-9 min-w-0 flex-1 rounded-lg border border-control bg-transparent px-3 text-[13px]"
             />
-            <button type="button" disabled={busy || !text.trim()} onClick={preview} className="h-9 rounded-lg px-3 text-[13px] font-medium hover:bg-hover cursor-pointer disabled:opacity-50">
+            <button type="button" disabled={busy || !text.trim()} onClick={preview} className="h-8 self-start rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] cursor-pointer disabled:opacity-50">
               {busy && !draft ? "Checking" : "Check"}
             </button>
           </div>
@@ -121,7 +166,7 @@ export default function WatchingPage() {
             {EXAMPLES.map((ex, i) => (
               <span key={ex}>
                 {i > 0 ? " · " : ""}
-                <button type="button" className="underline-offset-2 hover:underline cursor-pointer" onClick={() => { setText(ex); setDraft(null); }}>
+                <button type="button" className="text-left underline-offset-2 hover:underline cursor-pointer" onClick={() => { setText(ex); setDraft(null); }}>
                   “{ex}”
                 </button>
               </span>
@@ -131,13 +176,13 @@ export default function WatchingPage() {
           {draft && (
             <div className="space-y-2 rounded-lg border border-border p-3">
               <p className="text-[13px] font-medium">{draft.description}</p>
-              <dl aria-label="What this rule checks" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px]">
+              <dl aria-label="Rule conditions" className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px]">
                 {ruleParams(draft.spec).map((p) => (
                   <div key={p.name} className="contents"><dt className="text-muted">{p.name}</dt><dd>{p.value}</dd></div>
                 ))}
               </dl>
               {draft.markings.length > 0 && <p className="text-[12px] text-muted">Reads {draft.markings.join(", ")} figures: only people cleared for them can set it or see its alerts.</p>}
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2">
                 <button type="button" disabled={busy} onClick={confirm} className="h-8 rounded-lg bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-3 text-[13px] font-medium cursor-pointer">
                   Keep this rule
                 </button>
@@ -149,14 +194,8 @@ export default function WatchingPage() {
           )}
         </section>
 
-        <section aria-labelledby="rule-alerts" className="space-y-1">
-          <h2 id="rule-alerts" className="text-[15px] font-semibold">From your rules</h2>
-          {data && data.alerts.length === 0 && <EmptyState title="No alerts." />}
-          <ul className="divide-y divide-border">{(data?.alerts ?? []).map((a) => <AlertRow key={a.alert_id} a={a} />)}</ul>
-        </section>
-
         <section aria-labelledby="rules" className="space-y-1">
-          <h2 id="rules" className="text-[15px] font-semibold">Your rules</h2>
+          <h2 id="rules" className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Your rules</h2>
           {data && data.rules.length === 0 && <EmptyState title="No rules yet." />}
           <ul className="divide-y divide-border">
             {(data?.rules ?? []).map((r) => (
@@ -185,7 +224,7 @@ export default function WatchingPage() {
         </section>
 
         <section aria-labelledby="follows" className="space-y-1">
-          <h2 id="follows" className="text-[15px] font-semibold">Following</h2>
+          <h2 id="follows" className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Following</h2>
           {data && data.follows.length === 0 && <p className="text-[13px] text-muted">Use Follow on any record page.</p>}
           <ul className="divide-y divide-border">
             {(data?.follows ?? []).map((f) => (
@@ -200,8 +239,11 @@ export default function WatchingPage() {
             ))}
           </ul>
         </section>
-        </>
-        )}
+            </>
+            )}
+            <AlertKindsSection compact data={{ reg, briefing, error: kindsError, retry: retryKinds }} />
+          </aside>
+        </div>
       </div>
     </div>
   );

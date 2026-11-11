@@ -103,7 +103,10 @@ class ParallelCorroborationTests(unittest.TestCase):
         def parallel(builder, projector):
             return finish_parallel.store_mention_links(builder, projector, processes=3,
                                                        min_documents=1)
-        cls.parallel = _build(cls.root, "parallel.sqlite", tuple(cls.rows), parallel)
+        # the links replayed into the build by workers in parts of two links each
+        with mock.patch.object(finish_parallel, "REPLAY_PARTS_MIN", 1), \
+                mock.patch.object(finish_parallel, "REPLAY_PART_ROWS", 2):
+            cls.parallel = _build(cls.root, "parallel.sqlite", tuple(cls.rows), parallel)
         cls.last = dict(finish_parallel.LAST)
 
     @classmethod
@@ -113,6 +116,7 @@ class ParallelCorroborationTests(unittest.TestCase):
 
     def test_workers_write_the_serial_rows_report_and_digest(self):
         self.assertEqual(self.last.get("mode"), "parallel", self.last)
+        self.assertGreater(self.last.get("replay.parts", 0), 3, self.last)
         serial, parallel = self.serial, self.parallel
         step = serial[0]["post_project"]["mentions"]
         # the fixture exercises raises of several kinds and leads that stay leads

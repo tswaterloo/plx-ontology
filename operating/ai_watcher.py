@@ -100,6 +100,7 @@ import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from operating import declared_schema as _schemas
 from operating.declared_schema import ai_watcher as _AI_WATCHER
+from operating.prose_style import PROSE_STYLE_RULE
 
 SCHEMA = "plx-ai-watcher/v1"
 KIND = "watcher_attention"          # the gap kind its items carry (``briefing``)
@@ -981,7 +982,7 @@ def task(batch: Mapping[str, Any], events: Sequence[Mapping[str, str]],
               "names, the other system's record it contradicts.", "", GATE_RULE, "",
               OUTPUT_RULE.replace("{codes}", ", ".join(sorted(departments)))
               .replace("{kinds}", ", ".join(CLAIM_KINDS)).replace("{most}", str(MAX_ITEMS))
-              .replace("{{", "{").replace("}}", "}")]
+              .replace("{{", "{").replace("}}", "}"), "", PROSE_STYLE_RULE]
     return "\n".join(lines)
 
 
@@ -1031,7 +1032,7 @@ def retry_task(title: str, retry: Mapping[str, Any], refusals: Sequence[str], *,
             .replace("{{", "{").replace("}}", "}"))
     return "\n".join(lines + ["", GATE_RULE.replace(
         "The batch reads above are for spotting what matters: before",
-        "Before"), "", rule])
+        "Before"), "", rule, "", PROSE_STYLE_RULE])
 
 
 # --------------------------------------------------------------------------- proposals
@@ -2446,7 +2447,7 @@ def report(runs: Sequence[Mapping[str, Any]], *, hours: float, now: dt.datetime)
                          if (item.get("truth") or {}).get("checks") else ""),
                       f"- **Subject:** `{item.get('subject')}`",
                       f"- **What:** {item['text'] or '(nothing the gate passed)'}",
-                      f"- **Why it matters:** {item['why'] or '(nothing the gate passed)'}",
+                      f"- **Reason:** {item['why'] or '(nothing the gate passed)'}",
                       f"- **Suggested next step (draft, not sent):** "
                       f"{item['next_step'] or '-'}",
                       f"- **Routed to:** {', '.join(item['departments']) or '-'}; priority "

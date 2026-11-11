@@ -54,6 +54,14 @@ def _ids_and_handles(value, out):
     return out
 
 
+def _shown(result):
+    """A tool result as the planner is shown it: one over the observation limit comes packed
+    (operating.agent_loop._packed: its entries under ``shown``); a model reads what it was
+    shown."""
+    return result["shown"] if isinstance(result, dict) and "omitted" in result \
+        and isinstance(result.get("shown"), dict) else result
+
+
 def _on_record(values):
     """An answer stating the card's first cited value by reference (structured claim)."""
     value = next(v for v in values if v.get("citation") and v.get("value") is not None)
@@ -152,13 +160,13 @@ class ObjectiveBoxHttpTest(unittest.TestCase):
                     {"tool": "plx.object", "arguments": {"object_id": oid}} for oid in roots]
                     or [{"tool": "plx.find", "arguments": {"query": case_fixtures.PO_NUMBER,
                                                            "identifier_kind": "petra_po"}}]}, None
-            result = request["transcript"][0]["observations"][0]["result"]
+            result = _shown(request["transcript"][0]["observations"][0]["result"])
             if "candidates" in result:
                 # Named by nothing: the agent finds the record itself, then reads it.
                 if len(request["transcript"]) == 1:
                     return {"action": "call", "calls": [{"tool": "plx.object", "arguments": {
                         "object_id": result["candidates"][0]["object"]["object_id"]}}]}, None
-                result = request["transcript"][1]["observations"][0]["result"]
+                result = _shown(request["transcript"][1]["observations"][0]["result"])
             return {"action": "answer", "unknowns": ["not in the record: why it is late"],
                     **_on_record(result["values"])}, None
 
@@ -199,7 +207,7 @@ class ObjectiveBoxHttpTest(unittest.TestCase):
                 ids = line.split("none chosen: ", 1)[1].split(". Read", 1)[0].split("; ")
                 return {"action": "call", "calls": [
                     {"tool": "plx.object", "arguments": {"object_id": oid}} for oid in ids]}, None
-            cards = [o["result"] for o in request["transcript"][0]["observations"]]
+            cards = [_shown(o["result"]) for o in request["transcript"][0]["observations"]]
             handle = {relation: next(v["citation"]["l1_handle"] for card in cards
                                      for v in card["values"]
                                      if v["citation"]["l1_handle"].startswith(
@@ -316,7 +324,7 @@ class ObjectiveBoxLiveCheckTest(unittest.TestCase):
             if not done:
                 return {"action": "call", "calls": [{"tool": "plx.find", "arguments": {
                     "query": case_fixtures.PO_NUMBER}}]}, None
-            last = done[-1]["observations"][0]["result"]
+            last = _shown(done[-1]["observations"][0]["result"])
             if "candidates" in last:
                 return {"action": "call", "calls": [{"tool": "plx.object", "arguments": {
                     "object_id": last["candidates"][0]["object"]["object_id"]}}]}, None

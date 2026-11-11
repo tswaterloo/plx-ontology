@@ -1069,6 +1069,14 @@
             "description": "Why the assistant could not work the question (its usage limit, its sign-in, its time limit or an error), in words; the answer then shows what the records read without it show. Null when it ran.",
             "title": "Assistant Unavailable"
           },
+          "attachments": {
+            "description": "The question's attachments: what was read and what was not, and why.",
+            "items": {
+              "$ref": "#/components/schemas/AskAttachmentNote"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
           "conflicts": {
             "items": {
               "$ref": "#/components/schemas/Conflict"
@@ -1091,6 +1099,14 @@
           "direct_answer": {
             "title": "Direct Answer",
             "type": "string"
+          },
+          "drafts": {
+            "description": "Emails and actions the question asked to have drafted; each is done only from its preview with your explicit confirm.",
+            "items": {
+              "$ref": "#/components/schemas/AskDraft"
+            },
+            "title": "Drafts",
+            "type": "array"
           },
           "facts": {
             "items": {
@@ -1189,7 +1205,7 @@
                 "type": "null"
               }
             ],
-            "description": "How we know (optional: older clients ignore it)."
+            "description": "The evidence trail (optional: older clients ignore it)."
           }
         },
         "required": [
@@ -1509,9 +1525,182 @@
         "title": "AsOfValue",
         "type": "object"
       },
+      "AskAttachment": {
+        "additionalProperties": false,
+        "description": "A file or image attached to one question (``operating.ask_attachments``): read in\nmemory for that answer only, never stored.",
+        "properties": {
+          "data": {
+            "description": "The file's bytes, base64 (8 MB a file, 10 MB together).",
+            "maxLength": 11200000,
+            "minLength": 1,
+            "title": "Data",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "data"
+        ],
+        "title": "AskAttachment",
+        "type": "object"
+      },
+      "AskAttachmentNote": {
+        "additionalProperties": false,
+        "description": "What the answer and the saved Ask say of an attachment: never its content.",
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pdf",
+                  "spreadsheet",
+                  "text",
+                  "image"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Why it was not read, or read in part.",
+            "title": "Note"
+          },
+          "read": {
+            "title": "Read",
+            "type": "boolean"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "digest",
+          "read"
+        ],
+        "title": "AskAttachmentNote",
+        "type": "object"
+      },
+      "AskDraft": {
+        "additionalProperties": false,
+        "description": "A draft the Ask wrote because the question asked for one: an email the person edits\nand sends from its preview with one explicit confirm (``/api/actions/preview`` and\n``/api/actions/confirm``, ``card_id`` = ``id``, the approve-to-send desk), or an\naction (a payment, a record change, an approval) shown in full, which the person\nfiles as a follow-up or assigns to a colleague for approval through the same desk.\nNothing is sent, paid or written by the Ask itself.",
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/CardActionOffer"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "details": {
+            "description": "An action's details, each shown before any confirm.",
+            "items": {
+              "$ref": "#/components/schemas/DraftDetail"
+            },
+            "title": "Details",
+            "type": "array"
+          },
+          "email_subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Email Subject"
+          },
+          "id": {
+            "description": "The card id the approve-to-send desk takes.",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "email",
+              "payment",
+              "record_change",
+              "approval"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "missing": {
+            "description": "What the draft lacks before it can be done, in words.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "sent": {
+            "const": false,
+            "default": false,
+            "title": "Sent",
+            "type": "boolean"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "body"
+        ],
+        "title": "AskDraft",
+        "type": "object"
+      },
       "AskRequest": {
         "additionalProperties": false,
         "properties": {
+          "attachments": {
+            "description": "Files and images the person attached (PDF, .xlsx, .csv, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.",
+            "items": {
+              "$ref": "#/components/schemas/AskAttachment"
+            },
+            "maxItems": 5,
+            "title": "Attachments",
+            "type": "array"
+          },
           "conversation_id": {
             "anyOf": [
               {
@@ -1840,6 +2029,14 @@
             "title": "Items",
             "type": "array"
           },
+          "known_workflows": {
+            "description": "every workflow the autopilot knows (``operating.workflows``), scored or not: the workflow filter offers them before any is scored or prepared",
+            "items": {
+              "type": "string"
+            },
+            "title": "Known Workflows",
+            "type": "array"
+          },
           "notes": {
             "items": {
               "type": "string"
@@ -2096,6 +2293,46 @@
         "title": "AutopilotAuditRow",
         "type": "object"
       },
+      "AutopilotCatalog": {
+        "additionalProperties": false,
+        "description": "What the builder offers: the triggers, conditions and actions the registry knows.",
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotStep"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "builder": {
+            "description": "False: this server shows the catalog but does not keep or replay a drafted workflow yet.",
+            "title": "Builder",
+            "type": "boolean"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotStep"
+            },
+            "title": "Conditions",
+            "type": "array"
+          },
+          "triggers": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotStep"
+            },
+            "title": "Triggers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "triggers",
+          "conditions",
+          "actions",
+          "builder"
+        ],
+        "title": "AutopilotCatalog",
+        "type": "object"
+      },
       "AutopilotDecision": {
         "additionalProperties": false,
         "properties": {
@@ -2146,6 +2383,12 @@
             },
             "title": "Reasons",
             "type": "array"
+          },
+          "sent": {
+            "default": false,
+            "description": "The item's email went out: its own send action's result is done (an entry before it may have succeeded while the send did not).",
+            "title": "Sent",
+            "type": "boolean"
           },
           "text": {
             "anyOf": [
@@ -2235,6 +2478,88 @@
           "decision"
         ],
         "title": "AutopilotDecisionRequest",
+        "type": "object"
+      },
+      "AutopilotDraftKept": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "default": "draft",
+            "enum": [
+              "off",
+              "suggest",
+              "draft",
+              "auto",
+              "watch"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "workflow": {
+            "description": "The draft's id; it starts in Draft mode, never live.",
+            "title": "Workflow",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow"
+        ],
+        "title": "AutopilotDraftKept",
+        "type": "object"
+      },
+      "AutopilotGate": {
+        "additionalProperties": false,
+        "description": "The write gate's reading of one workflow: held-out (fresh) replay when scored, else\nthe tuning replay; ``passed`` only from the fresh gate.",
+        "properties": {
+          "fresh": {
+            "default": false,
+            "description": "The counts are the held-out replay's.",
+            "title": "Fresh",
+            "type": "boolean"
+          },
+          "judged": {
+            "default": 0,
+            "title": "Judged",
+            "type": "integer"
+          },
+          "matched": {
+            "default": 0,
+            "title": "Matched",
+            "type": "integer"
+          },
+          "passed": {
+            "default": false,
+            "title": "Passed",
+            "type": "boolean"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percent"
+          },
+          "rule": {
+            "description": "What passing takes, in words.",
+            "title": "Rule",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "title": "AutopilotGate",
         "type": "object"
       },
       "AutopilotItem": {
@@ -2351,6 +2676,40 @@
         "title": "AutopilotItem",
         "type": "object"
       },
+      "AutopilotModeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "off",
+              "suggest",
+              "draft",
+              "auto",
+              "watch"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "draft/auto: the role (or person: role) it applies to.",
+            "title": "Role"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "AutopilotModeRequest",
+        "type": "object"
+      },
       "AutopilotPerson": {
         "additionalProperties": false,
         "properties": {
@@ -2383,6 +2742,193 @@
         "title": "AutopilotPerson",
         "type": "object"
       },
+      "AutopilotReplay": {
+        "additionalProperties": false,
+        "description": "A workflow tried on past days: what it would have prepared against what people did.\nNothing is sent or written by a replay.",
+        "properties": {
+          "caught": {
+            "title": "Caught",
+            "type": "integer"
+          },
+          "days": {
+            "title": "Days",
+            "type": "integer"
+          },
+          "false_alarms": {
+            "title": "False Alarms",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotReplayItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "judged": {
+            "title": "Judged",
+            "type": "integer"
+          },
+          "missed": {
+            "title": "Missed",
+            "type": "integer"
+          },
+          "workflow": {
+            "title": "Workflow",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow",
+          "days",
+          "judged",
+          "caught",
+          "missed",
+          "false_alarms"
+        ],
+        "title": "AutopilotReplay",
+        "type": "object"
+      },
+      "AutopilotReplayItem": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "caught",
+              "missed",
+              "false_alarm"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why"
+          }
+        },
+        "required": [
+          "at",
+          "title",
+          "outcome"
+        ],
+        "title": "AutopilotReplayItem",
+        "type": "object"
+      },
+      "AutopilotReplayRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "days"
+        ],
+        "title": "AutopilotReplayRequest",
+        "type": "object"
+      },
+      "AutopilotSchedule": {
+        "additionalProperties": false,
+        "properties": {
+          "cadence": {
+            "description": "When it runs, in words.",
+            "title": "Cadence",
+            "type": "string"
+          },
+          "checks": {
+            "description": "What each run looks at, in words.",
+            "title": "Checks",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run"
+          },
+          "next_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run"
+          },
+          "on": {
+            "title": "On",
+            "type": "boolean"
+          },
+          "workflow": {
+            "title": "Workflow",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "workflow",
+          "cadence",
+          "checks",
+          "on"
+        ],
+        "title": "AutopilotSchedule",
+        "type": "object"
+      },
+      "AutopilotSchedules": {
+        "additionalProperties": false,
+        "properties": {
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "schedules": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotSchedule"
+            },
+            "title": "Schedules",
+            "type": "array"
+          }
+        },
+        "title": "AutopilotSchedules",
+        "type": "object"
+      },
       "AutopilotScore": {
         "additionalProperties": false,
         "properties": {
@@ -2412,6 +2958,35 @@
           "matched"
         ],
         "title": "AutopilotScore",
+        "type": "object"
+      },
+      "AutopilotStep": {
+        "additionalProperties": false,
+        "description": "A workflow's trigger, one condition or one action: its registry key and its words.",
+        "properties": {
+          "kind": {
+            "description": "The registry's key: an event ('message.received'), a condition ('side_in') or a handler ('order_entry').",
+            "maxLength": 80,
+            "title": "Kind",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "words": {
+            "description": "The step in plain words.",
+            "maxLength": 300,
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "words"
+        ],
+        "title": "AutopilotStep",
         "type": "object"
       },
       "AutopilotSwitchRequest": {
@@ -2460,6 +3035,237 @@
           "autopilot_off"
         ],
         "title": "AutopilotSwitches",
+        "type": "object"
+      },
+      "AutopilotWorkflowDetail": {
+        "additionalProperties": false,
+        "description": "One workflow as the studio shows it: what starts it, what it checks and does, its\ngate, its mode, per role its row, what it caught and missed, and its history.",
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotStep"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "autopilots": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Autopilots",
+            "type": "array"
+          },
+          "caught": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replay items it got right.",
+            "title": "Caught"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotStep"
+            },
+            "title": "Conditions",
+            "type": "array"
+          },
+          "false_alarms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null: not counted by this gate.",
+            "title": "False Alarms"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/AutopilotGate"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotAuditRow"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "hours_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hours Basis"
+          },
+          "hours_saved": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null: not measured.",
+            "title": "Hours Saved"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "missed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replay items it got wrong or missed.",
+            "title": "Missed"
+          },
+          "mode": {
+            "enum": [
+              "off",
+              "suggest",
+              "draft",
+              "auto",
+              "watch"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "modes": {
+            "description": "The modes this server can set for it now (watch only after its gate passed).",
+            "items": {
+              "enum": [
+                "off",
+                "suggest",
+                "draft",
+                "auto",
+                "watch"
+              ],
+              "type": "string"
+            },
+            "title": "Modes",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "open_items": {
+            "default": 0,
+            "title": "Open Items",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotWorkflowRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutopilotStep"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no registered autopilot feeds it (a workflow seen in replay only)."
+          },
+          "workflow": {
+            "title": "Workflow",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow",
+          "label",
+          "mode",
+          "modes",
+          "gate"
+        ],
+        "title": "AutopilotWorkflowDetail",
+        "type": "object"
+      },
+      "AutopilotWorkflowDraft": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotStep"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Actions",
+            "type": "array"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/AutopilotStep"
+            },
+            "maxItems": 12,
+            "title": "Conditions",
+            "type": "array"
+          },
+          "label": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "person": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Person"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/AutopilotStep"
+          }
+        },
+        "required": [
+          "label",
+          "trigger",
+          "actions"
+        ],
+        "title": "AutopilotWorkflowDraft",
         "type": "object"
       },
       "AutopilotWorkflowRow": {
@@ -2976,7 +3782,7 @@
             "type": "array"
           },
           "state": {
-            "description": "finance_marked / quality_marked: shown only to a reader holding finance / quality_controlled (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, which is not the same as none; blocked: the people exclusion is not loaded, so no mail, Teams, meeting or Planner line is shown; not_available: the data it needs is not captured yet (the note says what).",
+            "description": "finance_marked / quality_marked: shown only to a reader holding finance / quality_controlled (the same whatever the data holds); partial: a read limit was reached or a part was not readable; unread: its source (the alert list, or your item access) could not be read, so the section may still have items; blocked: the people exclusion is not loaded, so no mail, Teams, meeting or Planner line is shown; not_available: the data it needs is not captured yet (the note says what).",
             "enum": [
               "shown",
               "empty",
@@ -3901,7 +4707,7 @@
                 "type": "null"
               }
             ],
-            "description": "How we know, read as this reader (top items only)."
+            "description": "The evidence trail, read as this reader (top items only)."
           },
           "why": {
             "anyOf": [
@@ -4949,6 +5755,25 @@
         "title": "DocumentsPending",
         "type": "object"
       },
+      "DraftDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "DraftDetail",
+        "type": "object"
+      },
       "DraftFact": {
         "additionalProperties": false,
         "properties": {
@@ -5217,7 +6042,7 @@
       },
       "EvidenceTrail": {
         "additionalProperties": false,
-        "description": "How we know: the steps, records and messages that led to the answer, each opening\nits source; a purchase order's lateness trail, a customer order's materials, or the\nanswer's dated, checked claims.",
+        "description": "The evidence trail: the steps, records and messages that led to the answer, each opening\nits source; a purchase order's lateness trail, a customer order's materials, or the\nanswer's dated, checked claims.",
         "properties": {
           "complete": {
             "anyOf": [
@@ -8276,6 +9101,119 @@
           "follow_up"
         ],
         "title": "MeetingFollowUp",
+        "type": "object"
+      },
+      "MeetingInvitee": {
+        "additionalProperties": false,
+        "description": "One person on a calendar invitation, as the invitation lists them (directory facts\nevery employee sees; the people exclusion decided before it is shown).",
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "outside": {
+            "default": false,
+            "description": "Their address is outside the mailbox's domain.",
+            "title": "Outside",
+            "type": "boolean"
+          },
+          "response": {
+            "anyOf": [
+              {
+                "enum": [
+                  "accepted",
+                  "declined",
+                  "tentativelyaccepted",
+                  "none",
+                  "notresponded",
+                  "organizer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response"
+          },
+          "role": {
+            "enum": [
+              "organizer",
+              "required",
+              "optional",
+              "resource"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "role"
+        ],
+        "title": "MeetingInvitee",
+        "type": "object"
+      },
+      "MeetingOpenItem": {
+        "additionalProperties": false,
+        "description": "An open action item from an earlier meeting of the same series (the meeting\nautopilot's tracked items the reader may see).",
+        "properties": {
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "MeetingOpenItem",
         "type": "object"
       },
       "Money": {
@@ -12921,12 +13859,117 @@
       "UpcomingMeeting": {
         "additionalProperties": false,
         "properties": {
+          "agenda": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The invitation's body preview, clipped.",
+            "title": "Agenda"
+          },
+          "all_day": {
+            "default": false,
+            "title": "All Day",
+            "type": "boolean"
+          },
+          "attendees": {
+            "items": {
+              "$ref": "#/components/schemas/MeetingInvitee"
+            },
+            "title": "Attendees",
+            "type": "array"
+          },
           "brief_url": {
             "title": "Brief Url",
             "type": "string"
           },
+          "end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          },
+          "is_organizer": {
+            "default": false,
+            "title": "Is Organizer",
+            "type": "boolean"
+          },
+          "join_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Teams join link (teams.microsoft.com only).",
+            "title": "Join Url"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
           "object": {
             "$ref": "#/components/schemas/ObjectRef"
+          },
+          "online": {
+            "default": false,
+            "title": "Online",
+            "type": "boolean"
+          },
+          "open_items": {
+            "items": {
+              "$ref": "#/components/schemas/MeetingOpenItem"
+            },
+            "title": "Open Items",
+            "type": "array"
+          },
+          "organizer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeetingInvitee"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parties": {
+            "description": "Customers and suppliers it is linked to.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Parties",
+            "type": "array"
+          },
+          "people_withheld": {
+            "default": false,
+            "description": "The people exclusion is not loaded: no organizer, attendee or agenda shown.",
+            "title": "People Withheld",
+            "type": "boolean"
+          },
+          "private": {
+            "default": false,
+            "description": "A private or confidential event: its time only.",
+            "title": "Private",
+            "type": "boolean"
           },
           "sources": {
             "items": {
@@ -13761,6 +14804,531 @@
           "unread"
         ],
         "title": "Watchlist",
+        "type": "object"
+      },
+      "WorkLogEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "kind": {
+            "enum": [
+              "ask",
+              "alert",
+              "autopilot",
+              "action",
+              "write",
+              "watch",
+              "note",
+              "save"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "loop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkLogLoop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "people": {
+            "items": {
+              "type": "string"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "reader_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who did it (the owner's view).",
+            "title": "Reader Name"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/WorkLogRecord"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "source": {
+            "description": "The store the item lives in (actions_journal, autopilot_queue, write_intents, watchlists, feedback, ai_watcher, ask, saved).",
+            "title": "Source",
+            "type": "string"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "thread": {
+            "description": "What \"continue\" reopens (GET /api/work-log/threads/{thread}).",
+            "title": "Thread",
+            "type": "string"
+          },
+          "thread_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Name"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "verb": {
+            "title": "Verb",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "at",
+          "mine",
+          "kind",
+          "verb",
+          "title",
+          "thread",
+          "source"
+        ],
+        "title": "WorkLogEvent",
+        "type": "object"
+      },
+      "WorkLogLoop": {
+        "additionalProperties": false,
+        "description": "A sent message's follow-through: waiting, answered (a reply arrived), overdue (no\nreply inside the window: ``nudge`` and a follow-up to ask for) or closed by you.",
+        "properties": {
+          "answered_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answered At"
+          },
+          "due": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due"
+          },
+          "follow_up": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A question for Ask that drafts the follow-up (nothing is sent).",
+            "title": "Follow Up"
+          },
+          "nudge": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nudge"
+          },
+          "state": {
+            "enum": [
+              "waiting",
+              "answered",
+              "overdue",
+              "closed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "WorkLogLoop",
+        "type": "object"
+      },
+      "WorkLogOrganise": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "pattern": "^[A-Za-z0-9_.:-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "closed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Close a waiting loop yourself.",
+            "title": "Closed"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned"
+          }
+        },
+        "title": "WorkLogOrganise",
+        "type": "object"
+      },
+      "WorkLogPage": {
+        "additionalProperties": false,
+        "properties": {
+          "all_readers": {
+            "default": false,
+            "title": "All Readers",
+            "type": "boolean"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/WorkLogEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the log cannot be shown (the people exclusion list is not loaded: fail closed).",
+            "title": "Total"
+          }
+        },
+        "required": [
+          "events",
+          "total"
+        ],
+        "title": "WorkLogPage",
+        "type": "object"
+      },
+      "WorkLogRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "title": "WorkLogRecord",
+        "type": "object"
+      },
+      "WorkLogResume": {
+        "additionalProperties": false,
+        "properties": {
+          "href": {
+            "title": "Href",
+            "type": "string"
+          },
+          "turns": {
+            "description": "An Ask session's turns, oldest first, as you saw them.",
+            "items": {
+              "$ref": "#/components/schemas/WorkLogTurn"
+            },
+            "title": "Turns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "href"
+        ],
+        "title": "WorkLogResume",
+        "type": "object"
+      },
+      "WorkLogSave": {
+        "additionalProperties": false,
+        "description": "The record page's or Ask's Save (kept in the browser too).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "object",
+              "question"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "maxLength": 400,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "saved": {
+            "title": "Saved",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "saved",
+          "kind",
+          "label"
+        ],
+        "title": "WorkLogSave",
+        "type": "object"
+      },
+      "WorkLogThread": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/WorkLogEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "related": {
+            "description": "Your other work on the same records.",
+            "items": {
+              "$ref": "#/components/schemas/WorkLogEvent"
+            },
+            "title": "Related",
+            "type": "array"
+          },
+          "resume": {
+            "$ref": "#/components/schemas/WorkLogResume"
+          },
+          "thread": {
+            "title": "Thread",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread",
+          "events",
+          "resume"
+        ],
+        "title": "WorkLogThread",
+        "type": "object"
+      },
+      "WorkLogTurn": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The answer as you saw it; null (``withheld`` says why) when a source it cites is no longer open to you.",
+            "title": "Answer"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "withheld": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withheld"
+          }
+        },
+        "required": [
+          "question",
+          "answer",
+          "at"
+        ],
+        "title": "WorkLogTurn",
         "type": "object"
       },
       "Workload": {
@@ -15219,6 +16787,38 @@
         ]
       }
     },
+    "/api/autopilot/catalog": {
+      "get": {
+        "description": "The triggers, conditions and actions the workflow builder offers.",
+        "operationId": "autopilot_catalog_api_autopilot_catalog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotCatalog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Autopilot Catalog",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/autopilot/items/{item_id}/decision": {
       "post": {
         "description": "Accept, edit, reject or snooze an item of your own. Accept runs it through the\ngated write path: a dry run (the decision recorded, nothing written) unless its\nworkflow passed the fresh gate and the owner switched it live.",
@@ -15302,6 +16902,38 @@
         ]
       }
     },
+    "/api/autopilot/schedules": {
+      "get": {
+        "description": "The workflows that run on a schedule, as the reader may see them.",
+        "operationId": "autopilot_schedules_api_autopilot_schedules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotSchedules"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Autopilot Schedules",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/autopilot/switches": {
       "post": {
         "description": "The global kill switch of the write path. Owner only (403 for every other\nreader).",
@@ -15374,7 +17006,140 @@
         ]
       }
     },
+    "/api/autopilot/workflows": {
+      "post": {
+        "description": "Keep a drafted workflow (owner only). It starts in Draft mode, never live.",
+        "operationId": "autopilot_draft_api_autopilot_workflows_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotWorkflowDraft"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotDraftKept"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Draft",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/autopilot/workflows/{workflow}": {
+      "get": {
+        "description": "One workflow: trigger, conditions, actions, gate, mode, per role its row, what it\ncaught and missed, its history (owner). A reader outside its roles gets 404.",
+        "operationId": "autopilot_workflow_detail_api_autopilot_workflows__workflow__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow",
+            "required": true,
+            "schema": {
+              "title": "Workflow",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotWorkflowDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Autopilot Workflow Detail",
+        "tags": [
+          "actions"
+        ]
+      },
       "post": {
         "description": "Switch a workflow off or on, or a role's workflow live (only after its fresh\ngate passed) or back to dry run. Owner only (403 for every other reader).",
         "operationId": "autopilot_workflow_api_autopilot_workflows__workflow__post",
@@ -15462,6 +17227,182 @@
           }
         },
         "summary": "Autopilot Workflow",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/workflows/{workflow}/mode": {
+      "put": {
+        "description": "Set a workflow's mode (owner only): off, draft, or auto with approval (after its\nfresh gate passed for the role). A mode this server lacks is refused (409).",
+        "operationId": "autopilot_set_mode_api_autopilot_workflows__workflow__mode_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow",
+            "required": true,
+            "schema": {
+              "title": "Workflow",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotWorkflowDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Autopilot Set Mode",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/autopilot/workflows/{workflow}/replay": {
+      "post": {
+        "description": "Try a workflow on past days: caught, missed and false alarms. Owner only; nothing\nis sent or written.",
+        "operationId": "autopilot_replay_api_autopilot_workflows__workflow__replay_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow",
+            "required": true,
+            "schema": {
+              "title": "Workflow",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutopilotReplayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutopilotReplay"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Autopilot Replay",
         "tags": [
           "actions"
         ]
@@ -18277,6 +20218,430 @@
         "summary": "Watch Rule Delete",
         "tags": [
           "watch"
+        ]
+      }
+    },
+    "/api/work-log": {
+      "get": {
+        "description": "Your work log, newest first: what you asked, read, dismissed, approved, sent,\nnoted, saved and watched, with the records and people involved. Search with ``q``;\n``record`` is the record page's section; ``waiting``: your sent messages still\nopen. The owner may read everyone's (``everyone``).",
+        "operationId": "work_log_api_work_log_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "ask",
+                    "alert",
+                    "autopilot",
+                    "action",
+                    "write",
+                    "watch",
+                    "note",
+                    "save"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "record",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 700,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Record"
+            }
+          },
+          {
+            "in": "query",
+            "name": "thread",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 420,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Thread"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "in": "query",
+            "name": "case_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 120,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Case Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pinned",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Pinned",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "waiting",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Waiting",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "The owner only: every person's.",
+            "in": "query",
+            "name": "everyone",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "The owner only: every person's.",
+              "title": "Everyone",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkLogPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Work Log",
+        "tags": [
+          "work-log"
+        ]
+      }
+    },
+    "/api/work-log/saved": {
+      "post": {
+        "description": "A Save or Unsave on a record page or a question, kept in your work log.",
+        "operationId": "work_log_saved_api_work_log_saved_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkLogSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkLogPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Work Log Saved",
+        "tags": [
+          "work-log"
+        ]
+      }
+    },
+    "/api/work-log/threads/{thread}": {
+      "get": {
+        "description": "One of your threads with what continuing it reopens: an Ask session's turns as\nyou saw them, an autopilot item, a card, a write; and your other work on its\nrecords.",
+        "operationId": "work_log_thread_api_work_log_threads__thread__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread",
+            "required": true,
+            "schema": {
+              "title": "Thread",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkLogThread"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Work Log Thread",
+        "tags": [
+          "work-log"
+        ]
+      },
+      "post": {
+        "description": "Name, pin, attach to a case or close one of your own threads.",
+        "operationId": "work_log_organise_api_work_log_threads__thread__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread",
+            "required": true,
+            "schema": {
+              "title": "Thread",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkLogOrganise"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkLogThread"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Work Log Organise",
+        "tags": [
+          "work-log"
         ]
       }
     },

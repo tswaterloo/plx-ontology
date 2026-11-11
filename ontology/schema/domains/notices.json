@@ -1,0 +1,1062 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "notices",
+ "origin": "curated",
+ "description": "Notification mail read into records by declared sender families (integrations/notice_mail.py; open-capture-gaps-notice-binding option 1): carrier, payment, support, replenishment, EDI and expense notices. One generic Notice type (its record_type says which) and one NoticeReference per value it names, so shipments, POs, orders, invoices, customer POs, items and customers join by the one identifier grammar. Each record takes its message's version, citation and audience (mail:<mailbox>); payments are finance-marked and expense reports finance and pii, by the bindings' marking rules. Machine-read leads, never business facts.",
+ "upstream_pins": {},
+ "object_types": [
+  {
+   "id": "Notice",
+   "description": "A notification message from a declared sender family read into a record: its family, record type and kind, the dates and amount it states, and (via NoticeReference) the numbers and names it carries. Cited to the message; visible only to readers of the message's mailbox who hold its markings.",
+   "anchor": true,
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "graph_mail.notices",
+     "source": "graph_mail",
+     "relation": "notices",
+     "key": [
+      "mailbox",
+      "message_id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "path": "family",
+         "op": "eq",
+         "value": "payments"
+        }
+       ],
+       "markings": [
+        "finance"
+       ],
+       "why": "a payment notice is a customer's payment to us: finance (integrations/notice_mail_families.json payments markings)"
+      },
+      {
+       "when": [
+        {
+         "path": "family",
+         "op": "eq",
+         "value": "concur"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "an expense report notice is one person's expenses: finance and personal (notice_mail_families.json concur markings)"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "note": "One object per latest captured message version a declared family parses (ontology/project.py MailCaptures notices); same handle, audience and validity interval as the message."
+    }
+   ],
+   "properties": [
+    {
+     "name": "family",
+     "value_type": "text",
+     "description": "The declared sender family that read the message (integrations/notice_mail_families.json).",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "family",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "record_type",
+     "value_type": "text",
+     "description": "What the notice is: CarrierNotice, PaymentNotice, SupportTicket, ReplenishmentNotice, EdiNotice or ExpenseNotice.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "record_type",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "kind",
+     "value_type": "text",
+     "description": "The family's declared kind the subject or text matched (e.g. delivered, scheduled, payment received).",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "kind",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "carrier",
+     "value_type": "text",
+     "description": "The carrier of a carrier notice.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "carrier",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "received_at",
+     "value_type": "timestamp",
+     "description": "When the message was received.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "received_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "scheduled_delivery",
+     "value_type": "date",
+     "description": "The delivery date the carrier gave.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "scheduled_delivery",
+       "parser": "iso_date"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "delivered_on",
+     "value_type": "date",
+     "description": "The date the carrier reported delivery.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "delivered_on",
+       "parser": "iso_date"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "shipped_on",
+     "value_type": "date",
+     "description": "The date the carrier reported shipping.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "shipped_on",
+       "parser": "iso_date"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "amount",
+     "value_type": "money",
+     "description": "The amount a payment or expense notice states, as Decimal text; its currency as the mail states it, else unknown.",
+     "currency_from": "amount.currency",
+     "money_measure": "amount",
+     "markings": [
+      "finance"
+     ],
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "amount.amount",
+       "parser": "decimal_text",
+       "tax_basis": "unknown"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "payer",
+     "value_type": "text",
+     "description": "The payer a payment notice names, as written.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "payer",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ],
+     "markings": [
+      "finance"
+     ]
+    },
+    {
+     "name": "ticket_id",
+     "value_type": "text",
+     "description": "The support or EDI ticket number the notice carries.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "ticket_id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "value_type": "text",
+     "description": "The ticket status the notice states.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "report_name",
+     "value_type": "text",
+     "description": "The report name a replenishment or expense notice states.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "report_name",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "document_type",
+     "value_type": "text",
+     "description": "The EDI document type (e.g. 850, 856).",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "document_type",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "trading_partner",
+     "value_type": "text",
+     "description": "The EDI trading partner, as written.",
+     "sources": [
+      {
+       "binding": "graph_mail.notices",
+       "path": "trading_partner",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "integrations/notice_mail.py"
+    }
+   ]
+  },
+  {
+   "id": "NoticeReference",
+   "description": "One number or name a notice carries (a tracking, invoice, customer PO or item number, a free reference, a payer or partner name), read as its identifier kind (the links compare it under that kind; the value is text here, so no store-wide mention or identifier pass reads notices). Links to the notice and to the record the value names.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "graph_mail.notice_references",
+     "source": "graph_mail",
+     "relation": "noticeReferences",
+     "key": [
+      "mailbox",
+      "message_id",
+      "ref_key"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "path": "family",
+         "op": "eq",
+         "value": "payments"
+        }
+       ],
+       "markings": [
+        "finance"
+       ],
+       "why": "a payment notice is a customer's payment to us: finance (integrations/notice_mail_families.json payments markings)"
+      },
+      {
+       "when": [
+        {
+         "path": "family",
+         "op": "eq",
+         "value": "concur"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "an expense report notice is one person's expenses: finance and personal (notice_mail_families.json concur markings)"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "note": "One object per distinct (field, kind, value) of a projected notice; its notice's handle, audience and markings."
+    }
+   ],
+   "properties": [
+    {
+     "name": "family",
+     "value_type": "text",
+     "description": "The family of the notice this value came from.",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "family",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "field",
+     "value_type": "text",
+     "description": "The notice field that holds the value (tracking_numbers, invoice_numbers, po_numbers, items, references, payer, trading_partner).",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "field",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "identifier_kind",
+     "value_type": "text",
+     "description": "The identifier kind the value is read as (ontology/schema/identifiers.json; customer_name and reference are free text).",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "identifier_kind",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "tracking_number",
+     "value_type": "text",
+     "description": "A carrier tracking number the notice names (check digit validated).",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "tracking_number",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "invoice_number",
+     "value_type": "text",
+     "description": "An invoice number the notice names.",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "invoice_number",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "customer_po",
+     "value_type": "text",
+     "description": "A customer PO number the notice names.",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "customer_po",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "item_code",
+     "value_type": "text",
+     "description": "An item code the notice names.",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "item_code",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "reference",
+     "value_type": "text",
+     "description": "A free reference the notice carries (a PO, order or shipment number as the sender wrote it).",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "reference",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    },
+    {
+     "name": "customer_name",
+     "value_type": "text",
+     "description": "A payer or trading partner name, as written.",
+     "sources": [
+      {
+       "binding": "graph_mail.notice_references",
+       "path": "customer_name",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "integrations/notice_mail.py"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "integrations/notice_mail.py"
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "NoticeReference.of_notice",
+   "from": "NoticeReference",
+   "to": "Notice",
+   "name": "of_notice",
+   "reverse_name": "references",
+   "cardinality": "N:1",
+   "description": "The notice a referenced value was read from (same message: mailbox and message id).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "graph_mail.notices",
+     "pairs": [
+      {
+       "from": "mailbox",
+       "to": "mailbox",
+       "compare": "text_id"
+      },
+      {
+       "from": "message_id",
+       "to": "message_id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NoticeReference.for_shipment",
+   "from": "NoticeReference",
+   "to": "Shipment",
+   "name": "for_shipment",
+   "reverse_name": "notice_references",
+   "cardinality": "N:1",
+   "description": "The shipment whose tracking number a carrier notice names (machine-read from the notice; one candidate only).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.app_shipment",
+     "pairs": [
+      {
+       "from": "tracking_number",
+       "to": "tracking_number",
+       "compare": "identifier",
+       "identifier_kind": "tracking_number"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "tracking_number"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    }
+   ]
+  },
+  {
+   "id": "NoticeReference.for_purchase_order",
+   "from": "NoticeReference",
+   "to": "PurchaseOrder",
+   "name": "for_purchase_order",
+   "reverse_name": "notice_references",
+   "cardinality": "N:1",
+   "description": "The purchase order whose inbound tracking number a carrier notice names, or (a lead) whose PO number a notice's free reference carries.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.app_purchase_order",
+     "pairs": [
+      {
+       "from": "tracking_number",
+       "to": "tracking_number",
+       "compare": "identifier",
+       "identifier_kind": "tracking_number"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "tracking_number"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "lead",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.app_purchase_order",
+     "pairs": [
+      {
+       "from": "reference",
+       "to": "po_number",
+       "compare": "identifier",
+       "identifier_kind": "petra_po"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "reference"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    }
+   ]
+  },
+  {
+   "id": "NoticeReference.for_sales_order",
+   "from": "NoticeReference",
+   "to": "SalesOrder",
+   "name": "for_sales_order",
+   "reverse_name": "notice_references",
+   "cardinality": "N:1",
+   "description": "The sales order whose number a notice's free reference carries (a lead: the sender's reference field holds any number).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "lead",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.app_sales_order",
+     "pairs": [
+      {
+       "from": "reference",
+       "to": "order_number",
+       "compare": "identifier",
+       "identifier_kind": "so_number"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "reference"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    }
+   ]
+  },
+  {
+   "id": "NoticeReference.for_sales_invoice",
+   "from": "NoticeReference",
+   "to": "SalesInvoice",
+   "name": "for_sales_invoice",
+   "reverse_name": "notice_references",
+   "cardinality": "N:1",
+   "description": "The invoice a payment or expense notice names (Sage OE invoice number; one candidate only).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.sage_oe_invoice_header",
+     "pairs": [
+      {
+       "from": "invoice_number",
+       "to": "invnumber",
+       "compare": "identifier",
+       "identifier_kind": "invoice_number"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "invoice_number"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "lead",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "bc.sales_invoices",
+     "pairs": [
+      {
+       "from": "invoice_number",
+       "to": "number",
+       "compare": "identifier",
+       "identifier_kind": "invoice_number"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "invoice_number"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    }
+   ]
+  },
+  {
+   "id": "NoticeReference.for_customer_po",
+   "from": "NoticeReference",
+   "to": "CustomerPurchaseOrder",
+   "name": "for_customer_po",
+   "reverse_name": "notice_references",
+   "cardinality": "N:1",
+   "description": "The customer PO an EDI notice names.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.app_sales_order.po_reference",
+     "pairs": [
+      {
+       "from": "customer_po",
+       "to": "po_reference",
+       "compare": "identifier",
+       "identifier_kind": "customer_po"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "customer_po"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.fm_order_entry.custpocode",
+     "pairs": [
+      {
+       "from": "customer_po",
+       "to": "custpocode",
+       "compare": "identifier",
+       "identifier_kind": "customer_po"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "customer_po"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.sage_oe_order_header.ponumber",
+     "pairs": [
+      {
+       "from": "customer_po",
+       "to": "ponumber",
+       "compare": "identifier",
+       "identifier_kind": "customer_po"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "customer_po"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "bc.sales_orders.external_document_number",
+     "pairs": [
+      {
+       "from": "customer_po",
+       "to": "externalDocumentNumber",
+       "compare": "identifier",
+       "identifier_kind": "customer_po"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "customer_po"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    }
+   ]
+  },
+  {
+   "id": "NoticeReference.for_item",
+   "from": "NoticeReference",
+   "to": "Product",
+   "name": "for_item",
+   "reverse_name": "notice_references",
+   "cardinality": "N:1",
+   "description": "The item a replenishment notice names (item code; one candidate only).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.app_product",
+     "pairs": [
+      {
+       "from": "item_code",
+       "to": "code",
+       "compare": "identifier",
+       "identifier_kind": "item_code"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "item_code"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "lead",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "bc.items",
+     "pairs": [
+      {
+       "from": "item_code",
+       "to": "number",
+       "compare": "identifier",
+       "identifier_kind": "item_code"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "item_code"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    }
+   ]
+  },
+  {
+   "id": "NoticeReference.for_customer",
+   "from": "NoticeReference",
+   "to": "Customer",
+   "name": "for_customer",
+   "reverse_name": "notice_references",
+   "cardinality": "N:1",
+   "description": "The customer a payer or trading-partner name reads as (a free-text lead).",
+   "bindings": [
+    {
+     "kind": "text_match",
+     "tier_ceiling": "lead",
+     "from_binding": "graph_mail.notice_references",
+     "to_binding": "portal.app_customer",
+     "pairs": [
+      {
+       "from": "customer_name",
+       "to": "company_name",
+       "compare": "text"
+      }
+     ],
+     "where": [
+      {
+       "path": "identifier_kind",
+       "op": "eq",
+       "value": "customer_name"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/project.py"
+      }
+     ],
+     "unique_target": true
+    }
+   ]
+  }
+ ],
+ "event_types": [],
+ "evidence_catalog": {}
+}

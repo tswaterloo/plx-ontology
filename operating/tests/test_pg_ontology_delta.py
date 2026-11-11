@@ -357,6 +357,84 @@ class DeltaToPostgresTests(unittest.TestCase):
                        "WHERE name = 'generation'")
         self.assertFalse(tt.catch_up_pg_facts(self.dsn, layer.parent))
 
+    def test_a_reader_carries_its_audiences_and_odd_links_over_a_layer_only_growing(self):
+        """Live 2026-11-11: after every layer a page's first hop read the audiences per
+        type and the odd slot links whole again (half a minute each under load). A reader
+        holding them carries them over a layer, each with the layer's objects' own rows
+        added, without a whole read, and they cover a full read of the new version; when
+        the layer's odd links cannot be read by object they are read again, never
+        guessed."""
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1, T2
+        from operating import ontology_tools as ot, ontology_tools_traverse as tt
+        from operating.pg import ontology_delta, ontology_load
+        from operating.pg.ontology_reader import PgStoreReader
+
+        facts_dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, facts_dir, True)
+        self.enterContext(mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": facts_dir}))
+        tt._LOADED.clear()
+        self.addCleanup(tt._LOADED.clear)
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+
+        def opened():
+            reader = PgStoreReader.open(self.dsn, only=False)
+            self.addCleanup(reader.close)
+            return tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy("plx", {})))
+
+        holders = {"carried": opened(), "unreadable": opened()}
+        for tools in holders.values():
+            with tools.store.lock:
+                held = tools._audiences()
+                link_types = [r[0] for r in tools.store.conn.execute(
+                    "SELECT DISTINCT link_type FROM links")]
+                tools._slices_of("link", link_types)
+                self.assertIn(tt._LINK_ODD, tools.store.facts[1])
+        fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        fixture.capture(T2)
+        layer = Path(fixture.cycle(base)["store"])
+        with mock.patch.object(tt, "fold_layer_facts", return_value=False):
+            applied = ontology_delta.apply_layer(layer, self.dsn)
+        self.assertTrue(applied["applied"], applied)
+        # the audience keys of the layer's objects taken out of what one reader holds
+        # (as if the layer brought them): the carry adds them back from its own rows.
+        # This layer's alone: the class database keeps earlier tests' layers.
+        owned_keys = {tuple(r) for r in holders["carried"].store.conn.execute(
+            "SELECT object_type, audience_key FROM objects WHERE object_id IN "
+            "(SELECT object_id FROM ontology.applied_owned WHERE layer = :layer)",
+            {"layer": applied["layer"]})}
+        self.assertTrue(owned_keys)
+        holders["carried"].store.facts[1]["audiences"] = {
+            k: tuple(a for a in v if (k, a) not in owned_keys) for k, v in held.items()}
+
+        full = opened()
+        with full.store.lock:
+            fresh_audiences, fresh_odd = full._audiences(), full.store.link_odd()
+        whole = mock.Mock(side_effect=AssertionError("read whole again"))
+        carried = holders["carried"]
+        with carried.store.lock, mock.patch.object(carried.store, "link_odd", whole), \
+                mock.patch.object(carried, "_grouped_slices", whole):
+            facts = carried._current_facts("anything")
+            self.assertIn("audiences", facts)
+            for name, keys in fresh_audiences.items():
+                self.assertLessEqual(set(keys), set(facts["audiences"][name]), name)
+            self.assertLessEqual(set(fresh_odd), set(facts[tt._LINK_ODD]))
+            self.assertEqual(carried._audiences(), facts["audiences"])
+        # the layer's odd links unreadable by object (past the cap): not carried, so
+        # the next hop reads them whole again
+        other = holders["unreadable"]
+        with other.store.lock, mock.patch.object(other.store, "link_odd_of",
+                                                 return_value=None):
+            facts = other._current_facts("anything")
+            self.assertNotIn(tt._LINK_ODD, facts)
+            self.assertIn("audiences", facts)
+
     def test_the_link_slice_read_natively_equals_the_composed_read_and_a_prime_is_loud(self):
         """Real ontology 2026-11-07: the link slice composed 25M packed evidence texts
         (minutes), and a prime over which a delta layer landed kept only its last facts
@@ -456,6 +534,22 @@ class DeltaToPostgresTests(unittest.TestCase):
         for name, value in composed.items():
             self.assertEqual(typed[name], {name: value}, name)
         self.assertEqual(set(by_index), {"A.b", "C.d", "E.f"})   # the inserted links
+        # each type read alone (a page's hops, ``_slices_of``) scans for the odd slot
+        # texts once per store state, not once per type; too many odd links (None):
+        # every type is read the composed way, with the same facts
+        for odd_result in ("real", None):
+            per_type = PgStoreReader.open(self.dsn, only=False, text_store=base)
+            self.addCleanup(per_type.close)
+            real_odd, scans = per_type.link_odd, []
+            per_type.link_odd = lambda: scans.append(1) or (
+                real_odd() if odd_result == "real" else None)
+            hops = tt.TraverseTools(ot.OntologyTools(per_type, ot.ReadPolicy("plx", {})))
+            with per_type.lock:
+                got = {name: hops._slices_of("link", [name]) for name in composed}
+                got.update({name: hops._slices_of("link", [name]) for name in composed})
+            for name, value in composed.items():
+                self.assertEqual(got[name], {name: value}, (odd_result, name))
+            self.assertEqual(len(scans), 1, odd_result)
         self.assertEqual(set(composed["A.b"][1]), {"graph-mail://m/1", "sharepoint://s/2",
                                                    "sharepoint://lit/9"})
         # an object skeleton and a surplus slot give nothing; an escaped literal (read

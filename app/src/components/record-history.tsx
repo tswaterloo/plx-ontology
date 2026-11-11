@@ -128,7 +128,7 @@ function AsOf({ type, id }: { type: string; id: string }) {
             <ul className="space-y-0.5 text-[13px] leading-5">
               {(data.links ?? []).map((l) => (
                 <li key={l.label}>
-                  <span className="tabular-nums">{l.count}</span> <span className="text-muted">{l.label}</span>
+                  <span className="num">{l.count}</span> <span className="text-muted">{l.label}</span>
                 </li>
               ))}
             </ul>

@@ -200,7 +200,13 @@ def field_words(name: Any) -> str:
 
 
 def type_words(name: Any) -> str:
-    """``PurchaseOrderLine`` -> ``purchase order line``; ``MCApproval`` -> ``MC approval``."""
+    """``PurchaseOrderLine`` -> ``purchase order line``; ``MCApproval`` -> ``MC approval``; a raw
+    Portal/Sage type -> its declared business label (``RelSageGlJeDetail`` -> ``GL journal
+    entry line``, ``ontology.raw_business``)."""
+    from ontology.raw_business import label_of
+    label = label_of(str(name or ""))
+    if label:
+        return label
     text = _TYPE_PREFIX.sub("", str(name or "")).replace("SharePoint", "Sharepoint")
     parts = [w.upper() if w.lower() in _ACRONYMS else w.lower() for w in _TYPE_PARTS.findall(text)]
     return " ".join(parts).replace("sharepoint", "SharePoint")

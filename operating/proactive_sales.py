@@ -597,9 +597,9 @@ class SalesTool:
                  wait: float = 35.0) -> None:
         from .cash_forecast import _Books
 
+        from .cash_forecast import store_file
         self.base, self.wait = base, wait
-        row = base.store.conn.execute("PRAGMA database_list").fetchone()
-        self.books = _Books(str(row[2]), read)
+        self.books = _Books.shared(store_file(base), read)
 
     def key(self, as_of: date) -> tuple:
         meta = self.base._store_meta() if hasattr(self.base, "_store_meta") else {}

@@ -28,7 +28,7 @@ export function Toolbar({
 }) {
   return (
     <header
-      className={cn("sticky top-0 z-20 flex h-[52px] shrink-0 items-center gap-3 border-b border-border bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] px-4 backdrop-blur-xl lg:px-5", className)}
+      className={cn("sticky top-0 z-20 flex h-[52px] shrink-0 items-center gap-3 border-b border-border bg-bg px-4 lg:px-5", className)}
       data-testid={testId}
     >
       <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px]">

@@ -305,9 +305,39 @@ def plan(schema: Any) -> Plan:
         lin_memo[bid] = frozenset(out)
         return lin_memo[bid]
 
+    def rule_reads(bid: str) -> set[str]:
+        """The bindings a binding's ``when`` marking rules read: their via_link hops (a
+        line's account)."""
+        out: set[str] = set()
+        for rule in bindings[bid][1].get("marking_rules", ()):
+            for when in rule.get("when", ()):
+                if "via_link" in when:
+                    out |= ends(when["via_link"], bid)
+        return out
+
+    def marks_read(bid: str) -> set[str]:
+        """What a binding's marking rules read: its ``when`` hops, and for a
+        ``from_lines`` rule (a header marked from its lines) the line bindings linking to
+        it by those names and what their own rules read (their accounts): a changed line
+        or account re-projects the header, and a header's unit holds its lines."""
+        tid = bindings[bid][0]
+        out = rule_reads(bid)
+        for rule in bindings[bid][1].get("marking_rules", ()):
+            names = set(rule.get("from_lines", ()))
+            if not names:
+                continue
+            for lid, link in links.items():
+                if link.get("to") != tid or link.get("name") not in names:
+                    continue
+                for lb in link.get("bindings", []):
+                    line = lb.get("from_binding")
+                    if lb.get("to_binding") in kin[bid] and line in bindings:
+                        out |= ends(lid, line) | {line} | rule_reads(line)
+        return out
+
     def val(bid: str) -> frozenset[str]:
         tid = bindings[bid][0]
-        out = set(lin(bid))
+        out = set(lin(bid)) | marks_read(bid)
         for prop in types[tid].get("properties", []):
             for source in prop["sources"]:
                 if source["binding"] != bid:

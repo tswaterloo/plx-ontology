@@ -168,6 +168,59 @@ class ValuesFirstNarrowingTests(ContractMixin, unittest.TestCase):
         self.assertEqual(counted, ["12", "12"])   # 10 wanted, the finance-only two
         self.assertEqual(len(reads), 1)
 
+    def test_a_selective_condition_narrows_beside_one_that_holds_every_record(self):
+        """Two filters, one selective (the prefix) and one past the cap (every number holds
+        "PO"): the selective one alone narrows, no span is read, and the listing and count
+        are the span scan's for a full and a restricted reader at N = 1, 10 and 60 (11-10:
+        a week's "before the next Monday" bound sent every weekly count to a span scan)."""
+        from operating import ontology_tools_aggregate as oa
+        both = [{"property": "po_number", "op": "prefix", "value": "PO77"},
+                {"property": "po_number", "op": "contains", "value": "PO"}]
+        for matches in (1, 10, 60):
+            store = population(matches)
+            cap = 2 * matches + 5      # the prefix's candidates fit, every order does not
+            reads = []
+            real = ot.StoreReader.narrowed_ids
+
+            def spy(self_, *args, **kwargs):
+                got = real(self_, *args, **kwargs)
+                reads.append(got)
+                return got
+            with mock.patch.object(ot.StoreReader, "NARROWED_IDS_CAP", cap), \
+                    mock.patch.object(ot.StoreReader, "narrowed_ids", spy):
+                for actor in (READER, FULL):
+                    with self.subTest(n=matches, actor=repr(actor)):
+                        spans, first = self._both(store, actor, list(both))
+                        self.assertEqual(first, spans)
+                        counts = []
+                        for values_first in (False, True):
+                            with mock.patch.object(ot.StoreReader, "VALUES_FIRST",
+                                                   values_first):
+                                out = oa.AggregateTools(tools(store)).call(
+                                    "plx.aggregate", {"object_type": "PurchaseOrder",
+                                                      "measure": {"op": "count"},
+                                                      "filters": list(both)}, actor)
+                            self.assertNotIn("error", out, out)
+                            counts.append(out["groups"][0]["value"])
+                        self.assertEqual(counts[0], counts[1])
+                        if actor is FULL:   # the reader's count leaves withheld undecided
+                            self.assertEqual(counts[0], str(matches + 2))
+            self.assertTrue(reads and all(r is not None for r in reads), reads)
+            self.assertTrue(all(len(r) <= cap for r in reads))
+            with mock.patch.object(ot.StoreReader, "NARROWED_IDS_CAP", cap), \
+                    mock.patch.object(ot.StoreReader, "VALUES_FIRST", True), \
+                    mock.patch.object(ot, "NARROWED_SPAN", 2), \
+                    mock.patch.object(ot.StoreReader, "key_ahead",
+                                      side_effect=AssertionError("span read")):
+                found = tools(store).call("plx.find", {"object_type": "PurchaseOrder",
+                                                       "filters": list(both), "limit": 50},
+                                          READER)
+            self.assertNotIn("error", found)
+            ids = [c["object"]["object_id"] for c in found["candidates"]]
+            self.assertTrue(ids and all("want-" in i for i in ids), ids)
+            if matches <= 10:
+                self.assertEqual(len(ids), matches)
+
     def test_value_first_reads_no_key_spans(self):
         store = population(10)
         with mock.patch.object(ot.StoreReader, "VALUES_FIRST", True), \

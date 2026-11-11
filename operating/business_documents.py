@@ -1454,10 +1454,11 @@ def _store_guard(base: Any) -> Any:
     proactive engine's loader); None (every view withheld) when it cannot be loaded."""
     from pathlib import Path
     from .proactive_engine import _people
-    row = base.store.conn.execute("PRAGMA database_list").fetchone()
-    if not row or not row[2]:
+    from .cash_forecast import store_file
+    path = store_file(base)
+    if not path:
         return None
-    return _people(Path(row[2]))
+    return _people(Path(path))
 
 
 def register(table: MutableMapping[str, dict[str, Any]], base: Any

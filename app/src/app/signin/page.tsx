@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth";
-import { AppIcon, DevBanner } from "@/components/shell";
+import { DevBanner, Logo } from "@/components/shell";
 import { ThemeToggle } from "@/components/theme";
 import { ErrorNotice } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
@@ -92,10 +92,8 @@ function SignIn() {
       <main id="main" className="flex flex-1 flex-col items-center justify-center px-4 pt-16 pb-12">
         <div className="w-full max-w-[360px]">
           <div className="flex flex-col items-center text-center">
-            <AppIcon className="size-14 rounded-[15px] shadow-[inset_0_-1.5px_0_rgb(0_0_0/0.18),0_6px_16px_-6px_rgb(27_94_64/0.55)] [&>svg]:size-[38px]" />
-            <h1 className="mt-5 text-[20px] leading-[26px] font-semibold tracking-[-0.02em]">
-              Sign in to <span className="whitespace-nowrap">PLX Workbench</span>
-            </h1>
+            <Logo className="text-[22px] leading-7" />
+            <h1 className="mt-4 text-[15px] leading-5 font-medium text-muted">Sign in</h1>
           </div>
           <div className="mt-7 space-y-4 rounded-xl bg-bg p-5 shadow-lift dark:bg-surface">
             {state.status === "loading" || state.status === "signed-in" ? (

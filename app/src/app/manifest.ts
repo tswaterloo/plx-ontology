@@ -1,9 +1,9 @@
 import type { MetadataRoute } from "next";
 
 // Installable: Chrome and Edge (Windows and Mac) offer "Install PLX Workbench", and it opens in
-// its own window with this name, icon and title-bar colour. The "any" icons are the rounded tile
-// on a clear ground (the Windows taskbar and Start menu, the macOS Dock); the maskable one is
-// full-bleed for Android, which cuts its own shape.
+// its own window with this name, icon and title-bar colour. Every icon is the cube mark (cyan,
+// blue and navy faces, no tile); the maskable one sets it on the dark field inside Android's
+// safe zone. The 16 and 32 px favicons are the hand-checked small renders from the concept sheet.
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
@@ -14,7 +14,7 @@ export default function manifest(): MetadataRoute.Manifest {
     scope: "/",
     display: "standalone",
     background_color: "#ffffff",
-    theme_color: "#f6f6f5",
+    theme_color: "#f5f6f8",
     icons: [
       { src: "/icons/icon.svg", sizes: "any", type: "image/svg+xml" },
       { src: "/icons/icon-96.png", sizes: "96x96", type: "image/png" },

@@ -1248,8 +1248,20 @@ class FamilyTests(Base):
         numbers = self.answer(result, "order_number")
         self.assertEqual([_text(e["value"]) for e in numbers], [expected["order_number"]["value"]])
         self.assert_cites_expected_row(numbers[0], expected["order_number"])
-        self.assertEqual([_text(e["value"]) for e in self.answer(result, "order_status")],
-                         [expected["order_status"]["value"]])
+        # The oracle's status is the Portal twin's (lead_basis); the FM carrier states its own
+        # status text (the fixture catalog declares order_entry.status as live serves it),
+        # cited from its own row and never labelled a lead.
+        statuses = self.answer(result, "order_status")
+        portal = [e for e in statuses if e["property"] == "status"]
+        self.assertEqual([_text(e["value"]) for e in portal], [expected["order_status"]["value"]])
+        self.assertTrue(portal[0].get("lead_basis"))
+        fm = [e for e in statuses if e["property"] == "fm_status"]
+        self.assertEqual([_text(e["value"]) for e in fm], ["Complete"])
+        self.assertTrue(fm[0]["object_id"].startswith("SalesOrder:portal.fm_order_entry:"))
+        self.assertTrue(fm[0]["citation"]["l1_handle"].startswith("api://public.order_entry/"))
+        self.assertEqual(fm[0]["citation"]["field_path"], "row.status")
+        self.assertNotIn("lead_basis", fm[0])
+        self.assertEqual(len(statuses), 2)
         self.assertEqual([_text(e["value"]) for e in self.answer(result, "shipment_status")],
                          [expected["shipment_statuses"]["value"]])
         counted = {e["name"]: e for e in result["answer"] if e["kind"] == "count"}

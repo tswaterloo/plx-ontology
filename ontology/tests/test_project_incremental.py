@@ -551,6 +551,47 @@ class SyntheticGenerationTests(unittest.TestCase):
                     self.assertEqual(tables(built.store), tables(root / "cold.sqlite"))
                     self.assertEqual(built.content_digest, cold["content_digest"])
 
+    def test_payroll_line_and_header_marking_rules_equal_a_cold_build(self):
+        """Both marking rules active (every resolvable Sage line on a named account is
+        marked, its header from its lines): a changed account, line or header relation
+        rebuilds incrementally to exactly the cold build, and a header's unit holds its
+        lines and their accounts and a line's unit its account (the plan dependencies a
+        partial build needs). The synthetic rows resolve too few account hops to flip a
+        mark between generations: the dependency assertions are the discriminating part."""
+        schema = copy.deepcopy(self.schema)
+        for t in schema.object_types.values():
+            for b in t.get("bindings", []):
+                for rule in b.get("marking_rules", ()):
+                    for when in rule.get("when", ()):
+                        if when.get("op") == "matches":
+                            when["value"] = "."      # any named account is pay here
+        schema.digest = "sha256:" + "1" * 64
+        the_plan = inc.plan(schema)
+        header = inc.binding_unit("gen.sage.ap_pjh")
+        self.assertIn("gen.sage.ap_pjd", the_plan.units[header])       # its lines
+        self.assertIn("gen.sage.gl_account", the_plan.units[header])   # their accounts
+        self.assertIn("gen.sage.gl_account",
+                      the_plan.units[inc.binding_unit("gen.sage.ap_pjd")])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources = lambda changed=None: synthetic_captures.sources(
+                schema, self.ROWS, [changed] if changed else [])
+            inc.build_generation(root / "state", schema, sources(), clock=lambda: T2)
+            for relation in ("sage.gl_account", "sage.ap_pjd", "sage.ap_pjh"):
+                with self.subTest(relation=relation):
+                    built = inc.build_generation(root / "state", schema, sources(relation),
+                                                 clock=lambda: T2, space=incremental_path)
+                    cold = build_store(root / "cold.sqlite", schema, sources(relation),
+                                       clock=lambda: T2)
+                    self.assertEqual(built.mode, "incremental")
+                    self.assertEqual(tables(built.store), tables(root / "cold.sqlite"))
+                    self.assertEqual(built.content_digest, cold["content_digest"])
+            with closing(sqlite3.connect(str(root / "cold.sqlite"))) as conn:
+                marked = conn.execute(
+                    "SELECT COUNT(*) FROM object_versions WHERE object_id LIKE "
+                    "'RelSageApPjh:%' AND markings LIKE '%pii%'").fetchone()[0]
+            self.assertGreater(marked, 0)     # the rule did mark headers in this fixture
+
     def test_a_schema_change_to_one_type_rebuilds_only_the_units_reading_it(self):
         """A property added to one type (``Lot.qc_status``, as the schema gained it)
         changes the keys of the units that read a binding of that type and of no other;

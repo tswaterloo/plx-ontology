@@ -288,7 +288,16 @@ class SchemaQueryableProbeTests(unittest.TestCase):
         # gap-0b8675835265: the daily of 2026-10-21 (6 unavailable, 10 catalog_absent, 7
         # empty) recorded 3,936 characters with read_empty dropped by the cap, so the two
         # empty MRP routes' models read no_live_check instead of live_unexercised.
-        world = SchemaWorld(self.schema)
+        # With 248 bound relations (catalog of 2026-10-26) those 23 no longer breach the
+        # floor, so the fewest further failing reads that do are added: the record stays a
+        # failing one, the longest kind.
+        floor = Decimal(str(self.spec["expect"]["json_min"]["queryable_share"]))
+        served = len(self.bound) - len(UNAVAILABLE_LIVE)
+        named = {*UNAVAILABLE_LIVE, *ABSENT_LIVE, *EMPTY_LIVE}
+        short = len(self.bound) - len(named) - int(
+            (floor * served).to_integral_value(ROUND_CEILING)) + 1
+        broken = sorted(set(self.bound) - named)[:max(short, 0)]
+        world = SchemaWorld(self.schema, broken=broken)
         for name in UNAVAILABLE_LIVE:
             world.catalog[name]["unavailable"] = "1 approved column is missing or not granted"
         for name in ABSENT_LIVE:
@@ -298,9 +307,12 @@ class SchemaQueryableProbeTests(unittest.TestCase):
         code, document, detail = self.run_spec(world)
         self.assertEqual((document["unavailable_count"], document["not_queryable_count"],
                           document["read_empty_count"], document["served_ok"]),
-                         (len(UNAVAILABLE_LIVE), len(ABSENT_LIVE), len(EMPTY_LIVE), False))
+                         (len(UNAVAILABLE_LIVE), len(ABSENT_LIVE) + len(broken),
+                          len(EMPTY_LIVE), False))
         self.assertIn("blocked", detail)
-        self.assertLessEqual(len(json.dumps(detail, sort_keys=True)), lv.MAX_DETAIL_CHARS)
+        # The spec's own cap (its 248 relation names outgrow the 4,000 default), within it.
+        self.assertEqual(lv.detail_cap(self.spec), self.spec["max_detail_chars"])
+        self.assertLessEqual(len(json.dumps(detail, sort_keys=True)), lv.detail_cap(self.spec))
         # Every name list survives the cap, whole, and so do the failure codes and the
         # unreached count (relations never named) ahead of the counts a list carries.
         fields = detail["fields"]
@@ -308,7 +320,9 @@ class SchemaQueryableProbeTests(unittest.TestCase):
                     "not_queryable_codes", "unreached_count"):
             with self.subTest(kept=key):
                 self.assertEqual(fields.get(key), document[key])
-        self.assertEqual(fields["not_queryable_codes"], {"catalog_absent": len(ABSENT_LIVE)})
+        self.assertEqual(fields["not_queryable_codes"], {
+            "catalog_absent": len(ABSENT_LIVE),
+            **({"read_SourceUnavailable": len(broken)} if broken else {})})
         rows = self.uncovered(detail, "fail")
         portal = {row["name"]: row["reason"] for row in rows.values()
                   if row["system"] == "portal-reporting-api"}

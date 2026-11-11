@@ -19,7 +19,7 @@
  "as_known_at": {
   "time": "2099-01-02T03:04:05Z",
   "l1_generations": {
-   "portal_api": "8a5851cbdc2e491a"
+   "portal_api": "3e2441a266431c3d"
   }
  },
  "closed_transaction": true,
@@ -39,7 +39,7 @@
     "value": "FXSO100112",
     "citations": [
      {
-      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-112%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-112%22%7D@3e2441a266431c3d",
       "field_path": "row.order_number"
      }
     ]
@@ -51,7 +51,7 @@
     "value": "SHIPPED",
     "citations": [
      {
-      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-112%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-112%22%7D@3e2441a266431c3d",
       "field_path": "row.status"
      }
     ]
@@ -63,7 +63,7 @@
     "value": "2098-12-01",
     "citations": [
      {
-      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-112%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_sales_order/%7B%22id%22%3A%22fx-so-112%22%7D@3e2441a266431c3d",
       "field_path": "row.required_date"
      }
     ]
@@ -107,7 +107,7 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f2_customer_po_status@305211c73a11",
+  "id": "oracle:f2_customer_po_status@8656201efb4b",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
    "devloop/CONTEXT/03-PORTAL.md#3.3 app_sales_order.po_reference (exact, untrimmed, not unique)",
@@ -117,7 +117,7 @@
    "SO closed: SHIPPED/COMPLETE, FM text complet/closed/realiz (P@c3ffda3:src/lib/wms/source-status.ts:24) or Sage header complete 1/Y (etl-sage-distribution-gold.mjs:1393)"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
-  "query_digest": "c0880b6b51d2cfa60580787d93462e2de9226642464faed1b766d68bbb2e249a"
+  "query_digest": "b49e937e1ac9213083cdb1aad9f861a2118b71464b1ed8934f8c38f2557369cd"
  },
  "label": {
   "status": "oracle_only",

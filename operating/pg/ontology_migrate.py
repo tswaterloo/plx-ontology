@@ -354,9 +354,6 @@ def _apply_step_values(cur: Any, layer: Path, owned: Sequence[Mapping[str, Any]]
     back): a value is never attached to another version."""
     from ontology import store_ddl
     from ontology.step_migrate import VALUE_PARSER
-    from operating.pg.ontology_delta import _copy, _match
-    from operating.pg.ontology_load import NUMERIC, _number
-
     deleted = 0
     cur.execute("CREATE TEMP TABLE step_srcs (src bigint PRIMARY KEY) ON COMMIT DROP")
     for o in owned:
@@ -376,13 +373,30 @@ def _apply_step_values(cur: Any, layer: Path, owned: Sequence[Mapping[str, Any]]
                 "step_srcs) AND NOT EXISTS (SELECT 1 FROM ontology.value_cells c WHERE "
                 "c.src = s.src)")
     out["deleted.values"] = deleted
+    from operating.pg.ontology_delta import _CHUNK
+    col = {c: i for i, c in enumerate(store_ddl.VALUE_COLUMNS)}
     conn = sqlite3.connect(f"file:{layer}?mode=ro", uri=True)
+    copied = 0
     try:
-        rows = conn.execute(f"SELECT {', '.join(store_ddl.VALUE_COLUMNS)} FROM object_values "
-                            "ORDER BY object_id, l1_handle, binding_id, property").fetchall()
+        # the layer's values in chunks (all of them in one list is a memory risk)
+        stream = conn.execute(f"SELECT {', '.join(store_ddl.VALUE_COLUMNS)} FROM object_values "
+                              "ORDER BY object_id, l1_handle, binding_id, property")
+        while True:
+            rows = stream.fetchmany(_CHUNK)
+            if not rows:
+                break
+            copied += _copy_step_values(cur, rows, col)
     finally:
         conn.close()
-    col = {c: i for i, c in enumerate(store_ddl.VALUE_COLUMNS)}
+    out["copied.values"] = copied
+
+
+def _copy_step_values(cur: Any, rows: Sequence[Sequence[Any]], col: Mapping[str, int]) -> int:
+    """One chunk of a layer's ``object_values`` rows onto the served versions they name."""
+    from ontology import store_ddl
+    from operating.pg.ontology_delta import _copy, _match
+    from operating.pg.ontology_load import NUMERIC, _number
+
     versions: dict[tuple[str, str], tuple[int, str, str]] = {}
     for r in rows:
         key = (r[col["object_id"]], r[col["l1_handle"]])
@@ -412,7 +426,7 @@ def _apply_step_values(cur: Any, layer: Path, owned: Sequence[Mapping[str, Any]]
                    store_ddl.FIELD_COLUMNS, fields)
     kind = _match(cur, "value_kinds", "kind", "value_kinds_kind", store_ddl.KIND_COLUMNS,
                   kinds)
-    out["copied.values"] = _copy(
+    return _copy(
         cur, "value_cells", ("src", "field", "kind", "value", "value_num", "currency",
                              "currency_citation"),
         ((src[n], field[n], kind[n], r[col["value"]],

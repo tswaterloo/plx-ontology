@@ -3091,14 +3091,14 @@
    "from": "Payment",
    "to": "RelBcCustomerPaymentJournals",
    "name": "customer_payment_journal",
-   "reverse_name": "vendor_payments",
+   "reverse_name": "customer_payments",
    "cardinality": "N:1",
-   "description": "vendorPayments.journalId = customerPaymentJournals.id (NavigationProperty customerPaymentJournal ReferentialConstraint); compared within one BC company.",
+   "description": "customerPayments.journalId = customerPaymentJournals.id (contained customerPaymentJournal.customerPayments, the line names its header by journalId); compared within one BC company.",
    "bindings": [
     {
      "kind": "fk",
      "tier_ceiling": "verified",
-     "from_binding": "bc.vendor_payments",
+     "from_binding": "bc.customer_payments",
      "to_binding": "gen.bc.customer_payment_journals",
      "pairs": [
       {
@@ -3112,7 +3112,7 @@
       {
        "kind": "workbench_code",
        "path": "ontology/schema/generated/meta/bc_metadata.json",
-       "note": "vendorPayment -> customerPaymentJournal: NavigationProperty customerPaymentJournal ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+       "note": "customerPayment -> customerPaymentJournal: contained customerPaymentJournal.customerPayments, the line names its header by journalId (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
       }
      ]
     }

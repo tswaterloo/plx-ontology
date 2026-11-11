@@ -59,7 +59,10 @@ from typing import Any, Callable, Iterable, Iterator, Mapping
 from ontology import mentions as M
 
 TASK_GROUPS = 8          # groups a worker reads in one task
-WINDOW_TASKS = 4         # tasks per worker in flight ahead of the step
+# tasks per worker in flight ahead of the step: the step takes the groups in order, so
+# one slow group stalls every worker once the window is spent (4: workers ~20% busy
+# on 3.3M mail groups; 64 measured ~2x the rate, about 8k groups ahead on 16 workers)
+WINDOW_TASKS = 64
 MIN_GROUPS = 256         # fewer groups: the workers cost more than they save
 WORKER_CACHE_KIB = 65536
 _MISSING = object()

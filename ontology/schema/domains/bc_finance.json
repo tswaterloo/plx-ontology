@@ -2357,6 +2357,84 @@
       "markings": [
         "finance"
       ]
+    },
+    {
+      "id": "ItemLedgerEntry.source_vendor",
+      "from": "ItemLedgerEntry",
+      "to": "Supplier",
+      "name": "source_vendor",
+      "reverse_name": "item_ledger_entries",
+      "cardinality": "N:1",
+      "description": "The BC vendor an item ledger entry's source names (sourceNumber = vendor number in the same company, for entries of source type Vendor).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.item_ledger_entries",
+          "to_binding": "bc.vendors",
+          "pairs": [
+            {
+              "from": "sourceNumber",
+              "to": "number",
+              "compare": "text_id"
+            }
+          ],
+          "unique_target": true,
+          "where": [
+            {
+              "path": "sourceType",
+              "op": "eq",
+              "value": "Vendor"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/bc_finance.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): every non-blank Vendor source number reaches one vendor in the entry's company (168 vendor, 130 customer); 15 of 15 sampled pairs agree with the receipt or shipment the entry's document is."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ItemLedgerEntry.source_customer",
+      "from": "ItemLedgerEntry",
+      "to": "Customer",
+      "name": "source_customer",
+      "reverse_name": "item_ledger_entries",
+      "cardinality": "N:1",
+      "description": "The BC customer an item ledger entry's source names (sourceNumber = customer number in the same company, for entries of source type Customer).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.item_ledger_entries",
+          "to_binding": "bc.customers",
+          "pairs": [
+            {
+              "from": "sourceNumber",
+              "to": "number",
+              "compare": "text_id"
+            }
+          ],
+          "unique_target": true,
+          "where": [
+            {
+              "path": "sourceType",
+              "op": "eq",
+              "value": "Customer"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/bc_finance.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): every non-blank Customer source number reaches one customer in the entry's company (168 vendor, 130 customer); 15 of 15 sampled pairs agree with the receipt or shipment the entry's document is."
+            }
+          ]
+        }
+      ]
     }
   ],
   "event_types": [

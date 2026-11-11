@@ -7,6 +7,7 @@
   "capture_scope": "integrations/bc_read.py:CAPTURE_ENTITY_SETS",
   "registry": "ontology/source_registry.json",
   "workbench": [
+   "ontology/schema/overrides/business.json",
    "ontology/schema/overrides/identity.json",
    "ontology/schema/overrides/lineage.json",
    "ontology/schema/overrides/markings.json",
@@ -622,6 +623,11 @@
    "from": "salesQuoteLines",
    "navigation": "itemVariant",
    "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "vendorPayments",
+   "navigation": "customerPaymentJournal",
+   "reason": "constraint column names the containing header"
   }
  ],
  "links_not_bound": [

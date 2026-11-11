@@ -638,7 +638,7 @@ def reconciled_not_found(items: Sequence[m.NotFound], trail: Optional[m.Evidence
             owner = (item.where_it_would_live or "").split(". ", 1)[0].strip().rstrip(".")
             many = len(mentions) != 1
             said = (f"Not on record in the systems searched; {len(mentions)} "
-                    f"message{'s' if many else ''} in How we know mention{'' if many else 's'} "
+                    f"message{'s' if many else ''} in Evidence mention{'' if many else 's'} "
                     "it (not confirmed as this order's)")
             item = item.model_copy(update={
                 "where_it_would_live": f"{owner}. {said}" if owner.lower().startswith("ask")

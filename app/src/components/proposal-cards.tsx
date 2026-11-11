@@ -153,11 +153,13 @@ function ProposalCard({ p }: { p: Proposal }) {
 export function ProposalCards({ proposals, bare = false }: { proposals: Proposal[] | null | undefined; bare?: boolean }) {
   if (!proposals || proposals.length === 0) return null;
   return (
-    <section id="proposals" className="scroll-mt-20 space-y-8" aria-label="Proposed follow-ups" data-testid="proposals">
-      {!bare && <h2 className="-mb-5 text-[12px] leading-4 font-medium text-muted">Drafts</h2>}
-      {proposals.map((p) => (
-        <ProposalCard key={p.id} p={p} />
-      ))}
+    <section id="proposals" className="scroll-mt-20" aria-label="Proposed follow-ups" data-testid="proposals">
+      {!bare && <h2 className="mb-3 text-[12px] leading-4 font-medium text-muted">Drafts</h2>}
+      <div className="space-y-8">
+        {proposals.map((p) => (
+          <ProposalCard key={p.id} p={p} />
+        ))}
+      </div>
     </section>
   );
 }

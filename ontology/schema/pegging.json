@@ -1,0 +1,51 @@
+{
+  "format": "plx-pegging/v1",
+  "description": "Demand pegging rules (ontology/demand_pegging.py): which order lines are open demand and open supply, the properties their quantities and dates are read from, and the links that join them. An order is open only when it holds at least one of its open-rule properties and every one it holds has a listed value: an unlisted value (closed, cancelled or unknown text) is never open. Lines of twin orders (same_record_as at a firm tier) count once: the first binding in the preference list holding lines.",
+  "item_identity_link": "Product.same_record_as",
+  "demand": {
+    "line_type": "SalesOrderLine",
+    "order_link": "SalesOrderLine.line_of",
+    "item_link": "SalesOrderLine.for_item",
+    "order_twin_link": "SalesOrder.same_record_as",
+    "quantity": "ordered_quantity",
+    "done_quantity": "shipped_quantity",
+    "outstanding_quantity": "outstanding_quantity",
+    "uom": "uom",
+    "line_date": "shipment_date",
+    "order_date": "required_date",
+    "line_preference": ["bc.sales_order_lines", "portal.app_sales_order_line",
+                        "portal.fm_order_entry_item", "portal.sage_oe_order_detail"],
+    "open": {"status": ["Open", "OPEN"], "fm_status": ["Open"],
+             "bc_fully_shipped": ["false"], "sage_complete": ["1", "2"]}
+  },
+  "supply": {
+    "line_type": "PurchaseOrderLine",
+    "order_link": "PurchaseOrderLine.line_of",
+    "item_link": "PurchaseOrderLine.for_item",
+    "order_twin_link": "PurchaseOrder.same_record_as",
+    "quantity": "ordered_quantity",
+    "done_quantity": "received_quantity",
+    "uom": "uom",
+    "line_date": "bc_expected_receipt_date",
+    "order_date": "expected_date",
+    "line_preference": ["bc.purchase_order_lines", "portal.app_purchase_order_line",
+                        "portal.fm_generated_purchase_order_item", "portal.sage_po_detail"],
+    "open": {"status": ["Pending", "B.Order", "Revised", "Generated", "DRAFT"],
+             "fm_status": ["Pending", "B.Order", "Revised", "Generated"],
+             "bc_fully_received": ["false"], "sage_is_complete": ["0"]}
+  },
+  "components": {
+    "maker_paths": [["~AssemblyOrder.for_order_line"],
+                    ["~AssemblyOrderAllocation.for_order_line", "AssemblyOrderAllocation.allocates"]],
+    "maker_twin_link": "AssemblyOrder.same_record_as",
+    "component_link": "AssemblyOrderComponent.component_of",
+    "item_link": "AssemblyOrderComponent.uses_item",
+    "quantity": "planned_quantity",
+    "done_quantity": "consumed_quantity",
+    "maker_preference": ["portal.app_manufacturing_order", "portal.fm_assembly_order"],
+    "open": {"status": ["RELEASED", "Allocated", "SCHEDULED", "IN_PRODUCTION", "Committed",
+                        "CREATED", "Generated"]}
+  },
+  "line_link": "SalesOrderLine.supplied_by",
+  "order_link": "SalesOrder.awaits_purchase_order"
+}

@@ -40,7 +40,9 @@ class Digest(World):
              task: str | None = None, task_id: str | None = None) -> str:
         oid = self.w.obj("MCApproval", {
             "gate_id": f"apg_{i}", "task_id": task_id or f"TASK-{1000 + i}",
-            "status": "pending", "reason": reason, "requested_by": APPROVER,
+            # asked by an agent no one in the directory is: an asker never decides their
+            # own gate when another can (autopilot.owners_of)
+            "status": "pending", "reason": reason, "requested_by": "agent@synth-tenant.example",
             "requested_at": at(hour)}, audience=audience)
         if task:
             self.w.link("MCApproval.gate_of", oid, task)

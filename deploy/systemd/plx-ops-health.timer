@@ -1,9 +1,10 @@
 [Unit]
-Description=PLX ops health check every 15 minutes
+Description=PLX reliability alarms every 5 minutes
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=15min
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
 
 [Install]
 WantedBy=timers.target

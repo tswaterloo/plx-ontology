@@ -19,7 +19,7 @@
  "as_known_at": {
   "time": "2099-01-02T03:04:05Z",
   "l1_generations": {
-   "portal_api": "8a5851cbdc2e491a",
+   "portal_api": "3e2441a266431c3d",
    "bc": "eb3e2f6b0537414c"
   }
  },
@@ -43,7 +43,7 @@
     "unit": "ea",
     "citations": [
      {
-      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-78-1%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-78-1%22%7D@3e2441a266431c3d",
       "field_path": "row.quantity"
      }
     ]
@@ -57,7 +57,7 @@
     "unit": "ea",
     "citations": [
      {
-      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-78-1%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-78-1%22%7D@3e2441a266431c3d",
       "field_path": "row.quantity"
      }
     ]
@@ -80,11 +80,11 @@
     "value": true,
     "citations": [
      {
-      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-78-1%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_purchase_order_line/%7B%22id%22%3A%22fx-pol-78-1%22%7D@3e2441a266431c3d",
       "field_path": "row.quantity"
      },
      {
-      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-78-1%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_receipt_line/%7B%22id%22%3A%22fx-rcl-78-1%22%7D@3e2441a266431c3d",
       "field_path": "row.quantity"
      },
      {
@@ -142,7 +142,7 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f4_three_way_match@305211c73a11",
+  "id": "oracle:f4_three_way_match@8656201efb4b",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
    "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order.po_number (unique)",
@@ -160,7 +160,7 @@
    "devloop/CONTEXT/03-PORTAL.md#3.5 derivePoFulfillmentCode over header + summed lines = RECEIVED, or closed_at (P@59b0548:src/lib/mrp/po-fulfillment-status.ts:12, apply-po-line-receive.ts:298)"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
-  "query_digest": "ad0ef8aace7e0d96d153bdd70c609eef5ab09c644c9cbc2cda8c8ab9d1ae9810"
+  "query_digest": "d479356d98997c8ffe95812953fcec50ee2e951b31738198d7c27fc3687ba180"
  },
  "label": {
   "status": "oracle_only",

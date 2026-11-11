@@ -56,6 +56,11 @@ _UPDATE_TO = re.compile(r"\b(?:to|for)\s+(?P<who>(?:the\s+|my\s+|our\s+)?(?:team
                         r"everybody|group|[a-z][\w.'-]+(?:\s+[a-z][\w.'-]+)?))\s*$", re.I)
 _YEAR = re.compile(r"(?:19|20)\d\d")
 _DAYS = re.compile(r"\d{1,2}[-/]\d{1,2}")      # "Oct. 05-10": days, not a record
+# "100ml", "20kg", "12pcs": a quantity with its unit, not a record
+_UNITS = (r"(?:ml|l|oz|fl\.?oz|g|kg|mg|lbs?|cse?|cs|pcs?|pieces?|units?|ea|gal|mm|cm|m|ft|"
+          r"ct|pk|packs?|cases?|pallets?|bottles?|drums?|totes?)")
+_MEASURE = re.compile(rf"(?:\d+x)?\d+(?:[.,]\d+)?{_UNITS}", re.I)
+_MEASURED = re.compile(rf"\b(\d+(?:[.,]\d+)?)\s+{_UNITS}\b", re.I)    # "250 pcs"
 _LEAD_ASK = re.compile(r"^(?:if|whether|when|what|where|why|how|about)\b", re.I)
 
 
@@ -138,7 +143,8 @@ def parse(text: Any) -> Intent:
     return Intent(text=line, channel=channel, verb=verb, mentions=mentions[:MAX_TO],
                   team=team, side=side, topic=topic, whole=whole,
                   records=[t for t in _tokens(line) if not _YEAR.fullmatch(t)
-                           and not _DAYS.fullmatch(t)
+                           and not _DAYS.fullmatch(t) and not _MEASURE.fullmatch(t)
+                           and t not in {m.group(1) for m in _MEASURED.finditer(line)}
                            and sum(c.isdigit() for c in t) >= 3][:MAX_RECORDS])
 
 
@@ -202,7 +208,7 @@ _FILLER = frozenset({
 _AUTOMATED = re.compile(r"no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounce|"
                         r"notification|alerts?$", re.I)
 _TOPIC_STOP = frozenset({"with", "from", "this", "that", "your", "about", "please", "order",
-                         "invoice", "update", "request", "petra", "confirmation", "thanks",
+                         "invoice", "update", "request", "confirmation", "thanks",
                          "follow", "today", "week"})
 
 
@@ -226,9 +232,24 @@ def _fit(domain: str, mention: str) -> float:
     return 0.0
 
 
-def _topic_words(text: str) -> set[str]:
+def _topic_words(text: str, own: Sequence[str] = ()) -> set[str]:
+    """The words a subject is about: not filler, and not the company's own name (``own``:
+    the labels of its internal mail domains; a word one of them opens with or that opens
+    with one, "petra" of petrasoap.com, is in every subject the company writes)."""
     return {w for w in re.findall(r"[a-z0-9]+", (text or "").casefold())
-            if (len(w) >= 4 and w not in _TOPIC_STOP) or sum(c.isdigit() for c in w) >= 3}
+            if ((len(w) >= 4 and w not in _TOPIC_STOP) or sum(c.isdigit() for c in w) >= 3)
+            and not any(o.startswith(w) or w.startswith(o) for o in own)}
+
+
+def _own_names(internal: Sequence[str]) -> tuple[str, ...]:
+    """The company's own name words: the first label of each internal mail domain, with
+    a trailing number or hyphen part dropped ("petra-1.com" -> petra)."""
+    out = []
+    for domain in internal:
+        label = re.split(r"[-\d]", str(domain).casefold().split(".")[0])[0]
+        if len(label) >= 4 and label not in out:
+            out.append(label)
+    return tuple(out)
 
 
 def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str, Any]],
@@ -305,7 +326,8 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
         for r in mine:
             members_of(r)
 
-    topic = _topic_words(intent.topic) | {_norm(r) for r in intent.records}
+    own_names = _own_names(internal)
+    topic = _topic_words(intent.topic, own_names) | {_norm(r) for r in intent.records}
 
     def outside(mention: str) -> list[str]:
         """The outside addresses ``mention`` names (module and function doc)."""
@@ -338,7 +360,8 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
         there = [(i, row, [a for a in listed if a.rsplit("@", 1)[-1] in domains])
                  for i, row, listed in rows]
         there = [(i, row, listed) for i, row, listed in there if listed]
-        shared = [(len(topic & _topic_words(str(row.get("subject") or ""))), -i, listed)
+        shared = [(len(topic & _topic_words(str(row.get("subject") or ""), own_names)), -i,
+                   listed)
                   for i, row, listed in there]
         top = max(shared, default=(0, 0, []))
         if top[0] >= TOPIC_MIN:
@@ -428,7 +451,26 @@ def subject_of(intent: Intent) -> str:
     topic = re.sub(r"^(?:(?:for|about|re|regarding|that|the|an?)\s+)+", "", intent.topic.strip(),
                    flags=re.I).rstrip(".?!")
     subject = _sentence(topic) or "Update"
-    return subject if len(subject) <= 78 else subject[:77].rsplit(" ", 1)[0]
+    from .copy_gate import rules
+    limit = int(rules()["limits"]["subject_chars"])      # the copy check's own limit
+    return subject if len(subject) <= limit else \
+        subject[:limit + 1].rsplit(" ", 1)[0].rstrip(" -|:,;(")[:limit]
+
+
+def _names_record(text: str, records: Sequence[str]) -> bool:
+    """Whether ``text`` names one of ``records`` as written or in another written form of
+    it: its separators aside ("AO-26278A" for AO26278A), or its number alone behind a
+    document word ("customer purchase order 8739" for PO8739)."""
+    said = {_norm(w) for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9#/-]*[A-Za-z0-9]|[A-Za-z0-9]",
+                                         text)}
+    for token in records:
+        forms = {_norm(token)}
+        written = re.match(r"^[A-Za-z]{2,4}[-#\s]?(\d[A-Za-z0-9]*)$", token)
+        if written and sum(c.isdigit() for c in written.group(1)) >= 3:
+            forms.add(_norm(written.group(1)))
+        if forms & said:
+            return True
+    return False
 
 
 def draft(intent: Intent, recipients: Recipients, answers: Sequence[Mapping[str, Any]],
@@ -443,8 +485,7 @@ def draft(intent: Intent, recipients: Recipients, answers: Sequence[Mapping[str,
     for answer in answers:
         got = [f for f in answer.get("facts") or () if f.get("text") and f.get("sources")]
         if outside:
-            named = [f for f in got if any(re.search(rf"(?<![\w-]){re.escape(t)}(?![\w-])",
-                                                     str(f["text"])) for t in intent.records)]
+            named = [f for f in got if _names_record(str(f["text"]), intent.records)]
             inside_only += len(got) - len(named)
             got = named
         if not got:

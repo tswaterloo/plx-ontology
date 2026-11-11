@@ -748,3 +748,41 @@ class ReferenceAliasTests(unittest.TestCase):
                 **spec, "reference_alias": bad}}}
             with self.subTest(bad=bad), self.assertRaises(ids.IdentifierSchemaError):
                 ids._Compiled(broken)
+
+
+class ReferenceCandidateTests(unittest.TestCase):
+    """An order number names the order: an invoice that only refers to it (its declared
+    ``identifies: reference`` property) is no mention of its own while the order answers,
+    and a lead via the reference (vetoed) when nothing holds the number itself."""
+
+    def store(self, holders):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            "CREATE TABLE objects (object_id TEXT, object_type TEXT);"
+            "CREATE TABLE object_versions (object_id TEXT, l1_handle TEXT, digest TEXT, "
+            "markings TEXT);"
+            "CREATE TABLE identifiers (object_id TEXT, identifier_kind TEXT, normalized TEXT, "
+            "property TEXT, role TEXT, l1_handle TEXT, field_path TEXT, lineage TEXT, "
+            "recorded_at TEXT, superseded_at TEXT);")
+        for oid, otype, prop, role in holders:
+            conn.execute("INSERT INTO objects VALUES (?, ?)", (oid, otype))
+            conn.execute("INSERT INTO object_versions VALUES (?, ?, 'd', '[]')", (oid, "h:" + oid))
+            conn.execute("INSERT INTO identifiers VALUES (?, 'so_number', 'SO100', ?, ?, ?, "
+                         "'row.x', 'sage_bronze', '2030-01-01', NULL)",
+                         (oid, prop, role, "h:" + oid))
+        return conn
+
+    def test_an_invoice_is_reached_through_the_order_it_refers_to(self):
+        from unittest import mock
+        from ontology import mentions as mm
+        invoice = ("inv", "SalesInvoice", "order_number", "alias")
+        order = ("ord", "SalesOrder", "order_number", "primary")
+        with mock.patch.object(mm, "candidate_keys", lambda m: [("so_number", "SO100")]):
+            both = mm._store_candidates(self.store([invoice, order]), {}, "doc")
+            alone = mm._store_candidates(self.store([invoice]), {}, "doc")
+        self.assertEqual([r["object_id"] for r in both], ["ord"])
+        self.assertEqual([r["object_id"] for r in alone], ["inv"])
+        self.assertTrue(mm.is_reference(alone[0]))
+        self.assertEqual(mm.MENTION_FEATURES["via_reference"]["role"], "veto")

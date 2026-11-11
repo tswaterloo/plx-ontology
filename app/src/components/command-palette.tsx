@@ -1,7 +1,7 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { CornerDownLeft, MessageCircle, Search } from "lucide-react";
+import { CornerDownLeft, Search } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { suggest } from "@/lib/api";
@@ -11,8 +11,7 @@ import { VERIFIED_EXAMPLES } from "@/lib/examples";
 import { recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { stashPending } from "@/lib/pending";
 import { arrange, type Arranged } from "./ask-box";
-import { PlaceTile, SystemTile } from "./ui/glyphs";
-import { Monogram } from "./ui/monogram";
+import { PlaceIcon, SystemCode } from "./ui/glyphs";
 import { useReturnFocus } from "@/lib/return-focus";
 
 /**
@@ -164,7 +163,7 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(0_0_0/0.14)] animate-fade-in dark:bg-[rgb(0_0_0/0.45)]" />
         <Dialog.Content
-          className="fixed top-[max(12px,12vh)] left-1/2 z-50 flex max-h-[min(540px,calc(100dvh-24px))] w-[min(660px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-[14px] bg-raised shadow-[0_0_0_0.5px_rgb(0_0_0/0.14),0_24px_64px_-12px_rgb(0_0_0/0.3)] animate-fade-in focus:outline-none dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.12),0_24px_64px_-12px_rgb(0_0_0/0.7)]"
+          className="fixed top-[max(12px,12vh)] left-1/2 z-50 flex max-h-[min(540px,calc(100dvh-24px))] w-[min(660px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-[3px] bg-raised shadow-[0_0_0_0.5px_rgb(0_0_0/0.14),0_24px_64px_-12px_rgb(0_0_0/0.3)] animate-fade-in focus:outline-none dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.12),0_24px_64px_-12px_rgb(0_0_0/0.7)]"
           aria-describedby={undefined}
           data-testid="command-palette"
         >
@@ -189,7 +188,7 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
               data-testid="palette-input"
             />
             {searching && <span className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-border-strong border-t-muted" aria-label="Searching" role="status" />}
-            <kbd className="hidden h-5 items-center rounded-[5px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] px-1.5 font-sans text-[11px] text-muted sm:flex" aria-hidden>
+            <kbd className="hidden h-5 items-center rounded-[3px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] px-1.5 font-sans text-[11px] text-muted sm:flex" aria-hidden>
               Esc
             </kbd>
           </div>
@@ -262,7 +261,7 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
 }
 
 function Key({ children }: { children: React.ReactNode }) {
-  return <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded-[5px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] px-1 font-sans text-[11px] leading-none text-muted">{children}</kbd>;
+  return <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded-[3px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] px-1 font-sans text-[11px] leading-none text-muted">{children}</kbd>;
 }
 
 const PARTY = /^(?:supplier|vendor|customer|contact|company)$/i;
@@ -271,13 +270,7 @@ function Row({ it }: { it: Item }) {
   if (it.kind === "ask" || it.kind === "example")
     return (
       <>
-        {it.kind === "ask" ? (
-          <PlaceTile href="/ask" />
-        ) : (
-          <span className="flex size-5 shrink-0 items-center justify-center rounded-[5.5px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] text-muted" aria-hidden>
-            <MessageCircle className="size-3" strokeWidth={2.2} />
-          </span>
-        )}
+        <PlaceIcon href="/ask" />
         <span className="min-w-0 truncate">
           {it.kind === "ask" && <span className="text-muted">Ask </span>}
           <span className={it.kind === "ask" ? "font-medium text-fg" : "text-fg"}>{it.q}</span>
@@ -287,7 +280,7 @@ function Row({ it }: { it: Item }) {
   if (it.kind === "go")
     return (
       <>
-        <PlaceTile href={it.href} />
+        <PlaceIcon href={it.href} />
         <span className="shrink-0 font-medium text-fg">{it.label}</span>
         <span className="hidden min-w-0 truncate text-[12px] text-muted sm:inline">{it.hint}</span>
       </>
@@ -297,7 +290,7 @@ function Row({ it }: { it: Item }) {
   const sub = [typeLabel(s.type), s.facts ?? s.sublabel].filter(Boolean).join(" · ");
   return (
     <>
-      {party ? <Monogram name={s.label} size={24} /> : <SystemTile system={s.systems[0] ?? "BC"} size={24} />}
+      {party ? null : <SystemCode system={s.systems[0] ?? "BC"} size={24} />}
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] leading-[17px] font-medium text-fg">{recordLabel(s.type, s.label)}</span>
         <span className="block truncate text-[12px] leading-4 text-muted">{sub}</span>
@@ -305,7 +298,7 @@ function Row({ it }: { it: Item }) {
       {s.systems.length > 1 && (
         <span className="hidden shrink-0 items-center gap-0.5 sm:flex" aria-hidden>
           {s.systems.slice(1, 4).map((x) => (
-            <SystemTile key={x} system={x} size={14} />
+            <SystemCode key={x} system={x} size={14} />
           ))}
         </span>
       )}

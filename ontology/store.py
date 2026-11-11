@@ -606,11 +606,37 @@ def _parallel_digest_parts(path: Path, conn: sqlite3.Connection, workers: int
             for (table, segment), digest in hashes.items()}
 
 
+_MAIN_HIDDEN = False
+
+
+def _hide_main_from_spawns() -> None:
+    """From now on no ``spawn`` worker this process starts imports its ``__main__``: the
+    preparation data a worker is started with names no main module. Installed once by
+    :func:`main_not_imported`, it holds for the workers a pool starts after the context
+    has exited too (a ``ProcessPoolExecutor`` starts its workers as work is submitted)."""
+    global _MAIN_HIDDEN
+    if _MAIN_HIDDEN:
+        return
+    from multiprocessing import spawn
+    prepare = spawn.get_preparation_data
+
+    def without_main(name: str) -> dict[str, Any]:
+        data = prepare(name)
+        data.pop("init_main_from_name", None)
+        data.pop("init_main_from_path", None)
+        return data
+    spawn.get_preparation_data = without_main
+    _MAIN_HIDDEN = True
+
+
 @contextlib.contextmanager
 def main_not_imported() -> Iterator[None]:
     """While ``spawn`` workers start: ``spawn`` would import the build's ``__main__`` (a
     script or ``-m`` module) in each worker, running an unguarded script's top level
-    there. A worker needs nothing of it, so it is not named to them."""
+    there. A worker needs nothing of it, so it is not named to them: not while this
+    context is open, nor (:func:`_hide_main_from_spawns`) to the workers a pool made in
+    it starts later."""
+    _hide_main_from_spawns()
     main = sys.modules.get("__main__")
     saved = {name: main.__dict__[name] for name in ("__file__", "__spec__")
              if main is not None and name in main.__dict__}
@@ -794,6 +820,95 @@ class _Interner:
             self.created = hit is None
             self.cache[(table, key)] = found
         return found
+
+
+# --------------------------------------------------------------------------- value parts
+
+class ValuePart:
+    """Value rows (``store_ddl.VALUE_COLUMNS`` tuples, in the order they would be given to
+    ``StoreBuilder.add("object_values", ...)``) written to a file of their own, so many
+    processes can prepare a build's values at once and the builder takes each file in
+    order with SQL alone (:meth:`StoreBuilder.add_value_parts`). A part names each
+    source, field, kind and (field, kind) pair by a number of its own given in the order
+    each first appears, the order the builder interns them in; no row is checked here
+    (the builder checks them as ``add`` would)."""
+
+    _DDL = (
+        "CREATE TABLE sources (s INTEGER PRIMARY KEY, object_id, l1_handle, binding_id, "
+        "recorded_at, superseded_at, digest, lineage)",
+        "CREATE TABLE fields (f INTEGER PRIMARY KEY, property, field_path)",
+        f"CREATE TABLE kinds (k INTEGER PRIMARY KEY, {', '.join(store_ddl.KIND_COLUMNS)})",
+        "CREATE TABLE pairs (p INTEGER PRIMARY KEY, f INTEGER NOT NULL, k INTEGER NOT NULL)",
+        "CREATE TABLE cells (seq INTEGER PRIMARY KEY, s INTEGER NOT NULL, f INTEGER NOT NULL, "
+        "p INTEGER NOT NULL, value, currency, currency_citation)",
+    )
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.unlink(missing_ok=True)
+        self._conn = sqlite3.connect(str(self.path), isolation_level=None)
+        self._conn.execute("PRAGMA journal_mode = OFF")
+        self._conn.execute("PRAGMA synchronous = OFF")
+        self._conn.execute("BEGIN")
+        for statement in self._DDL:
+            self._conn.execute(statement)
+        self._sources: dict[tuple[Any, ...], int] = {}
+        self._fields: dict[tuple[Any, ...], int] = {}
+        self._kinds: dict[tuple[Any, ...], int] = {}
+        self._pairs: dict[tuple[int, int], int] = {}
+        self.count = 0
+
+    def write(self, rows: Iterable[Sequence[Any]]) -> int:
+        """Add value rows (``VALUE_COLUMNS`` tuples); returns how many."""
+        D = store_ddl
+        at = {c: i for i, c in enumerate(D.VALUE_COLUMNS)}
+        skey = [at[c] for c in ("object_id", "l1_handle", "binding_id", "recorded_at",
+                                "superseded_at", "digest", "lineage")]
+        fkey = [at[c] for c in D.FIELD_COLUMNS]
+        kkey = [at[c] for c in D.KIND_COLUMNS]
+        value, currency, cite = at["value"], at["currency"], at["currency_citation"]
+        sources, fields, kinds, pairs = self._sources, self._fields, self._kinds, self._pairs
+        new_sources, new_fields, new_kinds, new_pairs, cells = [], [], [], [], []
+        last: tuple[Any, ...] | None = None
+        s = -1
+        for row in rows:
+            here = tuple(row[i] for i in skey)
+            if here != last:
+                last = here
+                s = sources.get(here)
+                if s is None:
+                    s = sources[here] = len(sources)
+                    new_sources.append((s, *here))
+            key = tuple(row[i] for i in fkey)
+            f = fields.get(key)
+            if f is None:
+                f = fields[key] = len(fields)
+                new_fields.append((f, *key))
+            key = tuple(row[i] for i in kkey)
+            k = kinds.get(key)
+            if k is None:
+                k = kinds[key] = len(kinds)
+                new_kinds.append((k, *key))
+            p = pairs.get((f, k))
+            if p is None:
+                p = pairs[(f, k)] = len(pairs)
+                new_pairs.append((p, f, k))
+            cells.append((s, f, p, row[value], row[currency], row[cite]))
+        c = self._conn
+        c.executemany("INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)", new_sources)
+        c.executemany("INSERT INTO fields VALUES (?, ?, ?)", new_fields)
+        c.executemany(f"INSERT INTO kinds VALUES ({', '.join('?' * (1 + len(kkey)))})",
+                      new_kinds)
+        c.executemany("INSERT INTO pairs VALUES (?, ?, ?)", new_pairs)
+        c.executemany("INSERT INTO cells (s, f, p, value, currency, currency_citation) "
+                      "VALUES (?, ?, ?, ?, ?, ?)", cells)
+        self.count += len(cells)
+        return len(cells)
+
+    def close(self) -> Path:
+        self._conn.execute("COMMIT")
+        self._conn.close()
+        return self.path
 
 
 class StoreBuilder:
@@ -1155,6 +1270,137 @@ class StoreBuilder:
             f"INSERT INTO link_rows ({', '.join(names)}) VALUES "
             f"({', '.join('?' for _ in names)})", out)
         return len(out)
+
+    def add_value_parts(self, parts: Iterable[str | Path]) -> int:
+        """Add the value rows of ``parts`` (:class:`ValuePart` files, taken in order and
+        removed once taken) as ``add("object_values", ...)`` adds them, one part after
+        another: the same rows, row ids and interned ids, refused as it refuses them, by
+        SQL alone (no row passes through Python). Only a part's builder (``foreign_keys``
+        False) whose values are all cells (no ``packed_bindings``): SQLite attaches and
+        detaches a file only outside a transaction, so the rows added so far are
+        committed before each part and the builder's transaction is begun again after it
+        (a part's builder is never committed as a generation)."""
+        if not self._part:
+            raise StoreError("value_parts_need_a_part")
+        if self.packed_bindings:
+            raise StoreError("value_parts_need_cells")
+        D = store_ddl
+        conn = self.connection
+        # The word index and the cells' layout index are made once, after the parts: the
+        # same entries (the index's, and the words of each cell in row order, as the
+        # trigger would enter them), not one insert into each per row. The planner's
+        # fixed statistics of the index go with it and are put back.
+        (first,) = conn.execute("SELECT coalesce(max(rowid), 0) FROM value_cells").fetchone()
+        index = next(x for x in D.STATEMENTS if "value_cells_by_layout ON" in x)
+        trigger = next(x for x in D.STATEMENTS if "TRIGGER IF NOT EXISTS value_text_insert" in x)
+        conn.execute("DROP TRIGGER IF EXISTS value_text_insert")
+        conn.execute("DROP INDEX IF EXISTS value_cells_by_layout")
+        total = 0
+        try:
+            for path in parts:
+                total += self._add_value_part(Path(path))
+                Path(path).unlink(missing_ok=True)
+        finally:
+            conn.execute(index)
+            conn.execute(f"INSERT INTO value_text (rowid, value) SELECT c.rowid, c.value FROM "
+                         f"value_cells c WHERE c.rowid > ? AND {D._INDEXED.format('c')} "
+                         "ORDER BY c.rowid", (first,))
+            conn.execute(trigger)
+            conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'value_cells'")
+            conn.executemany("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES (?, ?, ?)",
+                             [x for x in D.PLANNER_STATS if x[0] == "value_cells"])
+            conn.execute("ANALYZE sqlite_master")
+        return total
+
+    def _intern_part(self, table: str, key_column: str, columns: Sequence[str],
+                     rows_sql: str) -> str:
+        """The temp table mapping a part's local ids (``rows_sql``: SELECT id, *columns) to
+        the ids of ``table``: an equal row's (the lowest, as ``_Interner`` finds it) or a
+        new row's, inserted in the order the part first names each (the next rowids, as
+        one insert after another would take them)."""
+        conn = self.connection
+        name = f"part_{table}"
+        cols = ", ".join(columns)
+        conn.execute(f"DROP TABLE IF EXISTS temp.{name}")
+        conn.execute(f"CREATE TEMP TABLE {name} (id INTEGER PRIMARY KEY, {key_column} INTEGER, "
+                     f"{cols})")
+        conn.execute(f"INSERT INTO temp.{name} (id, {cols}) {rows_sql}")
+        same = " AND ".join(f"e.{c} IS {name}.{c}" for c in columns)
+        conn.execute(f"UPDATE temp.{name} SET {key_column} = (SELECT e.{key_column} FROM "
+                     f"main.{table} e WHERE {same} ORDER BY e.{key_column} LIMIT 1)")
+        (base,) = conn.execute(f"SELECT coalesce(max({key_column}), 0) FROM main.{table}"
+                               ).fetchone()
+        conn.execute("DROP TABLE IF EXISTS temp.part_fresh")
+        conn.execute(f"CREATE TEMP TABLE part_fresh AS SELECT {cols}, ? + row_number() OVER "
+                     f"(ORDER BY min(id)) AS {key_column} FROM temp.{name} WHERE "
+                     f"{key_column} IS NULL GROUP BY {cols}", (base,))
+        conn.execute(f"CREATE INDEX temp.part_fresh_key ON part_fresh ({cols})")
+        conn.execute(f"INSERT INTO main.{table} ({key_column}, {cols}) SELECT {key_column}, "
+                     f"{cols} FROM temp.part_fresh ORDER BY {key_column}")
+        fresh = " AND ".join(f"x.{c} IS {name}.{c}" for c in columns)
+        conn.execute(f"UPDATE temp.{name} SET {key_column} = (SELECT x.{key_column} FROM "
+                     f"temp.part_fresh x WHERE {fresh}) WHERE {key_column} IS NULL")
+        return name
+
+    def _add_value_part(self, path: Path) -> int:
+        D = store_ddl
+        conn = self.connection
+        if conn.in_transaction:
+            conn.execute("COMMIT")
+        conn.execute("ATTACH DATABASE ? AS part", (str(path),))
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            # add's refusals, of the first source refused (as add meets them, in row order)
+            bad = conn.execute(
+                "SELECT NOT EXISTS (SELECT 1 FROM main.object_versions v WHERE v.l1_handle = "
+                "p.l1_handle AND v.object_id = p.object_id), p.digest IS NULL, p.lineage "
+                "IS NULL FROM part.sources p WHERE p.digest IS NULL OR p.lineage IS NULL OR "
+                "NOT EXISTS (SELECT 1 FROM main.object_versions v WHERE v.l1_handle = "
+                "p.l1_handle AND v.object_id = p.object_id) ORDER BY p.s LIMIT 1").fetchone()
+            if bad is not None:
+                if bad[0]:   # the v9 composite foreign key's refusal
+                    raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+                raise sqlite3.IntegrityError("NOT NULL constraint failed: value_sources."
+                                             + ("digest" if bad[1] else "lineage"))
+            sources = self._intern_part(
+                "value_sources", "src", D.SOURCE_STORED,
+                "SELECT p.s, v.rowid, p.binding_id, p.recorded_at, p.superseded_at, CASE WHEN "
+                "p.digest = v.digest THEN NULL ELSE p.digest END, CASE WHEN p.lineage = "
+                "v.lineage THEN NULL ELSE p.lineage END FROM part.sources p JOIN "
+                "main.object_versions v ON v.l1_handle = p.l1_handle AND v.object_id = "
+                "p.object_id ORDER BY p.s")
+            fields = self._intern_part(
+                "value_fields", "field", D.FIELD_COLUMNS,
+                f"SELECT f, {', '.join(D.FIELD_COLUMNS)} FROM part.fields ORDER BY f")
+            kinds = self._intern_part(
+                "value_kinds", "kind", D.KIND_COLUMNS,
+                f"SELECT k, {', '.join(D.KIND_COLUMNS)} FROM part.kinds ORDER BY k")
+            layouts = self._intern_part(
+                "value_layouts", "layout", ("fields",),
+                f"SELECT p.p, '[[' || f.field || ',' || k.kind || ']]' FROM part.pairs p "
+                f"JOIN temp.{fields} f ON f.id = p.f JOIN temp.{kinds} k ON k.id = p.k "
+                "ORDER BY p.p")
+            conn.execute("INSERT INTO main.value_layout_fields (layout, pos, field, kind, path) "
+                         "SELECT layout, 0, json_extract(fields, '$[0][0]'), "
+                         "json_extract(fields, '$[0][1]'), NULL FROM temp.part_fresh")
+            count = conn.execute(
+                "INSERT INTO main.value_cells (src, field, layout, "
+                f"{', '.join(D.CELL_COLUMNS)}) SELECT s.src, f.field, l.layout, "
+                f"{', '.join('c.' + c for c in D.CELL_COLUMNS)} FROM part.cells c "
+                f"CROSS JOIN temp.{sources} s CROSS JOIN temp.{fields} f CROSS JOIN "
+                f"temp.{layouts} l WHERE s.id = c.s AND f.id = c.f AND l.id = c.p "
+                "ORDER BY c.seq").rowcount
+            for name in (sources, fields, kinds, layouts, "part_fresh"):
+                conn.execute(f"DROP TABLE temp.{name}")
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.execute("DETACH DATABASE part")
+            conn.execute("BEGIN IMMEDIATE")
+        return count
 
     def set_meta(self, key: str, value: Any) -> None:
         text = value if isinstance(value, str) else canonical(value)

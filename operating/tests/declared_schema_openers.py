@@ -124,6 +124,13 @@ def _feedback(d: Path) -> Path:
     return d / "fb" / "feedback.sqlite"
 
 
+def _work_log(d: Path) -> Path:
+    from operator_api.work_log import WorkLog
+    s = WorkLog(d / "wl")
+    s._conn.close()
+    return d / "wl" / "work-log.sqlite"
+
+
 def _page_store(d: Path) -> Path:
     from operator_api.page_store import PageStore
     s = PageStore(d, "code")
@@ -229,7 +236,7 @@ OPENERS: dict[str, Callable[[Path], Path]] = {
     "action_path": _action_path, "ai_watcher": _ai_watcher, "case_originals": _originals,
     "goal2_exec_owner": _owner, "ingestion": _ingest, "labour_hours": _labour,
     "proactive_inbox": _inbox, "proactive_incremental": _inbox_changes,
-    "watchlists": _watchlists, "feedback": _feedback, "page_store": _page_store,
+    "watchlists": _watchlists, "feedback": _feedback, "work_log": _work_log, "page_store": _page_store,
     "page_counts": _page_counts, "captured_text": _captured_text,
     "kept_members": _kept_members, "document_fields": _kept_fields,
     "mention_memo": _memo, "briefs": _briefs, "autopilot_replay": _replay_progress,

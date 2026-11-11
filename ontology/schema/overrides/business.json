@@ -1,0 +1,2374 @@
+{
+ "format": "plx-generator-overrides/v1",
+ "kind": "business",
+ "description": "What each raw Portal, FileMaker-silver and Sage relation is to the business, declared once: decision `type` (a business record type of its own), `extends` (rows that add facts to the record `extends` names: optional fields, statistics, schedules, comments), `links` (a copy of a record a curated type holds, reached through its link to `links_to`) or `skip` (a pure system or log table, `reason` starting `system:` or `log:`; its raw rows stay served and marked as before). `label` is the business name readers and Ask see; `about` leads the generated type's description; `display` (source columns) forms a record's name; `text` (source columns) is chunked for search under the row's own markings; `joins` are the declared foreign keys scripts/gen_raw_links.py writes as links (pairs from this relation's columns to the `to_binding` relation's, tier and why). Read by the generator (ontology/generator/build.py), scripts/gen_raw_links.py, ontology/raw_business.py and the record-text chunker. Every served raw relation no curated type shadows is listed (tests/ontology raw_business).",
+ "sources": {
+  "portal_api": {
+   "public.app_access_policy_grant": {
+    "decision": "skip",
+    "label": "Portal access policy grant",
+    "reason": "system: Portal access-control grants (pii)"
+   },
+   "public.app_agent_access": {
+    "decision": "skip",
+    "label": "Portal agent access",
+    "reason": "system: Portal agent access-control grants (pii)"
+   },
+   "public.app_approval_record": {
+    "decision": "type",
+    "label": "Portal approval record",
+    "about": "an approval of a Portal record (who approved which record and file version, when)",
+    "display": [
+     "record_id",
+     "id"
+    ]
+   },
+   "public.app_assembly_order_damage": {
+    "decision": "links",
+    "label": "Portal assembly order damage record",
+    "about": "a damage record of an assembly order in the Portal (component, damage type, quantity, description)",
+    "links_to": "AssemblyOrder",
+    "display": [
+     "assembly_order_id",
+     "id"
+    ],
+    "text": [
+     "description"
+    ]
+   },
+   "public.app_assembly_order_status": {
+    "decision": "links",
+    "label": "Portal assembly order status update",
+    "about": "a status update of an assembly order in the Portal (quantities made and left, crew size, times)",
+    "links_to": "AssemblyOrder",
+    "display": [
+     "assembly_order_id",
+     "id"
+    ]
+   },
+   "public.app_batch_schedule": {
+    "decision": "links",
+    "label": "Portal batch schedule entry",
+    "about": "a scheduled bulk batch slot in the Portal (line, bulk product, dates, status)",
+    "links_to": "Batch",
+    "display": [
+     "batch_name",
+     "id"
+    ],
+    "text": [
+     "bulk_name",
+     "title"
+    ]
+   },
+   "public.app_department": {
+    "decision": "skip",
+    "label": "Portal department",
+    "reason": "system: Portal access-control departments (pii)"
+   },
+   "public.app_manufacturer": {
+    "decision": "links",
+    "label": "Portal manufacturer",
+    "about": "a manufacturer record in the Portal",
+    "links_to": "Supplier",
+    "display": [
+     "id"
+    ]
+   },
+   "public.app_production_task": {
+    "decision": "links",
+    "label": "Portal production task",
+    "about": "a production task logged in the Portal against an assembly order (type, category, start and finish, hours, quantity)",
+    "links_to": "AssemblyOrder",
+    "display": [
+     "mo_id",
+     "id"
+    ]
+   },
+   "public.app_supplier_product_tier": {
+    "decision": "extends",
+    "label": "Portal supplier price tier",
+    "about": "a quantity price tier of a supplier product in the Portal",
+    "extends": "SupplierItem",
+    "display": [
+     "id"
+    ]
+   },
+   "public.app_temporary_elevation_grant": {
+    "decision": "skip",
+    "label": "Portal temporary elevation grant",
+    "reason": "system: Portal access-control elevations (pii)"
+   },
+   "public.app_temporary_elevation_request": {
+    "decision": "skip",
+    "label": "Portal temporary elevation request",
+    "reason": "system: Portal access-control elevation requests (pii)"
+   },
+   "public.app_user": {
+    "decision": "skip",
+    "label": "Portal user",
+    "reason": "system: Portal login and access-control directory (pii); people come from the directory with the exclusion rules"
+   },
+   "public.app_user_access_scope": {
+    "decision": "skip",
+    "label": "Portal user access scope",
+    "reason": "system: Portal access-control scopes (pii)"
+   },
+   "public.app_user_department_membership": {
+    "decision": "skip",
+    "label": "Portal department membership",
+    "reason": "system: Portal access-control membership (pii)"
+   },
+   "sage.ap_aged": {
+    "decision": "type",
+    "label": "AP aged trial balance row",
+    "about": "a row of a Sage AP aged trial balance run: vendor, document, due date and amounts per aging bucket",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idvend"
+    ]
+   },
+   "sage.ap_bta": {
+    "decision": "type",
+    "label": "AP payment batch",
+    "about": "a Sage AP payment or adjustment batch (description, status, cheque run, totals)",
+    "display": [
+     "cntbtch"
+    ]
+   },
+   "sage.ap_clx": {
+    "decision": "skip",
+    "label": "AP vendor tax class",
+    "reason": "system: tax class setup"
+   },
+   "sage.ap_dpo": {
+    "decision": "skip",
+    "label": "AP session date",
+    "reason": "log: session date stamps only"
+   },
+   "sage.ap_dsd": {
+    "decision": "skip",
+    "label": "AP distribution set line",
+    "reason": "system: invoice distribution setup"
+   },
+   "sage.ap_dsh": {
+    "decision": "skip",
+    "label": "AP distribution set",
+    "reason": "system: invoice distribution setup"
+   },
+   "sage.ap_glref": {
+    "decision": "skip",
+    "label": "AP GL reference setup",
+    "reason": "system: GL integration reference setup"
+   },
+   "sage.ap_ibc": {
+    "decision": "type",
+    "label": "AP invoice batch",
+    "about": "a Sage AP invoice batch (description, status, totals)",
+    "display": [
+     "cntbtch"
+    ]
+   },
+   "sage.ap_ibd": {
+    "decision": "type",
+    "label": "AP invoice entry line",
+    "about": "a line of a Sage AP invoice entry: GL account, item, quantity and amount",
+    "display": [
+     "transnbr",
+     "cntbtch",
+     "cntitem"
+    ]
+   },
+   "sage.ap_ibdo": {
+    "decision": "extends",
+    "label": "AP invoice line optional field",
+    "about": "an optional field value of a Sage AP invoice entry line",
+    "extends": "RelSageApIbh",
+    "display": [
+     "cntbtch",
+     "cntitem",
+     "cntline"
+    ],
+    "joins": [
+     {
+      "name": "invoice_entry",
+      "to_binding": "gen.sage.ap_ibh",
+      "pairs": [
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch and entry of the optional field"
+     }
+    ]
+   },
+   "sage.ap_ibh": {
+    "decision": "type",
+    "label": "AP invoice entry",
+    "about": "a Sage AP vendor invoice, credit or debit note entry: vendor, document, PO, dates and totals",
+    "display": [
+     "idinvc",
+     "idvend",
+     "cntbtch"
+    ]
+   },
+   "sage.ap_ibho": {
+    "decision": "extends",
+    "label": "AP invoice entry optional field",
+    "about": "an optional field value of a Sage AP invoice entry",
+    "extends": "RelSageApIbh",
+    "display": [
+     "cntbtch",
+     "cntitem",
+     "optfield"
+    ],
+    "joins": [
+     {
+      "name": "invoice_entry",
+      "to_binding": "gen.sage.ap_ibh",
+      "pairs": [
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch and entry of the optional field"
+     }
+    ]
+   },
+   "sage.ap_ibs": {
+    "decision": "extends",
+    "label": "AP invoice payment schedule",
+    "about": "a payment due date and amount of a Sage AP invoice entry",
+    "extends": "RelSageApIbh",
+    "display": [
+     "cntbtch",
+     "cntitem"
+    ]
+   },
+   "sage.ap_ibt": {
+    "decision": "extends",
+    "label": "AP invoice entry text",
+    "about": "a text line of a Sage AP invoice entry",
+    "extends": "RelSageApIbh",
+    "display": [
+     "cntbtch",
+     "cntitem",
+     "cntline"
+    ],
+    "joins": [
+     {
+      "name": "invoice_entry",
+      "to_binding": "gen.sage.ap_ibh",
+      "pairs": [
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch and entry of the text line"
+     }
+    ]
+   },
+   "sage.ap_intck": {
+    "decision": "skip",
+    "label": "AP integrity check",
+    "reason": "log: data integrity checker run record"
+   },
+   "sage.ap_msg": {
+    "decision": "skip",
+    "label": "AP message",
+    "reason": "system: e-mail message templates"
+   },
+   "sage.ap_oblj": {
+    "decision": "type",
+    "label": "AP open document journal line",
+    "about": "a posted line of a Sage AP open document journal",
+    "display": [
+     "idinvc",
+     "idvend",
+     "transnbr"
+    ],
+    "joins": [
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ap_open_document",
+      "pairs": [
+       {
+        "from": "idvend",
+        "to": "idvend",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the vendor and document number of the journal line"
+     }
+    ]
+   },
+   "sage.ap_obljo": {
+    "decision": "extends",
+    "label": "AP open document line optional field",
+    "about": "an optional field value of a Sage AP open document journal line",
+    "extends": "RelSageApVendor",
+    "display": [
+     "idinvc",
+     "idvend",
+     "cntline"
+    ]
+   },
+   "sage.ap_oblo": {
+    "decision": "extends",
+    "label": "AP open document optional field",
+    "about": "an optional field value of a Sage AP open document",
+    "extends": "RelSageApVendor",
+    "display": [
+     "idinvc",
+     "idvend",
+     "optfield"
+    ]
+   },
+   "sage.ap_obp": {
+    "decision": "type",
+    "label": "AP payment application",
+    "about": "a payment, credit or adjustment applied to a Sage AP open document",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idvend"
+    ],
+    "joins": [
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ap_open_document",
+      "pairs": [
+       {
+        "from": "idvend",
+        "to": "idvend",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the vendor and document number the payment, credit or adjustment applies to (which cheque paid which invoice)"
+     }
+    ]
+   },
+   "sage.ap_obs": {
+    "decision": "extends",
+    "label": "AP open document schedule",
+    "about": "a due-date instalment of a Sage AP open document and its remaining balance",
+    "extends": "RelSageApOpenDocument",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idvend"
+    ],
+    "joins": [
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ap_open_document",
+      "pairs": [
+       {
+        "from": "idvend",
+        "to": "idvend",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the vendor and document number of the schedule"
+     }
+    ]
+   },
+   "sage.ap_ofd": {
+    "decision": "skip",
+    "label": "AP optional field definition",
+    "reason": "system: optional field setup"
+   },
+   "sage.ap_ofh": {
+    "decision": "skip",
+    "label": "AP optional field location",
+    "reason": "system: optional field setup"
+   },
+   "sage.ap_open_document": {
+    "decision": "type",
+    "label": "AP open document",
+    "about": "a Sage AP open (posted) vendor document: invoice, credit or debit note, payment or prepayment, with balance and due date",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idvend"
+    ]
+   },
+   "sage.ap_p01": {
+    "decision": "skip",
+    "label": "AP options record 1",
+    "reason": "system: an AP module options record"
+   },
+   "sage.ap_p02": {
+    "decision": "skip",
+    "label": "AP options record 2",
+    "reason": "system: an AP module options record"
+   },
+   "sage.ap_p03": {
+    "decision": "skip",
+    "label": "AP options record 3",
+    "reason": "system: an AP module options record"
+   },
+   "sage.ap_p04": {
+    "decision": "skip",
+    "label": "AP options record 4",
+    "reason": "system: an AP module options record"
+   },
+   "sage.ap_p05": {
+    "decision": "skip",
+    "label": "AP options record 5",
+    "reason": "system: an AP module options record"
+   },
+   "sage.ap_pjd": {
+    "decision": "type",
+    "label": "AP posted transaction line",
+    "about": "a Sage AP posting-journal line: account, amount and the GL entry it posted to",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idvend"
+    ]
+   },
+   "sage.ap_pjdo": {
+    "decision": "extends",
+    "label": "AP posted transaction line optional field",
+    "about": "an optional field value of a Sage AP posted transaction line",
+    "extends": "RelSageApPjh",
+    "display": [
+     "cntbtch",
+     "cntitem",
+     "postseqnce"
+    ],
+    "joins": [
+     {
+      "name": "posted_entry",
+      "to_binding": "gen.sage.ap_pjh",
+      "pairs": [
+       {
+        "from": "typebtch",
+        "to": "typebtch",
+        "compare": "text_id"
+       },
+       {
+        "from": "postseqnce",
+        "to": "postseqnce",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type, posting sequence, batch and entry of the optional field"
+     }
+    ]
+   },
+   "sage.ap_pjh": {
+    "decision": "type",
+    "label": "AP posted transaction",
+    "about": "a Sage AP posting-journal header: a posted invoice, payment or adjustment",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idvend"
+    ],
+    "joins": [
+     {
+      "name": "gl_entry",
+      "to_binding": "gen.sage.gl_je_header",
+      "pairs": [
+       {
+        "from": "glbatch",
+        "to": "batchid",
+        "compare": "integer_id"
+       },
+       {
+        "from": "glentry",
+        "to": "btchentry",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the GL batch and entry the AP posting created (AP-to-GL integration)"
+     },
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ap_open_document",
+      "pairs": [
+       {
+        "from": "idvend",
+        "to": "idvend",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the vendor and document number the posting journal posted"
+     }
+    ]
+   },
+   "sage.ap_pjho": {
+    "decision": "extends",
+    "label": "AP posted transaction optional field",
+    "about": "an optional field value of a Sage AP posted transaction",
+    "extends": "RelSageApPjh",
+    "display": [
+     "cntbtch",
+     "cntitem",
+     "postseqnce"
+    ],
+    "joins": [
+     {
+      "name": "posted_entry",
+      "to_binding": "gen.sage.ap_pjh",
+      "pairs": [
+       {
+        "from": "typebtch",
+        "to": "typebtch",
+        "compare": "text_id"
+       },
+       {
+        "from": "postseqnce",
+        "to": "postseqnce",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type, posting sequence, batch and entry of the optional field"
+     }
+    ]
+   },
+   "sage.ap_pjs": {
+    "decision": "skip",
+    "label": "AP posting run",
+    "reason": "log: one row per AP posting run (posting sequence, dates, flags)"
+   },
+   "sage.ap_pter": {
+    "decision": "skip",
+    "label": "AP posting error",
+    "reason": "log: Sage AP posting-error log rows"
+   },
+   "sage.ap_ptp": {
+    "decision": "type",
+    "label": "AP payment code",
+    "about": "a Sage AP payment code (cheque, cash, wire) payments carry",
+    "display": [
+     "paymcode"
+    ]
+   },
+   "sage.ap_ras": {
+    "decision": "skip",
+    "label": "AP account set",
+    "reason": "system: GL account set setup"
+   },
+   "sage.ap_rdc": {
+    "decision": "skip",
+    "label": "AP 1099/CPRS code",
+    "reason": "system: tax reporting code setup"
+   },
+   "sage.ap_rpd": {
+    "decision": "extends",
+    "label": "AP recurring payable line",
+    "about": "a distribution line of a Sage AP recurring payable",
+    "extends": "RelSageApRph",
+    "display": [
+     "idvend",
+     "cntline",
+     "idrecurr"
+    ],
+    "joins": [
+     {
+      "name": "recurring_payable",
+      "to_binding": "gen.sage.ap_rph",
+      "pairs": [
+       {
+        "from": "idvend",
+        "to": "idvend",
+        "compare": "text_id"
+       },
+       {
+        "from": "idrecurr",
+        "to": "idrecurr",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the vendor and recurring payable code"
+     }
+    ]
+   },
+   "sage.ap_rph": {
+    "decision": "type",
+    "label": "AP recurring payable",
+    "about": "a Sage AP recurring payable (vendor, schedule, amounts, last invoice generated)",
+    "display": [
+     "idvend",
+     "idrecurr"
+    ]
+   },
+   "sage.ap_rpho": {
+    "decision": "extends",
+    "label": "AP recurring payable optional field",
+    "about": "an optional field value of a Sage AP recurring payable",
+    "extends": "RelSageApVendor",
+    "display": [
+     "idvend",
+     "idrecurr",
+     "optfield"
+    ]
+   },
+   "sage.ap_rstrt": {
+    "decision": "skip",
+    "label": "AP restart record",
+    "reason": "system: interrupted-process restart records"
+   },
+   "sage.ap_slh": {
+    "decision": "skip",
+    "label": "AP payment selection criteria",
+    "reason": "system: saved cheque-run selection criteria"
+   },
+   "sage.ap_slven": {
+    "decision": "skip",
+    "label": "AP vendor selection list",
+    "reason": "system: saved selection list for a cheque run"
+   },
+   "sage.ap_tcn": {
+    "decision": "extends",
+    "label": "AP miscellaneous payment line",
+    "about": "a distribution line of a Sage AP miscellaneous payment",
+    "extends": "RelSageApTcr",
+    "display": [
+     "cntbtch",
+     "cntline"
+    ],
+    "joins": [
+     {
+      "name": "payment",
+      "to_binding": "gen.sage.ap_tcr",
+      "pairs": [
+       {
+        "from": "batchtype",
+        "to": "btchtype",
+        "compare": "text_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntrmit",
+        "to": "cntentr",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type, batch and entry of the miscellaneous line"
+     }
+    ]
+   },
+   "sage.ap_tcp": {
+    "decision": "extends",
+    "label": "AP payment application",
+    "about": "a document a Sage AP payment is applied to and the applied amount",
+    "extends": "RelSageApTcr",
+    "display": [
+     "idinvc",
+     "idvend",
+     "cntbtch"
+    ],
+    "joins": [
+     {
+      "name": "payment",
+      "to_binding": "gen.sage.ap_tcr",
+      "pairs": [
+       {
+        "from": "batchtype",
+        "to": "btchtype",
+        "compare": "text_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntrmit",
+        "to": "cntentr",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type, batch and entry of the applied line"
+     }
+    ]
+   },
+   "sage.ap_tcr": {
+    "decision": "type",
+    "label": "AP payment",
+    "about": "a Sage AP payment or adjustment entry (vendor, cheque, bank amount, applied amount)",
+    "display": [
+     "docnbr",
+     "idrmit",
+     "idvend"
+    ],
+    "joins": [
+     {
+      "name": "payment_batch",
+      "to_binding": "gen.sage.ap_bta",
+      "pairs": [
+       {
+        "from": "btchtype",
+        "to": "paymtype",
+        "compare": "text_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type and number of the payment"
+     }
+    ]
+   },
+   "sage.ap_tcu": {
+    "decision": "extends",
+    "label": "AP payment adjustment",
+    "about": "an adjustment entered with a Sage AP payment",
+    "extends": "RelSageApTcr",
+    "display": [
+     "transnbr",
+     "cntbtch",
+     "cntline"
+    ],
+    "joins": [
+     {
+      "name": "payment",
+      "to_binding": "gen.sage.ap_tcr",
+      "pairs": [
+       {
+        "from": "batchtype",
+        "to": "btchtype",
+        "compare": "text_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntrmit",
+        "to": "cntentr",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type, batch and entry of the adjustment"
+     }
+    ]
+   },
+   "sage.ap_term": {
+    "decision": "type",
+    "label": "AP payment terms",
+    "about": "a Sage AP payment terms code (due and discount day rules)",
+    "display": [
+     "termscode"
+    ]
+   },
+   "sage.ap_vcm": {
+    "decision": "extends",
+    "label": "AP vendor comment",
+    "about": "a dated comment on a Sage AP vendor",
+    "extends": "RelSageApVendor",
+    "display": [
+     "vendorid",
+     "cmnttype"
+    ]
+   },
+   "sage.ap_vendor": {
+    "decision": "type",
+    "label": "Vendor (Sage)",
+    "about": "a Sage AP vendor (code, name, terms, balances, last activity)",
+    "display": [
+     "idcust",
+     "vendorid",
+     "idgrp"
+    ]
+   },
+   "sage.ap_vendor_remit": {
+    "decision": "extends",
+    "label": "AP vendor remit-to location",
+    "about": "a remit-to address of a Sage AP vendor",
+    "extends": "RelSageApVendor",
+    "display": [
+     "idvend"
+    ]
+   },
+   "sage.ap_veno": {
+    "decision": "extends",
+    "label": "AP vendor optional field",
+    "about": "an optional field value of a Sage AP vendor",
+    "extends": "RelSageApVendor",
+    "display": [
+     "vendorid",
+     "optfield"
+    ]
+   },
+   "sage.ap_vgr": {
+    "decision": "type",
+    "label": "AP vendor group",
+    "about": "a Sage AP vendor group (terms, distribution, tax setup)",
+    "display": [
+     "groupid",
+     "paymcode"
+    ]
+   },
+   "sage.ap_vgs": {
+    "decision": "extends",
+    "label": "AP vendor group period statistics",
+    "about": "a Sage AP vendor group's counts and amounts for one period",
+    "extends": "RelSageApVgr",
+    "display": [
+     "idgrp"
+    ],
+    "joins": [
+     {
+      "name": "vendor_group",
+      "to_binding": "gen.sage.ap_vgr",
+      "pairs": [
+       {
+        "from": "idgrp",
+        "to": "groupid",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the vendor group code"
+     }
+    ]
+   },
+   "sage.ap_vsm": {
+    "decision": "extends",
+    "label": "AP vendor period statistics",
+    "about": "a Sage AP vendor's invoice, payment and credit counts and amounts for one period",
+    "extends": "RelSageApVendor",
+    "display": [
+     "vendorid"
+    ]
+   },
+   "sage.ar_aged": {
+    "decision": "type",
+    "label": "AR aged trial balance row",
+    "about": "a row of a Sage AR aged trial balance run: customer, document, due date and amounts per aging bucket",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ]
+   },
+   "sage.ar_bta": {
+    "decision": "type",
+    "label": "AR receipt batch",
+    "about": "a Sage AR receipt or adjustment batch (description, status, deposit, totals)",
+    "display": [
+     "cntbtch"
+    ]
+   },
+   "sage.ar_cmm": {
+    "decision": "type",
+    "label": "AR customer comment",
+    "about": "a dated comment on a Sage AR customer (follow-up, note)",
+    "display": [
+     "idcust",
+     "cmnttype"
+    ],
+    "text": [
+     "textcmnt1",
+     "textcmnt10",
+     "textcmnt2",
+     "textcmnt3",
+     "textcmnt4",
+     "textcmnt5",
+     "textcmnt6",
+     "textcmnt7",
+     "textcmnt8",
+     "textcmnt9"
+    ],
+    "joins": [
+     {
+      "name": "comment_type",
+      "to_binding": "gen.sage.ar_cmmtp",
+      "pairs": [
+       {
+        "from": "cmnttype",
+        "to": "cmnttype",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the comment type code"
+     }
+    ]
+   },
+   "sage.ar_cmmtp": {
+    "decision": "type",
+    "label": "AR comment type",
+    "about": "a Sage AR comment type a customer comment carries",
+    "display": [
+     "cmnttype"
+    ]
+   },
+   "sage.ar_csm": {
+    "decision": "extends",
+    "label": "AR customer period statistics",
+    "about": "a Sage AR customer's counts and amounts (invoices, payments, credits, write-offs) for one period",
+    "extends": "Customer",
+    "display": [
+     "idcust"
+    ]
+   },
+   "sage.ar_cuso": {
+    "decision": "extends",
+    "label": "AR customer optional field",
+    "about": "an optional field value of a Sage AR customer",
+    "extends": "Customer",
+    "display": [
+     "idcust",
+     "optfield"
+    ]
+   },
+   "sage.ar_dro": {
+    "decision": "skip",
+    "label": "AR session date",
+    "reason": "log: session date stamps only"
+   },
+   "sage.ar_dun": {
+    "decision": "skip",
+    "label": "AR dunning message",
+    "reason": "system: dunning message templates"
+   },
+   "sage.ar_glref": {
+    "decision": "skip",
+    "label": "AR GL reference setup",
+    "reason": "system: GL integration reference setup"
+   },
+   "sage.ar_gro": {
+    "decision": "type",
+    "label": "AR customer group",
+    "about": "a Sage AR customer group (credit limits, terms, salesperson splits)",
+    "display": [
+     "idgrp"
+    ]
+   },
+   "sage.ar_groo": {
+    "decision": "extends",
+    "label": "AR customer group optional field",
+    "about": "an optional field value of a Sage AR customer group",
+    "extends": "RelSageArGro",
+    "display": [
+     "idgrp",
+     "optfield"
+    ],
+    "joins": [
+     {
+      "name": "customer_group",
+      "to_binding": "gen.sage.ar_gro",
+      "pairs": [
+       {
+        "from": "idgrp",
+        "to": "idgrp",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the customer group code"
+     }
+    ]
+   },
+   "sage.ar_gsm": {
+    "decision": "extends",
+    "label": "AR customer group period statistics",
+    "about": "a Sage AR customer group's counts and amounts for one period",
+    "extends": "RelSageArGro",
+    "display": [
+     "idgrp"
+    ],
+    "joins": [
+     {
+      "name": "customer_group",
+      "to_binding": "gen.sage.ar_gro",
+      "pairs": [
+       {
+        "from": "idgrp",
+        "to": "idgrp",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the customer group code"
+     }
+    ]
+   },
+   "sage.ar_ibc": {
+    "decision": "type",
+    "label": "AR invoice batch",
+    "about": "a Sage AR invoice batch (description, status, totals)",
+    "display": [
+     "cntbtch"
+    ]
+   },
+   "sage.ar_ibd": {
+    "decision": "type",
+    "label": "AR invoice entry line",
+    "about": "a line of a Sage AR invoice entry: item, quantity, revenue account and amount",
+    "display": [
+     "idinvc",
+     "transnbr",
+     "cntbtch"
+    ]
+   },
+   "sage.ar_ibh": {
+    "decision": "type",
+    "label": "AR invoice entry",
+    "about": "a Sage AR invoice, credit or debit note entry in a batch: customer, document number, order, shipment, dates and totals",
+    "display": [
+     "idinvc",
+     "idcust",
+     "cntbtch"
+    ],
+    "joins": [
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ar_open_document",
+      "pairs": [
+       {
+        "from": "idcust",
+        "to": "idcust",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the customer and document number the invoice entry became once posted (also non-OE documents)"
+     }
+    ]
+   },
+   "sage.ar_ibs": {
+    "decision": "extends",
+    "label": "AR invoice payment schedule",
+    "about": "a payment due date and amount of a Sage AR invoice entry",
+    "extends": "RelSageArIbh",
+    "display": [
+     "cntbtch",
+     "cntitem"
+    ]
+   },
+   "sage.ar_ibt": {
+    "decision": "extends",
+    "label": "AR invoice entry text",
+    "about": "a text line of a Sage AR invoice entry",
+    "extends": "RelSageArIbh",
+    "display": [
+     "cntbtch",
+     "cntitem",
+     "cntline"
+    ],
+    "joins": [
+     {
+      "name": "invoice_entry",
+      "to_binding": "gen.sage.ar_ibh",
+      "pairs": [
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch and entry of the text line"
+     }
+    ]
+   },
+   "sage.ar_intck": {
+    "decision": "skip",
+    "label": "AR integrity check",
+    "reason": "log: data integrity checker run record"
+   },
+   "sage.ar_msg": {
+    "decision": "skip",
+    "label": "AR message",
+    "reason": "system: e-mail message templates"
+   },
+   "sage.ar_nat": {
+    "decision": "type",
+    "label": "AR national account",
+    "about": "a Sage AR national account grouping customers under one parent account, with balances",
+    "display": [
+     "idgrp",
+     "idnatacct"
+    ]
+   },
+   "sage.ar_nato": {
+    "decision": "extends",
+    "label": "AR national account optional field",
+    "about": "an optional field value of a Sage AR national account",
+    "extends": "RelSageArNat",
+    "display": [
+     "idnatacct",
+     "optfield"
+    ],
+    "joins": [
+     {
+      "name": "national_account",
+      "to_binding": "gen.sage.ar_nat",
+      "pairs": [
+       {
+        "from": "idnatacct",
+        "to": "idnatacct",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the national account code"
+     }
+    ]
+   },
+   "sage.ar_nsm": {
+    "decision": "extends",
+    "label": "AR national account period statistics",
+    "about": "a Sage AR national account's counts and amounts for one period",
+    "extends": "RelSageArNat",
+    "display": [
+     "idnatlacct"
+    ],
+    "joins": [
+     {
+      "name": "national_account",
+      "to_binding": "gen.sage.ar_nat",
+      "pairs": [
+       {
+        "from": "idnatlacct",
+        "to": "idnatacct",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the national account code"
+     }
+    ]
+   },
+   "sage.ar_oblj": {
+    "decision": "type",
+    "label": "AR open document journal line",
+    "about": "a posted line of a Sage AR open document journal (account, item, amount, tax)",
+    "display": [
+     "idinvc",
+     "idcust",
+     "transnbr"
+    ],
+    "joins": [
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ar_open_document",
+      "pairs": [
+       {
+        "from": "idcust",
+        "to": "idcust",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the customer and document number of the journal line"
+     }
+    ]
+   },
+   "sage.ar_obp": {
+    "decision": "type",
+    "label": "AR payment application",
+    "about": "a payment, credit or adjustment applied to a Sage AR open document (remittance, amount, date)",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ],
+    "joins": [
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ar_open_document",
+      "pairs": [
+       {
+        "from": "idcust",
+        "to": "idcust",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the customer and document number the payment, credit or adjustment applies to (cash application)"
+     },
+     {
+      "name": "receipt",
+      "to_binding": "gen.sage.ar_tcr",
+      "pairs": [
+       {
+        "from": "idcust",
+        "to": "idcust",
+        "compare": "text_id"
+       },
+       {
+        "from": "idrmit",
+        "to": "idrmit",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the customer and remittance id of the receipt the application comes from (a remittance id alone recurs across customers)"
+     }
+    ]
+   },
+   "sage.ar_obs": {
+    "decision": "extends",
+    "label": "AR open document schedule",
+    "about": "a due-date instalment of a Sage AR open document and its remaining balance",
+    "extends": "RelSageArOpenDocument",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ],
+    "joins": [
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ar_open_document",
+      "pairs": [
+       {
+        "from": "idcust",
+        "to": "idcust",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the customer and document number of the schedule"
+     }
+    ]
+   },
+   "sage.ar_ofd": {
+    "decision": "skip",
+    "label": "AR optional field definition",
+    "reason": "system: optional field setup"
+   },
+   "sage.ar_ofh": {
+    "decision": "skip",
+    "label": "AR optional field location",
+    "reason": "system: optional field setup"
+   },
+   "sage.ar_open_document": {
+    "decision": "type",
+    "label": "AR open document",
+    "about": "a Sage AR open (posted) customer document: invoice, credit or debit note, receipt or prepayment, with balance, due date and status",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ]
+   },
+   "sage.ar_pjd": {
+    "decision": "type",
+    "label": "AR posted transaction line",
+    "about": "a Sage AR posting-journal line: account, amount and the GL entry it posted to",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ]
+   },
+   "sage.ar_pjh": {
+    "decision": "type",
+    "label": "AR posted transaction",
+    "about": "a Sage AR posting-journal header: a posted invoice, receipt or adjustment and the GL batch and entry it posted to",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ],
+    "joins": [
+     {
+      "name": "gl_entry",
+      "to_binding": "gen.sage.gl_je_header",
+      "pairs": [
+       {
+        "from": "glbatch",
+        "to": "batchid",
+        "compare": "integer_id"
+       },
+       {
+        "from": "glentry",
+        "to": "btchentry",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the GL batch and entry the AR posting created (AR-to-GL integration)"
+     },
+     {
+      "name": "open_document",
+      "to_binding": "gen.sage.ar_open_document",
+      "pairs": [
+       {
+        "from": "idcust",
+        "to": "idcust",
+        "compare": "text_id"
+       },
+       {
+        "from": "idinvc",
+        "to": "idinvc",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the customer and document number the posting journal posted"
+     }
+    ]
+   },
+   "sage.ar_pjs": {
+    "decision": "skip",
+    "label": "AR posting run",
+    "reason": "log: one row per AR posting run (posting sequence, dates, flags)"
+   },
+   "sage.ar_pter": {
+    "decision": "skip",
+    "label": "AR posting error",
+    "reason": "log: Sage AR posting-error log rows"
+   },
+   "sage.ar_ptp": {
+    "decision": "type",
+    "label": "AR payment code",
+    "about": "a Sage AR payment code (cash, cheque, credit card) receipts carry",
+    "display": [
+     "paymcode"
+    ]
+   },
+   "sage.ar_pym": {
+    "decision": "type",
+    "label": "AR customer payment",
+    "about": "a Sage AR customer payment record (cheque number, remitter, amount, cleared or reversed date)",
+    "display": [
+     "idinvc",
+     "idcust",
+     "cntbtch"
+    ]
+   },
+   "sage.ar_r01": {
+    "decision": "skip",
+    "label": "AR options record 1",
+    "reason": "system: an AR module options record"
+   },
+   "sage.ar_r02": {
+    "decision": "skip",
+    "label": "AR options record 2",
+    "reason": "system: an AR module options record"
+   },
+   "sage.ar_r03": {
+    "decision": "skip",
+    "label": "AR options record 3",
+    "reason": "system: an AR module options record"
+   },
+   "sage.ar_r04": {
+    "decision": "skip",
+    "label": "AR options record 4",
+    "reason": "system: an AR module options record"
+   },
+   "sage.ar_r05": {
+    "decision": "skip",
+    "label": "AR options record 5",
+    "reason": "system: an AR module options record"
+   },
+   "sage.ar_r06": {
+    "decision": "skip",
+    "label": "AR options record 6",
+    "reason": "system: an AR module options record"
+   },
+   "sage.ar_ras": {
+    "decision": "skip",
+    "label": "AR account set",
+    "reason": "system: GL account set setup"
+   },
+   "sage.ar_rbc": {
+    "decision": "skip",
+    "label": "AR recurring charge setup",
+    "reason": "system: single setup row"
+   },
+   "sage.ar_rfb": {
+    "decision": "type",
+    "label": "AR refund batch",
+    "about": "a Sage AR refund batch",
+    "display": [
+     "cntbtch"
+    ]
+   },
+   "sage.ar_rfd": {
+    "decision": "extends",
+    "label": "AR refund line",
+    "about": "a document a Sage AR refund applies to",
+    "extends": "RelSageArRfh",
+    "display": [
+     "idinvc",
+     "cntbtch",
+     "cntitem"
+    ],
+    "joins": [
+     {
+      "name": "refund",
+      "to_binding": "gen.sage.ar_rfh",
+      "pairs": [
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch and entry of the refund line"
+     }
+    ]
+   },
+   "sage.ar_rfh": {
+    "decision": "type",
+    "label": "AR refund",
+    "about": "a Sage AR refund entry (customer, cheque, amount)",
+    "display": [
+     "idinvc",
+     "idcust",
+     "cntbtch"
+    ],
+    "joins": [
+     {
+      "name": "refund_batch",
+      "to_binding": "gen.sage.ar_rfb",
+      "pairs": [
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the refund batch number"
+     }
+    ]
+   },
+   "sage.ar_salesperson": {
+    "decision": "type",
+    "label": "AR salesperson",
+    "about": "a Sage AR salesperson (code, employee number, sales target, commission flag); personal and finance marked",
+    "display": [
+     "codeslsp"
+    ]
+   },
+   "sage.ar_slcus": {
+    "decision": "skip",
+    "label": "AR customer selection list",
+    "reason": "system: saved selection list for a report or print run"
+   },
+   "sage.ar_sllbl": {
+    "decision": "skip",
+    "label": "AR label print row",
+    "reason": "system: mailing-label print buffer rows"
+   },
+   "sage.ar_sllst": {
+    "decision": "skip",
+    "label": "AR selection list",
+    "reason": "system: saved selection list definitions"
+   },
+   "sage.ar_sps": {
+    "decision": "extends",
+    "label": "AR salesperson period statistics",
+    "about": "a Sage AR salesperson's invoiced, paid and written-off counts and amounts for one period; personal and finance marked",
+    "extends": "RelSageArSalesperson",
+    "display": [
+     "codeslsp"
+    ],
+    "joins": [
+     {
+      "name": "salesperson",
+      "to_binding": "gen.sage.ar_salesperson",
+      "pairs": [
+       {
+        "from": "codeslsp",
+        "to": "codeslsp",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the salesperson code"
+     }
+    ]
+   },
+   "sage.ar_stcus": {
+    "decision": "extends",
+    "label": "AR statement customer",
+    "about": "a customer as printed on one Sage AR statement run (balances, contacts, aging)",
+    "extends": "Customer",
+    "display": [
+     "idcust",
+     "idgrp",
+     "idnatacct"
+    ]
+   },
+   "sage.ar_stcuso": {
+    "decision": "extends",
+    "label": "AR statement customer optional field",
+    "about": "an optional field value of a customer on one Sage AR statement run",
+    "extends": "Customer",
+    "display": [
+     "idcust",
+     "optfield"
+    ]
+   },
+   "sage.ar_stnat": {
+    "decision": "extends",
+    "label": "AR statement national account",
+    "about": "a national account as printed on one Sage AR statement run",
+    "extends": "RelSageArNat",
+    "display": [
+     "idnatacct"
+    ],
+    "joins": [
+     {
+      "name": "national_account",
+      "to_binding": "gen.sage.ar_nat",
+      "pairs": [
+       {
+        "from": "idnatacct",
+        "to": "idnatacct",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the national account code"
+     }
+    ]
+   },
+   "sage.ar_stobl": {
+    "decision": "extends",
+    "label": "AR statement document",
+    "about": "an open document as printed on a customer's Sage AR statement",
+    "extends": "Customer",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ]
+   },
+   "sage.ar_stobp": {
+    "decision": "extends",
+    "label": "AR statement payment",
+    "about": "a payment as printed on a customer's Sage AR statement",
+    "extends": "Customer",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ]
+   },
+   "sage.ar_strun": {
+    "decision": "skip",
+    "label": "AR statement run",
+    "reason": "log: statement print-run parameters (one row per run)"
+   },
+   "sage.ar_svc": {
+    "decision": "skip",
+    "label": "AR interest profile",
+    "reason": "system: interest/service charge setup"
+   },
+   "sage.ar_svd": {
+    "decision": "skip",
+    "label": "AR interest profile detail",
+    "reason": "system: single setup row"
+   },
+   "sage.ar_tcn": {
+    "decision": "extends",
+    "label": "AR miscellaneous receipt line",
+    "about": "a distribution line of a Sage AR miscellaneous receipt",
+    "extends": "RelSageArTcr",
+    "display": [
+     "cntbtch",
+     "cntitem",
+     "cntline"
+    ],
+    "joins": [
+     {
+      "name": "receipt",
+      "to_binding": "gen.sage.ar_tcr",
+      "pairs": [
+       {
+        "from": "codepaym",
+        "to": "codepymtyp",
+        "compare": "text_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type, batch and entry of the miscellaneous line"
+     }
+    ]
+   },
+   "sage.ar_tcp": {
+    "decision": "extends",
+    "label": "AR receipt application",
+    "about": "a document a Sage AR receipt is applied to and the applied amount",
+    "extends": "RelSageArTcr",
+    "display": [
+     "idinvc",
+     "idcust",
+     "cntbtch"
+    ],
+    "joins": [
+     {
+      "name": "receipt",
+      "to_binding": "gen.sage.ar_tcr",
+      "pairs": [
+       {
+        "from": "codepaym",
+        "to": "codepymtyp",
+        "compare": "text_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type, batch and entry of the applied line"
+     }
+    ]
+   },
+   "sage.ar_tcr": {
+    "decision": "type",
+    "label": "AR receipt",
+    "about": "a Sage AR receipt or adjustment entry (customer, cheque/remittance, bank amount, applied amount)",
+    "display": [
+     "docnbr",
+     "idrmit",
+     "idcust"
+    ],
+    "joins": [
+     {
+      "name": "receipt_batch",
+      "to_binding": "gen.sage.ar_bta",
+      "pairs": [
+       {
+        "from": "codepymtyp",
+        "to": "codepymtyp",
+        "compare": "text_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type and number of the receipt"
+     }
+    ]
+   },
+   "sage.ar_tcu": {
+    "decision": "extends",
+    "label": "AR receipt adjustment",
+    "about": "an adjustment entered with a Sage AR receipt",
+    "extends": "RelSageArTcr",
+    "display": [
+     "transnbr",
+     "cntbtch",
+     "cntitem"
+    ],
+    "joins": [
+     {
+      "name": "receipt",
+      "to_binding": "gen.sage.ar_tcr",
+      "pairs": [
+       {
+        "from": "codepaym",
+        "to": "codepymtyp",
+        "compare": "text_id"
+       },
+       {
+        "from": "cntbtch",
+        "to": "cntbtch",
+        "compare": "integer_id"
+       },
+       {
+        "from": "cntitem",
+        "to": "cntitem",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the batch type, batch and entry of the adjustment"
+     }
+    ]
+   },
+   "sage.ar_unpsth": {
+    "decision": "type",
+    "label": "AR unposted transaction",
+    "about": "a Sage AR transaction entered but not posted (customer, document, amount, applied-to)",
+    "display": [
+     "idinvc",
+     "idrmit",
+     "idcust"
+    ]
+   },
+   "sage.gl_01": {
+    "decision": "skip",
+    "label": "GL options",
+    "reason": "system: the GL module's single options record"
+   },
+   "sage.gl_abk": {
+    "decision": "skip",
+    "label": "GL account structure block",
+    "reason": "system: chart-of-accounts structure definition"
+   },
+   "sage.gl_abrx": {
+    "decision": "skip",
+    "label": "GL account structure",
+    "reason": "system: chart-of-accounts structure definition"
+   },
+   "sage.gl_account": {
+    "decision": "type",
+    "label": "GL account (Sage)",
+    "about": "a Sage 300 general ledger account (number, description, type, group, balance)",
+    "display": [
+     "acctfmttd",
+     "acctid",
+     "acctgrpcod"
+    ],
+    "joins": [
+     {
+      "name": "account_group",
+      "to_binding": "gen.sage.gl_acgrp",
+      "pairs": [
+       {
+        "from": "acctgrpcod",
+        "to": "acctgrpcod",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the account group code"
+     }
+    ]
+   },
+   "sage.gl_acgrp": {
+    "decision": "type",
+    "label": "GL account group",
+    "about": "a Sage GL account group (code and description) accounts are classified under",
+    "display": [
+     "acctgrpcod"
+    ]
+   },
+   "sage.gl_achd": {
+    "decision": "skip",
+    "label": "GL account hierarchy link",
+    "reason": "system: rollup hierarchy index (parent and child keys only)"
+   },
+   "sage.gl_adsd": {
+    "decision": "skip",
+    "label": "GL account descendant index",
+    "reason": "system: rollup hierarchy closure index (keys and counts only)"
+   },
+   "sage.gl_afs": {
+    "decision": "extends",
+    "label": "GL account fiscal set",
+    "about": "a Sage GL account's opening balance and net change per fiscal period for one year",
+    "extends": "RelSageGlAccount",
+    "display": [
+     "acctid"
+    ]
+   },
+   "sage.gl_asv": {
+    "decision": "type",
+    "label": "GL account segment value",
+    "about": "a value of a Sage GL account segment (such as a department or division) and its description",
+    "display": [
+     "segval"
+    ]
+   },
+   "sage.gl_avc": {
+    "decision": "extends",
+    "label": "GL account valid currency",
+    "about": "a currency a Sage GL account may post in",
+    "extends": "RelSageGlAccount",
+    "display": [
+     "acctid"
+    ]
+   },
+   "sage.gl_batch": {
+    "decision": "type",
+    "label": "GL batch",
+    "about": "a Sage GL journal batch (description, source ledger, status, debit and credit totals)",
+    "display": [
+     "batchid"
+    ]
+   },
+   "sage.gl_cas": {
+    "decision": "extends",
+    "label": "GL account source restriction",
+    "about": "a source ledger allowed to post to a Sage GL account",
+    "extends": "RelSageGlAccount",
+    "display": [
+     "acctid"
+    ]
+   },
+   "sage.gl_chagp": {
+    "decision": "skip",
+    "label": "GL account group sort",
+    "reason": "system: account group sort order setup"
+   },
+   "sage.gl_je_detail": {
+    "decision": "type",
+    "label": "GL journal entry line",
+    "about": "one debit or credit line of a Sage GL journal entry: account, amount, date, description and reference",
+    "display": [
+     "acctid",
+     "batchnbr",
+     "journalid"
+    ],
+    "joins": [
+     {
+      "name": "source_code",
+      "to_binding": "gen.sage.gl_srce",
+      "pairs": [
+       {
+        "from": "srceldgr",
+        "to": "srceledger",
+        "compare": "text_id"
+       },
+       {
+        "from": "srcetype",
+        "to": "srcetype",
+        "compare": "text_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the source ledger and type of the line"
+     }
+    ]
+   },
+   "sage.gl_je_header": {
+    "decision": "type",
+    "label": "GL journal entry",
+    "about": "a Sage GL journal entry (batch and entry number, source document, customer or vendor, period, totals)",
+    "display": [
+     "docnumber",
+     "batchid",
+     "btchentry"
+    ]
+   },
+   "sage.gl_jec": {
+    "decision": "extends",
+    "label": "GL journal entry comment",
+    "about": "a comment on a Sage GL journal entry line",
+    "extends": "RelSageGlJeHeader",
+    "display": [
+     "batchnbr",
+     "journalid",
+     "transnbr"
+    ],
+    "joins": [
+     {
+      "name": "journal_entry",
+      "to_binding": "gen.sage.gl_je_header",
+      "pairs": [
+       {
+        "from": "batchnbr",
+        "to": "batchid",
+        "compare": "integer_id"
+       },
+       {
+        "from": "journalid",
+        "to": "btchentry",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the GL batch and entry number of the comment"
+     }
+    ]
+   },
+   "sage.gl_perr": {
+    "decision": "skip",
+    "label": "GL posting error",
+    "reason": "log: Sage GL posting-error log rows (a failed posting run's messages)"
+   },
+   "sage.gl_pjc": {
+    "decision": "extends",
+    "label": "GL posted journal comment",
+    "about": "a comment on a posted Sage GL journal line",
+    "extends": "RelSageGlPjd",
+    "display": [
+     "batchnbr",
+     "entrynbr",
+     "transnbr"
+    ],
+    "joins": [
+     {
+      "name": "posted_line",
+      "to_binding": "gen.sage.gl_pjd",
+      "pairs": [
+       {
+        "from": "postingseq",
+        "to": "postingseq",
+        "compare": "integer_id"
+       },
+       {
+        "from": "batchnbr",
+        "to": "batchnbr",
+        "compare": "integer_id"
+       },
+       {
+        "from": "entrynbr",
+        "to": "entrynbr",
+        "compare": "integer_id"
+       },
+       {
+        "from": "transnbr",
+        "to": "transnbr",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the posting sequence, batch, entry and line of the commented posted line"
+     }
+    ]
+   },
+   "sage.gl_pjd": {
+    "decision": "type",
+    "label": "GL posted journal line",
+    "about": "a line of the Sage GL posting journal: what was posted to which account, in which period and posting sequence",
+    "display": [
+     "acctid",
+     "batchnbr",
+     "entrynbr"
+    ],
+    "joins": [
+     {
+      "name": "journal_entry",
+      "to_binding": "gen.sage.gl_je_header",
+      "pairs": [
+       {
+        "from": "batchnbr",
+        "to": "batchid",
+        "compare": "integer_id"
+       },
+       {
+        "from": "entrynbr",
+        "to": "btchentry",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the GL batch and entry the posted line came from"
+     }
+    ]
+   },
+   "sage.gl_rval": {
+    "decision": "skip",
+    "label": "GL revaluation code",
+    "reason": "system: revaluation setup record"
+   },
+   "sage.gl_rvl": {
+    "decision": "skip",
+    "label": "GL revaluation option",
+    "reason": "system: revaluation setup record"
+   },
+   "sage.gl_sjn": {
+    "decision": "skip",
+    "label": "GL source journal profile",
+    "reason": "system: source journal report profile setup"
+   },
+   "sage.gl_srce": {
+    "decision": "type",
+    "label": "GL source code",
+    "about": "a Sage GL source code (ledger and type) naming where a journal line came from",
+    "display": [
+     "srceledger",
+     "srcetype"
+    ]
+   },
+   "silver.assembly_order_damage": {
+    "decision": "links",
+    "label": "Portal silver assembly order damage",
+    "about": "the Portal's cleaned silver copy of a FileMaker assembly order damage record, keyed by the FileMaker id",
+    "links_to": "AssemblyOrderDamage",
+    "display": [
+     "assembly_order_id",
+     "id"
+    ],
+    "text": [
+     "description"
+    ]
+   },
+   "silver.assembly_order_items": {
+    "decision": "links",
+    "label": "Portal silver assembly order item",
+    "about": "the Portal's cleaned silver copy of a FileMaker assembly order items record, keyed by the FileMaker id",
+    "links_to": "AssemblyOrderComponent",
+    "display": [
+     "assembly_order_id",
+     "id"
+    ]
+   },
+   "silver.assembly_order_statuses": {
+    "decision": "links",
+    "label": "Portal silver assembly order statuse",
+    "about": "the Portal's cleaned silver copy of a FileMaker assembly order statuses record, keyed by the FileMaker id",
+    "links_to": "AssemblyOrderStatusEntry",
+    "display": [
+     "assembly_order_id",
+     "id"
+    ]
+   },
+   "silver.batch_schedule": {
+    "decision": "links",
+    "label": "Portal silver batch schedule",
+    "about": "the Portal's cleaned silver copy of a FileMaker batch schedule record, keyed by the FileMaker id",
+    "links_to": "Batch",
+    "display": [
+     "batch_name",
+     "id"
+    ],
+    "text": [
+     "bulk_name",
+     "title"
+    ],
+    "joins": [
+     {
+      "name": "batch",
+      "to_binding": "portal.fm_batch",
+      "pairs": [
+       {
+        "from": "batch_id",
+        "to": "id",
+        "compare": "integer_id"
+       }
+      ],
+      "tier": "verified",
+      "why": "the FileMaker batch id the silver schedule row names"
+     }
+    ]
+   },
+   "silver.batches": {
+    "decision": "links",
+    "label": "Portal silver batche",
+    "about": "the Portal's cleaned silver copy of a FileMaker batches record, keyed by the FileMaker id",
+    "links_to": "Batch",
+    "display": [
+     "mo_id",
+     "batch_name",
+     "id"
+    ],
+    "text": [
+     "notes"
+    ]
+   },
+   "silver.bulk_products": {
+    "decision": "links",
+    "label": "Portal silver bulk product",
+    "about": "the Portal's cleaned silver copy of a FileMaker bulk products record, keyed by the FileMaker id",
+    "links_to": "Product",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.customers": {
+    "decision": "links",
+    "label": "Portal silver customer",
+    "about": "the Portal's cleaned silver copy of a FileMaker customers record, keyed by the FileMaker id",
+    "links_to": "Customer",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.finished_product_items": {
+    "decision": "links",
+    "label": "Portal silver finished product item",
+    "about": "the Portal's cleaned silver copy of a FileMaker finished product items record, keyed by the FileMaker id",
+    "links_to": "ProductComponent",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.finished_products": {
+    "decision": "links",
+    "label": "Portal silver finished product",
+    "about": "the Portal's cleaned silver copy of a FileMaker finished products record, keyed by the FileMaker id",
+    "links_to": "Product",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.manufacturers": {
+    "decision": "links",
+    "label": "Portal silver manufacturer",
+    "about": "the Portal's cleaned silver copy of a FileMaker manufacturers record, keyed by the FileMaker id",
+    "links_to": "Manufacturer",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.manufacturing_orders": {
+    "decision": "links",
+    "label": "Portal silver manufacturing order",
+    "about": "the Portal's cleaned silver copy of a FileMaker manufacturing orders record, keyed by the FileMaker id",
+    "links_to": "AssemblyOrder",
+    "display": [
+     "id"
+    ],
+    "text": [
+     "notes"
+    ]
+   },
+   "silver.order_entries": {
+    "decision": "links",
+    "label": "Portal silver order entrie",
+    "about": "the Portal's cleaned silver copy of a FileMaker order entries record, keyed by the FileMaker id",
+    "links_to": "SalesOrder",
+    "display": [
+     "id"
+    ],
+    "text": [
+     "reference"
+    ]
+   },
+   "silver.order_entry_items": {
+    "decision": "links",
+    "label": "Portal silver order entry item",
+    "about": "the Portal's cleaned silver copy of a FileMaker order entry items record, keyed by the FileMaker id",
+    "links_to": "SalesOrderLine",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.packaging": {
+    "decision": "links",
+    "label": "Portal silver packaging",
+    "about": "the Portal's cleaned silver copy of a FileMaker packaging record, keyed by the FileMaker id",
+    "links_to": "Product",
+    "display": [
+     "id"
+    ],
+    "text": [
+     "description"
+    ]
+   },
+   "silver.packaging_suppliers": {
+    "decision": "links",
+    "label": "Portal silver packaging supplier",
+    "about": "the Portal's cleaned silver copy of a FileMaker packaging suppliers record, keyed by the FileMaker id",
+    "links_to": "SupplierItem",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.production_tasks": {
+    "decision": "links",
+    "label": "Portal silver production task",
+    "about": "the Portal's cleaned silver copy of a FileMaker production tasks record, keyed by the FileMaker id",
+    "links_to": "AssemblyOrder",
+    "display": [
+     "mo_id",
+     "id"
+    ]
+   },
+   "silver.purchase_order_items": {
+    "decision": "links",
+    "label": "Portal silver purchase order item",
+    "about": "the Portal's cleaned silver copy of a FileMaker purchase order items record, keyed by the FileMaker id",
+    "links_to": "PurchaseOrderLine",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.purchase_orders": {
+    "decision": "links",
+    "label": "Portal silver purchase order",
+    "about": "the Portal's cleaned silver copy of a FileMaker purchase orders record, keyed by the FileMaker id",
+    "links_to": "PurchaseOrder",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.raw_material_suppliers": {
+    "decision": "links",
+    "label": "Portal silver raw material supplier",
+    "about": "the Portal's cleaned silver copy of a FileMaker raw material suppliers record, keyed by the FileMaker id",
+    "links_to": "SupplierItem",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.raw_materials": {
+    "decision": "links",
+    "label": "Portal silver raw material",
+    "about": "the Portal's cleaned silver copy of a FileMaker raw materials record, keyed by the FileMaker id",
+    "links_to": "Product",
+    "display": [
+     "id"
+    ],
+    "text": [
+     "description"
+    ]
+   },
+   "silver.receipt_pack_items": {
+    "decision": "links",
+    "label": "Portal silver receipt pack item",
+    "about": "the Portal's cleaned silver copy of a FileMaker receipt pack items record, keyed by the FileMaker id",
+    "links_to": "ReceiptLine",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.receipt_raw_items": {
+    "decision": "links",
+    "label": "Portal silver receipt raw item",
+    "about": "the Portal's cleaned silver copy of a FileMaker receipt raw items record, keyed by the FileMaker id",
+    "links_to": "ReceiptLine",
+    "display": [
+     "id"
+    ]
+   },
+   "silver.receipts": {
+    "decision": "links",
+    "label": "Portal silver receipt",
+    "about": "the Portal's cleaned silver copy of a FileMaker receipts record, keyed by the FileMaker id",
+    "links_to": "Receipt",
+    "display": [
+     "id"
+    ],
+    "text": [
+     "notes"
+    ]
+   },
+   "silver.suppliers": {
+    "decision": "links",
+    "label": "Portal silver supplier",
+    "about": "the Portal's cleaned silver copy of a FileMaker suppliers record, keyed by the FileMaker id",
+    "links_to": "Supplier",
+    "display": [
+     "id"
+    ],
+    "text": [
+     "notes"
+    ]
+   }
+  }
+ }
+}

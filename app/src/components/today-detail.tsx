@@ -14,8 +14,7 @@ import { briefingKind } from "@/lib/status";
 import type { ActionResult, BriefingItem, CardActionOffer, LatePo, ObjectPage, ProactiveSuggestion, Source, SuggestionDraft, TrailStep } from "@/lib/types";
 import { ActionDialog } from "./card-actions";
 import { SourceChip } from "./source-chip";
-import { AgeRing, DoneRing, OpenRing, SystemTile } from "./ui/glyphs";
-import { Monogram } from "./ui/monogram";
+import { lateFigure, DoneRing, OpenRing, SystemCode } from "./ui/glyphs";
 
 export interface QueueRow {
   key: string;
@@ -72,7 +71,7 @@ function OrderLine({ ordered, needed, daysLate }: { ordered: number | null; need
     <div className="pt-1" data-testid="order-line">
       <div className="relative h-[18px]">
         {late && neededAt != null && (
-          <span className="absolute top-0 -translate-x-1/2 text-[12px] leading-4 font-medium whitespace-nowrap" style={{ left: `${Math.min(88, Math.max(neededAt + (100 - neededAt) / 2, 12))}%` }}>
+          <span className={cn("absolute top-0 -translate-x-1/2 text-[12px] leading-4 font-medium whitespace-nowrap", lateFigure(lateDays))} style={{ left: `${Math.min(88, Math.max(neededAt + (100 - neededAt) / 2, 12))}%` }}>
             {lateDays} days late
           </span>
         )}
@@ -130,7 +129,7 @@ function Figure({ label, value, unit, children }: { label: string; value: string
     <div className="min-w-0">
       <div className="text-[12px] leading-4 text-muted">{label}</div>
       <div className="mt-1 flex items-baseline gap-1.5 whitespace-nowrap">
-        <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] tabular-nums">{value}</span>
+        <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] num">{value}</span>
         {unit && <span className="text-[13px] text-muted">{unit}</span>}
       </div>
       {children}
@@ -186,7 +185,7 @@ function stepDate(at: string | null | undefined) {
   return formatDate(at.slice(0, 10), { short: true });
 }
 
-/** How we know, as a trail: each step on its source system's tile, joined by a line. */
+/** The evidence, as a trail: each step on its source system's tile, joined by a line. */
 function Trail({ steps, verdict }: { steps: TrailStep[]; verdict?: string | null }) {
   const [all, setAll] = useState(false);
   const shown = all ? steps : steps.slice(0, 6);
@@ -194,14 +193,14 @@ function Trail({ steps, verdict }: { steps: TrailStep[]; verdict?: string | null
   return (
     <section data-testid="detail-evidence">
       <SectionTitle aside={steps.length > 6 && <button type="button" onClick={() => setAll(!all)} className="text-[12px] font-medium text-muted hover:text-fg cursor-pointer">{all ? "Fewer" : `All ${steps.length}`}</button>}>
-        How we know
+        Evidence
       </SectionTitle>
       {verdict && <p className="mb-3 text-[13px] leading-5">{readable(verdict)}</p>}
       <ol className="relative">
         {shown.map((s, i) => (
-          <li key={i} className="relative grid grid-cols-[18px_minmax(0,1fr)_auto] gap-x-3 pb-4 last:pb-0">
-            {i < shown.length - 1 && <span className="absolute top-[22px] bottom-[2px] left-[8.5px] w-px bg-border-strong" aria-hidden />}
-            <SystemTile system={s.source?.system} size={18} className="mt-px" />
+          <li key={i} className="relative grid grid-cols-[40px_minmax(0,1fr)_auto] gap-x-2 pb-4 last:pb-0">
+            {i < shown.length - 1 && <span className="absolute top-[20px] bottom-[2px] left-[0.5px] w-px bg-border-strong" aria-hidden />}
+            <SystemCode system={s.source?.system} size={18} className="mt-px" />
             <div className="min-w-0">
               <div className="text-[13px] leading-5">{readable(s.title)}</div>
               {s.source && (
@@ -307,13 +306,12 @@ function Actions({ card, state, onDone }: { card: ProactiveSuggestion; state?: A
   );
 }
 
-/** What the header says under the title: how late, and whether the supplier has given a date. Words in ink; the glyph carries the colour. */
+/** What the header says under the title: how late, and whether the supplier has given a date. Words and glyph in the status colour, as text, no pill. */
 function Facts({ row, page }: { row: QueueRow; page: ObjectPage | null }) {
   const out: React.ReactNode[] = [];
   if (row.days != null && row.status === "late")
     out.push(
-      <span key="late" className="inline-flex items-center gap-1.5">
-        <AgeRing days={row.days} size={14} />
+      <span key="late" className={cn("inline-flex items-center gap-1.5 font-medium", lateFigure(row.days))}>
         {row.days} days late
       </span>,
     );
@@ -329,7 +327,7 @@ function Facts({ row, page }: { row: QueueRow; page: ObjectPage | null }) {
   const trailEta = page?.trail?.trails?.[0]?.eta?.state;
   if (eta?.answer === "yes" || trailEta === "confirmed")
     out.push(
-      <span key="eta" className="inline-flex items-center gap-1.5">
+      <span key="eta" className="inline-flex items-center gap-1.5 font-medium text-ok">
         <DoneRing size={14} />
         Supplier confirmed{eta?.when ? ` ${formatDate(eta.when, { short: true })}` : ""}
       </span>,
@@ -444,7 +442,6 @@ export function TodayDetail({
         <div className="grid min-h-full xl:grid-cols-[minmax(0,1fr)_256px]">
           <div className="min-w-0 space-y-8 px-6 pt-6 pb-12 sm:px-8 sm:pt-7">
             <header className="flex gap-4">
-              <Monogram name={who} size={48} />
               <div className="min-w-0">
                 <div className="flex flex-wrap items-baseline gap-x-2.5">
                   <h2 className="text-[24px] leading-[30px] font-semibold tracking-[-0.025em]">{row.title}</h2>
@@ -473,7 +470,7 @@ export function TodayDetail({
                             <span className="relative h-1 w-24 overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]">
                               <span className="absolute inset-y-0 left-0 rounded-full bg-fg/70" style={{ width: `${Math.max(3, got.pct)}%` }} />
                             </span>
-                            <span className="text-[12px] tabular-nums text-muted">{got.pct}%</span>
+                            <span className="text-[12px] num text-muted">{got.pct}%</span>
                           </div>
                         )}
                       </Figure>
@@ -576,7 +573,7 @@ export function TodayDetail({
                 <ul className="space-y-2">
                   {sources.slice(0, 5).map((src, i) => (
                     <li key={i} className="flex min-w-0 items-center gap-2.5 text-[13px]">
-                      <SystemTile system={src.system} size={18} />
+                      <SystemCode system={src.system} size={18} />
                       <SourceChip source={src} className="min-w-0 max-w-full" />
                     </li>
                   ))}

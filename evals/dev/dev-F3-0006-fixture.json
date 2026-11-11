@@ -19,7 +19,7 @@
  "as_known_at": {
   "time": "2099-01-02T03:04:05Z",
   "l1_generations": {
-   "portal_api": "8a5851cbdc2e491a"
+   "portal_api": "3e2441a266431c3d"
   }
  },
  "closed_transaction": true,
@@ -35,7 +35,7 @@
     "quantity_role": "ordered",
     "citations": [
      {
-      "l1_handle": "api://public.app_sales_order_line/%7B%22id%22%3A%22fx-sol-70-2%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_sales_order_line/%7B%22id%22%3A%22fx-sol-70-2%22%7D@3e2441a266431c3d",
       "field_path": "row.quantity"
      }
     ],
@@ -49,7 +49,7 @@
     "quantity_role": "ordered",
     "citations": [
      {
-      "l1_handle": "api://public.app_sales_order_line/%7B%22id%22%3A%22fx-sol-70-1%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_sales_order_line/%7B%22id%22%3A%22fx-sol-70-1%22%7D@3e2441a266431c3d",
       "field_path": "row.quantity"
      }
     ],
@@ -63,11 +63,11 @@
     "quantity_role": "produced",
     "citations": [
      {
-      "l1_handle": "api://public.assembly_order_status/%7B%22id%22%3A70701%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.assembly_order_status/%7B%22id%22%3A70701%7D@3e2441a266431c3d",
       "field_path": "row.qtymanuf"
      },
      {
-      "l1_handle": "api://public.assembly_order_status/%7B%22id%22%3A70703%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.assembly_order_status/%7B%22id%22%3A70703%7D@3e2441a266431c3d",
       "field_path": "row.qtymanuf"
      }
     ],
@@ -82,7 +82,7 @@
     "quantity_role": "shipped",
     "citations": [
      {
-      "l1_handle": "api://public.app_shipment_line/%7B%22id%22%3A%22fx-shl-70-2%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_shipment_line/%7B%22id%22%3A%22fx-shl-70-2%22%7D@3e2441a266431c3d",
       "field_path": "row.quantity"
      }
     ],
@@ -96,7 +96,7 @@
     "quantity_role": "shipped",
     "citations": [
      {
-      "l1_handle": "api://public.app_shipment_line/%7B%22id%22%3A%22fx-shl-70-1%22%7D@8a5851cbdc2e491a",
+      "l1_handle": "api://public.app_shipment_line/%7B%22id%22%3A%22fx-shl-70-1%22%7D@3e2441a266431c3d",
       "field_path": "row.quantity"
      }
     ],
@@ -191,7 +191,7 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f3_quantities@305211c73a11",
+  "id": "oracle:f3_quantities@8656201efb4b",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
    "devloop/CONTEXT/03-PORTAL.md#3.4 resolveOrderByNumber: exact order_number",
@@ -207,7 +207,7 @@
    "SO closed: SHIPPED/COMPLETE, FM text complet/closed/realiz (P@c3ffda3:src/lib/wms/source-status.ts:24) or Sage header complete 1/Y (etl-sage-distribution-gold.mjs:1393)"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
-  "query_digest": "ba82ce467df7df0f3caee7acffd91b96811b01703d70b6bf809ad7bdec0771fd"
+  "query_digest": "16ec70e889a5a305e8b9babca4c60cd8b575ae8d131433e8bdcee1c88f2bf4dd"
  },
  "label": {
   "status": "oracle_only",

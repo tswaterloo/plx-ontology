@@ -221,6 +221,12 @@ TIME_BUDGET = "time_budget"
 SETTLED = ("verified", "reviewed")
 CONFIRMING = ("verified", "reviewed", "corroborated")
 QC_TYPES = ("RelPublicAppIncomingQcRecord", "QualityRecord")
+# FileMaker's own receiving QC decision, held on the receiving line (lot -> line): a decided
+# status or QC initials on the row. Not a QC record type, so it is named here.
+QC_LINKS = ("Lot.qc_decided_receipt_line",)
+# Receipt systems that hold no QC decision of any kind: never a "no QC" gap, unless a line
+# is tied to a FileMaker line (which holds one)
+NO_QC_SOURCE_BINDINGS = frozenset({"portal.sage_po_receipt_header", "bc.purchase_receipts"})
 PRIORITY = ("high", "medium", "low")
 # The order they start in: the store-only checks (the proactive events among them) side by
 # side on threads (``run(threads=)``), the tool-call rules one after another on the run's
@@ -515,6 +521,16 @@ def _link_row(row: Sequence[Any]) -> tuple:
             sys.intern(row[6]), bool(row[7]))
 
 
+class _ThreadConn:
+    """A thread's store connection, closed when the thread's locals are freed (the thread
+    ended). The finalizer holds the connection and the release callback, never this object."""
+
+    def __init__(self, conn: Any, release: Callable[[Any], None]) -> None:
+        self.conn = conn
+        import weakref
+        weakref.finalize(self, release, conn)
+
+
 class _LinkRows:
     """The run's link rows by link type, read once (``_Store.links``): each row
     (rowid, link_id, link_type, from_object, to_object, tier, markings, gone), ``gone``
@@ -627,8 +643,17 @@ class _Store:
                 conn.set_progress_handler(self.interrupt, 10000)
             with self._conns_lock:
                 self._conns.append(conn)
-            self._local.conn = conn
-        return conn
+            self._local.conn = holder = _ThreadConn(conn, self._release)
+            return holder.conn
+        return conn.conn
+
+    def _release(self, conn: Any) -> None:
+        """A thread ended: its connection is closed and no longer kept (a Postgres server
+        has a fixed number of connections; threads of the lanes and pools come and go)."""
+        with self._conns_lock:
+            self._conns = [c for c in self._conns if c is not conn]
+        with contextlib.suppress(Exception):
+            conn.close()
 
     def watch(self, interrupt: Callable[[], int] | None,
               pin: Callable[[], Callable[[], int]] | None = None) -> None:
@@ -1190,11 +1215,14 @@ def _identity_link_types() -> tuple[str, ...]:
 
 @functools.lru_cache(maxsize=1)
 def declared_qc_links() -> tuple[str, ...]:
-    """Link types the schema declares between a QC record and anything (none today)."""
+    """Link types the schema declares as a QC decision: ``QC_LINKS`` when declared, and
+    every link between a QC record type (served by the Portal later) and anything."""
     from ontology.schema import load_schema
 
-    return tuple(sorted(lid for lid, link in load_schema().link_types.items()
-                        if link.get("from") in QC_TYPES or link.get("to") in QC_TYPES))
+    links = load_schema().link_types
+    return tuple(sorted(lid for lid, link in links.items()
+                        if lid in QC_LINKS or link.get("from") in QC_TYPES
+                        or link.get("to") in QC_TYPES))
 
 
 # --------------------------------------------------------------------------- detectors
@@ -2102,6 +2130,11 @@ def _receipt_without_qc(st: _Store, as_of: date, link_types: Sequence[str]
                            (link["to_object"], link["from_object"])):
             qc[end].add(link["tier"])
             qc_parts[end].append((other, link["markings"]))
+    # a line's twin (the same row in another system) holds that system's QC decision too
+    twins: dict[str, set[str]] = defaultdict(set)
+    for link in st.links((RECEIPT_LINKS[0],), CONFIRMING):
+        twins[link["from_object"]].add(link["to_object"])
+        twins[link["to_object"]].add(link["from_object"])
     skipped = _Skips()
     gaps = []
     for receipt, entry in sorted(receipts.items()):
@@ -2109,7 +2142,15 @@ def _receipt_without_qc(st: _Store, as_of: date, link_types: Sequence[str]
                  if (d := _day(r["value"])) is not None and d <= as_of]
         if not dated:
             continue
-        tiers = set().union(*(qc.get(o, set()) for o in {receipt, *lines_of.get(receipt, ())}))
+        lines = lines_of.get(receipt, set())
+        held = {receipt, *lines, *(t for line in lines for t in twins.get(line, ()))}
+        tiers = set().union(*(qc.get(o, set()) for o in held))
+        if not tiers and po_status.binding_of(receipt) in NO_QC_SOURCE_BINDINGS and not any(
+                po_status.binding_of(t) in po_status.FM_RECEIPT_BINDINGS
+                for line in lines for t in twins.get(line, ())):
+            # Sage and BC keep no QC decision: no QC here is not a gap
+            skipped.note("no_qc_source_for_system", [receipt])
+            continue
         if tiers & set(CONFIRMING):
             continue
         if tiers:
@@ -2118,7 +2159,8 @@ def _receipt_without_qc(st: _Store, as_of: date, link_types: Sequence[str]
             for line in sorted(lines_of.get(receipt, ())):
                 joined = line_marks.get((receipt, line))
                 cause.append((line, _markings(joined)))
-                cause += [(other, _markings(m, joined)) for other, m in qc_parts.get(line, ())]
+                for end in (line, *sorted(twins.get(line, ()))):
+                    cause += [(other, _markings(m, joined)) for other, m in qc_parts.get(end, ())]
             skipped.note("qc_link_unsettled", [receipt], cause)
             continue
         gaps.append(_gap(

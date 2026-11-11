@@ -739,7 +739,7 @@
    "name": "in_channel",
    "reverse_name": "messages",
    "cardinality": "N:1",
-   "description": "The channel a captured channel message or reply was posted in (Graph structure: the message's team and channel ids; ontology/schema/domains/teams_conversations.json).",
+   "description": "The channel a captured channel message or reply was posted in (Graph structure: the message's channel id, a thread id unique across teams; ontology/schema/domains/teams_conversations.json). The team id is not a pair: pairs are matched one at a time, so it made every other channel of the team a contradicted candidate.",
    "bindings": [
     {
      "kind": "fk",
@@ -747,11 +747,6 @@
      "from_binding": "gen.teams.channel_messages",
      "to_binding": "teams.channels",
      "pairs": [
-      {
-       "from": "team_id",
-       "to": "team_id",
-       "compare": "text_id"
-      },
       {
        "from": "channel_id",
        "to": "channel_id",

@@ -28,7 +28,7 @@ const isLoss = (m: { amount: string } | null | undefined) => !!m && m.amount.tri
 
 function Signed({ m }: { m: { amount: string; currency: string } | null | undefined }) {
   if (!m) return <span className="text-muted">not stated</span>;
-  return <span className="font-medium tabular-nums">{money(m).replace(/^-/, "−")}</span>;
+  return <span className="font-medium num">{money(m).replace(/^-/, "−")}</span>;
 }
 
 /** "partial: worst of the 3 most recent orders; …" -> "Partial: worst of …" */
@@ -69,8 +69,8 @@ export function OrderRanking({ orders, note, more = 0, inPeriod, footnote = true
                   {o.order.label}
                 </Link>
               </td>
-              <td className="py-2 text-right tabular-nums">{money(o.revenue)}</td>
-              <td className="py-2 text-right tabular-nums">{money(o.booked_cost)}</td>
+              <td className="py-2 text-right num">{money(o.revenue)}</td>
+              <td className="py-2 text-right num">{money(o.booked_cost)}</td>
               <td className="py-2 text-right">
                 <Signed m={o.margin} />
               </td>
@@ -188,8 +188,8 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
                     <span className="font-medium">{l.label}</span> <SourceChips sources={l.sources} max={1} />
                   </td>
                   <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums">{l.quantity ? `${l.quantity} ${l.unit ?? ""}`.trim() : "–"}</td>
-                  <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums max-sm:hidden">{money(l.revenue) || "–"}</td>
-                  <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums max-sm:hidden">{money(l.booked_cost) || "–"}</td>
+                  <td className="whitespace-nowrap py-2 pl-3 text-right num max-sm:hidden">{money(l.revenue) || "–"}</td>
+                  <td className="whitespace-nowrap py-2 pl-3 text-right num max-sm:hidden">{money(l.booked_cost) || "–"}</td>
                   <td className="whitespace-nowrap py-2 pl-3 text-right">
                     <Signed m={l.margin} />
                   </td>
@@ -202,7 +202,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
         </div>
       )}
       {(b.cost_sources ?? []).length > 0 && (
-        <ul className="space-y-1.5 text-[13px] leading-5" aria-label="Where the cost came from">
+        <ul className="space-y-1.5 text-[13px] leading-5" aria-label="Cost by source">
           {(b.cost_sources ?? []).map((c, i) => (
             <li key={i} className="flex flex-wrap items-baseline gap-x-1.5">
               <span className="font-medium">{KIND[c.kind] ?? c.kind}</span>
@@ -212,7 +212,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
               {c.amount && (
                 <>
                   <span className="text-muted">·</span>
-                  <span className="tabular-nums">{money(c.amount)}</span>
+                  <span className="num">{money(c.amount)}</span>
                 </>
               )}
               {c.per_unit && <span className="tabular-nums text-muted">· {c.per_unit}</span>}
@@ -224,7 +224,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
       {(b.drivers ?? []).length > 0 && (
         <details className="text-[13px] leading-5">
           <summary className="cursor-pointer text-[12px] text-muted hover:text-fg">All margin drivers</summary>
-          <ul className="mt-1 space-y-1" aria-label="What drove the margin">
+          <ul className="mt-1 space-y-1" aria-label="Margin drivers">
             {(b.drivers ?? []).map((d, i) => (
               <li key={i}>{readable(d)}</li>
             ))}
@@ -315,7 +315,7 @@ export function MarginHeadline({ b, scope }: { b: CostBreakdownView; scope?: str
   return (
     <section className="space-y-2" data-testid="margin-headline">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        {b.margin && <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] tabular-nums">{money(b.margin).replace(/^-/, "−")}</span>}
+        {b.margin && <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] num">{money(b.margin).replace(/^-/, "−")}</span>}
         {b.margin_pct && <span className="text-[13px] tabular-nums text-muted">{b.margin_pct}% of revenue</span>}
         <EtaPill shown={b.margin ? (loss ? { status: "late", label: "Losing money" } : { status: "ok", label: "Profitable" }) : { status: "neutral", label: "No margin stated" }} testId="margin-verdict" />
         {scope && <span className="text-[12px] text-muted">{scope}</span>}

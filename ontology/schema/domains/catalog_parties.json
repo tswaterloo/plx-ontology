@@ -612,6 +612,30 @@
           ]
         },
         {
+          "name": "quantity_on_hand",
+          "value_type": "quantity",
+          "description": "Business Central's on-hand inventory of the item (the item card inventory field) in the item's base unit. BC is the system of record; the figure is as of the capture, not the live book, and covers every location BC sums into the card.",
+          "quantity_role": "actual",
+          "sources": [
+            {
+              "binding": "bc.items",
+              "path": "inventory",
+              "parser": "decimal_text",
+              "unit_from": "baseUnitOfMeasureCode"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.live-source-grammar-py.4afed4"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcuomcode.ba2e7d"
+            }
+          ]
+        },
+        {
           "name": "bc_item_type",
           "value_type": "text",
           "sources": [
@@ -2140,6 +2164,25 @@
               "binding": "portal.fm_customer",
               "path": "email_3",
               "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "salesperson_code",
+          "value_type": "text",
+          "description": "The customer's salesperson (account owner) code: BC customers.salespersonCode. A salesperson/purchaser code (BC Code[20]); the with_owners step (ontology/owner_links.py) links it to the one staff Person whose address local part it is, as a lead (a code is no address).",
+          "sources": [
+            {
+              "binding": "bc.customers",
+              "path": "salespersonCode",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "integrations/bc_read.py",
+              "note": "BC API v2.0 customers entity: salespersonCode is served on the captured row."
             }
           ]
         }
@@ -4662,35 +4705,32 @@
       ]
     },
     {
-      "id": "CustomerLocation.same_record_as",
+      "id": "CustomerLocation.sage_customer",
       "from": "CustomerLocation",
-      "to": "CustomerLocation",
-      "name": "same_record_as",
-      "reverse_name": "same_record_as",
-      "cardinality": "1:1",
-      "description": "Gold location copied from a Sage ship-to (legacy IDCUST + ship-to code).",
+      "to": "Customer",
+      "name": "sage_customer",
+      "reverse_name": "sage_customer_locations",
+      "cardinality": "N:1",
+      "description": "The Sage customer a Portal customer location was migrated from (app_customer_location.legacy_sage_idcust = Sage ar_customer.idcust; 4,125 of 4,125 rows, 14/15 corroborated by name and city on 2026-11-08). Replaces the former CustomerLocation.same_record_as to a Sage ship-to on (legacy_sage_idcust, legacy_sage_ship_to_code): the location's code is the customer's own code for most rows, not a Sage ship-to code, so that pair matched 15.6% and every other ship-to of the customer was a contradicted candidate.",
       "bindings": [
         {
-          "kind": "same_record",
+          "kind": "fk",
           "tier_ceiling": "verified",
           "from_binding": "portal.app_customer_location",
-          "to_binding": "portal.sage_ar_ship_to",
+          "to_binding": "portal.sage_ar_customer",
           "pairs": [
             {
               "from": "legacy_sage_idcust",
               "to": "idcust",
-              "compare": "text_id"
-            },
-            {
-              "from": "legacy_sage_ship_to_code",
-              "to": "idcustshpt",
-              "compare": "text_id"
+              "compare": "identifier",
+              "identifier_kind": "customer_erp_code"
             }
           ],
           "evidence": [
             {
-              "kind": "ref",
-              "id": "upstream-code.customerlocation.64c39f"
+              "kind": "workbench_code",
+              "path": "scripts/gen_raw_links.py",
+              "note": "Link-completeness audit 2026-11-08 (read-only, source mirror and BC capture): value containment plus a 15-sample second-key check (name, city, date)."
             }
           ]
         }
@@ -5167,6 +5207,166 @@
               "kind": "workbench_code",
               "path": "ontology/party_roles.py",
               "note": "roles step: equal normalized names of a customer and a supplier of one system and audience scope, own parties and many-record names excluded."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RelSageApVendor.portal_supplier_by_sage_id",
+      "from": "RelSageApVendor",
+      "to": "Supplier",
+      "name": "portal_supplier_by_sage_id",
+      "reverse_name": "sage_vendors_by_sage_id",
+      "cardinality": "N:1",
+      "description": "The Portal supplier that stores this Sage vendor id in custom_fields.sageVendorId (a key the Portal stores for the vendor, not a code coincidence; 992 of 992 Sage vendors, 15/15 on 2026-11-08). One candidate only.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "gen.sage.ap_vendor",
+          "to_binding": "portal.app_supplier",
+          "pairs": [
+            {
+              "from": "vendorid",
+              "to": "custom_fields.sageVendorId",
+              "compare": "identifier",
+              "identifier_kind": "supplier_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "scripts/gen_raw_links.py",
+              "note": "Link-completeness audit 2026-11-08 (read-only, source mirror and BC capture): value containment plus a 15-sample second-key check (name, city, date)."
+            }
+          ],
+          "unique_target": true
+        }
+      ]
+    },
+    {
+      "id": "RelSageApVendor.bc_vendor",
+      "from": "RelSageApVendor",
+      "to": "Supplier",
+      "name": "bc_vendor",
+      "reverse_name": "sage_vendors_by_bc_number",
+      "cardinality": "N:1",
+      "description": "The BC vendor whose number equals the Sage vendor id (vendor numbers carried across the ERP move; 602 of 992, name or city agree 15/15 on 2026-11-08). A lead: two systems' codes, and the BC company is not known from the Sage row; one candidate per BC company (unique_target), an ambiguous number links nothing.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "lead",
+          "from_binding": "gen.sage.ap_vendor",
+          "to_binding": "bc.vendors",
+          "pairs": [
+            {
+              "from": "vendorid",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "supplier_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "scripts/gen_raw_links.py",
+              "note": "Link-completeness audit 2026-11-08 (read-only, source mirror and BC capture): value containment plus a 15-sample second-key check (name, city, date)."
+            }
+          ],
+          "unique_target": true
+        }
+      ]
+    },
+    {
+      "id": "Customer.national_account",
+      "from": "Customer",
+      "to": "RelSageArNat",
+      "name": "national_account",
+      "reverse_name": "customers",
+      "cardinality": "N:1",
+      "description": "The Sage national account a Portal customer was migrated under (legacy_sage_idnatacct = ar_nat.idnatacct).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_customer",
+          "to_binding": "gen.sage.ar_nat",
+          "pairs": [
+            {
+              "from": "legacy_sage_idnatacct",
+              "to": "idnatacct",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/catalog_parties.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 4,339 of 4,339 non-blank values reach a national account; 15 of 15 sampled pairs agree with the Sage customer's own national account."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Product.owned_by_customer",
+      "from": "Product",
+      "to": "Customer",
+      "name": "owned_by_customer",
+      "reverse_name": "owned_products",
+      "cardinality": "N:1",
+      "description": "The FileMaker customer a private-label Portal product belongs to (app_product.customer_id = FM customer.id).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.fm_customer",
+          "pairs": [
+            {
+              "from": "customer_id",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/catalog_parties.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 5,211 of 5,211 non-blank ids reach a customer; of 80 sampled pairs, 37 could be checked against the FileMaker product of the same code and all 37 name the same customer (the rest have no FileMaker owner); shift baseline 0.0."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Product.label_customer",
+      "from": "Product",
+      "to": "Customer",
+      "name": "label_customer",
+      "reverse_name": "labelled_products",
+      "cardinality": "N:1",
+      "description": "The customer a BC item's second display name names (a free-text lead: the private-label customer as BC writes it).",
+      "bindings": [
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "bc.items",
+          "to_binding": "portal.app_customer",
+          "pairs": [
+            {
+              "from": "displayName2",
+              "to": "company_name",
+              "compare": "text"
+            }
+          ],
+          "unique_target": true,
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/catalog_parties.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 5,096 non-blank names equal one customer's name (16 ambiguous); of 80 sampled pairs 24 could be checked against the FileMaker owner of the same item code and all 24 agree."
             }
           ]
         }

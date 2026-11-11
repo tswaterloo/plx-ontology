@@ -1,13 +1,14 @@
 "use client";
 
-import { ArrowUp, Box, Building2, Factory, FileBox, FlaskConical, Hash, MapPin, Package, Square, Truck, User, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, Box, Building2, Factory, FileBox, FlaskConical, Hash, MapPin, Package, Paperclip, Square, Truck, User, X, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { suggest as fetchSuggest } from "@/lib/api";
+import { ACCEPT, addFiles, sizeWords, type Attachment } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { plural, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
-import { SystemTile } from "./ui/glyphs";
+import { SystemCode } from "./ui/glyphs";
 
 export interface Pin {
   object_id: string;
@@ -163,8 +164,11 @@ export function AskBox({
   dropUp = false,
   inputId,
   label = "Ask a question",
+  attachable = false,
 }: {
-  onSubmit: (question: string, pins: Pin[]) => void;
+  onSubmit: (question: string, pins: Pin[], files: Attachment[]) => void;
+  /** Files and images can be attached (a button, or pasted into the box). */
+  attachable?: boolean;
   size?: "lg" | "md" | "sm";
   /** An id for the text field (the top bar's search is focused by ⌘K / "/"). */
   inputId?: string;
@@ -189,6 +193,9 @@ export function AskBox({
   const [frag, setFrag] = useState({ start: 0, end: 0, text: "" });
   const [up, setUp] = useState(dropUp);
   const [searching, setSearching] = useState(false);
+  const [files, setFiles] = useState<Attachment[]>([]);
+  const [fileNote, setFileNote] = useState("");
+  const picker = useRef<HTMLInputElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -311,13 +318,22 @@ export function AskBox({
     });
   }
 
+  async function attach(list: Iterable<File>) {
+    const { next, problems } = await addFiles(list, files);
+    setFiles(next);
+    setFileNote(problems.join(" "));
+  }
+
   function submit() {
-    const q = value.trim();
+    // a question with only files asks what they show
+    const q = value.trim() || (files.length ? "What does this show?" : "");
     if (!q || disabled || busy) return;
     const live = pins.filter((p) => q.includes(p.label));
-    onSubmit(q, live);
+    onSubmit(q, live, files);
     setValue("");
     setPins([]);
+    setFiles([]);
+    setFileNote("");
     close();
   }
 
@@ -378,6 +394,24 @@ export function AskBox({
           big ? "p-2.5" : sm ? "p-0.5" : "p-2",
         )}
       >
+        {attachable && files.length > 0 && (
+          <ul className="flex flex-wrap gap-1 px-1.5 pt-0.5 pb-1" aria-label="Attachments" data-testid="attachments">
+            {files.map((f) => (
+              <li key={f.id} className="inline-flex h-6 items-center gap-1.5 rounded-md bg-surface-2 pl-2 text-[12px] text-fg">
+                <span className="max-w-48 truncate">{f.name}</span>
+                <span className="text-muted">{sizeWords(f.size)}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${f.name}`}
+                  onClick={() => setFiles(files.filter((x) => x.id !== f.id))}
+                  className="flex size-6 items-center justify-center rounded-md text-muted hover:text-fg cursor-pointer"
+                >
+                  <X className="size-3" aria-hidden />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {pins.length > 0 && (
           <div className="flex flex-wrap gap-1 px-1.5 pt-0.5 pb-1" aria-label="Picked items">
             {pins.map((p) => {
@@ -419,12 +453,45 @@ export function AskBox({
               lookup(e.target.value, e.target.selectionStart ?? e.target.value.length);
             }}
             onKeyDown={onKeyDown}
+            onPaste={(e) => {
+              if (!attachable) return;
+              const pasted = Array.from(e.clipboardData?.files ?? []);
+              if (pasted.length === 0) return;
+              e.preventDefault();
+              void attach(pasted);
+            }}
             onBlur={() => setTimeout(close, 120)}
             className={cn(
               "max-h-[220px] flex-1 resize-none bg-transparent px-2 text-fg placeholder:text-faint focus:outline-none",
               sm ? "min-h-[34px] py-1.5 text-[13px]" : big ? "min-h-[48px] py-3 text-[15px] leading-6" : "min-h-[40px] py-2.5 text-[14px] leading-5",
             )}
           />
+          {attachable && (
+            <>
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                accept={ACCEPT}
+                hidden
+                data-testid="attach-input"
+                onChange={(e) => {
+                  void attach(Array.from(e.target.files ?? []));
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => picker.current?.click()}
+                disabled={disabled || busy}
+                aria-label="Attach files or images"
+                title="Attach a PDF, spreadsheet or image (or paste one)"
+                className={cn("flex shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer disabled:opacity-50", sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8")}
+              >
+                <Paperclip className="size-4" strokeWidth={2} aria-hidden />
+              </button>
+            </>
+          )}
           {busy && onStop ? (
             <button
               type="button"
@@ -440,8 +507,8 @@ export function AskBox({
               type="submit"
               aria-label="Ask"
               title="Ask (Enter)"
-              disabled={!value.trim() || disabled || busy}
-              aria-disabled={!value.trim() || disabled || busy}
+              disabled={(!value.trim() && files.length === 0) || disabled || busy}
+              aria-disabled={(!value.trim() && files.length === 0) || disabled || busy}
               className={cn(
                 "flex shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-sm hover:brightness-110 disabled:bg-surface-2 disabled:text-faint disabled:shadow-none cursor-pointer disabled:cursor-default",
                 sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8",
@@ -497,7 +564,7 @@ export function AskBox({
               {(s.systems ?? []).length > 0 && (
                 <span className="hidden shrink-0 items-center gap-1 sm:flex" aria-label={`Found in ${s.systems!.join(" and ")}`}>
                   {s.systems!.map((x) => (
-                    <SystemTile key={x} system={x} size={16} />
+                    <SystemCode key={x} system={x} size={16} />
                   ))}
                 </span>
               )}
@@ -521,6 +588,11 @@ export function AskBox({
           );
         })}
       </ul>
+      {fileNote && (
+        <p className="px-2 pt-1 text-[12px] text-muted" role="status" data-testid="attach-note">
+          {fileNote}
+        </p>
+      )}
       {searching && !open && (
         <p className={cn(pop, "px-3.5 py-2.5 text-[12px] text-muted", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
           Searching

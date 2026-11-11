@@ -11,7 +11,8 @@ import { businessToday, formatDate } from "@/lib/format";
 import type { Shown, Status } from "@/lib/status";
 import type { Source } from "@/lib/types";
 import { EvidenceDrawer } from "../source-chip";
-import { AgeRing, DoneRing, OpenRing, StatusGlyph } from "../ui/glyphs";
+import { daysIn, DoneRing, lateFigure, OpenRing, StatusGlyph } from "../ui/glyphs";
+import { STATUS_INK } from "../ui/status-badge";
 
 export function SectionTitle({ children, aside, as: Tag = "h2", className }: { children: React.ReactNode; aside?: React.ReactNode; as?: "h2" | "h3"; className?: string }) {
   return (
@@ -33,24 +34,20 @@ export function MoreButton({ children, onClick, testId, expanded }: { children: 
 
 /** A status as its shape: late with days sweeps the ring; the words beside it stay in ink. */
 export function Glyph({ status, days, size = 14 }: { status: Status; days?: number | null; size?: number }) {
-  if (status === "late" && days != null) return <AgeRing days={days} size={size} />;
+  if (status === "late") return null;
   if (status === "risk") return <OpenRing size={size} />;
   if (status === "ok") return <DoneRing size={size} />;
   if (status === "neutral") return <OpenRing size={size} tone="neutral" />;
   return <StatusGlyph status={status} size={size} />;
 }
 
-/** "134 days late" -> 134, for the ring's sweep. */
-export function daysIn(label: string | null | undefined): number | null {
-  const m = /(\d+)\s*(?:d\b|days?)/.exec(label ?? "");
-  return m ? Number(m[1]) : null;
-}
+export { daysIn };
 
 /** A status line's item: glyph, then the words in ink. */
 export function Fact({ shown, className }: { shown: Shown; className?: string }) {
   return (
-    <span className={cn("inline-flex items-center gap-1.5", shown.status === "neutral" && "text-muted", className)} data-status={shown.status}>
-      <Glyph status={shown.status} days={shown.status === "late" ? (daysIn(shown.label) ?? 90) : null} />
+    <span className={cn("inline-flex items-center gap-1.5 font-medium", shown.status === "neutral" ? "text-muted font-normal" : shown.status === "late" && daysIn(shown.label) != null ? lateFigure(daysIn(shown.label)) : STATUS_INK[shown.status], className)} data-status={shown.status}>
+      <Glyph status={shown.status} />
       {shown.label}
     </span>
   );
@@ -86,7 +83,7 @@ export function Figure({
         {label}
       </span>
       <span className="mt-1 flex items-baseline gap-1.5 whitespace-nowrap">
-        <span className={cn(words ? "text-[13px] leading-7 text-muted" : "text-[22px] leading-7 font-semibold tracking-[-0.02em] tabular-nums", source && "group-hover:underline decoration-1 underline-offset-4")}>{value}</span>
+        <span className={cn(words ? "text-[13px] leading-7 text-muted" : "text-[22px] leading-7 font-semibold tracking-[-0.02em] num", source && "group-hover:underline decoration-1 underline-offset-4")}>{value}</span>
         {unit && <span className="truncate text-[13px] text-muted">{unit}</span>}
       </span>
     </>
@@ -115,7 +112,7 @@ export function Progress({ pct }: { pct: number }) {
       <span className="relative h-1 w-24 overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]">
         <span className="absolute inset-y-0 left-0 rounded-full bg-fg/70" style={{ width: `${Math.max(3, Math.min(100, pct))}%` }} />
       </span>
-      <span className="text-[12px] tabular-nums text-muted">{pct}%</span>
+      <span className="text-[12px] num text-muted">{pct}%</span>
     </div>
   );
 }
@@ -172,7 +169,7 @@ export function OrderLine({ ordered, needed, daysLate, end: endLabel = "Today" }
     <div className="pt-1" data-testid="order-line">
       <div className="relative h-[18px]">
         {late && neededAt != null && (
-          <span className="absolute top-0 -translate-x-1/2 text-[12px] leading-4 font-medium whitespace-nowrap" style={{ left: `${Math.min(88, Math.max(neededAt + (100 - neededAt) / 2, 12))}%` }}>
+          <span className={cn("absolute top-0 -translate-x-1/2 text-[12px] leading-4 font-medium whitespace-nowrap", lateFigure(lateDays))} style={{ left: `${Math.min(88, Math.max(neededAt + (100 - neededAt) / 2, 12))}%` }}>
             {lateDays} days late
           </span>
         )}

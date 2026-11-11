@@ -826,3 +826,101 @@ class StandingReviewPack(unittest.TestCase):
         self.assertEqual(out["review"], [])
         self.assertFalse([s for s in out["sections"] if s["key"].startswith("review_")
                           or s["key"] == "agenda"])
+
+
+class UpcomingCalendar(unittest.TestCase):
+    """The Meetings calendar (``upcoming_meetings``): who, where, agenda and parties of each
+    event as the reader may read them; the people exclusion fails closed; a private event
+    shows its time only; N=1/10/60 cardinality."""
+
+    SUP = "Supplier:bc.vendors:synth-sup-1"
+
+    def cal(self, n: int = 1, **over) -> Store:
+        st = Store()
+        st.add(CUS, "Synth Foods")
+        st.add(self.SUP, "Synth Packaging", aud="secret")
+        for i in range(n):
+            oid = f"CalendarEvent:meetings.calendar_events:synth-up-{i}"
+            values = dict(
+                subject=f"Review {i}", start=f"2026-11-{10 + i % 5:02d}T{8 + i % 9:02d}:{i % 60:02d}:00",
+                end=f"2026-11-{10 + i % 5:02d}T{9 + i % 9:02d}:00:00", is_cancelled="false",
+                mailbox="me@synth-home.example", location="Room 1",
+                body_preview="1. Orders\n2. Quality", content="read", is_online_meeting="true",
+                online_meeting=json.dumps({"join_url": "https://teams.microsoft.com/l/x"}),
+                organizer=json.dumps({"name": "Org Person", "address": "org@synth-home.example"}),
+                attendees=json.dumps([
+                    {"name": "Org Person", "address": "org@synth-home.example",
+                     "type": "required", "response": "accepted"},
+                    {"name": "Out Side", "address": "buyer@synth-foods.example",
+                     "type": "optional", "response": "tentativelyAccepted"},
+                    {"name": "No Reply", "address": "nr@synth-home.example"}]))
+            values.update(over)
+            st.add(oid, f"Review {i}", **{k: v for k, v in values.items() if v is not None})
+            st.link(oid, "CalendarEvent.with_customer", CUS)
+            st.link(oid, "CalendarEvent.with_supplier", self.SUP)
+        return st
+
+    def read(self, st: Store, people=PEOPLE, held=frozenset(FIN)) -> list[dict]:
+        st.held = held
+        return br.upcoming_meetings(st, held, now=NOW, people=people,
+                                    since=datetime(2026, 11, 9, 5, 0, tzinfo=timezone.utc))
+
+    def test_each_event_names_its_people_place_agenda_and_parties_cited(self):
+        st = self.cal()
+        st.sees = OPS   # the supplier is in an audience this reader does not hold
+        [e] = self.read(st)
+        self.assertEqual((e["label"], e["location"], e["online"]), ("Review 0", "Room 1", True))
+        self.assertEqual(e["join_url"], "https://teams.microsoft.com/l/x")
+        self.assertEqual(e["agenda"], "1. Orders 2. Quality")
+        self.assertEqual(e["organizer"]["name"], "Org Person")
+        self.assertEqual(e["organizer"]["role"], "organizer")
+        # the organizer is not listed again among the attendees
+        self.assertEqual([(a["name"], a["role"], a["response"], a["outside"])
+                          for a in e["attendees"]],
+                         [("Out Side", "optional", "tentativelyaccepted", True),
+                          ("No Reply", "required", None, False)])
+        self.assertEqual([p["object_id"] for p in e["parties"]], [CUS])   # supplier unseen
+        self.assertNotIn("Synth Packaging", json.dumps(e))
+        self.assertTrue(e["sources"] and all(s["handle"].startswith("synth://")
+                                             for s in e["sources"]))
+        self.assertEqual(len({s["handle"] for s in e["sources"]}), len(e["sources"]))
+
+    def test_people_exclusion_fails_closed(self):
+        # an excluded or undecidable address drops the whole event
+        self.assertEqual(self.read(self.cal(), People({"buyer@synth-foods.example"})), [])
+        st = self.cal(attendees=json.dumps([{"name": "U", "address": "undecidable"}]))
+        self.assertEqual(self.read(st), [])
+        # the exclusion not loaded: the event's time and subject, no people, no agenda
+        [e] = self.read(self.cal(), People(unavailable="exclusion_not_loaded"))
+        self.assertTrue(e["people_withheld"])
+        self.assertEqual((e["organizer"], e["attendees"], e["agenda"]), (None, [], None))
+        self.assertNotIn("Out Side", json.dumps(e))
+        [e] = self.read(self.cal(), None)
+        self.assertTrue(e["people_withheld"])
+
+    def test_private_marked_and_malformed_input_shows_nothing_extra(self):
+        [e] = self.read(self.cal(content="withheld_sensitivity"))
+        self.assertTrue(e["private"])
+        self.assertEqual((e["location"], e["agenda"], e["join_url"], e["organizer"],
+                          e["attendees"], e["parties"]), (None, None, None, None, [], []))
+        # a join link off Teams, attendees not a list, an organizer not an object
+        [e] = self.read(self.cal(
+            online_meeting=json.dumps({"join_url": "https://evil.example/teams.microsoft.com"}),
+            attendees="{not json", organizer=json.dumps(["x"])))
+        self.assertEqual((e["join_url"], e["attendees"], e["organizer"]), (None, [], None))
+        # a marked attendees cell the reader does not hold is never shown
+        [e] = self.read(self.cal(attendees=(json.dumps([{"name": "Marked", "address":
+                                                          "m@synth-home.example"}]), ["hr"])))
+        self.assertEqual(e["attendees"], [])
+        self.assertNotIn("Marked", json.dumps(e))
+        # a cancelled event is not listed
+        self.assertEqual(self.read(self.cal(is_cancelled="true")), [])
+
+    def test_cardinality_no_event_lost_or_duplicated(self):
+        for n in (1, 10, 60):
+            started = time.monotonic()
+            got = self.read(self.cal(n))
+            self.assertEqual(len(got), n, n)
+            self.assertEqual(len({e["object_id"] for e in got}), n, n)
+            self.assertEqual([e["start"] for e in got], sorted(e["start"] for e in got))
+            self.assertLess(time.monotonic() - started, 5.0, n)

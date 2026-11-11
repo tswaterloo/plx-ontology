@@ -41,7 +41,7 @@ export default function RdProjectsPage() {
         ) : board ? (
           <RdBoardView board={board} />
         ) : (
-          <Pending label="Reading R&D and sample projects" />
+          <Pending page label="Reading R&D and sample projects" />
         )}
       </div>
     </div>

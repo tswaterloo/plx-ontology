@@ -244,7 +244,8 @@ class AutopilotAreaMixin:
                     decision = m.AutopilotDecision(
                         decision=dec["decision"], at=dec["at"], by_you=dec.get("by") in me,
                         until=dec.get("until"), text=dec.get("text"), note=dec.get("note"),
-                        outcome=dec.get("outcome"), reasons=list(dec.get("reasons") or ()))
+                        outcome=dec.get("outcome"), reasons=list(dec.get("reasons") or ()),
+                        sent=dec.get("sent") is True)
             created = _instant(item["created_at"])
             due = _instant(item["due_at"])
             is_today = bool((created and created.astimezone(_LOCAL).date() == today) or
@@ -326,6 +327,10 @@ class AutopilotAreaMixin:
                     open_items=open_by.get(flow, 0)))
         if not dev and not fresh:
             notes.append("No replay has scored the workflows yet.")
+        # items are prepared only for a workflow that passed its replay gate
+        # (``autopilot.gate_from``): with none passed, that is why nothing is here
+        if not items and not ap.gate_of({"schema": ap.GATE_SCHEMA, "roles": dev})[1]:
+            notes.insert(0, NO_GATE_PASSED)
         roles_seen = {r for r in set(dev) | set(fresh) | set(role_members)
                       if not r.startswith("person:")}
         roles_seen |= {r for it in items for r in it.roles}
@@ -342,7 +347,8 @@ class AutopilotAreaMixin:
                 workflows_off=sorted(off) if owner else sorted(
                     off & {w.workflow for w in workflows})),
             people=sorted(people.values(), key=lambda p: (not p.you, not p.name, p.name, p.id)),
-            roles=sorted(roles_seen), items=items, workflows=workflows, notes=notes)
+            roles=sorted(roles_seen), items=items, workflows=workflows, notes=notes,
+            known_workflows=_known_workflows())
 
     # ------------------------------------------------------------ decisions
 
@@ -394,6 +400,10 @@ class AutopilotAreaMixin:
             results = self._apa_executor(state).run(item, now)
             row["outcome"] = results[0]["status"] if results else None
             row["outcomes"] = [r["status"] for r in results]
+            # only the email's own result says it went out (an entry before it can be done
+            # while the confirmation failed, was refused or ran dry)
+            row["sent"] = any(r.get("kind") == "send_mail" and r.get("status") == "done"
+                              for r in results)
             row["reasons"] = [str(x) for r in results for x in r.get("reasons") or ()][:8]
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         journal = Journal(state / DECISIONS_FILE)
@@ -526,6 +536,19 @@ class AutopilotAreaMixin:
         except (ValueError, KeyError) as refused:
             raise UserFacing("action_refused", f"Not undone: {refused}"[:300], 409)
         return self.autopilot_audit(reader)
+
+
+NO_GATE_PASSED = ("No workflow has passed its gate yet. Items appear here once one passes "
+                  "its replay check.")
+
+
+def _known_workflows() -> list[str]:
+    """Every workflow name the catalogue holds; none when it cannot be read (the filter
+    then offers the workflows the page shows)."""
+    try:
+        return sorted(wf.names())
+    except Exception:  # noqa: BLE001 - an unreadable catalogue only narrows the filter
+        return []
 
 
 def _principals(reader: Reader) -> str:

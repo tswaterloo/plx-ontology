@@ -310,6 +310,18 @@ def words_of(code: Any) -> str:
     return re.sub(r"[_\s]+", " ", str(code or "")).strip()[:300]
 
 
+LATE_RULE = "late_or_unconfirmed_po"
+
+
+def late_rule_behind(inbox: Mapping[str, Any]) -> tuple[bool, bool]:
+    """(the late-PO rule is re-running over newer data, its list is not known for the
+    data served: re-running or not run)."""
+    refreshing = inbox.get("refreshing")
+    behind = LATE_RULE in refreshing if isinstance(refreshing, (list, tuple, set)) \
+        else bool(refreshing)
+    return behind, behind or LATE_RULE in (inbox.get("not_run") or {})
+
+
 def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                 inbox: Mapping[str, Any], late: Sequence[m.LatePo], conversation: str,
                 ms: Callable[[], int]) -> m.AnswerPayload:
@@ -353,11 +365,7 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     total = len(late)
     # the late-PO rule's findings are of older data than served (being re-checked), or
     # the rule did not run: no list is known, so "none is late" would be a false answer
-    rule = "late_or_unconfirmed_po"
-    refreshing = inbox.get("refreshing")
-    behind = rule in refreshing if isinstance(refreshing, (list, tuple, set)) \
-        else bool(refreshing)
-    unknown = behind or rule in (inbox.get("not_run") or {})
+    behind, unknown = late_rule_behind(inbox)
     if inbox.get("status") != "read":
         direct = ("The late-order check has not run for your records yet, so I can't list "
                   "late purchase orders.")
@@ -382,9 +390,14 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
         shown = ("All of them are listed below, oldest due date first." if total == len(late)
                  else "The first one is listed below." if len(late) == 1
                  else f"The first {len(late)} are listed below, oldest due date first.")
+        checked = inbox.get("checked_on")
+        last = f" ({str(checked)[:10]})" if isinstance(checked, str) else ""
         direct = (f"{total} purchase order{'s' if total != 1 else ''} you can see "
-                  f"{'are' if total != 1 else 'is'} late{when}. Longest late: {named}. "
-                  f"{shown}")
+                  f"{'are' if total != 1 else 'is'} late"
+                  + (f" at the last completed late-order check{last}" if unknown else when)
+                  + f". Longest late: {named}. {shown}"
+                  + (" The check is re-running on newer data now, so this can change."
+                     if unknown else ""))
         outcome = "answered"
     return m.AnswerPayload(
         answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
@@ -926,7 +939,7 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
             detail=(str(step["value"])[:600] if step.get("value") and step["label"] != "Driver"
                     else None), source=source, check=check))
     trail = m.EvidenceTrail(
-        kind="claims", title=f"How we know: {cust['name']}'s margin in {period}"[:200],
+        kind="claims", title=f"Evidence for {cust['name']}'s margin in {period}"[:200],
         steps=steps[:40], hidden_steps=hidden_steps,
         hidden_message=(f"{hidden_steps} more step{'s' if hidden_steps != 1 else ''} in "
                         "places you can't open.") if hidden_steps else None) if steps else None

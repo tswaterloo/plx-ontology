@@ -1,4 +1,4 @@
-"""The answer's evidence trail ("How we know") as the app contract's ``EvidenceTrail``.
+"""The answer's evidence trail ("Evidence") as the app contract's ``EvidenceTrail``.
 
 ``operating.evidence_trail`` builds the steps from what the generic tools returned as the
 reader; this module is the app boundary: every step's cited record is decided again for
@@ -315,8 +315,8 @@ def po_trails(mapper: Mapper, view: Any, oids: Sequence[str],
     if not trails:
         return None
     maybe = any(t.may_hide_more for t in trails)
-    title = "How we know" if len(trails) > 1 else (
-        f"How we know: {trails[0].subject.label}")
+    title = "Evidence" if len(trails) > 1 else (
+        f"Evidence for {trails[0].subject.label}")
     return m.EvidenceTrail(kind="purchase_order", title=title[:200], trails=trails,
                            hidden_steps=mapper.hidden,
                            hidden_message=hidden_words(mapper.hidden,
@@ -465,7 +465,7 @@ def claims_trail(mapper: Mapper, claims: Sequence[Mapping[str, Any]]
     steps, hidden = mapper.steps(raw, decided)
     if len(steps) < 2:
         return None
-    return m.EvidenceTrail(kind="claims", title="How we know", steps=steps,
+    return m.EvidenceTrail(kind="claims", title="Evidence", steps=steps,
                            hidden_steps=hidden, hidden_message=hidden_words(hidden, False))
 
 

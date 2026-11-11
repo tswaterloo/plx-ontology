@@ -8,8 +8,7 @@ import { plainError } from "@/lib/errors";
 import { fieldLabel, fieldValue, formatDateTime, recordKind, SYSTEM_LABEL } from "@/lib/format";
 import type { SourceView } from "@/lib/types";
 import { curatedFields } from "./source-chip";
-import { StatusGlyph, SystemTile } from "./ui/glyphs";
-import { Monogram } from "./ui/monogram";
+import { StatusGlyph, SystemCode } from "./ui/glyphs";
 import { ErrorNotice } from "./ui/notice";
 import { SkeletonLines } from "./ui/skeleton";
 
@@ -106,7 +105,6 @@ export function EmailHeader({ fields, asOf }: { fields: Record<string, string> |
   const attached = mailField(fields, "has_attachments") === "yes";
   return (
     <div className="flex gap-3" data-testid="email-header">
-      <Monogram name={who ? who.name.replace(/@.*$/, "") : null} size={36} className="rounded-full" />
       <dl className="min-w-0 flex-1">
         <div className="flex items-baseline gap-3">
           <dt className="sr-only">From</dt>
@@ -272,7 +270,7 @@ export function SourceDocument({
   const content = (
     <>
       <header className="flex min-w-0 gap-3.5">
-        <SystemTile system={view.system} size={wide ? 40 : 32} className="mt-0.5" />
+        <SystemCode system={view.system} size={wide ? 40 : 32} className="mt-0.5" />
         <div className="min-w-0 flex-1">
           <p className="text-[12px] leading-4 text-muted">
             {system}
@@ -344,7 +342,7 @@ export function SourceDocument({
             <details className="group" data-testid="source-more-fields">
               <summary className="inline-flex h-7 cursor-pointer list-none items-center gap-1 rounded-md px-2 -ml-2 text-[12px] text-muted hover:bg-hover hover:text-fg [&::-webkit-details-marker]:hidden">
                 <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
-                All fields <span className="tabular-nums text-faint">{rest.length}</span>
+                All fields <span className="num text-faint">{rest.length}</span>
               </summary>
               <div className="pt-2">
                 <FieldGrid pairs={rest} compact />
@@ -380,7 +378,7 @@ export function SourceDocument({
             <dl>
               <Prop label="Source">
                 <span className="inline-flex items-center gap-2">
-                  <SystemTile system={view.system} size={16} />
+                  <SystemCode system={view.system} size={16} />
                   {system}
                 </span>
               </Prop>
@@ -399,15 +397,19 @@ export function SourceDocument({
           </section>
           {!email && rest.length > 0 && (
             <section data-testid="source-more-fields">
+              {/* narrow: a toggle; wide: the fields always show, so a plain heading (no dead, "collapsed" button) */}
               <button
                 type="button"
                 onClick={() => setAll((v) => !v)}
                 aria-expanded={all}
-                className="mb-2 flex w-full items-center gap-1 text-left text-[12px] leading-4 font-medium text-muted hover:text-fg cursor-pointer @min-[880px]:pointer-events-none"
+                className="mb-2 flex w-full items-center gap-1 text-left text-[12px] leading-4 font-medium text-muted hover:text-fg cursor-pointer @min-[880px]:hidden"
               >
-                <ChevronRight className={cn("size-3.5 transition-transform @min-[880px]:hidden", all && "rotate-90")} aria-hidden />
-                All fields <span className="font-normal tabular-nums text-faint">{rest.length}</span>
+                <ChevronRight className={cn("size-3.5 transition-transform", all && "rotate-90")} aria-hidden />
+                All fields <span className="font-normal num text-faint">{rest.length}</span>
               </button>
+              <h3 className="mb-2 hidden text-[12px] leading-4 font-medium text-muted @min-[880px]:block">
+                All fields <span className="font-normal num text-faint">{rest.length}</span>
+              </h3>
               <div className={cn("hidden @min-[880px]:block", all && "block")}>
                 <FieldGrid pairs={rest} compact />
               </div>

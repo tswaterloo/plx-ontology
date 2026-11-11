@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFeedbackDialog } from "@/components/feedback-dialog";
 import { LoadProblem } from "@/components/ui/notice";
+import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { useAuth } from "@/components/auth";
 import { getFeedback, setFeedbackStatus } from "@/lib/api";
@@ -57,7 +58,7 @@ function Row({ e, on, onPick, admin, children }: { e: FeedbackEntry; on: boolean
         }}
         onFocus={onPick}
         className={cn(
-          "grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-x-2.5 rounded-[10px] px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          "grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-x-2.5 rounded-[3px] px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
           on ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)]" : "hover:bg-hover",
         )}
         data-testid="feedback-row"
@@ -231,10 +232,10 @@ export default function FeedbackPage() {
         title={
           <>
             {admin ? "Feedback" : "Your feedback"}
-            {list && <span className="ml-2 text-[13px] font-normal tracking-normal tabular-nums text-faint"><span className="sr-only">, </span>{list.total}</span>}
+            {list && <span className="ml-2 text-[13px] font-normal tracking-normal num text-faint"><span className="sr-only">, </span>{list.total}</span>}
           </>
         }
-        className="bg-[color-mix(in_srgb,var(--list)_90%,transparent)]"
+        className="bg-list"
         actions={
           <button type="button" onClick={dialog.open} className="inline-flex h-8 items-center rounded-lg px-2.5 text-[13px] font-medium hover:bg-hover cursor-pointer">
             Give feedback
@@ -253,7 +254,7 @@ export default function FeedbackPage() {
               className={cn("inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[12px] cursor-pointer", status === value ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] font-medium" : "text-muted hover:bg-hover hover:text-fg")}
             >
               {label}
-              {list && <span className="tabular-nums text-faint">{n}</span>}
+              {list && <span className="num text-faint">{n}</span>}
             </button>
           ))}
         </div>
@@ -285,16 +286,7 @@ export default function FeedbackPage() {
           <LoadProblem message={error} onRetry={load} />
         </div>
       ) : !list ? (
-        <ul className="space-y-1 px-2 pt-3 sm:px-3" aria-busy="true" aria-label="Loading feedback">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <li key={i} className="flex items-center gap-3 px-3 py-2.5">
-              <span className="flex-1 space-y-2">
-                <span className={cn("skeleton block h-3", ["w-1/2", "w-2/5", "w-1/3"][i % 3])} />
-                <span className="skeleton block h-2.5 w-1/4" />
-              </span>
-            </li>
-          ))}
-        </ul>
+        <Pending page label="Reading feedback" testId="feedback-pending" />
       ) : entries.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center" data-testid="feedback-empty">
           <p className="text-[13px] font-medium">No feedback.</p>

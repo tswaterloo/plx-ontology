@@ -18,6 +18,25 @@ A ``post_project`` step (``operating/build_steps.py`` ``sender_parties``; after
   name is the one the domain spells (``name_fits_domain``): a domain a party only uses (a
   government's or school board's address on a customer location, an agent's) is no lead.
 
+**The record a message names** decides two more cases, for a sender of outside, by the
+parties of the records the message itself names (its own links, any tier but
+``contradicted``, to a sales or purchase order, a sales or purchase invoice, a shipment, a
+customer PO or an aged payable, and each of those records' confirming or stored-join links
+to a customer or supplier; or its links straight to one), and only where the sender's
+domain spells that party's name (``name_fits_domain``):
+
+* a sender whose address or domain a customer and a supplier both hold (otherwise
+  ``shared_by_parties``) is linked to the holders of the side the named records' party is on
+  and that are that party (``named_side_address``, ``corroborated``; ``named_side_domain``,
+  ``lead``);
+* a sender whose domain no party holds (otherwise ``no_party``) is a ``lead`` to the one
+  party the named records belong to (``named_record``).
+
+Measured 2026-11-09 on 20,000 sampled messages:
+the named party is the sender's own on 60 of 66 messages already linked when the domain
+spells its name (91%), on 1 of 40 when it does not, so a domain that spells no name never
+links: a broker, a carrier or a parent company names its client's orders.
+
 *One party*: the records holding the address or domain are all one party when each two
 are joined by a confirming ``same_record`` link (verified, reviewed, corroborated), or
 carry the same normalised name (``identity_scoring.normalize_name``: one customer synced
@@ -59,6 +78,11 @@ CONTACT_TYPE = "Contact"
 PROPERTIES = {"website": "website", "bc_email": "mail", "rep_email": "mail",
               "csr_email": "mail", "email": "mail"}
 CONFIRMING = ("verified", "reviewed", "corroborated")
+# The records a message can name whose customer or supplier tells its side (module docstring).
+NAMED_TYPES = ("SalesOrder", "PurchaseOrder", "SalesInvoice", "PurchaseInvoice", "Shipment",
+               "AgedPayable", "CustomerPurchaseOrder")
+NAMED_PARTY_TIERS = (*CONFIRMING, "stored_by_text_join")
+NAMED = "named_record"
 MESSAGE_TYPE = "Email"
 SENDER = "sender"
 MEETING_LINK_TYPES = {
@@ -111,7 +135,11 @@ class Parties:
 
     def one_party(self, holdings: Sequence[Holding]) -> bool:
         """Whether every holder is one party (module docstring)."""
-        parties = sorted({h.party for h in holdings})
+        return self.one_of(h.party for h in holdings)
+
+    def one_of(self, records: Iterable[str]) -> bool:
+        """Whether every record is one party (module docstring)."""
+        parties = sorted(set(records))
         if len(parties) < 2:
             return bool(parties)
         parent = {p: p for p in parties}
@@ -142,7 +170,7 @@ class Parties:
         exact = self.by_address.get(sender.lower(), [])
         if exact:
             if not self.one_party(exact):
-                return "shared_by_parties", None, []
+                return "shared_by_parties", None, exact
             return "address", "corroborated", exact
         if mentions.shared_mail_domain(domain):
             return "shared_mail_provider", None, []
@@ -151,12 +179,40 @@ class Parties:
             held = self.by_domain.get(".".join(labels[i:]))
             if held:
                 if not self.one_party(held):
-                    return "shared_by_parties", None, []
+                    return "shared_by_parties", None, held
                 if not any(name_fits_domain(self.names.get(h.party, ""), domain)
                            for h in held):
                     return "domain_name_disagrees", None, []
                 return "domain", "lead", held
         return "no_party", None, []
+
+    def same(self, a: str, b: str) -> bool:
+        """Whether two party records are one party (twins or one normalised name)."""
+        return a == b or self.roots.get(a, a) == self.roots.get(b, b) or bool(
+            self.names.get(a) and self.names.get(a) == self.names.get(b))
+
+    def by_named(self, sender: str, outcome: str, held: Sequence[Holding],
+                 named: Sequence[Holding]) -> tuple[str, str | None, list[Holding]]:
+        """(outcome, tier, holdings) for a sender ``judge`` left unlinked as
+        ``shared_by_parties`` (``held``: the holders it found) or ``no_party``, by the
+        parties of the records the message names (``named``: one ``named_record`` holding
+        per party; module docstring). Anything else keeps ``outcome``, unlinked."""
+        domain = mentions.mail_domain(sender)
+        if domain is None or not named:
+            return outcome, None, []
+        if outcome == "shared_by_parties":
+            pick = [h for h in held if any(h.party_type == n.party_type
+                                           and self.same(h.party, n.party) for n in named)]
+            if pick and self.one_party(pick) and any(
+                    name_fits_domain(self.names.get(h.party, ""), domain) for h in pick):
+                if any(h.address == sender.lower() for h in pick):
+                    return "named_side_address", "corroborated", pick
+                return "named_side_domain", "lead", pick
+        elif outcome == "no_party" and not mentions.shared_mail_domain(domain):
+            if self.one_party(named) and any(
+                    name_fits_domain(self.names.get(n.party, ""), domain) for n in named):
+                return NAMED, "lead", list(named)
+        return outcome, None, []
 
 
 # Name words that say what a party is, not who: never enough to tie a name to a domain.
@@ -261,27 +317,64 @@ def read_parties(conn: Any) -> Parties:
     roots: dict[str, str] = {}
     twins: dict[str, list[str]] = {}
     for start in sorted({h.party for h in holdings}):
-        if start in roots:
-            continue
-        component, todo = {start}, [start]
-        while todo:
-            for other, _marks in _confirming_neighbours(conn, todo.pop()):
-                if other not in component and len(component) < 50:
-                    component.add(other)
-                    todo.append(other)
-        root = min(component)
-        for member in component:
-            roots[member] = root
-        for member in component:
-            twins[member] = sorted(o for o in component
-                                   if o != member and o.split(":", 1)[0] == member.split(":", 1)[0])
+        _component(conn, start, roots, twins)
     from ontology.identity_scoring import normalize_name
-    names: dict[str, str] = {}
-    holders = {h.party for h in holdings}
+    names: dict[str, str] = {}   # every party's: a named record's party may hold nothing
     for row, _prop in _values(conn, ["name"], tuple(t + ":" for t in PARTY_TYPES)):
-        if row["object_id"] in holders:
-            names.setdefault(row["object_id"], normalize_name(row["value"]))
+        names.setdefault(row["object_id"], normalize_name(row["value"]))
     return Parties(holdings, roots, names, twins)
+
+
+def _component(conn: Any, start: str, roots: dict[str, str],
+               twins: dict[str, list[str]]) -> None:
+    """Record ``start``'s identity component (confirming same_record links) in ``roots``
+    and ``twins``, unless it is known."""
+    if start in roots:
+        return
+    component, todo = {start}, [start]
+    while todo:
+        for other, _marks in _confirming_neighbours(conn, todo.pop()):
+            if other not in component and len(component) < 50:
+                component.add(other)
+                todo.append(other)
+    root = min(component)
+    for member in component:
+        roots[member] = root
+        twins[member] = sorted(o for o in component
+                               if o != member and o.split(":", 1)[0] == member.split(":", 1)[0])
+
+
+def named_parties(conn: Any, message: str, parties: Parties) -> list[Holding]:
+    """One ``named_record`` holding per party record the records ``message`` names
+    belong to (module docstring), citing the named record (or the party it names)."""
+    found: dict[str, str] = {}   # party -> the record naming it
+    for (target,) in _q(conn, "SELECT to_object FROM link_rows WHERE from_object = ? AND "
+                              "tier <> 'contradicted' AND superseded_at IS NULL AND NOT "
+                              "(link_id >= ? AND link_id < ?)",
+                        [message, PREFIX, _PREFIX_END]):
+        kind = target.split(":", 1)[0]
+        if kind in PARTY_TYPES:
+            found.setdefault(target, target)
+        elif kind in NAMED_TYPES:
+            for (party,) in _q(conn, "SELECT to_object FROM link_rows WHERE from_object = ? "
+                                     f"AND tier IN ({','.join('?' * len(NAMED_PARTY_TIERS))}) "
+                                     "AND superseded_at IS NULL",
+                               [target, *NAMED_PARTY_TIERS]):
+                if party.split(":", 1)[0] in PARTY_TYPES:
+                    found.setdefault(party, target)
+    if not found:
+        return []
+    versions = _versions(conn, set(found.values()))
+    out = []
+    for party, record in sorted(found.items()):
+        version = versions.get(record)
+        if version is None:
+            continue
+        _component(conn, party, parties.roots, parties.twins)
+        out.append(Holding(party, party.split(":", 1)[0], NAMED, "", None,
+                           version["l1_handle"], {"l1_handle": version["l1_handle"]},
+                           version["markings"], version["recorded_at"]))
+    return out
 
 
 def own_domains(projector: Any) -> list[str]:
@@ -306,7 +399,7 @@ def _versions(conn: Any, oids: Iterable[str]) -> dict[str, Any]:
 
 def link_rows(message: Any, tier: str, holdings: Sequence[Holding], parties: Parties,
               versions: Mapping[str, Any], declared: Mapping[str, str],
-              role: str = SENDER) -> list[dict[str, Any]]:
+              role: str = SENDER, named: Sequence[Holding] = ()) -> list[dict[str, Any]]:
     """The link rows of one message (``message``: its sender value row) to every holder
     and its twins (``declared``: party type -> link type)."""
     out: dict[tuple[str, str], dict[str, Any]] = {}
@@ -319,16 +412,30 @@ def link_rows(message: Any, tier: str, holdings: Sequence[Holding], parties: Par
             if link_type is None or version is None or (link_type, target) in out:
                 continue
             exact = tier == "corroborated"
-            reason = [{"feature": f"{role}_address" if exact else f"{role}_domain",
-                       "agrees": True, "citations": [msg_cite]},
-                      {"feature": "party_address" if exact else "party_domain",
-                       "agrees": True, "matched_on": h.prop, "citations": [dict(h.cite)]}]
+            if h.prop == NAMED:
+                reason = [{"feature": f"{role}_domain", "agrees": True,
+                           "citations": [msg_cite]},
+                          {"feature": "named_record_party", "agrees": True,
+                           "citations": [dict(h.cite)]}]
+                why_not = [{"feature": "domain_spells_name", "agrees": None,
+                            "detail": "no party stores the sender's address or domain; the "
+                                      "message names this party's record and the domain "
+                                      "spells its name: a lead"}]
+            else:
+                reason = [{"feature": f"{role}_address" if exact else f"{role}_domain",
+                           "agrees": True, "citations": [msg_cite]},
+                          {"feature": "party_address" if exact else "party_domain",
+                           "agrees": True, "matched_on": h.prop, "citations": [dict(h.cite)]}]
+                why_not = [] if exact else [{
+                    "feature": "domain_only", "agrees": None,
+                    "detail": "the sender's domain is one only this party holds; the address "
+                              "itself is not one it stores: a lead"}]
+            reason.extend({"feature": "named_record_party", "agrees": True,
+                           "citations": [dict(n.cite)]} for n in named
+                          if h.prop != NAMED and n.party_type == h.party_type
+                          and parties.same(n.party, h.party))
             if target != h.party:
                 reason.append({"feature": "same_record_twin", "agrees": True})
-            why_not = [] if exact else [{
-                "feature": "domain_only", "agrees": None,
-                "detail": "the sender's domain is one only this party holds; the address "
-                          "itself is not one it stores: a lead"}]
             out[(link_type, target)] = {
                 "link_id": PREFIX + _digest(message["object_id"], message["l1_handle"],
                                             link_type, target),
@@ -338,11 +445,13 @@ def link_rows(message: Any, tier: str, holdings: Sequence[Holding], parties: Par
                 "reason": json.dumps(reason, sort_keys=True, separators=(",", ":")),
                 "why_not": json.dumps(why_not, sort_keys=True, separators=(",", ":")),
                 "evidence_handles": json.dumps(list(dict.fromkeys(
-                    [message["l1_handle"], h.handle, version["l1_handle"]])),
+                    [message["l1_handle"], h.handle, version["l1_handle"],
+                     *(n.handle for n in named if h.prop != NAMED)])),
                     separators=(",", ":")),
                 "reviewed_by": None, "reviewed_at": None, "review_action_id": None,
                 "markings": mentions._marks(message["vmarks"], message["kmarks"], h.markings,
-                                            version["markings"]),
+                                            version["markings"],
+                                            *(n.markings for n in named if h.prop != NAMED)),
                 "recorded_at": max(message["recorded_at"], h.recorded_at,
                                    version["recorded_at"]),
                 "superseded_at": None}
@@ -439,10 +548,21 @@ def sender_parties_step(builder: Any, projector: Any) -> dict[str, Any]:
         pending.clear()
 
     for message, outcome, tier, holdings in judge_messages(conn, parties, own):
+        named: list[Holding] = []
+        if tier is None and outcome in ("shared_by_parties", "no_party"):
+            named = named_parties(conn, message["object_id"], parties)
+            if named:
+                found = addresses(message["value"])
+                outcome, tier, holdings = parties.by_named(found[0], outcome, holdings, named)
         counts[outcome] += 1
         if tier is None:
             continue
-        pending.extend(link_rows(message, tier, holdings, parties, versions, declared))
+        missing = {t for h in holdings for t in (h.party, *parties.twins.get(h.party, ()))
+                   if t not in versions}
+        if missing:
+            versions.update(_versions(conn, missing))
+        pending.extend(link_rows(message, tier, holdings, parties, versions, declared,
+                                 named=named))
         if len(pending) >= BATCH:
             flush()
     flush()
@@ -453,4 +573,5 @@ def sender_parties_step(builder: Any, projector: Any) -> dict[str, Any]:
 
 
 __all__ = ["LINK_TYPES", "MEETING_LINK_TYPES", "meeting_rows", "PREFIX", "Holding", "Parties", "declared_types", "judge_messages",
-           "link_rows", "name_fits_domain", "own_domains", "read_parties", "sender_parties_step"]
+           "link_rows", "name_fits_domain", "named_parties", "own_domains", "read_parties",
+           "sender_parties_step"]

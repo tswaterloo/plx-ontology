@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import unittest
+from datetime import date
 
 from fastapi.testclient import TestClient
 
@@ -333,6 +334,56 @@ class AskStream(unittest.TestCase):
         self.assertIn("incident", home.json()["error"]["message"])
 
 
+class AskBodySize(unittest.TestCase):
+    """Up to ten attachments of 11.2 MB each were parsed into memory
+    before the 5-file / 10 MB limit applied. Over the limit is refused at the HTTP layer,
+    before parsing; more than five files, or more than 10 MB together, is refused too."""
+
+    def setUp(self):
+        self.client = signed_in()
+        self.asked = []
+        backend = self.client.app.state.backend
+        original = backend.ask
+        backend.ask = lambda who, body: self.asked.append(body) or original(who, body)
+
+    def post(self, files):
+        return self.client.post("/api/ask", json={"question": "what is in this file?",
+                                                  "attachments": files})
+
+    def test_an_oversized_body_is_refused_before_it_is_parsed(self):
+        big = [{"name": f"f{i}.pdf", "data": "A" * 3_000_000} for i in range(5)]
+        got = self.post(big)
+        self.assertEqual(got.status_code, 413, got.text)
+        self.assertEqual(got.json()["error"]["code"], "request_too_large")
+        # streamed with no stated length: refused once it passes the limit
+        import asyncio
+        from operator_api.app import AskBodyLimit
+        reached, sent = [], []
+
+        async def app(scope, receive, send):
+            reached.append(scope)
+
+        async def receive():
+            return {"type": "http.request", "body": b"x" * 1000, "more_body": True}
+
+        async def send(message):
+            sent.append(message)
+        asyncio.run(AskBodyLimit(app, limit=5000)(
+            {"type": "http", "path": "/api/ask", "method": "POST", "headers": []},
+            receive, send))
+        self.assertEqual((reached, sent[0]["status"]), ([], 413))
+        self.assertEqual(self.asked, [])
+
+    def test_more_than_five_files_or_ten_megabytes_is_refused(self):
+        six = [{"name": f"f{i}.txt", "data": "aGVsbG8="} for i in range(6)]
+        self.assertEqual(self.post(six).status_code, 422)
+        heavy = [{"name": f"f{i}.pdf", "data": "A" * 2_850_000} for i in range(5)]
+        self.assertEqual(self.post(heavy).status_code, 422)
+        self.assertEqual(self.asked, [])
+        self.assertEqual(self.post(six[:5]).status_code, 200)
+        self.assertEqual(len(self.asked), 1)
+
+
 class MockMatchesOpenapi(unittest.TestCase):
     def test_committed_openapi_is_the_generated_one(self):
         self.assertEqual(Path(OPENAPI_FILE).read_text("utf-8"), openapi_text(),
@@ -500,10 +551,11 @@ class WatcherItemStateRoute(unittest.TestCase):
 
 
 class BriefRoutes(unittest.TestCase):
-    """The three brief routes for a signed-in reader (the mock world: no calendar, no
-    records); the auth walk above covers them signed out."""
+    """The three brief routes for a signed-in reader (the mock world: a synthetic calendar
+    and week, no finance marking); the auth walk above covers them signed out."""
 
     def test_weekly_review_meetings_and_a_brief_that_fails_closed(self):
+        from operating import briefs as br
         client = signed_in()
         weekly = client.get("/api/brief/weekly", params={"week": "2026-11-02"})
         self.assertEqual(weekly.status_code, 200, weekly.text)
@@ -512,12 +564,52 @@ class BriefRoutes(unittest.TestCase):
                          ("weekly", "Weekly review, week of 2026-11-02"))
         states = {s["key"]: s["state"] for s in body["sections"]}
         self.assertEqual(states["cash"], "finance_marked")
-        self.assertEqual(states["top_alerts"], "unread")   # no alert list: never "none"
+        self.assertEqual(states["margin"], "finance_marked")
+        self.assertFalse([f for s in body["sections"] for f in s["figures"]
+                          if f["unit"] == "money"])
+        # the demo week has the real builder's sections, no more and no fewer
+        real = br.weekly_review(lambda tool, args: {"error": {"code": "x", "message": "x"}},
+                                frozenset(), {"status": "not_configured"},
+                                week=date(2026, 11, 2), today=date(2026, 11, 10))
+        self.assertEqual(set(states), {s["key"] for s in real["sections"]})
         self.assertEqual(client.get("/api/brief/weekly", params={"week": "nope"}).status_code,
                          422)
-        self.assertEqual(client.get("/api/brief/meetings").json(), {"meetings": []})
+        meetings = client.get("/api/brief/meetings").json()["meetings"]
+        self.assertTrue(meetings)
+        for e in meetings:
+            if e["private"]:
+                self.assertEqual((e["attendees"], e["agenda"], e["location"]), ([], None, None))
+                continue
+            self.assertTrue(e["organizer"] and e["attendees"], e["object"]["label"])
+            brief = client.get(e["brief_url"].replace("/meetings/brief/", "/api/brief/"))
+            self.assertEqual(brief.status_code, 200, e["brief_url"])
         for path in ("/api/brief/PurchaseOrder/90412", "/api/brief/CalendarEvent/x",
                      "/api/brief/Customer/" + "x" * 701):
             got = client.get(path)
             self.assertIn(got.status_code, (404, 422), path)
             self.assertIn("error", got.json(), path)
+
+
+class ReaderWrites(unittest.TestCase):
+    """What counts as the reader's own write (their kept screens stop being current)."""
+
+    def test_a_write_counts_and_an_ask_under_way_does_not(self):
+        wrote: list = []
+
+        class Recording(MockBackend):
+            def reader_wrote(self, reader):
+                wrote.append(reader.key)
+
+        app = create_app(Recording(), DevAuth(fixture_identity("plx", ["staff:demo"]),
+                                              mode="mock"), secure_cookie=False)
+        client = TestClient(app, base_url="http://testserver")
+        self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+        wrote.clear()
+        self.assertEqual(client.get("/api/home").status_code, 200)
+        self.assertEqual(wrote, [])                    # a read is no write
+        asked = client.post("/api/ask", json={"question": "is 90412 late?"})
+        self.assertEqual(asked.status_code, 200, asked.text)
+        self.assertEqual(wrote, [])                    # the Ask counts its own answer
+        self.assertEqual(client.post("/api/briefing/seen").status_code, 200)
+        self.assertEqual(len(wrote), 2)                # before it ran and after
+        self.assertEqual(len(set(wrote)), 1)

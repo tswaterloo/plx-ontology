@@ -26,26 +26,37 @@ from ontology.units import MONEY_MEASURES, TAX_BASES
 
 FORMAT = "plx-generator-overrides/v1"
 OVERRIDES_DIR = Path(__file__).resolve().parent.parent / "schema" / "overrides"
-KINDS = ("identity", "lineage", "markings", "money", "names", "storage")
+KINDS = ("business", "identity", "lineage", "markings", "money", "names", "storage")
 _HEAD = {"format", "kind", "description"}
 _KEYS = {
     "money": _HEAD | {"evidence", "markings", "columns", "source_columns"},
     "markings": _HEAD | {"name_rules", "domain_markings", "scoped_markings",
-                         "relation_markings"},
+                         "relation_markings", "row_markings", "text_markings"},
     "identity": _HEAD | {"key_name", "scope", "verified_key_sources", "unverified_tier"},
     "lineage": _HEAD | {"note", "sources"},
     "names": _HEAD | {"sources"},
     "storage": _HEAD | {"evidence", "sources"},
+    "business": _HEAD | {"sources"},
 }
 _MONEY_SPEC = {"measure", "tax_basis", "header", "per_unit_from", "currency_from",
                "tax_basis_from"}
 _OPTIONAL = {"money": {"source_columns"},
-             "markings": {"scoped_markings", "relation_markings"}}
+             "markings": {"scoped_markings", "relation_markings", "row_markings",
+                          "text_markings"}}
 _NAME_RULE = {"marking", "value_types", "matches", "unless", "applied", "exception_label",
               "exceptions"}
 _SNAKE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _TYPE_ID = re.compile(r"^[A-Z][A-Za-z0-9]{1,63}$")   # a C0 object type id
 _NAME = {"object_type", "note", "anchor", "markings"}
+# business.json: what a raw relation is to the business (``_business``)
+BUSINESS_DECISIONS = ("type", "extends", "links", "skip")
+_BUSINESS = {"decision", "label", "about", "display", "text", "extends", "links_to", "joins",
+             "reason"}
+_BUSINESS_NEEDS = {"type": {"about"}, "extends": {"about", "extends"},
+                   "links": {"about", "links_to"}, "skip": {"reason"}}
+_JOIN = {"name", "to_binding", "pairs", "tier", "why", "unique_target"}
+_JOIN_COMPARES = ("integer_id", "text_id", "identifier")
+_SKIP_REASON = re.compile(r"^(system|log): \S")
 # How a source adapter chose a relation's key (facts ``key_source``; the Portal reporting
 # API's chooseKey: a primary key, a NOT NULL unique constraint, a single-column nullable
 # unique constraint, else a bare ``id`` column).
@@ -111,6 +122,14 @@ class Overrides:
     # markings.json scoped_markings: owner-decided markings replacing a rule's on listed
     # columns and properties.
     scoped_markings: tuple[ScopedMarking, ...] = ()
+    # business.json: source -> relation -> its declared business decision (``_business``)
+    business: Mapping[str, Mapping[str, Mapping[str, Any]]] = field(default_factory=dict)
+    # markings.json row_markings: rules a generated binding of a matching relation that
+    # carries one of the rule's account columns takes as marking_rules (build.py)
+    row_markings: tuple[dict[str, Any], ...] = ()
+    # markings.json text_markings: free-text columns (by name pattern) of matching
+    # relations carry the rule's markings on every row (build.py)
+    text_markings: tuple[dict[str, Any], ...] = ()
     # storage.json: source -> relation -> its generated binding's value_storage.
     storage: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
@@ -212,6 +231,77 @@ def _names(sources: Any) -> dict[str, dict[str, dict[str, Any]]]:
             _need(isinstance(spec.get("anchor", False), bool), at, "anchor must be a boolean")
             if "markings" in spec:
                 _markings(spec["markings"], at)
+            out.setdefault(source, {})[relation] = dict(spec)
+    return out
+
+
+def _columns(value: Any, at: str, what: str, most: int) -> None:
+    _need(isinstance(value, list) and 0 < len(value) <= most and
+          all(isinstance(c, str) and c for c in value) and len(set(value)) == len(value),
+          at, f"{what} must be 1-{most} distinct column names")
+
+
+def _business(sources: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """business.json: relation -> decision, label and what the decision needs. A skipped
+    relation is a pure system or log table (``reason`` says which); any other key, a
+    decision the vocabulary lacks or a join without its parts fails the load."""
+    _need(isinstance(sources, dict), "business.json", "sources must be an object")
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for source, relations in sources.items():
+        _need(isinstance(relations, dict) and bool(relations), f"business.json {source}",
+              "not a non-empty object")
+        for relation, spec in relations.items():
+            at = f"business.json {source}.{relation}"
+            _need(isinstance(spec, dict), at, "not an object")
+            decision = spec.get("decision")
+            _need(decision in BUSINESS_DECISIONS, at,
+                  f"decision must be one of {list(BUSINESS_DECISIONS)}")
+            _keys(spec, _BUSINESS, {"decision", "label"} | _BUSINESS_NEEDS[decision], at)
+            _text(spec["label"], at, "label")
+            if decision == "skip":
+                _need(_SKIP_REASON.match(_text(spec["reason"], at, "reason")) is not None, at,
+                      "a skipped relation is a system or log table: reason starts "
+                      "'system: ' or 'log: '")
+                _need(not set(spec) & {"about", "display", "text", "joins", "extends",
+                                       "links_to"}, at,
+                      "a skipped relation declares a label and its reason only")
+            else:
+                _text(spec["about"], at, "about")
+                _need("reason" not in spec, at, "reason is for a skipped relation")
+                _need(decision == "extends" or "extends" not in spec, at,
+                      "extends is for an extends decision")
+                _need(decision == "links" or "links_to" not in spec, at,
+                      "links_to is for a links decision")
+                for key in ("extends", "links_to"):
+                    if key in spec:
+                        _need(isinstance(spec[key], str) and
+                              _TYPE_ID.match(spec[key]) is not None, at,
+                              f"{key} must be an object type id")
+                if "display" in spec:
+                    _columns(spec["display"], at, "display", 3)
+                if "text" in spec:
+                    _columns(spec["text"], at, "text", 40)
+            names = set()
+            for n, join in enumerate(spec.get("joins", ())):
+                jat = f"{at}.joins[{n}]"
+                _keys(join, _JOIN, _JOIN - {"unique_target"}, jat)
+                _need(isinstance(join["name"], str) and _SNAKE.match(join["name"]) is not None
+                      and join["name"] not in names, jat, "name must be a new snake_case name")
+                names.add(join["name"])
+                _text(join["to_binding"], jat, "to_binding")
+                _text(join["why"], jat, "why")
+                _need(join["tier"] in store_ddl.TIERS, jat, f"tier not in {store_ddl.TIERS}")
+                _need(join["tier"] != "lead" or join.get("unique_target") is True, jat,
+                      "a lead join links one candidate only (unique_target)")
+                _need(isinstance(join["pairs"], list) and bool(join["pairs"]), jat,
+                      "pairs must be a non-empty list")
+                for pair in join["pairs"]:
+                    _keys(pair, {"from", "to", "compare", "identifier_kind"},
+                          {"from", "to", "compare"}, jat)
+                    _need(pair["compare"] in _JOIN_COMPARES, jat,
+                          f"compare must be one of {list(_JOIN_COMPARES)}")
+                    _need((pair["compare"] == "identifier") == ("identifier_kind" in pair),
+                          jat, "an identifier compare names its identifier_kind")
             out.setdefault(source, {})[relation] = dict(spec)
     return out
 
@@ -393,6 +483,53 @@ def load_overrides(directory: Path = OVERRIDES_DIR) -> Overrides:
                                   else (),
                                   {str(c): _markings(m, f"{where}.{c}")
                                    for c, m in columns.items()})
+    row_markings: list[dict[str, Any]] = []
+    for n, item in enumerate(docs["markings"].get("row_markings", [])):
+        where = f"markings.json row_markings[{n}]"
+        keys = {"source", "relations", "except", "account_columns", "when", "markings",
+                "header_links", "applied"}
+        _keys(item, keys, keys - {"except", "header_links"}, where)
+        _need(isinstance(item.get("header_links", []), list) and all(
+            isinstance(n, str) and _SNAKE.match(n) for n in item.get("header_links", [])),
+            where, "header_links must be snake_case link names")
+        _text(item["source"], where, "source")
+        _text(item["applied"], where, "applied")
+        marks = _markings(item["markings"], where)
+        _need(bool(marks), where, "markings must not be empty")
+        _need(isinstance(item["relations"], list) and bool(item["relations"]) and
+              all(isinstance(g, str) and g for g in item["relations"]), where,
+              "relations must be a non-empty list of relation globs")
+        _need(isinstance(item.get("except", []), list), where, "except must be a list")
+        cols = item["account_columns"]
+        _need(isinstance(cols, dict) and bool(cols) and all(
+            isinstance(v, str) and _SNAKE.match(v) for v in cols.values()), where,
+            "account_columns maps a column to the snake_case link its rule hops")
+        _need(isinstance(item["when"], list) and 0 < len(item["when"]) <= 4, where,
+              "when must be 1-4 predicates")
+        for w in item["when"]:
+            _keys(w, {"path", "op", "value", "via_link"}, {"path", "op"}, where)
+        for pattern in [str(w.get("value")) for w in item["when"] if w["op"] == "matches"]:
+            try:
+                re.compile(pattern)
+            except re.error:
+                raise OverrideError(f"{where}: bad pattern") from None
+        row_markings.append({**item, "markings": list(marks), "why": item["applied"][:600]})
+    text_markings: list[dict[str, Any]] = []
+    for n, item in enumerate(docs["markings"].get("text_markings", [])):
+        where = f"markings.json text_markings[{n}]"
+        keys = {"source", "relations", "except", "columns", "unless", "markings", "applied"}
+        _keys(item, keys, keys - {"except"}, where)
+        _text(item["source"], where, "source")
+        _text(item["applied"], where, "applied")
+        marks = _markings(item["markings"], where)
+        _need(bool(marks), where, "markings must not be empty")
+        _need(isinstance(item["relations"], list) and bool(item["relations"]), where,
+              "relations must be a non-empty list of relation globs")
+        try:
+            compiled_rule = (re.compile(item["columns"]), re.compile(item["unless"]))
+        except (re.error, TypeError):
+            raise OverrideError(f"{where}: bad columns or unless pattern") from None
+        text_markings.append({**item, "markings": list(marks), "_re": compiled_rule})
     scoped = tuple(_scoped_marking(item, rules, f"markings.json scoped_markings[{n}]")
                    for n, item in enumerate(docs["markings"].get("scoped_markings", [])))
     _need(len({s.marking for s in scoped}) == len(scoped), "markings.json",
@@ -400,10 +537,12 @@ def load_overrides(directory: Path = OVERRIDES_DIR) -> Overrides:
     return Overrides(
         domain_markings=domain_markings, scoped_markings=scoped,
         relation_markings=relation_markings,
+        row_markings=tuple(row_markings), text_markings=tuple(text_markings),
         money=_money(docs["money"], lineage, "money.json"),
         source_money=_source_money(docs["money"], "money.json"),
         money_markings=money_markings,
         name_rules=rules, identity=identity, lineage=lineage,
         lineage_note=_text(docs["lineage"]["note"], "lineage.json", "note"),
-        names=_names(docs["names"]["sources"]), storage=_storage(docs["storage"]),
+        names=_names(docs["names"]["sources"]),
+        business=_business(docs["business"]["sources"]), storage=_storage(docs["storage"]),
         paths=tuple(f"ontology/schema/overrides/{p.name}" for p in paths))

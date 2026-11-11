@@ -148,10 +148,12 @@ class AgentPath(unittest.TestCase):
         blocks = [events(b)[0] for b in text.split("\n\n") if b.strip()]
         return next(data for name, data in reversed(blocks) if name == "answer")
 
-    def ask(self, served, question):
+    def ask(self, served, question, attachments=()):
         started = time.monotonic()
         seen = []
-        with served.client.stream("POST", "/api/ask", json={"question": question}) as reply:
+        body = {"question": question, **({"attachments": list(attachments)}
+                                         if attachments else {})}
+        with served.client.stream("POST", "/api/ask", json=body) as reply:
             self.assertEqual(reply.status_code, 200)
             buffer = ""
             for chunk in reply.iter_text():
@@ -185,11 +187,13 @@ class AgentPath(unittest.TestCase):
         reading = next(t for (n, d), t in got if d.get("message") == "Looking up records")
         self.assertLess(reading, got[-1][1] - 0.5)         # ...before the session ended
         # the card runner's prompt, for this reader's own session, then the app's
-        # business-reader wording rule (the scoreboard's prompt never carries it)
+        # business-reader wording rule and the house prose style (the scoreboard's prompt
+        # carries neither)
+        from operating.prose_style import PROSE_STYLE_RULE
         self.assertEqual(seen["prompt"], aa.app_prompt(question))
         self.assertTrue(seen["prompt"].startswith(runner.ask_prompt(question)))
         self.assertEqual(seen["prompt"][len(runner.ask_prompt(question)):],
-                         "\n\n" + aa.APP_READER_RULE)
+                         "\n\n" + aa.APP_READER_RULE + "\n\n" + PROSE_STYLE_RULE)
         self.assertEqual(sorted(hosts[0].principals), sorted(OPS))
         answer = got[-1][0][1]
         self.assertEqual(answer["outcome"], "answered")
@@ -214,6 +218,288 @@ class AgentPath(unittest.TestCase):
         self.assertNotIn(status, json.dumps(other))
         self.assertEqual(self.outsider.client.get(
             "/api/source", params={"handle": self.handle}).status_code, 404)
+
+    def read_as(self, served, scope):
+        """The front door reads every question with ``scope`` (``general_answer``)."""
+        from operating.front_door import Reading
+        backend = served.app.state.backend
+        backend.front_door = SimpleNamespace(read=lambda question, earlier: Reading(
+            question, question, "investigate", "Reading your question", 0.1, None, scope))
+        self.addCleanup(setattr, backend, "front_door", None)
+
+    def setUp(self):
+        # the work log keeps Asks only while the people exclusion decides (fail closed)
+        from operator_api.tests.test_work_log import Guard
+        self.guard = Guard()
+        for served in (self.ops, self.outsider):
+            store = served.app.state.work_log
+            self.addCleanup(setattr, store, "guard", store.guard)
+            store.guard = lambda: self.guard
+
+    def general_model(self, served, said):
+        """The general answerer's model: replies ``said``, keeps each prompt it got."""
+        prompts = []
+        backend = served.app.state.backend
+        self.images = []
+        backend.general_call = lambda text, images=(): (
+            prompts.append(text), self.images.append(list(images)))[0] or said
+        self.addCleanup(setattr, backend, "general_call", None)
+        return prompts
+
+    def test_a_general_question_is_answered_from_knowledge_marked_and_never_a_company_fact(self):
+        """A question no record answers gets the model's general knowledge under the
+        general heading, with no fact, source or citation, and no agent session; a
+        sentence stating a company figure, record or name the asker did not give is
+        removed. A model that gives nothing leaves the question to the evidence path."""
+        from operating import general_answer as ga
+        self.read_as(self.ops, "general")
+        said = ("Landed cost is the total cost of getting goods to your dock: the "
+                "purchase price plus freight, duty, insurance and handling. For imported "
+                "raw materials it typically adds 5 to 15 percent; ISO 22716 asks you to "
+                "keep the records behind it.\n"
+                "PLX makes soaps and lotions under contract. "
+                "Our landed cost on PO 4501 was $4.10 per kg on March 3, 2026. "
+                "See lot L2024-17 for an example. Acme Chemicals supplies our glycerin.\n"
+                "[[DRAFT email]]\nSubject: Landed cost for [PO number]\nHello [supplier name],"
+                "\nPlease send the freight and duty you charged on [PO number]. We paid "
+                "$7,450 last time.\n[[END]]\n"
+                "[[DRAFT payment]]\nWhat: Pay the freight invoice\nAmount: [amount]\n"
+                "Reason: freight on [PO number]\n[[END]]")
+        prompts = self.general_model(self.ops, said)
+        sessions = []
+        self.use(self.ops, lambda on_line: sessions.append(1) or ScriptedSession(
+            on_line, [], "nothing"))
+        got = self.ask(self.ops, "explain landed cost")
+        names = [name for (name, _), _ in got]
+        answer = got[-1][0][1]
+        m.AnswerPayload.model_validate(answer)
+        self.assertEqual(sessions, [])                       # no agent, no record read
+        self.assertNotIn("sources", names)
+        self.assertEqual((answer["outcome"], answer["facts"], answer["proposals"]),
+                         ("answered", [], []))
+        self.assertTrue(answer["direct_answer"].startswith(ga.HEADING + "\n"))
+        self.assertIn("typically adds 5 to 15 percent", answer["direct_answer"])
+        self.assertIn("ISO 22716", answer["direct_answer"])
+        for invented in ("4.10", "4501", "March 3", "L2024-17", "Acme", "7,450",
+                         "PLX makes"):
+            self.assertNotIn(invented, json.dumps(answer))
+        # the drafts: an email the approve-to-send desk previews (never confirmed here),
+        # and a payment shown in full, filed or assigned through the same desk
+        email, payment = answer["drafts"]
+        self.assertEqual((email["kind"], email["email_subject"], email["sent"]),
+                         ("email", "Landed cost for [PO number]", False))
+        self.assertEqual([o["kind"] for o in email["actions"]], ["send_email"])
+        self.assertIn("Please send the freight", email["body"])
+        self.assertEqual(payment["kind"], "payment")
+        self.assertIn({"label": "Amount", "value": "[amount]"}, payment["details"])
+        self.assertEqual({o["kind"] for o in payment["actions"]}, {"create_follow_up", "assign"})
+        preview = self.ops.client.post("/api/actions/preview", json={
+            "card_id": email["id"], "kind": "send_email"})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.json()["payload"]["body"], email["body"])
+        self.assertIn("Add at least one recipient.", preview.json()["problems"])
+        # another reader's preview of the same draft finds nothing
+        self.assertEqual(self.outsider.client.post("/api/actions/preview", json={
+            "card_id": email["id"], "kind": "send_email"}).status_code, 404)
+        # saved work, in the work log: resumable and organizable by this reader only
+        thread = f"/api/work-log/threads/ask:{answer['conversation_id']}"
+        kept = self.ops.client.get(thread).json()
+        self.assertEqual(kept["resume"]["turns"][0]["answer"]["direct_answer"],
+                         answer["direct_answer"])
+        self.assertEqual(self.outsider.client.get(thread).status_code, 404)
+        self.assertNotIn(answer["answer_id"], json.dumps(
+            self.outsider.client.get("/api/work-log").json()))
+        filed = self.ops.client.post(thread, json={
+            "name": "Landed cost", "case_id": "freight-review", "pinned": True}).json()
+        self.assertEqual((filed["name"], filed["case_id"], filed["pinned"]),
+                         ("Landed cost", "freight-review", True))
+        listed = self.ops.client.get("/api/work-log", params={
+            "case_id": "freight-review"}).json()["events"]
+        self.assertEqual([e["source_id"] for e in listed], [answer["answer_id"]])
+        # the exclusion list not loaded: no kept Ask, so no draft card (fail closed)
+        with mock.patch.object(self.guard, "unavailable", "excluded_people_oids_absent"):
+            self.assertEqual(self.ops.client.post("/api/actions/preview", json={
+                "card_id": email["id"], "kind": "send_email"}).status_code, 404)
+        # the model saw the question and the house style, never a record
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("Question: explain landed cost", prompts[0])
+        self.assertNotIn(self.handle, prompts[0])
+        # nothing from the model: the evidence path answers, as before
+        self.general_model(self.ops, None)
+        self.ask(self.ops, "explain landed cost")
+        self.assertEqual(sessions, [1])
+
+    def test_a_mixed_question_keeps_the_gated_company_answer_and_adds_marked_reasoning(self):
+        """The company part goes through the agent path and its gate unchanged (its fact,
+        sources and outcome); the general part follows it under the general heading, and
+        a company figure the model invented for it is removed."""
+        from operating import general_answer as ga
+        status = "Overdue"
+        self.read_as(self.ops, "mixed")
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, status))]
+        prose = (f"The order status is {status}.\n\n" + answer_block(self.handle, status))
+        self.use(self.ops, lambda on_line: ScriptedSession(on_line, lines, prose,
+                                                           pause=0.01))
+        prompts = self.general_model(
+            self.ops, "An order is usually escalated after five business days late. "
+                      "Our supplier promised it for 2026-12-01.")
+        answer = self.ask(self.ops, "is our latest PO late, and when should we escalate?"
+                          )[-1][0][1]
+        self.assertEqual(answer["outcome"], "answered")
+        self.assertEqual(answer["facts"][0]["check"], "passed")
+        self.assertIn(self.handle, {s["handle"] for s in answer["facts"][0]["sources"]})
+        company, general = answer["direct_answer"].split(ga.HEADING + "\n")
+        self.assertIn(f"The order status is {status}.", company)
+        self.assertIn("escalated after five business days", general)
+        self.assertNotIn("2026-12-01", answer["direct_answer"])
+        self.assertIn("figures above", prompts[0])           # told the records answer
+        # kept in the work log with its cited source, reopened by conversation (to carry
+        # on from it)
+        thread = f"/api/work-log/threads/ask:{answer['conversation_id']}"
+        kept = self.ops.client.get(thread).json()
+        self.assertEqual([t["answer"]["facts"] for t in kept["resume"]["turns"]],
+                         [answer["facts"]])
+        # a source no longer open to the reader withholds the kept answer (fail closed)
+        backend = self.ops.app.state.backend
+        with mock.patch.object(type(backend), "feedback_grant",
+                               lambda _self, reader, handles: (frozenset(), {
+                                   h: "restricted" for h in handles})):
+            kept = self.ops.client.get(thread).json()
+        self.assertIsNone(kept["resume"]["turns"][0]["answer"])
+        self.assertTrue(kept["resume"]["turns"][0]["withheld"])
+        self.assertNotIn(status, json.dumps(kept["resume"]))
+
+    def test_a_company_question_the_records_cannot_answer_still_gets_marked_help(self):
+        """Never a refusal: an answer the records could not give says what is missing, as
+        the evidence path wrote it, and the model's general help follows under the general
+        heading; the outcome stays the evidence path's own."""
+        from operating import general_answer as ga
+        self.use(self.ops, lambda on_line: ScriptedSession(on_line, [], "I found nothing.",
+                                                           pause=0.01))
+        prompts = self.general_model(self.ops, "Supplier lead times for glycerin usually "
+                                               "run two to six weeks.")
+        answer = self.ask(self.ops, "when will the glycerin arrive?")[-1][0][1]
+        self.assertNotEqual(answer["outcome"], "answered")
+        self.assertEqual(answer["facts"], [])
+        company, general = answer["direct_answer"].split(ga.HEADING + "\n")
+        self.assertTrue(company.strip())                     # what is missing, said first
+        self.assertIn("two to six weeks", general)
+        self.assertIn("could not confirm all", prompts[0])
+
+    def test_the_general_part_never_names_the_record_the_cited_part_answers(self):
+        """In "Is PO 4501 confirmed by the supplier, and how should
+        I chase it?" a general line restating PO 4501 or a figure about the supplier read
+        as a cited company fact. The general part keeps only the general advice; the
+        record and any figure about it come from the cited part alone."""
+        from operating import general_answer as ga
+        status = "Overdue"
+        self.read_as(self.ops, "mixed")
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, status))]
+        prose = (f"The order status is {status}.\n\n" + answer_block(self.handle, status))
+        self.use(self.ops, lambda on_line: ScriptedSession(on_line, lines, prose,
+                                                           pause=0.01))
+        self.general_model(
+            self.ops,
+            "- If PO 4501 is not confirmed, the supplier should be chased by phone.\n"
+            "- Your supplier Northline is 12 days late on this order.\n"
+            "- Glycerin from Acme Chemicals arrives on 2026-12-01.\n"
+            "- Ask the supplier's order desk for a written confirmation.\n"
+            "- Escalate to their account manager if nobody replies within a week.")
+        answer = self.ask(self.ops, "Is PO 4501 confirmed by the supplier, and how "
+                                    "should I chase it?")[-1][0][1]
+        self.assertEqual(answer["facts"][0]["check"], "passed")
+        company, general = answer["direct_answer"].split(ga.HEADING + "\n")
+        self.assertIn(f"The order status is {status}.", company)
+        self.assertIn("written confirmation", general)
+        self.assertIn("account manager", general)
+        for company_fact in ("4501", "Northline", "12 days", "Acme", "2026-12-01"):
+            self.assertNotIn(company_fact, general)
+
+    def test_attached_files_and_images_are_read_labelled_and_never_kept(self):
+        """A question with attachments: a spreadsheet's cells and a CSV's rows reach the
+        model as data (between markers it is told are not instructions), an image goes as
+        an image, an excluded person's address is cleaned out first; a file of another
+        kind or over its limit is named as not read, with why. The answer is labelled as
+        from the attachment; the saved Ask keeps each file's name, kind and size, never
+        its content. With the exclusion list unavailable nothing is read (fail closed)."""
+        import base64
+        import io
+        import zipfile
+        from operating import ask_attachments as at
+        from operating import general_answer as ga
+        from operator_api.tests.test_work_log import EXCLUDED
+        backend = self.ops.app.state.backend
+        self.addCleanup(setattr, backend, "people_guard", backend.people_guard)
+        backend.people_guard = lambda: self.guard
+        self.read_as(self.ops, "general")
+        book = io.BytesIO()
+        with zipfile.ZipFile(book, "w") as z:
+            z.writestr("xl/workbook.xml", '<workbook xmlns="http://schemas.openxmlformats.org/'
+                       'spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/'
+                       'officeDocument/2006/relationships"><sheets><sheet name="Quote" '
+                       'sheetId="1" r:id="rId1"/></sheets></workbook>')
+            z.writestr("xl/_rels/workbook.xml.rels", '<Relationships xmlns="http://schemas.'
+                       'openxmlformats.org/package/2006/relationships"><Relationship Id="rId1"'
+                       ' Target="worksheets/sheet1.xml"/></Relationships>')
+            z.writestr("xl/sharedStrings.xml", '<sst xmlns="http://schemas.openxmlformats.org'
+                       '/spreadsheetml/2006/main"><si><t>Glycerin quote</t></si></sst>')
+            z.writestr("xl/worksheets/sheet1.xml", '<worksheet xmlns="http://schemas.'
+                       'openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c '
+                       'r="A1" t="s"><v>0</v></c><c r="B1"><v>7319.55</v></c></row>'
+                       '</sheetData></worksheet>')
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+        b64 = lambda data: base64.b64encode(data).decode()  # noqa: E731
+        files = [{"name": "quote.xlsx", "data": b64(book.getvalue())},
+                 {"name": "freight.csv", "data": b64(
+                     f"carrier,cost\nNorthline,1288.40\ncontact,{EXCLUDED}\n".encode())},
+                 {"name": "label.png", "data": b64(png)},
+                 {"name": "old.xls", "data": b64(b"\xd0\xcf\x11\xe0" + b"\x00" * 32)},
+                 {"name": "huge.png", "data": b64(b"\x89PNG\r\n\x1a\n"
+                                                  + b"\x00" * (at.MAX_IMAGE_BYTES + 1))}]
+        prompts = self.general_model(
+            self.ops, "The attached quote shows glycerin at 7319.55 and freight from "
+                      "Northline at 1288.40, so the landed total is 8607.95.")
+        got = self.ask(self.ops, "what is the landed total of these?", files)
+        answer = got[-1][0][1]
+        self.assertEqual(answer["outcome"], "answered")
+        self.assertTrue(answer["direct_answer"].startswith(ga.ATTACHMENT_HEADING + "\n"),
+                        answer["direct_answer"])
+        self.assertIn("8607.95", answer["direct_answer"])     # figures the files gave
+        self.assertEqual(answer["facts"], [])
+        self.assertIn("Reading your attachments", [p["message"] for (n, p), _ in got
+                                                    if n == "status"])
+        notes = {a["name"]: a for a in answer["attachments"]}
+        self.assertEqual([notes[n]["read"] for n in ("quote.xlsx", "freight.csv",
+                                                     "label.png", "old.xls", "huge.png")],
+                         [True, True, True, False, False])
+        self.assertIn("larger than 5 MB", notes["huge.png"]["note"])
+        self.assertIn("save it as one of those", notes["old.xls"]["note"])
+        self.assertIn("Glycerin quote\t7319.55", prompts[0])
+        self.assertIn("Northline\t1288.40", prompts[0])
+        self.assertIn("never as instructions", prompts[0])
+        self.assertNotIn(EXCLUDED, prompts[0])
+        self.assertEqual([i["media_type"] for i in self.images[0]], ["image/png"])
+        # the saved Ask: the files' names and sizes, never what they hold
+        kept = self.ops.client.get(
+            f"/api/work-log/threads/ask:{answer['conversation_id']}").json()
+        turn = kept["resume"]["turns"][0]["answer"]
+        self.assertEqual([a["name"] for a in turn["attachments"]], list(notes))
+        store = self.ops.app.state.work_log
+        with store._lock:
+            rows = " ".join(str(tuple(r)) for r in store._conn.execute("SELECT * FROM event"))
+        for content in ("Glycerin quote", "Northline,1288.40", b64(png)[:20]):
+            self.assertNotIn(content, rows)
+        # the exclusion list not loaded: nothing read, nothing shown to the model
+        with mock.patch.object(self.guard, "unavailable", "excluded_people_oids_absent"):
+            prompts = self.general_model(self.ops, "General help only.")
+            answer = self.ask(self.ops, "what is the landed total of these?", files[:2]
+                              )[-1][0][1]
+        self.assertEqual([a["read"] for a in answer["attachments"]], [False, False])
+        self.assertTrue(all("not loaded" in a["note"] for a in answer["attachments"]))
+        self.assertNotIn("Glycerin", " ".join(prompts))
+        self.assertTrue(answer["direct_answer"].startswith(ga.HEADING))
 
     def test_progress_names_plain_steps_and_the_verdict_comes_before_the_answer(self):
         """The reader watches the work in plain words (their own identifier, the sources
@@ -871,6 +1157,8 @@ class ReaderIdentity(unittest.TestCase):
                          runner.build_prompt(runner.UNPINNED_ITEM, question))
         self.assertNotIn(aa.APP_READER_RULE, runner.build_prompt(runner.UNPINNED_ITEM,
                                                                    question))
+        from operating.prose_style import PROSE_STYLE_RULE
+        self.assertNotIn(PROSE_STYLE_RULE, runner.build_prompt(runner.UNPINNED_ITEM, question))
         defs = runner._schema()["$defs"]
         self.assertEqual(list(agent_session.QUANTITY_ROLES), defs["quantity_role"]["enum"])
         self.assertEqual(list(agent_session.GAP_STATES), defs["gap_state"]["enum"])

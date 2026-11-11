@@ -44,7 +44,7 @@ export default function BriefPage() {
         ) : brief ? (
           <BriefView brief={brief} />
         ) : (
-          <Pending label="Preparing the brief" />
+          <Pending page label="Preparing the brief" />
         )}
       </div>
     </div>

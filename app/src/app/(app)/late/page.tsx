@@ -4,10 +4,9 @@ import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChartNoAxesColumn, ChevronDown,
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LateOverview } from "@/components/late/overview";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
-import { AgeRing, DoneRing, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
-import { Monogram } from "@/components/ui/monogram";
+import { DoneRing, lateEdge, lateFigure, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
-import { SlowNote } from "@/components/ui/skeleton";
+import { Pending } from "@/components/ui/skeleton";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { getActionStates, getLateList, getSuggestions } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -123,27 +122,20 @@ function Row({ po, on, onPick }: { po: LatePo; on: boolean; onPick: (() => void)
         data-row-link=""
         data-testid="late-row"
         className={cn(
-          "flex gap-3 rounded-[10px] px-3 py-2.5 outline-none transition-[background-color,box-shadow] duration-100",
-          on ? "bg-row-on shadow-lift" : "hover:bg-hover",
+          "flex gap-3 rounded-[3px] px-3 py-2.5 outline-none transition-[background-color,box-shadow] duration-100",
+          typeof po.days_late === "number" && lateEdge(po.days_late),
+          on ? "bg-row-on shadow-[var(--lift),inset_2px_0_0_var(--accent)]" : "hover:bg-hover",
           "focus-visible:ring-2 focus-visible:ring-ring/50",
         )}
       >
-        <Monogram name={po.supplier} size={32} />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span className="shrink-0 text-[13px] font-semibold leading-[18px]" data-testid="late-po">
+            <span className="num shrink-0 text-[13px] font-semibold leading-[18px]" data-testid="late-po">
               {recordLabel("PurchaseOrder", po.label)}
             </span>
             <span className="min-w-0 truncate text-[13px] leading-[18px] text-fg/80">{po.supplier ?? "No supplier"}</span>
-            <span className="ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 font-medium tabular-nums">
-              {typeof po.days_late === "number" ? (
-                <>
-                  {po.days_late}d
-                  <AgeRing days={po.days_late} size={13} />
-                </>
-              ) : (
-                "–"
-              )}
+            <span className={cn("ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 font-medium num", typeof po.days_late === "number" && lateFigure(po.days_late))}>
+              {typeof po.days_late === "number" ? `${po.days_late}d` : "–"}
             </span>
           </span>
           <span className="mt-0.5 flex items-center gap-2 text-[12px] leading-4 text-muted tabular-nums">
@@ -166,23 +158,7 @@ function Row({ po, on, onPick }: { po: LatePo; on: boolean; onPick: (() => void)
 }
 
 function ListSkeleton() {
-  const widths = ["w-[62%]", "w-[53%]", "w-[44%]"];
-  return (
-    <>
-    <SlowNote className="px-5 pt-3" />
-    <ul className="space-y-1 px-2 pt-2" aria-busy="true" aria-label="Loading late POs">
-      {Array.from({ length: 9 }).map((_, i) => (
-        <li key={i} className="flex gap-3 px-3 py-2.5">
-          <span className="skeleton size-8 rounded-[9px]" />
-          <span className="flex-1 space-y-2">
-            <span className={cn("skeleton block h-3", widths[i % 3])} />
-            <span className={cn("skeleton block h-2.5", i % 2 ? "w-[32%]" : "w-[40%]")} />
-          </span>
-        </li>
-      ))}
-    </ul>
-    </>
-  );
+  return <Pending page label="Reading late POs" testId="late-pending" />;
 }
 
 /** Every late purchase order the reader may see: filtered by supplier, days late and value band; sorted; one opened beside the list. */
@@ -330,17 +306,17 @@ export default function LatePage() {
               onClick={() => setFilter((f) => ({ ...f, days: b.id }))}
               className={cn(
                 "relative flex h-full shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap cursor-pointer",
-                filter.days === b.id ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:rounded-full after:bg-fg" : "text-muted hover:text-fg",
+                filter.days === b.id ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
               )}
             >
               {BAND_SHORT[b.id]}
-              <span className="text-[12px] font-normal tabular-nums text-faint">{n}</span>
+              <span className="text-[12px] font-normal num text-faint">{n}</span>
             </button>
           );
         })}
       </div>
-      <div className="flex h-11 items-center gap-0.5 border-t border-border px-3">
-        <Pick label="Supplier" value={filter.supplier ?? "\u0000all"} onChange={(v) => setSupplier(v === "\u0000all" ? null : v)} className="flex-1">
+      <div className="flex min-h-11 flex-wrap items-center gap-x-0.5 gap-y-0.5 border-t border-border px-3 py-1.5">
+        <Pick label="Supplier" value={filter.supplier ?? "\u0000all"} onChange={(v) => setSupplier(v === "\u0000all" ? null : v)} className="min-w-[10rem] flex-1">
           <option value={"\u0000all"}>All suppliers</option>
           {suppliers.map(([name, n]) => (
             <option key={name || "\u0000none"} value={name}>
@@ -383,7 +359,7 @@ export default function LatePage() {
         heading
         title="Late POs"
         testId="late-header"
-        className="bg-[color-mix(in_srgb,var(--list)_90%,transparent)]"
+        className="bg-list"
         actions={
           desktop && ready && items.length > 0 ? (
             <ToolbarButton onClick={() => pick(null)} aria-pressed={!selected} title="Overview (Esc)" className={cn(!selected && "bg-hover text-fg")}>
@@ -428,7 +404,7 @@ export default function LatePage() {
                       {g.name !== null && (
                         <div className="sticky top-0 z-10 flex h-9 items-end gap-2 bg-list px-5 pb-1.5">
                           <h2 className="truncate text-[12px] font-medium text-muted">
-                            {g.name || "No supplier"} <span className="font-normal tabular-nums text-faint">{g.rows.length}</span>
+                            {g.name || "No supplier"} <span className="font-normal num text-faint">{g.rows.length}</span>
                           </h2>
                         </div>
                       )}
@@ -471,15 +447,10 @@ export default function LatePage() {
                   {overview("all") ||
                     (ready ? (
                       <p className="text-[13px] text-muted">No late POs.</p>
+                    ) : error ? (
+                      <p className="text-[13px] text-muted">The overview waits until the list can be read.</p>
                     ) : (
-                    <div className="flex gap-10" aria-busy={!ready || undefined}>
-                      {[0, 1, 2].map((i) => (
-                        <div key={i} className="space-y-2">
-                          <div className="skeleton h-3 w-12" />
-                          <div className="skeleton h-6 w-24" />
-                        </div>
-                      ))}
-                    </div>
+                    <Pending label="Reading the overview" />
                     ))}
                 </div>
               </div>

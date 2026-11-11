@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import contextvars
+import dataclasses
 import hashlib
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 import functools
@@ -66,9 +67,12 @@ from . import proposals
 from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
+from .autopilot_studio import AutopilotStudioMixin
 from .assist_api import AssistMixin
+from .ask_drafts import AskDraftsMixin, draft_models
 from .write_intents_api import WriteIntentsMixin
 from .briefs import BriefsMixin
+from operating import general_answer
 from operating import labour_hours
 from .watch import WatchMixin
 from .auth import Reader
@@ -87,6 +91,8 @@ from .serving import (  # noqa: F401 - re-exported
     SECTION_WORKERS, SECTION_START_SECONDS, PREWARM_SECONDS, PAGE_DIR, WARM_SECONDS,
     WARM_LATE_PAGES, WARM_THREAD, WARM_IDLE_SECONDS, WARM_PAUSE_SECONDS, WARM_RECENT_PAGES,
     READER_CACHE_SECONDS, LAST_GOOD_SECONDS, SERVE_FAST_SECONDS, LAST_GOOD_KEPT,
+    SNAPSHOT_FRESH_SECONDS, INPUTS_POLL_SECONDS, SNAPSHOT_RECENT_SECONDS,
+    SNAPSHOT_REFRESH_KEPT, SNAPSHOT_REFRESH,
     ACCESS_WAIT_SECONDS, REWARM_SECONDS, READER_CACHE_KEPT, CARD_WORDS_KEPT,
     KNOWN_READERS_FILE, KNOWN_READERS, GENERATION_POLL_SECONDS, FLIGHT_SECONDS,
     ORIGINAL_READS, ORIGINAL_READS_PER_READER, ORIGINAL_READ_WAIT, HOST_READ_SCHEMES,
@@ -107,7 +113,7 @@ from .answers import (  # noqa: F401 - re-exported
     need_date, late_amount, rounded_alike, _quantities_in_words, ask_shortcut,
     read_shortcut, _AT_RISK, _CUSTOMER_ORDERS, _LATE_SUPPLY, _LATE_FOR,
     orders_at_risk_question, _SLIP_WORD, _LATE_WORD, late_for_target, late_list_question,
-    _base, words_of, late_answer, ORDER_TWIN_LINK, AT_RISK_KINDS, MAX_CHAIN_SOURCES,
+    _base, words_of, late_answer, late_rule_behind, ORDER_TWIN_LINK, AT_RISK_KINDS, MAX_CHAIN_SOURCES,
     at_risk_gaps, held_up_by, _name_forms, _display_of, _linked, at_risk_answer,
     PICK_PREFIX, picked_question, customer_object, profit_question, order_margin_question,
     _money, _decided_sources, MAX_CARDS_TOGETHER, with_orders, profit_choices,
@@ -124,7 +130,7 @@ from .answers import (  # noqa: F401 - re-exported
     _grouped, _aggregate_read, _CURRENCY, _DECIMAL)
 from .suggest import (  # noqa: F401 - re-exported
     SUGGEST_FUZZY, SUGGEST_ROWS, SUGGEST_WORDS, SUGGEST_TYPE_RANK,
-    SYSTEM_WORDS, OPEN_FIRST, suggest_phrases, SAME_RECORD_ASKS, SAME_RECORD_SECONDS,
+    SYSTEM_WORDS, OPEN_FIRST, suggest_phrases, SAME_RECORD_ASKS, SAME_RECORD_SECONDS, SameRecordMemo,
     same_records, PARTY_LABELS, ORDER_TYPES, party_codes, record_codes, system_word,
     suggestions, projection_suggest, sublabel_tell, resolve_object)
 from .briefing_view import (  # noqa: F401 - re-exported
@@ -151,6 +157,9 @@ from .cli import (  # noqa: F401 - re-exported
     default_search)
 
 
+RESUME_HOST_CHECKS = 6   # host re-reads one resumed Ask turn may make; more: withheld
+
+
 def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
     """``job`` with its end logged: how long it ran and how long after the start."""
     def run(view: Any) -> Any:
@@ -165,10 +174,23 @@ def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
     return run
 
 
+def _people_exclusion() -> Any:
+    from .feedback import exclusion
+    return exclusion()
+
+
+def _clean_text(text: str, guard: Any) -> str:
+    """``text`` without excluded people's addresses and ids (``feedback.clean``); with the
+    exclusion undecidable, every address and id goes."""
+    from .feedback import clean
+    return clean(text, guard, len(text) + 1) or ""
+
+
 # ---- the backend ---------------------------------------------------------------------
 
 class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin,
-                       AutopilotAreaMixin, AssistMixin, WatchMixin):
+                       AutopilotAreaMixin, AutopilotStudioMixin, AssistMixin, WatchMixin,
+                       AskDraftsMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,
     one shared bounded queue), so one Ask never holds up another reader's page."""
@@ -200,6 +222,11 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.agent_ask = agent_ask
         self.front_door = front_door
+        # the general answerer's model call (``general_answer.claude_call`` on the agent's
+        # binary); tests replace it
+        self.general_call: Optional[Callable[..., Optional[str]]] = None
+        # the people exclusion an attachment's text is cleaned with (tests replace it)
+        self.people_guard: Callable[[], Any] = _people_exclusion
         self._original_slots: dict[str, threading.BoundedSemaphore] = {}
         self._original_all = threading.BoundedSemaphore(ORIGINAL_READS)
         self._sessions = SessionSlots(agent_sessions)
@@ -221,6 +248,14 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         # the last good page of each main screen per reader: (read at, model, access state)
         self._good: dict[tuple, tuple[float, Any]] = {}
         self._refreshing: set[tuple] = set()
+        # per kept page: the inputs stamp it was read under (``inputs_stamp``; memory
+        # only: a page found on disk is never current, it is served stale and read again)
+        self._good_inputs: dict[tuple, Any] = {}
+        # per screen served: (reader, its read, when last served), what an inputs change
+        # reads again off the request (``_refresh_changed``)
+        self._good_reads: dict[tuple, tuple[Reader, Callable[[], Any], float]] = {}
+        self._inputs: Optional[tuple[float, Any]] = None
+        self._inputs_watch: Optional[threading.Thread] = None
         # The data notes said per (reader, conversation) (``_first_notice``).
         self._notices: dict[tuple[Any, Any], set[str]] = {}
         self._lock = threading.Lock()
@@ -327,7 +362,11 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         worker after any first read waiting beside it."""
         from .section_pool import SlotGone
         pool = self.sections
-        slot = pool.slot_for(section, m.PAGE_SECTIONS) if pool is not None else None
+        # the margin reads each order on its own plan run, waiting on the store: here its
+        # orders spread over the Ask pool's workers (``_spread``), on a pool slot one by one
+        spread = section in SPREAD_SECTIONS and len(self.ask_workers) >= 2
+        slot = pool.slot_for(section, m.PAGE_SECTIONS) if pool is not None and not spread \
+            else None
         if slot is not None:
             future = pool.submit(slot, reader.key, (reader, object_type, object_id, section))
             try:
@@ -337,9 +376,32 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 raise TimeoutError("workbench_busy") from None
             except SlotGone:
                 pass   # its process ended: read here
-        return self.reads.run(reader, lambda view: object_section(
-            self, view, object_type, object_id, section),
+        return self.reads.run(reader, self._spread(reader, lambda view: object_section(
+            self, view, object_type, object_id, section)),
             timeout=PAGE_TIMEOUT_SECONDS, priority=SECTION_PRIORITY)
+
+    def _spread(self, reader: Reader, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        """``job`` with ``PAGE_SPREAD`` set for its read: a record page's per-order margin
+        reads go to the Ask pool's idle workers as well (``serving.fan_out``, each read
+        as this reader on that worker's own runtime), after any question waiting there;
+        one after another when the pool has under two workers."""
+        if len(self.ask_workers) < 2:
+            return job
+        width = len(self.ask_workers)
+
+        def spread(call: Callable[[str, dict], Any], tasks: Sequence[Any],
+                   late: Callable[[], bool]) -> list:
+            return fan_out(self.ask_jobs, self.ask_stopped, reader, call, list(tasks),
+                           late, width=width, priority=PAGE_SPREAD_PRIORITY,
+                           deadline=time.monotonic() + PAGE_TIMEOUT_SECONDS)
+
+        def run(view: Any) -> Any:
+            token = PAGE_SPREAD.set(spread)
+            try:
+                return job(view)
+            finally:
+                PAGE_SPREAD.reset(token)
+        return run
 
     def add_warm_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
         """The warm worker: its own runtime and queue; the caller runs its ``loop`` on the
@@ -404,6 +466,9 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         """Signed out: never read ahead for this employee again until they sign in."""
         oid = getattr(getattr(reader.session, "employee", None), "object_id", None)
         with self._lock:
+            reads = self._snap_reads()
+            for key in [k for k in reads if k[0] == reader.key]:
+                reads.pop(key, None)   # nor are their screens read again on a change
             known = self.known_readers()
             if known.pop(str(oid), None) is not None:
                 self._write_known(known)
@@ -541,7 +606,8 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         for name, job in (("home", self._attention_cached),
                           ("briefing", self._briefing_ahead(reader)),
                           ("suggestions", self._suggestions_cached),
-                          ("late list", self._late_held)):
+                          ("late list", self._late_held),
+                          ("meetings", lambda view: self._upcoming_cached(view, reader))):
             if today:
                 self.reads.submit(reader, warm_timed(name, job), priority=WARM_PRIORITY)
         if warmer is not None and not warmer.stopped.is_set():
@@ -550,6 +616,12 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             warmer.submit(reader, self.yielding(warm_timed("pages", pages)),
                           priority=WARM_PRIORITY + 1 if warmer is self.reads and today
                           else 0)
+            if today:
+                # last week's review, read whole once and kept (``WeeklyArchive``): the
+                # Meetings page's weekly view then opens from the archive
+                warmer.submit(reader, self.yielding(warm_timed(
+                    "weekly review", self._weekly_ahead(reader))),
+                    priority=WARM_PRIORITY + 1 if warmer is self.reads else 0)
         return True
 
     def _briefing_ahead(self, reader: Reader) -> Callable[[Any], Any]:
@@ -1050,11 +1122,39 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         # the model's reading picks a ready answer; the phrase rules only without a reading
         shortcut = ask_shortcut(request) if reading is None else read_shortcut(request,
                                                                                reading)
-        if labour_hours.serves(intent):
+        # What answers it (``operating.general_answer``): PLX's records (the evidence path
+        # below, unchanged), general knowledge, or both; fail closed to the records.
+        labour = labour_hours.serves(intent)
+        scope = "company" if labour else general_answer.scope_of(
+            reading, request.question, object_id=request.object_id, source=request.source,
+            picked=picked_question(request) is not None)
+        earlier = [turn.text.strip() for turn in request.history if turn.role == "user"
+                   and turn.text.strip()]
+        # the person's own files (``operating.ask_attachments``), read for this question
+        files = self._attached(request)
+        if files is not None and files.read:
+            yield "status", m.StatusEvent(step="reading", message="Reading your attachment"
+                                          + ("s" if len(files.read) > 1 else ""),
+                                          elapsed_ms=ms())
+        heading = general_answer.ATTACHMENT_HEADING if files is not None and files.read \
+            else general_answer.HEADING
+        # a mixed question's general part is written while the records answer the rest;
+        # with attachments, the part read from them (with general knowledge) is that part
+        general_part = self._general_start(request.question, earlier, "mixed",
+                                           files=files) \
+            if scope == "mixed" or (files is not None and files.read
+                                    and scope != "general") else None
+        if labour:
             # Labour hours are answered from the hr-marked aggregates alone, for a reader
             # holding hr or ops-management; never by the agent, so no time sheet reaches a
             # model.
             answer = self._labour_ask(reader, request, conversation, ms, intent)
+        elif scope == "general":
+            # no record answers it: general knowledge, marked so, never a company fact
+            # (None: the model gave nothing, and the evidence path answers as before)
+            answer = yield from self._general_ask(request, conversation, ms, earlier,
+                                                  files=files)
+            scope = "general" if answer is not None else "company"
         elif shortcut == "late_list":
             answer = yield from self._late_ask(reader, request, conversation, ms)
         elif shortcut == "at_risk":
@@ -1081,6 +1181,16 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                                                 early=early)
         else:
             answer = yield from self._box_ask(reader, request, conversation, ms)
+        if general_part is None and scope == "company" and not labour \
+                and answer.outcome != "answered" and self._general_served():
+            # Never a refusal: what the records could not give is said above, and the
+            # model's general help follows it, marked so (``general_answer`` "fallback")
+            general_part = self._general_start(request.question, earlier, "fallback")
+        if general_part is not None:
+            answer = self._with_general(answer, general_part, heading=heading)
+        if files is not None:
+            answer = answer.model_copy(update={"attachments": [
+                m.AskAttachmentNote(**f.meta) for f in files.files]})
         answer = presentation.polished(answer)   # no codes or escapes reach the reader
         if request is not asked:
             answer.question = asked.question     # the person's own words
@@ -1092,7 +1202,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             intent, answer.freshness, self.clock(),
             cited={s.system for f in answer.facts for s in f.sources},
             settled=answer.outcome == "answered")
-        if notice and notice not in answer.direct_answer \
+        if notice and scope != "general" and notice not in answer.direct_answer \
                 and self._first_notice(reader.key, conversation, notice):
             answer.direct_answer = f"{answer.direct_answer} {notice}".strip()
         # what to ask next: from the answer's own records and gaps, as this reader sees them
@@ -1121,7 +1231,149 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                                               answer_id=answer.answer_id,
                                               conversation_id=conversation))
             del recent[10:]
+        self.reader_wrote(reader)   # Home lists the question now
         yield "answer", answer
+
+    def _general_served(self) -> bool:
+        """Whether general answers run here: a model the app reads questions with (the
+        front door) or a test's stand-in; never a model call the app is not set up for."""
+        return self.general_call is not None or self.front_door is not None
+
+    def ask_withheld(self, reader: Reader, handles: list[str]) -> Optional[str]:
+        """Why a kept answer is not shown to this reader now: a source it cites that the
+        read policy withholds from them (``feedback_grant``); raises when undecidable. A
+        captured mail original or SharePoint file (``HOST_READ_SCHEMES``) the store leaves
+        to the reader's host is read through that host again (their mailbox and site
+        access now); a host that does not open it, or no host, withholds the turn."""
+        if not handles:
+            return None
+        from operator_api.workspace.object_workspace import ITEM_REFUSED
+        _held, decided = self.feedback_grant(reader, handles)
+        hosted: list[str] = []
+        for handle in handles:
+            marker = decided.get(handle, {"reason": "undecided"})
+            if marker is None:
+                continue
+            if (handle.startswith(tuple(HOST_READ_SCHEMES)) and isinstance(marker, Mapping)
+                    and marker.get("reason") in (ITEM_REFUSED, "item_refused")):
+                hosted.append(handle)
+                continue
+            return "withheld"
+        if len(hosted) > RESUME_HOST_CHECKS:
+            return "withheld"      # too many to re-read: not decided, so not shown
+        for handle in hosted:
+            if not self._host_opens(reader, handle):
+                return "withheld"
+        return None
+
+    def _host_opens(self, reader: Reader, handle: str) -> bool:
+        """Whether the reader's own host opens this captured original or SharePoint file
+        now (``AgentAsk.read_source``); any failure, or no host for them, is no."""
+        if self.agent_ask is None or not self.agent_ask.serves(reader.session):
+            return False
+        try:
+            with self._original_reads(reader):
+                self.agent_ask.read_source(reader.session, handle, 0)
+        except Exception:  # noqa: BLE001 - refused, unknown, busy or failed alike: no
+            return False
+        return True
+
+    def _attached(self, request: m.AskRequest) -> Optional["ask_attachments.Batch"]:
+        """The request's attachments as read (``operating.ask_attachments``), their text
+        cleaned of excluded people's addresses and ids; None without attachments. With
+        the exclusion list unavailable none is read (fail closed)."""
+        if not request.attachments:
+            return None
+        from operating import ask_attachments
+        batch = ask_attachments.decode(a.model_dump() for a in request.attachments)
+        try:
+            guard = self.people_guard()
+        except Exception:  # noqa: BLE001 - undecidable: nothing read
+            guard = None
+        if guard is None or getattr(guard, "unavailable", "absent"):
+            batch.files = [dataclasses.replace(
+                f, text="", image=None, unread=f.unread or "Attachments can't be read right "
+                "now: the list of people whose data stays out is not loaded.")
+                for f in batch.files]
+            return batch
+        from .feedback import clean
+        batch.files = [dataclasses.replace(f, text=clean(f.text, guard, len(f.text) + 1)
+                                           or "") if f.text else f for f in batch.files]
+        return batch
+
+    def _general_start(self, question: str, earlier: Sequence[str], mode: str, *,
+                       files: Optional[Any] = None
+                       ) -> "Future[Optional[general_answer.GeneralAnswer]]":
+        """``general_answer.answer`` in ``mode`` on its own thread (the model sees only the
+        question and the person's earlier questions); its future, never raising."""
+        call = self.general_call or functools.partial(
+            general_answer.claude_call,
+            binary=getattr(self.agent_ask, "claude_bin", None) or "claude")
+        future: "Future[Optional[general_answer.GeneralAnswer]]" = Future()
+
+        def run() -> None:
+            try:
+                got = general_answer.answer(
+                    question, earlier, mode=mode, call=call,
+                    attachments=files.read if files is not None else ())
+                if got is not None and files is not None and files.read:
+                    # the model's words about a file are cleaned as the file was
+                    guard = self.people_guard()
+                    got = dataclasses.replace(got, text=_clean_text(got.text, guard))
+                future.set_result(got)
+            except Exception:  # noqa: BLE001 - no general part, never a failed Ask
+                future.set_result(None)
+        threading.Thread(target=run, name="ask-general", daemon=True).start()
+        return future
+
+    @staticmethod
+    def _general_wait(future: Future) -> Optional["general_answer.GeneralAnswer"]:
+        try:
+            got = future.result(timeout=general_answer.SECONDS + 5)
+        except (FutureTimeout, Exception):  # noqa: BLE001 - no general part
+            return None
+        if got is not None:
+            # counts only, never the question or the words
+            logging.getLogger("operator_api.ask").info(json.dumps(
+                {"general": True, "seconds": round(got.seconds, 1),
+                 "removed_sentences": len(got.removed)}))
+        return got
+
+    def _general_ask(self, request: m.AskRequest, conversation: str, ms: Callable[[], int],
+                     earlier: Sequence[str], *, files: Optional[Any] = None
+                     ) -> Iterator[tuple[str, Any]]:
+        """A question no record answers (``general_answer``): the model's general knowledge
+        under ``general_answer.HEADING``, screened of company claims; no fact, source,
+        citation or proposal. None when the model gave nothing."""
+        read = files is not None and bool(files.read)
+        yield "status", m.StatusEvent(step="answering", message="Answering from your "
+                                      "attachment" if read else "Answering from general "
+                                      "knowledge", elapsed_ms=ms())
+        got = self._general_wait(self._general_start(request.question, earlier, "general",
+                                                     files=files))
+        if got is None:
+            return None
+        answer_id = secrets.token_hex(12)
+        return m.AnswerPayload(
+            answer_id=answer_id, question=request.question, outcome="answered",
+            direct_answer=general_answer.combined("", got, heading=(
+                general_answer.ATTACHMENT_HEADING if read else general_answer.HEADING)),
+            hidden=m.Hidden(count=0, by_owner=[], message=None), freshness=m.Freshness(),
+            conversation_id=conversation, latency_ms=ms(),
+            drafts=draft_models(answer_id, got.drafts))
+
+    def _with_general(self, answer: m.AnswerPayload, future: Future, *,
+                      heading: str = general_answer.HEADING) -> m.AnswerPayload:
+        """The evidence path's answer as it is (its facts, sources and outcome), its words
+        followed by the general part under its heading, and the drafts it wrote."""
+        got = self._general_wait(future)
+        if got is None:
+            return answer
+        return answer.model_copy(update={
+            "direct_answer": general_answer.combined(answer.direct_answer, got,
+                                                     heading=heading),
+            "drafts": [*answer.drafts, *map(m.AskDraft.model_validate, draft_models(
+                answer.answer_id, got.drafts))]})
 
     def _first_notice(self, reader: Any, conversation: Any, notice: str) -> bool:
         """Whether ``notice`` is new in this reader's conversation (then it is kept as
@@ -1159,8 +1411,33 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         yield "status", m.StatusEvent(step="searching",
                                       message="Reading the late purchase orders you can see",
                                       elapsed_ms=ms())
-        return self.reads.run(reader, self.late_job(request, conversation, ms),
-                              timeout=READ_TIMEOUT_SECONDS)
+        answer = self.reads.run(reader, self.late_job(request, conversation, ms),
+                                timeout=READ_TIMEOUT_SECONDS)
+        # Never a non-answer: no list known for the newest data and no last completed
+        # one either goes on to a live read of the purchase orders (the agent path)
+        return None if answer.outcome == "not_found" else answer
+
+    def _late_fallback(self, view: Any) -> tuple[list[m.LatePo], int]:
+        """The late orders the Late page holds for this reader (``_late_held``: its last
+        completed read), each kept only when every source it cites opens for the reader
+        now; and their count. ([], 0) when that read fails."""
+        try:
+            _inbox, ordered, labels, suppliers = self._late_held(view)
+            with view._request():
+                handles = sorted({h for g in ordered for h in g.get("citations") or ()
+                                  if isinstance(h, str)})
+                decided = view.access.decide(handles) if handles else {}
+        except Exception:  # noqa: BLE001 - nothing to fall back to: the live read answers
+            return [], 0
+        # a handle the policy did not decide is withheld, and so is an order that cites
+        # nothing: there is nothing to decide it by (fail closed)
+        def opens(gap: Mapping[str, Any]) -> bool:
+            cited = [h for h in gap.get("citations") or () if isinstance(h, str) and h]
+            return bool(cited) and all(
+                decided.get(h, {"reason": "undecided"}) is None for h in cited)
+        shown = [g for g in ordered if opens(g)]
+        late, _ = attention_items({"gaps": shown}, labels, suppliers=suppliers)
+        return late, len(shown)
 
     def late_job(self, request: m.AskRequest, conversation: str, ms: Callable[[], int]
                  ) -> Callable[[Any], m.AnswerPayload]:
@@ -1171,6 +1448,12 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                                                      named=self.test_named())
             inbox = aged_to_today(inbox, self.today() if self.today else None)
             late, _risk = attention_items(inbox, labels, suppliers=suppliers)
+            if not late and late_rule_behind(inbox)[1]:
+                # the check is re-running (or did not run) on the newest data: the last
+                # completed result the Late page holds, decided for this reader now
+                late, total = self._late_fallback(view)
+                if late:
+                    inbox = {**inbox, "late_total": total}
             chains = at_risk_gaps(view)
             if chains is not None:
                 inbox = {**inbox, "gaps": [g for g in inbox.get("gaps") or ()
@@ -2027,9 +2310,22 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         except Exception:  # noqa: BLE001 - Postgres down: the projection answers
             return None
         return suggestions(rows, limit, members=members, parties=parties,
-                           same_record=lambda ids: self.reads.run(
-                               reader, lambda view: same_records(view, ids),
-                               timeout=SAME_RECORD_SECONDS, priority=-1))
+                           same_record=lambda ids: self._same_record_pairs(reader, ids))
+
+    def _same_record_pairs(self, reader: Reader, ids: Sequence[str]) -> set[frozenset[str]]:
+        """The suggestion copies this reader reads as one record: the kept walks at once;
+        records not walked yet are walked on a read worker, waited for at most
+        ``SAME_RECORD_SECONDS`` and kept as each is read, so the next keystroke has them
+        (until then their copies stay apart)."""
+        memo = self.__dict__.setdefault("_same_record_memo", SameRecordMemo())
+        if not memo.missing(reader.key, ids):
+            return memo.pairs(reader.key, ids)
+        future = self.reads.submit(reader, lambda view: same_records(
+            view, ids, memo=memo, reader=reader.key), priority=-1)
+        try:
+            return future.result(timeout=SAME_RECORD_SECONDS)
+        except FutureTimeout:
+            return memo.pairs(reader.key, ids)
 
     def suggest(self, reader: Reader, q: str, limit: int) -> m.SuggestResponse:
         started = time.perf_counter()
@@ -2119,8 +2415,15 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         the request path (in memory and in the page store on disk, so a restart or the
         other processes start from it)."""
         key = (reader.key, reader.mode, name)
+        inputs = self._inputs_of(reader)
+        self._remember_read(key, reader, read)
         held = self._held_good(key)
         before = self._access_later(reader, page_handles(held[1]) if held else ())
+        snapshot = self._snapshot(key, held, before, inputs)
+        if snapshot is not None:
+            if getattr(snapshot, "stale_since", None) is not None:
+                self._refresh_later(reader, key, read)
+            return snapshot
         with self._lock:
             reading = key in self._refreshing
         if held is not None and reading:
@@ -2146,7 +2449,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             if box.done():   # the read's own time limit (one class since Python 3.11)
                 return self._refused(reader, key, held, before, read, error)
             stale = self._stale_copy(key, held, before)
-            if stale is not None and self._finish_later(reader, key, box, before):
+            if stale is not None and self._finish_later(reader, key, box, before, inputs):
                 return stale
             try:
                 value = box.result()   # no page that may be served: the read itself
@@ -2158,8 +2461,159 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             kept = value.model_copy(deep=True)
             self._after(lambda: self._keep_good(
                 key, kept, self._state_of(self._access_result(before, ACCESS_WAIT_SECONDS)),
-                self._access_now(reader)))
+                self._access_now(reader), inputs))
         return value
+
+    def _snapshot(self, key: tuple, held: Optional[tuple], before: Future,
+                  inputs: Any) -> Any:
+        """``held`` served at once, no read started: as it is when it was read under
+        ``inputs`` (the inputs served now) within ``SNAPSHOT_FRESH_SECONDS``, else marked
+        ``stale_since`` (the caller reads it again off the request); with no inputs stamp
+        (None) never. Only when the
+        reader's access state now is the one it was read under and every source it shows
+        still opens for them (``before``, the same check a stale page passes); None
+        otherwise (the read decides, as before)."""
+        if inputs is None or held is None or time.time() - held[0] > LAST_GOOD_SECONDS:
+            return None   # no inputs to judge it by: the read decides, as before
+        with self._lock:
+            read_under = self._snap_inputs().get(key)
+        if read_under is not None and read_under[1] != inputs[1]:
+            return None   # the reader wrote since (marked seen, asked, acted): read now
+        current = read_under == inputs and time.time() - held[0] < SNAPSHOT_FRESH_SECONDS
+        now = self._access_result(before, ACCESS_WAIT_SECONDS)
+        if now is None or now[0] != held[2] or now[1] is not True:
+            return None
+        if current:
+            return held[1].model_copy(deep=True)
+        return self._stale_copy(key, held, before)
+
+    def inputs_stamp(self) -> Any:
+        """What every main screen is read from, reader-independent and cheap: the served
+        store file, its delta layer pointer, the gap inbox and the AI watcher
+        (``_served_state``) and, over Postgres, the load state (a generation, a layer or
+        a migration written). Read at most every ``INPUTS_POLL_SECONDS``; None when any
+        part cannot be read (nothing is then current: a kept page is served stale)."""
+        now = time.monotonic()
+        with self._lock:
+            got = getattr(self, "_inputs", None)
+        if got is not None and now - got[0] < INPUTS_POLL_SECONDS:
+            return got[1]
+        try:
+            stamp: Any = (self._served_state(), self._pg_load_stamp())
+        except Exception:  # noqa: BLE001 - unreadable inputs: nothing is current
+            stamp = None
+        if stamp is not None and self.store_path is None and stamp[1] is None:
+            stamp = None   # no store and no Postgres: no inputs to be current against
+        with self._lock:
+            self._inputs = (now, stamp)
+        if stamp is not None and SNAPSHOT_REFRESH:
+            self._watch_inputs()
+        return stamp
+
+    def _pg_load_stamp(self) -> Any:
+        """Over Postgres: the load state rows' count and newest write (None without one;
+        an unreadable one raises)."""
+        pool = self.pg() if self.pg_dsn else None
+        if pool is None:
+            return None
+        with pool.connection() as conn:
+            row = conn.execute("SELECT count(*), max(updated_at) FROM ontology.load_state"
+                               ).fetchone()
+        return (int(row[0]), str(row[1]))
+
+    def _inputs_of(self, reader: Reader) -> Any:
+        """``inputs_stamp`` with the count of the reader's own writes (``reader_wrote``);
+        None without a stamp."""
+        stamp = self.inputs_stamp()
+        if stamp is None:
+            return None
+        with self._lock:
+            return (stamp, self.__dict__.setdefault("_reader_writes", {}).get(reader.key, 0))
+
+    def reader_wrote(self, reader: Any) -> None:
+        """The reader changed something their own screens show (any request that is not a
+        read, before and after it runs; an Ask answered): none of their kept pages is
+        current any more, and the next visit reads (a page read before keeps nothing
+        current either)."""
+        key = getattr(reader, "key", None)
+        if key is None:
+            return
+        with self._lock:
+            writes = self.__dict__.setdefault("_reader_writes", {})
+            writes[key] = writes.get(key, 0) + 1
+
+    def _snap_inputs(self) -> dict:
+        return self.__dict__.setdefault("_good_inputs", {})
+
+    def _snap_reads(self) -> dict:
+        return self.__dict__.setdefault("_good_reads", {})
+
+    def _remember_read(self, key: tuple, reader: Reader, read: Callable[[], Any]) -> None:
+        with self._lock:
+            reads = self._snap_reads()
+            reads.pop(key, None)
+            while len(reads) >= LAST_GOOD_KEPT:
+                reads.pop(next(iter(reads)))
+            reads[key] = (reader, read, time.monotonic())
+
+    def _watch_inputs(self) -> None:
+        """Start, once, the thread that reads the recent screens again when the inputs
+        change (``_refresh_changed``)."""
+        with self._lock:
+            if getattr(self, "_inputs_watch", None) is not None:
+                return
+            self._inputs_watch = threading.Thread(target=self._refresh_on_change,
+                                                  name="snapshot-inputs", daemon=True)
+        self._inputs_watch.start()
+
+    def _refresh_on_change(self) -> None:
+        got = getattr(self, "_inputs", None)
+        seen = got[1] if got else None
+        stopped = getattr(self.reads, "stopped", None)
+        while stopped is None or not stopped.wait(GENERATION_POLL_SECONDS):
+            now = self.inputs_stamp()
+            if now is not None and now != seen:
+                seen = now
+                self._refresh_changed()
+
+    def _refresh_changed(self) -> int:
+        """Read again, one at a time, off any request and only while no request is being
+        read (``wait_idle``), the screens served within
+        ``SNAPSHOT_RECENT_SECONDS`` (newest first, at most ``SNAPSHOT_REFRESH_KEPT``) whose
+        kept page was read under other inputs; each kept as a fresh read is (the access
+        state the same before and after). The count read."""
+        stamp = self.inputs_stamp()
+        cut = time.monotonic() - SNAPSHOT_RECENT_SECONDS
+        with self._lock:
+            under = self._snap_inputs()
+            recent = sorted(((k, v) for k, v in self._snap_reads().items()
+                             if v[2] >= cut and (under.get(k) or (None,))[0] != stamp),
+                            key=lambda kv: -kv[1][2])[:SNAPSHOT_REFRESH_KEPT]
+        done = 0
+        for key, (reader, read, _) in recent:
+            if not self._may_read_ahead(reader):
+                continue
+            # a live request first: each screen waits until the read workers are idle
+            # (a refresh read never queues ahead of, or beside, a reader's own read)
+            if getattr(self, "yield_to_live", False):
+                self.wait_idle()
+            if self._refresh_now(reader, key, read):
+                done += 1
+        return done
+
+    def _may_read_ahead(self, reader: Reader) -> bool:
+        """Whether a screen may be read for ``reader`` with no request of theirs: a real
+        session (not a read-ahead one) still unexpired whose ticket is not revoked (the
+        replay guard, as ``warm_known``; without one, every ticket counts as revoked)."""
+        session = getattr(reader, "session", None)
+        ref, exp = getattr(session, "session_ref", None), getattr(session, "expires_at", None)
+        if not isinstance(ref, str) or not isinstance(exp, int) or exp <= time.time() \
+                or getattr(session, "warm_ahead", False):
+            return False
+        try:
+            return not self.revoked(ref)
+        except Exception:  # noqa: BLE001 - undecidable: not read ahead
+            return False
 
     def _refused(self, reader: Reader, key: tuple, held: Optional[tuple], before: Future,
                  read: Callable[[], Any], error: Exception) -> Any:
@@ -2211,7 +2665,8 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             held = self._good.setdefault(key, value)
         return held
 
-    def _finish_later(self, reader: Reader, key: tuple, box: Future, before: Future) -> bool:
+    def _finish_later(self, reader: Reader, key: tuple, box: Future, before: Future,
+                      inputs: Any = None) -> bool:
         """Keep the page the read under way returns (one at a time per screen and
         reader) under ``before``, the access state asked for ahead of that read (never one
         read after it started: a grant revoked, a document re-marked or an exclusion added
@@ -2226,7 +2681,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 value = box.result(timeout=PAGE_TIMEOUT_SECONDS)
                 self._keep_good(key, value, self._state_of(
                     self._access_result(before, ACCESS_WAIT_SECONDS)),
-                    self._access_now(reader))
+                    self._access_now(reader), inputs)
             except Exception:  # noqa: BLE001 - the next request tries again
                 pass
             finally:
@@ -2291,14 +2746,16 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                                                   ACCESS_WAIT_SECONDS))
 
     def _keep_good(self, key: tuple, value: Any, before: Optional[tuple],
-                   after: Optional[tuple]) -> None:
+                   after: Optional[tuple], inputs: Any = None) -> None:
         """Keep a fresh page under the access state it was read under: the same before and
-        after the read (a state that changed or could not be read keeps nothing)."""
+        after the read (a state that changed or could not be read keeps nothing), with the
+        inputs stamp taken before its read began (None: never current)."""
         if getattr(value, "stale_since", None) is not None:
             return   # never a page served stale kept as a fresh one
         store = getattr(getattr(self, "page_cache", None), "store", None)
         with self._lock:
             self._good.pop(key, None)
+            self._snap_inputs().pop(key, None)
             kept = before is not None and before == after
         if not kept:   # the page may not match any one access state: never served stale
             if store is not None:   # nor its disk copy, not left there for 12 h
@@ -2308,6 +2765,8 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             while len(self._good) >= LAST_GOOD_KEPT:
                 self._good.pop(next(iter(self._good)))
             held = self._good[key] = (time.time(), value.model_copy(deep=True), before)
+            if inputs is not None:
+                self._snap_inputs()[key] = inputs
         if store is not None:   # on disk too: a restart starts from it
             store.put(("last-good",) + key, held, LAST_GOOD_SECONDS)
 
@@ -2320,9 +2779,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
 
         def run() -> None:
             try:
-                before = self._access_now(reader)
-                value = read()
-                self._keep_good(key, value, before, self._access_now(reader))
+                self._read_and_keep(reader, key, read)
             except Exception:  # noqa: BLE001 - the next request tries again
                 pass
             finally:
@@ -2330,6 +2787,27 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                     self._refreshing.discard(key)
 
         threading.Thread(target=run, name="last-good-refresh", daemon=True).start()
+
+    def _refresh_now(self, reader: Reader, key: tuple, read: Callable[[], Any]) -> bool:
+        """``_refresh_later`` on this thread (False: one is under way or it failed)."""
+        with self._lock:
+            if key in self._refreshing:
+                return False
+            self._refreshing.add(key)
+        try:
+            self._read_and_keep(reader, key, read)
+            return True
+        except Exception:  # noqa: BLE001 - the next request tries again
+            return False
+        finally:
+            with self._lock:
+                self._refreshing.discard(key)
+
+    def _read_and_keep(self, reader: Reader, key: tuple, read: Callable[[], Any]) -> None:
+        inputs = self._inputs_of(reader)
+        before = self._access_now(reader)
+        value = read()
+        self._keep_good(key, value, before, self._access_now(reader), inputs)
 
     def home(self, reader: Reader) -> m.Home:
         return self._serving(reader, ("home",), lambda: self._home(reader))
@@ -2709,14 +3187,14 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 if not first.complete:
                     waits = self._sections_on_pool(reader, object_type, object_id,
                                                    POOL_SECTIONS)
-                    self.reads.run(reader, lambda view: page_sections(
-                        self, view, object_type, object_id, PLAN_SECTIONS),
+                    self.reads.run(reader, self._spread(reader, lambda view: page_sections(
+                        self, view, object_type, object_id, PLAN_SECTIONS)),
                         timeout=PAGE_TIMEOUT_SECONDS)
                     stage("plan sections")
                     waits()
                     stage("pool sections")
-            page = self.reads.run(reader, lambda view: object_page(self, view, object_type,
-                                                                   object_id, quick=quick),
+            page = self.reads.run(reader, self._spread(reader, lambda view: object_page(
+                self, view, object_type, object_id, quick=quick)),
                                   timeout=PAGE_TIMEOUT_SECONDS)
             stage("full read")
             # On the quick read too: the app shows the quick read with its sections merged,
@@ -2910,7 +3388,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 held = frozenset(grant()[1]) if callable(grant) else frozenset()
                 decided = view.access.decide(list(handles)) if handles else {}
                 return held, dict(decided)
-        return self.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+        return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
 
     def served_version(self) -> Optional[str]:
         """The served data's version: a short digest of the served store file's identity."""
@@ -3034,7 +3512,7 @@ def card_words(view: Any, oid: str, *, supplier: bool = False,
 def briefing_trail(backend: "WorkspaceBackend", view: Any, item: Mapping[str, Any],
                    label: Optional[str], *, seconds: float = BRIEFING_TRAIL_SECONDS
                    ) -> Optional[m.EvidenceTrail]:
-    """How we know one briefing item, read as the reader: a purchase order's lateness trail
+    """The evidence for one briefing item, read as the reader: a purchase order's lateness trail
     (``operator_api.trail.for_page``), else the why trail of the record; None when none is
     built (the item stands without it)."""
     from . import trail as trails
@@ -3407,7 +3885,7 @@ def why_answer_trail(backend: "WorkspaceBackend", view: Any, question: str,
 def answer_trail(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                  found: Mapping[str, Any], late_pos: Sequence[tuple[m.LatePo, Optional[str]]],
                  claims: Sequence[Mapping[str, Any]]) -> Optional[m.EvidenceTrail]:
-    """How we know (``operator_api.trail``): the PO's lateness trail, a customer order's
+    """The evidence trail (``operator_api.trail``): the PO's lateness trail, a customer order's
     materials, or the answer's dated checked claims, each step decided for this reader."""
     from . import trail as trails
 
@@ -3634,6 +4112,14 @@ def kept_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
         copy=lambda model: model.model_copy(deep=True))
 
 
+# How a record page's margin reads its orders side by side (``WorkspaceBackend._spread``:
+# the Ask pool's workers, each as this reader); None: one after another on the page's view.
+SPREAD_SECTIONS = ("margin",)   # read beside the Ask pool rather than on a section slot
+PAGE_SPREAD_PRIORITY = 2   # after a question waiting on the Ask pool (priority 1)
+PAGE_SPREAD: "contextvars.ContextVar[Optional[Callable[..., list]]]" = contextvars.ContextVar(
+    "plx_page_spread", default=None)
+
+
 def page_profitability(backend: WorkspaceBackend, view: Any, page: m.ObjectPage
                        ) -> Optional[m.Profitability]:
     """The margin and its why on a Business Central customer's page (its orders of the
@@ -3642,6 +4128,7 @@ def page_profitability(backend: WorkspaceBackend, view: Any, page: m.ObjectPage
     reader reads it, test orders left out. None for any other record, or an order with
     no one customer."""
     from operating import customer_profit as cp
+    from operating.ontology_tools import snapshot_reads
     from .test_records import is_test
 
     oid, kind = page.object_id, page.type
@@ -3670,9 +4157,13 @@ def page_profitability(backend: WorkspaceBackend, view: Any, page: m.ObjectPage
         period = cp.period_covering(view._call, oid, cp.period_of("", today))
     named_tests = backend.test_named()
     try:
-        profit = cp.profitability(view._call, customer, today=today, period=period,
-                                  focus=focus, also=also,
-                                  skip_order=lambda number: is_test((number,), named_tests))
+        spread = PAGE_SPREAD.get()
+        with snapshot_reads():   # tens of plan runs over the same records: one picture
+            profit = cp.profitability(view._call, customer, today=today, period=period,
+                focus=focus, also=also,
+                skip_order=lambda number: is_test((number,), named_tests),
+                fan_out=None if spread is None else (
+                    lambda tasks, late: spread(view._call, tasks, late)))
     except cp.ProfitError:
         return None
     return profitability_model(backend, view, profit)

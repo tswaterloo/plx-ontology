@@ -676,41 +676,18 @@ def _contracts() -> Mapping[str, Any]:
     return load_contracts()
 
 
-class _Books:
-    """The reader-independent book per (store file, generation, day): read once, in the
-    background on the first question of a new day."""
-
-    def __init__(self, path: str, read: Callable[[str, dt.date], Mapping[str, Any]]) -> None:
-        self.path, self.read = path, read
-        self.lock = threading.Lock()
-        self.kept: dict[tuple, dict[str, Any]] = {}
-        self.events: dict[tuple, threading.Event] = {}
-
-    def get(self, key: tuple, as_of: dt.date, wait: float) -> Mapping[str, Any] | None:
-        with self.lock:
-            if key in self.kept:
-                return self.kept[key]
-            event = self.events.get(key)
-            if event is None:
-                event = self.events[key] = threading.Event()
-                threading.Thread(target=self._fill, args=(key, as_of, event), daemon=True,
-                                 name="demand-forecast-book").start()
-        event.wait(wait)
-        with self.lock:
-            return self.kept.get(key)
-
-    def _fill(self, key: tuple, as_of: dt.date, event: threading.Event) -> None:
-        try:
-            made = dict(self.read(self.path, as_of))
-        except Exception as exc:  # noqa: BLE001 - the error is the answer
-            made = {"error": type(exc).__name__}
-        with self.lock:
-            self.kept = {k: v for k, v in self.kept.items() if k[:2] == key[:2]}
-            self.kept[key] = made
-            self.events.pop(key, None)
-        event.set()
+from .cash_forecast import _Books as _SharedBooks, isolated as _isolated   # noqa: E402
 
 
+class _Books(_SharedBooks):
+    """The reader-independent book per (store file, generation, day), read once in the
+    background on the first question of a new day (``cash_forecast._Books``: one per store
+    file and reader function in the process)."""
+
+    _shared: dict = {}
+
+
+@_isolated
 def read_book(path: str, as_of: dt.date, *,
               on_hand: Sequence[tuple[str, str, str | None]] | None = None) -> dict[str, Any]:
     """The history and the reorder check's supply over one store file (its own read-only
@@ -736,8 +713,8 @@ class DemandForecastTool:
     def __init__(self, base: Any, read: Callable[[str, dt.date], Mapping[str, Any]] = read_book,
                  wait: float = WAIT_SECONDS) -> None:
         self.base, self.wait = base, wait
-        row = base.store.conn.execute("PRAGMA database_list").fetchone()
-        self.books = _Books(str(row[2]), read)
+        from .cash_forecast import store_file
+        self.books = _Books.shared(store_file(base), read)
 
     def key(self, as_of: dt.date) -> tuple:
         meta = self.base._store_meta() if hasattr(self.base, "_store_meta") else {}

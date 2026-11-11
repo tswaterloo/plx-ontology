@@ -115,6 +115,8 @@ from ontology.finish_parallel import store_mention_links
 from ontology.mc_task_links import task_ids_step, task_names_step
 from ontology.mention_firm_parallel import unique_mentions_step
 from ontology.party_roles import roles_step
+from ontology.demand_pegging import supply_pegging_step
+from ontology.owner_links import with_owners_step
 from ontology.posting_links import trace_postings_step
 from ontology.mentions import Document
 from ontology.sender_parallel import sender_corroboration_step
@@ -338,10 +340,12 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
         "reviews": reviews.link_step(review_store, tenant), "roles": roles_step,
         "sender_corroboration": sender_corroboration_step,
         "sender_parties": sender_parties_step,
+        "supply_pegging": supply_pegging_step,
         "task_ids": task_ids_step, "task_names": task_names_step,
         "text_index": _documents_cleaned(store_text_index),
         "trace_postings": trace_postings_step, "twins": twin_step,
         "twins_parties": party_twin_step, "unique_mentions": unique_mentions_step,
+        "with_owners": with_owners_step,
         "with_people": people_links_step,
         "your_reference": your_reference_step}.items()}
 

@@ -111,6 +111,12 @@ class ActionsMixin:
             if built is None:
                 raise UserFacing("not_found", "That alert is no longer on your list.", 404)
             return ap.card(built)
+        if card_id.startswith("ask:"):
+            # a draft one of this reader's own kept Asks wrote (never from the request)
+            built = self.ask_draft_card(reader, card_id)  # type: ignore[attr-defined]
+            if built is None:
+                raise UserFacing("not_found", "That draft is not one of your Asks.", 404)
+            return built
         if card_id.startswith("reply:"):
             built = self.reply_card_of(reader, card_id)
             if built is None:

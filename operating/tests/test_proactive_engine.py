@@ -368,8 +368,9 @@ class DetectorTest(Engine):
 
     def test_qc_is_blocked_without_a_declared_link_and_coverage_absent_is_not_configured(self):
         world, _ids = seeded()
-        summary = self.run_engine(world, None, qc_link_types=None)
-        self.assertEqual(pe.declared_qc_links(), ())   # the schema serves no QC relation yet
+        summary = self.run_engine(world, None, qc_link_types=())
+        # the schema declares FileMaker's receiving QC decision as the one QC relation
+        self.assertEqual(pe.declared_qc_links(), pe.QC_LINKS)
         self.assertEqual(summary["detectors"]["receipt_without_qc"], "blocked")
         # the seeded store holds QC records: only the missing relation is said
         self.assertEqual(summary["detector_reasons"]["receipt_without_qc"],
@@ -378,13 +379,53 @@ class DetectorTest(Engine):
         bare.obj("Receipt", {"received_date": "2026-10-01"})
         self.store = self.dir / "no-qc.sqlite"
         self.inbox = pe.inbox_path(self.store)
-        none = self.run_engine(bare, None, qc_link_types=None, only=["receipt_without_qc"])
+        none = self.run_engine(bare, None, qc_link_types=(), only=["receipt_without_qc"])
         # no QC record of any kind in the store: said, and still blocked (never "none")
         self.assertEqual(none["detectors"]["receipt_without_qc"], "blocked")
         self.assertEqual(none["detector_reasons"]["receipt_without_qc"],
                          ["qc_link_not_declared", "no_qc_record_captured"])
         self.assertEqual(summary["detectors"]["order_without_customer_po"], "not_configured")
         self.assertNotIn("receipt_without_qc", summary["gaps_by_kind"])
+
+    def test_fm_receiving_qc_decision_link_settles_the_receipt_and_sage_bc_are_not_judged(self):
+        qc = pe.QC_LINKS[0]
+        w = World()
+        fm = "portal.fm_receipt"
+
+        def receipt(binding, day="2026-10-10"):
+            return w.obj("Receipt", {"received_date": day}, binding=binding)
+
+        def line(of, binding):
+            ln = w.obj("ReceiptLine", {"lab_id": "x"}, binding=binding)
+            w.link("ReceiptLine.line_of", ln, of)
+            return ln
+
+        decided = receipt(fm)
+        w.link(qc, w.obj("Lot", {}, binding="portal.fm_receipt_raw_material.lotnoqc"),
+               line(decided, "portal.fm_receipt_raw_material"))
+        waiting = receipt(fm)                           # Quarantine/blank: no link, a real gap
+        line(waiting, "portal.fm_receipt_raw_material")
+        sage, bc = receipt("portal.sage_po_receipt_header"), receipt("bc.purchase_receipts")
+        line(sage, "portal.sage_po_receipt_header")
+        tied = receipt("portal.sage_po_receipt_header")   # Sage receipt tied to a decided FM line
+        sage_line = line(tied, "portal.sage_po_receipt_header")
+        fm_line = w.obj("ReceiptLine", {}, binding="portal.fm_receipt_raw_material")
+        w.link("ReceiptLine.same_record_as", sage_line, fm_line)
+        w.link(qc, w.obj("Lot", {}, binding="portal.fm_receipt_raw_material.lotnoqc"), fm_line)
+        tied_open = receipt("bc.purchase_receipts")      # tied to an FM line with no decision
+        open_line = line(tied_open, "bc.purchase_receipts")
+        w.link("ReceiptLine.same_record_as", open_line,
+               w.obj("ReceiptLine", {}, binding="portal.fm_receipt_packaging"))
+        lead = receipt(fm)                                # a lead-tier link is no decision
+        w.link(qc, w.obj("Lot", {}, binding="portal.fm_receipt_raw_material.lotnoqc"),
+               line(lead, "portal.fm_receipt_raw_material"), "lead")
+        summary = self.run_engine(w, None, qc_link_types=pe.QC_LINKS,
+                                  only=["receipt_without_qc"])
+        gapped = {g["object_id"] for g in self.read()["gaps"] if g["kind"] == "receipt_without_qc"}
+        self.assertEqual(gapped, {waiting, tied_open})
+        self.assertEqual(summary["not_evaluated"]["receipt_without_qc"],
+                         {"no_qc_source_for_system": 2, "qc_link_unsettled": 1})
+        self.assertNotIn(bc, gapped)
 
     def test_an_incomplete_mirror_scan_is_truncated_and_resolves_nothing(self):
         world, ids = seeded()
@@ -741,7 +782,7 @@ class InboxTest(Engine):
 
     def test_a_scheduled_run_with_rules_that_did_not_run_is_never_read_as_clean(self):
         # The store-only hook runs without the mirror coverage and without a card caller:
-        # those rules (and QC, with no declared link) did not run, so the read is incomplete
+        # those rules did not run (QC runs: the schema declares FileMaker's QC link), so the read is incomplete
         # and names them, never a clean "nothing found".
         world, _ids = seeded()
         world.build(self.store)
@@ -753,18 +794,12 @@ class InboxTest(Engine):
         self.assertEqual(found["not_run"], {"card_rules": "not_configured",
                                             "order_without_customer_po": "not_configured",
                                             "orders_at_risk": "not_configured",
-                                            "receipt_without_qc": "blocked",
                                             "margin_erosion": "not_configured",
-                                            # no on-hand source declared in the schema
-                                            "stock_out_risk": "blocked",
-                                            "slow_moving_stock": "blocked",
+                                            # the schema (schema-next, L126) declares the
+                                            # on-hand source, assembly order dates and MC
+                                            # task / production due dates: those rules run;
+                                            # lot expiry is still not declared
                                             "expiring_lot_stock": "blocked",
-                                            "reorder_soon": "blocked",
-                                            # nor an assembly order start date
-                                            "assembly_component_shortfall": "blocked",
-                                            # no MC task or production due date declared
-                                            "mc_task_overdue": "blocked",
-                                            "production_late": "blocked",
                                             # no tenant mail directory beside the store
                                             "vendor_no_reply": "blocked",
                                             "customer_chase": "blocked",
@@ -784,11 +819,10 @@ class InboxTest(Engine):
                                             "vendor_terms_unapplied": "not_configured",
                                             "negative_margin": "not_configured"})
         # every rule run: each one the schema serves is complete, and the read is complete
-        # only when every rule is; the rules blocked until the schema declares their fields
-        # (MC task and production due dates, an assembly order's start date) keep it
-        # incomplete and are named, never read as clean
-        schema_blocked = {"mc_task_overdue": "blocked", "production_late": "blocked",
-                          "assembly_component_shortfall": "blocked"}
+        # only when every rule is (a rule blocked until the schema declares its fields
+        # keeps it incomplete and is named, never read as clean); the schema (L126) now
+        # declares the MC task and production due dates and the assembly order dates
+        schema_blocked = {}
         def card(_tool, arguments):
             return {"object": {"object_id": arguments["object_id"]}, "leads": [],
                     "conflicts": []}
@@ -796,7 +830,7 @@ class InboxTest(Engine):
         full = self.read()
         self.assertEqual(set(full["detectors"]), set(pe.DETECTORS))
         self.assertEqual((full["complete"], full["not_run"], full["truncated"]),
-                         (False, schema_blocked, False), full["detectors"])
+                         (not schema_blocked, schema_blocked, False), full["detectors"])
         # the sheet rules wait for the reading step: a setup state, never incomplete
         self.assertEqual({d: s for d, s in full["detectors"].items()
                           if s in pe.SETUP_STATES},

@@ -53,6 +53,7 @@ import os
 from pathlib import Path
 import pickle
 import secrets
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -139,7 +140,7 @@ def store_mention_links(builder: Any, projector: Any, *,
             else:
                 LAST.update(mode="serial", reason="few_documents")
             at = time.monotonic()
-            side.replay(builder)
+            side.replay(builder, count)
             LAST["seconds.add"] = round(time.monotonic() - at, 3)
             at = time.monotonic()
             raised = (_apply(conn, decided) if decided is not None
@@ -246,8 +247,16 @@ class _Scratch:
         db.execute("COMMIT")
         db.execute("BEGIN")
 
-    def replay(self, builder: Any) -> None:
-        """Add the step's links to the build, as the serial step added them."""
+    def replay(self, builder: Any, count: int = 1) -> None:
+        """Add the step's links to the build, as the serial step added them: by ``count``
+        worker processes writing parts of consecutive links, merged in order by SQL
+        (``project_parallel.merge_link_parts``: the same rows, row ids and text ids),
+        when the links are many; else here, batch by batch."""
+        (total,) = self.conn.execute(f"SELECT count(*) FROM {_SCRATCH_LINKS}").fetchone()
+        if count >= 2 and total >= REPLAY_PARTS_MIN and \
+                getattr(builder, "connection", None) is not None and \
+                _committed(builder.connection):   # else the rows stay open: added here
+            return self._replay_parts(builder, count, total)
         batch: list[dict[str, Any]] = []
         at = None
         cursor = self.conn.execute(f"SELECT batch, {', '.join(LINK_COLUMNS)} FROM "
@@ -261,6 +270,28 @@ class _Scratch:
         if batch:
             builder.add("links", batch)
 
+    def _replay_parts(self, builder: Any, count: int, total: int) -> None:
+        from ontology.project_parallel import merge_link_parts
+        from ontology.step_migrate import _parts_in_order
+        self.conn.execute("COMMIT")   # the workers read the file
+        size = max(REPLAY_PART_ROWS, -(-total // (count * 8)))
+        (low, high) = self.conn.execute(f"SELECT min(seq), max(seq) FROM {_SCRATCH_LINKS}"
+                                        ).fetchone()
+        jobs = [(str(self.path), a, min(a + size, high + 1))
+                for a in range(low, high + 1, size)]
+        LAST["replay.parts"] = len(jobs)
+        folder = self.path.with_name(self.path.name + ".parts")
+        folder.mkdir(exist_ok=True)
+        conn = builder.connection
+        try:
+            (rows,) = conn.execute("SELECT count(*) FROM link_rows").fetchone()
+            merge_link_parts(builder, _parts_in_order(_replay_part, jobs, count, folder),
+                             rebuild_indexes=4 * total >= rows)   # sort once: many
+        finally:
+            conn.execute("BEGIN IMMEDIATE")
+            shutil.rmtree(folder, ignore_errors=True)
+            self.conn.execute("BEGIN")
+
     def remove(self) -> None:
         if self.conn is not None:
             try:
@@ -272,6 +303,22 @@ class _Scratch:
                 path.unlink()
             except FileNotFoundError:
                 pass
+
+
+REPLAY_PARTS_MIN = 200_000   # fewer links: replayed here (the parts cost more)
+REPLAY_PART_ROWS = 50_000
+
+
+def _replay_part(path: str, scratch: str, low: int, high: int) -> str:
+    """A worker's part of the replay: the links of ``seq`` in [``low``, ``high``)."""
+    from ontology.project_parallel import link_part
+    conn = sqlite3.connect(f"file:{scratch}?mode=ro", uri=True)
+    try:
+        return link_part(path, (dict(zip(LINK_COLUMNS, r)) for r in conn.execute(
+            f"SELECT {', '.join(LINK_COLUMNS)} FROM {_SCRATCH_LINKS} WHERE seq >= ? AND "
+            "seq < ? ORDER BY seq", (low, high))))
+    finally:
+        conn.close()
 
 
 class _Diverted:

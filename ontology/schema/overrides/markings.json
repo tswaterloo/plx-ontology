@@ -259,6 +259,115 @@
     ]
    },
    "applied": "A fixed asset names the employee it is assigned to: those columns are pii (employees themselves are never captured)."
+  },
+  {
+   "source": "portal_api",
+   "relation": "sage.ar_salesperson",
+   "markings": [
+    "finance",
+    "pii"
+   ],
+   "applied": "Sage AR salespeople are employees: the salesperson record carries the employee number and the annual sales target, and the salesperson statistics the invoiced and paid amounts commission is computed on (pay-related, owner rule 2026-11-08: payroll never leaks). Every field is pii and finance, the payroll marking pair, so only a reader holding both reaches the rows (raw_tables lane)."
+  },
+  {
+   "source": "portal_api",
+   "relation": "sage.ar_sps",
+   "markings": [
+    "finance",
+    "pii"
+   ],
+   "applied": "Sage AR salespeople are employees: the salesperson record carries the employee number and the annual sales target, and the salesperson statistics the invoiced and paid amounts commission is computed on (pay-related, owner rule 2026-11-08: payroll never leaks). Every field is pii and finance, the payroll marking pair, so only a reader holding both reaches the rows (raw_tables lane)."
+  },
+  {
+   "source": "portal_api",
+   "relation": "sage.gl_jec",
+   "markings": [],
+   "columns": {
+    "jecomment": [
+     "finance",
+     "pii"
+    ]
+   },
+   "applied": "Free text of Sage GL lines and their comments names staff on payroll, wage, salary, commission and bonus lines: the descriptions, references and comments are pii and finance on every GL line, and are never search text (review of lane raw-tables, 2026-11-08)."
+  },
+  {
+   "source": "portal_api",
+   "relation": "sage.gl_pjc",
+   "markings": [],
+   "columns": {
+    "comment": [
+     "finance",
+     "pii"
+    ],
+    "reference": [
+     "finance",
+     "pii"
+    ]
+   },
+   "applied": "Free text of Sage GL lines and their comments names staff on payroll, wage, salary, commission and bonus lines: the descriptions, references and comments are pii and finance on every GL line, and are never search text (review of lane raw-tables, 2026-11-08)."
+  }
+ ],
+ "row_markings": [
+  {
+   "source": "portal_api",
+   "relations": [
+    "sage.gl_*",
+    "sage.ar_*",
+    "sage.ap_*"
+   ],
+   "except": [
+    "sage.gl_account"
+   ],
+   "account_columns": {
+    "acctid": "gl_account",
+    "idglacct": "gl_account_idglacct",
+    "idacct": "gl_account_idacct",
+    "idacctrev": "gl_account_idacctrev"
+   },
+   "when": [
+    {
+     "via_link": "yes",
+     "path": "acctdesc",
+     "op": "matches",
+     "value": "(payroll|wage|salar|commission|bonus)"
+    }
+   ],
+   "markings": [
+    "finance",
+    "pii"
+   ],
+   "applied": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (reviews of lane raw-tables, 2026-11-08).",
+   "header_links": [
+    "invoice_entry",
+    "posted_entry",
+    "journal_entry",
+    "open_document",
+    "payment",
+    "receipt",
+    "recurring_payable",
+    "refund",
+    "posted_line"
+   ]
+  }
+ ],
+ "text_markings": [
+  {
+   "source": "portal_api",
+   "relations": [
+    "sage.gl_*",
+    "sage.ar_*",
+    "sage.ap_*"
+   ],
+   "except": [
+    "sage.ar_cmm"
+   ],
+   "columns": "desc|comment|cmnt|^text|ref|memo|note|remark",
+   "unless": "^id|^cnt|^code(?!desc)|^sw|^date|^amt|^acct|^typ|nbr$|^descomp$",
+   "markings": [
+    "finance",
+    "pii"
+   ],
+   "applied": "Free text of Sage GL, AR and AP records (descriptions, references, comments, text lines, memos, notes) names staff on pay documents: on every row of every relation of these families it is finance and pii and never search text. Identifiers and document numbers stay as they are. AR customer comments (sage.ar_cmm, credit-handling notes) keep their reviewed markings (reviews of lane raw-tables, 2026-11-08)."
   }
  ]
 }

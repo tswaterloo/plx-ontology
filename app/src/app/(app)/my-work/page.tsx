@@ -28,14 +28,14 @@ export default function MyWorkPage() {
   }, [round]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar heading title="Prepared for you" />
-      <div className="mx-auto w-full max-w-3xl px-6 py-6">
+      <Toolbar heading title="Assist" />
+      <div className="w-full px-6 py-5">
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : work ? (
           <MyWorkList work={work} />
         ) : (
-          <Pending label="Reading the work prepared for you" />
+          <Pending page label="Reading the work prepared for you" />
         )}
       </div>
     </div>

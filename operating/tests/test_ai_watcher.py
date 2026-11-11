@@ -265,6 +265,9 @@ class MailTest(World):
                       "writes to]", prompt)
         self.assertIn("6 Email messages from one automated sender", prompt)
         self.assertNotIn("customer.example", prompt)
+        # the items it writes are prose a person reads: the house style closes the task
+        from operating.prose_style import PROSE_STYLE_RULE
+        self.assertTrue(prompt.endswith(PROSE_STYLE_RULE))
         self.assertIn(("plx.read", {"citation": "graph-mail://mbx-1/msg-45@v1",
                                     "max_chars": aw.READ_CHARS}), aw.reads_for(batch))
 

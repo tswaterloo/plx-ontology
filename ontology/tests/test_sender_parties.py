@@ -8,6 +8,10 @@ projector, the compiled schema and the step; no source read).
 * A shared provider's domain, our own domain, a domain two different parties hold and a
   pair a person rejected link nothing; a domain two records of one party hold (one
   normalised name) links both, an address only the record storing it.
+* The record a message names decides what the sender's address alone cannot, only where
+  the sender's domain spells the named party's name: a domain no party holds is a ``lead``
+  to that party, and a domain a customer and a supplier both hold reaches the holder of the
+  named record's side. A broker's domain, which spells no name, links nothing.
 """
 
 from __future__ import annotations
@@ -55,12 +59,19 @@ PORTAL = {
     "public.app_supplier": [
         {"id": "s-a", "code": "ACME01", "name": "Acme Polymers Inc.",
          "website": "https://www.acme-poly.example"},
-        {"id": "s-d", "code": "DUPE01", "name": "Dupe Packaging", "website": "dupe.example"}],
+        {"id": "s-d", "code": "DUPE01", "name": "Dupe Packaging", "website": "dupe.example"},
+        {"id": "s-n", "code": "NOVA01", "name": "Novachem Ltd"},
+        {"id": "s-c", "code": "CEDR01", "name": "Cedarline Packaging",
+         "website": "cedarline.example"}],
+    "public.app_purchase_order": [
+        {"id": "po-n", "po_number": "PO#9101", "supplier_id": "s-n"},
+        {"id": "po-c", "po_number": "PO#9102", "supplier_id": "s-c"}],
     "public.supplier": [{"id": 7, "name": "Birch Oils", "emailrep": "birch.rep@gmail.com"}],
     "public.customer": [
         {"id": 1, "name": "Zeta Hotels Ltd", "email": "orders@zeta.example"},
         {"id": 2, "name": "ZETA HOTELS LTD.", "email": "ap@zeta.example"},
-        {"id": 3, "name": "Other Buyer", "email": "buyer@dupe.example"}],
+        {"id": 3, "name": "Other Buyer", "email": "buyer@dupe.example"},
+        {"id": 4, "name": "Cedarline Foods", "email": "orders@cedarline.example"}],
 }
 
 
@@ -78,6 +89,9 @@ MAIL = {"messages": [
     message(6, "orders@zeta.example"),            # stored address: both Zeta records
     message(7, "bob@sales.acme-poly.example"),    # rejected below: nothing
     message(8, "frank@zeta.example"),             # domain of one party's two records
+    message(9, "ap@novachem.example"),            # held by none, names Novachem's PO: lead
+    message(10, "desk@freightbroker.example"),    # names Novachem's PO, spells no name
+    message(11, "ar@cedarline.example"),          # a customer's and a supplier's: PO side
 ]}
 
 
@@ -91,7 +105,24 @@ def email(i):
 
 ACME = oid("Supplier", "portal.app_supplier", {"id": "s-a"})
 BIRCH = oid("Supplier", "portal.fm_supplier", {"id": 7})
+NOVA = oid("Supplier", "portal.app_supplier", {"id": "s-n"})
+CEDAR = oid("Supplier", "portal.app_supplier", {"id": "s-c"})
 ZETA = [oid("Customer", "portal.fm_customer", {"id": i}) for i in (1, 2)]
+
+
+def name_orders(builder, projector):
+    """Messages 9-11 name a purchase order (as the mentions step's link would)."""
+    po = {"po-n": oid("PurchaseOrder", "portal.app_purchase_order", {"id": "po-n"}),
+          "po-c": oid("PurchaseOrder", "portal.app_purchase_order", {"id": "po-c"})}
+    builder.add("links", [{
+        "link_id": f"mention:t{i}", "link_type": "Email.mentions_purchase_order",
+        "from_object": email(i), "to_object": po[key], "tier": "lead",
+        "binding_kind": "mention", "link_contract": None,
+        "reason": '[{"agrees":true,"feature":"mention"}]', "why_not": "[]",
+        "evidence_handles": f'["mention:h{i}"]', "reviewed_by": None, "reviewed_at": None,
+        "review_action_id": None, "markings": "[]", "recorded_at": T, "superseded_at": None}
+        for i, key in ((9, "po-n"), (10, "po-n"), (11, "po-c"))])
+    return {}
 
 
 def reject(builder, projector):
@@ -116,7 +147,8 @@ class SenderParties(unittest.TestCase):
             {"portal_api": Source("portal_api", PORTAL), "graph_mail": Source("graph_mail", MAIL)},
             normalizer=identifiers.normalize,
             clock=lambda: datetime(2026, 10, 2, tzinfo=timezone.utc),
-            post_project={"reviews": reject, "sender_parties": sp.sender_parties_step})
+            post_project={"mentions": name_orders, "reviews": reject,
+                          "sender_parties": sp.sender_parties_step})
         cls.conn = sqlite3.connect(str(path))
 
     @classmethod
@@ -135,10 +167,25 @@ class SenderParties(unittest.TestCase):
             (email(2), BIRCH, SUPPLIER, "corroborated"),
             (email(6), ZETA[0], CUSTOMER, "corroborated"),
             (email(8), ZETA[0], CUSTOMER, "lead"),
-            (email(8), ZETA[1], CUSTOMER, "lead")})
+            (email(8), ZETA[1], CUSTOMER, "lead"),
+            (email(9), NOVA, SUPPLIER, "lead"),
+            (email(11), CEDAR, SUPPLIER, "lead")})
         counts = self.report["post_project"]["sender_parties"]["counts"]
         self.assertEqual((counts["shared_mail_provider"], counts["own_sender"],
-                          counts["shared_by_parties"], counts["rejected"]), (1, 1, 1, 1))
+                          counts["shared_by_parties"], counts["rejected"], counts["no_party"],
+                          counts["named_record"], counts["named_side_domain"]),
+                         (1, 1, 1, 1, 1, 1, 1))
+
+    def test_a_link_by_the_named_record_cites_that_record(self):
+        (reason, handles), = self.conn.execute(
+            "SELECT reason, evidence_handles FROM links WHERE link_id LIKE 'sendparty:%' "
+            "AND from_object = ?", (email(9),))
+        (po,), = self.conn.execute(
+            "SELECT l1_handle FROM object_versions WHERE object_id = ?",
+            (oid("PurchaseOrder", "portal.app_purchase_order", {"id": "po-n"}),))
+        self.assertEqual([f["feature"] for f in json.loads(reason)],
+                         ["sender_domain", "named_record_party"])
+        self.assertIn(po, json.loads(handles))
 
     def test_a_link_cites_what_it_read_and_never_copies_a_value(self):
         (reason, handles, marks), = self.conn.execute(
@@ -202,6 +249,17 @@ class Judge(unittest.TestCase):
         self.assertEqual(parties.judge("buyer@province.example", [])[:2],
                          ("address", "corroborated"))
         self.assertTrue(sp.name_fits_domain("northwind freight", "northwindco.example"))
+
+    def test_records_of_two_parties_name_no_sender(self):
+        named = [self.holding(p, "", prop=sp.NAMED) for p in ("Supplier:a", "Supplier:b")]
+        parties = sp.Parties([], {}, {"Supplier:a": "orbit", "Supplier:b": "orbit labs"}, {})
+        self.assertEqual(parties.by_named("x@orbit.example", "no_party", [], named),
+                         ("no_party", None, []))
+        self.assertEqual(parties.by_named("x@orbit.example", "no_party", [], named[:1])[:2],
+                         (sp.NAMED, "lead"))
+        # a shared provider's domain spells no party, whatever the name
+        self.assertEqual(parties.by_named("orbit@gmail.com", "no_party", [], named[:1])[0],
+                         "no_party")
         self.assertFalse(sp.name_fits_domain("general", "ge.example"))
 
 

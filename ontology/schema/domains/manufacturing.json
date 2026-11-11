@@ -193,6 +193,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -203,17 +214,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -247,6 +247,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -257,17 +268,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -317,6 +317,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -327,17 +338,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -380,6 +380,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -390,17 +401,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -435,6 +435,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -445,17 +456,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -541,6 +541,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -551,17 +562,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -597,6 +597,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -607,17 +618,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -656,6 +656,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -666,17 +677,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -738,6 +738,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -748,17 +759,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -812,6 +812,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -822,17 +833,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorders.9aa7f9"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
               }
@@ -989,6 +989,176 @@
               "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
             }
           ]
+        },
+        {
+          "name": "start_date",
+          "value_type": "date",
+          "description": "The planned start day of the Portal manufacturing order (scheduled_start_date). Only the Portal MO carries a planned start; a FileMaker assembly order has none, so it has no start_date. The day of a timestamp is kept as written.",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "scheduled_start_date",
+              "parser": "iso_date"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        },
+        {
+          "name": "scheduled_end_date",
+          "value_type": "date",
+          "description": "The planned finish day of the Portal manufacturing order (scheduled_end_date).",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "scheduled_end_date",
+              "parser": "iso_date"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        },
+        {
+          "name": "actual_end_date",
+          "value_type": "date",
+          "description": "The day the Portal manufacturing order actually finished (actual_end_date); absent while it is open.",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "actual_end_date",
+              "parser": "iso_date"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        },
+        {
+          "name": "scheduled_date",
+          "value_type": "date",
+          "description": "The day the assembly order is scheduled to be made (FileMaker assembly_order.datescheduled; the Portal manufacturing order's scheduled_date). The plan for an open order; a production-late rule reads it as the order's due day.",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "datescheduled",
+              "parser": "iso_date"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "scheduled_date",
+              "parser": "iso_date"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
+        },
+        {
+          "name": "realized_date",
+          "value_type": "date",
+          "description": "The day the assembly order was realized, i.e. made (FileMaker assembly_order.daterealized; the Portal manufacturing order's date_realized); absent while it is open.",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "daterealized",
+              "parser": "iso_date"
+            },
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "date_realized",
+              "parser": "iso_date"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlmanufacturingorders.cdba79"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorders.9aa7f9"
+                  }
+                ]
+              }
+            ],
+            "note": "The Portal reads AO detail from FM; the gold copy is ETL output. Native MO rows have no confirmed authority until Q1 is answered."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorders.9aa7f9"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.manufacturingorder.42f88d"
+            }
+          ]
         }
       ],
       "identity_keys": [
@@ -1142,6 +1312,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -1152,17 +1333,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorderitems.f2113b"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etl-mo-lines.b46934"
                   }
                 ]
               }
@@ -1207,6 +1377,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -1217,17 +1398,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorderitems.f2113b"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etl-mo-lines.b46934"
                   }
                 ]
               }
@@ -1255,6 +1425,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -1265,17 +1446,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorderitems.f2113b"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etl-mo-lines.b46934"
                   }
                 ]
               }
@@ -1302,6 +1472,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -1312,17 +1493,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorderitems.f2113b"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etl-mo-lines.b46934"
                   }
                 ]
               }
@@ -1378,6 +1548,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze"
                 ],
                 "evidence": [
@@ -1388,17 +1569,6 @@
                   {
                     "kind": "ref",
                     "id": "upstream-code.fetchassemblyorderitems.f2113b"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "upstream-code.etl-mo-lines.b46934"
                   }
                 ]
               }
@@ -1623,6 +1793,24 @@
               "binding": "portal.fm_assembly_order_damage",
               "path": "userentered",
               "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "date_entered",
+          "value_type": "date",
+          "description": "The day the damage was entered (FileMaker assembly_order_damage.dateentered); a damage-spike rule dates the entry by it rather than by its assembly order.",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order_damage",
+              "path": "dateentered",
+              "parser": "iso_date"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.fetchassemblyorderdamage.046acc"
             }
           ]
         }
@@ -1942,6 +2130,46 @@
             ],
             "note": "Each row is read by exactly one binding."
           }
+        },
+        {
+          "name": "task_date",
+          "value_type": "date",
+          "description": "The day the production task ran (FileMaker production.datestart; the run's own start and finish times are beside it). A task carries no planned or due day: neither FileMaker nor the Portal's app_production_task has one.",
+          "sources": [
+            {
+              "binding": "portal.fm_production_ao",
+              "path": "datestart",
+              "parser": "iso_date"
+            },
+            {
+              "binding": "portal.fm_production_batch",
+              "path": "datestart",
+              "parser": "iso_date"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.portal-id-offset.887e71"
+                  }
+                ]
+              }
+            ],
+            "note": "Each row is read by exactly one of the two bindings."
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/manufacturing.json",
+              "note": "Schema-next audit, 2026-11-09 (read-only source mirror, counts only): datestart is an ISO day on 20,820 of 20,825 production rows (2024-2026)."
+            }
+          ]
         }
       ],
       "evidence": [
@@ -3130,6 +3358,114 @@
             ],
             "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
           }
+        },
+        {
+          "name": "scheduled_date",
+          "value_type": "date",
+          "description": "The day the batch is scheduled to be made (FileMaker batch.datesche; the Portal batch record's date_scheduled). A production-late rule reads it as the batch's due day.",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "datesche",
+              "parser": "iso_date"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "date_scheduled",
+              "parser": "iso_date"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.batchrecord.c3a320"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          }
+        },
+        {
+          "name": "realized_date",
+          "value_type": "date",
+          "description": "The day the batch was realized, i.e. made (FileMaker batch.daterealized; the Portal batch record's date_completed); absent while it is open.",
+          "sources": [
+            {
+              "binding": "portal.fm_batch",
+              "path": "daterealized",
+              "parser": "iso_date"
+            },
+            {
+              "binding": "portal.app_batch_record",
+              "path": "date_completed",
+              "parser": "iso_date"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.silver-batches.a4b3a1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etlbatches.49da4d"
+                  }
+                ]
+              }
+            ],
+            "note": "Batching reads and writes FM bronze; gold app_batch_record is the ETL copy."
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.silver-batches.a4b3a1"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.batchrecord.c3a320"
+            }
+          ]
         }
       ],
       "identity_keys": [
@@ -4280,24 +4616,26 @@
       "name": "requested_by",
       "reverse_name": "requested_batches",
       "cardinality": "N:1",
-      "description": "FM batch.idmoreq (silver mo_id): the AO that requested the batch.",
+      "description": "FM batch.idmoreq (silver mo_id): the AO that requested the batch. Found from the Portal MO that names the batch (one MO only); the batch's own idmoreq is not an assembly order id.",
       "bindings": [
         {
           "kind": "fk",
           "tier_ceiling": "verified",
           "from_binding": "portal.fm_batch",
-          "to_binding": "portal.fm_assembly_order",
+          "to_binding": "portal.app_manufacturing_order",
           "pairs": [
             {
-              "from": "idmoreq",
-              "to": "id",
+              "from": "id",
+              "to": "batch_id",
               "compare": "integer_id"
             }
           ],
+          "unique_target": true,
           "evidence": [
             {
-              "kind": "ref",
-              "id": "upstream-code.silver-batches.a4b3a1"
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/%s",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): the reverse of AssemblyOrder.for_batch: 6,608 of 10,607 batches are named by a Portal MO, 1,741 by several (left unresolved, unique_target); 15 of 15 sampled pairs agree with the MO's FileMaker twin. The former batch.idmoreq -> FM assembly_order.id binding is removed: 0 of 15 sampled pairs agreed (the FM AO names another batch) and shifted ids matched more often than real ones (baseline 1.3), so idmoreq is not an assembly order id."
             }
           ]
         }
@@ -4609,6 +4947,101 @@
             {
               "kind": "ref",
               "id": "upstream-code.manufacturingjob.7b6ba9"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrder.for_batch",
+      "from": "AssemblyOrder",
+      "to": "Batch",
+      "name": "for_batch",
+      "reverse_name": "assembly_orders",
+      "cardinality": "N:1",
+      "description": "The FileMaker batch a Portal manufacturing order makes or draws its bulk from (app_manufacturing_order.batch_id = FM batch.id; FileMaker's own batch ids, so verified).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_order",
+          "to_binding": "portal.fm_batch",
+          "pairs": [
+            {
+              "from": "batch_id",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/manufacturing.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 9,800 of 9,803 non-blank batch ids reach a batch; 15 of 15 sampled pairs agree with the MO's FileMaker twin (same AO code) naming the same batch, or the same lot number. Dense integers (random-shift baseline 0.29), so the twin check decides it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Batch.for_sales_order",
+      "from": "Batch",
+      "to": "SalesOrder",
+      "name": "for_sales_order",
+      "reverse_name": "batches",
+      "cardinality": "N:1",
+      "description": "The FileMaker order a batch is made for, when the batch's OE list names one order (batch.oelist_c = order_entry.erpcode). A list of several orders is not split here (a later step); such a batch stays unlinked.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_batch",
+          "to_binding": "portal.fm_order_entry",
+          "pairs": [
+            {
+              "from": "oelist_c",
+              "to": "erpcode",
+              "compare": "identifier",
+              "identifier_kind": "so_number"
+            }
+          ],
+          "unique_target": true,
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/manufacturing.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 1,022 of 1,363 non-blank OE lists equal one order's ERP code (53 ambiguous, left unresolved); 15 of 15 sampled pairs agree on the customer (the batch's bulk product owner is the order's customer)."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AssemblyOrderComponent.of_finished_product",
+      "from": "AssemblyOrderComponent",
+      "to": "Product",
+      "name": "of_finished_product",
+      "reverse_name": "assembly_components",
+      "cardinality": "N:1",
+      "description": "The FileMaker finished product an assembly order line is for (assembly_order_item.idfinproduct = finished_product.id).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_assembly_order_item",
+          "to_binding": "portal.fm_finished_product",
+          "pairs": [
+            {
+              "from": "idfinproduct",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/manufacturing.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 63,208 of 63,328 non-blank ids reach a finished product; 15 of 15 sampled pairs agree with the assembly order's own finished product; shift baseline 0.0."
             }
           ]
         }

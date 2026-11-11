@@ -1,5 +1,6 @@
 "use client";
 
+import { PartyPulse } from "./record/party-pulse";
 import { DocumentsSection } from "@/components/record/documents";
 import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, MessageCircle } from "lucide-react";
 import Link from "next/link";
@@ -12,6 +13,7 @@ import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import { activityTitle, factMap, groupLinked, groupRelated, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
+import { RecordWorkLog } from "@/components/work-log";
 import { lateness, recordState, type Shown } from "@/lib/status";
 import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, PersonKnows, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
 import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, missingText, SourceLine } from "./answer-parts";
@@ -32,13 +34,12 @@ import { DraftSheet, SuggestionActions } from "./record/next-step";
 import { Bars, dayOf, Fact, Figure, Glyph, LinkRow, MoreButton, OrderLine, Progress, Property, SectionTitle } from "./record/parts";
 import { EvidenceDrawer, SourceChip, SourceChips } from "./source-chip";
 import { stepWords } from "./today-detail";
-import { DoneRing, OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
+import { DoneRing, lateFigure, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 import { Toolbar, ToolbarButton } from "./ui/toolbar";
 import { useCommandPalette } from "./command-palette";
 import { LoadProblem, StaleNote } from "./ui/notice";
-import { Monogram } from "./ui/monogram";
 import { KindSections } from "./record/kind-sections";
-import { StatusBadge, StatusWord } from "./ui/status-badge";
+import { STATUS_INK, StatusBadge, StatusWord } from "./ui/status-badge";
 
 /** Status words the API uses, mapped to a tone (kept for callers outside the record page). */
 export function toneOf(state: string): Tone {
@@ -111,7 +112,7 @@ function ObjectSkeleton({ type, label }: { type: string; label?: string | null }
       main={
         <div className="space-y-9" role="status" aria-label="Loading">
           <header className="flex gap-4">
-            <div className="skeleton size-12 shrink-0 rounded-[13px]" />
+            <div className="skeleton size-12 shrink-0 rounded-[3px]" />
             <div className="min-w-0 space-y-2 pt-0.5">
               {label ? <h1 className="break-words text-[24px] leading-[30px] font-semibold tracking-[-0.025em]">{label}</h1> : <div className="skeleton h-7 w-56" />}
               <p className="text-[13px] leading-5 text-muted" data-pending="">
@@ -204,7 +205,8 @@ function SupplierOrders({ obj }: { obj: ObjectPage }) {
     if (m) lateLabels.set(m[1], l);
   }
   const days = /Late by (\d+) days/i.exec(obj.status?.text ?? "")?.[1];
-  const rows = pos.map((p) => ({ p, late: lateLabels.get(p.label) ?? null })).sort((a, b) => Number(!!b.late) - Number(!!a.late));
+  // a line names its order by number ("PO number: 90412"); the related order may be labelled "PO 90412"
+  const rows = pos.map((p) => ({ p, late: lateLabels.get(p.label) ?? lateLabels.get(p.label.replace(/^PO\s*/i, "")) ?? null })).sort((a, b) => Number(!!b.late) - Number(!!a.late));
   if (rows.length === 0) return null;
   const cap = rows.length > 18 ? 12 : rows.length;
   const shown = all ? rows : rows.slice(0, cap);
@@ -216,13 +218,10 @@ function SupplierOrders({ obj }: { obj: ObjectPage }) {
           const d = late?.days_late ?? (days && lateLabels.size === 1 ? Number(days) : null);
           return (
             <li key={p.object_id}>
-              <Link href={refHref(p)} className="group flex h-10 items-center gap-3 rounded-[10px] px-3 text-[13px] hover:bg-hover">
+              <Link href={refHref(p)} className="group flex h-10 items-center gap-3 rounded-[3px] px-3 text-[13px] hover:bg-hover">
                 <span className="min-w-0 flex-1 truncate font-medium">{recordLabel(p.type, p.label)}</span>
                 {late && (
-                  <span className="flex shrink-0 items-center gap-1.5 text-[12px] tabular-nums">
-                    {d != null ? `${d}d` : "Late"}
-                    <Glyph status="late" days={d ?? 90} size={13} />
-                  </span>
+                  <span className={cn("shrink-0 text-[12px] tabular-nums", d != null ? lateFigure(d) : "text-late")}>{d != null ? `${d}d` : "Late"}</span>
                 )}
                 <ArrowUpRight className="size-3.5 shrink-0 text-faint opacity-0 group-hover:opacity-100" aria-hidden />
               </Link>
@@ -247,7 +246,7 @@ function OrderTable({ title, rows, testId }: { title: string | null; rows: Order
       <ul className="-mx-3">
         {rows.map((r) => (
           <li key={`${r.object_id}-${r.label}`}>
-            <Link href={safeHref(r.open_url) ?? objectHref("SalesOrder", r.object_id)} className="grid h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 rounded-[10px] px-3 text-[13px] hover:bg-hover sm:grid-cols-[132px_72px_minmax(0,1fr)_auto]">
+            <Link href={safeHref(r.open_url) ?? objectHref("SalesOrder", r.object_id)} className="grid h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 rounded-[3px] px-3 text-[13px] hover:bg-hover sm:grid-cols-[132px_72px_minmax(0,1fr)_auto]">
               <span className="min-w-0 truncate font-semibold">{r.label}</span>
               <span className="tabular-nums text-muted max-sm:hidden">{r.date ? formatDate(r.date, { short: true }) : ""}</span>
               <span className="flex min-w-0 items-center gap-4 max-sm:hidden">
@@ -258,7 +257,7 @@ function OrderTable({ title, rows, testId }: { title: string | null; rows: Order
                   </span>
                 )}
               </span>
-              <span className="text-right tabular-nums">{r.amount ? money(r.amount) : ""}</span>
+              <span className="text-right num">{r.amount ? money(r.amount) : ""}</span>
             </Link>
           </li>
         ))}
@@ -345,7 +344,7 @@ function ActivityRow({ e, count }: { e: TimelineEvent; count: number }) {
   const title = activityTitle(e.title, count);
   const body = (
     <>
-      <SystemTile system={e.system} size={16} className="mt-[2px]" />
+      <SystemCode system={e.system} size={16} className="mt-[2px]" />
       <span className="min-w-0 flex-1">
         <span className="block text-[13px] leading-5">{title}</span>
         {e.summary && count === 1 && <span className="block truncate text-[12px] leading-4 text-muted">{readable(e.summary)}</span>}
@@ -384,10 +383,10 @@ function ThreadRow({ t }: { t: Thread }) {
       <button
         type="button"
         onClick={() => (t.count > 1 ? setExpanded((v) => !v) : setOpen(first))}
-        className="flex w-full items-start gap-3 rounded-[10px] px-3 py-2 text-left hover:bg-hover cursor-pointer"
+        className="flex w-full items-start gap-3 rounded-[3px] px-3 py-2 text-left hover:bg-hover cursor-pointer"
         aria-expanded={t.count > 1 ? expanded : undefined}
       >
-        <SystemTile system={first?.source?.system ?? LINK_SYSTEM[t.kind]} size={20} className="mt-px" />
+        <SystemCode system={first?.source?.system ?? LINK_SYSTEM[t.kind]} size={20} className="mt-px" />
         <span className="min-w-0 flex-1">
           <span className="line-clamp-2 text-[13px] leading-5 font-medium">{subject}</span>
           <span className="block text-[12px] leading-4 text-muted">
@@ -442,7 +441,6 @@ function People({ people }: { people: Person[] }) {
       <ul className="space-y-2.5">
         {people.map((p, i) => (
           <li key={i} className="flex items-center gap-2.5">
-            <Monogram name={p.name} size={26} className="rounded-full" />
             <span className="min-w-0">
               <span className="block truncate text-[13px] leading-[18px] font-medium">{p.name}</span>
               <span className="block truncate text-[12px] leading-4 text-muted">{[p.role, p.organisation].filter(Boolean).join(" · ")}</span>
@@ -536,7 +534,7 @@ function LinkGroupRows({ s, max, evidence }: { s: LinkSection; max: number; evid
     <div data-testid={`link-group-${s.group.link_type}`}>
       <p className="mb-0.5 text-[12px] text-muted">
         {s.heading}
-        {count > 1 && <span className="ml-1.5 tabular-nums text-faint">{count}</span>}
+        {count > 1 && <span className="ml-1.5 num text-faint">{count}</span>}
       </p>
       <ul className="-mx-2">
         {shown.map((r) => (
@@ -612,13 +610,13 @@ function LandedCostCard({ lc }: { lc: LandedCost }) {
         {lines.map((l, i) => (
           <div key={i} className="flex h-9 items-center justify-between gap-3 border-b border-border">
             <dt className="min-w-0 truncate text-muted">{l.label}</dt>
-            <dd className="shrink-0 tabular-nums">{money(l.amount)}</dd>
+            <dd className="shrink-0 num">{money(l.amount)}</dd>
           </div>
         ))}
         {lc.total ? (
           <div className="flex h-10 items-center justify-between gap-3 font-semibold">
             <dt>Total</dt>
-            <dd className="tabular-nums">{money(lc.total)}</dd>
+            <dd className="num">{money(lc.total)}</dd>
           </div>
         ) : (
           <p className="flex items-start gap-2.5 pt-2.5 leading-5">
@@ -629,7 +627,7 @@ function LandedCostCard({ lc }: { lc: LandedCost }) {
         {lc.per_unit && (
           <div className="flex items-center justify-between gap-3 text-muted">
             <dt>Per unit</dt>
-            <dd className="tabular-nums">{money(lc.per_unit)}</dd>
+            <dd className="num">{money(lc.per_unit)}</dd>
           </div>
         )}
       </dl>
@@ -702,7 +700,7 @@ function NextStep({
         <p className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] leading-5">
           {who && (
             <span className="inline-flex items-center gap-1.5">
-              {contact ? <Monogram name={contact} size={16} className="rounded-full" /> : <OpenRing size={13} />}
+              {contact ? null : <OpenRing size={13} />}
               {contact ?? <span className="text-muted">No contact on record for {who}</span>}
             </span>
           )}
@@ -1127,10 +1125,9 @@ if (c.signal.aborted) return;
     <>
     <StaleNote since={[obj.stale_since, sectionStale].filter((t): t is string => !!t).sort()[0]} className="mb-3" />
     <header className="flex gap-4 sm:gap-5">
-      <Monogram name={isParty ? obj.label : (counterpart?.label ?? null)} size={isParty ? 56 : 48} />
       <div className="min-w-0 flex-1">
         <h1 className="flex flex-wrap items-baseline gap-x-2.5 break-words" data-testid="object-title">
-          <span className={cn("font-semibold tracking-[-0.025em]", isParty ? "text-[26px] leading-[32px]" : "text-[24px] leading-[30px]")}>{head.title}</span>
+          <span className={cn("font-semibold tracking-[-0.025em]", isParty ? "text-[26px] leading-[32px]" : "num text-[24px] leading-[30px]")}>{head.title}</span>
           {counterpart && (
             <span className="text-[17px] leading-[22px] font-normal tracking-[-0.01em] text-muted">
               <span className="sr-only">· </span>
@@ -1144,6 +1141,7 @@ if (c.signal.aborted) return;
             </span>
           )}
         </h1>
+        <span aria-hidden className="mt-1.5 mb-1 block h-[2px] w-10 bg-accent" data-testid="title-rule" />
         {(subline || (isCustomer && (obj.customer?.also_in ?? []).length > 0)) && (
           <p className="mt-0.5 text-[13px] leading-5 text-muted">
             {subline}
@@ -1161,7 +1159,7 @@ if (c.signal.aborted) return;
         {merged ? (
           <p className="mt-2 flex max-w-[72ch] items-start gap-2 text-[13px] leading-5" data-testid="object-status">
             <Glyph status={merged.status} days={null} size={14} />
-            <span className="-mt-[3px]">{merged.label}</span>
+            <span className={cn("-mt-[3px] font-medium", STATUS_INK[merged.status])}>{merged.label}</span>
           </p>
         ) : (badges.length > 0 || (isCustomer && conflicts.length > 0)) && (
           <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] leading-5" data-testid="object-status">
@@ -1180,7 +1178,7 @@ if (c.signal.aborted) return;
         {isCustomer && <SameName obj={obj} />}
         {pending.size > 0 && (
           <p className="mt-2 inline-flex items-center gap-1.5 text-[12px] leading-4 text-muted" role="status" data-testid="checking" data-pending="">
-            <span className="size-1.5 animate-breathe rounded-full bg-[var(--dot-neutral)]" aria-hidden />
+            <span className="size-1.5 rounded-full bg-[var(--dot-neutral)]" aria-hidden />
             Loading {sectionWords(pending)}…
           </p>
         )}
@@ -1253,7 +1251,7 @@ if (c.signal.aborted) return;
           role="tab"
           aria-selected={tab === t}
           onClick={() => setTab(t)}
-          className={cn("-mb-px cursor-pointer border-b-2 px-2.5 py-1.5", tab === t ? "border-fg text-fg" : "border-transparent text-muted hover:text-fg")}
+          className={cn("-mb-px cursor-pointer border-b-2 px-2.5 py-1.5", tab === t ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg")}
           data-testid={`tab-${t}`}
         >
           {t === "overview" ? "Overview" : "History"}
@@ -1283,6 +1281,7 @@ if (c.signal.aborted) return;
       {tabs}
       {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
       {figures}
+      {isParty && <PartyPulse obj={obj} />}
       <KindSections obj={obj} />
       {(isPo || isAo || isSalesOrder || isCustomer || (obj.proposals ?? []).length > 0) && (
         <NextStep obj={obj} head={head} card={card} cardState={cardState} onDone={setCardState} pending={trailPending && (isPo || isAo)} />
@@ -1302,7 +1301,7 @@ if (c.signal.aborted) return;
         (pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} />)}
       {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={2} /> : <LinesTable lines={lines} />}
       {(isPo || isSalesOrder || isCustomer) && trailPending ? (
-        <SectionSkeleton name="trail" title={isPo ? "How we know" : "Materials"} lines={3} />
+        <SectionSkeleton name="trail" title={isPo ? "Evidence" : "Materials"} lines={3} />
       ) : (
         <div>
           <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} showEta={!isPo} />
@@ -1372,7 +1371,7 @@ if (c.signal.aborted) return;
           <ul className="space-y-2">
             {sources.slice(0, 5).map((src, i) => (
               <li key={i} className="flex items-center gap-2.5 text-[13px]">
-                <SystemTile system={src.system} size={18} />
+                <SystemCode system={src.system} size={18} />
                 <span className="min-w-0 truncate">
                   <SourceChip source={src} record={head.title} />
                 </span>
@@ -1382,6 +1381,7 @@ if (c.signal.aborted) return;
         </section>
       )}
       {!(isCustomer || isSalesOrder) && <Activity events={obj.timeline ?? []} />}
+      <RecordWorkLog objectId={obj.object_id} />
       <div className="text-[12px]">
         <FreshnessLabel freshness={obj.freshness} />
       </div>

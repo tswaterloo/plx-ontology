@@ -20,6 +20,11 @@ place (the step migration).
   objects each two of which a confirming ``same_record`` link joins (a FileMaker batch and
   its Portal copy). A part naming several unrelated records, or none, links nothing
   (counted). A form whose read names no record type (a day) never links.
+* Every link keeps its keys (``ontology.link_keys``): the ``document_form`` feature cites
+  the document number's identifier row, the ``exact_identifier`` feature the named
+  record's (its identifier row, or for a FileMaker id its native key on its current
+  version), each with the source's own text (``raw``); the link carries the identifier
+  rows' markings with its ends'.
 
 Stdlib only.
 """
@@ -96,27 +101,40 @@ def fm_bindings(bindings: Mapping[str, Any]) -> dict[str, list[str]]:
 
 
 class Resolver:
-    """The records of a type an identifier names."""
+    """The records of a type an identifier names, each with the key it holds the value in
+    (citation, markings): its first identifier row by (handle, field), else its native
+    key on its current version."""
 
     def __init__(self, conn: Any, fm: Mapping[str, Sequence[str]]) -> None:
         self.conn, self.fm, self.cache = conn, fm, {}
 
     def __call__(self, kind: str, object_type: str, value: str) -> list[str]:
+        return sorted(self.keys(kind, object_type, value))
+
+    def keys(self, kind: str, object_type: str, value: str
+             ) -> dict[str, tuple[dict[str, Any], str]]:
         key = (kind, object_type, value)
         if key not in self.cache:
-            found = {r[0] for r in _q(
-                self.conn, "SELECT DISTINCT object_id FROM identifiers WHERE identifier_kind = ? "
-                           "AND normalized = ? AND superseded_at IS NULL AND object_id >= ? "
-                           "AND object_id < ?",
-                [kind, value, object_type + ":", object_type + ";"])}
+            found: dict[str, tuple[dict[str, Any], str]] = {}
+            for r in sorted(_q(self.conn, "SELECT object_id, l1_handle, field_path, raw, "
+                                          "markings FROM identifiers WHERE identifier_kind = ? "
+                                          "AND normalized = ? AND superseded_at IS NULL AND "
+                                          "object_id >= ? AND object_id < ?",
+                               [kind, value, object_type + ":", object_type + ";"]),
+                            key=lambda r: (r[0], r[1], r[2])):
+                found.setdefault(r[0], ({"l1_handle": r[1], "field_path": r[2], "raw": r[3]},
+                                        r[4]))
             if kind == FM_ID and value.lstrip("-").isdigit():
                 native = _canon({"id": int(value)})
                 for binding in self.fm.get(object_type, ()):
-                    found |= {r[0] for r in _q(
-                        self.conn, "SELECT object_id FROM objects WHERE object_type = ? AND "
-                                   "binding_id = ? AND native_key = ?",
-                        [object_type, binding, native])}
-            self.cache[key] = sorted(found)
+                    for r in _q(self.conn, "SELECT o.object_id, v.l1_handle FROM objects o JOIN "
+                                           "object_versions v ON v.object_id = o.object_id AND "
+                                           "v.superseded_at IS NULL WHERE o.object_type = ? AND "
+                                           "o.binding_id = ? AND o.native_key = ? "
+                                           "ORDER BY v.l1_handle", [object_type, binding, native]):
+                        found.setdefault(r[0], ({"l1_handle": r[1], "field_path": "native_key.id",
+                                                 "raw": value}, "[]"))
+            self.cache[key] = found
         return self.cache[key]
 
 
@@ -171,8 +189,8 @@ def posting_links(conn: Any, links: Mapping[str, Mapping[str, Any]],
     found: list[tuple[Any, str, str, Any]] = []
     for kind in form_kinds():
         for from_type in from_types:
-            for row in _q(conn, "SELECT object_id, normalized, l1_handle, field_path, markings, "
-                                "recorded_at FROM identifiers WHERE identifier_kind = ? AND "
+            for row in _q(conn, "SELECT object_id, normalized, raw, l1_handle, field_path, "
+                                "markings, recorded_at FROM identifiers WHERE identifier_kind = ? AND "
                                 "superseded_at IS NULL AND object_id >= ? AND object_id < ?",
                           [kind, from_type + ":", from_type + ";"]):
                 form = ids.document_form(kind, row["normalized"])
@@ -192,12 +210,13 @@ def posting_links(conn: Any, links: Mapping[str, Mapping[str, Any]],
                         counts["several_records"] += 1
                     else:
                         counts["firm"] += 1
-                        found += [(row, link_type, t, (form, part, named_kind, value))
+                        named = resolve.keys(named_kind, to_type, value)
+                        found += [(row, link_type, t, (form, part, named_kind, value, named[t]))
                                   for t in targets]
     versions = _versions(conn, [t for _r, _l, t, _f in found])
     rejected = _rejected(conn, {r["object_id"] for r, *_x in found})
     out: dict[str, dict[str, Any]] = {}
-    for row, link_type, target, (form, part, named_kind, value) in found:
+    for row, link_type, target, (form, part, named_kind, value, (cited, marks)) in found:
         version = versions.get(target)
         if version is None:
             continue
@@ -207,20 +226,22 @@ def posting_links(conn: Any, links: Mapping[str, Mapping[str, Any]],
         link_id = PREFIX + _digest(row["object_id"], link_type, target)
         if link_id in out:
             continue
-        cite = {"l1_handle": row["l1_handle"], "field_path": row["field_path"]}
+        cite = {"l1_handle": row["l1_handle"], "field_path": row["field_path"],
+                "raw": row["raw"]}
         reason = [{"feature": "document_form", "agrees": True, "identifier_kind": form.kind,
                    "form": form.form, "normalized": row["normalized"], "citations": [cite]},
                   {"feature": "exact_identifier", "agrees": True, "part": part,
-                   "identifier_kind": named_kind, "normalized": value},
+                   "identifier_kind": named_kind, "normalized": value, "citations": [cited]},
                   {"feature": "unique_record", "agrees": True}]
         out[link_id] = {
             "link_id": link_id, "link_type": link_type, "from_object": row["object_id"],
             "to_object": target, "tier": FIRM, "binding_kind": BINDING_KIND,
             "link_contract": None, "reason": _canon(reason), "why_not": "[]",
             "evidence_handles": _canon(list(dict.fromkeys([row["l1_handle"],
-                                                           version["l1_handle"]]))),
+                                                           version["l1_handle"],
+                                                           cited["l1_handle"]]))),
             "reviewed_by": None, "reviewed_at": None, "review_action_id": None,
-            "markings": mentions._marks(row["markings"], version["markings"]),
+            "markings": mentions._marks(row["markings"], version["markings"], marks),
             "recorded_at": max(row["recorded_at"], version["recorded_at"]),
             "superseded_at": None}
     counts["links"] = len(out)

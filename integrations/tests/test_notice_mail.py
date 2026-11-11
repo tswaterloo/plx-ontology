@@ -166,5 +166,136 @@ class NoticeMailTest(unittest.TestCase):
                           ("INV5004", "1244.50", False)])
 
 
+class NoticeProjectionTest(unittest.TestCase):
+    """The mail projector's ``notices`` and ``noticeReferences`` relations (the schema's
+    graph_mail.notices / graph_mail.notice_references bindings) over a scratch capture."""
+
+    def captures(self, messages, exclusion):
+        import json
+        import sqlite3
+        from ontology.project import MailCaptures
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE messages (version_id INTEGER PRIMARY KEY, l1_handle TEXT, "
+                     "mailbox_id TEXT, message_id TEXT, record TEXT, digest TEXT, "
+                     "body_sha256 TEXT, recorded_at TEXT, superseded_at TEXT, "
+                     "removed_reason TEXT, last_seen_at TEXT)")
+        bodies = {}
+        for i, (box, (msg, body)) in enumerate(messages):
+            bodies[f"b{i}"] = body
+            conn.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
+                i + 1, f"graph-mail://{box}/m{i}@ck", box, f"m{i}",
+                json.dumps({k: v for k, v in msg.items() if k != "citation"}), f"d{i}",
+                f"b{i}", "2030-03-01T00:00:00Z", None, None, "2030-03-02T00:00:00Z"))
+        mc = MailCaptures.__new__(MailCaptures)
+        mc._conn, mc.exclusion = conn, exclusion
+        mc._blob_text = bodies.get
+        return mc
+
+    class Usable:
+        unavailable = None
+
+        def __init__(self, excluded=(), undecided=()):
+            self.out, self.undecided = set(excluded), set(undecided)
+
+        def known_domains(self):
+            return frozenset({"example-plx.com"})
+
+        def excluded(self, identities):
+            if self.undecided & set(identities):
+                raise ValueError("unknown_identity")
+            return bool(self.out & set(identities))
+
+    def test_notices_take_their_messages_audience_markings_and_references(self):
+        from ontology.project import NOTICE_REFERENCES, NOTICE_RELATION
+        pay = CASES["payments"](1)
+        concur = CASES["concur"](2)
+        ups = CASES["carrier_ups"](3)
+        msgs = [("box-a", pay), ("box-b", concur), ("box-a", ups),
+                ("box-c", (message("someone@example.org", "Lunch?"), "hi"))]
+        mc = self.captures(msgs, self.Usable())
+        notices = list(mc._notice_records(NOTICE_RELATION))
+        self.assertEqual([(n.audience_key, n.l1_handle, n.row["family"], n.row["markings"])
+                          for n in notices],
+                         [("mail:box-a", "graph-mail://box-a/m0@ck", "payments", ["finance"]),
+                          ("mail:box-a", "graph-mail://box-a/m2@ck", "carrier_ups", []),
+                          ("mail:box-b", "graph-mail://box-b/m1@ck", "concur",
+                           ["finance", "pii"])])
+        self.assertEqual(notices[0].row["amount"]["currency"], "CAD")
+        refs = list(mc._notice_records(NOTICE_REFERENCES))
+        self.assertTrue(refs and all(r.audience_key == f"mail:{r.row['mailbox']}" for r in refs))
+        kinds = {(r.row["family"], r.row["identifier_kind"]) for r in refs}
+        self.assertIn(("payments", "invoice_number"), kinds)
+        self.assertIn(("carrier_ups", "tracking_number"), kinds)
+        ups_refs = [r for r in refs if r.row["identifier_kind"] == "tracking_number"]
+        self.assertEqual(len(ups_refs), 1)
+        self.assertEqual(ups_refs[0].row["tracking_number"], ups_number(3))
+        self.assertEqual(len({r.record_key for r in refs}), len(refs))   # one per value
+        self.assertTrue(all(r.row["markings"] == ["finance", "pii"]
+                            for r in refs if r.row["family"] == "concur"))
+
+    def test_real_exclusion_decides_tenant_addresses_from_the_captured_mailboxes(self):
+        """Notices are read with the real exclusion before any people read: the build loads
+        the staff directory from the capture's mailboxes, so an outside carrier's notice to
+        staff is read and one to an excluded person's mailbox address is withheld."""
+        from integrations.people_exclusion import PeopleExclusion
+        from ontology.project import NOTICE_RELATION
+        excluded = "11111111-1111-4111-8111-111111111111"
+        staff = "22222222-2222-4222-8222-222222222222"
+        ups = CASES["carrier_ups"](3)
+        away = (message("pkginfo@ups.com", ups[0]["subject"], 4,
+                        to=("away@example-plx.com",)), ups[1])
+        mc = self.captures([("box-a", ups), ("box-x", away)], PeopleExclusion([excluded]))
+        mc._conn.execute("CREATE TABLE mailboxes (mailbox_id TEXT, upn TEXT, identities TEXT, "
+                         "first_captured_at TEXT, identity_checked_at TEXT)")
+        mc._conn.executemany("INSERT INTO mailboxes VALUES (?,?,?,?,?)", [
+            (staff, "buyer@example-plx.com", "[]", None, None),
+            (excluded, "away@example-plx.com", "[]", None, None)])
+        notices = list(mc._notice_records(NOTICE_RELATION))
+        self.assertEqual([n.l1_handle for n in notices], ["graph-mail://box-a/m0@ck"])
+
+    def test_excluded_undecided_and_unavailable_exclusions_withhold(self):
+        from ontology.project import NOTICE_REFERENCES, NOTICE_RELATION
+        pay = CASES["payments"](1)
+        msgs = [("box-a", pay)]
+        for exclusion in (self.Usable(excluded={"buyer@example-plx.com"}),
+                          self.Usable(undecided={"buyer@example-plx.com"})):
+            mc = self.captures(msgs, exclusion)
+            self.assertEqual(list(mc._notice_records(NOTICE_RELATION)), [])
+            self.assertEqual(list(mc._notice_records(NOTICE_REFERENCES)), [])
+        gone = self.Usable()
+        gone.unavailable = "people_exclusion_unavailable"
+        self.assertEqual(list(self.captures(msgs, gone)._notice_records(NOTICE_RELATION)), [])
+
+
+class NoticeBuildExclusionTests(unittest.TestCase):
+    """The build's notice exclusion with the real directory-backed exclusion: an outside
+    notice sender is no tenant person's, a tenant address is decided, an undecidable one
+    (or no known tenant domain) withholds the message."""
+
+    EXCLUDED = "11111111-1111-4111-8111-111111111111"
+    STAFF = "22222222-2222-4222-8222-222222222222"
+
+    def people(self, directory: bool = True):
+        from integrations.people_exclusion import PeopleExclusion
+        people = PeopleExclusion([self.EXCLUDED])
+        if directory:
+            people.attach_directory([(self.EXCLUDED, "away@own.example", []),
+                                     (self.STAFF, "ops@own.example", [])])
+        return people
+
+    def test_outside_sender_to_staff_is_read_and_excluded_party_is_withheld(self):
+        from ontology.project import _UndecidedWithheld
+        guard = _UndecidedWithheld(self.people())
+        self.assertFalse(guard.excluded(["notices@carrier.example", "ops@own.example"]))
+        self.assertTrue(guard.excluded(["notices@carrier.example", "away@own.example"]))
+        self.assertTrue(guard.excluded(["notices@carrier.example", "nobody@own.example"]))
+
+    def test_without_tenant_domains_every_message_is_withheld(self):
+        from ontology.project import _UndecidedWithheld
+        guard = _UndecidedWithheld(self.people(directory=False))
+        self.assertTrue(guard.excluded(["notices@carrier.example", "ops@own.example"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,7 +47,7 @@ SINCE = {"public.order_entry_item_assembly": None}
 DECLARED_COLUMNS = {
     "public.assembly_order_status": ("audittimestampmodified", "id", "idassembly", "qtymanuf"),
     "sage.oe_order_header": ("complete", "customer"),
-    "public.order_entry": ("id", "custpocode", "idcust", "audittimestampmodified"),
+    "public.order_entry": ("id", "custpocode", "idcust", "status", "audittimestampmodified"),
     "public.order_entry_item": ("id", "idoe", "audittimestampmodified"),
     "public.order_entry_item_assembly": ("id", "idassembly", "idoeitem"),
     "public.app_receipt": ("id", "receipt_number", "purchase_order_id", "status",
@@ -380,8 +380,12 @@ def build_world(sales: int = 24, purchases: int = 16) -> World:
             "required_date": f"2098-12-{1 + i % 28:02d}", "updated_at": UPDATED_AT})
         if "fmId" in custom:
             # Each system names the customer in its own column (the customer PO's scope).
+            # FileMaker keeps its own status text; it agrees with the Portal copy on
+            # whether the order is finished (the oracle closes an order in any copy).
             rel["public.order_entry"].append({"id": custom["fmId"], "custpocode": po_ref,
                                               "idcust": 1 + i % 5,
+                                              "status": ("Open" if status == "CONFIRMED"
+                                                         else "Complete"),
                                               "audittimestampmodified": UPDATED_AT})
         if "sageOrdUniq" in custom:
             rel["sage.oe_order_header"].append({"orduniq": custom["sageOrdUniq"],

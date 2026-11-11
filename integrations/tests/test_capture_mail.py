@@ -22,7 +22,7 @@ import unittest
 import unittest.mock
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from verify import live_verify as lv
+from verify import require_live_verify
 from integrations import capture_mail, graph_read
 from integrations.capture_mail import (CaptureError, CaptureScope, MailCapture,
                                        MailCaptureStore, assert_outside_git)
@@ -905,6 +905,7 @@ class RefusedCaptureTests(CaptureCase):
                                          sleep=self.sleeps.append)
 
     def test_a_capture_refused_on_every_mailbox_is_blocked_with_the_missing_grant(self):
+        lv = require_live_verify(self)
         outside_b = CaptureScope([{"address": UPN_A, "folders": ["inbox"]},
                                   {"address": UPN_B, "folders": ["inbox"]}],
                                  internal_domains=["example-plx.com"],
@@ -1243,6 +1244,7 @@ class ScopeAndCliTests(unittest.TestCase):
                 store.close()
 
     def test_cli_reports_counts_only_and_proves_resume_and_no_leak(self):
+        lv = require_live_verify(self)
         graph = FakeGraph()
         for n in range(1, 4):
             graph.put(BOX_A, f"MSG-{n}", f"CK-{n}-1",
@@ -1293,6 +1295,7 @@ class ScopeAndCliTests(unittest.TestCase):
         # Every bound mailbox 403 (or 401: a rejected token) in every run: the check reads
         # blocked upstream with the missing grant (never measured, never a capture
         # failure: nothing was read); a partial refusal stays a fail.
+        lv = require_live_verify(self)
         spec = json.loads((Path(__file__).resolve().parents[2] / "devloop/live-checks"
                            / "graph.mail_capture.json").read_text(encoding="utf-8"))
         for name, status, forbidden, blocked in (

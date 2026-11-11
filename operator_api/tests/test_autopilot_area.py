@@ -135,6 +135,35 @@ class AutopilotArea(unittest.TestCase):
                                     json={"decision": "reject"}).status_code, 404)
         self.assertEqual(self.bc.calls, [])
 
+    def test_an_empty_page_says_no_workflow_passed_and_the_filter_offers_every_workflow(
+            self) -> None:
+        """Owner 2026-11-11: an empty Autopilot page did not say why, and the Workflow
+        filter offered nothing but "Every workflow". With no workflow over its replay gate
+        the page says so first; the filter offers the catalogue, scored or not. A
+        workflow that passes keeps the plain notes."""
+        from operating import workflows as wf
+        from operator_api.autopilot_area import NO_GATE_PASSED
+        path = self.state.parent / "empty" / ap.QUEUE_FILE
+        ap.Queue(path).close()
+        self.backend.autopilot_queue = path
+        gate = path.parent / ap.GATE_FILE
+        gate.write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+            ROLE: {"members": [OWNER[1]], "workflows": {FLOW: {"judged": 40, "matched": 20}}}}}))
+        area = self.client(OWNER).get("/api/autopilot").json()
+        self.assertEqual(area["items"], [])
+        self.assertEqual(area["notes"][0], NO_GATE_PASSED)
+        self.assertEqual(area["known_workflows"], sorted(wf.names()))
+        self.assertIn(FLOW, area["known_workflows"])
+        # a passing workflow: the page is empty for another reason, not the gate
+        gate.write_text(json.dumps({"schema": ap.GATE_SCHEMA, "roles": {
+            ROLE: {"members": [OWNER[1]], "workflows": {FLOW: {"judged": 40, "matched": 37}}}}}))
+        area = self.client(OWNER).get("/api/autopilot").json()
+        self.assertNotIn(NO_GATE_PASSED, area["notes"])
+        # an unreadable gate file passes nothing: said the same way (fail closed)
+        gate.write_text("{not json")
+        area = self.client(OWNER).get("/api/autopilot").json()
+        self.assertEqual(area["notes"][0], NO_GATE_PASSED)
+
     def test_decisions_dry_run_records_only(self) -> None:
         owner = self.client(OWNER)
         later = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -212,6 +241,72 @@ class AutopilotArea(unittest.TestCase):
         owner.post(f"/api/autopilot/workflows/{FLOW}", json={"live": False, "role": ROLE})
         owner.post("/api/autopilot/items/ap_own/decision", json={"decision": "accept"})
         self.assertEqual(len(self.bc.calls), 2)
+
+    def test_a_send_is_logged_only_when_the_email_itself_went_out(self) -> None:
+        """A customer PO: the BC entry is done but the confirmation email is not. The first
+        action's outcome says done; the work log records no send and opens no loop."""
+        from operator_api import work_log as wl
+        from operator_api.tests.test_work_log import Guard
+
+        class Mail:
+            def __init__(self, status):
+                self.status, self.calls = status, 0
+
+            def dispatch(self, kind, sender, payload):
+                self.calls += 1
+                return {"status": self.status, "http_status": 500 if self.status == "failed"
+                        else 202, "missing": []}
+
+        self.backend.work_log = wl.WorkLog(None, guard=lambda: Guard())
+        owner = self.client(OWNER)
+        self.pass_fresh_gate()
+        owner.post(f"/api/autopilot/workflows/{FLOW}", json={"live": True, "role": ROLE})
+        self.backend.writes_environ = {**ENV, aw.MASTER_ENV: "1"}
+        owner.post(f"/api/autopilot/workflows/{FLOW}", json={"on": True})
+
+        class FromMailbox(wa.MailAdapter):
+            """The owner's mailbox as the sender (the fixture's owner is an object id)."""
+            box: str | None = None
+
+            def request(self, action):
+                if self.box:
+                    action = {**action, "target": {"sender": self.box}}
+                return super().request(action)
+
+        def accept(item_id, mail_status, mailbox=OWNER[0]):
+            mail = Mail(mail_status)
+            adapter = FromMailbox(mail, environ=self.backend.writes_environ)
+            adapter.box = mailbox
+            self.backend.autopilot_adapters = {
+                "bc_write": wa.BCAdapter(self.bc, environ=ENV), "send_mail": adapter}
+            self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'})]
+            got = owner.post(f"/api/autopilot/items/{item_id}/decision",
+                             json={"decision": "accept"})
+            self.assertEqual(got.status_code, 200, got.text)
+            return got.json()["decision"], mail.calls
+
+        q = ap.Queue(self.state.parent / "queue" / ap.QUEUE_FILE)
+        with q.conn:
+            q.add_item(queued("ap_two", OWNER[1]))
+            q.add_item(queued("ap_three", OWNER[1]))
+        q.close()
+        # an email refused before sending (the item names no sender mailbox) is no send
+        decision, calls = accept("ap_own", "sent", mailbox=None)
+        self.assertEqual((decision["outcome"], decision["sent"], calls), ("done", False, 0))
+        decision, calls = accept("ap_two", "failed")
+        self.assertEqual((decision["outcome"], decision["sent"], calls), ("done", False, 1),
+                         decision)
+        events = owner.get("/api/work-log").json()["events"]
+        self.assertEqual([e["verb"] for e in events], ["accepted", "accepted"])
+        self.assertTrue(all(e.get("loop") is None for e in events))
+        # control: the same entry with the email delivered is a send that waits for a reply
+        decision, calls = accept("ap_three", "sent")
+        self.assertEqual((decision["outcome"], decision["sent"], calls), ("done", True, 1))
+        events = owner.get("/api/work-log").json()["events"]
+        self.assertEqual(sorted(e["verb"] for e in events),
+                         ["accepted", "accepted", "accepted", "sent"])
+        self.assertEqual(next(e for e in events if e["verb"] == "sent")["loop"]["state"],
+                         "waiting")
 
 
 if __name__ == "__main__":

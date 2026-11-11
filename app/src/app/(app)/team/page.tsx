@@ -44,14 +44,18 @@ export default function TeamPage() {
   // the per-person view is the owner's: any other reader is refused and sees nothing of it
   const owner = useLoad(getOwnerWorkload, team);
   const labourOn = !!labour.data && labour.data.state !== "not_granted";
+  // a reader with no team and no labour grant leaves for My work; until the router has
+  // moved, the page says so instead of standing blank
+  const leaving = !!me && !team && !!labour.data && !labourOn;
   useEffect(() => {
-    if (me && !team && labour.data && !labourOn) router.replace("/");
-  }, [me, team, labour.data, labourOn, router]);
+    if (leaving) router.replace("/");
+  }, [leaving, router]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Team" />
       <div className="mx-auto w-full max-w-3xl space-y-10 px-6 py-6">
-        {!me || (!team && !labour.data && !labour.error) ? <Pending label="Checking your access" /> : null}
+        {!me || (!team && !labour.data && !labour.error) ? <Pending page label="Checking your access" /> : null}
+        {leaving ? <Pending page label="Opening My work" testId="team-leaving" /> : null}
         {team && (
           <section id="approvals" aria-labelledby="approvals-title" className="scroll-mt-16 space-y-3">
             <h2 id="approvals-title" className="text-[15px] font-semibold">Approvals waiting on others</h2>
@@ -79,7 +83,7 @@ export default function TeamPage() {
             <LabourView page={labour.data} />
           </section>
         )}
-        {labour.error && team ? <LoadProblem message={plainError(labour.error)} onRetry={labour.retry} /> : null}
+        {labour.error ? <LoadProblem message={plainError(labour.error)} onRetry={labour.retry} /> : null}
       </div>
     </div>
   );

@@ -27,6 +27,7 @@
    "operating/link_contracts.json",
    "ontology/relation_contracts.py:FM_SOURCE_FK",
    "operating/source_unit_contracts.json",
+   "ontology/schema/overrides/business.json",
    "ontology/schema/overrides/identity.json",
    "ontology/schema/overrides/lineage.json",
    "ontology/schema/overrides/markings.json",
@@ -5105,7 +5106,10 @@
   "silver.raw_materials.average_cost": "finance-marked text: the name reads as money (Sage abbreviates amount as amt; doctotal is a Sage document total, extended/extcancel/extreceive its extended amounts, taxbase1-5 its tax bases; tax_c is the FileMaker PO tax); no measure or currency is declared",
   "silver.receipts.amount": "finance-marked text: the name reads as money (Sage abbreviates amount as amt; doctotal is a Sage document total, extended/extcancel/extreceive its extended amounts, taxbase1-5 its tax bases; tax_c is the FileMaker PO tax); no measure or currency is declared",
   "silver.suppliers.min_order_cost": "finance-marked text: the name reads as money (Sage abbreviates amount as amt; doctotal is a Sage document total, extended/extcancel/extreceive its extended amounts, taxbase1-5 its tax bases; tax_c is the FileMaker PO tax); no measure or currency is declared",
-  "silver.suppliers.surcharge": "finance-marked text: the name reads as money (Sage abbreviates amount as amt; doctotal is a Sage document total, extended/extcancel/extreceive its extended amounts, taxbase1-5 its tax bases; tax_c is the FileMaker PO tax); no measure or currency is declared"
+  "silver.suppliers.surcharge": "finance-marked text: the name reads as money (Sage abbreviates amount as amt; doctotal is a Sage document total, extended/extcancel/extreceive its extended amounts, taxbase1-5 its tax bases; tax_c is the FileMaker PO tax); no measure or currency is declared",
+  "sage.gl_jec.jecomment": "finance+pii-marked (relation_markings)",
+  "sage.gl_pjc.comment": "finance+pii-marked (relation_markings)",
+  "sage.gl_pjc.reference": "finance+pii-marked (relation_markings)"
  },
  "storage": {
   "packed": [

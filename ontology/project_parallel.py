@@ -88,7 +88,7 @@ import sqlite3
 import sys
 import time
 import zlib
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Mapping as _MappingABC
 
 from ontology.project import MEMBER_RELATION, ProjectionError, Projector, binding_unit
@@ -566,6 +566,66 @@ def merge_part(builder: StoreBuilder, part: Path, batch: int, *,
         main.execute("DETACH DATABASE part")
 
 
+LINK_MERGE_CACHE_KIB = 2 * 1024 ** 2   # the builder's page cache while link parts merge
+
+
+def merge_link_parts(builder: StoreBuilder, parts: Iterable[Path], *,
+                     rebuild_indexes: bool = True) -> int:
+    """Merge link-only parts (each a :class:`StoreBuilder` part its ``add("links", ...)``
+    wrote) into ``builder`` in the order given, each removed once merged: the rows, row
+    ids and interned text ids ``builder.add`` of the same rows in the same order gives
+    (each part's new texts are interned in its order). The builder's open transaction is
+    committed first and none is open after. Its object indexes are made once after the
+    merge (the same entries, sorted once rather than inserted at random), the parts'
+    rows are not checked again (the same table checked them in the part), and the
+    builder keeps a larger page cache meanwhile. ``rebuild_indexes`` False: the object
+    indexes stay (few rows into a large table). The number of parts merged."""
+    import re as _re
+    main = builder.connection
+    secondary = [x for x in store_ddl.STATEMENTS if rebuild_indexes and
+                 _re.match(r"CREATE INDEX IF NOT EXISTS links_(from|to) ON link_rows\(", x)]
+    (cache,) = main.execute("PRAGMA cache_size").fetchone()
+    if main.in_transaction:
+        main.execute("COMMIT")   # parts attach outside a transaction
+    count = 0
+    try:
+        main.execute(f"PRAGMA cache_size = -{LINK_MERGE_CACHE_KIB}")
+        for ddl in secondary:
+            main.execute("DROP INDEX IF EXISTS " + ddl.split(" ON ", 1)[0].rsplit(" ", 1)[1])
+        main.execute("PRAGMA ignore_check_constraints = ON")
+        for part in parts:
+            try:
+                merge_part(builder, Path(part), 0, links=True)
+                count += 1
+            finally:
+                Path(part).unlink(missing_ok=True)
+    finally:
+        main.execute("PRAGMA ignore_check_constraints = OFF")
+        for ddl in secondary:
+            main.execute(ddl)
+        main.execute(f"PRAGMA cache_size = {cache}")
+    return count
+
+
+def link_part(path: str, rows: Iterable[Mapping[str, Any]]) -> str:
+    """A link-only part at ``path`` holding ``rows`` as ``add("links", ...)`` stores them
+    (for :func:`merge_link_parts`); the part's file."""
+    part = StoreBuilder(Path(path), foreign_keys=False)
+    try:
+        batch: list[Mapping[str, Any]] = []
+        for row in rows:
+            batch.append(row)
+            if len(batch) >= 20_000:
+                part.add("links", batch)
+                batch = []
+        if batch:
+            part.add("links", batch)
+        return str(part.keep_as_part())
+    except BaseException:
+        part.abort()
+        raise
+
+
 def _columns(main: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in main.execute(f"PRAGMA part.table_info({table})")]
 
@@ -645,8 +705,9 @@ def _merge_links(main: sqlite3.Connection) -> None:
     for name in names:
         if name in ("reason_id", "evidence_id"):
             picked.append(f"(SELECT new FROM temp.plx_merge_skeleton WHERE old = t.{name})")
-        elif name in slots:
-            picked.append(f"(SELECT new FROM temp.plx_merge_text WHERE old = t.{name})")
+        elif name in slots:   # most slots are empty: no search for those
+            picked.append(f"CASE WHEN t.{name} IS NOT NULL THEN (SELECT new FROM "
+                          f"temp.plx_merge_text WHERE old = t.{name}) END")
         else:
             picked.append(f"t.{name}")
     _copy(main, "link_rows", names, picked, " ORDER BY t.rowid")

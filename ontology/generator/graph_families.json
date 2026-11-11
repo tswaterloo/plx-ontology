@@ -84,8 +84,8 @@
      "key": ["team_id", "channel_id", "id"],
      "fields": {"team_id": "channelIdentity/teamId", "channel_id": "channelIdentity/channelId"},
      "links": [{"name": "in_channel", "to": "TeamsChannel", "to_binding": "teams.channels",
-                "reverse_name": "messages", "pairs": {"team_id": "team_id", "channel_id": "channel_id"},
-                "description": "The channel a captured channel message or reply was posted in (Graph structure: the message's team and channel ids; ontology/schema/domains/teams_conversations.json)."}],
+                "reverse_name": "messages", "pairs": {"channel_id": "channel_id"},
+                "description": "The channel a captured channel message or reply was posted in (Graph structure: the message's channel id, a thread id unique across teams; ontology/schema/domains/teams_conversations.json). The team id is not a pair: pairs are matched one at a time, so it made every other channel of the team a contradicted candidate."}],
      "description": "One captured Teams channel message or reply version (Graph chatMessage; lineage mail until the Teams lineage decision). Readers are trimmed per channel and by the channel's captured membership. Source text is untrusted; the body is cited, not projected."
     },
     "TeamsChatMessage": {

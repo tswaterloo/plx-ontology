@@ -1,25 +1,5 @@
-import { Bot, BellRing, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
+import { BookOpen, Bot, BellRing, Calculator, Database, FileText, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
-
-/**
- * How late, drawn: a grey ring with a wedge that fills clockwise with days past the
- * needed-by date (full at 180 days), like a clock hand sweeping. The number beside it says
- * the days; the wedge lets a column of them be compared at a glance.
- */
-export function AgeRing({ days, size = 14, className }: { days: number; size?: number; className?: string }) {
-  const f = Math.max(0.06, Math.min(1, days / 180));
-  const r = 4.1;
-  const a = f * 2 * Math.PI;
-  const x = 7 + r * Math.sin(a);
-  const y = 7 - r * Math.cos(a);
-  const wedge = f >= 0.999 ? `M7 7m-${r} 0a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 -${2 * r} 0` : `M7 7V${7 - r}A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${x.toFixed(2)} ${y.toFixed(2)}Z`;
-  return (
-    <svg viewBox="0 0 14 14" width={size} height={size} className={cn("shrink-0", className)} aria-hidden>
-      <circle cx="7" cy="7" r="6.1" fill="none" stroke="var(--border-strong)" strokeWidth="1.3" />
-      <path d={wedge} fill="var(--dot-late)" />
-    </svg>
-  );
-}
 
 /** No date on record: the ring left open, dashed. */
 export function OpenRing({ size = 14, tone = "risk", className }: { size?: number; tone?: "risk" | "neutral"; className?: string }) {
@@ -40,54 +20,76 @@ export function DoneRing({ size = 14, className }: { size?: number; className?: 
   );
 }
 
-/** A place in the app: a white glyph on its own colour tile, as the app icon is drawn. */
-export const PLACES: Record<string, { icon: LucideIcon; tile: string }> = {
-  "/": { icon: Inbox, tile: "bg-[linear-gradient(180deg,#4f86ee,#2f6fe4)]" },
-  "/late": { icon: Clock3, tile: "bg-[linear-gradient(180deg,#ec7058,#df4a33)]" },
-  "/watching": { icon: BellRing, tile: "bg-[linear-gradient(180deg,#f0ae3f,#e3951a)]" },
-  "/ask": { icon: MessageCircle, tile: "bg-[linear-gradient(180deg,#2fb0a2,#13917f)]" },
-  "/autopilot": { icon: Bot, tile: "bg-[linear-gradient(180deg,#7486e0,#5465c9)]" },
-  "/meetings": { icon: CalendarClock, tile: "bg-[linear-gradient(180deg,#5aa8e8,#3a8bd6)]" },
-  "/team": { icon: Users, tile: "bg-[linear-gradient(180deg,#6cc070,#43a047)]" },
-  "/activity": { icon: History, tile: "bg-[linear-gradient(180deg,#90939b,#72757e)]" },
-  "/feedback": { icon: MessageSquareText, tile: "bg-[linear-gradient(180deg,#9b7be6,#7d5bd6)]" },
+/**
+ * A place in the app: a line icon in the place's own hue, with no tile behind it. Hues are
+ * classes, not inline styles: the CSP drops style attributes in server-rendered markup.
+ */
+export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
+  "/": { icon: Inbox, hue: "text-[var(--place-work)]" },
+  "/late": { icon: Clock3, hue: "text-[var(--place-late)]" },
+  "/watching": { icon: BellRing, hue: "text-[var(--place-watching)]" },
+  "/ask": { icon: MessageCircle, hue: "text-[var(--place-ask)]" },
+  "/autopilot": { icon: Bot, hue: "text-[var(--place-autopilot)]" },
+  "/meetings": { icon: CalendarClock, hue: "text-[var(--place-meetings)]" },
+  "/team": { icon: Users, hue: "text-[var(--place-team)]" },
+  "/activity": { icon: History, hue: "text-[var(--place-activity)]" },
+  "/feedback": { icon: MessageSquareText, hue: "text-[var(--place-feedback)]" },
 };
 
-/** 20 px: drawn with classes only, since the sidebar is drawn on the server. */
-export function PlaceTile({ href, className }: { href: string; className?: string }) {
+export function PlaceIcon({ href, className }: { href: string; className?: string }) {
   const p = PLACES[href];
   if (!p) return null;
   const Icon = p.icon;
+  return <Icon className={cn("size-4 shrink-0", p.hue, className)} strokeWidth={1.75} aria-hidden />;
+}
+
+/**
+ * A source system: a small line icon in the system's hue, then its name in the readable ink of
+ * that hue, medium weight. The same system is the same colour everywhere; no tile, badge or fill.
+ */
+const SYSTEM_CODE: Record<string, [string, string, LucideIcon]> = {
+  BC: ["BC", "bc", BookOpen],
+  Portal: ["Portal", "portal", Package],
+  Email: ["Mail", "mail", Mail],
+  Teams: ["Teams", "teams", MessageCircle],
+  File: ["File", "file", FileText],
+  MC: ["MC", "mc", ListChecks],
+  Sage: ["Sage", "sage", Calculator],
+  FileMaker: ["FM", "fm", Database],
+};
+
+export function SystemCode({ system, size = 18, className }: { system: string | null | undefined; size?: number; className?: string }) {
+  const [label, key, Icon] = SYSTEM_CODE[system ?? ""] ?? [(system ?? "?").slice(0, 6), "file", FileText];
   return (
-    <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-[5.5px] text-white shadow-[inset_0_-1px_0_rgb(0_0_0/0.12)]", p.tile, className)} aria-hidden>
-      <Icon className="size-[13px]" strokeWidth={2.3} />
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-[5px] leading-none font-medium",
+        size <= 16 ? "h-4 text-[11px]" : size <= 20 ? "h-5 text-[11px]" : "h-8 text-[12px]",
+        className,
+      )}
+      style={{ color: `var(--sys-${key}-ink)` }}
+      data-system={system ?? undefined}
+      aria-hidden
+    >
+      <Icon className="size-[13px] shrink-0" strokeWidth={1.75} />
+      {label}
     </span>
   );
 }
 
-/** A source system as a small lettered tile: the same system is the same colour everywhere. */
-const SYSTEM_TILE: Record<string, [string, string]> = {
-  BC: ["BC", "#1f8a70"],
-  Portal: ["P", "#2f6fe4"],
-  Email: ["M", "#2a9bd8"],
-  Teams: ["T", "#5b5fc7"],
-  File: ["F", "#7a7d86"],
-  MC: ["MC", "#c2572b"],
-  Sage: ["S", "#3d8b2f"],
-  FileMaker: ["FM", "#8a5cc2"],
-};
+/** Late days as text: amber up to 30 days, red beyond (both hold AA on every pane). */
+export const lateInk = (days: number | null | undefined) => (typeof days === "number" && days > 30 ? "text-late" : "text-risk");
 
-export function SystemTile({ system, size = 18, className }: { system: string | null | undefined; size?: number; className?: string }) {
-  const [label, colour] = SYSTEM_TILE[system ?? ""] ?? [(system ?? "?").slice(0, 2), "#7a7d86"];
-  return (
-    <span
-      className={cn("flex shrink-0 items-center justify-center font-semibold text-white", className)}
-      style={{ width: size, height: size, borderRadius: Math.round(size * 0.28), background: colour, fontSize: label.length > 1 ? size * 0.42 : size * 0.52, letterSpacing: "-0.02em" }}
-      aria-hidden
-    >
-      {label}
-    </span>
-  );
+/** A late figure ("134d", "134 days late"): Geist Mono in the severity colour, no icon. */
+export const lateFigure = (days: number | null | undefined) => cn("font-mark", lateInk(days));
+
+/** A late row's 3 px left edge in the severity colour (amber up to 30 days, red beyond). */
+export const lateEdge = (days: number | null | undefined) => cn("border-l-[3px]", typeof days === "number" && days > 30 ? "border-late" : "border-risk");
+
+/** "134 days late" or "134d" -> 134. */
+export function daysIn(label: string | null | undefined): number | null {
+  const m = /(\d+)\s*(?:d\b|days?)/.exec(label ?? "");
+  return m ? Number(m[1]) : null;
 }
 
 /**
@@ -98,7 +100,7 @@ export function SystemTile({ system, size = 18, className }: { system: string | 
 export function StatusGlyph({ status, size = 13, className }: { status: "late" | "risk" | "ok" | "suspect" | "new" | "neutral"; size?: number; className?: string }) {
   switch (status) {
     case "late":
-      return <AgeRing days={90} size={size} className={className} />;
+      return null; // lateness is said by its coloured figure, not a shape
     case "risk":
       return <OpenRing size={size} className={className} />;
     case "ok":

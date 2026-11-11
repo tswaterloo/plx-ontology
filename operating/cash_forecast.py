@@ -24,6 +24,8 @@ from collections import defaultdict
 import datetime as dt
 from decimal import Decimal
 import json
+import os
+from pathlib import Path
 import re
 import threading
 from typing import Any, Callable, Mapping, MutableMapping
@@ -165,9 +167,119 @@ def answer(book: Mapping[str, Any], as_of: dt.date, *, may_read: Callable[[str],
     return result
 
 
+def store_file(base: Any) -> str | None:
+    """The served store's file, which a book is read over and keyed by: SQLite's main
+    database (``PRAGMA database_list``); Postgres has none, so the projection path the host
+    serves the store for (``served_path``, set by ``ontology_host.aggregate_modes``), which
+    the proactive engine's store and people exclusion read the same way. None: no book
+    (the mode answers ``store_unavailable``, never a failed host)."""
+    try:
+        rows = base.store.conn.execute("PRAGMA database_list").fetchall()
+    except Exception:  # noqa: BLE001 - no listing: the served path decides
+        rows = []
+    main = next((row[2] for row in rows if row and len(row) > 2 and row[2]), None)
+    if main:
+        return str(main)
+    served = getattr(base, "served_path", None)
+    return str(served) if served else None
+
+
+BOOK_CACHE_ENV = "PLX_BOOK_CACHE_DIR"   # where isolated books are kept (default: a private temp dir)
+BOOK_KEEP_SECONDS = 2 * 86400
+
+
+def isolated(read: Callable[..., Mapping[str, Any]]) -> Callable[..., Mapping[str, Any]]:
+    """Mark a module-level book reader as read in a child process (``_read_isolated``):
+    the cash book's read peaks near 3 GB and the demand history's near 1.5 GB, and every
+    process of the server (the app, each section and Ask worker) would hold its own."""
+    read.isolated = True   # type: ignore[attr-defined]
+    return read
+
+
+def _cache_dir() -> Path | None:
+    """The book cache directory, created private; None when it is not this user's alone
+    (a pickle is only ever loaded from a directory nobody else can write)."""
+    import tempfile
+    path = Path(os.environ.get(BOOK_CACHE_ENV)
+                or Path(tempfile.gettempdir()) / f"plx-books-{os.getuid()}")
+    try:
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        st = path.stat()
+    except OSError:
+        return None
+    if st.st_uid != os.getuid() or st.st_mode & 0o077:
+        return None
+    return path
+
+
+def _read_isolated(read: Callable[..., Mapping[str, Any]], path: str, as_of: dt.date,
+                   digest: str) -> Mapping[str, Any]:
+    """``read(path, as_of)`` run in a spawned child process, its book kept on disk per
+    (reader, store file, generation, day): one read per machine and day, whichever server
+    process asks first (the others wait on its lock), its memory returned when it ends."""
+    import fcntl
+    import hashlib
+    import multiprocessing
+    import pickle
+    import time
+    from concurrent.futures import ProcessPoolExecutor
+
+    folder = _cache_dir()
+    name = hashlib.sha256(json.dumps([read.__module__, read.__qualname__, str(path), digest,
+                                      as_of.isoformat()]).encode()).hexdigest()[:40]
+
+    def compute() -> Mapping[str, Any]:
+        with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
+            return pool.submit(read, path, as_of).result()
+
+    if folder is None:
+        return compute()
+    kept = folder / f"{name}.pkl"
+    with open(folder / f"{name}.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(kept, "rb") as handle:
+                return pickle.load(handle)
+        except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ImportError):
+            pass
+        book = compute()
+        try:
+            part = folder / f"{name}.{os.getpid()}.part"
+            with open(os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as out:
+                pickle.dump(book, out, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(part, kept)
+        except OSError:
+            pass   # not kept: the next process reads it again
+    cutoff = time.time() - BOOK_KEEP_SECONDS
+    for old in folder.glob("*.pkl"):
+        try:
+            if old.stat().st_mtime < cutoff:
+                old.unlink()
+                (folder / f"{old.stem}.lock").unlink(missing_ok=True)
+        except OSError:
+            pass
+    return book
+
+
 class _Books:
     """The reader-independent book per (store file, generation, day): read once, in the
-    background on registration and on the first question of a new day."""
+    background on registration and on the first question of a new day. ``shared``: one per
+    (store file, reader function) in the process, so every host the server opens (one per
+    worker and session) asks the same book instead of reading its own copy."""
+
+    _shared: dict[tuple, "_Books"] = {}
+    _shared_lock = threading.Lock()
+
+    @classmethod
+    def shared(cls, path: str | None,
+               read: Callable[[str, dt.date], Mapping[str, Any]]) -> "_Books":
+        if not path:
+            return cls(path, read)   # no store: never kept, the mode answers unavailable
+        with cls._shared_lock:
+            books = cls._shared.get((path, read))
+            if books is None:
+                books = cls._shared[(path, read)] = cls(path, read)
+            return books
 
     def __init__(self, path: str, read: Callable[[str, dt.date], Mapping[str, Any]]) -> None:
         self.path, self.read = path, read
@@ -190,7 +302,11 @@ class _Books:
 
     def _fill(self, key: tuple, as_of: dt.date, event: threading.Event) -> None:
         try:
-            made = dict(self.read(self.path, as_of))
+            if not self.path:
+                raise LookupError("no_store_file")
+            made = dict(_read_isolated(self.read, self.path, as_of, str(key[1]))
+                        if getattr(self.read, "isolated", False)
+                        else self.read(self.path, as_of))
         except Exception as exc:  # noqa: BLE001 - the error is the answer
             made = {"error": type(exc).__name__}
         with self.lock:
@@ -200,8 +316,10 @@ class _Books:
         event.set()
 
 
+@isolated
 def read_book(path: str, as_of: dt.date) -> dict[str, Any]:
-    """The book over one store file (its own read-only connections)."""
+    """The book over one store file (its own read-only connections; in a child process:
+    ``isolated``)."""
     from . import po_status
     from . import proactive_cash as cash
     from .proactive_engine import _Store
@@ -219,8 +337,7 @@ class CashForecastTool:
     def __init__(self, base: Any, read: Callable[[str, dt.date], Mapping[str, Any]] = read_book,
                  wait: float = WAIT_SECONDS) -> None:
         self.base, self.wait = base, wait
-        row = base.store.conn.execute("PRAGMA database_list").fetchone()
-        self.books = _Books(str(row[2]), read)
+        self.books = _Books.shared(store_file(base), read)
 
     def key(self, as_of: dt.date) -> tuple:
         meta = self.base._store_meta() if hasattr(self.base, "_store_meta") else {}
@@ -288,4 +405,4 @@ def register(table: MutableMapping[str, dict[str, Any]], base: Any, *,
 
 
 __all__ = ["FORMAT", "MODE", "TOOL_NAME", "CashForecastTool", "answer",
-           "read_book", "register", "visible"]
+           "read_book", "register", "store_file", "visible"]

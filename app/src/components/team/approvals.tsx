@@ -49,9 +49,9 @@ export function TeamApprovals() {
           {[["all", queue.total] as const, ...Object.entries(queue.by_aging ?? {})].map(([bucket, n]) => {
             const on = (bucket === "all" ? null : bucket) === aging;
             return (
-              <button key={bucket} type="button" role="tab" aria-selected={on} onClick={() => setAging(bucket === "all" ? null : bucket)} className={cn("inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[12px] cursor-pointer", on ? "bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] font-medium text-fg" : "text-muted hover:bg-hover")}>
+              <button key={bucket} type="button" role="tab" aria-selected={on} onClick={() => setAging(bucket === "all" ? null : bucket)} className={cn("inline-flex h-7 items-center gap-1.5 rounded-[3px] px-3 text-[12px] cursor-pointer", on ? "bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] font-medium text-fg" : "text-muted hover:bg-hover")}>
                 {bucket === "all" ? "All" : bucket.replace(/^./, (c) => c.toUpperCase())}
-                <span className="tabular-nums text-faint">{n}</span>
+                <span className="num text-faint">{n}</span>
               </button>
             );
           })}

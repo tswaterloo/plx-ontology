@@ -231,7 +231,8 @@ from .explanations import FRESHNESS_SOURCES
 from .ontology_tools import (_AUDIENCE_SOURCE, _IDENTITY_TIERS, _ITEM_ACL_AUDIENCES, REFUSED_CODES,
                              ROOT_REASONS, SchemaView, identity_link_type,
                              _compare_key, _envelope_bytes, _fingerprint, _inline_defs,
-                             default_grammar, default_schema, load_contracts, plan_read, run_memo,
+                             default_grammar, default_schema, load_contracts, pinned_clock,
+                             plan_read, run_memo,
                              scoped_kind, scoped_root_lead)
 from .ontology_tools_traverse import with_leads
 from .ontology_tools_traverse import (DEFAULT_TIER_FLOOR, PERMISSION_LOSSES, TIER_ORDER,
@@ -1097,7 +1098,8 @@ class InvestigateTools:
         self.rows = rows
         self.unit_contracts = unit_contracts
         self.engines = dict(engines) if engines is not None else default_engines()
-        self.clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        # 'now' for a run naming no as_known_at; inside snapshot_reads its one moment
+        self.clock = pinned_clock(clock or (lambda: dt.datetime.now(dt.timezone.utc)))
         self.scope = scope
         self.captured = captured
         self.complete = complete

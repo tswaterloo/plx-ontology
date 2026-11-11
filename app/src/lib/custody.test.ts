@@ -24,7 +24,7 @@ describe("chain of custody", () => {
       object_id: "PurchaseOrder:1", type: "PurchaseOrder", label: "PO 1",
       freshness: { as_of: "2026-10-29T11:00:00Z" },
       trail: {
-        kind: "purchase_order", title: "How we know", steps: [], materials: [], gaps: [], hidden_steps: 0,
+        kind: "purchase_order", title: "Evidence", steps: [], materials: [], gaps: [], hidden_steps: 0,
         trails: [{
           subject: { object_id: "PurchaseOrder:1", type: "PurchaseOrder", label: "PO 1" }, state: "late", days_late: 12, hidden_steps: 0, may_hide_more: false, not_found: [],
           steps: [

@@ -108,6 +108,26 @@ class FrontDoorReads(unittest.TestCase):
                                    object_id='PurchaseOrder:bc.purchase_orders:{"id":"x"}')
         self.assertIsNone(backend.read_shortcut(on_a_record, late))
 
+    def test_the_scope_fails_closed_to_the_records(self):
+        """The model's scope routes a question; anything else it says, no reading, a
+        record page, an open document or a pick is the evidence path, and a "general"
+        question naming a record still has its record answered from the evidence."""
+        from operating.general_answer import scope_of
+        general = json.loads(reply("Explain landed cost."))
+        front = door(json.dumps({**general, "scope": "general"}),
+                     json.dumps({**general, "scope": "anything"}), reply("Explain landed cost."))
+        self.assertEqual(front.read("explain landed cost").scope, "general")
+        self.assertEqual(front.read("explain landed cost").scope, "company")
+        read = front.read("explain landed cost")
+        self.assertEqual(read.scope, "company")
+        said = fd.Reading("q", "q", "lookup", "s", 0.1, None, "general")
+        self.assertEqual(scope_of(said, "explain landed cost"), "general")
+        self.assertEqual(scope_of(said, "is the landed cost on PO 4501 reasonable?"), "mixed")
+        self.assertEqual(scope_of(said, "write a reminder about lot L2024-17"), "mixed")
+        for kwargs in ({"object_id": "x"}, {"source": "original://x"}, {"picked": True}):
+            self.assertEqual(scope_of(said, "explain landed cost", **kwargs), "company")
+        self.assertEqual(scope_of(None, "explain landed cost"), "company")
+
     def test_off_switch(self):
         import os
         from unittest import mock

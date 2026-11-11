@@ -5,12 +5,11 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HiddenNotice } from "@/components/answer-parts";
-import { loadHome, loadLate, MobileAccount, MobileSearch } from "@/components/shell";
+import { loadHome, loadLate, MobileAccount, MobileSearch, OpsAlarmBanner } from "@/components/shell";
 import { ReplyList } from "@/components/reply-list";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
 import { Pending, SlowNote } from "@/components/ui/skeleton";
-import { AgeRing, OpenRing } from "@/components/ui/glyphs";
-import { Monogram } from "@/components/ui/monogram";
+import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { isPutAway } from "@/lib/actions";
 import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
@@ -146,22 +145,21 @@ function Row({ row, on, onPick, actionState, testId }: { row: QueueRow; on: bool
         data-row-link=""
         data-testid="briefing-item"
         className={cn(
-          "flex gap-3 rounded-[10px] px-3 py-2.5 outline-none transition-[background-color,box-shadow] duration-100",
-          on ? "bg-row-on shadow-lift" : "hover:bg-hover",
+          "flex gap-3 rounded-[3px] px-3 py-2.5 outline-none transition-[background-color,box-shadow] duration-100",
+          row.status === "late" && row.days != null && lateEdge(row.days),
+          on ? "bg-row-on shadow-[var(--lift),inset_2px_0_0_var(--accent)]" : "hover:bg-hover",
           "focus-visible:ring-2 focus-visible:ring-ring/50",
           away && "opacity-60",
         )}
       >
-        <Monogram name={row.counterpart} size={32} />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span className="shrink-0 text-[13px] font-semibold leading-[18px]">{row.title}</span>
+            <span className="num shrink-0 text-[13px] font-semibold leading-[18px]">{row.title}</span>
             {row.counterpart && <span className="min-w-0 truncate text-[13px] leading-[18px] text-fg/80">{row.counterpart}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 tabular-nums">
               {row.days != null ? (
                 <>
-                  <span className="font-medium text-fg">{row.days}d</span>
-                  {row.status === "late" && <AgeRing days={row.days} size={13} />}
+                  <span className={cn("num font-medium", row.status === "late" ? lateFigure(row.days) : "text-fg")}>{row.days}d</span>
                 </>
               ) : row.group === "po_undated" ? (
                 <>
@@ -188,7 +186,7 @@ function ListSkeleton() {
     <ul className="space-y-1 px-2 pt-2" aria-busy="true" aria-label="Loading your work">
       {Array.from({ length: 9 }).map((_, i) => (
         <li key={i} className="flex gap-3 px-3 py-2.5">
-          <span className="skeleton size-8 rounded-[9px]" />
+          <span className="skeleton size-8 rounded-[3px]" />
           <span className="flex-1 space-y-2">
             <span className="skeleton block h-3" style={{ width: `${62 - (i % 3) * 9}%` }} />
             <span className="skeleton block h-2.5" style={{ width: `${40 - (i % 2) * 8}%` }} />
@@ -382,11 +380,11 @@ function Today() {
             onClick={() => setFilter(g.type)}
             className={cn(
               "relative flex h-full shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap cursor-pointer",
-              filter === g.type ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:rounded-full after:bg-fg" : "text-muted hover:text-fg",
+              filter === g.type ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
             )}
           >
             {g.label}
-            <span className="text-[12px] font-normal tabular-nums text-faint">{g.count}</span>
+            <span className="text-[12px] font-normal num text-faint">{g.count}</span>
           </button>
         ))}
       </div>
@@ -420,8 +418,7 @@ function Today() {
 
       {supplier && (
         <div className="flex shrink-0 items-center gap-2 px-5 pt-3" data-testid="supplier-filter">
-          <span className="inline-flex h-7 min-w-0 items-center gap-2 rounded-full bg-bg pr-1 pl-1 shadow-lift">
-            <Monogram name={supplier} size={20} className="rounded-full" />
+          <span className="inline-flex h-7 min-w-0 items-center gap-2 rounded-[3px] bg-bg pr-1 pl-2 shadow-lift">
             <span className="truncate text-[12px] font-medium">{supplier}</span>
             <button type="button" onClick={() => router.push("/")} aria-label="Show every supplier" className="flex size-5 items-center justify-center rounded-full text-muted hover:bg-hover hover:text-fg cursor-pointer">
               <X className="size-3.5" aria-hidden />
@@ -430,6 +427,7 @@ function Today() {
         </div>
       )}
 
+      <OpsAlarmBanner />
       <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing || !suggestionsRead ? { "data-pending": "" } : {})}>
         {morning && (
@@ -475,12 +473,12 @@ function Today() {
                 <h2 className="text-[12px] font-medium text-muted">
                   {g.type === "po_late" && !supplier ? (
                     <Link href="/late" className="group inline-flex items-center gap-1 hover:text-fg" data-testid="stat-late" title="Every late PO">
-                      {g.label} <span className="font-normal text-faint tabular-nums">{g.count}</span>
+                      {g.label} <span className="font-normal text-faint num">{g.count}</span>
                       <ChevronRight className="size-3 text-faint opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
                     </Link>
                   ) : (
                     <>
-                      {g.label} <span className="font-normal text-faint tabular-nums">{g.count}</span>
+                      {g.label} <span className="font-normal text-faint num">{g.count}</span>
                     </>
                   )}
                 </h2>
@@ -520,7 +518,7 @@ function Today() {
       {list}
       {showDetail && selected && (
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="sticky top-0 z-20 flex h-11 shrink-0 items-center border-b border-border bg-[color-mix(in_srgb,var(--bg)_88%,transparent)] px-1.5 backdrop-blur-xl lg:hidden">
+          <div className="sticky top-0 z-20 flex h-11 shrink-0 items-center border-b border-border bg-bg px-1.5 lg:hidden">
             {/* back to the list; a link opened straight to an item has no list behind it, so go to it */}
             <button type="button" onClick={() => (window.history.length > 1 ? router.back() : router.replace("/"))} className="flex h-9 items-center gap-0.5 pr-2 text-[15px] text-accent cursor-pointer">
               <ChevronLeft className="size-6" strokeWidth={2} aria-hidden />

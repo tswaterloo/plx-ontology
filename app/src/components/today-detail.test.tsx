@@ -24,7 +24,7 @@ describe("Today's detail of a late PO", () => {
     // the quick first read has no trail: no "no date" claim the trail may contradict a moment later
     expect(screen.queryByText("No date from the supplier")).toBeNull();
     await act(async () =>
-      answer({ object_id: row.objectId, section: "trail", trail: { kind: "purchase_order", title: "How we know", trails: [
+      answer({ object_id: row.objectId, section: "trail", trail: { kind: "purchase_order", title: "Evidence", trails: [
         { subject: { object_id: row.objectId, type: "PurchaseOrder", label: "106001", open_url: "/po/106001" }, state: "late", days_late: 12,
           eta: { state: "confirmed", text: "Confirmed" }, steps: [] }] } } as unknown as ObjectSection),
     );

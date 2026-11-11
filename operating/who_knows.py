@@ -308,10 +308,11 @@ class WhoKnowsTool:
                  inbox: Path | None = None) -> None:
         self.base = base
         self.guard = guard or (lambda: _env_guard())
-        row = base.store.conn.execute("PRAGMA database_list").fetchone()
-        if inbox is None and row and row[2]:
+        from .cash_forecast import store_file
+        path = store_file(base) if inbox is None else None
+        if path:
             from .proactive_engine import inbox_path
-            inbox = inbox_path(Path(row[2]))
+            inbox = inbox_path(Path(path))
         self.inbox = inbox
 
     def call(self, arguments: Any, actor: Any) -> dict[str, Any]:

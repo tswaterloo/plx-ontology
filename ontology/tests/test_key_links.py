@@ -12,6 +12,11 @@ store slice for the party key; no source read).
 * A Portal MO line's guessed product is corroborated only when a FileMaker component line
   of the same assembly order uses that product's twin; a guess of another family stays a
   lead, and a lead path never confirms.
+* Every link keeps the keys it was decided on (``ontology.link_keys``): each end's cited
+  version, field and source text are the identifier rows the join compared, an audit of
+  the store alone finds them held there, and a confirmed lead names its stored lead. A key
+  marked stricter than its record marks the link, so a reader who may not read the key
+  is not shown the link (nor its keys).
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ontology import identifiers, schema
+from ontology import identifiers, link_keys, schema
 from ontology import key_links as kl
 from ontology.posting_links import _end
 from ontology.project import CapturedRecord, build_store
@@ -113,6 +118,28 @@ class KeyJoinsInAStore(unittest.TestCase):
              oid("Product", "bc.items", {"id": ITEM_ID}),
              "BcEntityMapping.bc_product", "corroborated")]))
 
+    def test_each_link_keeps_the_keys_it_was_decided_on(self):
+        gl = oid("GeneralLedgerEntry", "bc.general_ledger_entries", {"id": "g1"})
+        (reason,) = self.conn.execute(
+            "SELECT reason FROM links WHERE from_object = ? AND link_id >= ? AND link_id < ?",
+            (gl, kl.PREFIX, _end(kl.PREFIX))).fetchone()
+        used = [dict(zip(("l1_handle", "field_path", "raw", "value"), r)) for r in (
+            self.conn.execute("SELECT l1_handle, field_path, raw, normalized FROM identifiers "
+                              "WHERE object_id = ? AND identifier_kind = 'bc_document_no'",
+                              (o,)).fetchone()
+            for o in (gl, oid("Receipt", "bc.purchase_receipts", {"id": "r1"})))]
+        self.assertEqual([{k: key[k] for k in ("l1_handle", "field_path", "raw", "value")}
+                          for key in link_keys.keys(reason)], used)
+        self.assertEqual(used[0]["raw"], "RCPT-99001")
+        # the served store alone repeats the audit: both keys held where they are cited
+        for link_type in ("GeneralLedgerEntry.for_receipt", "BcEntityMapping.bc_product"):
+            report = link_keys.audit(self.conn, link_type)
+            self.assertEqual((report["counts"]["keys_recorded"], report["counts"]["links"],
+                              report["counts"]["key:value_held"]), (1, 1, 2), report)
+        # a link whose join feature cites nothing is reported so, never as precise
+        self.assertIsNone(link_keys.keys([{"feature": "exact_identifier", "normalized": "X1"},
+                                          {"feature": "unique_record"}]))
+
 
 def slice_store():
     """The tables a party key reads, by hand: customer POs, their orders and customers."""
@@ -121,7 +148,8 @@ def slice_store():
         CREATE TABLE objects (object_id TEXT, object_type TEXT, binding_id TEXT,
                               native_key TEXT, audience_key TEXT);
         CREATE TABLE identifiers (object_id TEXT, identifier_kind TEXT, normalized TEXT,
-                                  field_path TEXT, superseded_at TEXT);
+                                  field_path TEXT, superseded_at TEXT, l1_handle TEXT,
+                                  raw TEXT, markings TEXT);
         CREATE TABLE link_rows (link_id TEXT, from_object TEXT, to_object TEXT,
                                 link_type TEXT, tier TEXT, superseded_at TEXT);""")
     rows = [("A", "app", "PO-88001", "custA"), ("S1", "sage", "PO-88001", "custS"),
@@ -133,8 +161,9 @@ def slice_store():
         so = f"SalesOrder:{side}:{{\"id\":\"{name}\"}}"
         c.execute("INSERT INTO objects VALUES (?, 'CustomerPurchaseOrder', ?, '{}', 'x')",
                   (cpo, f"{side}.po"))
-        c.execute("INSERT INTO identifiers VALUES (?, 'customer_po', ?, 'row.po', NULL)",
-                  (cpo, po))
+        c.execute("INSERT INTO identifiers VALUES (?, 'customer_po', ?, 'row.po', NULL, ?, ?, "
+                  "?)", (cpo, po, f"h:{name}", po.lower(),
+                         '["finance"]' if name == "S1" else "[]"))
         c.execute("INSERT INTO link_rows VALUES ('l', ?, ?, 'SalesOrder.references_customer_po',"
                   " 'verified', NULL)", (so, cpo))
         if cust:
@@ -162,8 +191,15 @@ class PartyKey(unittest.TestCase):
         got = kl._joins(conn, "CustomerPurchaseOrder.same_record_as", self.LINK, self.BINDING,
                         kl.Parties(conn, None), counts)
         name = lambda o: o.split('"id":"')[1].rstrip('"}')
-        self.assertEqual(sorted((name(f), name(t), tier) for f, t, tier, _r, _w in got),
+        self.assertEqual(sorted((name(f), name(t), tier) for f, t, tier, _r, _w, _m in got),
                          [("A", "S1", "corroborated"), ("A2", "S3", "lead")])
+        # S1's PO number is marked finance: the link carries it, so a reader without
+        # finance is shown neither the link nor the key it holds
+        marks = {name(t): (json.loads(m), link_keys.keys(r)) for _f, t, _t, r, _w, m in got}
+        self.assertEqual(marks["S1"][0], ["finance"])
+        self.assertEqual(marks["S3"][0], [])
+        self.assertEqual([(k["l1_handle"], k["raw"]) for k in marks["S1"][1]],
+                         [("h:A", "po-88001"), ("h:S1", "po-88001")])
         self.assertEqual((counts["other_party"], counts["not_an_identifier"]), (1, 1))
 
 
@@ -176,7 +212,7 @@ def confirm_store():
         CREATE TABLE link_rows (link_id TEXT, from_object TEXT, to_object TEXT,
                                 link_type TEXT, tier TEXT, superseded_at TEXT);""")
     L = lambda f, t, lt, tier="verified": c.execute(
-        "INSERT INTO link_rows VALUES ('l', ?, ?, ?, ?, NULL)", (f, t, lt, tier))
+        "INSERT INTO link_rows VALUES (?, ?, ?, ?, ?, NULL)", (f"l:{f}>{t}", f, t, lt, tier))
     line = lambda n: f'AssemblyOrderComponent:app.mol:{{"id":"{n}"}}'
     app = lambda n: f'Product:app.p:{{"id":"{n}"}}'
     for n, product in (("M1", "P-good"), ("M2", "P-otherfamily"), ("M3", "P-lead-twin")):
@@ -212,7 +248,11 @@ class ConfirmingPath(unittest.TestCase):
         got = kl._confirms(conn, "AssemblyOrderComponent.uses_item", self.LINK, self.BINDING,
                            kl.FirmParties(conn, None), counts)
         self.assertEqual([(f.split('"id":"')[1][:2], t.split('"id":"')[1].rstrip('"}'), tier)
-                          for f, t, tier, _r, _w in got], [("M1", "P-good", "corroborated")])
+                          for f, t, tier, _r, _w, _m in got], [("M1", "P-good", "corroborated")])
+        # its keys are its stored lead's: the confirmed link names that lead
+        self.assertEqual(link_keys.keys(got[0][3]), [{
+            "feature": "stored_lead",
+            "link_id": 'l:AssemblyOrderComponent:app.mol:{"id":"M1"}>Product:app.p:{"id":"P-good"}'}])
         self.assertEqual((counts["firm"], counts["path_disagrees"]), (1, 2))
         schema_links = schema.load_schema().link_types
         self.assertIn("AssemblyOrderComponent.uses_item", kl.written_types(schema_links))

@@ -73,7 +73,7 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import re
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology import store as ostore
 from ontology.units import unit_token
@@ -707,29 +707,53 @@ def _investigate(call: Callable, family: str, root: str) -> Mapping[str, Any] | 
     return found if isinstance(found, Mapping) and not found.get("error") else None
 
 
+def _parts(ids: Sequence[str], size: int = 5000) -> Iterator[list[str]]:
+    """``ids`` in bounded slices for an ``IN (json_each(?))`` read."""
+    for at in range(0, len(ids), size):
+        yield list(ids[at:at + size])
+
+
 class _MailIndex:
     """The mail the vendor checks rest on, read once per run in three plain scans (each
     message's conversation and sent time, the mail naming each purchase order): a
     per-order self-join over the value cells took minutes per order on the live store."""
 
     def __init__(self, st: Any, roots: Sequence[str]) -> None:
+        # Scoped to the mail naming these orders and those messages' conversations: reading
+        # every stored message's conversation and sent time held the whole mail store in
+        # memory (16 GB on the live store, 11-10).
         self.st = st
-        self.conv: dict[str, str] = {}
-        self.members: dict[str, set[str]] = defaultdict(set)
-        for oid, value in st.conn.execute(
-                "SELECT object_id, value FROM object_values WHERE property = "
-                "'conversation_id' AND superseded_at IS NULL"):
-            if value not in (None, ""):
-                self.conv[oid] = str(value)
-                self.members[str(value)].add(oid)
-        self.sent = {oid: str(value) for oid, value in st.conn.execute(
-            "SELECT object_id, value FROM object_values WHERE property = 'sent_at' AND "
-            "superseded_at IS NULL") if value not in (None, "")}
         wanted = set(roots)
         self.mail: dict[str, set[str]] = defaultdict(set)
         for link in st.links([MAIL_PO_LINK], held=False):
             if link["to_object"] in wanted:
                 self.mail[link["to_object"]].add(link["from_object"])
+        named = sorted({m for found in self.mail.values() for m in found})
+        convs: set[str] = set()
+        for part in _parts(named):
+            for _oid, value in st.conn.execute(
+                    "SELECT object_id, value FROM object_values WHERE property = "
+                    "'conversation_id' AND superseded_at IS NULL AND object_id IN "
+                    "(SELECT value FROM json_each(?))", (json.dumps(part),)):
+                if value not in (None, ""):
+                    convs.add(str(value))
+        self.conv: dict[str, str] = {}
+        self.members: dict[str, set[str]] = defaultdict(set)
+        for part in _parts(sorted(convs)):
+            for oid, value in st.conn.execute(
+                    "SELECT object_id, value FROM object_values WHERE property = "
+                    "'conversation_id' AND superseded_at IS NULL AND value IN "
+                    "(SELECT value FROM json_each(?))", (json.dumps(part),)):
+                self.conv[oid] = str(value)
+                self.members[str(value)].add(oid)
+        self.sent: dict[str, str] = {}
+        for part in _parts(sorted(set(named) | set(self.conv))):
+            for oid, value in st.conn.execute(
+                    "SELECT object_id, value FROM object_values WHERE property = 'sent_at' "
+                    "AND superseded_at IS NULL AND object_id IN (SELECT value FROM "
+                    "json_each(?))", (json.dumps(part),)):
+                if value not in (None, ""):
+                    self.sent[oid] = str(value)
 
     def thread(self, mail: Iterable[str]) -> set[str]:
         """These messages and every stored message of their conversations."""

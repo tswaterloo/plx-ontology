@@ -1087,6 +1087,44 @@ class MirrorCaptures(Reopenable):
         return out
 
 
+NOTICE_RELATION = "notices"
+NOTICE_REFERENCES = "noticeReferences"
+
+
+def _stated(value: Any) -> Any:
+    """A notice field as projected: an amount whose currency the mail does not state
+    carries none (the money value's currency is then unknown, never guessed)."""
+    if isinstance(value, dict) and value.get("currency") == "unstated":
+        return {k: v for k, v in value.items() if k != "currency"}
+    return value
+
+
+class _UndecidedWithheld:
+    """The people exclusion for notices: a message it cannot decide is withheld.
+
+    Only addresses in the tenant's mail domains are a tenant person's and are decided; an
+    outside sender (a carrier's or a payment service's notice address) is no tenant
+    person's, as ``integrations.notice_mail``'s own reader treats it. Without known tenant
+    domains every message is withheld (fail closed)."""
+
+    def __init__(self, exclusion: Any) -> None:
+        self.exclusion = exclusion
+        try:
+            self.domains = frozenset(d.lower() for d in exclusion.known_domains())
+        except Exception:  # noqa: BLE001 - no domains: nothing can be decided
+            self.domains = frozenset()
+
+    def excluded(self, identities: Sequence[str]) -> bool:
+        if not self.domains:
+            return True
+        tenant = [i for i in identities
+                  if "@" not in i or i.rsplit("@", 1)[-1].lower() in self.domains]
+        try:
+            return bool(self.exclusion.excluded(tenant))
+        except Exception:  # noqa: BLE001 - an address it cannot decide withholds the message
+            return True
+
+
 class MailCaptures(Reopenable):
     """Every retained message version of the versioned mail capture, read-only
     (``integrations/capture_mail.MailCaptureStore``; source family ``graph_mail``).
@@ -1385,7 +1423,8 @@ class MailCaptures(Reopenable):
             if self._exclusion().unavailable else dict(state)
         return {"generation": None if version is None else f"mail-capture/{version[0]}",
                 "relations": {"messages": dict(state), "attachments": dict(state),
-                              "people": people}}
+                              "people": people, NOTICE_RELATION: dict(people),
+                              NOTICE_REFERENCES: dict(people)}}
 
     def _exclusion(self) -> Any:
         if self.exclusion is None:
@@ -1476,6 +1515,8 @@ class MailCaptures(Reopenable):
                         last_seen_at=item["last_seen_at"],
                         # every mailbox the person corresponds in (people_directory)
                         audience_key=item["audience_key"])
+            elif relation in (NOTICE_RELATION, NOTICE_REFERENCES):
+                yield from self._notice_records(relation)
             elif relation == "attachments":
                 for row in self._attached_rows():
                     metadata = json.loads(row["metadata"])
@@ -1516,6 +1557,70 @@ class MailCaptures(Reopenable):
 
         self._stream = stream
         return _Relations(relations, stream)
+
+    def _notice_records(self, relation: str) -> Iterator[CapturedRecord]:
+        """The notices declared senders' mail reads into (``integrations.notice_mail``:
+        carrier, payment, support, replenishment, EDI and expense notices), one record per
+        notice (relation ``notices``) and one per value it names that a link resolves
+        (``noticeReferences``: tracking, invoice, PO, item numbers, references, names).
+        Each takes its message's version, handle and audience (``mail:<mailbox>``): a
+        reader who may not read the message sees none of it. The notice's family markings
+        (payments finance; expense reports finance and pii) ride on the row for the
+        bindings' marking rules. A message any excluded person is party to, or one the
+        exclusion cannot decide, gives nothing; without a usable exclusion list nothing
+        is read (fail closed)."""
+        from integrations import notice_mail
+        exclusion = self._exclusion()
+        if exclusion.unavailable:
+            return
+        if callable(getattr(exclusion, "attach_directory", None)):
+            # decide tenant addresses from the captured mailboxes (as the people relation
+            # does), whether or not that relation was read first in this build
+            from ontology import people_directory
+            exclusion.attach_directory((b.mailbox_id, b.upn, b.identities)
+                                       for b in people_directory.mailboxes(self._conn))
+        families, formats = notice_mail.load_families()
+        people = _UndecidedWithheld(exclusion)
+        for row in self._conn.execute(self._LATEST + " ORDER BY mailbox_id, message_id, "
+                                      "recorded_at, version_id"):
+            record = self._message_row(row["record"])
+            if notice_mail.family_of(families, record.get("from")) is None:
+                continue
+            body = self._blob_text(row["body_sha256"]) if row["body_sha256"] else None
+            notice = notice_mail.parse(families, formats, {
+                **record, "citation": row["l1_handle"]}, body, people=people)
+            if notice is None:
+                continue
+            superseded, missing = self._interval(row)
+            base = {"mailbox": row["mailbox_id"], "message_id": row["message_id"],
+                    "family": notice.family, "record_type": notice.record_type,
+                    "markings": list(notice.markings)}
+            if relation == NOTICE_RELATION:
+                rows = [(canonical([row["mailbox_id"], row["message_id"]]), {
+                    **base, "kind": notice.kind, "carrier": notice.carrier,
+                    "received_at": notice.received_at,
+                    **{k: _stated(v) for k, v in notice.fields.items()
+                       if not isinstance(v, list)}})]
+            else:
+                rows, seen = [], set()
+                for link in notice.links:
+                    key = (link["field"], link["identifier_kind"], link["value"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append((canonical([row["mailbox_id"], row["message_id"], *key]), {
+                        **base, "field": link["field"],
+                        "identifier_kind": link["identifier_kind"],
+                        "ref_key": canonical(list(key)),
+                        link["identifier_kind"]: link["value"]}))
+            for key, out in rows:
+                yield CapturedRecord(
+                    source=self.source, relation=relation, record_key=key, row=out,
+                    l1_handle=row["l1_handle"], field_prefix="row", digest=row["digest"],
+                    recorded_at=row["recorded_at"], superseded_at=superseded,
+                    last_seen_at=row["last_seen_at"],
+                    audience_key=f"mail:{row['mailbox_id']}",
+                    missing_from_source_since=missing)
 
     def _blob_text(self, digest: Any) -> str | None:
         """A body's text from its blob (stored as it is or compressed), re-hashed."""
@@ -2789,6 +2894,9 @@ class Projector:
         self._towards: dict[tuple[str, str, str, str | None, str], str | None] = {}
         self._source_order: dict[tuple[str, str, str], dict[str, int]] = {}
         self._cache: OrderedDict[int, _Version] = OrderedDict()
+        # vid -> markings a binding's marking_rules add to the whole record (_row_marks_of)
+        self._row_marks: dict[int, frozenset[str]] = {}
+        self._line_kinds: dict[tuple[str, tuple[str, ...]], list[str]] = {}
         self._cites: dict[int, tuple[str, str, str, str]] = {}
         self._recs = _RecCodec()  # the dictionaries of this working file's stage.rec
         self._locals: dict[tuple[str, str | None], list[int]] = {}
@@ -3555,8 +3663,19 @@ class Projector:
             fv = self._version(fvid)
             if not self._binding_applies(lb, fv):
                 continue
+            # A foreign key's pairs are one composite key (a team and a channel, a
+            # customer and a document number): a record matching on some of them only is
+            # another record, never a contradicted candidate of this one. Only a
+            # same_record binding compares keys one at a time (two keys of one record
+            # that disagree contradict it).
+            whole = lb["kind"] == "fk" and len(pairs) > 1
+            hit: dict[int, set[int]] = {}
+            for index_, tvid in matches:
+                hit.setdefault(tvid, set()).add(index_)
             candidates: dict[str, _Version] = {}
-            for _, tvid in matches:
+            for tvid, held in hit.items():
+                if whole and len(held) < len(pairs):
+                    continue
                 tv = self._version(tvid)
                 candidates.setdefault(tv.rec.l1_handle + "|" + tv.object_id, tv)
             found = []
@@ -3804,6 +3923,56 @@ class Projector:
         if version.vid:
             self._db.execute("UPDATE v SET lineage = ? WHERE vid = ?", (lineage, version.vid))
         return lineage
+
+    def _row_marks_of(self, version: _Version) -> None:
+        """The binding's ``marking_rules``: the markings a record carries whole (version and
+        every value) when a rule holds. A ``via_link`` hop that does not resolve to one
+        record counts as holding: an unresolved record is marked, never left open."""
+        rules = [r for r in version.binding.get("marking_rules", ()) if "when" in r]
+        if not rules or not version.vid:
+            return
+        extra: set[str] = set()
+        for rule in rules:
+            held = True
+            for w in rule["when"]:
+                if "via_link" in w:
+                    target = self._hop(version, w["via_link"],
+                                       f"{version.binding['id']} marking rule")
+                    ok = target is None or _predicate(target.rec.row, w)
+                else:
+                    ok = _predicate(version.rec.row, w)
+                if not ok:
+                    held = False
+                    break
+            if held:
+                extra.update(rule["markings"])
+        if extra:
+            self._row_marks[version.vid] = frozenset(extra)
+
+    def _header_marks_of(self, version: _Version) -> None:
+        """``from_lines`` marking rules: the record carries the rule's markings when any
+        record linking to it by a link of a listed name (its lines) carries them."""
+        rules = [r for r in version.binding.get("marking_rules", ()) if "from_lines" in r]
+        if not rules or not version.vid:
+            return
+        extra: set[str] = set(self._row_marks.get(version.vid, ()))
+        for rule in rules:
+            names = set(rule["from_lines"])
+            key = (version.type_id, tuple(sorted(names)))
+            kinds = self._line_kinds.get(key)
+            if kinds is None:
+                kinds = self._line_kinds[key] = [
+                    lid for lid, link in self.links.items()
+                    if link["to"] == version.type_id and link["name"] in names]
+            for lid in kinds:
+                for (from_vid,) in self._db.execute(
+                        "SELECT from_vid FROM links WHERE link_type = ? AND to_object = ? "
+                        "AND tier <> 'contradicted'", (lid, version.object_id)):
+                    if set(rule["markings"]) <= self._row_marks.get(from_vid, frozenset()):
+                        extra.update(rule["markings"])
+                        break
+        if extra:
+            self._row_marks[version.vid] = frozenset(extra)
 
     def _rule_predicate(self, version: _Version, predicate: Mapping[str, Any]) -> bool:
         if "via_link" in predicate:
@@ -4084,7 +4253,7 @@ class Projector:
             currency = self._measure(version, prop, source, "currency", where, cites)
             if value_type == "money":
                 basis = self._tax_basis(version, prop, source, where)
-        marks = self._prop_marks(tid, prop)
+        marks = self._prop_marks(tid, prop) | self._row_marks.get(version.vid, frozenset())
         row = {"object_id": version.object_id, "property": prop["name"],
                "value_type": value_type, "value": text, "unit": unit,
                "quantity_role": prop.get("quantity_role") if value_type == "quantity" else None,
@@ -4507,7 +4676,14 @@ class Projector:
         The working file is removed afterwards, whether or not the build succeeded."""
         def lineage() -> None:
             for vid in self._vids():
-                self._lineage(self._version(vid))
+                version = self._version(vid)
+                self._lineage(version)
+                self._row_marks_of(version)
+            # headers after every line: a header carries what any of its lines carries
+            if any(r.get("from_lines") for _, b in self.bindings.values()
+                   for r in b.get("marking_rules", ())):
+                for vid in self._vids():
+                    self._header_marks_of(self._version(vid))
 
         # Bindings declared ``value_storage: packed`` store their values as packed records.
         builder.packed_bindings = frozenset(
@@ -4570,8 +4746,9 @@ class Projector:
                 return
             builder.add("object_versions", [{
                 "object_id": row[2], "l1_handle": row[3], "digest": row[4], "lineage": row[5],
-                "markings": _markings_text(self._type_marks(row[1])), "recorded_at": row[6],
-                "superseded_at": row[7]} for row in rows
+                "markings": _markings_text(self._type_marks(row[1])
+                                           | self._row_marks.get(row[0], frozenset())),
+                "recorded_at": row[6], "superseded_at": row[7]} for row in rows
                 if self._emits(self._unit_of(row[8], row[2]))])
             last = rows[-1][0]
 
@@ -4645,6 +4822,9 @@ def _predicate(row: Mapping[str, Any], predicate: Mapping[str, Any]) -> bool:
         return _text(cell) != _text(value)
     if op == "in":
         return _text(cell) in {_text(item) for item in value}
+    if op == "matches":
+        text = _text(cell)
+        return text is not None and re.search(str(value), text, re.IGNORECASE) is not None
     if op == "prefix":
         text = _text(cell)
         return text is not None and text.startswith(str(value))

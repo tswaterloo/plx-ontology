@@ -35,6 +35,15 @@ PLAN_ROOT = {"family": "late_po", "root": {"identifier": "PO5447"}}
 QUESTION = "Who is purchase order PO5447 ordered from, and where is that recorded?"
 
 
+def _seen(observation) -> dict:
+    """An observation's result as the planner is shown it: a result over the observation
+    limit comes packed (agent_loop._packed: its entries under ``shown``), and a model reads
+    what it was shown."""
+    result = _plain(observation.get("result") or {})
+    return result["shown"] if isinstance(result.get("shown"), dict) and "omitted" in result \
+        else result
+
+
 def supplier_cells(transcript) -> list[dict]:
     """The supplier each ``plx.around`` edge the tools returned names, as structured claims
     on the two cells its link reads: the purchase order's ``row.supplier_id`` and the
@@ -42,7 +51,7 @@ def supplier_cells(transcript) -> list[dict]:
     out = []
     for step in transcript:
         for observation in step["observations"]:
-            for edge in _plain(observation.get("result") or {}).get("edges") or []:
+            for edge in _seen(observation).get("edges") or []:
                 supplier = json.loads(edge["to"].split(":", 2)[2])["id"]
                 out += [{"value": supplier, "citation": cite["l1_handle"],
                          "field": cite["field_path"]}
@@ -62,7 +71,7 @@ def card_cells(transcript) -> list[dict]:
                 continue
             out += [{"value": value["value"], "citation": value["citation"]["l1_handle"],
                      "field": value["citation"]["field_path"]}
-                    for value in _plain(observation.get("result") or {}).get("values") or []
+                    for value in _seen(observation).get("values") or []
                     if value.get("citation") and isinstance(value.get("value"), str)][:1]
     return out
 
@@ -79,7 +88,7 @@ def model(remembered: list[dict]):
                                                  "arguments": {"query": number}}]}, None
         last = transcript[-1]["observations"]
         found = [c["object"]["object_id"] for o in last
-                 for c in (o.get("result") or {}).get("candidates") or []]
+                 for c in _seen(o).get("candidates") or []]
         if len(transcript) == 1 and found:
             return {"action": "call", "calls": [
                 {"tool": "plx.around", "arguments": {"from": found[0], "path": [

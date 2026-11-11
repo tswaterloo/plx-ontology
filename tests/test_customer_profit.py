@@ -821,6 +821,31 @@ class SideBySideTests(unittest.TestCase):
                 answers[name] = alone["totals"]
         self.assertNotEqual(answers["full"], answers["restricted"])
 
+    def test_side_by_side_reads_as_of_the_callers_one_moment(self):
+        """Inside ``snapshot_reads`` (a record page's margin) every helper worker's reads
+        are as of the page's one moment, not each worker's own clock."""
+        from datetime import datetime, timedelta, timezone
+        from itertools import count
+        from unittest import mock
+        start, ticks = datetime(2026, 10, 30, 12, tzinfo=timezone.utc), count()
+        world = World(self, clock=lambda: start + timedelta(seconds=next(ticks)))
+        jobs, stopped, opened = self.pool({"full": world}, 3)
+        customer = world.customer("C-50")
+        alone = cp.profitability(world.call, customer, today=TODAY)
+        seen, original = [], ot.StoreReader._visible_versions_read
+
+        def counted(store, scope, ids):
+            seen.append(scope.params()["at"])
+            return original(store, scope, ids)
+        with mock.patch.object(ot.StoreReader, "_visible_versions_read", counted), \
+                ot.snapshot_reads():
+            spread = cp.profitability(world.call, customer, today=TODAY,
+                                      fan_out=self.spread(jobs, stopped, "full",
+                                                          world.call, 3))
+        self.assertGreater(sum(len(w.calls) for w in opened["full"]), 0)
+        self.assertEqual(len(set(seen)), 1, set(seen))
+        self.assertEqual(spread["totals"], alone["totals"])
+
     def test_side_by_side_keeps_the_time_budget(self):
         world = World(self)
         jobs, stopped, _opened = self.pool({"full": world}, 3)

@@ -44,6 +44,9 @@ class ProjectMcTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         fake = FakeMc()
         add_hr_project(fake)
+        # MC's own due cells: a full day, its em dash for none, a day with no year
+        for task, due in (("TASK-1", "2026-10-20"), ("TASK-2", "\u2014"), ("TASK-3", "Jun 12")):
+            fake.tasks[task]["due"] = due
         capture = Path(cls.tmp.name) / "mc.sqlite"
         with CaptureStore(capture, audience(), clock=Clock()) as store:
             McSourcesCapture(store, mc_client(fake)).capture(
@@ -103,6 +106,17 @@ class ProjectMcTests(unittest.TestCase):
         self.assertEqual(lineages, {"mission_control"})
         # A ranked search is never an enumeration: reported, never complete.
         self.assertEqual(self.gap, INCOMPLETE)
+
+    def test_a_task_due_day_is_read_only_when_mc_writes_a_whole_date(self):
+        dues = dict(self.conn.execute(
+            "SELECT json_extract(o.native_key, '$.id'), v.value FROM object_values v "
+            "JOIN objects o ON o.object_id = v.object_id WHERE o.object_type = 'MCTask' "
+            "AND v.property = 'due_date'").fetchall())
+        # The em dash is no value and no gap; a day without a year is a gap, never a guess.
+        self.assertEqual(dues, {"TASK-1": "2026-10-20"})
+        gaps = {g["code"]: g["count"] for g in self.report["gaps"]
+                if g["code"].startswith("parse_") and "due" in g["where"]}
+        self.assertEqual(gaps, {"parse_not_iso_date": 1})
 
     def test_a_retired_brain_items_unit_in_an_older_capture_is_neither_described_nor_projected(self):
         # A store captured before GOV-13 retired brain_items still holds its runs and

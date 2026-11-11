@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from urllib.parse import unquote, urlsplit
 
-from verify import live_verify
+from verify import require_live_verify
 from integrations import graph_directory, graph_read
 from integrations.graph_directory import (APPROVER_OIDS_DIR, APPROVER_OIDS_FILE,
                                           GraphDirectoryReader, resolve_roster,
@@ -206,6 +206,7 @@ class RosterResolutionTest(unittest.TestCase):
                          (len(upns), len(upns), 0, "none"))
         for value in (OID, *oids, *(upn.lower() for upn in upns), "do-not-leak"):
             self.assertNotIn(value, out.getvalue().lower())
+        live_verify = require_live_verify(self)
         spec = json.loads((live_verify.ROOT / live_verify.SPECS_DIR_NAME
                            / "graph.directory_entitlements.json").read_text("utf-8"))
         # Injected output is never the live-read label; nothing else fails.

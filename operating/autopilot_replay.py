@@ -52,6 +52,8 @@ import sys
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from ontology import store as ostore
+
 from . import autopilot as ap
 from . import workflows as wf
 from operating import declared_schema as _schemas
@@ -329,6 +331,9 @@ def teams_sent(st: Any, people: Any, who: set[str], since: str, until: str
         dated = ap._dated(st, otype, "created_at")
         ids = [o for _t, o in dated[bisect.bisect_left(dated, (lo,)):
                                     bisect.bisect_left(dated, (hi,))]]
+        # conversation -> sender -> when they last wrote there (messages in time order):
+        # an action's ``other_at`` is the last message someone else wrote before it
+        last_by: dict[str, dict[str, datetime]] = defaultdict(dict)
         for start in range(0, len(ids), CHUNK):
             chunk = ids[start:start + CHUNK]
             typed = ap._types(st, chunk)
@@ -338,20 +343,30 @@ def teams_sent(st: Any, people: Any, who: set[str], since: str, until: str
                     if ap.teams_sender(ap._v(r, "from"), directory) in who}
             bodies = ap.teams_bodies(st, [h for r in mine.values()
                                           for h in ap._handles_of(r)[:1]])
-            for oid, row in mine.items():
+            for oid in chunk:
+                row = rows.get(oid) or {}
                 aud = typed.get(oid, ("", ""))[1]
                 channel = aud.startswith("teams:channel:")
-                if not (channel or aud.startswith("teams:chat:")) or \
-                        not people.unit_clear(aud) or ap._v(row, "deleted_at"):
+                sender = ap.teams_sender(ap._v(row, "from"), directory)
+                when = ap._instant(ap._v(row, "created_at"))
+                if not (channel or aud.startswith("teams:chat:")) or not sender or \
+                        when is None:
+                    continue
+                conversation = ap.teams_thread(aud, oid, ap._v(row, "reply_to_id")) \
+                    if channel else aud
+                others = [t for s, t in last_by[conversation].items() if s != sender]
+                last_by[conversation][sender] = when
+                if oid not in mine or not people.unit_clear(aud) or \
+                        ap._v(row, "deleted_at"):
                     continue
                 text = bodies.get((ap._handles_of(row) or [""])[0]) or next(
                     (ap._v(row, p) for p in text_props if ap._v(row, p)), "")
-                out.append({"person": ap.teams_sender(ap._v(row, "from"), directory),
+                out.append({"person": sender,
                             "at": ap._v(row, "created_at"), "kind": "teams_sent",
                             "workflow": TEAMS_WORKFLOW,
                             "topic": wf.classify("", text, "internal"),
-                            "conversation": ap.teams_thread(aud, oid, ap._v(
-                                row, "reply_to_id")) if channel else aud,
+                            "conversation": conversation,
+                            "other_at": ap._iso(max(others)) if others else None,
                             "to": [], "records": []})
     return out
 
@@ -414,13 +429,48 @@ def trigger_at(item: Mapping[str, Any], event: Mapping[str, Any]) -> datetime | 
     return ap._instant(event.get("seen_at") or event.get("at"))
 
 
+# one Teams reply sent as several messages: each next message of the person in the same
+# chat within this long of the one before it is the same reply (measured on Vince's DEV
+# days 10-26..11-05: 22 of 110 unanticipated messages followed a matched one within it)
+BURST = timedelta(minutes=10)
+
+
+def _credit_burst(hit: Mapping[str, Any], actions: Sequence[tuple[datetime, Mapping[str, Any]]],
+                  anticipated: set[int]) -> None:
+    """The rest of a matched Teams reply (``BURST``) is anticipated with it: the prepared
+    reply replaces all of it. Coverage only; an item still matches once. Someone else
+    writing in the conversation in between (``other_at``, after the person's message
+    before) ends the reply: what follows answers a new message (measured on Vince's DEV
+    days 10-06..10-26: 58 of 214 own messages within ten minutes of the one before had
+    another member's message in between)."""
+    if hit.get("kind") != "teams_sent" or not hit.get("conversation"):
+        return
+    last = ap._instant(hit.get("at"))
+    for when, a in actions:
+        if last is None or when <= last:
+            continue
+        if when - last > BURST:
+            break
+        if a.get("kind") == "teams_sent" and a.get("conversation") == hit["conversation"]:
+            # an action read without it (an older cache): no credit, never a guess
+            other = ap._instant(a.get("other_at"))
+            if "other_at" not in a or (other is None and a["other_at"]) or \
+                    (other is not None and other > last):
+                break
+            anticipated.add(id(a))
+            last = when
+
+
 def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, Any]],
           actions: Sequence[Mapping[str, Any]], *, horizon: timedelta, data_end: datetime,
           since: datetime, until: datetime, window_items: bool = False,
-          anticipated: set[int] | None = None) -> dict[str, Any]:
+          anticipated: set[int] | None = None,
+          source_end: Mapping[str, datetime] | None = None) -> dict[str, Any]:
     """Per workflow: items prepared, judged, matched; the person's actions in [since, until)
     and how many an item anticipated. ``window_items``: only the items whose trigger is in
-    [since, until) (a split of the window: dev or held-out days)."""
+    [since, until) (a split of the window: dev or held-out days). ``source_end``
+    (``source_ends``): an item on a record of such a source is judged only when its horizon
+    ends by that source's last event too (else unjudged: its answer may not be captured)."""
     by_person: dict[str, list[tuple[datetime, Mapping[str, Any]]]] = defaultdict(list)
     for a in actions:
         at = ap._instant(a.get("at"))
@@ -441,7 +491,11 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
         c["prepared"] += 1
         # an entry keyed in a system: judged against what people entered there
         # (``receivables_score``), never against their mail
-        if at is None or at + horizon > data_end or flow in by_records:
+        end = data_end
+        source = SOURCE_OF.get(str(event.get("object_type") or ""))
+        if source_end and source in source_end:
+            end = min(end, source_end[source])
+        if at is None or at + horizon > end or flow in by_records:
             c["unjudged"] += 1
             continue
         c["judged"] += 1
@@ -465,6 +519,7 @@ def score(items: Sequence[Mapping[str, Any]], events: Mapping[str, Mapping[str, 
         if hit is not None:
             c["matched"] += 1
             anticipated.add(id(hit))
+            _credit_burst(hit, by_person.get(item["owner"], ()), anticipated)
     for person_actions in by_person.values():
         for when, a in person_actions:
             if since <= when < until:
@@ -662,6 +717,56 @@ def data_end(st: Any, until: str) -> datetime:
     return ap._instant(row[0]) if row and row[0] else ap._instant(until)
 
 
+# record types whose own capture can stop while mail goes on (the MC capture paused for a
+# migration, 2026-11-10 17:42Z): their items are judged only to that capture's last write
+SOURCE_OF = {"MCApproval": "mc", "MCTaskEvent": "mc"}
+
+
+def source_ends(st: Any) -> dict[str, datetime]:
+    """Each such source's capture's last write (``MCQuestions.known_to``); no key when no
+    capture reader is attached or its end is unknown (the mail's end alone, as before)."""
+    reader = getattr(st, "autopilot_mc", None)
+    known = getattr(reader, "known_to", None)
+    end = known() if callable(known) else None
+    return {"mc": end} if end is not None else {}
+
+
+TEXT_SAMPLE = 300          # Teams messages of the window probed for their body text
+TEXT_COMPLETE = 0.9        # share of probed body fields that must hold their text
+
+
+def text_gap(st: Any, since: datetime, until: datetime) -> dict[str, Any] | None:
+    """None when the store's text index holds the words of the window's Teams messages;
+    else what is missing. A store whose index lists a message's body field but holds none
+    of its text (Postgres before its text chunks are loaded) reads every message as empty,
+    so asks and closing notes go unseen and the Teams items would be scored on nothing:
+    the replay refuses (fail closed), as it does when the index cannot be read."""
+    handles: list[str] = []
+    try:
+        for otype in ap.TEAMS_TYPES:
+            dated = ap._dated(st, otype, "created_at")
+            ids = [o for _t, o in dated[bisect.bisect_left(dated, (since,)):
+                                        bisect.bisect_left(dated, (until,))]]
+            step = max(1, len(ids) // TEXT_SAMPLE)
+            rows = ap._read(st, ids[::step][:TEXT_SAMPLE], ("created_at",))
+            handles += [h for r in rows.values() for h in ap._handles_of(r)[:1]]
+        if not handles:
+            return None
+        where = ("f.citation IN (SELECT value FROM json_each(?)) AND f.field_path = ?")
+        args = (json.dumps(sorted(set(handles))), ap.TEAMS_BODY)
+        fields = st.conn.execute(f"SELECT COUNT(*) FROM text_fields f WHERE {where}",
+                                 args).fetchone()[0]
+        held = st.conn.execute(
+            f"SELECT COUNT(DISTINCT f.field_id) FROM text_fields f JOIN text_chunks k "
+            f"ON k.field_id = f.field_id WHERE {where}", args).fetchone()[0]
+    except sqlite3.Error as error:
+        return {"reason": "text_index_unreadable", "detail": str(error)[:200]}
+    if fields and held < TEXT_COMPLETE * fields:
+        return {"reason": "text_index_incomplete", "messages": len(handles),
+                "body_fields": int(fields), "with_text": int(held)}
+    return None
+
+
 def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until: datetime,
            roles: Mapping[str, list[str]], config: Mapping[str, Any],
            registry: Mapping[str, Any] | None = None, environ: Mapping[str, str] | None = None,
@@ -677,6 +782,10 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
     who = set(members(st, people, role, roles, until=ap._iso(since)))
     if not who:
         return {"schema": SCHEMA, "role": role, "status": "no_members"}
+    gap = text_gap(st, since, until)
+    if gap:
+        return {"schema": SCHEMA, "role": role, "status": "blocked", **gap,
+                "source": ap.store_source(st)}
     slug = re.sub(r"[^a-z0-9_]+", "_", role.lower())[:60]
     root = out / slug
     root.mkdir(parents=True, exist_ok=True)
@@ -686,7 +795,17 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
     progress = Progress(root / "progress.sqlite")
     env = {k: v for k, v in environ.items() if k != ap.ROLES_ENV}
     status = "complete"
+    source = ap.store_source(st)
     try:
+        # a queue holds the days one store prepared: a resumed run on the other store
+        # (SQLite generation vs Postgres) would mix two data sets in one score
+        began = queue.meta("store")
+        if began is not None and began != source["store"]:
+            return {"schema": SCHEMA, "role": role, "status": "blocked",
+                    "reason": f"queue_started_on_{began}"}
+        if began is None:
+            with queue.conn:
+                queue.set_meta("store", source["store"])
         if not queue.meta("seeded"):
             # what the person wrote before the window: a live feed would know it already
             # (``Queue.engagement``); their own sent mail and chat messages only
@@ -741,8 +860,9 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
         for provider in config["providers"]:
             actions += provider(st, people, who, ap._iso(since), a_until)
         anticipated: set[int] = set()
+        ends = source_ends(st)
         flows = score(items, events, actions, horizon=config["horizon"], data_end=last,
-                      since=since, until=until, anticipated=anticipated)
+                      since=since, until=until, anticipated=anticipated, source_end=ends)
         splits: dict[str, Any] = {}
         split_at = until - timedelta(days=held_out_days) if held_out_days else None
         if split_at is not None and since < split_at < until:
@@ -752,7 +872,7 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
                                 "workflows": score(items, events, actions,
                                                    horizon=config["horizon"], data_end=last,
                                                    since=lo, until=hi, window_items=True,
-                                                   anticipated=seen)}
+                                                   anticipated=seen, source_end=ends)}
                 splits[name]["misses"] = misses(queue, items, actions, seen, since=lo,
                                                 until=hi, horizon=config["horizon"])
         missed = misses(queue, items, actions, anticipated, since=since, until=until,
@@ -775,7 +895,12 @@ def replay(st: Any, people: Any, *, role: str, out: Path, since: datetime, until
               "days_done": len(days_done), "workflows": flows,
               "prepared_by_autopilot": dict(sorted(prepared.items())),
               "skipped": dict(sorted(skipped.items())), "actions": len(actions),
-              "misses": missed, "splits": splits}
+              "misses": missed, "splits": splits, "source": source,
+              "source_ends": {k: ap._iso(v) for k, v in sorted(ends.items())},
+              # when the feed held each prepared MC item: the capture's own first read of
+              # it (live days) or the configured feed lag (days the capture backfilled)
+              "feed_seen": dict(sorted(Counter(
+                  e["seen_from"] for e in events.values() if e.get("seen_from")).items()))}
     # the gate is decided on the held-out days when the window has them (never tuned on)
     gated = splits["held_out"]["workflows"] if splits else flows
     result["gate"] = {"precision": str(ap.GATE_PRECISION), "min_judged": ap.GATE_MIN_JUDGED,
@@ -810,8 +935,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     from . import proactive_engine as pe
     p = argparse.ArgumentParser(prog="python3 -m operating.autopilot_replay")
     p.add_argument("--store", required=True)
-    p.add_argument("--out", required=True)
-    p.add_argument("--role", required=True,
+    p.add_argument("--out", default=None)
+    p.add_argument("--role", default=None,
                    help="owner, purchasing, a roles-file role, or person:<address or id>")
     p.add_argument("--days", type=float, default=30.0)
     p.add_argument("--until", default=None, help="window end (ISO), default the data's end")
@@ -822,12 +947,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--mem-max-gb", type=float, default=8.0)
     p.add_argument("--held-out-days", type=float, default=10.0,
                    help="the window's last days scored apart (the gate's test days); 0: none")
+    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None,
+                   help="read the SQLite generation at --store, or the Postgres ontology "
+                        "the API reads in mode 1 (refused when it does not hold that "
+                        "generation); default: as PLX_ONTOLOGY_PG says")
+    p.add_argument("--print-data-end", action="store_true",
+                   help="print the store's last received mail (ISO) and its source; no run")
     a = p.parse_args(argv)
+    if not a.print_data_end and not (a.role and a.out):
+        p.error("--role and --out are required")
     cap_memory(a.mem_max_gb)
     config = load_config()
     store = Path(a.store)
+    try:
+        st = ap._store(a.store, a.source)
+    except ostore.StoreError as error:
+        print(json.dumps({"schema": SCHEMA, "role": a.role, "status": "blocked",
+                          "reason": error.code, "detail": str(error)}))
+        return 2
+    if a.print_data_end:
+        # with --until: also the data end a replay to then is judged to (its result's
+        # ``data_end``), so a scorer reruns a finished role once more data came in
+        try:
+            ends = {"data_end": ap._iso(data_end(st, ap._iso(datetime.now(timezone.utc))))}
+            if a.until:
+                ends["judged_to"] = ap._iso(data_end(st, ap._iso(
+                    ap._instant(a.until) + config["horizon"])))
+            print(json.dumps({**ends, **ap.store_source(st)}))
+        finally:
+            st.close()
+        return 0
     people = pe._people(store)
-    st = ap._store(a.store)
     if a.capture_state and (Path(a.capture_state) / "mail-capture" / "capture.db").exists():
         from . import autopilot_work as aw
         st.autopilot_capture = aw.CaptureTexts(a.capture_state)

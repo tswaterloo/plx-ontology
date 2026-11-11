@@ -15,6 +15,8 @@ a layer's versions, value sources, text fields and chunks take new row numbers f
 ontology's sequences, its value fields and kinds are matched to the ontology's by content
 (a new one is added), its packed values are unpacked (their sources recorded in
 ``packed_sources``: never word-indexed, migration 0010) and its links' texts stored plain.
+A row whose key the store already holds (the delta follower wrote the same content-keyed row
+a migration layer carries) is replaced by the layer's (``_copy``, ``UPSERT``).
 Layers are applied oldest first, so an object owned by several ends with the newest
 layer's rows.
 
@@ -40,6 +42,7 @@ from typing import Any, Mapping, Sequence
 from ontology import store_ddl
 from operating.pg.ontology_load import TABLES, _clean, _context, _number
 
+_CHUNK = 200_000   # sources whose value cells are read at once
 _OWNED = "(SELECT value FROM json_each(:ids))"
 _OWNED_PG = "(SELECT object_id FROM owned)"
 _EVENTS_PG = f"(SELECT event_id FROM ontology.event_objects WHERE object_id IN {_OWNED_PG})"
@@ -82,12 +85,76 @@ FOLLOW_LIMITS = {"connect_timeout": 10,
                  "options": "-c statement_timeout=1800000 -c lock_timeout=600000"}
 
 
-def _copy(cur: Any, table: str, columns: Sequence[str], rows: Any) -> int:
+# Tables whose rows are keyed by their content or their object, so a layer can hold a row
+# the served store already holds: a delta follower writes the same content-keyed rows
+# (events, links, identifiers, text) a migration layer then copies. Their layer rows
+# replace the served ones on the key. Every other table of ``_insert`` takes new row
+# numbers from a sequence, or matches by content (``_match``), and cannot meet its own key.
+UPSERT = frozenset({"objects", "events", "event_objects", "identifiers", "object_removals",
+                    "link_rows", "text_fields", "text_chunks", "chunk_words"})
+_ORDER = "_stage_order"
+# columns of the compact layout (migration 0007) a layer's plain row leaves unset: a served
+# row stored packed would otherwise keep them beside the layer's plain text (the table's
+# check refuses both)
+_UNPACK = {"link_rows": ("reason_id", "evidence_id", "ek", "slots")}
+
+
+def _primary_key(cur: Any, table: str, keys: dict[str, list[str]] | None) -> list[str]:
+    """``ontology.<table>``'s primary key columns, in key order. Read from the catalog once
+    per ``keys`` (a transaction's cache, ``_insert``'s) when one is given."""
+    if keys is not None and table in keys:
+        return keys[table]
+    cur.execute("SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = "
+                "i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = %s::regclass "
+                "AND i.indisprimary ORDER BY array_position(i.indkey, a.attnum)",
+                (f"ontology.{table}",))
+    key = [row[0] for row in cur.fetchall()]
+    if not key:
+        raise RuntimeError(f"ontology.{table} has no primary key to upsert on")
+    if keys is not None:
+        keys[table] = key
+    return key
+
+
+def _copy(cur: Any, table: str, columns: Sequence[str], rows: Any, *,
+          keys: dict[str, list[str]] | None = None) -> int:
+    """Copy ``rows`` into ``ontology.<table>``; the number of rows read.
+
+    A table of ``UPSERT`` is staged in a temporary table (dropped at commit) and inserted
+    ``ON CONFLICT`` on its primary key, ``DO UPDATE`` of every other column: a row the
+    store already holds is replaced by the layer's, and of several rows of one key in
+    ``rows`` the last wins (``SELECT DISTINCT ON``), so neither fails the transaction.
+    A replaced link row stored packed (migration 0007) becomes the layer's plain one
+    (``_UNPACK``). Other tables are copied directly, and a duplicate key there still fails loudly.
+    ``keys``: the primary keys read so far in this transaction."""
+    cols = ", ".join(columns)
     count = 0
-    with cur.copy(f"COPY ontology.{table} ({', '.join(columns)}) FROM STDIN") as copy:
+    key = _primary_key(cur, table, keys) if table in UPSERT else []
+    if key and not set(key) <= set(columns):
+        raise RuntimeError(f"ontology.{table}: the primary key {key} is not among {cols}")
+    if not key:
+        with cur.copy(f"COPY ontology.{table} ({cols}) FROM STDIN") as copy:
+            for row in rows:
+                copy.write_row(tuple(_clean(v) for v in row))
+                count += 1
+        return count
+    stage = f"stage_{table}"
+    cur.execute(f"CREATE TEMP TABLE IF NOT EXISTS {stage} ON COMMIT DROP AS SELECT {cols} "
+                f"FROM ontology.{table} WITH NO DATA")
+    cur.execute(f"ALTER TABLE {stage} ADD COLUMN IF NOT EXISTS {_ORDER} bigint "
+                "GENERATED ALWAYS AS IDENTITY")
+    cur.execute(f"TRUNCATE {stage}")
+    with cur.copy(f"COPY {stage} ({cols}) FROM STDIN") as copy:
         for row in rows:
             copy.write_row(tuple(_clean(v) for v in row))
             count += 1
+    on = ", ".join(key)
+    sets = ", ".join([f"{c} = excluded.{c}" for c in columns if c not in key]
+                     + [f"{c} = DEFAULT" for c in _UNPACK.get(table, ()) if c not in columns])
+    cur.execute(f"INSERT INTO ontology.{table} ({cols}) SELECT DISTINCT ON ({on}) {cols} "
+                f"FROM {stage} ORDER BY {on}, {_ORDER} DESC ON CONFLICT ({on}) "
+                f"{'DO UPDATE SET ' + sets if sets else 'DO NOTHING'}")
+    cur.execute(f"TRUNCATE {stage}")
     return count
 
 
@@ -287,6 +354,7 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
     (``conn``) into ``ontology.*``; their links, or with ``every_link`` every link the
     layer holds (a migration's link units may join objects it does not hold)."""
     report: dict[str, int] = {}
+    keys: dict[str, list[str]] = {}   # primary keys, read once per table in this transaction
     for table in ("objects", "object_removals", "identifiers", "events", "event_objects"):
         spec = TABLES[table]
         # a layer's row number is its own: the ontology numbers the row (column default)
@@ -294,63 +362,82 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
         select = spec.select.replace("SELECT rowid, ", "SELECT ", 1) if numbered \
             else spec.select
         rows = conn.execute(f"SELECT * FROM ({select}) WHERE {_PLAIN[table]}", {"ids": ids})
-        report[f"copied.{table}"] = _copy(cur, table, spec.columns[numbered:], rows)
+        report[f"copied.{table}"] = _copy(cur, table, spec.columns[numbered:], rows, keys=keys)
 
-    versions = conn.execute(
-        "SELECT rowid, object_id, l1_handle, digest, lineage, markings, recorded_at, "
-        f"superseded_at FROM object_versions WHERE object_id IN {_OWNED}", {"ids": ids}
-    ).fetchall()
-    ver = dict(zip((v[0] for v in versions), _numbers(cur, "object_versions_ver",
-                                                      len(versions))))
+    # versions and sources are streamed from the layer (6M rows each held as tuples were
+    # part of the 11-08 OOM); only the layer-id -> ontology-id maps stay in memory
+    owned_versions = (f"SELECT rowid, object_id, l1_handle, digest, lineage, markings, "
+                      f"recorded_at, superseded_at FROM object_versions WHERE object_id IN "
+                      f"{_OWNED} ORDER BY rowid")
+    n_versions = conn.execute(f"SELECT count(*) FROM ({owned_versions})", {"ids": ids}).fetchone()[0]
+    ver: dict[int, int] = {}
+    ver_numbers = iter(_numbers(cur, "object_versions_ver", n_versions))
+
+    def version_rows() -> Any:
+        for v in conn.execute(owned_versions, {"ids": ids}):
+            ver[v[0]] = next(ver_numbers)
+            yield (ver[v[0]], *v[1:])
     report["copied.object_versions"] = _copy(
-        cur, "object_versions", TABLES["object_versions"].columns,
-        ((ver[v[0]], *v[1:]) for v in versions))
+        cur, "object_versions", TABLES["object_versions"].columns, version_rows())
 
-    sources = conn.execute(
-        "SELECT src, ver, binding_id, digest, lineage, recorded_at, superseded_at FROM "
-        "value_sources WHERE ver IN (SELECT value FROM json_each(:vers))",
-        {"vers": json.dumps(list(ver))}).fetchall()
-    src = dict(zip((s[0] for s in sources), _numbers(cur, "value_sources_src", len(sources))))
+    owned_sources = ("SELECT src, ver, binding_id, digest, lineage, recorded_at, "
+                     "superseded_at FROM value_sources WHERE ver IN (SELECT rowid FROM "
+                     f"object_versions WHERE object_id IN {_OWNED}) ORDER BY src")
+    n_sources = conn.execute(f"SELECT count(*) FROM ({owned_sources})", {"ids": ids}).fetchone()[0]
+    src: dict[int, int] = {}
+    src_numbers = iter(_numbers(cur, "value_sources_src", n_sources))
+
+    def source_rows() -> Any:
+        for s in conn.execute(owned_sources, {"ids": ids}):
+            src[s[0]] = next(src_numbers)
+            yield (src[s[0]], ver[s[1]], *s[2:])
     report["copied.value_sources"] = _copy(
-        cur, "value_sources", TABLES["value_sources"].columns,
-        ((src[s[0]], ver[s[1]], *s[2:]) for s in sources))
+        cur, "value_sources", TABLES["value_sources"].columns, source_rows())
+    del src_numbers
 
-    cells = conn.execute(
-        "SELECT src, field, layout, value, currency, currency_citation FROM value_cells "
-        "WHERE src IN (SELECT value FROM json_each(:srcs))",
-        {"srcs": json.dumps(list(src))}).fetchall()
     context = _context(path)
-    used_fields = {f for cell in cells for f, _ in context["layouts"][cell[2]]}
-    used_kinds = {k for cell in cells for _, k in context["layouts"][cell[2]]}
-    fields = _match(cur, "value_fields", "field", "value_fields_field",
-                    ("property", "field_path"),
-                    conn.execute("SELECT field, property, field_path FROM value_fields WHERE "
-                                 "field IN (SELECT value FROM json_each(:f))",
-                                 {"f": json.dumps(sorted(used_fields))}).fetchall())
-    kinds = _match(cur, "value_kinds", "kind", "value_kinds_kind", store_ddl.KIND_COLUMNS,
-                   conn.execute(f"SELECT kind, {', '.join(store_ddl.KIND_COLUMNS)} FROM "
-                                "value_kinds WHERE kind IN (SELECT value FROM json_each(:k))",
-                                {"k": json.dumps(sorted(used_kinds))}).fetchall())
     numeric = context["numeric"]
+    # value cells in chunks of sources (a whole migration's cells in one list took 25 GB)
+    src_keys = list(src)
+    copied = 0
+    packed: set = set()
+    for i0 in range(0, len(src_keys), _CHUNK):
+        part = src_keys[i0:i0 + _CHUNK]
+        cells = conn.execute(
+            "SELECT src, field, layout, value, currency, currency_citation FROM value_cells "
+            "WHERE src IN (SELECT value FROM json_each(:srcs))",
+            {"srcs": json.dumps(part)}).fetchall()
+        used_fields = {f for cell in cells for f, _ in context["layouts"][cell[2]]}
+        used_kinds = {k for cell in cells for _, k in context["layouts"][cell[2]]}
+        fields = _match(cur, "value_fields", "field", "value_fields_field",
+                        ("property", "field_path"),
+                        conn.execute("SELECT field, property, field_path FROM value_fields WHERE "
+                                     "field IN (SELECT value FROM json_each(:f))",
+                                     {"f": json.dumps(sorted(used_fields))}).fetchall())
+        kinds = _match(cur, "value_kinds", "kind", "value_kinds_kind", store_ddl.KIND_COLUMNS,
+                       conn.execute(f"SELECT kind, {', '.join(store_ddl.KIND_COLUMNS)} FROM "
+                                    "value_kinds WHERE kind IN (SELECT value FROM json_each(:k))",
+                                    {"k": json.dumps(sorted(used_kinds))}).fetchall())
 
-    def values() -> Any:
-        for cell in cells:
-            for (s, f, k, value, _num, currency, cite) in TABLES["value_cells"].shape(
-                    context, cell):
-                yield (src[s], fields[f], kinds[k], value,
-                       _number(value) if k in numeric else None, currency, cite)
-    report["copied.value_cells"] = _copy(cur, "value_cells", TABLES["value_cells"].columns,
-                                         values())
+        def values(cells=cells, fields=fields, kinds=kinds) -> Any:
+            for cell in cells:
+                for (s_, f, k, value, _num, currency, cite) in TABLES["value_cells"].shape(
+                        context, cell):
+                    yield (src[s_], fields[f], kinds[k], value,
+                           _number(value) if k in numeric else None, currency, cite)
+        copied += _copy(cur, "value_cells", TABLES["value_cells"].columns, values())
+        packed.update(src[cell[0]] for cell in cells if cell[1] is None)
+        del cells
+    report["copied.value_cells"] = copied
     # its packed records' sources: their values are not word-indexed (migration 0010)
     report["copied.packed_sources"] = _copy(
-        cur, "packed_sources", ("src",),
-        sorted({(src[cell[0]],) for cell in cells if cell[1] is None}))
+        cur, "packed_sources", ("src",), sorted((p,) for p in packed))
 
     links = conn.execute(
         f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links" if every_link else
         f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links WHERE from_object IN "
         f"{_OWNED} OR to_object IN {_OWNED}", {} if every_link else {"ids": ids})
-    report["copied.link_rows"] = _copy(cur, "link_rows", store_ddl.LINK_COLUMNS, links)
+    report["copied.link_rows"] = _copy(cur, "link_rows", store_ddl.LINK_COLUMNS, links, keys=keys)
 
     try:
         text = conn.execute(
@@ -361,7 +448,7 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
         text = []
     field_id = dict(zip((t[0] for t in text), _numbers(cur, "text_fields_id", len(text))))
     report["copied.text_fields"] = _copy(cur, "text_fields", TABLES["text_fields"].columns,
-                                         ((field_id[t[0]], *t[1:]) for t in text))
+                                         ((field_id[t[0]], *t[1:]) for t in text), keys=keys)
     chunks = conn.execute(
         "SELECT field_id, start, body FROM text_chunks WHERE field_id IN "
         "(SELECT value FROM json_each(:f))", {"f": json.dumps(list(field_id))}).fetchall() \
@@ -369,12 +456,12 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
     numbers = _numbers(cur, "text_chunks_id", len(chunks))
     report["copied.text_chunks"] = _copy(
         cur, "text_chunks", TABLES["text_chunks"].columns,
-        ((n, field_id[c[0]], c[1], c[2]) for n, c in zip(numbers, chunks)))
+        ((n, field_id[c[0]], c[1], c[2]) for n, c in zip(numbers, chunks)), keys=keys)
     # their words (migration 0010: FTS5's own tokenizer, as the layer's ``chunk_text``)
     from operating.pg.words import chunk_word_rows
     report["copied.chunk_words"] = _copy(
         cur, "chunk_words", ("chunk_id", "words"),
-        chunk_word_rows((n, c[2]) for n, c in zip(numbers, chunks)))
+        chunk_word_rows((n, c[2]) for n, c in zip(numbers, chunks)), keys=keys)
     return report
 
 

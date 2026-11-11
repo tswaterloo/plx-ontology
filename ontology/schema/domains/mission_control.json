@@ -236,6 +236,31 @@
        "id": "wb.mc_sources"
       }
      ]
+    },
+    {
+     "name": "due_date",
+     "value_type": "date",
+     "description": "The task's due day as Mission Control shows it (due). MC writes an em dash for no due date, which is no value; a due day written without a year (\"Jun 12\") is a not_iso_date gap, never a guessed year.",
+     "sources": [
+      {
+       "binding": "mission_control.tasks",
+       "path": "due",
+       "parser": "iso_date",
+       "when": [
+        {
+         "path": "due",
+         "op": "ne",
+         "value": "—"
+        }
+       ]
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
     }
    ],
    "display": [

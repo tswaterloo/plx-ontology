@@ -250,13 +250,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--days", type=float, default=90.0)
     p.add_argument("--until", default=None)
     p.add_argument("--out", required=True, help="roles file to write (other roles kept)")
+    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None,
+                   help="the SQLite generation at --store, or the Postgres ontology the API "
+                        "reads in mode 1 (refused when it does not hold that generation)")
     a = p.parse_args(argv)
     wanted = a.roles or ["purchasing"]
     wanted = sorted(ROLE_NAMES) if "all" in wanted else list(dict.fromkeys(wanted))
     until = a.until or ap._iso(datetime.now(timezone.utc))
     since = ap._iso(ap._instant(until) - timedelta(days=a.days))
     people = pe._people(Path(a.store))
-    st = ap._store(a.store)
+    st = ap._store(a.store, a.source)
     results = {}
     try:
         acts = None

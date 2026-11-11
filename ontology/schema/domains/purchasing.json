@@ -325,6 +325,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "portal.etl_silver_purchase_orders"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "bc_manufacturing",
                   "bc_distribution"
                 ],
@@ -336,17 +347,6 @@
                   {
                     "kind": "ref",
                     "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "portal.etl_silver_purchase_orders"
                   }
                 ]
               }
@@ -374,17 +374,6 @@
             "precedence": [
               {
                 "lineage": [
-                  "fm_bronze"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
                   "gold_etl_from_fm"
                 ],
                 "evidence": [
@@ -395,6 +384,17 @@
                   {
                     "kind": "ref",
                     "id": "portal.mirror_fm_pos_to_gold"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
                   }
                 ]
               }
@@ -439,17 +439,6 @@
             "precedence": [
               {
                 "lineage": [
-                  "fm_bronze"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
                   "gold_etl_from_fm"
                 ],
                 "evidence": [
@@ -460,6 +449,17 @@
                   {
                     "kind": "ref",
                     "id": "portal.mirror_fm_pos_to_gold"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
                   }
                 ]
               }
@@ -602,6 +602,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "portal.etl_silver_purchase_orders"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze",
                   "sage_bronze"
                 ],
@@ -609,17 +620,6 @@
                   {
                     "kind": "ref",
                     "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "portal.etl_silver_purchase_orders"
                   }
                 ]
               },
@@ -669,6 +669,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "portal.etl_silver_purchase_orders"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze",
                   "sage_bronze"
                 ],
@@ -676,17 +687,6 @@
                   {
                     "kind": "ref",
                     "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "portal.etl_silver_purchase_orders"
                   }
                 ]
               },
@@ -785,6 +785,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "portal.etl_silver_purchase_orders"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "fm_bronze",
                   "sage_bronze"
                 ],
@@ -804,17 +815,6 @@
                   {
                     "kind": "ref",
                     "id": "portal.bc_transaction_currency"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "portal.etl_silver_purchase_orders"
                   }
                 ]
               }
@@ -872,6 +872,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "portal.etl_silver_purchase_orders"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "bc_manufacturing",
                   "bc_distribution"
                 ],
@@ -891,17 +902,6 @@
                   {
                     "kind": "ref",
                     "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "portal.etl_silver_purchase_orders"
                   }
                 ]
               }
@@ -1120,6 +1120,42 @@
               "kind": "context_pack",
               "ref": "devloop/CONTEXT/03-PORTAL.md#6",
               "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
+            }
+          ]
+        },
+        {
+          "name": "purchaser_code",
+          "value_type": "text",
+          "description": "The order's purchaser (buyer) code: BC purchaseOrders.purchaser. A salesperson/purchaser code (BC Code[20]); the with_owners step (ontology/owner_links.py) links it to the one staff Person whose address local part it is, as a lead (a code is no address).",
+          "sources": [
+            {
+              "binding": "bc.purchase_orders",
+              "path": "purchaser",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_query_specs"
+            }
+          ]
+        },
+        {
+          "name": "requisitioner",
+          "value_type": "text",
+          "description": "FileMaker generated PO requisitioner_c: the person who raised the PO, by name. The with_owners step links a name to the one staff Person whose address local part it spells (first.last, firstlast, flast), as a lead.",
+          "sources": [
+            {
+              "binding": "portal.fm_generated_purchase_order",
+              "path": "requisitioner_c",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.generated_purchase_order"
             }
           ]
         }
@@ -1365,6 +1401,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "portal.etl_silver_purchase_orders"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "bc_manufacturing",
                   "bc_distribution"
                 ],
@@ -1384,17 +1431,6 @@
                   {
                     "kind": "ref",
                     "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "portal.etl_silver_purchase_orders"
                   }
                 ]
               }
@@ -1440,6 +1476,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "portal.etl_silver_purchase_orders"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "bc_manufacturing",
                   "bc_distribution"
                 ],
@@ -1458,17 +1505,6 @@
                   {
                     "kind": "ref",
                     "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "portal.etl_silver_purchase_orders"
                   }
                 ]
               }
@@ -1818,6 +1854,17 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "bc_manufacturing",
                   "bc_distribution"
                 ],
@@ -1832,17 +1879,6 @@
                 "lineage": [
                   "fm_bronze",
                   "sage_bronze"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm"
                 ],
                 "evidence": [
                   {
@@ -4993,6 +5029,101 @@
           "path": "ontology/document_fields.py"
         }
       ]
+    },
+    {
+      "id": "PurchaseOrderReference",
+      "description": "The Your Reference of one BC purchase order (ODataV4 Page 50 PurchaseOrder, captured as the field page purchaseOrderReferences under the API v2.0 order's id): the FileMaker PO number BC carries for the order, its BC number and buy-from vendor. Read under its order's grant (capture_store.BC_FIELD_PAGES). The your_reference build step judges the Portal twin; this record makes the reference itself findable and linked to its BC order. Its values are text, not identifiers: the order itself carries the numbers a mention resolves to, so a mail naming the number never links twice.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "bc.purchase_order_references",
+          "source": "bc",
+          "relation": "purchaseOrderReferences",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_query_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "context.live_sources"
+            }
+          ],
+          "note": "The row's id is the API v2.0 purchase order id the field page is stored under (its record path; ontology/project_bc.py adds it to the projected row)."
+        }
+      ],
+      "properties": [
+        {
+          "name": "bc_order_id",
+          "value_type": "text",
+          "description": "The API v2.0 id of the BC purchase order the reference belongs to.",
+          "sources": [
+            {
+              "binding": "bc.purchase_order_references",
+              "path": "id",
+              "parser": "as_is"
+            }
+          ]
+        },
+        {
+          "name": "po_number",
+          "value_type": "text",
+          "description": "The BC purchase order number (Page 50 No).",
+          "sources": [
+            {
+              "binding": "bc.purchase_order_references",
+              "path": "No",
+              "parser": "as_is"
+            }
+          ]
+        },
+        {
+          "name": "your_reference",
+          "value_type": "text",
+          "description": "Your Reference: the FileMaker PO number BC carries for the order (blank on most orders).",
+          "sources": [
+            {
+              "binding": "bc.purchase_order_references",
+              "path": "Your_Reference",
+              "parser": "as_is"
+            }
+          ]
+        },
+        {
+          "name": "vendor_number",
+          "value_type": "text",
+          "description": "The buy-from vendor number (Page 50 Buy_from_Vendor_No).",
+          "sources": [
+            {
+              "binding": "bc.purchase_order_references",
+              "path": "Buy_from_Vendor_No",
+              "parser": "as_is"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "your_reference",
+        "po_number"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench.bc_query_specs"
+        },
+        {
+          "kind": "ref",
+          "id": "context.live_sources"
+        }
+      ]
     }
   ],
   "link_types": [
@@ -5636,7 +5767,7 @@
       "name": "supplied_by",
       "reverse_name": "receipts",
       "cardinality": "N:1",
-      "description": "The receipt's supplier per source.",
+      "description": "The receipt's supplier per source (FileMaker: the supplier of the generated PO line the receipt names).",
       "bindings": [
         {
           "kind": "fk",
@@ -5662,19 +5793,30 @@
           "tier_ceiling": "verified",
           "from_binding": "portal.fm_receipt",
           "to_binding": "portal.fm_supplier",
-          "pairs": [
-            {
-              "from": "idsupp",
-              "to": "id",
-              "compare": "integer_id"
-            }
-          ],
           "evidence": [
             {
-              "kind": "ref",
-              "id": "allowlist.public.receipt"
+              "kind": "workbench_code",
+              "path": "scripts/gen_raw_links.py",
+              "note": "FileMaker receipt.idsupp is blank on every row (0 of 3,438, 2026-11-08); the supplier is the one of the generated PO line the receipt names (idgenpoitem): 1,334 of 1,334 such receipts reach a supplier, and the line's supplier equals its PO header's supplier on 1,334 of 1,334."
             }
-          ]
+          ],
+          "via": {
+            "binding": "portal.fm_generated_purchase_order_item",
+            "from_pairs": [
+              {
+                "from": "idgenpoitem",
+                "to": "id",
+                "compare": "integer_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "idsupplier",
+                "to": "id",
+                "compare": "integer_id"
+              }
+            ]
+          }
         },
         {
           "kind": "fk",
@@ -5795,6 +5937,60 @@
             {
               "kind": "ref",
               "id": "allowlist.public.receipt_packaging"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_receipt_raw_material",
+          "to_binding": "portal.fm_receipt",
+          "pairs": [
+            {
+              "from": "idpogenitem",
+              "to": "idgenpoitem",
+              "compare": "integer_id"
+            }
+          ],
+          "unique_target": true,
+          "where": [
+            {
+              "path": "idreceipt",
+              "op": "absent"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/purchasing.json",
+              "note": "Schema-next link audit, 2026-11-09 (read-only source mirror, counts only): FileMaker fills idreceipt on 490 of 9,333 raw-material and 202 of 8,258 packaging receipt lines; the rest carry the PO line (idpogenitem) the receipt header names as idgenpoitem. Where exactly one header names the line's PO line it is the line's receipt in 345 of 358 raw-material and 83 of 86 packaging lines whose stored idreceipt can check it (96%), so the path is a lead: 772 raw-material and 92 packaging lines gain a receipt. A PO line received under two or three headers (87 of 1,234) stays unlinked."
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_receipt_packaging",
+          "to_binding": "portal.fm_receipt",
+          "pairs": [
+            {
+              "from": "idpogenitem",
+              "to": "idgenpoitem",
+              "compare": "integer_id"
+            }
+          ],
+          "unique_target": true,
+          "where": [
+            {
+              "path": "idreceipt",
+              "op": "absent"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/purchasing.json",
+              "note": "Schema-next link audit, 2026-11-09 (read-only source mirror, counts only): FileMaker fills idreceipt on 490 of 9,333 raw-material and 202 of 8,258 packaging receipt lines; the rest carry the PO line (idpogenitem) the receipt header names as idgenpoitem. Where exactly one header names the line's PO line it is the line's receipt in 345 of 358 raw-material and 83 of 86 packaging lines whose stored idreceipt can check it (96%), so the path is a lead: 772 raw-material and 92 packaging lines gain a receipt. A PO line received under two or three headers (87 of 1,234) stays unlinked."
             }
           ]
         },
@@ -6884,6 +7080,186 @@
             {
               "kind": "workbench_code",
               "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "FreightBill.for_sales_invoice",
+      "from": "FreightBill",
+      "to": "SalesInvoice",
+      "name": "for_sales_invoice",
+      "reverse_name": "freight_bills",
+      "cardinality": "N:M",
+      "description": "A freight bill names this SalesInvoice: an identifier the one identifier grammar reads in its text (a sales invoice number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "FreightBill.same_record_as",
+      "from": "FreightBill",
+      "to": "FreightBill",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "1:1",
+      "description": "One freight bill read from mail and filed in SharePoint: the tracking number names one bill on each side. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "graph_mail.freight_bills",
+          "to_binding": "sharepoint.freight_bills",
+          "key": {
+            "from": "tracking_number"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "PurchaseOrderReference.of_purchase_order",
+      "from": "PurchaseOrderReference",
+      "to": "PurchaseOrder",
+      "name": "of_purchase_order",
+      "reverse_name": "bc_references",
+      "cardinality": "1:1",
+      "description": "The BC purchase order the Page 50 reference is stored under: the same API v2.0 id (verified). The Portal order the reference names is the your_reference step's same-record link, never this one.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.purchase_order_references",
+          "to_binding": "bc.purchase_orders",
+          "pairs": [
+            {
+              "from": "id",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "bc_system_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_query_specs"
+            },
+            {
+              "kind": "ref",
+              "id": "context.live_sources"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Receipt.po_reference",
+      "from": "Receipt",
+      "to": "PurchaseOrderReference",
+      "name": "po_reference",
+      "reverse_name": "receipts",
+      "cardinality": "N:1",
+      "description": "The BC purchase order a BC posted receipt received (purchaseReceipts.orderNumber = the PO reference No. in the same company; BC deletes the PO once received, its reference stays).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.purchase_receipts",
+          "to_binding": "bc.purchase_order_references",
+          "pairs": [
+            {
+              "from": "orderNumber",
+              "to": "No",
+              "compare": "identifier",
+              "identifier_kind": "bc_document_no"
+            }
+          ],
+          "unique_target": true,
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/purchasing.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 114 of 114 non-blank order numbers reach a PO reference in the receipt's company; 15 of 15 sampled pairs name the same vendor. The Portal PO with the same number is not this PO: 0 of 15 sampled pairs agreed on the vendor, so no receipt-to-Portal-PO binding is declared."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "PurchaseOrderReference.fm_purchase_order",
+      "from": "PurchaseOrderReference",
+      "to": "PurchaseOrder",
+      "name": "fm_purchase_order",
+      "reverse_name": "bc_po_references",
+      "cardinality": "N:1",
+      "description": "The Portal/FileMaker purchase order a BC PO reference names in Your Reference (= the Portal PO's FileMaker PO number).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.purchase_order_references",
+          "to_binding": "portal.app_purchase_order",
+          "pairs": [
+            {
+              "from": "Your_Reference",
+              "to": "custom_fields.fmPoNumber",
+              "compare": "identifier",
+              "identifier_kind": "petra_po"
+            }
+          ],
+          "unique_target": true,
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/purchasing.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 248 of 331 non-blank references reach one Portal PO; 15 of 15 sampled pairs agree (the Portal PO carries the BC No. or the same vendor)."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ReceiptLine.supplier_item",
+      "from": "ReceiptLine",
+      "to": "SupplierItem",
+      "name": "supplier_item",
+      "reverse_name": "receipt_lines",
+      "cardinality": "N:1",
+      "description": "The supplier's packaging item a FileMaker packaging receipt line received (receipt_packaging.idpacksupp = packaging_supplier.id).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_receipt_packaging",
+          "to_binding": "portal.fm_packaging_supplier",
+          "pairs": [
+            {
+              "from": "idpacksupp",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/purchasing.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 8,062 of 8,241 non-blank ids reach a supplier item; 15 of 15 sampled pairs name the same packaging item; shift baseline 0.0."
             }
           ]
         }

@@ -38,7 +38,7 @@ from ontology.resolve import ReviewedAliases
 from ontology.types import Actor
 from operating import build_steps, ontology_tools as ot
 from operating import host as host_module
-from operating.ontology_tools_traverse import TraverseTools
+from operating.ontology_tools_traverse import TraverseTools, with_leads
 from operating import session_identity as si
 from operating.tests.test_host import (CASE_COWORKER, ENV, HANGING_RUN, INIT, Directory,
                                       HostCase, Lines, call)
@@ -243,7 +243,8 @@ class HostOneBuildTests(HostCase):
                 reader)
             self.assertNotIn("error", around, around)
             seen[name] = (po in [c["object"]["object_id"] for c in found.get("candidates", [])],
-                          po in [edge["to"] for edge in around["edges"]])
+                          # a lead link is set apart (possibly_related); read it there too
+                          po in [edge["to"] for edge in with_leads(around)["edges"]])
         self.assertEqual(seen, {"full": (True, True), "restricted": (False, False)}, seen)
 
 

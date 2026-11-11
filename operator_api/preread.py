@@ -11,7 +11,7 @@ Two things, both from the generic tools as the signed-in reader (nothing is writ
   number (a Portal number reused by Business Central, say), and the person is asked which
   one (``choices``), never a guess. A record the request is already about (a pick, a page)
   settles it.
-* **The evidence the answer's "How we know" shows** (``evidence``): a purchase order's
+* **The evidence the answer's "Evidence" list shows** (``evidence``): a purchase order's
   lateness trail (its dated steps, the vendor's mail naming it or a twin, receipts) or an
   order's materials walk, built once by ``operator_api.trail`` and handed to the agent as a
   tool output it reads and cites from (``brief``), so its reply and the trail under it

@@ -7,7 +7,7 @@ import { fieldLabel, formatDate, formatDateTime, formatMoney, plural, readable, 
 import type { Conflict, Fact, Freshness, Hidden, NotFoundItem, Source } from "@/lib/types";
 import { EvidenceDrawer, SourceChip, SourceChips, sourceName } from "./source-chip";
 import { mailField } from "./source-view";
-import { DoneRing, OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
+import { DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 
 const MONEY_LABEL = /\b(?:total|amount|cost|price|balance|value|revenue|margin|invoice)\b/i;
 const BARE_NUMBER = /^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$|^-?\d+(?:\.\d+)?$/;
@@ -90,7 +90,7 @@ export function SourceLine({ source, record, prefix = "From" }: { source: Source
   return (
     // a span (shown as a line): it also stands inside a sentence's paragraph
     <span className="flex items-center gap-2 text-meta text-muted" data-testid="source-line">
-      <SystemTile system={source.system} size={16} />
+      <SystemCode system={source.system} size={16} />
       {opens ? (
         <button type="button" onClick={() => setOpen(true)} className="min-w-0 truncate text-left underline-offset-2 hover:text-fg hover:underline cursor-pointer">
           {text}
@@ -335,7 +335,7 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
               {/* on a phone the system takes its own line, and the value with its reason the width below it */}
               <th scope="row" className="py-2 pr-3 text-left font-normal text-muted max-sm:w-full max-sm:pb-0.5">
                 <span className="flex items-center gap-2">
-                  <SystemTile system={v.source.system} size={16} />
+                  <SystemCode system={v.source.system} size={16} />
                   {valueSystem(v.source)}
                 </span>
               </th>
@@ -495,8 +495,8 @@ export function CheckedList({ freshness, facts, now }: { freshness: Freshness | 
   return (
     <dl className="space-y-1" data-testid="checked-list">
       {rows.map((r) => (
-        <div key={r.system} className="grid h-7 grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-x-2.5 text-[13px]">
-          <SystemTile system={r.code} size={18} />
+        <div key={r.system} className="grid h-7 grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-x-2 text-[13px]">
+          <SystemCode system={r.code} size={18} />
           <div className="flex min-w-0 items-baseline gap-2">
             <dt className="truncate">{r.system}</dt>
             <dd className={cn("shrink-0 text-[12px]", r.what === "None cited" ? "text-faint" : "text-muted")}>{r.what}</dd>
@@ -531,7 +531,7 @@ export function Disclosure({
       <summary className="-mx-2 flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-[13px] text-fg hover:bg-hover [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-3.5 shrink-0 text-muted transition-transform group-open:rotate-90" strokeWidth={2.2} aria-hidden />
         <h3 className="font-medium">{label}</h3>
-        {count != null && <span className="tabular-nums text-muted">{count}</span>}
+        {count != null && <span className="num text-muted">{count}</span>}
       </summary>
       <div className="space-y-3 pt-2 pb-4 pl-5">{children}</div>
     </details>

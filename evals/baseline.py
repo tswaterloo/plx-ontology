@@ -398,6 +398,12 @@ class DeterministicInvestigator:
                     around = call("plx.around", {**arguments, "tier_floor": LEAD_TIER})
                     if not isinstance(around, Mapping) or "error" in around:
                         continue
+                    # Lead records come set apart (possibly_related, since 2026-11-07): the
+                    # walk asked for them, follows them and labels the answer.
+                    apart = around.get("possibly_related")
+                    if isinstance(apart, Mapping):
+                        around = {**around, "objects": [*(around.get("objects") or ()),
+                                                        *(apart.get("objects") or ())]}
                     walk.lead_links = walk.lead_links or bool(around.get("objects"))
                 for ref in around.get("objects") or []:
                     other = ref.get("object_id")

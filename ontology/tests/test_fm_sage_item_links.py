@@ -8,6 +8,9 @@
 * An FM receipt reaches its PO through the PO item it names (``idgenpoitem``).
 * FM receipt lines and their lots reach the item: a raw line through its supplier item
   (``idrawsupp``), a packaging line by ``idpack``. A placeholder lot ("NA") is no lot.
+* An FM receipt line, and its lot, that holds no receipt (``idreceipt``) is a lead to the one
+  receipt header naming its PO line (``idgenpoitem``); a PO line two headers name reaches
+  neither, and a stored receipt is never second-guessed by the PO-line path.
 * A Sage PO line stores no item number: its description equal to exactly one Sage item's
   is a lead to that item; a description several items share names none.
 * A Sage PO reaches the Portal supplier whose unique code is the Sage vendor id; a vendor
@@ -168,6 +171,46 @@ class StoredKeyItemLinks(unittest.TestCase):
              if "sage_po_header" in f},
             {(oid("PurchaseOrder", "portal.sage_po_header", {"porhseq": "1001"}),
               oid("Supplier", "portal.app_supplier", {"id": "s-1"}), "verified")})
+
+
+PO_LINE_ROWS = {
+    "public.receipt": [{"id": 3, "idgenpoitem": 71}, {"id": 4, "idgenpoitem": 72},
+                       {"id": 5, "idgenpoitem": 72}],
+    "public.receipt_raw_material": [
+        {"id": 11, "idrawsupp": 5, "idpogenitem": 71, "lotnoqc": "SUP-LOT-1"},
+        {"id": 12, "idrawsupp": 5, "idpogenitem": 72, "lotnoqc": "SUP-LOT-2"},   # two headers
+        {"id": 13, "idrawsupp": 5, "idpogenitem": 71, "idreceipt": 4, "lotnoqc": "SUP-LOT-3"}],
+    "public.receipt_packaging": [
+        {"id": 21, "idpack": 2, "idpogenitem": 71, "lotnoqc": "NA"}],
+}
+
+
+class ReceiptThroughPoLine(unittest.TestCase):
+    def test_a_line_without_a_receipt_is_a_lead_to_the_one_header_of_its_po_line(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "store.sqlite"
+            build_store(path, schema.load_schema(), {"portal_api": Source(PO_LINE_ROWS)},
+                        normalizer=identifiers.normalize,
+                        clock=lambda: datetime(2026, 10, 2, tzinfo=timezone.utc))
+            conn = sqlite3.connect(str(path))
+            try:
+                links = {(lt, f, t, tier) for lt, f, t, tier in conn.execute(
+                    "SELECT link_type, from_object, to_object, tier FROM links WHERE "
+                    "link_type IN ('ReceiptLine.line_of', 'Lot.received_in') AND "
+                    "superseded_at IS NULL")}
+            finally:
+                conn.close()
+        receipt = lambda i: oid("Receipt", "portal.fm_receipt", {"id": i})
+        raw = lambda i: oid("ReceiptLine", "portal.fm_receipt_raw_material", {"id": i})
+        lot = lambda i: oid("Lot", "portal.fm_receipt_raw_material.lotnoqc", {"id": i})
+        self.assertEqual(links, {
+            ("ReceiptLine.line_of", raw(11), receipt(3), "lead"),
+            ("Lot.received_in", lot(11), receipt(3), "lead"),
+            ("ReceiptLine.line_of", oid("ReceiptLine", "portal.fm_receipt_packaging", {"id": 21}),
+             receipt(3), "lead"),
+            # the stored receipt alone, never also the PO line's header
+            ("ReceiptLine.line_of", raw(13), receipt(4), "verified"),
+            ("Lot.received_in", lot(13), receipt(4), "verified")})
 
 
 if __name__ == "__main__":

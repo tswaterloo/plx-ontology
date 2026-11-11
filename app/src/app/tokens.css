@@ -1,35 +1,41 @@
 /* Design tokens. A desktop app's palette: a light grey sidebar, white panes split by
-   hairlines, ink text in three greys, one blue for selection, focus and the primary
-   button, and status colours that mean something (late, at risk, confirmed, suspect).
-   The oak of the bench icon is the brand, used for the mark only. Host Grotesk with
-   tabular figures. Every text/background pair meets WCAG AA in its theme. */
+   hairlines, ink text in three greys, and status colours that mean something (late, at
+   risk, confirmed, suspect). The accents come from the cube mark: blue #4DA8FF (selection,
+   focus, links and the primary button on dark; deepened to #186BCA on light for 4.5:1),
+   cyan #4FDCEA for small live marks only, navy #123A66 for the active row on dark. Flat
+   colour only: no gradient, glow or motion. Host Grotesk for text, Geist Mono for the
+   wordmark and for figures (IDs, counts, money). Every text/background pair meets WCAG AA
+   in its theme; marks and the wordmark slash clear 3:1. */
 
 :root {
   --bg: #ffffff; /* panes */
-  --bg-subtle: #f6f6f5; /* sidebar, window chrome */
-  --sidebar: #f6f6f5;
-  --surface: #f7f7f6; /* inputs, wells, inspector */
-  --surface-2: #eeeeec; /* hover, sunken fills */
+  --bg-subtle: #f5f6f8; /* sidebar, window chrome */
+  --sidebar: #f5f6f8;
+  --surface: #f6f7f9; /* inputs, wells, inspector */
+  --surface-2: #edeef1; /* hover, sunken fills */
   --raised: #ffffff; /* popovers, menus, drawer */
-  --hover: rgb(0 0 0 / 0.04);
-  --list: #f8f8f7; /* the list pane, so its selected row can sit on it as a sheet */
+  --hover: rgb(24 107 202 / 0.06); /* rows warm to the accent on hover */
+  --list: #f7f8fa; /* the list pane, so its selected row can sit on it as a sheet */
   --row-on: #ffffff;
-  --lift: 0 0 0 0.5px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.08), 0 4px 12px -6px rgb(0 0 0 / 0.1);
-  --selected: #e4edfd; /* the selected row of a list */
-  --selected-strong: #0a64d8; /* the selected row while its list has focus */
+  --lift: 0 0 0 1px #e3e5e9; /* a sheet is set off by a hairline, not a shadow */
+  --selected: #e6f2ff; /* the selected row of a list: the cube's blue as a tint */
+  --selected-strong: #186bca; /* the selected row while its list has focus */
   --fg: #1d1d1f; /* 16:1 */
   --fg-muted: #636366; /* 6:1 */
-  --fg-faint: #6e6e72; /* 4.6:1 on the sidebar */
-  --border: #e6e6e3;
-  --border-strong: #d4d4d0;
-  --rule-ink: #d4d4d0;
-  --control-border: #c9c9c5;
-  --accent: #0a64d8; /* 5.5:1 */
-  --accent-fg: #ffffff;
-  --accent-soft: #e4edfd;
-  --ring: #0a64d8;
-  --oak: #a8642c;
-  --shadow: 0 0 0 0.5px rgb(0 0 0 / 0.12), 0 8px 24px -4px rgb(0 0 0 / 0.14);
+  --fg-faint: #6b6b70; /* 4.6:1 on the sidebar and the selected tint */
+  --border: #e3e5e9;
+  --border-strong: #d1d5db;
+  --rule-ink: #d1d5db;
+  --control-border: #c6cbd2;
+  --accent: #186bca; /* the cube's blue deepened: 5.3:1 on white, 4.6:1 on the selected tint */
+  --accent-fg: #ffffff; /* 5.3:1 on the accent */
+  --accent-soft: #e6f2ff;
+  --ring: #186bca;
+  --nav-on: #e6f2ff; /* the active sidebar row, with a 2 px accent bar */
+  --brand-slash: #2e8ff0; /* the wordmark's slash: 3.1:1 on the sidebar, 3.3:1 on white */
+  --cube-right: #1e5fae; /* the cube's shaded face, lighter navy on light */
+  --live: #1499a6; /* the cube's cyan deepened to 3:1 for a fresh / synced mark on light */
+  --shadow: 0 0 0 1px rgb(0 0 0 / 0.14), 0 4px 12px -4px rgb(0 0 0 / 0.12); /* popovers and menus only */
   --shadow-sm: 0 0 0 0.5px rgb(0 0 0 / 0.1), 0 1px 2px rgb(0 0 0 / 0.06);
 
   /* Status: fg (text), soft (fill), line (border). */
@@ -45,8 +51,8 @@
   --suspect: #7a3fa0; /* a data problem must not look like a business problem */
   --suspect-soft: #f4ecfa;
   --suspect-line: #d3b8e6;
-  --new: #0a64d8;
-  --new-soft: #e4edfd;
+  --new: #186bca;
+  --new-soft: #e6f2ff;
   --new-line: #a9c6f5;
   --neutral: #636366;
   --neutral-soft: #f0f0ee;
@@ -66,34 +72,66 @@
   --lh-answer: 22px;
   --fs-stat: 17px;
   --lh-stat: 22px;
+
+  /* A hue per place (sidebar line icons) and per source system (the tick beside BC, Mail):
+     colour only as a thin stroke, never a filled tile. Each is at least 3:1 on the sidebar. */
+  --place-work: #2563d9;
+  --place-late: #cc3d27;
+  --place-watching: #a8660a;
+  --place-ask: #0e8170;
+  --place-autopilot: #4f5bc9;
+  --place-meetings: #1b7bbf;
+  --place-team: #2f8439;
+  --place-activity: #6b6f78;
+  --place-feedback: #7550c8;
+  --sys-bc: #1f8a70;
+  --sys-portal: #2563d9;
+  --sys-mail: #1f8fcf;
+  --sys-teams: #5b5fc7;
+  --sys-file: #7a7d86;
+  --sys-mc: #c2572b;
+  --sys-sage: #3d8b2f;
+  --sys-fm: #8a5cc2;
+  /* the source label as text: darker than the tick so it holds 4.5:1 on white, sidebar, wells and selected rows */
+  --sys-bc-ink: #1a7660;
+  --sys-portal-ink: #2563d9;
+  --sys-mail-ink: #186fa1;
+  --sys-teams-ink: #5a5ec5;
+  --sys-file-ink: #666970;
+  --sys-mc-ink: #ac4d26;
+  --sys-sage-ink: #357828;
+  --sys-fm-ink: #7e54b2;
 }
 
 .dark {
-  --bg: #19191b;
-  --bg-subtle: #1f1f22;
-  --sidebar: #1f1f22;
-  --surface: #222225;
-  --surface-2: #2a2a2e;
-  --raised: #2a2a2d;
-  --hover: rgb(255 255 255 / 0.05);
-  --list: #1c1c1f;
-  --row-on: #2c2c31;
-  --lift: 0 0 0 0.5px rgb(255 255 255 / 0.08), 0 1px 3px rgb(0 0 0 / 0.5);
-  --selected: #1d3354;
-  --selected-strong: #0a6fe8;
-  --fg: #f2f2f4; /* 16:1 */
-  --fg-muted: #a1a1a6; /* 7.4:1 */
-  --fg-faint: #8b8b91; /* 4.8:1 on the sidebar */
-  --border: #2c2c30;
-  --border-strong: #3a3a3f;
-  --rule-ink: #3a3a3f;
-  --control-border: #48484e;
-  --accent: #4b9bff;
-  --accent-fg: #001a3d; /* 6.1:1 on the accent; white would be 2.8:1 */
-  --accent-soft: #1d3354;
-  --ring: #4b9bff;
-  --oak: #d9965a;
-  --shadow: 0 0 0 0.5px rgb(255 255 255 / 0.1), 0 10px 30px -4px rgb(0 0 0 / 0.6);
+  --bg: #17191d;
+  --bg-subtle: #1c1f24;
+  --sidebar: #1c1f24;
+  --surface: #20232a;
+  --surface-2: #282c33;
+  --raised: #262a30;
+  --hover: rgb(77 168 255 / 0.07); /* rows warm to the accent on hover */
+  --list: #1a1d21;
+  --row-on: #2a2e35;
+  --lift: 0 0 0 1px #2a2e35;
+  --selected: #123a66; /* the cube's navy */
+  --selected-strong: #1a6fd0;
+  --fg: #f2f3f5; /* 15:1 */
+  --fg-muted: #a6a8ad; /* 7.6:1; 4.6:1 on the navy row */
+  --fg-faint: #8d9097; /* 5:1 on the sidebar */
+  --border: #2a2e35;
+  --border-strong: #383d45;
+  --rule-ink: #383d45;
+  --control-border: #474d57;
+  --accent: #4da8ff; /* the cube's blue: 7:1 */
+  --accent-fg: #001a3d; /* 6.9:1 on the accent; white would be 2.5:1 */
+  --accent-soft: #123a66;
+  --ring: #4da8ff;
+  --nav-on: #123a66;
+  --brand-slash: #4da8ff;
+  --cube-right: #123a66;
+  --live: #4fdcea; /* the cube's cyan: small fresh / synced marks only */
+  --shadow: 0 0 0 1px rgb(255 255 255 / 0.12), 0 4px 12px -4px rgb(0 0 0 / 0.6);
   --shadow-sm: 0 0 0 0.5px rgb(255 255 255 / 0.08), 0 1px 2px rgb(0 0 0 / 0.4);
 
   --late: #ff7b72;
@@ -108,17 +146,43 @@
   --suspect: #cfa9e8;
   --suspect-soft: #2d2036;
   --suspect-line: #5a4166;
-  --new: #4b9bff;
-  --new-soft: #1d3354;
+  --new: #4da8ff;
+  --new-soft: #123a66;
   --new-line: #2f5590;
-  --neutral: #a1a1a6;
-  --neutral-soft: #26262a;
-  --neutral-line: #3a3a3f;
+  --neutral: #a6a8ad;
+  --neutral-soft: #24272d;
+  --neutral-line: #383d45;
 
   --dot-late: #ff6369;
   --dot-risk: #f5b142;
   --dot-ok: #46c27f;
-  --dot-neutral: #5d5d63;
+  --dot-neutral: #5d616a;
+
+  --place-work: #6aa5ff;
+  --place-late: #ff8a73;
+  --place-watching: #f0b24a;
+  --place-ask: #4fcfba;
+  --place-autopilot: #9ca7ff;
+  --place-meetings: #6cbcf5;
+  --place-team: #7bcf81;
+  --place-activity: #a3a7af;
+  --place-feedback: #b99cff;
+  --sys-bc: #4fc7a4;
+  --sys-portal: #6aa5ff;
+  --sys-mail: #5cc0f2;
+  --sys-teams: #9a9dff;
+  --sys-file: #a3a7af;
+  --sys-mc: #f08a5d;
+  --sys-sage: #7bcf6a;
+  --sys-fm: #c19bf0;
+  --sys-bc-ink: #4fc7a4;
+  --sys-portal-ink: #6aa5ff;
+  --sys-mail-ink: #5cc0f2;
+  --sys-teams-ink: #9a9dff;
+  --sys-file-ink: #a3a7af;
+  --sys-mc-ink: #f08a5d;
+  --sys-sage-ink: #7bcf6a;
+  --sys-fm-ink: #c19bf0;
 }
 
 @theme inline {
@@ -144,7 +208,10 @@
   --color-accent-fg: var(--accent-fg);
   --color-accent-soft: var(--accent-soft);
   --color-ring: var(--ring);
-  --color-oak: var(--oak);
+  --color-nav-on: var(--nav-on);
+  --color-brand-slash: var(--brand-slash);
+  --color-cube-right: var(--cube-right);
+  --color-live: var(--live);
 
   --color-late: var(--late);
   --color-late-soft: var(--late-soft);
@@ -181,20 +248,21 @@
 
   --font-sans: var(--font-host), -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --font-serif: var(--font-sans);
+  --font-mark: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --shadow-card: none;
   --shadow-pop: var(--shadow);
   --shadow-sm: var(--shadow-sm);
   --shadow-lift: var(--lift);
 
-  /* App radii: 6 for rows and controls, 8 for wells and cards, 12 for popovers. */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
-  --radius-2xl: 12px;
-  --radius-3xl: 16px;
+  /* App radii: 2 to 4 px everywhere, an internal tool's square corners. */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 4px;
+  --radius-2xl: 4px;
+  --radius-3xl: 4px;
 
   /* Type: 13 px is the app's body, as in a desktop app; weight and grey carry the rest. */
   --text-display: var(--fs-display);

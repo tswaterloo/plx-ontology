@@ -37,6 +37,13 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   AutopilotItem,
   AutopilotSwitches,
   AutopilotWorkflowSwitch,
+  AutopilotCatalog,
+  AutopilotDraftKept,
+  AutopilotMode,
+  AutopilotReplay,
+  AutopilotSchedules,
+  AutopilotWorkflowDetail,
+  AutopilotWorkflowDraft,
   AssistDraft,
   Workload,
   OwnerWorkload,
@@ -46,6 +53,11 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   UpcomingMeetings,
   WatcherItemState,
   WatcherItemStateRequest,
+  WorkLogKind,
+  WorkLogOrganise,
+  WorkLogPage,
+  WorkLogSave,
+  WorkLogThread,
   DevLoginResponse,
   FeedbackEntry,
   FeedbackList,
@@ -145,6 +157,33 @@ export interface OpsHealth {
 export async function getOpsHealth(signal?: AbortSignal): Promise<OpsHealth | null> {
   const body = await getJson<{ status: string; ops?: OpsHealth | null }>("/api/health", signal);
   return body.ops ?? null;
+}
+
+/** One reliability incident (operating/ops_alarms.py): paged once, a recovery notice when it clears. */
+export interface OpsIncident {
+  key: string;
+  line: string;
+  opened_at: string;
+  last_seen_at?: string;
+  closed_at?: string;
+  page?: { status: string; at?: string; missing?: string[] } | null;
+  recovery_page?: { status: string; at?: string; missing?: string[] } | null;
+}
+
+export interface OpsAlarms {
+  configured: boolean;
+  running: boolean;
+  checked_at?: string | null;
+  every_minutes?: number;
+  paging?: { configured: boolean };
+  open: OpsIncident[];
+  recovered: OpsIncident[];
+  checks: (OpsCheck & { line?: string })[];
+}
+
+/** The reliability alarms' last pass: the owner only (403 for every other reader). */
+export function getOpsAlarms(signal?: AbortSignal): Promise<OpsAlarms> {
+  return getJson<OpsAlarms>("/api/ops/status", signal);
 }
 
 export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
@@ -350,6 +389,36 @@ export async function setAutopilotGlobal(globalOff: boolean): Promise<AutopilotS
 /** Owner only: a workflow off or on, or a role's workflow live or back to dry run. */
 export async function setAutopilotWorkflow(workflow: string, body: AutopilotWorkflowSwitch): Promise<AutopilotArea> {
   return (await (await call(`/api/autopilot/workflows/${encodeURIComponent(workflow)}`, { method: "POST", json: body })).json()) as AutopilotArea;
+}
+
+/** One workflow: trigger, conditions, actions, gate, mode, caught and missed, history. */
+export function getAutopilotWorkflow(workflow: string, signal?: AbortSignal): Promise<AutopilotWorkflowDetail> {
+  return getJson<AutopilotWorkflowDetail>(`/api/autopilot/workflows/${encodeURIComponent(workflow)}`, signal);
+}
+
+/** Owner only: a workflow's mode (off, suggest, draft, auto with approval, watch). */
+export async function setAutopilotMode(workflow: string, mode: AutopilotMode, role?: string | null): Promise<AutopilotWorkflowDetail> {
+  return (await (await call(`/api/autopilot/workflows/${encodeURIComponent(workflow)}/mode`, { method: "PUT", json: { mode, role: role ?? null } })).json()) as AutopilotWorkflowDetail;
+}
+
+/** The triggers, conditions and actions the builder offers. */
+export function getAutopilotCatalog(signal?: AbortSignal): Promise<AutopilotCatalog> {
+  return getJson<AutopilotCatalog>("/api/autopilot/catalog", signal);
+}
+
+/** Owner only: keep a drafted workflow (it starts in Draft mode, never live). */
+export async function draftAutopilotWorkflow(body: AutopilotWorkflowDraft): Promise<AutopilotDraftKept> {
+  return (await (await call("/api/autopilot/workflows", { method: "POST", json: body })).json()) as AutopilotDraftKept;
+}
+
+/** Owner only: try a workflow on past days. Nothing is sent or written. */
+export async function replayAutopilotWorkflow(workflow: string, days: number): Promise<AutopilotReplay> {
+  return (await (await call(`/api/autopilot/workflows/${encodeURIComponent(workflow)}/replay`, { method: "POST", json: { days } })).json()) as AutopilotReplay;
+}
+
+/** The workflows that run on a schedule. */
+export function getAutopilotSchedules(signal?: AbortSignal): Promise<AutopilotSchedules> {
+  return getJson<AutopilotSchedules>("/api/autopilot/schedules", signal);
 }
 
 /** Owner only: the write path's audit log, newest first. */
@@ -584,4 +653,44 @@ export async function* ask(req: AskRequest, signal?: AbortSignal): AsyncGenerato
     reader.releaseLock();
   }
   if (!finished) yield { event: "error", data: { code: "stream_interrupted", message: "" } };
+}
+
+// ---- the work log (operator_api.work_log): everything you did or received, in one place ----
+
+export interface WorkLogFilters {
+  q?: string;
+  kind?: WorkLogKind;
+  record?: string;
+  thread?: string;
+  case_id?: string;
+  pinned?: boolean;
+  waiting?: boolean;
+  everyone?: boolean;
+  offset?: number;
+  limit?: number;
+}
+
+/** Your work log, newest first (the owner may ask for everyone's). */
+export function getWorkLog(filters: WorkLogFilters = {}, signal?: AbortSignal): Promise<WorkLogPage> {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) if (v !== undefined && v !== "" && v !== false) q.set(k, String(v));
+  const tail = q.toString();
+  return getJson<WorkLogPage>(`/api/work-log${tail ? `?${tail}` : ""}`, signal);
+}
+
+const threadPath = (thread: string) => `/api/work-log/threads/${thread.split("/").map(encodeURIComponent).join("/")}`;
+
+/** One of your threads and what continuing it reopens. */
+export function getWorkThread(thread: string, signal?: AbortSignal): Promise<WorkLogThread> {
+  return getJson<WorkLogThread>(threadPath(thread), signal);
+}
+
+/** Name, pin, attach to a case or close one of your threads. */
+export async function organiseWorkThread(thread: string, body: WorkLogOrganise): Promise<WorkLogThread> {
+  return (await (await call(threadPath(thread), { method: "POST", json: body })).json()) as WorkLogThread;
+}
+
+/** A Save or Unsave, kept in your work log as well as this browser. */
+export async function logSaved(body: WorkLogSave): Promise<void> {
+  await call("/api/work-log/saved", { method: "POST", json: body });
 }

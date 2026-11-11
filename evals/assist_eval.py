@@ -18,8 +18,9 @@ each role's sample. The draft is then scored against the real mail:
   ``found`` = drafted that the real body states, ``unconfirmed`` = drafted that it does
   not, ``conflict`` = a drafted status whose opposite the real body states;
 * **usable** = primary recipient right and no conflict;
-* **facts present**: of drafts naming a record, those carrying a gated fact; **facts
-  wrong**: conflicting drafted facts of all drafted facts.
+* **facts present**: of drafts naming a record, those carrying a gated fact (``_fast``:
+  carrying one from the fast path, whatever the agent added); **facts wrong**:
+  conflicting drafted facts of all drafted facts.
 
 Stages (each resumable, each one foreground call): ``sample`` (capture only), ``run``
 (drafts, appended to ``drafts.jsonl``; ``--seconds`` bounds one call), ``score``. The
@@ -297,10 +298,11 @@ def _facts(text: str) -> list[dict[str, Any]]:
 
 
 def _agent_answer(state: Path, config: Path, claims: Mapping[str, str], secret: str,
-                  question: str) -> str:
+                  question: str) -> tuple[str, str]:
     """The Ask's agent path for one question as the sender (``operator_api.agent_ask``:
     one Claude Code session on the operator's login, every claim through the answer
-    gate), its gated prose; "" when it settled nothing."""
+    gate): (its gated prose, "") or ("", why it settled nothing: a failure code or the
+    answerability, never text)."""
     from operator_api.agent_ask import HOST_HELPERS_ENV, AgentAsk, reply_prose
     from scripts import eval_real_agent as real
     # one host per session: helper hosts beside it outgrow the eval's memory cap and the
@@ -314,12 +316,14 @@ def _agent_answer(state: Path, config: Path, claims: Mapping[str, str], secret: 
                    seconds=AGENT_SECONDS, host_for=host_for)
     try:
         ran = ask.run(None, question, route="lookup")
-    except Exception:  # noqa: BLE001 - a failed session settles nothing
-        return ""
+    except Exception as error:  # noqa: BLE001 - a failed session settles nothing
+        return "", "error:" + type(error).__name__
     if ran.failure or not ran.answer or ran.answer.get("answerability") not in (
             "answerable", "partial"):
-        return ""
-    return reply_prose(ran.final_text, ran.answer)
+        return "", ran.failure or ("timeout" if (ran.usage or {}).get("subtype") == "timeout"
+                                   else "") \
+            or str((ran.answer or {}).get("answerability") or "no_answer")
+    return reply_prose(ran.final_text, ran.answer), ""
 
 
 def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: float,
@@ -332,8 +336,12 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
     with a record left unsettled and no agent is drafted again with it (the last line of a
     mail is its draft)."""
     import secrets
-    from operating import assist, fast_answer
+    from operating import assist, case_tools_host, fast_answer
     from scripts import eval_real_agent as real
+    # a batch reader, as the proactive engine's (``warm=False``): no background SharePoint
+    # warm-up per session host; a read that needs the file index builds it when asked
+    # (measured 2026-11-10: the warm-up thread held each call's first two minutes)
+    case_tools_host.warm_sharepoint = lambda *_a, **_k: None
     done: dict[str, dict[str, Any]] = {}
     path = out / "drafts.jsonl"
     if path.exists():
@@ -392,7 +400,7 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
                 recipients = assist.resolve(
                     intent, me=t["sender"], people=people, sent=sent, roles={},
                     party=lambda name, side: assist.party_addresses(reads, name, side))
-                answers, settled, agent_calls, as_of_reads = [], [], 0, []
+                answers, settled, agent_calls, as_of_reads, agent_why = [], [], 0, [], []
                 for q in assist.questions(intent):
                     asked = fast_answer.Reads.of_server(server)
                     asked.as_of = t["at"]
@@ -403,8 +411,9 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
                     if not text and agent and agents_used[t["role"]] < agent_per_role \
                             and time.monotonic() - started < seconds - AGENT_SECONDS - 10:
                         agent_calls += 1
-                        text = _agent_answer(state, config, claims, secret, q)
+                        text, why = _agent_answer(state, config, claims, secret, q)
                         how = "agent" if text else "none"
+                        agent_why.append(why)
                     settled.append(how)
                     answers.append({"question": q, "outcome": "answered" if text else "none",
                                     "facts": _facts(text)})
@@ -412,6 +421,7 @@ def run(state: Path, out: Path, reader_env: str, host_config: str, seconds: floa
                     agents_used[t["role"]] += 1
                 made = assist.draft(intent, recipients, answers, outside=recipients.outside)
                 row.update({"settled": settled, "agent_calls": agent_calls,
+                            "agent_why": agent_why,
                             "as_of_reads": as_of_reads,
                             "draft": {k: made[k] for k in (
                                 "channel", "to", "subject", "body", "facts", "gaps",
@@ -496,6 +506,13 @@ def score(out: Path) -> dict[str, Any]:
             # facts whose opposite status the real mail states, of all drafted facts
             "facts_present": _pct(sum(r["has_facts"] for r in rows if r["has_record"]),
                                   sum(r["has_record"] for r in rows)),
+            # the same share from the fast path alone: a draft's agent answer does not
+            # count, so a fast-only reading compares like for like whichever agent sessions
+            # a resumed run had already held (2026-11-10: an r2 "fast-only" score counted
+            # one agent answer and read as a later fast-path regression)
+            "facts_present_fast": _pct(
+                sum(r["has_facts"] and "fast" in r["settled"] for r in rows if r["has_record"]),
+                sum(r["has_record"] for r in rows)),
             "facts_wrong": _pct(sum(r["conflict"] for r in rows), drafted),
             "questions_settled": dict(Counter(s for r in rows for s in r["settled"])),
             "agent_sessions": sum(r["agent_calls"] for r in rows),

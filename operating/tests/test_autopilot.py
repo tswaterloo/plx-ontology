@@ -72,7 +72,7 @@ class Fixture(unittest.TestCase):
         self.w.link("Email.mentions_order", made, self.named_order)   # the order it names
         return made
 
-    def cycle(self, ids, *, guard=None, registry=None, now=NOW, name="s.sqlite"):
+    def cycle(self, ids, *, guard=None, registry=None, now=NOW, name="s.sqlite", **kw):
         path = self.dir / name
         if not path.exists():
             self.w.build(path)
@@ -81,7 +81,7 @@ class Fixture(unittest.TestCase):
         try:
             return ap.run_cycle(st, q, ids, people=people() if guard is None else guard,
                                 registry=registry, environ=self.env, now=now,
-                                landed_at=ap._iso(now - timedelta(minutes=2)))
+                                landed_at=ap._iso(now - timedelta(minutes=2)), **kw)
         finally:
             st.close()
             q.close()

@@ -1100,6 +1100,130 @@
        "id": "allowlist.public.receipt_packaging"
       }
      ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "lead",
+     "from_binding": "portal.fm_receipt_raw_material.lotnoqc",
+     "to_binding": "portal.fm_receipt",
+     "pairs": [
+      {
+       "from": "idpogenitem",
+       "to": "idgenpoitem",
+       "compare": "integer_id"
+      }
+     ],
+     "unique_target": true,
+     "where": [
+      {
+       "path": "idreceipt",
+       "op": "absent"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/domains/items.json",
+       "note": "Schema-next link audit, 2026-11-09 (read-only source mirror, counts only): a lot's receipt line rarely holds idreceipt (490 raw-material, 202 packaging rows); where it does not, the one receipt header naming the line's PO line (idgenpoitem) is its receipt in 96% of the lines a stored idreceipt can check (428 of 444), so this path is a lead: 772 raw-material and 58 packaging lots gain a receipt. Same path as ReceiptLine.line_of (ontology/schema/domains/purchasing.json)."
+      }
+     ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "lead",
+     "from_binding": "portal.fm_receipt_packaging.lotnoqc",
+     "to_binding": "portal.fm_receipt",
+     "pairs": [
+      {
+       "from": "idpogenitem",
+       "to": "idgenpoitem",
+       "compare": "integer_id"
+      }
+     ],
+     "unique_target": true,
+     "where": [
+      {
+       "path": "idreceipt",
+       "op": "absent"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/domains/items.json",
+       "note": "Schema-next link audit, 2026-11-09 (read-only source mirror, counts only): a lot's receipt line rarely holds idreceipt (490 raw-material, 202 packaging rows); where it does not, the one receipt header naming the line's PO line (idgenpoitem) is its receipt in 96% of the lines a stored idreceipt can check (428 of 444), so this path is a lead: 772 raw-material and 58 packaging lots gain a receipt. Same path as ReceiptLine.line_of (ontology/schema/domains/purchasing.json)."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Lot.qc_decided_receipt_line",
+   "from": "Lot",
+   "to": "ReceiptLine",
+   "name": "qc_decided_receipt_line",
+   "reverse_name": "qc_decisions",
+   "cardinality": "1:N",
+   "markings": [
+    "quality_controlled"
+   ],
+   "description": "FileMaker's receiving QC decision on a receiving line: the QC lot it assigned (lotnoqc) and the line it was decided on, both read from the same FileMaker receiving row. Present only when the row holds a decided status (raw material: status_c Released, Rejected, Expired or Finished) or QC initials (packaging, which holds no status_c). Quarantine or blank is no decision: the receipt still waits for QC. The supplier's certificate of analysis is not a QC decision and is not this link.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_receipt_raw_material.lotnoqc",
+     "to_binding": "portal.fm_receipt_raw_material",
+     "where": [
+      {
+       "path": "status_c",
+       "op": "in",
+       "value": [
+        "Released",
+        "Rejected",
+        "Expired",
+        "Finished"
+       ]
+      }
+     ],
+     "pairs": [
+      {
+       "from": "id",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_raw_material"
+      }
+     ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_receipt_packaging.lotnoqc",
+     "to_binding": "portal.fm_receipt_packaging",
+     "where": [
+      {
+       "path": "intitalsqc",
+       "op": "present"
+      }
+     ],
+     "pairs": [
+      {
+       "from": "id",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_packaging"
+      }
+     ]
     }
    ]
   },

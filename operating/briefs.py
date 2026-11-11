@@ -136,9 +136,9 @@ PEOPLE_KINDS = PROMISE_KINDS | ASK_KINDS | frozenset({"commitment_missed", "vend
                                                    "party_chase_unanswered",
                                                    "internal_order_chase"})
 PEOPLE_NOTE = ("The people exclusion is not loaded, so no mail, Teams or meeting line is "
-               "shown here: that is not the same as none.")
-ITEM_NOTE = ("Your item access could not be checked, so nothing is shown here: that is not "
-             "the same as none.")
+               "shown here; this section may still have items.")
+ITEM_NOTE = ("Your item access could not be checked, so nothing is shown here; this section "
+             "may still have items.")
 MAX_POINTS = 6           # talking points one brief suggests
 PERSON_LINK = {"Email": "Email.sent_by_person",
                "TeamsChatMessage": "TeamsChatMessage.sent_by_person",
@@ -405,8 +405,8 @@ def _alert_rows(gaps: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                  sources=_cite_handles(g)) for g in ranked]
 
 
-UNREAD_NOTE = ("Your alert list could not be read, so this section could not be read: "
-               "that is not the same as none.")
+UNREAD_NOTE = ("Your alert list could not be read, so nothing is shown here; this section "
+               "may still have items.")
 
 
 def alerts_read(alerts: Mapping[str, Any] | None, reads: "Reads") -> bool:
@@ -950,29 +950,160 @@ def _section_done(key: str, title: str, rows: list[dict[str, Any]], *,
             "rows": rows[:MAX_ROWS], "more": 0, "figures": []}
 
 
+UPCOMING_PROPS = ("subject", "start", "end", "is_cancelled", "is_all_day", "location",
+                  "body_preview", "content", "organizer", "attendees", "is_online_meeting",
+                  "online_meeting", "is_organizer", "mailbox")
+MAX_AGENDA = 600          # agenda words shown per meeting (the capture keeps 2,000 at most)
+MAX_ATTENDEES = 40
+JOIN_PREFIX = "https://teams.microsoft.com/"
+
+
+def _json_cell(value: Any) -> Any:
+    """A json property's value as data: the store hands it back as data or as its text."""
+    if isinstance(value, (list, Mapping)) and not (isinstance(value, Mapping)
+                                                   and "untrusted_text" in value):
+        return value
+    words = text_of(value)
+    if not isinstance(words, str) or not words.strip():
+        return None
+    try:
+        return json.loads(words)
+    except ValueError:
+        return None
+
+
+def _invitee(raw: Any, role: str) -> dict[str, Any] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    name, address = _clip(raw.get("name"), 120), _clip(raw.get("address"), 254)
+    if not name and not address:
+        return None
+    kind = (_clip(raw.get("type"), 32) or "").lower()
+    response = (_clip(raw.get("response"), 32) or "").lower()
+    return {"name": name or address, "address": address,
+            "role": role if role == "organizer" else (kind if kind in (
+                "required", "optional", "resource") else "required"),
+            "response": response if response in ("accepted", "declined",
+                                                  "tentativelyaccepted", "none",
+                                                  "notresponded", "organizer") else None}
+
+
+def _invitees(reads: "Reads", record: Any, people: Any) -> tuple[bool, dict | None, list]:
+    """(keep the event, organizer, attendees) as this reader may see them. An address the
+    people exclusion names, or one it cannot decide, drops the whole event (as the capture
+    does); a mailbox's own domain marks who is inside the company."""
+    org_raw, o_handle = reads.cell(record, "organizer")
+    att_raw, a_handle = reads.cell(record, "attendees")
+    mailbox, _ = reads.cell(record, "mailbox")
+    organizer = _invitee(_json_cell(org_raw), "organizer")
+    listed = _json_cell(att_raw)
+    attendees = [a for a in (_invitee(x, "attendee") for x in (
+        listed if isinstance(listed, list) else ())[:MAX_ATTENDEES]) if a]
+    home = str(text_of(mailbox) or "").rpartition("@")[2].lower()
+    for person in [organizer, *attendees]:
+        if person is None or not person["address"]:
+            continue
+        try:
+            if people.is_excluded(person["address"]):
+                return False, None, []
+        except Exception:  # noqa: BLE001 - undecidable: never shown
+            return False, None, []
+        domain = person["address"].rpartition("@")[2].lower()
+        person["outside"] = bool(home and domain and domain != home)
+    org_address = (organizer or {}).get("address")
+    attendees = [a for a in attendees if not org_address or a["address"] != org_address]
+    if organizer is not None:
+        organizer["sources"] = _source(o_handle)
+    for person in attendees:
+        person["sources"] = _source(a_handle)
+    return True, organizer, attendees
+
+
+def _join_url(raw: Any) -> str | None:
+    online = _json_cell(raw)
+    url = online.get("join_url") if isinstance(online, Mapping) else None
+    return url if isinstance(url, str) and url.startswith(JOIN_PREFIX) and len(url) <= 4096 \
+        else None
+
+
 def upcoming_meetings(call: Call, held: Iterable[str], *, now: datetime | None = None,
-                      days: int = UPCOMING_DAYS, limit: int = 25) -> list[dict[str, Any]]:
-    """Calendar events starting in the next ``days`` days this reader may read, soonest
-    first: (object id, subject, start, its citation)."""
+                      days: int = UPCOMING_DAYS, limit: int = 60, people: Any = None,
+                      since: datetime | None = None) -> list[dict[str, Any]]:
+    """Calendar events from ``since`` (default: now) to ``days`` days ahead this reader may
+    read, soonest first: subject, start and end, where (room or Teams), the organizer and
+    attendees with their invite role and response, the agenda words, and the customers and
+    suppliers the event is linked to, each cited.
+
+    People fail closed: with the exclusion unavailable no organizer, attendee or agenda is
+    shown (``people_withheld``); an event naming an excluded or undecidable address is not
+    listed at all. A private or confidential event shows its time only."""
     now = now or datetime.now(timezone.utc)
+    since = since or now
     reads = Reads(call, held, budget_seconds=BUDGET_SECONDS, declared=None)
     end = now + timedelta(days=days)
+    blocked = people_unavailable(people)
     ids = reads.cited.find("CalendarEvent", [
-        {"property": "start", "op": "gte", "value": now.strftime("%Y-%m-%dT%H:%M:%S")},
+        {"property": "start", "op": "gte", "value": since.strftime("%Y-%m-%dT%H:%M:%S")},
         {"property": "start", "op": "lt", "value": end.strftime("%Y-%m-%dT%H:%M:%S")}],
         empty_gap=False) or []
     out = []
     for oid in ids[:MAX_READS]:
-        record = reads.read(oid, ("subject", "start", "is_cancelled"))
+        record = reads.read(oid, UPCOMING_PROPS)
         start, s_handle = reads.cell(record, "start")
         cancelled, _ = reads.cell(record, "is_cancelled")
         if start is None or str(text_of(cancelled)).lower() == "true":
             continue
+        organizer, attendees = None, []
+        if not blocked:
+            keep, organizer, attendees = _invitees(reads, record, people)
+            if not keep:
+                continue
         subject, _ = reads.cell(record, "subject")
-        out.append({"object_id": oid, "label": _clip(subject) or "(no subject)",
-                    "start": text_of(start), "sources": _source(s_handle)})
+        finish, _ = reads.cell(record, "end")
+        content, _ = reads.cell(record, "content")
+        private = str(text_of(content) or "") == "withheld_sensitivity"
+        location, l_handle = reads.cell(record, "location")
+        agenda, g_handle = reads.cell(record, "body_preview")
+        online, _ = reads.cell(record, "is_online_meeting")
+        join, _ = reads.cell(record, "online_meeting")
+        all_day, _ = reads.cell(record, "is_all_day")
+        mine, _ = reads.cell(record, "is_organizer")
+        parties = []
+        if not private:
+            for link in PARTY_LINKS["CalendarEvent"]:
+                for party in reads.linked(oid, link, "forward")[:MAX_PARTIES]:
+                    if type_of(party) in PARTY_TYPES and party not in {
+                            p["object_id"] for p in parties}:
+                        parties.append({"object_id": party, "type": type_of(party),
+                                        "label": reads.label(party)[0]})
+        show_people = not blocked and not private
+        out.append({
+            "object_id": oid, "label": _clip(subject) or "(no subject)",
+            "start": text_of(start), "end": text_of(finish),
+            "all_day": str(text_of(all_day)).lower() == "true",
+            "location": None if private else _clip(location, 200),
+            "online": str(text_of(online)).lower() == "true",
+            "join_url": None if private else _join_url(join),
+            "agenda": _clip(agenda, MAX_AGENDA) if show_people else None,
+            "organizer": organizer if show_people else None,
+            "attendees": attendees if show_people else [],
+            "is_organizer": str(text_of(mine)).lower() == "true",
+            "private": private, "people_withheld": bool(blocked),
+            "parties": parties,
+            "sources": _dedupe(_source(s_handle) + (
+                _source(l_handle) if location is not None and not private else []) + (
+                _source(g_handle) if agenda is not None and show_people else []))})
     out.sort(key=lambda e: e["start"] or "")
     return out[:limit]
+
+
+def _dedupe(sources: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen, out = set(), []
+    for s in sources:
+        if s["handle"] not in seen:
+            seen.add(s["handle"])
+            out.append(s)
+    return out[:MAX_SOURCES]
 
 
 # ------------------------------------------------------------------------- weekly review
@@ -1522,7 +1653,7 @@ def qc_daily_pack(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
     hold_alerts = [g for g in gated if g["kind"] in QC_HOLD_KINDS]
     if out is None:
         sections = [_section(k, t, [], state="unread", note="The QC figures could not be "
-                             "read: that is not the same as none.") for k, t in keys[:3]]
+                             "read; this section may still have figures.") for k, t in keys[:3]]
         sections.append(_alert_section("holds", "Batches on hold", hold_alerts, inbox))
     else:
         rows = []
@@ -1589,7 +1720,7 @@ def qc_audit_pack(call: Call, held: Iterable[str], *, today: date | None = None,
     audit, monthly = _qc_read(reads, "audit"), _qc_read(reads, "compliance")
     if audit is None or monthly is None:
         sections = [_section(k, t, [], state="unread", note="The QC figures could not be "
-                             "read: that is not the same as none.") for k, t in keys]
+                             "read; this section may still have figures.") for k, t in keys]
         return {**head, "sections": finish(sections, decide, reads), "gaps": reads.gaps(),
                 "budget": reads.cited.budget()}
     checks = audit.get("checks") or {}

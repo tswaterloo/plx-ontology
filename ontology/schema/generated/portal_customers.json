@@ -1585,7 +1585,7 @@
   },
   {
    "id": "RelSageArAged",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_aged. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR aged trial balance row: a row of a Sage AR aged trial balance run: customer, document, due date and amounts per aging bucket. Generated raw type: one record of the Portal reporting-API relation sage.ar_aged. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -1615,7 +1615,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -2318,11 +2338,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_aged is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
    "id": "RelSageArBta",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_bta. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR receipt batch: a Sage AR receipt or adjustment batch (description, status, deposit, totals). Generated raw type: one record of the Portal reporting-API relation sage.ar_bta. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -2352,7 +2377,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -2437,6 +2482,10 @@
        "path": "batchdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -2737,11 +2786,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_bta is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "cntbtch"
    ]
   },
   {
    "id": "RelSageArCmm",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_cmm. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR customer comment: a dated comment on a Sage AR customer (follow-up, note). Generated raw type: one record of the Portal reporting-API relation sage.ar_cmm. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -2771,7 +2823,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -3045,11 +3117,15 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_cmm is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idcust",
+    "cmnttype"
    ]
   },
   {
    "id": "RelSageArCmmtp",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_cmmtp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR comment type: a Sage AR comment type a customer comment carries. Generated raw type: one record of the Portal reporting-API relation sage.ar_cmmtp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -3079,7 +3155,27 @@
        "note": "Pagination key ['cmnttype'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -3158,6 +3254,10 @@
        "path": "cmnttype",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -3191,6 +3291,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -3221,11 +3325,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_cmmtp is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "cmnttype"
    ]
   },
   {
    "id": "RelSageArCsm",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_csm. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR customer period statistics: a Sage AR customer's counts and amounts (invoices, payments, credits, write-offs) for one period. Generated raw type: one record of the Portal reporting-API relation sage.ar_csm. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -3255,7 +3362,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -3829,11 +3956,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_csm is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idcust"
    ]
   },
   {
    "id": "RelSageArCuso",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_cuso. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR customer optional field: an optional field value of a Sage AR customer. Generated raw type: one record of the Portal reporting-API relation sage.ar_cuso. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -3863,7 +3993,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -4038,6 +4188,10 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_cuso is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idcust",
+    "optfield"
    ]
   },
   {
@@ -4074,7 +4228,27 @@
        "note": "Pagination key ['idcust'] (key source: primary-key)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -5522,6 +5696,10 @@
        "path": "shpviadesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -5709,6 +5887,10 @@
        "path": "textsnam",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -5797,7 +5979,27 @@
        "note": "Pagination key ['sessdate'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -5935,7 +6137,27 @@
        "note": "Pagination key ['codestmt'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -6025,6 +6247,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -6036,6 +6262,10 @@
        "path": "textstmt1",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -6047,6 +6277,10 @@
        "path": "textstmt2",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -6058,6 +6292,10 @@
        "path": "textstmt3",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -6069,6 +6307,10 @@
        "path": "textstmt4",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -6080,6 +6322,10 @@
        "path": "textstmt5",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -6144,7 +6390,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -6312,7 +6578,7 @@
   },
   {
    "id": "RelSageArGro",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_gro. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR customer group: a Sage AR customer group (credit limits, terms, salesperson splits). Generated raw type: one record of the Portal reporting-API relation sage.ar_gro. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -6342,7 +6608,27 @@
        "note": "Pagination key ['idgrp'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -6865,6 +7151,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -6906,11 +7196,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_gro is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idgrp"
    ]
   },
   {
    "id": "RelSageArGroo",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_groo. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR customer group optional field: an optional field value of a Sage AR customer group. Generated raw type: one record of the Portal reporting-API relation sage.ar_groo. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -6940,7 +7233,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -7115,11 +7428,15 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_groo is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idgrp",
+    "optfield"
    ]
   },
   {
    "id": "RelSageArGsm",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_gsm. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR customer group period statistics: a Sage AR customer group's counts and amounts for one period. Generated raw type: one record of the Portal reporting-API relation sage.ar_gsm. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7149,7 +7466,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -7555,11 +7892,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_gsm is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idgrp"
    ]
   },
   {
    "id": "RelSageArIbc",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_ibc. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR invoice batch: a Sage AR invoice batch (description, status, totals). Generated raw type: one record of the Portal reporting-API relation sage.ar_ibc. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7589,7 +7929,27 @@
        "note": "Pagination key ['cntbtch'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -7649,6 +8009,10 @@
        "path": "btchdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -7811,11 +8175,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_ibc is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "cntbtch"
    ]
   },
   {
    "id": "RelSageArIbd",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_ibd. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR invoice entry line: a line of a Sage AR invoice entry: item, quantity, revenue account and amount. Generated raw type: one record of the Portal reporting-API relation sage.ar_ibd. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -7845,7 +8212,42 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "via_link": "RelSageArIbd.gl_account_idacctrev",
+         "path": "acctdesc",
+         "op": "matches",
+         "value": "(payroll|wage|salar|commission|bonus)"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      },
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -8726,6 +9128,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -9201,11 +9607,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_ibd is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "transnbr",
+    "cntbtch"
    ]
   },
   {
    "id": "RelSageArIbh",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_ibh. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR invoice entry: a Sage AR invoice, credit or debit note entry in a batch: customer, document number, order, shipment, dates and totals. Generated raw type: one record of the Portal reporting-API relation sage.ar_ibh. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -9235,7 +9646,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -10217,6 +10648,10 @@
        "path": "invcdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -10630,6 +11065,10 @@
        "path": "shpviadesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -10922,6 +11361,10 @@
        "path": "texttrx",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -11294,11 +11737,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_ibh is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idcust",
+    "cntbtch"
    ]
   },
   {
    "id": "RelSageArIbs",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_ibs. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR invoice payment schedule: a payment due date and amount of a Sage AR invoice entry. Generated raw type: one record of the Portal reporting-API relation sage.ar_ibs. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -11328,7 +11776,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -11515,11 +11983,15 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_ibs is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "cntbtch",
+    "cntitem"
    ]
   },
   {
    "id": "RelSageArIbt",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_ibt. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR invoice entry text: a text line of a Sage AR invoice entry. Generated raw type: one record of the Portal reporting-API relation sage.ar_ibt. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -11549,7 +12021,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -11650,6 +12142,10 @@
        "path": "textline",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -11680,6 +12176,11 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_ibt is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "cntbtch",
+    "cntitem",
+    "cntline"
    ]
   },
   {
@@ -11714,7 +12215,27 @@
        "note": "Pagination key ['recid'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -11956,7 +12477,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -12189,6 +12730,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -12223,7 +12768,7 @@
   },
   {
    "id": "RelSageArNat",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_nat. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR national account: a Sage AR national account grouping customers under one parent account, with balances. Generated raw type: one record of the Portal reporting-API relation sage.ar_nat. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -12253,7 +12798,27 @@
        "note": "Pagination key ['idnatacct'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -13433,11 +13998,15 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_nat is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idgrp",
+    "idnatacct"
    ]
   },
   {
    "id": "RelSageArNato",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_nato. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR national account optional field: an optional field value of a Sage AR national account. Generated raw type: one record of the Portal reporting-API relation sage.ar_nato. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -13467,7 +14036,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -13642,11 +14231,15 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_nato is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idnatacct",
+    "optfield"
    ]
   },
   {
    "id": "RelSageArNsm",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_nsm. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR national account period statistics: a Sage AR national account's counts and amounts for one period. Generated raw type: one record of the Portal reporting-API relation sage.ar_nsm. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -13676,7 +14269,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -14225,11 +14838,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_nsm is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idnatlacct"
    ]
   },
   {
    "id": "RelSageArOblj",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_oblj. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR open document journal line: a posted line of a Sage AR open document journal (account, item, amount, tax). Generated raw type: one record of the Portal reporting-API relation sage.ar_oblj. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -14259,7 +14875,42 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "via_link": "RelSageArOblj.gl_account_idglacct",
+         "path": "acctdesc",
+         "op": "matches",
+         "value": "(payroll|wage|salar|commission|bonus)"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      },
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -15108,11 +15759,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_oblj is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idcust",
+    "transnbr"
    ]
   },
   {
    "id": "RelSageArObp",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_obp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR payment application: a payment, credit or adjustment applied to a Sage AR open document (remittance, amount, date). Generated raw type: one record of the Portal reporting-API relation sage.ar_obp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -15142,7 +15798,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -15587,11 +16263,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_obp is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
    "id": "RelSageArObs",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_obs. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR open document schedule: a due-date instalment of a Sage AR open document and its remaining balance. Generated raw type: one record of the Portal reporting-API relation sage.ar_obs. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -15621,7 +16302,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -16029,6 +16730,11 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_obs is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
@@ -16063,7 +16769,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -16495,7 +17221,27 @@
        "note": "Pagination key ['location'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -16586,7 +17332,7 @@
   },
   {
    "id": "RelSageArOpenDocument",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_open_document. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR open document: a Sage AR open (posted) customer document: invoice, credit or debit note, receipt or prepayment, with balance, due date and status. Generated raw type: one record of the Portal reporting-API relation sage.ar_open_document. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -16616,7 +17362,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -17553,6 +18319,10 @@
        "path": "descinvc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -18472,11 +19242,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_open_document is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
    "id": "RelSageArPjd",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_pjd. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR posted transaction line: a Sage AR posting-journal line: account, amount and the GL entry it posted to. Generated raw type: one record of the Portal reporting-API relation sage.ar_pjd. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -18506,7 +19281,42 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "via_link": "RelSageArPjd.gl_account_idacct",
+         "path": "acctdesc",
+         "op": "matches",
+         "value": "(payroll|wage|salar|commission|bonus)"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      },
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -18873,6 +19683,10 @@
        "path": "glcomment",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -18884,6 +19698,10 @@
        "path": "gldesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -18906,6 +19724,10 @@
        "path": "glref",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -19005,6 +19827,10 @@
        "path": "itemdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -19239,11 +20065,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_pjd is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
    "id": "RelSageArPjh",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_pjh. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR posted transaction: a Sage AR posting-journal header: a posted invoice, receipt or adjustment and the GL batch and entry it posted to. Generated raw type: one record of the Portal reporting-API relation sage.ar_pjh. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -19273,7 +20104,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -19562,6 +20413,10 @@
        "path": "desc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -19997,6 +20852,10 @@
        "path": "textref",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -20071,6 +20930,11 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_pjh is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
@@ -20105,7 +20969,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -20314,7 +21198,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -20448,6 +21352,10 @@
        "path": "errdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -20548,7 +21456,7 @@
   },
   {
    "id": "RelSageArPtp",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_ptp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR payment code: a Sage AR payment code (cash, cheque, credit card) receipts carry. Generated raw type: one record of the Portal reporting-API relation sage.ar_ptp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -20578,7 +21486,27 @@
        "note": "Pagination key ['paymcode'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -20679,6 +21607,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -20709,11 +21641,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_ptp is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "paymcode"
    ]
   },
   {
    "id": "RelSageArPym",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_pym. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR customer payment: a Sage AR customer payment record (cheque number, remitter, amount, cleared or reversed date). Generated raw type: one record of the Portal reporting-API relation sage.ar_pym. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -20743,7 +21678,42 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "via_link": "RelSageArPym.gl_account_idacct",
+         "path": "acctdesc",
+         "op": "matches",
+         "value": "(payroll|wage|salar|commission|bonus)"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      },
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -21231,6 +22201,10 @@
        "path": "textretrn",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -21272,6 +22246,11 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_pym is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idcust",
+    "cntbtch"
    ]
   },
   {
@@ -21306,7 +22285,27 @@
        "note": "Pagination key ['idr01'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -21680,7 +22679,27 @@
        "note": "Pagination key ['idr02'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -22221,6 +23240,10 @@
        "path": "textcrpf",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22232,6 +23255,10 @@
        "path": "textdrpf",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22243,6 +23270,10 @@
        "path": "textitpf",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22254,6 +23285,10 @@
        "path": "textivpf",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22265,6 +23300,10 @@
        "path": "textrcpf",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22276,6 +23315,10 @@
        "path": "textrdpf",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22287,6 +23330,10 @@
        "path": "textripf",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22298,6 +23345,10 @@
        "path": "textrxpf",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -22362,7 +23413,27 @@
        "note": "Pagination key ['idr03'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -22408,6 +23479,10 @@
        "path": "adprefix",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22639,6 +23714,10 @@
        "path": "ppdprefix",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22672,6 +23751,10 @@
        "path": "pyprefix",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22705,6 +23788,10 @@
        "path": "rfprefix",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -22848,6 +23935,10 @@
        "path": "ucprefix",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -22912,7 +24003,27 @@
        "note": "Pagination key ['idr04'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -23099,7 +24210,27 @@
        "note": "Pagination key ['idr05'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -23145,6 +24276,10 @@
        "path": "cmntdays",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -23156,6 +24291,10 @@
        "path": "cmnttype",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -23264,7 +24403,27 @@
        "note": "Pagination key ['idr06'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -23671,7 +24830,27 @@
        "note": "Pagination key ['idacctset'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -23882,6 +25061,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -23968,7 +25151,27 @@
        "note": "Pagination key ['idcycl'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -24146,6 +25349,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -24180,7 +25387,7 @@
   },
   {
    "id": "RelSageArRfb",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_rfb. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR refund batch: a Sage AR refund batch. Generated raw type: one record of the Portal reporting-API relation sage.ar_rfb. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -24210,7 +25417,27 @@
        "note": "Pagination key ['cntbtch'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -24267,6 +25494,10 @@
        "path": "btchdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -24440,11 +25671,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_rfb is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "cntbtch"
    ]
   },
   {
    "id": "RelSageArRfd",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_rfd. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR refund line: a document a Sage AR refund applies to. Generated raw type: one record of the Portal reporting-API relation sage.ar_rfd. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -24474,7 +25708,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -24771,11 +26025,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_rfd is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "cntbtch",
+    "cntitem"
    ]
   },
   {
    "id": "RelSageArRfh",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_rfh. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR refund: a Sage AR refund entry (customer, cheque, amount). Generated raw type: one record of the Portal reporting-API relation sage.ar_rfh. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -24805,7 +26064,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -25219,6 +26498,10 @@
        "path": "docdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -25590,11 +26873,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_rfh is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idcust",
+    "cntbtch"
    ]
   },
   {
    "id": "RelSageArSalesperson",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_salesperson. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR salesperson: a Sage AR salesperson (code, employee number, sales target, commission flag); personal and finance marked. Generated raw type: one record of the Portal reporting-API relation sage.ar_salesperson. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -25624,7 +26912,27 @@
        "note": "Pagination key ['codeslsp'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -25753,6 +27061,10 @@
      ]
     }
    ],
+   "markings": [
+    "finance",
+    "pii"
+   ],
    "identity_keys": [
     {
      "name": "source_key",
@@ -25780,6 +27092,9 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_salesperson is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "codeslsp"
    ]
   },
   {
@@ -25816,7 +27131,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: nullable-unique)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -26159,6 +27494,10 @@
        "path": "shpviadesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -26313,7 +27652,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -26555,7 +27914,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -26764,7 +28143,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -26821,6 +28220,10 @@
        "path": "desc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -27086,7 +28489,7 @@
   },
   {
    "id": "RelSageArSps",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_sps. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR salesperson period statistics: a Sage AR salesperson's invoiced, paid and written-off counts and amounts for one period; personal and finance marked. Generated raw type: one record of the Portal reporting-API relation sage.ar_sps. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -27116,7 +28519,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -27348,6 +28771,10 @@
      ]
     }
    ],
+   "markings": [
+    "finance",
+    "pii"
+   ],
    "identity_keys": [
     {
      "name": "source_key",
@@ -27375,11 +28802,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_sps is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "codeslsp"
    ]
   },
   {
    "id": "RelSageArStcus",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_stcus. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR statement customer: a customer as printed on one Sage AR statement run (balances, contacts, aging). Generated raw type: one record of the Portal reporting-API relation sage.ar_stcus. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -27409,7 +28839,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -28948,6 +30398,10 @@
        "path": "textsnam",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -28959,6 +30413,10 @@
        "path": "textstmt",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -29011,11 +30469,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_stcus is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idcust",
+    "idgrp",
+    "idnatacct"
    ]
   },
   {
    "id": "RelSageArStcuso",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_stcuso. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR statement customer optional field: an optional field value of a customer on one Sage AR statement run. Generated raw type: one record of the Portal reporting-API relation sage.ar_stcuso. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -29045,7 +30508,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -29220,11 +30703,15 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_stcuso is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idcust",
+    "optfield"
    ]
   },
   {
    "id": "RelSageArStnat",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_stnat. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR statement national account: a national account as printed on one Sage AR statement run. Generated raw type: one record of the Portal reporting-API relation sage.ar_stnat. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -29254,7 +30741,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -29558,6 +31065,10 @@
        "path": "textstmt",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -29599,11 +31110,14 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_stnat is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idnatacct"
    ]
   },
   {
    "id": "RelSageArStobl",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_stobl. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR statement document: an open document as printed on a customer's Sage AR statement. Generated raw type: one record of the Portal reporting-API relation sage.ar_stobl. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -29633,7 +31147,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -29776,6 +31310,10 @@
        "path": "descinvc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -29938,11 +31476,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_stobl is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
    "id": "RelSageArStobp",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_stobp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR statement payment: a payment as printed on a customer's Sage AR statement. Generated raw type: one record of the Portal reporting-API relation sage.ar_stobp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -29972,7 +31515,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -30172,6 +31735,11 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_stobp is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
@@ -30206,7 +31774,27 @@
        "note": "Pagination key ['stmtseq'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -30723,7 +32311,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -30880,7 +32488,27 @@
        "note": "Pagination key ['codesvcchr'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -31025,6 +32653,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     }
    ],
@@ -31059,7 +32691,7 @@
   },
   {
    "id": "RelSageArTcn",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_tcn. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR miscellaneous receipt line: a distribution line of a Sage AR miscellaneous receipt. Generated raw type: one record of the Portal reporting-API relation sage.ar_tcn. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -31089,7 +32721,42 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "via_link": "RelSageArTcn.gl_account_idacct",
+         "path": "acctdesc",
+         "op": "matches",
+         "value": "(payroll|wage|salar|commission|bonus)"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      },
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -31371,6 +33038,10 @@
        "path": "gldesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -31382,6 +33053,10 @@
        "path": "glref",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -31974,11 +33649,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_tcn is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "cntbtch",
+    "cntitem",
+    "cntline"
    ]
   },
   {
    "id": "RelSageArTcp",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_tcp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR receipt application: a document a Sage AR receipt is applied to and the applied amount. Generated raw type: one record of the Portal reporting-API relation sage.ar_tcp. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -32008,7 +33688,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -32525,6 +34225,10 @@
        "path": "glref",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -32674,6 +34378,10 @@
        "path": "textadj",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -32715,11 +34423,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_tcp is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idcust",
+    "cntbtch"
    ]
   },
   {
    "id": "RelSageArTcr",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_tcr. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR receipt: a Sage AR receipt or adjustment entry (customer, cheque/remittance, bank amount, applied amount). Generated raw type: one record of the Portal reporting-API relation sage.ar_tcr. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -32749,7 +34462,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -33898,6 +35631,10 @@
        "path": "textpayor",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -33909,6 +35646,10 @@
        "path": "textrmit",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -34273,6 +36014,10 @@
        "path": "txtrmitref",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -34314,11 +36059,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_tcr is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "docnbr",
+    "idrmit",
+    "idcust"
    ]
   },
   {
    "id": "RelSageArTcu",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_tcu. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR receipt adjustment: an adjustment entered with a Sage AR receipt. Generated raw type: one record of the Portal reporting-API relation sage.ar_tcu. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -34348,7 +36098,42 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "when": [
+        {
+         "via_link": "RelSageArTcu.gl_account_idacct",
+         "path": "acctdesc",
+         "op": "matches",
+         "value": "(payroll|wage|salar|commission|bonus)"
+        }
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      },
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -34855,6 +36640,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -34866,6 +36655,10 @@
        "path": "textref",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -34918,11 +36711,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_tcu is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "transnbr",
+    "cntbtch",
+    "cntitem"
    ]
   },
   {
    "id": "RelSageArUnpsth",
-   "description": "Generated raw type: one record of the Portal reporting-API relation sage.ar_unpsth. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "AR unposted transaction: a Sage AR transaction entered but not posted (customer, document, amount, applied-to). Generated raw type: one record of the Portal reporting-API relation sage.ar_unpsth. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -34952,7 +36750,27 @@
        "note": "Pagination key ['_sage_pk'] (key source: not recorded)."
       }
      ],
-     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules."
+     "note": "Lineage is the unconfirmed per-schema default; curated bindings add row-level lineage rules.",
+     "marking_rules": [
+      {
+       "from_lines": [
+        "invoice_entry",
+        "posted_entry",
+        "journal_entry",
+        "open_document",
+        "payment",
+        "receipt",
+        "recurring_payable",
+        "refund",
+        "posted_line"
+       ],
+       "markings": [
+        "finance",
+        "pii"
+       ],
+       "why": "A Sage GL, AR or AP line on a GL account whose name says payroll, wage, salary, commission or bonus is pay: the whole record (amount, description, reference) carries the payroll pair finance and pii; the rule follows the row's own GL-account link and marks a row whose account does not resolve. A header, open document, payment, receipt, refund or recurring entry one of whose lines is so marked is marked whole as well (header_links) (2026-11-08)."
+      }
+     ]
     }
    ],
    "properties": [
@@ -35379,6 +37197,10 @@
        "path": "textdesc",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -35390,6 +37212,10 @@
        "path": "textref",
        "parser": "as_is"
       }
+     ],
+     "markings": [
+      "finance",
+      "pii"
      ]
     },
     {
@@ -35487,11 +37313,16 @@
      "ref": "live GET /v1/relations@2026-10-26",
      "note": "sage.ar_unpsth is listed by GET /v1/relations (domain customers); it is not in the pinned manifest."
     }
+   ],
+   "display": [
+    "idinvc",
+    "idrmit",
+    "idcust"
    ]
   },
   {
    "id": "RelSilverCustomers",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.customers. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver customer: the Portal's cleaned silver copy of a FileMaker customers record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.customers. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -35821,6 +37652,9 @@
      "commit": "52c9116f77ab",
      "note": "silver.customers is an approved reporting-API relation (manifest domain customers)."
     }
+   ],
+   "display": [
+    "id"
    ]
   }
  ],

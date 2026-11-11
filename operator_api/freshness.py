@@ -39,7 +39,8 @@ def capture_alarm_status(state_dir: Any, now: Optional[datetime] = None
         state = Path(state_dir)
         now = now or datetime.now(timezone.utc)
         t = ops_health.targets()
-        checks = ops_health.capture_checks(state, now, t)
+        checks = (ops_health.capture_checks(state, now, t)
+                  + ops_health.source_checks(state, now, t))
         extra = [c for c in (ops_health.start_check(state, t),
                              ops_health.config_keys_check(state)) if c is not None]
         alarm = ops_health.capture_alarm({"checks": checks + extra})

@@ -274,6 +274,39 @@
      ]
     }
    ]
+  },
+  {
+   "id": "BatchSchedule.for_bulk_product",
+   "from": "BatchSchedule",
+   "to": "Product",
+   "name": "for_bulk_product",
+   "reverse_name": "batch_schedules",
+   "cardinality": "N:1",
+   "description": "The bulk product a FileMaker batch schedule entry makes (batch_calibration.bulkcode = the Portal product code).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_batch_calibration",
+     "to_binding": "portal.app_product",
+     "pairs": [
+      {
+       "from": "bulkcode",
+       "to": "code",
+       "compare": "identifier",
+       "identifier_kind": "item_code"
+      }
+     ],
+     "unique_target": true,
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/domains/production.json",
+       "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 7,712 of 8,228 schedule rows reach a product; 15 of 15 sampled pairs agree on the bulk name (the FM bulk product table agrees the same, 15 of 15)."
+      }
+     ]
+    }
+   ]
   }
  ],
  "event_types": [

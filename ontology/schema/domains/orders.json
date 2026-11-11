@@ -396,6 +396,22 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_sage",
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "context.portal.3.2"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "bc_manufacturing",
                   "bc_distribution"
                 ],
@@ -422,22 +438,6 @@
                   {
                     "kind": "ref",
                     "id": "portal.etl_sage_open_orders"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_sage",
-                  "gold_etl_from_fm"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  },
-                  {
-                    "kind": "ref",
-                    "id": "context.portal.3.2"
                   }
                 ]
               }
@@ -485,22 +485,6 @@
             "precedence": [
               {
                 "lineage": [
-                  "fm_bronze",
-                  "sage_bronze"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  },
-                  {
-                    "kind": "ref",
-                    "id": "context.portal.3.3"
-                  }
-                ]
-              },
-              {
-                "lineage": [
                   "gold_etl_from_fm",
                   "gold_etl_from_sage"
                 ],
@@ -512,6 +496,22 @@
                   {
                     "kind": "ref",
                     "id": "portal.etl_sage_open_orders"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze",
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "context.portal.3.3"
                   }
                 ]
               },
@@ -650,13 +650,9 @@
             "precedence": [
               {
                 "lineage": [
-                  "sage_bronze"
+                  "gold_etl_from_sage"
                 ],
                 "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  },
                   {
                     "kind": "ref",
                     "id": "portal.etl_sage_open_orders"
@@ -665,9 +661,13 @@
               },
               {
                 "lineage": [
-                  "gold_etl_from_sage"
+                  "sage_bronze"
                 ],
                 "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
                   {
                     "kind": "ref",
                     "id": "portal.etl_sage_open_orders"
@@ -710,23 +710,23 @@
             "precedence": [
               {
                 "lineage": [
-                  "fm_bronze"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
                   "gold_etl_from_fm"
                 ],
                 "evidence": [
                   {
                     "kind": "ref",
                     "id": "portal.ensure_sales_order_from_fm_oe"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
                   }
                 ]
               }
@@ -986,17 +986,6 @@
             "precedence": [
               {
                 "lineage": [
-                  "fm_bronze"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
                   "gold_etl_from_fm"
                 ],
                 "evidence": [
@@ -1007,6 +996,17 @@
                   {
                     "kind": "ref",
                     "id": "portal.resolve_order_from_fm_id"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
                   }
                 ]
               }
@@ -1034,17 +1034,6 @@
             "precedence": [
               {
                 "lineage": [
-                  "sage_bronze"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
                   "gold_etl_from_sage"
                 ],
                 "evidence": [
@@ -1055,6 +1044,17 @@
                   {
                     "kind": "ref",
                     "id": "portal.etl_sage_make_prefix"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
                   }
                 ]
               }
@@ -1284,6 +1284,24 @@
             {
               "kind": "ref",
               "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "salesperson_code",
+          "value_type": "text",
+          "description": "The order's salesperson code: BC salesOrders.salesperson. A salesperson/purchaser code (BC Code[20]); the with_owners step (ontology/owner_links.py) links it to the one staff Person whose address local part it is, as a lead (a code is no address).",
+          "sources": [
+            {
+              "binding": "bc.sales_orders",
+              "path": "salesperson",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_query_specs"
             }
           ]
         }
@@ -1556,6 +1574,22 @@
             "precedence": [
               {
                 "lineage": [
+                  "gold_etl_from_fm",
+                  "gold_etl_from_sage"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.portal.3.2"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "context.portal.4.5"
+                  }
+                ]
+              },
+              {
+                "lineage": [
                   "bc_manufacturing",
                   "bc_distribution"
                 ],
@@ -1575,22 +1609,6 @@
                   {
                     "kind": "ref",
                     "id": "context.critique.r1"
-                  }
-                ]
-              },
-              {
-                "lineage": [
-                  "gold_etl_from_fm",
-                  "gold_etl_from_sage"
-                ],
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "context.portal.3.2"
-                  },
-                  {
-                    "kind": "ref",
-                    "id": "context.portal.4.5"
                   }
                 ]
               }
@@ -1946,6 +1964,24 @@
               "binding": "portal.sage_oe_order_detail",
               "path": "item",
               "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "shipment_date",
+          "value_type": "date",
+          "description": "BC shipment date of the line (when the line is planned to ship). The date supply pegging (ontology/demand_pegging.py) needs this line's goods by; a line without one falls back to its order's required_date.",
+          "sources": [
+            {
+              "binding": "bc.sales_order_lines",
+              "path": "shipmentDate",
+              "parser": "iso_date"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_query_specs"
             }
           ]
         }
@@ -6568,6 +6604,537 @@
               "kind": "workbench_code",
               "path": "ontology/key_links.py",
               "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SalesOrderLine.supplied_by",
+      "from": "SalesOrderLine",
+      "to": "PurchaseOrderLine",
+      "name": "supplied_by",
+      "reverse_name": "supplies_order_lines",
+      "cardinality": "N:M",
+      "description": "Demand pegging: the open purchase order lines this open order line's material is expected from. The line's item, or each open component of the assembly order made for it, is allocated in need-date order to open PO lines of the same item (twins across systems one item), PO lines due on or before the need date first, then later ones (reason due_after_need: the material arrives late). No source system records the tie (BC special-order/drop-ship fields and Portal/FileMaker order-to-PO references are not captured), so always a lead: on-hand stock is not netted. The reason names the item, the quantities allocated, both dates and the component.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_sales_order_line",
+          "to_binding": "portal.app_purchase_order_line",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_sales_order_line",
+          "to_binding": "portal.fm_generated_purchase_order_item",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_sales_order_line",
+          "to_binding": "bc.purchase_order_lines",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_order_entry_item",
+          "to_binding": "portal.app_purchase_order_line",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_order_entry_item",
+          "to_binding": "portal.fm_generated_purchase_order_item",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_order_entry_item",
+          "to_binding": "bc.purchase_order_lines",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.sage_oe_order_detail",
+          "to_binding": "portal.app_purchase_order_line",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.sage_oe_order_detail",
+          "to_binding": "portal.fm_generated_purchase_order_item",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.sage_oe_order_detail",
+          "to_binding": "bc.purchase_order_lines",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "bc.sales_order_lines",
+          "to_binding": "portal.app_purchase_order_line",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "bc.sales_order_lines",
+          "to_binding": "portal.fm_generated_purchase_order_item",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "bc.sales_order_lines",
+          "to_binding": "bc.purchase_order_lines",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        }
+      ]
+    },
+    {
+      "id": "SalesOrder.awaits_purchase_order",
+      "from": "SalesOrder",
+      "to": "PurchaseOrder",
+      "name": "awaits_purchase_order",
+      "reverse_name": "supplies_sales_orders",
+      "cardinality": "N:M",
+      "description": "The purchase orders an open sales order waits on: the orders of the PO lines its lines are pegged to (SalesOrderLine.supplied_by), a lead with the same reason. Lets a late PO explain a late customer order.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_sales_order",
+          "to_binding": "portal.app_purchase_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_sales_order",
+          "to_binding": "portal.fm_generated_purchase_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_sales_order",
+          "to_binding": "bc.purchase_orders",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_order_entry",
+          "to_binding": "portal.app_purchase_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_order_entry",
+          "to_binding": "portal.fm_generated_purchase_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_order_entry",
+          "to_binding": "bc.purchase_orders",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.sage_oe_order_header",
+          "to_binding": "portal.app_purchase_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.sage_oe_order_header",
+          "to_binding": "portal.fm_generated_purchase_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.sage_oe_order_header",
+          "to_binding": "bc.purchase_orders",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "bc.sales_orders",
+          "to_binding": "portal.app_purchase_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "bc.sales_orders",
+          "to_binding": "portal.fm_generated_purchase_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "bc.sales_orders",
+          "to_binding": "bc.purchase_orders",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/demand_pegging.py",
+              "note": "supply_pegging step: an open order line's item (and its assembly order's open components) allocated in date order to open purchase order lines of the same item; always a lead with the pegging reason, never verified."
+            }
+          ],
+          "written_by_step": "supply_pegging"
+        }
+      ]
+    },
+    {
+      "id": "ShipmentLine.of_sales_order",
+      "from": "ShipmentLine",
+      "to": "SalesOrder",
+      "name": "of_sales_order",
+      "reverse_name": "sage_shipment_lines",
+      "cardinality": "N:1",
+      "description": "The Sage order a Sage OE shipment line ships (oe_shipment_detail.ordnumber = oe_order_header.ordnumber; Sage's own order numbering, so verified).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.sage_oe_shipment_detail",
+          "to_binding": "portal.sage_oe_order_header",
+          "pairs": [
+            {
+              "from": "ordnumber",
+              "to": "ordnumber",
+              "compare": "identifier",
+              "identifier_kind": "so_number"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "scripts/gen_raw_links.py",
+              "note": "Link-completeness audit 2026-11-08 (read-only source mirror): 235,942 of 235,942 non-blank rows reach an order; 30 of 30 sampled pairs corroborated by the line's item on the order or the shipment's customer."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SalesInvoiceLine.of_sales_order",
+      "from": "SalesInvoiceLine",
+      "to": "SalesOrder",
+      "name": "of_sales_order",
+      "reverse_name": "sage_invoice_lines",
+      "cardinality": "N:1",
+      "description": "The Sage order a Sage OE invoice line bills (oe_invoice_detail.ordnumber = oe_order_header.ordnumber; Sage's own order numbering, so verified).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.sage_oe_invoice_detail",
+          "to_binding": "portal.sage_oe_order_header",
+          "pairs": [
+            {
+              "from": "ordnumber",
+              "to": "ordnumber",
+              "compare": "identifier",
+              "identifier_kind": "so_number"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "scripts/gen_raw_links.py",
+              "note": "Link-completeness audit 2026-11-08 (read-only source mirror): 235,910 of 235,910 non-blank rows reach an order; 30 of 30 sampled pairs corroborated by the line's item on the order."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SalesInvoiceLine.of_shipment",
+      "from": "SalesInvoiceLine",
+      "to": "Shipment",
+      "name": "of_shipment",
+      "reverse_name": "sage_invoice_lines",
+      "cardinality": "N:1",
+      "description": "The Sage shipment a Sage OE invoice line bills (oe_invoice_detail.shinumber = oe_shipment_header.shinumber; Sage's own shipment numbering, so verified).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.sage_oe_invoice_detail",
+          "to_binding": "portal.sage_oe_shipment_header",
+          "pairs": [
+            {
+              "from": "shinumber",
+              "to": "shinumber",
+              "compare": "identifier",
+              "identifier_kind": "shipment_number"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "scripts/gen_raw_links.py",
+              "note": "Link-completeness audit 2026-11-08 (read-only source mirror): 237,464 of 237,464 non-blank rows reach a shipment; 29 of 30 sampled pairs corroborated by the shipment's order number."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RelSageGlJeHeader.source_shipment",
+      "from": "RelSageGlJeHeader",
+      "to": "Shipment",
+      "name": "source_shipment",
+      "reverse_name": "gl_entries",
+      "cardinality": "N:1",
+      "description": "The Sage OE shipment a GL journal entry posted (drilldwnlk = oe_shipment_header.shiuniq), for entries whose drill-down source is OE shipments only (drilapp OE, drilsrcty 3).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "gen.sage.gl_je_header",
+          "to_binding": "portal.sage_oe_shipment_header",
+          "pairs": [
+            {
+              "from": "drilldwnlk",
+              "to": "shiuniq",
+              "compare": "text_id"
+            }
+          ],
+          "where": [
+            {
+              "path": "drilapp",
+              "op": "eq",
+              "value": "OE"
+            },
+            {
+              "path": "drilsrcty",
+              "op": "in",
+              "value": [
+                3,
+                "3"
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/orders.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 83,801 of 83,802 OE-shipment-sourced entries reach a shipment; random-shift baseline 0.007 (a real join). The same column on other ledgers' entries is another document's id (shift baseline 1.2-1.9), hence the source predicate."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SalesOrderLine.for_bulk",
+      "from": "SalesOrderLine",
+      "to": "Product",
+      "name": "for_bulk",
+      "reverse_name": "fm_order_lines_bulk",
+      "cardinality": "N:1",
+      "description": "The FileMaker bulk product a FileMaker order line is for (order_entry_item.idbulk = bulk_product.id).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_order_entry_item",
+          "to_binding": "portal.fm_bulk_product",
+          "pairs": [
+            {
+              "from": "idbulk",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/orders.json",
+              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 1,691 of 1,692 non-blank ids reach a bulk product; 15 of 15 sampled pairs agree with the line's finished product's bulk; shift baseline 0.0."
             }
           ]
         }

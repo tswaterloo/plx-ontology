@@ -21,6 +21,7 @@ from unittest import mock
 
 from evals import measure, runner, score as sc
 from evals.tests import fixtures as fx
+from verify import require_live_verify
 
 HELD_VALUES = ("2400", "2350", "SO-TEST-77", "Shipment", "oracle:f3_quantities")
 
@@ -400,9 +401,17 @@ class HeldOutTests(Temp):
                               runner.load_items(directory, split="held_out")], ["ho-F3-0901"])
 
     def test_held_out_directory_inside_a_git_work_tree_is_refused(self):
-        with self.env(**{runner.HELD_OUT_DIR_ENV: str(runner.REPO_ROOT / "evals")}):
-            with self.assertRaisesRegex(runner.RunnerError, "git_work_tree"):
-                runner.held_out_root()
+        # A work tree of its own: an exported copy of this repository need not be one.
+        work_tree = self.root / "checkout"
+        (work_tree / ".git").mkdir(parents=True)
+        (work_tree / "evals" / "held").mkdir(parents=True)
+        for inside in (work_tree, work_tree / "evals" / "held"):
+            with self.env(**{runner.HELD_OUT_DIR_ENV: str(inside)}):
+                with self.assertRaisesRegex(runner.RunnerError, "git_work_tree"):
+                    runner.held_out_root()
+        with self.env(**{runner.HELD_OUT_DIR_ENV: str(self.root / "held")}):
+            (self.root / "held").mkdir()
+            self.assertEqual(runner.held_out_root(), (self.root / "held").resolve())
 
     def test_held_out_item_related_to_a_visible_item_is_refused_without_echoing_it(self):
         exposed = runner.load_items(runner.REPO_ROOT / "evals" / "exposed", split="dev")
@@ -1389,7 +1398,6 @@ class RealAgentEvalTests(Temp):
         self.assertEqual(sc.outcome_of(result), "wrong")  # an abstention where it has an answer
 
     def test_each_outcome_class_is_scored_with_coverage_and_the_k1_session_cap(self):
-        from verify import live_verify as lv
         from scripts import eval_real_agent as era
         blocked_item = fx.item(id="dev-F3-0902", question={"text": "Q blocked?"},
                                known_outcome={"answerability": "blocked", "values": [],
@@ -1455,6 +1463,10 @@ class RealAgentEvalTests(Temp):
         report, code = run(5)
         self.assertEqual((code, len(spawned), report["eval"]["skipped"]), (3, 5, 1))
         self.assertEqual(report["eval"]["fail_reasons"], ["incomplete"])
+
+    def test_no_claude_binary_is_blocked_upstream_and_the_daily_spec_records_it_blocked(self):
+        from scripts import eval_real_agent as era
+        lv = require_live_verify(self)
         # No Claude Code binary: blocked upstream, never a measurement.
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

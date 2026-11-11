@@ -92,6 +92,63 @@ def property_name(column: str, taken: set[str]) -> str:
     return name
 
 
+def _row_rules(overrides: Overrides, source: str, relation: str, tid: str,
+               columns: list[str], properties: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ``markings.json`` row rules this relation takes: a matching relation that carries
+    one of a rule's account columns hops that column's account link (the first column the
+    rule lists that the relation has); its free-text columns (``text_columns``) carry the
+    rule's markings on every row (``text_markings``); a relation of the rule's families
+    is marked whole when one of its lines is (``header_links``, the lines' link names).
+    Declared once for the Sage families."""
+    import fnmatch
+
+    def matches(rule: Mapping[str, Any]) -> bool:
+        return rule["source"] == source and relation not in rule.get("except", ()) and \
+            any(fnmatch.fnmatchcase(relation, g) for g in rule["relations"])
+
+    by_path = {p["sources"][0]["path"]: p for p in properties}
+    for rule in overrides.text_markings:
+        if not matches(rule):
+            continue
+        cols, unless = rule["_re"]
+        for col in columns:
+            if col in by_path and cols.search(col) and not unless.search(col):
+                held = by_path[col]
+                held["markings"] = sorted(set(held.get("markings", ())) | set(rule["markings"]))
+    out = []
+    for rule in overrides.row_markings:
+        if not matches(rule):
+            continue
+        link = next((name for col, name in rule["account_columns"].items()
+                     if col in columns), None)
+        if link is not None:
+            out.append({"when": [dict(w, via_link=f"{tid}.{link}") if w.get("via_link")
+                                 else dict(w) for w in rule["when"]],
+                        "markings": list(rule["markings"]), "why": rule["why"]})
+        if rule.get("header_links"):
+            out.append({"from_lines": list(rule["header_links"]),
+                        "markings": list(rule["markings"]), "why": rule["why"]})
+    return out
+
+
+def _apply_business(obj: dict[str, Any], spec: Mapping[str, Any] | None, relation: str,
+                    props: Mapping[str, str]) -> None:
+    """The declared business meaning of a raw relation (``overrides/business.json``): a
+    kept relation's description leads with its label and what it is, and ``display`` (its
+    columns) forms a record's name. A column the relation lacks fails generation; a skipped
+    relation (system or log) stays as generated."""
+    if not spec or spec["decision"] == "skip":
+        return
+    for key in ("display", "text"):
+        missing = [c for c in spec.get(key, ()) if c not in props]
+        if missing:
+            raise OverrideError(f"business.json {relation}.{key}: no column "
+                                + ", ".join(missing))
+    obj["description"] = (f"{spec['label']}: {spec['about']}. {obj['description']}")[:2000]
+    if spec.get("display"):
+        obj["display"] = [props[c] for c in spec["display"]]
+
+
 def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
              unit_contracts: Mapping[str, Any], fm_source_fk: Mapping[str, tuple[str, str]],
              overrides: Overrides) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -158,6 +215,9 @@ def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
                 "evidence": rel["evidence"] + [key_evidence],
                 "note": rel.get("note") or overrides.lineage_note,
                 **({"value_storage": storage[name]} if name in storage else {}),
+                **({"marking_rules": rules_here}
+                   if (rules_here := _row_rules(overrides, facts["source"], name, tid,
+                                                columns_of[name], properties)) else {}),
             }],
             "properties": properties,
             **({"markings": marked} if (marked := sorted(
@@ -173,9 +233,19 @@ def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
             }],
             "evidence": rel["evidence"],
         }
+        _apply_business(types[tid], overrides.business.get(facts["source"], {}).get(name),
+                        name, {c: prop_of[(name, c)] for c in columns_of[name]})
         type_of_relation[name] = tid
         ends[name] = (tid, bid)
 
+    # a relation the facts declare but no raw type stands for (excluded, curated) cannot
+    # carry a business meaning; one the facts lack (a partial catalog) is not this run's
+    # (ontology.raw_business.check holds the declaration to the compiled schema)
+    unknown = sorted((set(overrides.business.get(facts["source"], {})) & set(relations))
+                     - set(type_of_relation))
+    if unknown:
+        raise OverrideError("business.json names relations that are not generated served "
+                            "relations of " + facts["source"] + ": " + ", ".join(unknown))
     by_prop = {(obj["bindings"][0]["relation"], p["sources"][0]["path"]): p
                for obj in types.values() for p in obj["properties"]}
     unit_report = _apply_units(unit_contracts, by_prop, prefix)

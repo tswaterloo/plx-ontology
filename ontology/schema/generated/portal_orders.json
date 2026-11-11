@@ -14519,7 +14519,7 @@
   },
   {
    "id": "RelSilverOrderEntries",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.order_entries. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver order entrie: the Portal's cleaned silver copy of a FileMaker order entries record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.order_entries. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -14717,11 +14717,14 @@
      "commit": "52c9116f77ab",
      "note": "silver.order_entries is an approved reporting-API relation (manifest domain orders)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {
    "id": "RelSilverOrderEntryItems",
-   "description": "Generated raw type: one record of the Portal reporting-API relation silver.order_entry_items. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
+   "description": "Portal silver order entry item: the Portal's cleaned silver copy of a FileMaker order entry items record, keyed by the FileMaker id. Generated raw type: one record of the Portal reporting-API relation silver.order_entry_items. Raw source records with every approved column; curated types in ontology/schema/domains/ shadow it.",
    "availability": {
     "state": "served"
    },
@@ -14864,6 +14867,9 @@
      "commit": "52c9116f77ab",
      "note": "silver.order_entry_items is an approved reporting-API relation (manifest domain orders)."
     }
+   ],
+   "display": [
+    "id"
    ]
   },
   {

@@ -32,26 +32,26 @@ describe("brief view", () => {
     expect(screen.getByText("4 more not listed.")).toBeTruthy();
   });
 
-  it("says an unread or finance-only section once, keeping 'not the same as none', with dates in words", () => {
+  it("says an unread or finance-only section once, keeping 'may still have items', with dates in words", () => {
     render(
       <BriefView
         brief={brief({
           sections: [
-            { key: "slips", title: "Top slips", state: "unread", rows: [], more: 0, figures: [], note: "Your alert list could not be read, so this section could not be read: that is not the same as none." },
+            { key: "slips", title: "Top slips", state: "unread", rows: [], more: 0, figures: [], note: "Your alert list could not be read, so nothing is shown here; this section may still have items." },
             { key: "cash", title: "Cash", state: "finance_marked", rows: [], more: 0, figures: [], note: "Finance-marked: shown only to readers who hold finance." },
             { key: "trend", title: "Trend", state: "unread", rows: [], more: 0, figures: [], note: "Week of 2099-01-05 to 2099-01-11." },
           ],
         })}
       />,
     );
-    expect(screen.getAllByText(/not the same as none/)).toHaveLength(2); // the slips note once, the trend's empty line
+    expect(screen.getAllByText(/may still have items/)).toHaveLength(2); // the slips note once, the trend's empty line
     expect(screen.getAllByText(/Finance-marked/)).toHaveLength(1);
     expect(screen.getByRole("heading", { level: 1 })).not.toHaveTextContent("2099-01-05");
     expect(screen.getByText(/^Week of 5 Jan/)).toBeTruthy();
   });
 
   it("says a reason shared by sections in a row once, then points at it; a missing figure says so once", () => {
-    const why = "Your alert list could not be read, so this section could not be read: that is not the same as none.";
+    const why = "Your alert list could not be read, so nothing is shown here; this section may still have items.";
     render(
       <BriefView
         brief={brief({

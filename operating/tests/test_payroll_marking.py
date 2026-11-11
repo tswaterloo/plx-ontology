@@ -85,6 +85,46 @@ class TextIndexTests(unittest.TestCase):
         self.assertFalse(text_index._text_facts(stub)["sensitive"])
 
 
+TIME_SHEET = """Week ending 2026-10-30
+Day        In     Out    Hours
+Monday     7:00   15:30  8.0
+Tuesday    7:00   15:30  8.0
+Total hours 40.0    Overtime hours 2.5
+Supervisor signature ________"""
+PAY_SHEET = """Employee   Hours   Rate    Pay
+A. Person  40.0    23.50   940.00
+Regular hours 40   Pay period 2026-10-16 to 2026-10-31"""
+LABOUR_INVOICE = """INVOICE 4471  Bill to: Acme Ltd
+Service      Hours   Rate    Amount
+Repair call  3.0     95.00   285.00
+Subtotal 285.00  HST 37.05  Total 322.05"""
+
+
+class TimeSheetTests(unittest.TestCase):
+    """Time sheets and pay sheets carry the personal markings in the text index (and its
+    search chunks), however they are named; hours billed on an invoice do not."""
+
+    def test_time_and_pay_sheets_are_marked_and_a_labour_invoice_is_not(self):
+        from ontology import text_index
+        field = lambda path, text: SimpleNamespace(citation="graph-mail://m/1",
+                                                   field_path=path, text=text)
+
+        def facts(name, text):
+            stub = SimpleNamespace(citation="graph-mail://m/1", kind="email_attachment",
+                                   sender_class=None,
+                                   fields=[field("row.name", name), field("row.text", text)])
+            return text_index._text_facts(stub)["sensitive"]
+
+        self.assertTrue(facts("Timesheet - Oct 30.xlsx", TIME_SHEET))
+        self.assertTrue(facts("scan0031.pdf", "TIME SHEET\n" + TIME_SHEET))
+        self.assertTrue(facts("export.csv", PAY_SHEET))
+        self.assertEqual(personal_financial(PAY_SHEET), "time_sheet")
+        self.assertFalse(facts("INV-4471.pdf", LABOUR_INVOICE))
+        self.assertFalse(facts("Line 2 schedule.xlsx", "Line 2 hours this week: 40\nBatch 7"))
+        # a title alone never decides
+        self.assertIsNone(personal_financial("See you Monday", title="timesheet reminder"))
+
+
 class RemarkTests(unittest.TestCase):
     """The re-mark command on a scratch database."""
 

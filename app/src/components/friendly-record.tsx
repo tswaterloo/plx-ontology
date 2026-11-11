@@ -9,8 +9,7 @@ import { recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 import { MissingActions, ObjectView } from "./object-view";
 import { arrange, type Arranged } from "./ask-box";
-import { SystemTile } from "./ui/glyphs";
-import { Monogram } from "./ui/monogram";
+import { SystemCode } from "./ui/glyphs";
 
 /** The record type each friendly path opens: /po/106093, /customer/DIVE11, /supplier/V06110, /ao/AO-26253A. */
 export const FRIENDLY_TYPE = {
@@ -110,8 +109,7 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
         <ul className="-mx-3">
           {found.map((s) => (
             <li key={s.object_id}>
-              <Link href={safeHref(s.open_url) ?? "/"} className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 hover:bg-hover">
-                <Monogram name={partyOf(s)} size={32} />
+              <Link href={safeHref(s.open_url) ?? "/"} className="flex items-center gap-3 rounded-[3px] px-3 py-2.5 hover:bg-hover">
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] leading-[18px] font-semibold">{recordLabel(s.type, s.label)}</span>
                   <span className="block truncate text-[12px] leading-4 text-muted">{s.facts || typeLabel(s.type)}</span>
@@ -120,7 +118,7 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
                   <span className="flex shrink-0 items-center gap-2 text-[12px] text-muted">
                     {s.systems.map((x) => (
                       <span key={x} className="inline-flex items-center gap-1.5">
-                        <SystemTile system={x} size={16} />
+                        <SystemCode system={x} size={16} />
                         <span className="max-sm:sr-only">{SYSTEM_LABEL[x as keyof typeof SYSTEM_LABEL] ?? x}</span>
                       </span>
                     ))}

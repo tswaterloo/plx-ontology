@@ -151,6 +151,9 @@ class LinkKindTests(unittest.TestCase):
                                     "direction": "reverse"}])
         mail = self.around(SO, [{"link_type": "Email.mentions_sales_order",
                                  "direction": "reverse"}])
+        # A lead-tier hop is listed apart (possibly_related, ae3cfbfc91), never in the
+        # answer's own edges or objects: the mail mention is there with its kind and tier.
+        self.assertEqual((mail["edges"], mail["objects"]), ([], []))
         edges = {(e["link_type"], e["kind"], e["tier"])
                  # a lead-tier mention is set apart (possibly_related); with_leads reads it back
                  for out in map(tt.with_leads, (dependency_chain, packets, mail))
@@ -170,6 +173,7 @@ class LinkKindTests(unittest.TestCase):
                                    "direction": "reverse"}], B.actor)
         hidden = tt.with_leads(hidden)   # the lead set is read too: nothing leaks through it
         self.assertEqual((hidden["edges"], hidden["objects"]), ([], []))
+        self.assertNotIn("possibly_related", hidden)
 
         # plx.object names each record by itself, never the pair as one.
         for oid in (SO, TWIN):

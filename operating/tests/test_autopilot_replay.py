@@ -8,9 +8,12 @@ SYNTHETIC fixtures only; evidence label: isolated-fixture.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import io
 import json
+import os
 from pathlib import Path
 import unittest
+from unittest import mock
 
 from operating import autopilot as ap
 from operating import autopilot_replay as rp
@@ -320,6 +323,113 @@ class Replay(World):
             days.close()
         self.assertNotIn("Nov 20", (self.dir / "out" / ap.GATE_FILE).read_text())
         self.assertEqual(out["actions"], 3)
+
+
+class StoreSource(World):
+    """``--source``: the replay reads the store it was asked for, or nothing."""
+    scene, replay = Replay.scene, Replay.replay
+
+    def run_on(self, source: str, out: str) -> tuple[dict, list]:
+        st = ap._store(str(self.dir / "s.sqlite"), source)
+        try:
+            result = rp.replay(st, people(), role=f"person:{OURS}", out=self.dir / out,
+                               since=DAY, until=DAY + timedelta(days=1), roles={},
+                               config=rp.load_config(), environ={},
+                               end=DAY + timedelta(days=10), probe=lambda: 64.0)
+        finally:
+            st.close()
+        q = ap.Queue(next((self.dir / out).glob("person_*")) / ap.QUEUE_FILE)
+        try:
+            items = sorted((i["item_id"], i["owner"], i["autopilot"], i["state"], i["event_id"],
+                            json.dumps(i["citations"], sort_keys=True))
+                           for i in q.items(None, ("open", "done", "settled", "dismissed")))
+        finally:
+            q.close()
+        return result, items
+
+    def test_cardinality_postgres_scores_the_same_items_as_the_sqlite_generation(self):
+        from operating.pg import ontology_load
+        from operating.tests import pg_testdb
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                self.scene(n, lambda i: i % 2 == 0)
+                self.store()
+                name, dsn = pg_testdb.create_db()
+                self.addCleanup(pg_testdb.drop_db, name)
+                from operating.tests.pg_store_mode import MIGRATIONS
+                import psycopg
+                with psycopg.connect(dsn, autocommit=True) as pg:
+                    for migration in MIGRATIONS:
+                        pg.execute(migration.read_text(encoding="utf-8"))
+                ontology_load.load(str(self.dir / "s.sqlite"), dsn, workers=1, replace=True,
+                                   log=io.StringIO())
+                with mock.patch.dict(os.environ, {"PLX_PG_DSN": dsn}):
+                    os.environ.pop("PLX_ONTOLOGY_PG", None)
+                    lite, lite_items = self.run_on("sqlite", "lite")
+                    pg_run, pg_items = self.run_on("postgres", "pg")
+                self.assertEqual((lite["source"]["store"], pg_run["source"]["store"]),
+                                 ("sqlite", "postgres"))
+                self.assertEqual(len(pg_items), n)
+                self.assertEqual(pg_items, lite_items)
+                self.assertEqual(pg_run["workflows"], lite["workflows"])
+                flow = pg_run["workflows"]["supplier_eta_receiving"]
+                self.assertEqual((flow["judged"], flow["matched"]), (n, (n + 1) // 2))
+
+    def test_postgres_not_holding_the_generation_is_refused_never_read_as_sqlite(self):
+        self.scene(2, lambda i: True)
+        self.store()
+        out = self.dir / "out"
+        # no server at this socket: Postgres serves nothing, so the run reads nothing
+        with mock.patch.dict(os.environ, {"PLX_PG_DSN": f"postgresql:///none?host={self.dir}"}):
+            os.environ.pop("PLX_ONTOLOGY_PG", None)
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as said:
+                code = rp.main(["--store", str(self.dir / "s.sqlite"), "--out", str(out),
+                                "--role", f"person:{OURS}", "--source", "postgres",
+                                "--mem-max-gb", "0"])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(said.getvalue())["reason"], "store_source_mismatch")
+        self.assertFalse(out.exists())
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as said:
+            code = rp.main(["--store", str(self.dir / "s.sqlite"), "--source", "sqlite",
+                            "--print-data-end", "--until", ap._iso(DAY - timedelta(days=4)),
+                            "--mem-max-gb", "0"])
+        ends = json.loads(said.getvalue())
+        self.assertEqual((code, ends["store"]), (0, "sqlite"))
+        # the last mail is the 14:00 reply; a replay to four days before judges to its end
+        self.assertEqual(ends["data_end"], at(14))
+        self.assertLess(ends["judged_to"], ends["data_end"])
+        with self.assertRaises(ValueError):
+            ap._store(str(self.dir / "s.sqlite"), "postgresql")
+
+    def test_cardinality_short_lived_reader_threads_hold_no_connection_after_they_end(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.scene(2, lambda i: True)
+        st = self.store()
+        for pools in (1, 10, 60):
+            with self.subTest(pools=pools):
+                for _ in range(pools):   # proactive_threads._read: a new pool per read
+                    with ThreadPoolExecutor(4) as pool:
+                        self.assertEqual(set(pool.map(lambda _: st.conn.execute(
+                            "SELECT COUNT(*) FROM objects").fetchone()[0], range(8))),
+                            {st.conn.execute("SELECT COUNT(*) FROM objects").fetchone()[0]})
+                # the main thread's and at most one per thread alive at once
+                self.assertLessEqual(len(st._conns), 5)
+
+    def test_a_queue_begun_on_one_store_is_never_resumed_on_the_other(self):
+        self.scene(2, lambda i: True)
+        self.store()
+        first = self.replay()
+        self.assertEqual((first["status"], first["source"]["store"]), ("complete", "sqlite"))
+        q = ap.Queue(next((self.dir / "out").glob("person_*")) / ap.QUEUE_FILE)
+        try:
+            with q.conn:
+                q.set_meta("store", "postgres")
+        finally:
+            q.close()
+        again = self.replay()
+        self.assertEqual((again["status"], again["reason"]),
+                         ("blocked", "queue_started_on_postgres"))
 
 
 class Gate(unittest.TestCase):
@@ -713,7 +823,10 @@ class PastApprovals(World):
                     pending[project] = [
                         self.w.obj("MCApproval", {
                             "gate_id": f"g-{i}-{k}", "status": "approved",
-                            "requested_by": APPROVER, "requested_at": at(10),
+                            # asked by an agent no one in the directory is (the asker
+                            # is left out: test_..._never_goes_back_to_its_asker...)
+                            "requested_by": "agent@synth-tenant.example",
+                            "requested_at": at(10),
                             "decided_by": APPROVER, "decided_at": at(30),
                             "reason": "Ship it"}, audience=f"mc:live/approvals/{project}")
                         for k in range(n)]
@@ -737,6 +850,56 @@ class PastApprovals(World):
                 self.assertEqual(got, {"P-OURS": {OURS_OID}, "P-BOTH": both,
                                        "P-STALE": both, "P-NONE": both,
                                        "P-STRANGER": both})
+
+    def test_cardinality_an_approval_never_goes_back_to_its_asker_when_another_decides(self):
+        from unittest import mock
+        for n in (1, 10, 60):
+            with self.subTest(n=n), mock.patch.object(
+                    ap, "_approvers", lambda _d: [OURS_OID, APPROVER_OID]):
+                self.setUp()
+                asked = {}
+                # (project, who asked): both decide in P-BOTH; only we decide in P-OURS
+                for i, (project, asker) in enumerate((
+                        ("P-BOTH", OURS), ("P-BOTH", APPROVER), ("P-OURS", OURS),
+                        ("P-NONE", OURS), ("P-NONE", "nobody@synth-tenant.example"),
+                        ("P-NONE", ""))):
+                    asked[(project, asker)] = [
+                        self.w.obj("MCApproval", {
+                            "gate_id": f"g-{i}-{k}", "status": "pending",
+                            "requested_by": asker.upper(), "requested_at": at(10),
+                            "reason": "Ship it"}, audience=f"mc:live/approvals/{project}")
+                        for k in range(n)]
+                self.decided("P-BOTH", OURS, 5)
+                self.decided("P-BOTH", APPROVER, 2)
+                self.decided("P-OURS", OURS, 3)
+                st = self.store()
+                q = ap.Queue(self.dir / "q" / ap.QUEUE_FILE)
+                self.addCleanup(q.close)
+                ap.run_cycle(st, q, [o for v in asked.values() for o in v], people=people(),
+                             environ={}, now=DAY + timedelta(hours=12), settle_items=False)
+                got: dict = {}
+                for item in q.items(None):
+                    oid = json.loads(q.conn.execute(
+                        "SELECT body FROM events WHERE event_id = ?",
+                        (item["event_id"],)).fetchone()[0])["object_id"]
+                    key = next(k for k, v in asked.items() if oid in v)
+                    got.setdefault(key, []).append(item["owner"])
+                both = {OURS_OID, APPROVER_OID}
+                self.assertEqual({k: set(v) for k, v in got.items()}, {
+                    ("P-BOTH", OURS): {APPROVER_OID}, ("P-BOTH", APPROVER): {OURS_OID},
+                    # the asker alone decided there: the other approvers
+                    ("P-OURS", OURS): {APPROVER_OID},
+                    # every approver: the asker is left out
+                    ("P-NONE", OURS): {APPROVER_OID},
+                    # an asker not known, or none: every approver
+                    ("P-NONE", "nobody@synth-tenant.example"): both, ("P-NONE", ""): both})
+                # no one else can decide: the asker keeps it
+                with mock.patch.object(ap, "_approvers", lambda _d: [OURS_OID]):
+                    q2 = ap.Queue(self.dir / "q2" / ap.QUEUE_FILE)
+                    self.addCleanup(q2.close)
+                    ap.run_cycle(st, q2, asked[("P-OURS", OURS)], people=people(), environ={},
+                                 now=DAY + timedelta(hours=12), settle_items=False)
+                    self.assertEqual({i["owner"] for i in q2.items(None)}, {OURS_OID})
 
 
 class TeamsChats(World):
@@ -774,6 +937,57 @@ class TeamsChats(World):
                 self.assertEqual(sum(v["actions"] for v in out["workflows"].values()), 1)
                 self.assertNotIn("c3", (self.dir / "out" / ap.GATE_FILE).read_text())
 
+    def test_cardinality_a_reply_sent_as_several_messages_is_anticipated_whole(self):
+        """One answer typed as n messages, each six minutes after the one before, is
+        what the prepared reply replaces: all n are anticipated, the item matches once.
+        A message 20 minutes after the last one, or in another chat, is not."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                self.chat("c1", OURS_OID, 9, "Morning, can you check the run sheet?", day=-1)
+                self.chat("c2", OURS_OID, 9, "Hi", day=-1)
+                self.chat("c1", APPROVER_OID, 10, "Did the batch pass the check?")
+                for i in range(n):
+                    self.chat("c1", OURS_OID, 12 + i * 6 / 60, f"Part {i} of the answer.")
+                last = 12 + (n - 1) * 6 / 60
+                self.chat("c2", OURS_OID, last + 5 / 60, "Unrelated note.")
+                self.chat("c1", OURS_OID, last + 29 / 60, "One more thing, later.")
+                self.store()
+                out = Replay.replay(self, role=f"person:{OURS}")
+                flow = out["workflows"]["teams_chat"]
+                self.assertEqual((flow["judged"], flow["matched"]), (1, 1))
+                self.assertEqual((flow["actions"], flow["anticipated"]), (n + 2, n))
+
+    def test_a_message_after_the_other_side_wrote_is_not_part_of_the_reply(self):
+        """Reproduced on Vince's DEV days: the owner answers in two messages, the other
+        person writes ("Thanks!", owed nothing), and the owner writes again three minutes
+        later. That is a new exchange, not the rest of the reply: only the two messages
+        of the answer are anticipated."""
+        self.chat("c1", OURS_OID, 9, "Morning, can you check the run sheet?", day=-1)
+        self.chat("c1", APPROVER_OID, 10, "Did the batch pass the check?")
+        self.chat("c1", OURS_OID, 12, "Yes, it passed.")
+        self.chat("c1", OURS_OID, 12 + 3 / 60, "All three lots.")
+        self.chat("c1", APPROVER_OID, 12 + 5 / 60, "Thanks!")
+        self.chat("c1", OURS_OID, 12 + 8 / 60, "Also the label run starts at two.")
+        self.store()
+        out = Replay.replay(self, role=f"person:{OURS}")
+        flow = out["workflows"]["teams_chat"]
+        self.assertEqual((flow["judged"], flow["matched"]), (1, 1))
+        self.assertEqual((flow["actions"], flow["anticipated"]), (3, 2))
+
+    def test_an_action_without_the_other_side_s_time_gets_no_burst_credit(self):
+        """An action list read without ``other_at`` (an older cache) or with an
+        unreadable one credits the matched message only."""
+        t0 = rp.ap._instant("2026-10-21T12:00:00Z")
+        hit = {"kind": "teams_sent", "conversation": "c1", "at": "2026-10-21T12:00:00Z",
+               "other_at": None}
+        for extra in ({}, {"other_at": "not a time"}, {"other_at": None}):
+            with self.subTest(extra=extra):
+                nxt = {"kind": "teams_sent", "conversation": "c1",
+                       "at": "2026-10-21T12:03:00Z", **extra}
+                seen: set = set()
+                rp._credit_burst(hit, [(t0, hit), (t0 + timedelta(minutes=3), nxt)], seen)
+                self.assertEqual(id(nxt) in seen, extra == {"other_at": None})
 
     def texts(self, bodies: dict) -> None:
         """A message's body as the capture's text index holds it (not a property)."""
@@ -791,6 +1005,70 @@ class TeamsChats(World):
                 conn.execute("INSERT INTO text_chunks (field_id, start, body) VALUES "
                              "(?, 0, ?)", (cur.lastrowid, zlib.compress(body.encode())))
         conn.close()
+
+    def test_cardinality_a_chat_note_closing_its_loop_after_a_casual_lead_in_is_not_owed(self):
+        """Reproduced on dev days: "lol okay thanks", "Sure will do!", "Sorry bout that" in
+        a chat were prepared as owed and went unanswered. A chat message that asks or
+        answers is still prepared."""
+        notes = ("lol okay thanks", "Sure will do!", "Sorry bout that", "yep will do")
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                texts = {}
+                for i in range(n):
+                    chat = f"c{i}"
+                    self.chat(chat, OURS_OID, 9, "", day=-1)
+                    texts[self.chat(chat, APPROVER_OID, 10, "")] = notes[i % len(notes)]
+                self.chat("q", OURS_OID, 9, "", day=-1)
+                texts[self.chat("q", APPROVER_OID, 10, "")] = "sure, can you send it?"
+                self.store()
+                self.texts(texts)
+                from integrations.people_exclusion import PeopleExclusion
+                from operating.chunking.permissions import Exclusion
+                guard = Exclusion(PeopleExclusion([EXCLUDED_OID]),
+                                  directory={OURS: OURS_OID, APPROVER: APPROVER_OID},
+                                  internal_domains=["synth-tenant.example"],
+                                  chat_members={c: [OURS_OID, APPROVER_OID] for c in
+                                                [f"c{i}" for i in range(n)] + ["q"]})
+                out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
+                self.assertEqual(out["status"], "complete")
+                self.assertEqual(out["skipped"].get("teams_not_chat_or_not_cleared", 0), 0)
+                self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": 1})
+
+    def test_cardinality_an_index_without_the_messages_text_refuses_the_replay(self):
+        """Reproduced on Postgres before its text chunks were loaded: every Teams message's
+        body field was listed and none held text, so all read as empty and closing notes
+        were prepared as owed. The replay refuses such a window (fail closed); the same
+        window with its text runs."""
+        import sqlite3
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                self.chat("c1", OURS_OID, 9, "Morning", day=-1)
+                sent = [self.chat("c1", APPROVER_OID, 10, "") for _ in range(n)]
+                self.chat("c1", OURS_OID, 15, "Done.")
+                self.store()
+                self.texts({o: "Thanks, noted!" for o in sent})
+                conn = sqlite3.connect(self.dir / "s.sqlite")
+                with conn:
+                    saved = conn.execute("SELECT field_id, start, body FROM text_chunks"
+                                         ).fetchall()
+                    conn.execute("DELETE FROM text_chunks")
+                conn.close()
+                out = Replay.replay(self, role=f"person:{OURS}")
+                self.assertEqual((out["status"], out["reason"]),
+                                 ("blocked", "text_index_incomplete"))
+                self.assertEqual((out["body_fields"], out["with_text"]), (n, 0))
+                self.assertNotIn("workflows", out)
+                conn = sqlite3.connect(self.dir / "s.sqlite")
+                with conn:
+                    conn.executemany("INSERT INTO text_chunks (field_id, start, body) "
+                                     "VALUES (?, ?, ?)", saved)
+                conn.close()
+                out = Replay.replay(self, role=f"person:{OURS}")
+                self.assertEqual(out["status"], "complete")
+                # each message closes its own loop: nothing is owed
+                self.assertEqual(out["prepared_by_autopilot"], {})
 
     def test_the_messages_own_text_decides_and_the_drafted_answer_is_never_posted(self):
         """Reproduced: a chat message's words live in the text index, not a property, so
@@ -914,6 +1192,22 @@ class GroupChats(TeamsChats):
                 matched = sum(v["matched"] for v in out["workflows"].values())
                 self.assertEqual((judged, matched), (1, 1))
                 self.assertNotIn("g2", (self.dir / "out" / ap.GATE_FILE).read_text())
+
+    def test_a_third_member_writing_in_between_ends_the_reply(self):
+        """In a group the owner answers a mention; another member (not the asker) writes;
+        the owner's next message five minutes on answers that, not the mention."""
+        guard = people()
+        guard.chat_members["g1"] = [OURS_OID, APPROVER_OID, self.THIRD]
+        self.chat("g1", OURS_OID, 9, "Morning all", day=-1)
+        self.msg("g1", self.THIRD, 11, "Can you check the run sheet?", mention=OURS_OID)
+        self.msg("g1", OURS_OID, 12, "Checked, all fine.")
+        self.msg("g1", APPROVER_OID, 12 + 2 / 60, "Is the press free after lunch?")
+        self.msg("g1", OURS_OID, 12 + 5 / 60, "Yes from one.")
+        self.store()
+        out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
+        flow = out["workflows"]["teams_chat"]
+        self.assertEqual((flow["judged"], flow["matched"]), (1, 1))
+        self.assertEqual((flow["actions"], flow["anticipated"]), (2, 1))
 
 
 class CaptureShapeChats(TeamsChats):
@@ -1039,6 +1333,11 @@ class MCQuestions(World):
         super().setUp()
         self.capture_rows: list[tuple[str, dict]] = []
         self.q = 0
+        # a capture that records when it read each version and when it first ran live
+        # (None: an older layout without either)
+        self.live_since: datetime | None = None
+        self.held: dict[str, datetime] = {}
+        self.known_to = DAY + timedelta(days=30)     # the capture's last write per unit
 
     def _event(self, task: str, task_oid: str, kind: str, actor: str, when: datetime,
                payload: dict) -> str:
@@ -1088,11 +1387,30 @@ class MCQuestions(World):
         state = self.dir / "state"
         (state / "mc-capture").mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(state / "mc-capture" / "capture.sqlite") as c:
+            if self.live_since is None:
+                c.execute("CREATE TABLE versions (kind TEXT, path TEXT, payload TEXT, "
+                          "superseded_at TEXT)")
+                for path, row in self.capture_rows:
+                    c.execute("INSERT INTO versions VALUES ('mission_control', ?, ?, NULL)",
+                              (path, json.dumps({"row": row})))
+                return state
             c.execute("CREATE TABLE versions (kind TEXT, path TEXT, payload TEXT, "
-                      "superseded_at TEXT)")
+                      "superseded_at TEXT, recorded_at TEXT)")
+            c.execute("CREATE TABLE runs (kind TEXT, unit TEXT, started_at TEXT, "
+                      "updated_at TEXT)")
+            for unit in ("approvals", "task_events"):
+                c.execute("INSERT INTO runs VALUES ('mission_control', ?, ?, ?)",
+                          (f"mc:live/{unit}", ap._iso(self.live_since),
+                           ap._iso(self.known_to)))
             for path, row in self.capture_rows:
-                c.execute("INSERT INTO versions VALUES ('mission_control', ?, ?, NULL)",
-                          (path, json.dumps({"row": row})))
+                # the first sweep read what came before it; later the version of a record
+                # it re-read, and before that the first one, superseded
+                first = self.held.get(path, self.live_since)
+                c.execute("INSERT INTO versions VALUES ('mission_control', ?, ?, ?, ?)",
+                          (path, json.dumps({"row": row}), ap._iso(first + timedelta(days=1)),
+                           ap._iso(first)))
+                c.execute("INSERT INTO versions VALUES ('mission_control', ?, ?, NULL, ?)",
+                          (path, json.dumps({"row": row}), ap._iso(first + timedelta(days=1))))
         return state
 
     def replayed(self, *, reader: bool = True) -> dict:
@@ -1154,6 +1472,69 @@ class MCQuestions(World):
                     self.assertEqual(draft["option"], "Wait for the new label")
                     self.assertNotIn("SYNTH-ANSWER-TEXT", json.dumps(item))
                     self.assertNotIn("object", item["body"]["prepared"])
+
+    def home(self) -> None:
+        """One step the person took in MC: the capture's actors name its home domain, the
+        only place a bare MC name is looked up."""
+        task = self.w.obj("MCTask", {"task_id": "TASK-H"}, binding="mission_control.tasks")
+        self._event("TASK-H", task, "task.moved", OURS, DAY + timedelta(hours=9),
+                    {"actorKind": "human"})
+
+    def test_cardinality_a_live_captured_question_is_timed_by_its_first_read(self):
+        """Once the capture reads MC live, a question is seen when its first version was
+        captured, not at its time plus the configured lag: a fast poll's ten minutes make
+        one answered in half an hour preparable; a paused feed's five hours make one
+        answered in three hours not. One the first sweep backfilled keeps the lag."""
+        asked = DAY + timedelta(hours=10)
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                self.live_since = DAY + timedelta(hours=1)
+                self.home()
+                fast, paused = [], []
+                for i in range(n):
+                    fast.append(self.question(i, "ops", answered_after=timedelta(minutes=30)))
+                    self.held[f"live/task_events/TASK-{i}~{self.q - 1}"] = \
+                        asked + timedelta(minutes=10)
+                for i in range(n, 3 * n):              # twice as many: counts tell them apart
+                    paused.append(self.question(i, "ops", answered_after=timedelta(hours=3)))
+                    self.held[f"live/task_events/TASK-{i}~{self.q - 1}"] = \
+                        asked + timedelta(hours=5)
+                out = self.replayed()
+                self.assertEqual(out["prepared_by_autopilot"], {"mc_question": n})
+                self.assertEqual(out["feed_seen"], {"capture": n})
+                flow = out["workflows"]["mc_question"]
+                self.assertEqual((flow["judged"], flow["matched"]), (n, n))
+                # the same questions before the capture ran live: the configured lag
+                self.setUp()
+                self.live_since = asked + timedelta(days=1)
+                self.home()
+                for i in range(n):
+                    self.question(i, "ops", answered_after=timedelta(minutes=30))
+                    self.question(n + i, "ops", answered_after=timedelta(hours=3))
+                out = self.replayed()
+                self.assertEqual(out["prepared_by_autopilot"], {"mc_question": n})
+                self.assertEqual(out["feed_seen"], {"feed_lag": n})
+
+    def test_cardinality_a_question_past_the_mc_captures_last_write_is_not_judged(self):
+        """Mail goes on while the MC capture stopped writing (paused for a migration): a
+        question whose 72 h are not all inside the capture is left unjudged, answered or
+        not, never counted a miss; once the capture covers them, both are judged."""
+        for n in (1, 10, 60):
+            for stopped, judged, matched in ((True, 0, 0), (False, 2 * n, n)):
+                with self.subTest(n=n, stopped=stopped):
+                    self.setUp()
+                    self.live_since = DAY
+                    self.known_to = DAY + timedelta(days=1 if stopped else 5)
+                    self.home()
+                    for i in range(n):
+                        self.question(i, "ops", answered_after=timedelta(hours=3))
+                        self.question(n + i, "ops", answered_after=None)
+                    out = self.replayed()
+                    flow = out["workflows"]["mc_question"]
+                    self.assertEqual(flow["prepared"], 2 * n)
+                    self.assertEqual((flow["judged"], flow["matched"]), (judged, matched))
+                    self.assertEqual(out["source_ends"], {"mc": ap._iso(self.known_to)})
 
     def test_without_the_mc_capture_no_question_is_prepared(self):
         self.question(0, "ops", answered_after=timedelta(hours=3))

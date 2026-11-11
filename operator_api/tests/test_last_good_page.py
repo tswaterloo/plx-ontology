@@ -412,3 +412,240 @@ class PlainWordsAndBusinessDay(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SnapshotFirst(LastGoodPage.__base__):
+    """Owner 2026-11-11: every page under 1 s. A screen's last good page read under the
+    inputs served now (the store, its layers, the inbox: ``inputs_stamp``) is served as it
+    is with no read started; read under other inputs it is served at once marked
+    ``stale_since`` and read again off the request; an inputs change reads the recent
+    screens again. Every access rule of the kept page still holds on this path."""
+
+    def setUp(self):
+        LastGoodPage.setUp(self)
+        self.inputs = ("gen-1",)
+        stamp = mock.patch.object(be.WorkspaceBackend, "inputs_stamp",
+                                  lambda backend: self.inputs)
+        stamp.start()
+        self.addCleanup(stamp.stop)
+        self.marks = None
+        marks = mock.patch.object(be, "_marks_stamp", lambda view: self.marks)
+        marks.start()
+        self.addCleanup(marks.stop)
+
+    serve = LastGoodPage.serve
+    wait_kept = NeverServedCold.wait_kept
+
+    def counted(self, value):
+        calls = []
+
+        def read():
+            calls.append(1)
+            return value
+        return read, calls
+
+    def test_a_page_read_under_the_inputs_now_is_served_with_no_read(self):
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        read, calls = self.counted(page(9))
+        started = time.monotonic()
+        got = self.serve(who, read)
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertEqual((got.total, got.stale_since, calls), (3, None, []))
+        # past the freshness limit it is no longer current: served stale, read again
+        key = (who.key, who.mode, ("late", 0, 25))
+        at, value, access = self.backend._good[key]
+        self.backend._good[key] = (at - be.SNAPSHOT_FRESH_SECONDS - 1, value, access)
+        got = self.serve(who, read)
+        self.assertEqual(got.total, 3)
+        self.assertIsNotNone(got.stale_since)
+        self.wait_kept(who, 9)
+
+    def test_new_inputs_serve_the_page_stale_at_once_and_keep_the_new_read(self):
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        self.inputs = ("gen-2",)
+        got = self.serve(who, slow(page(8), 0.3))
+        self.assertEqual(got.total, 3)
+        self.assertIsNotNone(got.stale_since)
+        self.wait_kept(who, 8)
+        read, calls = self.counted(page(1))
+        got = self.serve(who, read)
+        self.assertEqual((got.total, got.stale_since, calls), (8, None, []))
+
+    def test_the_readers_own_write_reads_the_screen_now_not_its_snapshot(self):
+        """A reader who marks the briefing seen, asks, or acts sees it at once: their own
+        write (any request that is not a read) leaves their kept pages not current, and
+        the next visit waits for its read; another reader's snapshot is untouched."""
+        who, other = reader("grp-a"), reader("grp-b")
+        self.serve(who, lambda: page(3))
+        self.serve(other, lambda: page(4))
+        self.backend.reader_wrote(who)
+        read, calls = self.counted(page(5))
+        got = self.serve(who, read)
+        self.assertEqual((got.total, got.stale_since, calls), (5, None, [1]))
+        read, calls = self.counted(page(6))      # current again: kept under the write
+        self.assertEqual((self.serve(who, read).total, calls), (5, []))
+        read, calls = self.counted(page(7))
+        self.assertEqual((self.serve(other, read).total, calls), (4, []))
+        # a read under way across the write is never kept as current
+        def read_across():
+            self.backend.reader_wrote(who)
+            return page(8)
+        self.backend.reader_wrote(who)
+        self.serve(who, read_across)
+        read, calls = self.counted(page(9))
+        self.assertEqual((self.serve(who, read).total, calls), (9, [1]))
+
+    def test_no_inputs_stamp_reads_as_before(self):
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        self.inputs = None
+        read, calls = self.counted(page(4))
+        self.assertEqual((self.serve(who, read).total, calls), (4, [1]))
+
+    def test_the_snapshot_passes_every_access_rule_of_a_kept_page(self):
+        who = reader("grp-a")
+        cited = "graph-mail://box/msg-1@g-1"
+        shown = page(5).model_copy(update={"items": [m.LatePo(
+            object_id="po-1", label="PO 1", reason="late", open_url="/objects/po-1", sources=[
+                m.Source(system="Email", handle=cited, label="Supplier mail")])]})
+        self.serve(who, lambda: shown)
+        # a source the reader can no longer open: never served, the read decides
+        self.reads.denied.add(cited)
+        read, calls = self.counted(page(6))
+        self.assertEqual((self.serve(who, read).total, calls), (6, [1]))
+        self.reads.denied.clear()
+        self.serve(who, lambda: shown)
+        # a revoked marking with the same principals
+        self.reads.policy = policy()
+        read, calls = self.counted(page(7))
+        self.assertEqual((self.serve(who, read).total, calls), (7, [1]))
+        # an added exclusion
+        self.reads.policy = policy("finance")
+        self.serve(who, lambda: shown)
+        with mock.patch.dict(os.environ, {
+                "PLX_EXCLUDED_PEOPLE_OIDS": "22222222-2222-4222-8222-222222222222"}):
+            read, calls = self.counted(page(8))
+            self.assertEqual((self.serve(who, read).total, calls), (8, [1]))
+        # a document re-marked beyond the reader
+        self.serve(who, lambda: shown)
+        self.marks = "re-marked"
+        read, calls = self.counted(page(2))
+        self.assertEqual((self.serve(who, read).total, calls), (2, [1]))
+        # an access state that cannot be read: no snapshot either
+        self.marks = None
+        self.serve(who, lambda: shown)
+        self.reads.stuck = True
+        with mock.patch.object(be, "ACCESS_WAIT_SECONDS", 0.05):
+            read, calls = self.counted(page(4))
+            self.assertEqual((self.serve(who, read).total, calls), (4, [1]))
+        # never another reader's
+        self.reads.stuck = False
+        other_read, other_calls = self.counted(page(1))
+        self.assertEqual((self.serve(reader("grp-b"), other_read).total, other_calls),
+                         (1, [1]))
+
+    def test_a_disk_copy_is_never_current(self):
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        self.backend._snap_inputs().clear()      # as after a restart: read from disk
+        read, calls = self.counted(page(5))
+        got = self.serve(who, read)
+        self.assertEqual(got.total, 3)
+        self.assertIsNotNone(got.stale_since)
+        self.wait_kept(who, 5)
+
+    def test_an_inputs_change_reads_nothing_while_a_request_is_being_read(self):
+        """The change refresh yields to live requests: each screen it reads again waits
+        until the read workers are idle (``wait_idle``), so an object page asked for
+        while the inputs moved is never queued behind a refresh."""
+        order: list = []
+        self.backend.yield_to_live = True
+        self.backend.wait_idle = lambda: order.append("idle")
+        self.backend.revoked = lambda ref: False
+        self.inputs = ("gen", 1)
+        readers = [reader(f"grp-{i}") for i in range(3)]
+        for i, who in enumerate(readers):
+            who.session = SimpleNamespace(session_ref=f"ref-{i}",
+                                          expires_at=int(time.time()) + 3600)
+            self.serve(who, lambda: page(1))
+        self.inputs = ("gen", 2)
+        for who in readers:
+            def read(who=who):
+                order.append(who.key)
+                return page(2)
+            self.backend._snap_reads()[(who.key, who.mode, ("late", 0, 25))] = (
+                who, read, time.monotonic())
+        self.assertEqual(self.backend._refresh_changed(), 3)
+        self.assertEqual(order[0::2], ["idle"] * 3)        # every read after an idle wait
+        self.assertEqual(sorted(order[1::2]), sorted(w.key for w in readers))
+
+    def test_an_inputs_change_reads_each_recent_screen_again_once(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.backend._good.clear()
+                self.backend._snap_inputs().clear()
+                self.backend._snap_reads().clear()
+                self.inputs = ("gen", n, 1)
+                calls: dict[str, int] = {}
+                readers = [reader(f"grp-{i}") for i in range(n)]
+                for i, who in enumerate(readers):
+                    who.session = SimpleNamespace(session_ref=f"ref-{i}",
+                                                  expires_at=int(time.time()) + 3600)
+                # one signed in with a revoked ticket, one expired: never read ahead
+                revoked = {"ref-0"}
+                self.backend.revoked = lambda ref: ref in revoked
+                if n > 1:
+                    readers[1].session.expires_at = int(time.time()) - 1
+                skipped = {readers[0].key} | ({readers[1].key} if n > 1 else set())
+
+                def read_of(who, total):
+                    def read():
+                        calls[who.key] = calls.get(who.key, 0) + 1
+                        return page(total)
+                    return read
+                for who in readers:
+                    self.serve(who, read_of(who, 1))
+                calls.clear()
+                self.inputs = ("gen", n, 2)
+                for who in readers:   # the reads the change runs return the new page
+                    self.backend._snap_reads()[(who.key, who.mode, ("late", 0, 25))] = (
+                        who, read_of(who, 2), time.monotonic())
+                done = self.backend._refresh_changed()
+                # newest first: the skipped readers (served first) are oldest
+                expected = min(n - len(skipped), be.SNAPSHOT_REFRESH_KEPT)
+                self.assertEqual(done, expected)
+                self.assertEqual(sorted(calls.values()), [1] * expected)
+                self.assertFalse(skipped & set(calls))
+                # the refreshed ones are current now: no read, the new page
+                fresh = [w for w in readers if w.key in calls]
+                for who in fresh:
+                    read, got_calls = self.counted(page(9))
+                    got = self.serve(who, read)
+                    self.assertEqual((got.total, got.stale_since, got_calls), (2, None, []))
+                # a second pass under the same inputs reads nothing again
+                calls.clear()
+                self.backend._refresh_changed()
+                self.assertEqual(sorted(calls.values()), [1] * (n - len(skipped) - expected))
+                self.assertFalse(skipped & set(calls))
+
+
+class ChangeRefreshSwitch(unittest.TestCase):
+    def test_the_change_refresh_starts_only_when_switched_on(self):
+        """Off by default (the live inputs move every few minutes): reading the inputs
+        stamp starts no refresh thread; PLX_SNAPSHOT_REFRESH=1 starts it once."""
+        backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
+        backend._lock = threading.RLock()
+        backend.store_path = Path("/nonexistent/store.sqlite")
+        backend._served_state = lambda: ("store", 1)
+        backend._pg_load_stamp = lambda: None
+        started: list = []
+        backend._refresh_on_change = lambda: started.append(1)
+        self.assertEqual(be.WorkspaceBackend.inputs_stamp(backend), (("store", 1), None))
+        self.assertIsNone(getattr(backend, "_inputs_watch", None))
+        with mock.patch.object(be, "SNAPSHOT_REFRESH", True):
+            backend._inputs = None
+            be.WorkspaceBackend.inputs_stamp(backend)
+            backend._inputs_watch.join(5)
+        self.assertEqual(started, [1])

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import threading
 from types import SimpleNamespace
 import unittest
@@ -408,6 +409,36 @@ class ProfitAskTests(unittest.TestCase):
             while True:
                 next(steps)
         self.assertIsNone(done.exception.value)
+
+    def test_a_customer_pages_margin_reads_its_orders_beside_the_ask_pool(self):
+        """With two or more Ask workers, the margin section's orders are read side by side
+        on the pool's workers, each as this reader on its own runtime, and the margin is the
+        one read one order after another; with fewer, the section reads alone."""
+        page_view, other = View(self), View(self)
+        self.addCleanup(page_view.close)
+        alone = be.WorkspaceBackend(lambda session: page_view, data_label="isolated-fixture",
+                                    today=lambda: TODAY)
+        customer = page_view.world.customer("C-50")
+        page = SimpleNamespace(object_id=customer, type="Customer",
+                               label="Northwind Test Foods")
+        job = lambda view: be.read_section(alone, view, page, "margin")   # noqa: E731
+        self.assertIs(alone._spread(self.reader(), job), job)
+        plain = job(page_view).profitability
+        backend = be.WorkspaceBackend(lambda session: page_view, data_label="isolated-fixture",
+                                      today=lambda: TODAY)
+        for view in (other, other):
+            worker = backend.add_ask_worker(lambda session, view=view: view)
+            threading.Thread(target=worker.loop, daemon=True).start()
+        self.addCleanup(backend.stop)
+        spread = backend._spread(self.reader(), lambda view: be.read_section(
+            backend, view, page, "margin"))(page_view).profitability
+        self.assertGreater(other.calls, 0)   # a helper read orders as this reader
+        # the helper's world is captured on its own (revision suffixes of handles differ)
+        def same(model):
+            return re.sub(r"(@|%40)[0-9a-f]+-", "@-",
+                          json.dumps(model.model_dump(), sort_keys=True))
+        self.assertEqual(same(spread), same(plain))
+        self.assertEqual(spread.margin.amount, "-41.00")
 
     def test_the_order_and_customer_pages_carry_the_margin_and_its_why(self):
         """The ``margin`` page section: a BC sales order's page leads with that order's

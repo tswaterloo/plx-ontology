@@ -1,0 +1,28 @@
+# The memory checks of the reliability alarms (operating.ops_alarms memory) every minute,
+# between the full 5-minute passes: an alert pass plus agents went from comfortable to an
+# OOM kill faster than one full pass. Available memory under 8 GB (memory_warn_gb) pages
+# the owner once with the top leaf cgroups and processes named; under 6 GB for 5 minutes
+# is the second, louder incident. Same state, lock and page path as plx-ops-health; reads
+# /proc and /sys/fs/cgroup only, sends nothing without PLX_OPS_PAGE_TO.
+[Unit]
+Description=PLX Workbench memory early warning (every minute)
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/plx.env
+EnvironmentFile=-/etc/plx/workbench-api.env
+EnvironmentFile=-/etc/plx/ops-page.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 -m operating.ops_alarms memory --state-dir ${PLX_INGEST_STATE}
+# runs when memory is short: small, but never the one the kernel picks first
+Nice=5
+CPUWeight=50
+MemoryHigh=256M
+MemoryMax=512M
+OOMScoreAdjust=-500
+TimeoutStartSec=50s
+UMask=0077

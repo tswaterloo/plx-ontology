@@ -2,55 +2,60 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AssistBox } from "@/components/autopilot/assist";
+import { BuilderView, SchedulesView } from "@/components/autopilot/builder";
+import { WorkflowsView } from "@/components/autopilot/workflows";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { StatusBadge, StatusWord } from "@/components/ui/status-badge";
-import { decideAutopilotItem, getAutopilotAudit, setAutopilotGlobal, setAutopilotWorkflow, undoAutopilotAction } from "@/lib/api";
+import { decideAutopilotItem, getAutopilotAudit, getAutopilotCatalog, setAutopilotGlobal, undoAutopilotAction } from "@/lib/api";
 import {
   ITEM_STATE,
   NO_FILTERS,
   type Filters,
   type Split,
+  dueWords,
   filterItems,
   filterWorkflows,
   itemLive,
-  pct,
   personName,
   roleLabel,
   rowRole,
   splitItems,
-  stateShown,
   systemLabel,
   workflowLabel,
 } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { formatDateTime, objectHref, plural, sourceHref } from "@/lib/format";
-import type { AutopilotArea as Area, AutopilotAudit, AutopilotAuditRow, AutopilotItem, AutopilotWorkflowRow } from "@/lib/types";
+import type { AutopilotArea as Area, AutopilotAudit, AutopilotAuditRow, AutopilotCatalog, AutopilotItem } from "@/lib/types";
 
-// The autopilot area: today's prepared items with their evidence and drafted action (accept,
-// edit, reject, snooze), the workflows with their scores, state and the owner's switches, and
-// the audit log of the write path with undo. An accept is a recorded dry run until its
-// workflow passed the fresh gate and the owner switched it live; the server decides both.
+// The autopilot studio: the review queue (prepared items with their evidence and drafted
+// action: accept, edit, reject, snooze, one by one or in bulk), the workflows with their
+// gate and mode, the builder, the schedules and the audit log with undo. An accept is a
+// recorded dry run until its workflow passed the fresh gate and the owner set it to Auto;
+// the server decides both. A bulk accept never performs: a live item is accepted alone,
+// after its own confirm.
 
-type Tab = "today" | "workflows" | "audit";
+type Tab = "queue" | "workflows" | "builder" | "schedules" | "audit";
 
 const chip = (on: boolean) =>
   cn(
-    "inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[12px]",
+    "inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-[3px] px-3 text-[12px]",
     on ? "bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] font-medium text-fg" : "text-muted hover:bg-hover",
   );
 
 const selectCls = "h-8 min-w-0 rounded-lg border border-border bg-bg px-2 text-[13px] text-fg";
 
+/** A filter select; one that has nothing to choose (only its "every" option, already
+ * chosen) is not shown at all. */
 function Select({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: [string, string][] }) {
+  if (options.length < 2 && options[0]?.[0] === value) return null;
   return (
-    <label className="flex min-w-0 flex-col gap-0.5 text-[11px] text-muted">
+    <label className="flex max-w-full flex-col gap-0.5 text-[11px] text-muted">
       {label}
-      <select className={selectCls} value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}>
+      <select className={cn(selectCls, "max-w-[20rem]")} value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}>
         {options.map(([v, l]) => (
           <option key={v} value={v}>
             {l}
@@ -90,7 +95,8 @@ function happenedLine(h: Record<string, unknown>): string {
   return parts.join(" · ");
 }
 
-// One prepared item: what happened, the evidence, the drafted action and your decision.
+// One prepared item in the queue's detail pane: what happened, the evidence, the drafted
+// action and your decision.
 function Item({
   area,
   item,
@@ -102,7 +108,7 @@ function Item({
   item: AutopilotItem;
   itemKey: string;
   onDecided: (i: AutopilotItem) => void;
-  register: (el: HTMLLIElement | null, api: { act: (k: string) => void } | null) => void;
+  register: (el: HTMLElement | null, api: { act: (k: string) => void } | null) => void;
 }) {
   const prepared = (item.prepared ?? {}) as Record<string, unknown>;
   const happened = (item.happened ?? {}) as Record<string, unknown>;
@@ -153,32 +159,32 @@ function Item({
     },
     [item.mine, busy, open, decide, editing, text, draft?.body],
   );
-  const liRef = useRef<HTMLLIElement | null>(null);
+  const liRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     register(liRef.current, { act });
     return () => register(null, null);
   }, [register, act]);
   const outcome = item.decision?.outcome;
   return (
-    <li
+    <article
       ref={liRef}
       tabIndex={0}
       data-key={itemKey}
       aria-label={item.title}
       data-testid="autopilot-item"
-      className={cn("space-y-2 rounded-lg border border-border p-3 text-[13px] outline-none focus-visible:border-border-strong focus-visible:ring-2 focus-visible:ring-accent")}
+      className="space-y-4 text-[13px] outline-none"
     >
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
-        <p className="min-w-0 flex-1 break-words font-medium">{item.title}</p>
+        <h2 className="min-w-0 flex-1 break-words text-[15px] font-semibold tracking-[-0.01em]">{item.title}</h2>
         <StatusWord status={item.state === "accepted" ? "ok" : item.state === "rejected" ? "neutral" : item.state === "snoozed" ? "risk" : "new"} label={ITEM_STATE[item.state]} />
       </div>
-      <p className="break-words text-[12px] text-muted">
+      <p className="-mt-3 break-words text-[12px] text-muted">
         {[personName(area, item.owner), workflowLabel(item.workflow), systemLabel(item.system), `due ${formatDateTime(item.due_at)}`].join(" · ")}
         {!item.mine && " · view only"}
       </p>
       {(happenedLine(happened) || objectId) && (
-        <div className="rounded-lg bg-surface p-2.5">
-          <p className="mb-0.5 text-[12px] text-muted">What happened</p>
+        <div className="border-l-[3px] border-border-strong pl-3">
+          <p className="mb-0.5 text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">What happened</p>
           {happenedLine(happened) && <p className="break-words">{happenedLine(happened)}</p>}
           {objectId && (
             <Link className="text-[12px] font-medium hover:underline" href={objectHref(objectId.split(":")[0], objectId)}>
@@ -196,8 +202,8 @@ function Item({
         </p>
       )}
       {draft?.body && !editing && (
-        <div className="rounded-lg bg-surface p-2.5">
-          <p className="mb-1 text-[12px] text-muted">
+        <div className="rounded-[4px] border border-border p-3">
+          <p className="mb-1.5 text-[12px] text-muted">
             {item.decision?.text ? "Your edited draft" : "Drafted reply"}
             {draft.to?.[0]?.address ? ` to ${draft.to[0].address}` : ""}
             {draft.subject ? ` · ${draft.subject}` : ""} · not sent
@@ -251,7 +257,7 @@ function Item({
       {item.mine && open && (
         <div className="space-y-2">
           {confirmLive && (
-            <p className="rounded-lg bg-risk-soft px-3 py-2" role="status">
+            <p className="border-l-[3px] border-risk pl-3" role="status">
               This workflow is live: accepting performs it in {systemLabel(item.system)}. Accept again to confirm.
             </p>
           )}
@@ -293,11 +299,13 @@ function Item({
           <p className="text-[11px] text-muted">{live ? "Live: accept performs it through the write path after your confirm." : "Dry run: accept records your decision only. Nothing is sent or written."}</p>
         </div>
       )}
-    </li>
+    </article>
   );
 }
 
-function TodayView({ area, filters, split, decided, onDecided }: { area: Area; filters: Filters; split: Split; decided: Set<string>; onDecided: (i: AutopilotItem) => void }) {
+/** The review queue: the items as rows on the left (select for bulk), the selected item's
+ * evidence, draft and decision on the right. j/k move, a/e/r/s act on the selected one. */
+function QueueView({ area, filters, split, decided, onDecided }: { area: Area; filters: Filters; split: Split; decided: Set<string>; onDecided: (i: AutopilotItem) => void }) {
   // an item decided here stays in view with its outcome until the view changes
   const items = useMemo(() => {
     const shown = new Set(filterItems(area, filters).map((i) => i.item_id));
@@ -305,157 +313,160 @@ function TodayView({ area, filters, split, decided, onDecided }: { area: Area; f
     return relaxed.filter((i) => shown.has(i.item_id) || decided.has(i.item_id));
   }, [area, filters, decided]);
   const groups = useMemo(() => splitItems(area, items, split), [area, items, split]);
-  const flat = groups.flatMap((g) => g.items.map((i) => `${g.key}/${i.item_id}`));
-  const els = useRef(new Map<string, { el: HTMLLIElement; act: (k: string) => void }>());
+  const flat = useMemo(() => groups.flatMap((g) => g.items.map((i) => `${g.key}/${i.item_id}`)), [groups]);
+  const [sel, setSel] = useState<string | null>(null);
+  const current = sel && flat.includes(sel) ? sel : (flat[0] ?? null);
+  const currentItem = current ? items.find((i) => i.item_id === current.split("/").slice(1).join("/")) ?? null : null;
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const actRef = useRef<((k: string) => void) | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const now = new Date();
+  const open = (i: AutopilotItem) => i.state === "waiting" || i.state === "edited";
+  const pickedItems = items.filter((i) => picked.has(i.item_id) && i.mine && open(i));
+  const liveInPick = pickedItems.filter((i) => itemLive(area, i));
+  const bulk = async (decision: "accept" | "reject" | "snooze") => {
+    const list = decision === "accept" ? pickedItems.filter((i) => !itemLive(area, i)) : pickedItems;
+    setBulkBusy(true);
+    setBulkNote(null);
+    let failed = 0;
+    for (const i of list) {
+      try {
+        onDecided(await decideAutopilotItem(i.item_id, decision === "snooze" ? { decision, until: snoozeChoices()[1][0] } : { decision }));
+      } catch {
+        failed += 1;
+      }
+    }
+    setBulkBusy(false);
+    setPicked(new Set());
+    setBulkNote(failed ? `${plural(list.length - failed, "item")} done; ${failed} refused, left as they were.` : `${plural(list.length, "item")} ${decision === "accept" ? "accepted" : decision === "reject" ? "rejected" : "snoozed until tomorrow morning"}.`);
+  };
+  const move = (by: number) => {
+    const at = current ? flat.indexOf(current) : -1;
+    const next = flat[Math.max(0, Math.min(flat.length - 1, at + by))];
+    if (next) {
+      setSel(next);
+      rowRefs.current.get(next)?.focus();
+    }
+  };
   const onKey = (e: React.KeyboardEvent) => {
     const t = e.target as HTMLElement;
     if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
-    const focus = (t.closest("li[data-key]") as HTMLElement | null)?.dataset.key ?? null;
-    const at = focus ? flat.indexOf(focus) : -1;
-    if (e.key === "j" || e.key === "ArrowDown" || e.key === "k" || e.key === "ArrowUp") {
-      if (t.tagName === "BUTTON" && e.key.startsWith("Arrow")) return;
-      const next = flat[Math.max(0, Math.min(flat.length - 1, at + (e.key === "j" || e.key === "ArrowDown" ? 1 : -1)))];
-      if (next) {
-        e.preventDefault();
-        els.current.get(next)?.el.focus();
-      }
-    } else if (focus && t.tagName === "LI" && ["a", "e", "r", "s"].includes(e.key)) {
+    if (e.key === "j" || e.key === "ArrowDown") {
       e.preventDefault();
-      els.current.get(focus)?.act(e.key);
+      move(1);
+    } else if (e.key === "k" || e.key === "ArrowUp") {
+      e.preventDefault();
+      move(-1);
+    } else if (["a", "e", "r", "s"].includes(e.key) && (t.dataset.queueRow !== undefined || t.dataset.key !== undefined)) {
+      e.preventDefault();
+      actRef.current?.(e.key);
     }
   };
   if ((area.items ?? []).length === 0)
     return <EmptyState title="Nothing prepared yet." line={(area.notes ?? [])[0] ?? "Prepared items appear here as mail, Teams, MC and records change."} />;
   if (items.length === 0) return <EmptyState title="Nothing matches this view." line="Clear a filter or show every open item, not only today's." />;
+  const mineOpen = items.filter((i) => i.mine && open(i));
   return (
-    <div onKeyDown={onKey} className="space-y-5">
-      <p className="text-[12px] text-muted">
-        {plural(items.length, "item")} · keys: j and k move, a accept, e edit, r reject, s snooze
-      </p>
-      {groups.map((g) => (
-        <section key={g.key || "all"} aria-label={g.label || "Prepared items"} className="space-y-2">
-          {g.label && (
-            <h3 className="text-[13px] font-medium">
-              {g.label} <span className="font-normal text-muted">· {g.items.length}</span>
-            </h3>
+    <div onKeyDown={onKey} className="grid min-h-[520px] gap-0 md:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]" data-testid="autopilot-queue">
+      <div className="min-w-0 md:border-r md:border-border md:pr-0">
+        <div className="flex h-9 items-center gap-2 border-b border-border px-2 text-[12px] text-muted">
+          <input
+            type="checkbox"
+            aria-label="Select every item of yours"
+            checked={mineOpen.length > 0 && mineOpen.every((i) => picked.has(i.item_id))}
+            onChange={(e) => setPicked(e.target.checked ? new Set(mineOpen.map((i) => i.item_id)) : new Set())}
+            disabled={mineOpen.length === 0}
+          />
+          {picked.size > 0 ? (
+            <span className="flex flex-1 flex-wrap items-center gap-1" role="group" aria-label="With the selected">
+              <span className="num mr-1 text-fg">{picked.size}</span>
+              <button type="button" className={chip(false)} disabled={bulkBusy || pickedItems.length === liveInPick.length} onClick={() => void bulk("accept")} title={liveInPick.length ? "A live item is accepted alone, after its own confirm" : undefined}>
+                Accept{liveInPick.length ? ` ${pickedItems.length - liveInPick.length}` : ""}
+              </button>
+              <button type="button" className={chip(false)} disabled={bulkBusy} onClick={() => void bulk("snooze")}>
+                Snooze
+              </button>
+              <button type="button" className={chip(false)} disabled={bulkBusy} onClick={() => void bulk("reject")}>
+                Reject
+              </button>
+            </span>
+          ) : (
+            <span className="flex-1">
+              <span className="num text-fg">{items.length}</span> {items.length === 1 ? "item" : "items"} · j k move · a e r s act
+            </span>
           )}
-          <ul className="space-y-3">
-            {g.items.map((i) => {
-              const k = `${g.key}/${i.item_id}`;
-              return (
-                <Item
-                  key={k}
-                  area={area}
-                  item={i}
-                  itemKey={k}
-                  onDecided={onDecided}
-                  register={(el, api) => (el && api ? els.current.set(k, { el, act: api.act }) : els.current.delete(k))}
-                />
-              );
-            })}
-          </ul>
-        </section>
-      ))}
-    </div>
-  );
-}
-
-// A switch: the whole row (track and words) is the target, so a phone tap needs no aim.
-function Toggle({ on, label, text, disabled, onChange }: { on: boolean; label: string; text: string; disabled?: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!on)}
-      className="group inline-flex cursor-pointer items-center gap-2 rounded-md text-[12px] text-fg disabled:cursor-not-allowed"
-    >
-      <span className={cn("relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors group-disabled:opacity-40", on ? "bg-accent" : "bg-[color-mix(in_srgb,var(--fg)_18%,transparent)]")}>
-        <span className={cn("inline-block size-4 rounded-full bg-bg shadow transition-transform", on ? "translate-x-[18px]" : "translate-x-0.5")} />
-      </span>
-      <span className="group-disabled:text-muted">{text}</span>
-    </button>
-  );
-}
-
-function WorkflowsView({ area, filters, onArea }: { area: Area; filters: Filters; onArea: (a: Area) => void }) {
-  const rows = useMemo(() => filterWorkflows(area, filters), [area, filters]);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const flip = async (row: AutopilotWorkflowRow, body: { on?: boolean; live?: boolean; role?: string }) => {
-    setBusy(`${row.role}/${row.workflow}`);
-    setError(null);
-    try {
-      onArea(await setAutopilotWorkflow(row.workflow, body));
-    } catch (e) {
-      setError(plainError(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  if ((area.workflows ?? []).length === 0) return <EmptyState title="No workflow has been scored yet." line="Scores appear after the first replay of a role's days." />;
-  if (rows.length === 0) return <EmptyState title="No workflow matches this view." />;
-  return (
-    <div className="space-y-3">
-      {error && <ErrorNotice message={error} />}
-      <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1.3fr)_4rem_4rem_3rem_minmax(0,1.6fr)_minmax(0,1.2fr)] gap-3 px-3 text-[11px] text-muted md:grid" aria-hidden>
-        <span>Workflow</span>
-        <span>Person or role</span>
-        <span className="text-right">Dev</span>
-        <span className="text-right">Fresh</span>
-        <span className="text-right">n</span>
-        <span>State</span>
-        <span>Last run</span>
+        </div>
+        {liveInPick.length > 0 && picked.size > 0 && <p className="border-b border-border px-2 py-1.5 text-[12px] text-muted">{plural(liveInPick.length, "live item")} left out of a bulk accept: open each and confirm it.</p>}
+        {bulkNote && <p className="border-b border-border px-2 py-1.5 text-[12px] text-muted" role="status">{bulkNote}</p>}
+        {groups.map((g) => (
+          <section key={g.key || "all"} aria-label={g.label || "Prepared items"}>
+            {g.label && (
+              <h3 className="flex h-8 items-end px-2 pb-1 text-[12px] font-semibold">
+                {g.label} <span className="ml-1 font-normal text-muted">· {g.items.length}</span>
+              </h3>
+            )}
+            <ul>
+              {g.items.map((i) => {
+                const k = `${g.key}/${i.item_id}`;
+                const due = dueWords(i.due_at, now);
+                const late = due.endsWith("overdue");
+                const live = itemLive(area, i);
+                return (
+                  <li key={k} className={cn("flex items-stretch border-b border-border", k === current && "bg-[color-mix(in_srgb,var(--accent)_7%,transparent)] shadow-[inset_3px_0_0_var(--accent)]")} data-testid="autopilot-row">
+                    <span className="flex w-7 shrink-0 items-start justify-center pt-2.5">
+                      {i.mine && open(i) && (
+                        <input type="checkbox" aria-label={`Select ${i.title}`} checked={picked.has(i.item_id)} onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(i.item_id); else n.delete(i.item_id); return n; })} />
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      ref={(el) => { if (el) rowRefs.current.set(k, el); else rowRefs.current.delete(k); }}
+                      data-queue-row=""
+                      aria-current={k === current ? "true" : undefined}
+                      aria-label={i.title}
+                      onClick={() => setSel(k)}
+                      onFocus={() => setSel(k)}
+                      className="min-w-0 flex-1 py-2 pr-2 text-left outline-none cursor-pointer focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset"
+                    >
+                      <span className="flex items-baseline gap-2">
+                        <span className={cn("min-w-0 flex-1 truncate text-[13px]", open(i) ? "font-medium text-fg" : "text-muted")}>{i.title}</span>
+                        <span className={cn("num shrink-0 text-[11px]", late && open(i) ? "text-late" : "text-muted")}>{open(i) ? due : ITEM_STATE[i.state]}</span>
+                      </span>
+                      {happenedLine(i.happened ?? {}) && <span className="mt-0.5 block truncate text-[12px] text-fg/80">{happenedLine(i.happened ?? {})}</span>}
+                      <span className="mt-0.5 block truncate text-[12px] text-muted">
+                        {[personName(area, i.owner), workflowLabel(i.workflow), systemLabel(i.system)].join(" · ")}
+                        {live && <span className="text-accent"> · live</span>}
+                        {!i.mine && " · view only"}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ))}
       </div>
-      <ul className="divide-y divide-border rounded-lg border border-border" aria-label="Workflows">
-        {rows.map((r) => {
-          const shown = stateShown(r.state, area.owner);
-          const k = `${r.role}/${r.workflow}`;
-          const canLive = area.owner && r.on && r.fresh != null && r.state !== "dry_run";
-          return (
-            <li key={k} className="grid grid-cols-2 gap-x-3 gap-y-1 p-3 text-[13px] md:grid-cols-[minmax(0,2fr)_minmax(0,1.3fr)_4rem_4rem_3rem_minmax(0,1.6fr)_minmax(0,1.2fr)] md:items-center" data-testid="autopilot-workflow">
-              <span className="col-span-2 break-words font-medium md:col-span-1">{workflowLabel(r.workflow)}</span>
-              <span className="col-span-2 text-muted md:col-span-1 md:text-fg">{rowRole(area, r)}</span>
-              <span className="tabular-nums md:text-right">
-                <span className="text-muted md:hidden">Dev </span>
-                {pct(r.dev)}
-              </span>
-              <span className="tabular-nums md:text-right">
-                <span className="text-muted md:hidden">Fresh </span>
-                {pct(r.fresh)}
-              </span>
-              <span className="tabular-nums md:text-right">
-                <span className="text-muted md:hidden">n </span>
-                {r.n}
-              </span>
-              <span className="col-span-2 md:col-span-1">
-                <StatusBadge status={shown.status} label={shown.label} />
-              </span>
-              <span className="col-span-2 text-[12px] text-muted md:col-span-1">{r.last_run ? formatDateTime(r.last_run) : "Not run yet"}</span>
-              {area.owner && (
-                <div className="col-span-2 flex flex-wrap items-center gap-x-4 gap-y-2 pt-1 md:col-span-7">
-                  <Toggle on={r.on} label={`${workflowLabel(r.workflow)} on`} text={r.on ? "On" : "Off"} disabled={busy === k || area.switches.global_off} onChange={(v) => void flip(r, { on: v })} />
-                  <Toggle
-                    on={r.live_flag}
-                    label={`${workflowLabel(r.workflow)} live for ${rowRole(area, r)}`}
-                    text={r.live_flag ? "Live" : r.state === "dry_run" ? "Live after it passes (90% on 15 fresh)" : "Switch live"}
-                    disabled={busy === k || (!r.live_flag && !canLive)}
-                    onChange={(v) => void flip(r, { live: v, role: r.role })}
-                  />
-                  {r.open_items > 0 && <span className="text-[12px] text-muted">{plural(r.open_items, "open item")}</span>}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      <div className="min-w-0 px-0 pt-5 md:px-6 md:pt-3">
+        {currentItem ? (
+          <Item
+            key={current!}
+            area={area}
+            item={currentItem}
+            itemKey={current!}
+            onDecided={onDecided}
+            register={(_el, api) => {
+              actRef.current = api ? api.act : null;
+            }}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }
 
-function AuditView({ area }: { area: Area }) {
+function AuditView({ area, filters }: { area: Area; filters: Filters }) {
   const roleName = (role?: string | null) => {
     if (!role) return null;
     const row = (area.workflows ?? []).find((w) => w.role === role);
@@ -478,7 +489,11 @@ function AuditView({ area }: { area: Area }) {
   }, [round]);
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
   if (!audit) return <Pending label="Reading the audit log" />;
-  const rows = (audit.rows ?? []).filter((r) => !liveOnly || r.mode === "live" || r.event === "switch" || r.event === "reconciled");
+  const roles = new Set(filterWorkflows(area, filters).map((w) => w.role));
+  const scoped = !!(filters.person || filters.role || filters.workflow);
+  const rows = (audit.rows ?? [])
+    .filter((r) => !liveOnly || r.mode === "live" || r.event === "switch" || r.event === "reconciled")
+    .filter((r) => !scoped || (r.role ? roles.has(r.role) : !filters.person && !filters.role) && (!filters.workflow || r.workflow === filters.workflow));
   const undo = async (key: string) => {
     setUndoError(null);
     try {
@@ -552,19 +567,31 @@ function auditWhat(r: AutopilotAuditRow): string {
 export function AutopilotView({ area: initial, onReload }: { area: Area; onReload: () => void }) {
   const [area, setArea] = useState(initial);
   useEffect(() => setArea(initial), [initial]);
-  const [tab, setTab] = useState<Tab>("today");
+  const [tab, setTab] = useState<Tab>("queue");
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [split, setSplit] = useState<Split>("");
   const [decided, setDecided] = useState<Set<string>>(new Set());
   useEffect(() => setDecided(new Set()), [filters, split]);
   const [killError, setKillError] = useState<string | null>(null);
   const [killConfirm, setKillConfirm] = useState(false);
+  const [catalog, setCatalog] = useState<AutopilotCatalog | null>(null);
+  useEffect(() => {
+    const ctl = new AbortController();
+    getAutopilotCatalog(ctl.signal).then(setCatalog, () => !ctl.signal.aborted && setCatalog({ triggers: [], conditions: [], actions: [], builder: false }));
+    return () => ctl.abort();
+  }, []);
   const set = (k: keyof Filters) => (v: string | boolean) => setFilters((f) => ({ ...f, [k]: v }));
   const onDecided = useCallback((i: AutopilotItem) => {
     setDecided((d) => new Set(d).add(i.item_id));
     setArea((a) => ({ ...a, items: (a.items ?? []).map((x) => (x.item_id === i.item_id ? i : x)) }));
   }, []);
-  const tabs: [Tab, string][] = [["today", "Prepared items"], ["workflows", "Workflows"], ...(area.owner ? ([["audit", "Audit log"]] as [Tab, string][]) : [])];
+  const tabs: [Tab, string][] = [
+    ["queue", "Review queue"],
+    ["workflows", "Workflows"],
+    ...(area.owner ? ([["builder", "Builder"]] as [Tab, string][]) : []),
+    ["schedules", "Schedules"],
+    ...(area.owner ? ([["audit", "Audit log"]] as [Tab, string][]) : []),
+  ];
   const kill = async (off: boolean) => {
     setKillError(null);
     try {
@@ -584,77 +611,114 @@ export function AutopilotView({ area: initial, onReload }: { area: Area; onReloa
     setTab(next);
     (document.getElementById(`ap-tab-${next}`) as HTMLElement | null)?.focus();
   };
+  const open = items.filter((i) => i.state === "waiting" || i.state === "edited");
+  const now = Date.now();
+  const overdue = open.filter((i) => new Date(i.due_at).getTime() < now).length;
+  const live = (area.workflows ?? []).filter((w) => w.state === "live" || w.state === "live_held").length;
+  const passed = (area.workflows ?? []).filter((w) => w.state === "passed_awaiting_owner").length;
+  const shownWorkflows = new Set(filterWorkflows(area, filters).map((w) => w.workflow));
   return (
     <div className="space-y-4" data-testid="autopilot">
-      <AssistBox />
       {area.switches.global_off && (
         <ErrorNotice tone="notice" message={area.owner ? "Every autopilot write is switched off. Accepts are refused until you switch it back on." : "The owner switched every autopilot write off. Accepts are refused for now."} />
       )}
       {area.switches.autopilot_off && <ErrorNotice tone="notice" message="The autopilot is switched off on this server: nothing new is prepared." />}
-      {area.owner && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border p-3 text-[13px]">
-          <p className="min-w-0 flex-1">
-            {area.switches.global_off ? "All writes stopped." : "Writes run only for workflows you switched live."}{" "}
-            <span className="text-muted">{area.switches.master_switch ? "The host's live switch is on." : "The host's live switch is off: nothing goes live."}</span>
-          </p>
-          {area.switches.global_off ? (
-            <Button size="sm" variant="outline" onClick={() => void kill(false)}>
-              Switch writes back on
-            </Button>
-          ) : killConfirm ? (
-            <>
-              <Button size="sm" variant="outline" onClick={() => void kill(true)}>
-                Confirm: stop all writes
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setKillConfirm(false)}>
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <Button size="sm" variant="outline" onClick={() => setKillConfirm(true)}>
-              Stop all writes
-            </Button>
-          )}
-          {killError && <ErrorNotice message={killError} className="w-full" />}
-        </div>
-      )}
-      <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Autopilot">
-        {tabs.map(([t, label], i) => (
-          <button key={t} id={`ap-tab-${t}`} type="button" role="tab" aria-selected={tab === t} tabIndex={tab === t ? 0 : -1} className={chip(tab === t)} onClick={() => setTab(t)} onKeyDown={(e) => onTabKey(e, i)}>
-            {label}
-          </button>
+      <div className="flex flex-wrap items-end gap-x-10 gap-y-3 border-b border-border pb-4" data-testid="autopilot-figures">
+        {(
+          [
+            ["Waiting on a decision", open.length, ""],
+            ["Overdue", overdue, overdue ? "text-late" : ""],
+            ["Workflows", (area.workflows ?? []).length, ""],
+            ["Passed, awaiting you", passed, passed ? "text-accent" : ""],
+            ["Auto", live, ""],
+          ] as const
+        ).map(([k, v, tone]) => (
+          <div key={k}>
+            <p className="text-[12px] text-muted">{k}</p>
+            <p className={cn("num text-[19px] leading-6", tone)}>{v}</p>
+          </div>
         ))}
-      </div>
-      {tab !== "audit" && (
-        <div className="space-y-3">
-          {people.length > 0 && (
-            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Person">
-              {[{ id: "", name: "Everyone", you: false }, ...people].map((p) => (
-                <button key={p.id || "all"} type="button" aria-pressed={filters.person === p.id} className={chip(filters.person === p.id)} onClick={() => set("person")(p.id)}>
-                  {p.id ? personName(area, p.id) : p.name}
-                  {p.id && <span className="tabular-nums text-faint">{items.filter((i) => i.owner === p.id && (i.state === "waiting" || i.state === "edited")).length}</span>}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-            <Select label="Role" value={filters.role} onChange={set("role")} options={[["", "Every role"], ...(area.roles ?? []).map((r) => [r, roleLabel(r)] as [string, string])]} />
-            <Select label="Workflow" value={filters.workflow} onChange={set("workflow")} options={[["", "Every workflow"], ...uniq([...items.map((i) => i.workflow), ...(area.workflows ?? []).map((w) => w.workflow)]).map((w) => [w, workflowLabel(w)] as [string, string])]} />
-            {tab === "today" && (
+        {area.owner && (
+          <div className="ml-auto flex flex-wrap items-center gap-2 text-[12px]">
+            <span className="text-muted">
+              {area.switches.global_off ? "All writes stopped." : "Writes run only for workflows set to Auto."} {area.switches.master_switch ? "The host's live switch is on." : "The host's live switch is off: nothing goes live."}
+            </span>
+            {area.switches.global_off ? (
+              <Button size="sm" variant="outline" onClick={() => void kill(false)}>
+                Switch writes back on
+              </Button>
+            ) : killConfirm ? (
               <>
-                <Select label="System" value={filters.system} onChange={set("system")} options={[["", "Every system"], ...uniq(items.map((i) => i.system)).map((s) => [s, systemLabel(s)] as [string, string])]} />
-                <Select label="State" value={filters.state} onChange={set("state")} options={[["open", "Waiting on a decision"], ["", "Any state"], ["accepted", "Accepted"], ["rejected", "Rejected"], ["snoozed", "Snoozed"]]} />
-                <Select label="When" value={filters.today ? "today" : "all"} onChange={(v) => set("today")(v === "today")} options={[["today", "Today and past due"], ["all", "Every open item"]]} />
-                <Select label="Split by" value={split} onChange={(v) => setSplit(v as Split)} options={[["", "No split"], ["person", "Person"], ["role", "Role"], ["workflow", "Workflow"], ["system", "System"], ["state", "State"]]} />
+                <Button size="sm" variant="outline" onClick={() => void kill(true)}>
+                  Confirm: stop all writes
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setKillConfirm(false)}>
+                  Cancel
+                </Button>
               </>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => setKillConfirm(true)}>
+                Stop all writes
+              </Button>
+            )}
+            {killError && <ErrorNotice message={killError} className="w-full" />}
+          </div>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <nav className="flex h-9 items-stretch gap-4" role="tablist" aria-label="Autopilot">
+          {tabs.map(([t, label], i) => (
+            <button
+              key={t}
+              id={`ap-tab-${t}`}
+              type="button"
+              role="tab"
+              aria-selected={tab === t}
+              tabIndex={tab === t ? 0 : -1}
+              className={cn("relative flex items-center text-[13px] cursor-pointer", tab === t ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg")}
+              onClick={() => setTab(t)}
+              onKeyDown={(e) => onTabKey(e, i)}
+            >
+              {label}
+              {t === "queue" && open.length > 0 && <span className="num ml-1.5 text-[11px] text-faint">{open.length}</span>}
+            </button>
+          ))}
+        </nav>
+        {tab !== "builder" && (
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            {people.length > 0 && (
+              <div className="flex flex-wrap gap-1" role="group" aria-label="Person">
+                {[{ id: "", name: "Everyone", you: false }, ...people].map((p) => (
+                  <button key={p.id || "all"} type="button" aria-pressed={filters.person === p.id} className={chip(filters.person === p.id)} onClick={() => set("person")(p.id)}>
+                    {p.id ? personName(area, p.id) : p.name}
+                    {p.id && <span className="num text-faint">{items.filter((i) => i.owner === p.id && (i.state === "waiting" || i.state === "edited")).length}</span>}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
+        )}
+      </div>
+      {tab !== "builder" && (
+        <div className="flex flex-wrap gap-2" data-testid="autopilot-filters">
+          <Select label="Role" value={filters.role} onChange={set("role")} options={[["", "Every role"], ...(area.roles ?? []).map((r) => [r, roleLabel(r)] as [string, string])]} />
+          <Select label="Workflow" value={filters.workflow} onChange={set("workflow")} options={[["", "Every workflow"], ...uniq([...items.map((i) => i.workflow), ...(area.workflows ?? []).map((w) => w.workflow), ...(area.known_workflows ?? [])]).map((w) => [w, workflowLabel(w)] as [string, string])]} />
+          {tab === "queue" && (
+            <>
+              <Select label="System" value={filters.system} onChange={set("system")} options={[["", "Every system"], ...uniq(items.map((i) => i.system)).map((s) => [s, systemLabel(s)] as [string, string])]} />
+              <Select label="State" value={filters.state} onChange={set("state")} options={[["open", "Waiting on a decision"], ["", "Any state"], ["accepted", "Accepted"], ["rejected", "Rejected"], ["snoozed", "Snoozed"]]} />
+              <Select label="When" value={filters.today ? "today" : "all"} onChange={(v) => set("today")(v === "today")} options={[["today", "Today and past due"], ["all", "Every open item"]]} />
+              <Select label="Split by" value={split} onChange={(v) => setSplit(v as Split)} options={[["", "No split"], ["person", "Person"], ["role", "Role"], ["workflow", "Workflow"], ["system", "System"], ["state", "State"]]} />
+            </>
+          )}
         </div>
       )}
       <div role="tabpanel" aria-labelledby={`ap-tab-${tab}`}>
-        {tab === "today" && <TodayView area={area} filters={filters} split={split} decided={decided} onDecided={onDecided} />}
-        {tab === "workflows" && <WorkflowsView area={area} filters={filters} onArea={setArea} />}
-        {tab === "audit" && area.owner && <AuditView area={area} />}
+        {tab === "queue" && <QueueView area={area} filters={filters} split={split} decided={decided} onDecided={onDecided} />}
+        {tab === "workflows" && <WorkflowsView area={area} filters={filters} builder={!!catalog?.builder} onChanged={onReload} />}
+        {tab === "builder" && area.owner && <BuilderView area={area} catalog={catalog} />}
+        {tab === "schedules" && <SchedulesView filterWorkflow={(w) => (!filters.person && !filters.role && !filters.workflow) || shownWorkflows.has(w)} />}
+        {tab === "audit" && area.owner && <AuditView area={area} filters={filters} />}
       </div>
     </div>
   );

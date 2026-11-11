@@ -173,7 +173,30 @@ def _sin_number(text: str) -> bool:
     return False
 
 
+# A time sheet: one person's hours over a pay period, kept by payroll and HR. Named one
+# (its title or its own heading) and carrying hours or the person-and-period frame, or a
+# sheet whose columns pair hours with a rate or pay for an employee or a period.
+_TIME_NAME = re.compile(r"\b(?:time ?sheets?|time ?cards?|hours worked)\b", _I)
+_TIME_HOURS = re.compile(r"\b(?:total|regular|reg\.?|overtime|o/?t|daily|weekly) "
+                         r"(?:hours|hrs)\b|\b(?:hours|hrs) (?:worked|total)\b", _I)
+_TIME_FRAME = re.compile(r"\bemployee\b|\b(?:pay|payroll) period\b|"
+                         r"\b(?:week|period) end(?:ing|ed)\b|\bsupervisor\b", _I)
+_PAY_COLUMNS = re.compile(r"^[^\n]*\b(?:hours|hrs)\b[^\n]*\b(?:rate|wages?|pay)\b[^\n]*$|"
+                          r"^[^\n]*\b(?:rate|wages?|pay)\b[^\n]*\b(?:hours|hrs)\b[^\n]*$",
+                          re.I | re.M)
+
+
+def _time_sheet(text: str, title: str | None) -> bool:
+    named = bool(title and _TIME_NAME.search(title)) or bool(_TIME_NAME.search(text[:2000]))
+    if named and (_TIME_HOURS.search(text) or _TIME_FRAME.search(text)):
+        return True
+    return bool(_PAY_COLUMNS.search(text) and _TIME_FRAME.search(text)
+                and _TIME_HOURS.search(text))
+
+
 def _hr(text: str, title: str | None) -> str | None:
+    if _time_sheet(text, title):
+        return "time_sheet"
     core = sum(1 for p in _PAY_CORE if p.search(text))
     if core:
         more = sum(1 for p in _PAY_MORE if p.search(text))
@@ -194,7 +217,7 @@ def _hr(text: str, title: str | None) -> str | None:
 def personal_financial(text: str, *, title: str | None = None,
                        labels: "Iterable[str | None]" = ()) -> str | None:
     """Why ``text`` is personal financial or HR-confidential content (``statement``,
-    ``card_number``, ``payroll``, ``sin_number``, ``offer_letter``,
+    ``card_number``, ``time_sheet``, ``payroll``, ``sin_number``, ``offer_letter``,
     ``termination_letter``, ``label``), or None. ``title``: the document's name or subject
     (supports a content signal, never enough alone); ``labels``: its captured
     classification labels and the site, library or folder it is filed under."""

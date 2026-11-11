@@ -123,6 +123,44 @@ class CommittedSkeletonTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(gen.main(["generate", "--check"]), 0)
 
+    def test_raw_rows_link_to_the_business_records_they_name(self):
+        """Gap 6: a raw row's foreign key to a relation a curated type shadows moves onto that
+        type, and the natural-key links generated from column metadata are current; a
+        shadowed end held only under a row filter, or a Portal user, keeps no link."""
+        from scripts import gen_raw_links
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(gen_raw_links.main(["check"]), 0)
+        compiled = s.load_schema()
+        moved = compiled.link_types["RelPublicAppProductionTask.mo"]
+        self.assertEqual((moved["to"], moved["bindings"][0]["to_binding"]),
+                         ("AssemblyOrder", "portal.app_manufacturing_order"))
+        self.assertEqual(compiled.retargeted["RelPublicAppProductionTask.mo"],
+                         "RelPublicAppProductionTask.mo")
+        people = {t["id"] for t in json.loads((s.GENERATED_DIR / "portal_people_access.json")
+                                              .read_text(encoding="utf-8"))["object_types"]}
+        for link_id in compiled.retargeted:
+            link = compiled.link_types[link_id]
+            self.assertFalse({link["from"], link["to"]} & people, link_id)
+            self.assertFalse({link["from"], link["to"]} & set(compiled.shadowed), link_id)
+        # Lot holds receipt lines only under a row filter: no raw link is moved onto it.
+        self.assertFalse([i for i in compiled.link_types.values() if i["to"] == "Lot"
+                          and i["from"].startswith("Rel")])
+        ar = compiled.link_types["RelSageArObs.customer"]
+        self.assertEqual((ar["to"], ar["bindings"][0]["to_binding"],
+                          ar["bindings"][0]["pairs"][0]["identifier_kind"]),
+                         ("Customer", "portal.sage_ar_customer", "customer_erp_code"))
+        # An aged AR row reaches an OE invoice only as an invoice (document type 1); the
+        # same rule keeps other AR relations unfiltered.
+        aged = compiled.link_types["RelSageArAged.sales_invoice"]["bindings"][0]
+        self.assertEqual(aged["where"], [{"path": "doctype", "op": "in", "value": [1, "1"]}])
+        self.assertNotIn("where", compiled.link_types["RelSageArObs.sales_invoice"]
+                         ["bindings"][0])
+        vendor = compiled.link_types["RelSageApVendor.portal_supplier"]["bindings"][0]
+        self.assertEqual((vendor["tier_ceiling"], vendor.get("unique_target")), ("lead", True))
+        # A vendor payment's journalId names its vendor journal, never a customer journal.
+        journal = compiled.link_types["Payment.customer_payment_journal"]["bindings"][0]
+        self.assertEqual(journal["from_binding"], "bc.customer_payments")
+
     # Columns the pinned manifest serves that the 2026-10-01 live read predates: Portal
     # 421d21f9 (TASK-3146, manifest approved) and c2ff912f (TASK-3355, nine drifted
     # relations recaptured) grew them; the read lists none the manifest dropped.

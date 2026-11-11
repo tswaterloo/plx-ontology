@@ -156,7 +156,7 @@ export function ImpactBody({ panel: raw }: { panel: Panel }) {
           {panel.money.map((m, i) => (
             <li key={i}>
               <span className="text-muted">{MEASURE_WORDS[m.measure]}: </span>
-              <span className="font-medium tabular-nums">{money(m.money)}</span>
+              <span className="font-medium num">{money(m.money)}</span>
               <span className="text-muted"> over {m.orders} order{m.orders === 1 ? "" : "s"}</span>
               <Tier tier={m.tier} />
             </li>
@@ -176,7 +176,7 @@ export function ImpactBody({ panel: raw }: { panel: Panel }) {
                 {o.required_date && <span className="text-muted">required {formatDate(o.required_date)}</span>}
                 {o.slips && o.late_by_days != null && <span className="text-late">slips {o.late_by_days} day{o.late_by_days === 1 ? "" : "s"}</span>}
                 {o.slips === false && <span className="text-muted">still on time</span>}
-                {o.revenue && <span className="tabular-nums">{money(o.revenue)}</span>}
+                {o.revenue && <span className="num">{money(o.revenue)}</span>}
               </li>
             ))}
           </ul>

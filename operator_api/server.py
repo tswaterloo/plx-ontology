@@ -132,8 +132,10 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
                 parser.error(f"--mock-ticket-env: {args.mock_ticket_env} holds no ticket "
                              "(16 characters at least)")
             auth = DevAuth(ticket_identity=mock_ticket(expected, identity), mode="mock")
-        return start(MockBackend(step_delay=max(0.0, min(args.mock_step_delay, 2.0))),
-                     auth,
+        from . import mock_studio
+        backend = MockBackend(step_delay=max(0.0, min(args.mock_step_delay, 2.0)))
+        mock_studio.install(backend)
+        return start(backend, auth,
                      {"sign_in_available": True,
                       "message": "Demo data: sign in with the demo button."})
     from .backend import run

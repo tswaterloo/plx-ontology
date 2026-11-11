@@ -307,6 +307,46 @@ MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = (MENTION_LINK_RULE,
                                                      *MEETINGS_MENTION_LINK_RULES)
 
 
+# Raw types whose links stay among raw types: Portal people and access records (app_user,
+# departments, grants) are pending curation (ontology/schema/pending/people_lots.json), so a
+# business record never gains a link to a Portal user through a retargeted foreign key.
+RETARGET_KEEP_RAW_DOMAINS = frozenset({"portal_people_access"})
+
+
+def retargeted_link(item: Mapping[str, Any], dropped: Sequence[str],
+                    retarget: Mapping[str, tuple[str, str, str]],
+                    keep_raw: Iterable[str] = ()) -> dict[str, Any] | None:
+    """A generated foreign key between a raw type and a raw type a curated binding shadows,
+    moved onto the curated type that holds the shadowed relation's records whole (same
+    relation and key, no row filter: ``retarget``), so the raw row links to the business
+    record instead of losing the link. Only one end may be shadowed (two shadowed ends are
+    the curated links' business) and every binding must name the shadowed raw binding on
+    that end, and the other end is no ``keep_raw`` type (``RETARGET_KEEP_RAW_DOMAINS``);
+    else None (the link stays shadowed). The id becomes ``<from>.<name>``."""
+    if len(dropped) != 1 or dropped[0] not in retarget or item["from"] == item["to"]:
+        return None
+    if {item["from"], item["to"]} & set(keep_raw):
+        return None
+    gone = dropped[0]
+    raw_binding, curated_type, curated_binding = retarget[gone]
+    side = "from" if item["from"] == gone else "to"
+    out = json.loads(json.dumps(item))
+    for binding in out.get("bindings", []):
+        if binding.get(f"{side}_binding") != raw_binding:
+            return None
+        binding[f"{side}_binding"] = curated_binding
+    out[side] = curated_type
+    if side == "to" and out.get("reverse_name"):
+        # The raw rows' own navigation name on the business type (its curated links may
+        # already use the Prisma name): e.g. public_app_production_task_rows.
+        out["reverse_name"] = _snake_case(item["from"].removeprefix("Rel")) + "_rows"
+    out["id"] = f"{out['from']}.{out['name']}"
+    out["description"] = (item.get("description", "") + f" Retargeted from the generated "
+                          f"{item['id']} ({gone} is shadowed by {curated_type}, "
+                          f"binding {curated_binding}).")[:2000]
+    return out
+
+
 def _snake_case(name: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
@@ -880,6 +920,8 @@ class CompiledSchema:
     domains: dict[str, dict] = field(default_factory=dict)
     origin_of_type: dict[str, str] = field(default_factory=dict)
     shadowed: dict[str, str] = field(default_factory=dict)
+    # link id -> the generated link it was retargeted from (``retargeted_link``)
+    retargeted: dict[str, str] = field(default_factory=dict)
     excluded_relations: dict[str, str] = field(default_factory=dict)
     pinned_catalog_digest: str | None = None
     identifiers_digest: str | None = None
@@ -1104,6 +1146,11 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
     # relation (a Portal relation, a BC entity set, ...).
     curated_relations = {(b["source"], b["relation"]) for _, d in docs if d["origin"] == "curated"
                          for t in d.get("object_types", []) for b in t["bindings"]}
+    # shadowed raw type -> (its binding, the curated type and binding holding its records
+    # whole: same relation and key, no row filter, no stand-in)
+    retarget: dict[str, tuple[str, str, str]] = {}
+    keep_raw = {t["id"] for _, d in docs if d["origin"] == "generated"
+                and d["domain"] in RETARGET_KEEP_RAW_DOMAINS for t in d.get("object_types", [])}
     for _, doc in docs:
         if doc["origin"] != "generated":
             continue
@@ -1112,6 +1159,17 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                          if (b["source"], b["relation"]) in curated_relations)
             if hit:
                 compiled.shadowed[t["id"]] = "curated binding on " + ", ".join(hit)
+                own = [b for b in t["bindings"]
+                       if (b["source"], b["relation"]) in curated_relations]
+                if len(own) == 1:
+                    whole = [(ct["id"], cb["id"]) for _, d in docs if d["origin"] == "curated"
+                             for ct in d.get("object_types", []) for cb in ct["bindings"]
+                             if (cb["source"], cb["relation"]) == (own[0]["source"],
+                                                                   own[0]["relation"])
+                             and cb.get("key") == own[0].get("key")
+                             and not cb.get("where") and not cb.get("stands_for")]
+                    if len(whole) == 1:
+                        retarget[t["id"]] = (own[0]["id"], *whole[0])
 
     # Collect, with global id uniqueness.
     def put(kind: str, table: dict, item_id: str, item: dict, name: str) -> None:
@@ -1158,8 +1216,14 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                         {item["object_type"]} if key == "event_types" else {item["target"]})
                 dropped = sorted(ends & set(compiled.shadowed))
                 if dropped and doc["origin"] == "generated":
-                    compiled.shadowed[item["id"]] = "endpoint shadowed: " + ", ".join(dropped)
-                    continue
+                    moved = (retargeted_link(item, dropped, retarget, keep_raw)
+                             if key == "link_types" else None)
+                    if moved is None or moved["id"] in compiled.link_types:
+                        compiled.shadowed[item["id"]] = ("endpoint shadowed: "
+                                                         + ", ".join(dropped))
+                        continue
+                    compiled.retargeted[moved["id"]] = item["id"]
+                    item = moved
                 put(kind, table, item["id"], item, name)
     kind_specs = identifiers.get("kinds") if isinstance(identifiers, dict) else None
     copy_kinds = {name for name, spec in (kind_specs or {}).items()
@@ -1309,6 +1373,19 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                                   f"({rel.unavailable or 'no key'})")
             check_columns(where + " key", b, b["key"])
             check_predicates(where + " where", tid, b, b.get("where", []))
+            errors.extend(f"{where} where: matches is for marking rules only"
+                          for w in b.get("where", ()) if w["op"] == "matches")
+            for rule in b.get("marking_rules", ()):
+                if ("when" in rule) == ("from_lines" in rule):
+                    errors.append(f"{where} marking rule: exactly one of when, from_lines")
+                    continue
+                check_predicates(where + " marking rule", tid, b, rule.get("when", ()))
+                for w in rule.get("when", ()):
+                    if w["op"] == "matches":
+                        try:
+                            re.compile(str(w["value"]))
+                        except re.error:
+                            errors.append(f"{where} marking rule: bad pattern")
             for rule in b["lineage"].get("rules", []):
                 check_predicates(where + " lineage rule", tid, b, rule["when"])
             stands = b.get("stands_for")

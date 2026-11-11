@@ -33,7 +33,7 @@ export function Stat({
         {flagged && <StatusGlyph status={status} size={12} />}
         {label}
       </span>
-      <span className={cn("mt-0.5 block break-words tabular-nums", words ? "text-row leading-[26px] text-muted" : "text-[22px] leading-7 font-semibold tracking-[-0.02em] text-fg", (href || onClick) && "group-hover:underline")}>{value}</span>
+      <span className={cn("mt-0.5 block break-words", words ? "text-row leading-[26px] text-muted" : "num text-[22px] leading-7 font-semibold tracking-[-0.02em] text-fg", (href || onClick) && "group-hover:underline")}>{value}</span>
       {caption && <span className="block truncate text-meta text-muted">{caption}</span>}
     </>
   );

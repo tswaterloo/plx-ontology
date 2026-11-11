@@ -1,9 +1,13 @@
-# The stale-capture and start-loop alarm: operating.ops_health exits 1 on any breach (a
-# capture source past twice its normal turn, or plx-ingest refusing to start 3+ times in a
-# row); systemd marks the unit failed and the journal carries the one-line-per-check
-# report. No message is sent anywhere. Reads state only; the env file names the state dir.
+# The reliability alarms (operating.ops_alarms): one pass every 5 minutes over freshness
+# (delta, each capture source, search follow, proactive), failed or stuck plx-* system and
+# user units, Postgres connections, free disk and memory, and the backups. A breach opens an
+# incident that pages the owner once (PLX_OPS_PAGE_TO, through the card actions' send path;
+# recorded as dry_run until it is set) and sends a recovery notice; Home and /ops show the
+# open ones to the owner. The pass exits 0 whatever it finds (the page and the banner are
+# the alarm); a failed unit means the checker itself broke, and Home says the checks have
+# not run. The env files name values, never hold them here.
 [Unit]
-Description=PLX Workbench ops health (stale captures, ingest start loop)
+Description=PLX Workbench reliability alarms (freshness, units, Postgres, disk, memory, backups)
 
 [Service]
 Type=oneshot
@@ -11,11 +15,17 @@ User=@PLX_USER@
 Group=@PLX_GROUP@
 WorkingDirectory=@PLX_CURRENT@
 EnvironmentFile=/etc/plx/ingest.env
+# the send path's settings as the API has them: the send app's credentials, PLX_ACTIONS_*,
+# PLX_PG_DSN
+EnvironmentFile=-@PLX_HOME@/.config/plx/plx.env
+EnvironmentFile=-/etc/plx/workbench-api.env
+# PLX_OPS_PAGE_TO (and optionally PLX_OPS_PAGE_FROM, PLX_OPS_IGNORE_UNITS, PLX_OPS_PG_DSN)
+EnvironmentFile=-/etc/plx/ops-page.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/data/venv/bin/python3 -m operating.ops_health check --state-dir ${PLX_INGEST_STATE}
+ExecStart=/data/venv/bin/python3 -m operating.ops_alarms run --state-dir ${PLX_INGEST_STATE}
 Nice=10
 CPUWeight=20
 MemoryHigh=512M
 MemoryMax=1G
-TimeoutStartSec=10min
+TimeoutStartSec=4min
 UMask=0077

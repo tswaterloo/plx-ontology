@@ -855,8 +855,8 @@ def verdict(result: Mapping[str, Any], *, min_items: int) -> int:
 # The last hand diagnosis of the fixture run; render_markdown prints it only while the run
 # still matches it (so a regenerated report never carries a stale diagnosis).
 DIAGNOSED = {
-    "date": "2026-10-22",
-    "run": {"items_digest": "f03852a80198817b", "dev_set": "19/30",
+    "date": "2026-11-10",
+    "run": {"items_digest": "80359c3e44a3167d", "dev_set": "19/30",
             "by_reason": {"answerability_mismatch": 6, "gap_missing": 2,
                           "value:absence_not_reported": 2, "value:reported_absent": 5,
                           "value:value_missing": 9}},
@@ -897,6 +897,12 @@ DIAGNOSED = {
         "values, 0 items) but that text-match lead carries no vendor check, so another "
         "vendor's invoice reusing the number would be stated as the PO's (the chain plan's "
         "`party_check` is the vendor check it would need).",
+        "Re-run 2026-11-10 (lane green-6): the fixture catalog now serves the FileMaker order "
+        "entry's status, as the live catalog does (its read of public.order_entry had failed "
+        "whole), and the fixture's FM order entries carry their own status text (Open or "
+        "Complete, agreeing with the Portal copy on whether the order is finished), so the dev "
+        "items and the held-out fixture manifest were regenerated (only digests moved); every "
+        "count above is unchanged.",
     ],
 }
 

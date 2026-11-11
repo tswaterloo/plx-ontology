@@ -152,7 +152,7 @@ describe("BriefingCard", () => {
     };
     render(<BriefingCard briefing={b} />);
     expect(screen.getByTestId("briefing-counts").textContent).toContain("Vendor replies: not checked this run.");
-    fireEvent.click(screen.getByText(/What was checked/));
+    fireEvent.click(screen.getByText(/Checks run/));
     const text = screen.getByTestId("briefing-checks").textContent;
     expect(text).toContain("Batch on quality hold: checked · none found in the live data yet");
     expect(text).toContain("Lot near expiry: checked · first found 2026-10-30");

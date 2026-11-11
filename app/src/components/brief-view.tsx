@@ -51,7 +51,7 @@ function Row({ row }: { row: BriefRow }) {
         )}
       </div>
       <div className="flex shrink-0 items-center gap-3 text-muted">
-        {row.amount && <span className="tabular-nums text-fg">{formatMoney(row.amount.amount, row.amount.currency)}</span>}
+        {row.amount && <span className="num text-fg">{formatMoney(row.amount.amount, row.amount.currency)}</span>}
         {row.date && <span>{formatDate(row.date, { short: true })}</span>}
         <SourceChips sources={row.sources} max={2} />
       </div>
@@ -80,16 +80,16 @@ function Figure({ f }: { f: BriefFigure }) {
 const EMPTY: Record<string, string> = {
   empty: "Nothing here you may read.",
   finance_marked: "Finance-marked: shown only to readers who hold finance.",
-  unread: "Could not be read: this is not the same as none.",
-  blocked: "Not shown: the people exclusion is not loaded. This is not the same as none.",
+  unread: "Could not be read; this section may still have items.",
+  blocked: "Not shown: the people exclusion is not loaded; this section may still have items.",
 };
 
-/** The section's own note already says what the empty line would (unread is not none; finance only): said once. */
+/** The section's own note already says what the empty line would (unread may still have items; finance only): said once. */
 function saidInNote(section: BriefSection): boolean {
   const note = (section.note ?? "").toLowerCase();
   if (!note) return false;
   if (section.state === "finance_marked") return note.includes("finance");
-  if (section.state === "unread" || section.state === "blocked") return note.includes("not the same as none");
+  if (section.state === "unread" || section.state === "blocked") return note.includes("may still have");
   return false;
 }
 

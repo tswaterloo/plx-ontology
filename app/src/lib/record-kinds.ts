@@ -133,7 +133,7 @@ export function kindSections(obj: ObjectPage): KindSection[] | null {
       const att = people();
       out.push({ id: "when", title: "When and where", rows: plain("when", "status"), empty: "No time or place is on record for this event." });
       out.push({ id: "attendees", title: "Attendees", rows: att, empty: "No attendees are on record for this event." });
-      out.push({ id: "agenda", title: "Agenda and notes", rows: plain("text"), empty: "No agenda or notes are on record. Nothing is made up in their place." });
+      out.push({ id: "agenda", title: "Agenda and notes", rows: plain("text"), empty: "No agenda or notes are on record, and the Workbench writes none in their place." });
       out.push({ id: "parties", title: "Customers and suppliers", rows: relatedRows(refs, role("party")), empty: "No customer or supplier is linked to this event." });
       out.push({ id: "records", title: "Related orders and records", rows: relatedRows(refs, (x) => !["party", "person", "event"].includes(roleOf(x.type))), empty: "No orders or other records are linked to this event." });
       out.push({ id: "copies", title: "Calendar copies and transcripts", rows: relatedRows(refs, role("event")), empty: "No other copy or transcript of this event is on record." });

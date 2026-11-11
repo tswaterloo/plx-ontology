@@ -15,10 +15,11 @@ import { ProfitabilityView } from "./cost-breakdown";
 import { EvidenceTrailCard, trailNextAction, trailStepCount } from "./evidence-trail";
 import { Feedback } from "./feedback";
 import { ProposalCards } from "./proposal-cards";
+import { AskDrafts, AttachmentNotes } from "./ask-drafts";
+import { AskOrganizer } from "./ask-organize";
 import { Inlines, RichText } from "./rich-text";
 import { CiteNumbers, EvidenceDrawer, SourceChips, sourceName } from "./source-chip";
-import { AgeRing, OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
-import { initials, Monogram } from "./ui/monogram";
+import { lateFigure, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 import { ErrorNotice } from "./ui/notice";
 
 /** Server prose as a reader reads it: codes and dates in words, amounts with their currency. */
@@ -80,25 +81,6 @@ function refHref(r: ObjectRef): string {
   return safeHref(r.open_url) ?? objectHref(r.type, r.object_id);
 }
 
-const TYPE_LETTERS: Record<string, string> = { purchaseorder: "PO", salesorder: "SO", assemblyorder: "AO", manufacturingorder: "MO", lot: "L", batch: "B", item: "I", product: "I" };
-const PARTY = /^(supplier|vendor|customer|customerlocation|person|employee)$/;
-
-/** A record's tile: a counterpart by its monogram, anything else by its kind's glyph. */
-export function RecordTile({ type, label, size = 20 }: { type: string; label: string; size?: number }) {
-  if (PARTY.test(type.replace(/[_\s-]/g, "").toLowerCase())) return <Monogram name={label} size={size} />;
-  const k = type.replace(/[_\s-]/g, "").toLowerCase();
-  const letters = TYPE_LETTERS[k] ?? initials(typeLabel(type)).slice(0, 2);
-  return (
-    <span
-      className="flex shrink-0 items-center justify-center bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] font-semibold tracking-[-0.02em] text-muted"
-      style={{ width: size, height: size, borderRadius: Math.round(size * 0.28), fontSize: Math.round(size * (letters.length > 1 ? 0.4 : 0.5)) }}
-      aria-hidden
-    >
-      {letters}
-    </span>
-  );
-}
-
 /** The answer's records as a line of links: "PO 106093 · Viva Distribution (Canada) Ltd". */
 function SubjectsLine({ refs, timeFrame, className }: { refs: ObjectRef[]; timeFrame?: string | null; className?: string }) {
   const [all, setAll] = useState(false);
@@ -108,7 +90,6 @@ function SubjectsLine({ refs, timeFrame, className }: { refs: ObjectRef[]; timeF
     <div className={cn("-ml-1.5 flex flex-wrap items-center gap-x-0.5 gap-y-1 text-[13px]", className)} data-testid="understanding">
       {shown.map((r) => (
         <Link key={r.object_id} href={refHref(r)} className="inline-flex h-7 max-w-full items-center gap-2 rounded-lg px-1.5 hover:bg-hover" data-testid="entity-link">
-          <RecordTile type={r.type} label={r.label} size={18} />
           <span className="truncate">{recordLabel(r.type, r.label)}</span>
         </Link>
       ))}
@@ -151,7 +132,6 @@ function DidYouMean({ text, choices, onPick }: { text?: string; choices: Pick[];
               data-last-pick={c.object_id === last ? "true" : undefined}
               className="group flex min-h-9 w-full items-center gap-3 rounded-lg px-2 py-1 text-left text-[13px] hover:bg-hover disabled:cursor-default disabled:opacity-60 cursor-pointer"
             >
-              <RecordTile type={c.type} label={c.label} />
               <span className="min-w-0 flex-1">
                 <span className="font-medium">{choiceLabel(c)}</span>
                 <span className="text-muted"> · {typeLabel(c.type)}</span>
@@ -246,7 +226,7 @@ function Progress({ turn }: { turn: Turn }) {
             {s.tiles && (
               <span className="flex shrink-0 gap-1" aria-hidden>
                 {SEARCHED.map((x) => (
-                  <SystemTile key={x} system={x} size={14} className={cn(s.state === "active" && "animate-pulse")} />
+                  <SystemCode key={x} system={x} size={14} />
                 ))}
               </span>
             )}
@@ -278,6 +258,40 @@ export function missingLine(text: string): { text: string; missing: string | nul
   return { text: kept.join("\n").trim(), missing };
 }
 
+/** The headings the server puts over an answer's uncited part (``operating.general_answer``). */
+export const GENERAL_HEADINGS = ["General knowledge (not from PLX records)", "From your attachment (not from PLX records)"] as const;
+
+/**
+ * The answer's words cut at the uncited part's heading: the company part (the cited path's
+ * own words) and the general part with its heading, which never takes a source chip or a
+ * fact line. The first heading wins: anything after it is shown as uncited.
+ */
+export function splitGeneral(text: string): { company: string; general: { heading: string; text: string } | null } {
+  let at = -1;
+  let heading = "";
+  for (const h of GENERAL_HEADINGS) {
+    const i = text.startsWith(`${h}\n`) || text === h ? 0 : text.indexOf(`\n${h}\n`);
+    const start = i > 0 ? i + 1 : i;
+    if (start >= 0 && (at < 0 || start < at)) {
+      at = start;
+      heading = h;
+    }
+  }
+  if (at < 0) return { company: text, general: null };
+  return { company: text.slice(0, at).trim(), general: { heading, text: text.slice(at + heading.length).trim() } };
+}
+
+/** The uncited part, in its own labelled section: plain text, no chips, never a fact line. */
+function GeneralPart({ heading, text }: { heading: string; text: string }) {
+  if (!text) return null;
+  return (
+    <section className="space-y-2 border-l border-[color-mix(in_srgb,var(--fg)_15%,transparent)] pl-4" aria-label={heading} data-testid="general-part">
+      <h3 className="text-[12px] leading-4 font-medium text-muted">{heading}</h3>
+      <RichText blocks={parseMarkdown(text)} map={prose} className="max-w-[68ch] space-y-2 text-[13px] leading-[21px] text-fg" />
+    </section>
+  );
+}
+
 /**
  * The direct answer and what moves out of it: at most two paragraphs lead (18 px); later
  * paragraphs and bullets become fact lines. A "Label: value" dump is never the lead: its
@@ -298,34 +312,24 @@ export function splitAnswer(text: string, subject?: ObjectRef | null): { lead: B
   return { lead: blocks.slice(0, leadCount), rest: blocks.slice(leadCount), composed: null };
 }
 
-// Figures and record numbers in a line (commas out of numbers), and its longer words.
+// Figures and record numbers in a line (commas out of numbers).
 const norm = (s: string) => prose(s).toLowerCase().replace(/(\d),(?=\d{3}\b)/g, "$1");
 const figures = (s: string) => new Set((norm(s).match(/[a-z$]*\d[\w.\-/]*/g) ?? []).map((t) => t.replace(/[.\-/]+$/, "")));
-const STOP = new Set(["that", "this", "with", "from", "have", "been", "were", "which", "their", "there", "about", "still", "they"]);
-const longWords = (s: string) => new Set((norm(s).match(/[a-z]{4,}/g) ?? []).filter((w) => !STOP.has(w)));
 
 /**
- * Which fact a bullet of the answer states, by index (or null): the fact whose every figure
- * the bullet writes, else one sharing at least half of its words. A bullet only borrows the
- * evidence chips of the gated fact it restates; it never adds one.
+ * Which fact a bullet of the answer's cited part states, by index (or null): the fact
+ * whose every figure the bullet writes. Words alone never match. A bullet only borrows the
+ * evidence chips of the gated fact it restates; it never adds one, and the uncited part
+ * (``splitGeneral``) never comes here.
  */
 export function bulletFact(item: string, facts: Fact[], used: Set<number>): number | null {
   const fig = figures(item);
-  const wd = longWords(item);
   let best: number | null = null;
   let score = 0;
   facts.forEach((f, i) => {
     if (used.has(i)) return;
     const ff = [...figures(f.text)];
-    let sc = 0;
-    if (ff.length && ff.every((t) => fig.has(t))) sc = 2 + ff.length;
-    else if (ff.length === 0) {
-      // a fact with no figure: by its words; one whose figure the bullet lacks never matches
-      const fw = longWords(f.text);
-      const shared = [...fw].filter((w) => wd.has(w)).length;
-      const j = shared / Math.max(1, new Set([...fw, ...wd]).size);
-      if (j >= 0.5) sc = j;
-    }
+    const sc = ff.length && ff.every((t) => fig.has(t)) ? 2 + ff.length : 0;
     if (sc > score) {
       score = sc;
       best = i;
@@ -394,9 +398,8 @@ function LateLedger({ rows }: { rows: NonNullable<ReturnType<typeof lateRows>> }
                 <td className="whitespace-nowrap pr-3 font-medium">{r.po}</td>
                 <td className="whitespace-nowrap px-3 tabular-nums">{r.due}</td>
                 <td className="whitespace-nowrap px-3 text-right tabular-nums">
-                  <span className="inline-flex items-center gap-1.5">
+                  <span className={cn("inline-flex items-center gap-1.5", lateFigure(r.days))}>
                     {r.days}d
-                    <AgeRing days={r.days} size={13} />
                   </span>
                 </td>
                 {!allUnconfirmed && <td className="px-3 text-muted">{r.unconfirmed ? "None" : "On record"}</td>}
@@ -459,13 +462,13 @@ function SourceRow({ source, n, owner }: { source: Source; n: number; owner?: st
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="group grid h-8 w-full grid-cols-[14px_18px_minmax(0,1fr)] items-center gap-x-2 rounded-lg px-2 text-left text-[13px] hover:bg-hover cursor-pointer"
+        className="group grid h-8 w-full grid-cols-[14px_40px_minmax(0,1fr)] items-center gap-x-2 rounded-[3px] px-2 text-left text-[13px] hover:bg-hover cursor-pointer"
         aria-label={`Source ${n}: ${sys}, ${owner ? `${owner}, ` : ""}${name}`}
         title={[sys, owner, what, read].filter(Boolean).join(" · ")}
         data-testid="answer-source"
       >
-        <span className="text-right text-[11px] tabular-nums text-muted">{n}</span>
-        <SystemTile system={source.system} size={18} />
+        <span className="text-right text-[11px] num text-muted">{n}</span>
+        <SystemCode system={source.system} size={18} />
         <span className="min-w-0 truncate">
           {owner ? (
             <>
@@ -522,7 +525,6 @@ function RecordsList({ refs }: { refs: ObjectRef[] }) {
         {refs.slice(0, 5).map((r) => (
           <li key={r.object_id}>
             <Link href={refHref(r)} className="group flex h-8 items-center gap-2.5 rounded-lg px-2 text-[13px] hover:bg-hover">
-              <RecordTile type={r.type} label={r.label} />
               <span className="min-w-0 flex-1 truncate">{recordLabel(r.type, r.label)}</span>
               <ArrowUpRight className="size-3.5 shrink-0 text-faint group-hover:text-fg" aria-hidden />
             </Link>
@@ -610,9 +612,9 @@ function Confidence({ a, systems }: { a: Answer; systems: string[] }) {
   return (
     <p className={cn(line, "text-muted")} data-testid="confidence">
       {systems.length > 0 && (
-        <span className="flex -space-x-1" aria-hidden>
+        <span className="flex gap-1" aria-hidden>
           {systems.slice(0, 4).map((x) => (
-            <SystemTile key={x} system={x} size={16} className="ring-2 ring-bg" />
+            <SystemCode key={x} system={x} size={16} />
           ))}
         </span>
       )}
@@ -644,7 +646,8 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
   const primary = subjects[0] ?? null;
   // before the words stream, the gate-accepted first line stands in for the answer
   const shownText = a ? a.direct_answer : turn.streamed || turn.verdict || "";
-  const { text, missing: missingSaid } = missingLine(shownText ?? "");
+  const { company, general } = splitGeneral(shownText ?? "");
+  const { text, missing: missingSaid } = missingLine(company);
   const { lead, rest, composed } = splitAnswer(text, primary);
   // a lead longer than a short paragraph is read, not displayed: set in the body face, not the large serif
   const leadChars = lead.reduce((n, b) => n + (b.kind === "p" ? b.inlines.reduce((m, x) => m + x.text.length, 0) : 0), 0);
@@ -759,6 +762,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
                 <ArrowRight className="size-3.5" aria-hidden />
               </Link>
             )}
+            {general && <GeneralPart heading={general.heading} text={general.text} />}
             {missingCount > 0 ? (
               // what wasn't found, said in one line; opened, the line gives way to each item and who to ask
               <details className="group" open={a.outcome === "partial"} data-testid="whats-missing">
@@ -794,6 +798,8 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
             {(a.conflicts ?? []).map((c, i) => (
               <ConflictCard key={i} conflict={c} />
             ))}
+            <AttachmentNotes items={a.attachments ?? []} />
+            <AskDrafts drafts={a.drafts ?? []} />
             {ask && (
               <section data-testid="who-to-ask">
                 <SectionTitle>Next step</SectionTitle>
@@ -803,7 +809,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
             {(steps > 0 || proposals.length > 0) && (
               <div className="space-y-0.5">
                 {steps > 0 && (
-                  <Disclosure label="How we know" count={steps} testId="how-we-know">
+                  <Disclosure label="Evidence" count={steps} testId="how-we-know">
                     <EvidenceTrailCard trail={a.trail} bare showNext={false} />
                   </Disclosure>
                 )}
@@ -839,7 +845,8 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
           <div className="order-last w-full min-w-0">
             <FreshnessLabel freshness={a.freshness} used={usedSystems} />
           </div>
-          <SaveButton question={turn.question} href={`/ask?q=${encodeURIComponent(turn.question)}`} />
+          <SaveButton question={turn.question} href={`/ask?c=${encodeURIComponent(a.conversation_id)}`} />
+          <AskOrganizer conversationId={a.conversation_id} records={a.subjects ?? []} />
           <Feedback answerId={a.answer_id} facts={(a.facts ?? []).map((f) => f.text)} />
           {primary && (
             <Link

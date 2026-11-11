@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Turn } from "@/components/answer-card";
 import { ask } from "./api";
+import type { Attachment } from "./attachments";
 import { noticeKind, plainError } from "./errors";
-import type { AskEvent, HistoryTurn } from "./types";
+import type { Answer, AskEvent, HistoryTurn } from "./types";
 
 /** The progress steps a turn keeps (the latest). */
 export const MAX_STEPS = 8;
@@ -95,7 +96,7 @@ export function useThread() {
   /** Ask; `objectId` scopes the question to one record (a pick, or an object page),
    *  `source` to one document (a mail, attachment or file the reader has open). */
   const run = useCallback(
-    async (question: string, objectId?: string, source?: string) => {
+    async (question: string, objectId?: string, source?: string, files: Attachment[] = []) => {
       ctrl.current?.abort();
       const c = new AbortController();
       ctrl.current = c;
@@ -113,6 +114,7 @@ export function useThread() {
             ...(conversation_id ? { conversation_id } : {}),
             ...(objectId ? { object_id: objectId } : {}),
             ...(source ? { source: source.slice(0, 4096) } : {}),
+            ...(files.length ? { attachments: files.map((f) => ({ name: f.name, data: f.data })) } : {}),
           },
           c.signal,
         )) {
@@ -137,5 +139,18 @@ export function useThread() {
     setTurns([]);
   }, []);
 
-  return { turns, run, stop, reset, busy };
+  /** Reopen a session's earlier turns as they were answered (a "continue" from the work log);
+   *  a turn whose source is no longer open to you shows why instead of its answer. */
+  const seed = useCallback((prior: { question: string; answer: Answer | null; withheld?: string | null }[]) => {
+    ctrl.current?.abort();
+    const restored: Turn[] = prior.map((t) =>
+      t.answer
+        ? { id: newId(), question: t.question, phase: "done", streamed: t.answer.direct_answer, answer: t.answer }
+        : { id: newId(), question: t.question, phase: "error", streamed: "", error: t.withheld ?? "Ask again to see this answer." },
+    );
+    turnsRef.current = restored;
+    setTurns(restored);
+  }, []);
+
+  return { turns, run, stop, reset, busy, seed };
 }

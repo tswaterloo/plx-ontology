@@ -11,7 +11,8 @@
 #     plx-proactive-whole.timer  every 4 h        whole-store proactive rules (not in after_build.sh)
 #     plx-backup.timer           03:15 ET         nightly backup set
 #     plx-restore-test.timer     04:30 ET         restore test of the newest set
-#     plx-ops-health.timer       every 15 min     stale-capture and ingest start-loop alarm
+#     plx-ops-health.timer       every 5 min      reliability alarms (operating/ops_alarms.py): page + Home banner
+#     plx-ops-memory.timer       every 1 min      memory early warning (under 8 GB, top consumers named)
 #   and ~/.local/bin/plx-release -> $PLX_REPO/deploy/release/plx-release
 #
 #Nothing here writes to a business system or reads a secret; the units name env files, not
@@ -24,7 +25,7 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 USER_UNITS="plx-sheet-readings plx-system-activity plx-work-graph"
-SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health"
+SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory"
 
 python3 "$render" --user --out "$tmp/user" >/dev/null
 python3 "$render" --out "$tmp/sys" >/dev/null
@@ -32,7 +33,7 @@ for u in $USER_UNITS; do systemd-analyze verify --user "$tmp/user/$u.service" "$
   | grep -v -E "not executable|plx-suite" || true; done
 for u in $SYS_UNITS; do systemd-analyze verify "$tmp/sys/$u.service" "$tmp/sys/$u.timer" 2>&1 \
   | grep -v -E "not executable|plx-suite" || true; done
-for f in "$tmp"/user/plx-{sheet-readings,system-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health}.*; do
+for f in "$tmp"/user/plx-{sheet-readings,system-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory}.*; do
   grep -q "^MemoryMax=" "$f" || [[ $f == *.timer ]] || { echo "no MemoryMax: $f" >&2; exit 1; }
   grep -q "^Nice=" "$f" || [[ $f == *.timer ]] || { echo "no Nice: $f" >&2; exit 1; }
 done

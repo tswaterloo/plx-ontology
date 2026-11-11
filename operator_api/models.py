@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 API_VERSION = "1.0.0"
 
@@ -442,7 +442,7 @@ class TrailGap(_Model):
 
 
 class EvidenceTrail(_Model):
-    """How we know: the steps, records and messages that led to the answer, each opening
+    """The evidence trail: the steps, records and messages that led to the answer, each opening
     its source; a purchase order's lateness trail, a customer order's materials, or the
     answer's dated, checked claims."""
     kind: Literal["purchase_order", "materials", "claims", "why"]
@@ -471,6 +471,34 @@ class EvidenceTrail(_Model):
                                               json_schema_extra=_optional)
 
 
+AskDraftKind = Literal["email", "payment", "record_change", "approval"]
+
+
+class DraftDetail(_Model):
+    label: str
+    value: str
+
+
+class AskDraft(_Model):
+    """A draft the Ask wrote because the question asked for one: an email the person edits
+    and sends from its preview with one explicit confirm (``/api/actions/preview`` and
+    ``/api/actions/confirm``, ``card_id`` = ``id``, the approve-to-send desk), or an
+    action (a payment, a record change, an approval) shown in full, which the person
+    files as a follow-up or assigns to a colleague for approval through the same desk.
+    Nothing is sent, paid or written by the Ask itself."""
+    id: str = Field(description="The card id the approve-to-send desk takes.")
+    kind: AskDraftKind
+    title: str
+    email_subject: Optional[str] = None
+    body: str
+    details: list[DraftDetail] = Field(default_factory=list, description="An action's "
+                                       "details, each shown before any confirm.")
+    actions: list["CardActionOffer"] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list, description="What the draft lacks "
+                               "before it can be done, in words.")
+    sent: Literal[False] = False
+
+
 class AnswerPayload(_Model):
     answer_id: str
     question: str
@@ -486,7 +514,7 @@ class AnswerPayload(_Model):
     did_you_mean: list[ObjectRef] = Field(default_factory=list,
                                           description="Choices when a name or number matched "
                                                       "several records; never merged.")
-    trail: Optional[EvidenceTrail] = Field(None, description="How we know (optional: "
+    trail: Optional[EvidenceTrail] = Field(None, description="The evidence trail (optional: "
                                                              "older clients ignore it).",
                                            json_schema_extra=_optional)
     conversation_id: str
@@ -517,6 +545,13 @@ class AnswerPayload(_Model):
         default_factory=list, json_schema_extra=_optional,
         description="Follow-up drafts and proposed updates built from the answer's gated "
                     "trail; never sent or applied.")
+    attachments: list[AskAttachmentNote] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="The question's attachments: what was read and what was not, and why.")
+    drafts: list[AskDraft] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Emails and actions the question asked to have drafted; each is done "
+                    "only from its preview with your explicit confirm.")
 
 
 # ---- ask (SSE) -------------------------------------------------------------------------
@@ -524,6 +559,24 @@ class AnswerPayload(_Model):
 class HistoryTurn(_Model):
     role: Literal["user", "assistant"]
     text: str = Field(max_length=4000)
+
+
+class AskAttachment(_Model):
+    """A file or image attached to one question (``operating.ask_attachments``): read in
+    memory for that answer only, never stored."""
+    name: str = Field(min_length=1, max_length=200)
+    data: str = Field(min_length=1, max_length=11_200_000,
+                      description="The file's bytes, base64 (8 MB a file, 10 MB together).")
+
+
+class AskAttachmentNote(_Model):
+    """What the answer and the saved Ask say of an attachment: never its content."""
+    name: str
+    kind: Optional[Literal["pdf", "spreadsheet", "text", "image"]] = None
+    size: int
+    digest: str
+    read: bool
+    note: Optional[str] = Field(None, description="Why it was not read, or read in part.")
 
 
 class AskRequest(_Model):
@@ -536,6 +589,23 @@ class AskRequest(_Model):
                                   description="Ask about this document: the citation of a "
                                               "mail, attachment or file the person has open "
                                               "or picked; read for them as they may read it.")
+    attachments: list[AskAttachment] = Field(
+        default_factory=list, max_length=5,
+        description="Files and images the person attached (PDF, .xlsx, .csv, text, PNG, "
+                    "JPEG, GIF, WebP): up to five, 10 MB together.")
+
+    @model_validator(mode="after")
+    def _attachments_fit(self) -> "AskRequest":
+        if sum(len(a.data) for a in self.attachments) > ATTACHMENTS_BASE64_MAX:
+            raise ValueError("Attachments together can be up to 10 MB.")
+        return self
+
+
+# the base64 length of 10 MB (``operating.ask_attachments.MAX_TOTAL``), and the largest
+# /api/ask body the app reads at all (``operator_api.app``): that and the question,
+# history and names with room for JSON escapes
+ATTACHMENTS_BASE64_MAX = -(-10 * 1024 * 1024 // 3) * 4
+ASK_BODY_MAX = ATTACHMENTS_BASE64_MAX + 600_000
 
 
 class Candidate(_Model):
@@ -1563,7 +1633,7 @@ class BriefingItem(_Model):
     first_seen: Optional[str] = None
     open_url: str
     sources: list[Source] = Field(default_factory=list)
-    trail: Optional[EvidenceTrail] = Field(None, description="How we know, read as this "
+    trail: Optional[EvidenceTrail] = Field(None, description="The evidence trail, read as this "
                                                              "reader (top items only).")
     yours: bool = Field(False, description="About a record you are involved in (named on "
                                            "it, mentioned in your mail, or its supplier or "
@@ -2513,8 +2583,8 @@ class BriefSection(_Model):
         description="finance_marked / quality_marked: shown only to a reader holding finance "
                     "/ quality_controlled (the same whatever the data holds); partial: a read "
                     "limit was reached or a part was not readable; unread: its source (the "
-                    "alert list, or your item access) could not be read, which is not the "
-                    "same as none; blocked: the people exclusion is not loaded, so no mail, "
+                    "alert list, or your item access) could not be read, so the section may still have "
+                    "items; blocked: the people exclusion is not loaded, so no mail, "
                     "Teams, meeting or Planner line is shown; not_available: the data it needs "
                     "is not captured yet (the note says what).")
     note: Optional[str] = None
@@ -2555,9 +2625,46 @@ class Brief(_Model):
                           "still opens for you.")
 
 
+class MeetingInvitee(_Model):
+    """One person on a calendar invitation, as the invitation lists them (directory facts
+    every employee sees; the people exclusion decided before it is shown)."""
+    name: str
+    address: Optional[str] = None
+    role: Literal["organizer", "required", "optional", "resource"]
+    response: Optional[Literal["accepted", "declined", "tentativelyaccepted", "none",
+                               "notresponded", "organizer"]] = None
+    outside: bool = Field(False, description="Their address is outside the mailbox's domain.")
+    sources: list[Source] = Field(default_factory=list)
+
+
+class MeetingOpenItem(_Model):
+    """An open action item from an earlier meeting of the same series (the meeting
+    autopilot's tracked items the reader may see)."""
+    label: str
+    detail: Optional[str] = None
+    date: Optional[str] = None
+    sources: list[Source] = Field(default_factory=list)
+
+
 class UpcomingMeeting(_Model):
     object: ObjectRef
     start: Optional[str] = None
+    end: Optional[str] = None
+    all_day: bool = False
+    location: Optional[str] = None
+    online: bool = False
+    join_url: Optional[str] = Field(None, description="The Teams join link (teams.microsoft.com "
+                                                      "only).")
+    agenda: Optional[str] = Field(None, description="The invitation's body preview, clipped.")
+    organizer: Optional[MeetingInvitee] = None
+    attendees: list[MeetingInvitee] = Field(default_factory=list)
+    is_organizer: bool = False
+    private: bool = Field(False, description="A private or confidential event: its time only.")
+    people_withheld: bool = Field(False, description="The people exclusion is not loaded: no "
+                                                     "organizer, attendee or agenda shown.")
+    parties: list[ObjectRef] = Field(default_factory=list,
+                                     description="Customers and suppliers it is linked to.")
+    open_items: list[MeetingOpenItem] = Field(default_factory=list)
     brief_url: str
     sources: list[Source] = Field(default_factory=list)
 
@@ -2704,6 +2811,9 @@ class AutopilotDecision(_Model):
     outcome: Optional[str] = Field(None, description="The write path's outcome of an "
                                    "accept: dry_run (recorded only), done, killed, refused...")
     reasons: list[str] = Field(default_factory=list)
+    sent: bool = Field(False, description="The item's email went out: its own send "
+                       "action's result is done (an entry before it may have succeeded "
+                       "while the send did not).")
 
 
 class AutopilotItem(_Model):
@@ -2755,6 +2865,9 @@ class AutopilotArea(_Model):
     items: list[AutopilotItem] = Field(default_factory=list)
     workflows: list[AutopilotWorkflowRow] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    known_workflows: list[str] = Field(default_factory=list, description=(
+        "every workflow the autopilot knows (``operating.workflows``), scored or not: the "
+        "workflow filter offers them before any is scored or prepared"))
 
 
 class AutopilotDecisionRequest(_Model):
@@ -2840,6 +2953,126 @@ class AutopilotAudit(_Model):
     changes and the owner's switches. Owner only."""
     rows: list[AutopilotAuditRow] = Field(default_factory=list)
     live: int = Field(description="Live actions done.")
+
+
+# --- the autopilot studio (workflow pages, modes, builder, replay, schedules) ------------
+
+AutopilotMode = Literal["off", "suggest", "draft", "auto", "watch"]
+
+
+class AutopilotStep(_Model):
+    """A workflow's trigger, one condition or one action: its registry key and its words."""
+    kind: str = Field(max_length=80, description="The registry's key: an event "
+                      "('message.received'), a condition ('side_in') or a handler "
+                      "('order_entry').")
+    words: str = Field(max_length=300, description="The step in plain words.")
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class AutopilotGate(_Model):
+    """The write gate's reading of one workflow: held-out (fresh) replay when scored, else
+    the tuning replay; ``passed`` only from the fresh gate."""
+    percent: Optional[float] = None
+    judged: int = 0
+    matched: int = 0
+    fresh: bool = Field(False, description="The counts are the held-out replay's.")
+    passed: bool = False
+    rule: str = Field(description="What passing takes, in words.")
+
+
+class AutopilotWorkflowDetail(_Model):
+    """One workflow as the studio shows it: what starts it, what it checks and does, its
+    gate, its mode, per role its row, what it caught and missed, and its history."""
+    workflow: str
+    label: str
+    trigger: Optional[AutopilotStep] = Field(None, description="Null when no registered "
+                                             "autopilot feeds it (a workflow seen in replay "
+                                             "only).")
+    conditions: list[AutopilotStep] = Field(default_factory=list)
+    actions: list[AutopilotStep] = Field(default_factory=list)
+    autopilots: list[str] = Field(default_factory=list)
+    mode: AutopilotMode
+    modes: list[AutopilotMode] = Field(description="The modes this server can set for it "
+                                       "now (watch only after its gate passed).")
+    gate: AutopilotGate
+    rows: list[AutopilotWorkflowRow] = Field(default_factory=list)
+    caught: Optional[int] = Field(None, description="Replay items it got right.")
+    missed: Optional[int] = Field(None, description="Replay items it got wrong or missed.")
+    false_alarms: Optional[int] = Field(None, description="Null: not counted by this gate.")
+    hours_saved: Optional[float] = Field(None, description="Null: not measured.")
+    hours_basis: Optional[str] = None
+    open_items: int = 0
+    history: list[AutopilotAuditRow] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class AutopilotCatalog(_Model):
+    """What the builder offers: the triggers, conditions and actions the registry knows."""
+    triggers: list[AutopilotStep]
+    conditions: list[AutopilotStep]
+    actions: list[AutopilotStep]
+    builder: bool = Field(description="False: this server shows the catalog but does not "
+                          "keep or replay a drafted workflow yet.")
+
+
+class AutopilotWorkflowDraft(_Model):
+    label: str = Field(min_length=1, max_length=120)
+    trigger: AutopilotStep
+    conditions: list[AutopilotStep] = Field(default_factory=list, max_length=12)
+    actions: list[AutopilotStep] = Field(min_length=1, max_length=8)
+    person: Optional[str] = Field(None, max_length=200)
+    role: Optional[str] = Field(None, max_length=120)
+
+
+class AutopilotDraftKept(_Model):
+    workflow: str = Field(description="The draft's id; it starts in Draft mode, never live.")
+    mode: AutopilotMode = "draft"
+    problems: list[str] = Field(default_factory=list)
+
+
+class AutopilotReplayRequest(_Model):
+    days: int = Field(ge=1, le=60)
+
+
+class AutopilotReplayItem(_Model):
+    at: str
+    title: str
+    outcome: Literal["caught", "missed", "false_alarm"]
+    why: Optional[str] = None
+
+
+class AutopilotReplay(_Model):
+    """A workflow tried on past days: what it would have prepared against what people did.
+    Nothing is sent or written by a replay."""
+    workflow: str
+    days: int
+    judged: int
+    caught: int
+    missed: int
+    false_alarms: int
+    items: list[AutopilotReplayItem] = Field(default_factory=list)
+
+
+class AutopilotModeRequest(_Model):
+    mode: AutopilotMode
+    role: Optional[str] = Field(None, max_length=120, description="draft/auto: the role "
+                                "(or person: role) it applies to.")
+
+
+class AutopilotSchedule(_Model):
+    id: str
+    label: str
+    workflow: str
+    cadence: str = Field(description="When it runs, in words.")
+    checks: str = Field(description="What each run looks at, in words.")
+    on: bool
+    last_run: Optional[str] = None
+    next_run: Optional[str] = None
+
+
+class AutopilotSchedules(_Model):
+    schedules: list[AutopilotSchedule] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class WriteIntentView(_Model):
@@ -2961,3 +3194,103 @@ class LabourPage(_Model):
     weeks: list[LabourWeek]
     trend: list[LabourTrend]
     alerts: list[LabourAlert]
+
+
+# ---- the work log (``/api/work-log*``, ``operator_api.work_log``) ---------------------------
+
+WorkLogKind = Literal["ask", "alert", "autopilot", "action", "write", "watch", "note", "save"]
+
+
+class WorkLogRecord(_Model):
+    object_id: str
+    type: Optional[str] = None
+    label: Optional[str] = None
+
+
+class WorkLogLoop(_Model):
+    """A sent message's follow-through: waiting, answered (a reply arrived), overdue (no
+    reply inside the window: ``nudge`` and a follow-up to ask for) or closed by you."""
+    state: Literal["waiting", "answered", "overdue", "closed"]
+    due: Optional[str] = None
+    answered_at: Optional[str] = None
+    nudge: Optional[str] = None
+    follow_up: Optional[str] = Field(None, description="A question for Ask that drafts the "
+                                     "follow-up (nothing is sent).")
+
+
+class WorkLogEvent(_Model):
+    seq: int
+    at: str
+    mine: bool
+    reader_name: Optional[str] = Field(None, description="Who did it (the owner's view).")
+    kind: WorkLogKind
+    verb: str
+    title: str
+    thread: str = Field(description="What \"continue\" reopens (GET /api/work-log/threads/"
+                                    "{thread}).")
+    source: str = Field(description="The store the item lives in (actions_journal, "
+                                    "autopilot_queue, write_intents, watchlists, feedback, "
+                                    "ai_watcher, ask, saved).")
+    source_id: Optional[str] = None
+    records: list[WorkLogRecord] = Field(default_factory=list)
+    people: list[str] = Field(default_factory=list)
+    thread_name: Optional[str] = None
+    pinned: bool = False
+    case_id: Optional[str] = None
+    loop: Optional[WorkLogLoop] = None
+
+
+class WorkLogPage(_Model):
+    events: list[WorkLogEvent]
+    total: Optional[int] = Field(description="Null when the log cannot be shown (the people "
+                                 "exclusion list is not loaded: fail closed).")
+    offset: int = 0
+    all_readers: bool = False
+
+
+class WorkLogTurn(_Model):
+    question: str
+    answer: Optional[dict[str, Any]] = Field(description="The answer as you saw it; null "
+                                             "(``withheld`` says why) when a source it cites "
+                                             "is no longer open to you.")
+    withheld: Optional[str] = None
+    at: str
+
+
+class WorkLogResume(_Model):
+    href: str
+    turns: list[WorkLogTurn] = Field(default_factory=list, description="An Ask session's "
+                                     "turns, oldest first, as you saw them.")
+
+
+class WorkLogThread(_Model):
+    thread: str
+    name: Optional[str] = None
+    pinned: bool = False
+    case_id: Optional[str] = None
+    closed_at: Optional[str] = None
+    events: list[WorkLogEvent]
+    related: list[WorkLogEvent] = Field(default_factory=list, description="Your other work "
+                                        "on the same records.")
+    resume: WorkLogResume
+
+
+class WorkLogOrganise(_Model):
+    name: Optional[str] = Field(None, max_length=120)
+    pinned: Optional[bool] = None
+    case_id: Optional[str] = Field(None, max_length=120, pattern=r"^[A-Za-z0-9_.:-]*$")
+    closed: Optional[bool] = Field(None, description="Close a waiting loop yourself.")
+
+
+class WorkLogSave(_Model):
+    """The record page's or Ask's Save (kept in the browser too)."""
+    saved: bool
+    kind: Literal["object", "question"]
+    label: str = Field(min_length=1, max_length=300)
+    object_type: Optional[str] = Field(None, max_length=60)
+    object_id: Optional[str] = Field(None, max_length=400)
+
+
+# AskDraft names CardActionOffer before it is defined
+AskDraft.model_rebuild()
+AnswerPayload.model_rebuild()

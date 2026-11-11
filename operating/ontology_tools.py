@@ -401,6 +401,81 @@ def _readable_text(store: Any, scope: Any, rows: Iterable[Any]) -> list[Any]:
                                         store.sensitive_versions)
 
 
+# One read of many tool calls as of one moment (``snapshot_reads``); None outside one.
+_SNAPSHOT: ContextVar[dict[str, Any] | None] = ContextVar("plx_snapshot_reads", default=None)
+
+
+@contextmanager
+def snapshot_reads(clock: Callable[[], dt.datetime] | None = None) -> Any:
+    """Every tool call made inside it (on this thread) reads as of one moment when the
+    call names no ``as_known_at`` (a record page's margin: tens of plan runs over the
+    same customer, orders and items, read as one picture): every tool's ``clock``
+    (``pinned_clock``) answers that moment, so a scope, a meta and a freshness age agree
+    across the calls. The moment is ``clock()`` when given, else the first tool clock
+    read inside it. The store's visible versions of an object are read once for the same
+    scope (audience keys, markings, moment and document marks: the whole of the query's
+    inputs). The item gate still decides every version on every call. A snapshot inside
+    a snapshot is the outer one."""
+    if _SNAPSHOT.get() is not None:
+        yield
+        return
+    at = clock().astimezone(dt.timezone.utc) if clock is not None else None
+    snap: dict[str, Any] = {"at": at, "versions": {}}
+    token = _SNAPSHOT.set(snap)
+    try:
+        yield
+    finally:
+        _SNAPSHOT.reset(token)
+        for close in snap.get("closers", ()):   # what a tool held for the snapshot
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - a closed store holds nothing more
+                pass
+
+
+def current_snapshot() -> dict[str, Any] | None:
+    """The ``snapshot_reads`` this thread reads in (None: none), for ``joined_snapshot``."""
+    return _SNAPSHOT.get()
+
+
+@contextmanager
+def joined_snapshot(snap: dict[str, Any] | None) -> Any:
+    """Read inside another thread's ``snapshot_reads`` (``current_snapshot``): a record
+    page's margin reads some of its orders on the Ask pool's workers as the same reader,
+    and they read as of the page's one moment. None, or a snapshot already open on this
+    thread: nothing changes."""
+    if snap is None or _SNAPSHOT.get() is not None:
+        yield
+        return
+    token = _SNAPSHOT.set(snap)
+    try:
+        yield
+    finally:
+        _SNAPSHOT.reset(token)
+
+
+_PIN_LOCK = threading.Lock()
+
+
+def pinned_clock(clock: Callable[[], dt.datetime]) -> Callable[[], dt.datetime]:
+    """``clock``, except inside ``snapshot_reads``: the snapshot's one moment (the first
+    reading of a clock there, when the snapshot named none)."""
+    clock = getattr(clock, "unpinned", clock)
+
+    def now() -> dt.datetime:
+        snap = _SNAPSHOT.get()
+        if snap is None:
+            return clock()
+        if snap["at"] is None:
+            moment = clock().astimezone(dt.timezone.utc)
+            with _PIN_LOCK:   # a joined thread may read first: one moment either way
+                if snap["at"] is None:
+                    snap["at"] = moment
+        return snap["at"]
+    now.unpinned = clock  # type: ignore[attr-defined]
+    return now
+
+
 def run_memo_for(kind: Any) -> dict[Any, Any] | None:
     """The decisions of ``kind`` kept for the plan run in progress (``run_memo``); None
     outside a run (each call decides afresh)."""
@@ -1007,6 +1082,25 @@ class StoreReader:
                          cap=LEAD_SCAN_CAP + 1)))
 
     def primary_identifiers(self, scope: _Scope, object_ids: Sequence[str]) -> list[sqlite3.Row]:
+        """The primary identifiers this scope may read of ``object_ids``, each object's in
+        (kind, normalized) order; inside ``snapshot_reads`` each object's are read once
+        for the same query inputs (``visible_versions``' rule)."""
+        snap = _SNAPSHOT.get()
+        if snap is None:
+            return self._primary_identifiers_read(scope, object_ids)
+        params = scope.params()
+        memo = snap.setdefault("identifiers", {}).setdefault(
+            (id(self), tuple(sorted((k, str(v)) for k, v in params.items()))), {})
+        wanted = [oid for oid in dict.fromkeys(object_ids) if oid not in memo]
+        if wanted:
+            found: dict[str, list[sqlite3.Row]] = {oid: [] for oid in wanted}
+            for row in self._primary_identifiers_read(scope, wanted):
+                found[row["object_id"]].append(row)
+            memo.update(found)
+        return [row for oid in dict.fromkeys(object_ids) for row in memo[oid]]
+
+    def _primary_identifiers_read(self, scope: _Scope, object_ids: Sequence[str]
+                                  ) -> list[sqlite3.Row]:
         return list(self.conn.execute(
             self._scoped_identifiers() + "AND i.role = 'primary' "
             "AND i.object_id IN (SELECT value FROM json_each(:ids)) "
@@ -1330,8 +1424,12 @@ class StoreReader:
         clause included, so the set is the one its span scan keeps), read from the
         values of each narrowed property in one statement per condition rather than one
         per span of keys (11-09: a file name over 190k SharePoint files, 95 statements and
-        31-49 s, against one of 4 s). None when the store does not read values first or a
-        condition holds more than ``NARROWED_IDS_CAP`` records: the caller scans spans."""
+        31-49 s, against one of 4 s). A condition holding more than ``NARROWED_IDS_CAP``
+        records narrows nothing and is left to the scan, which applies every filter to the
+        candidates anyway (a week's dates: "on or after the Monday" holds a few hundred
+        orders, "before the next Monday" every order ever; 11-10, the weekly review counted
+        each week by a span scan of all 84k order dates). None when the store does not read
+        values first or no condition is selective: the caller scans spans."""
         if not self.VALUES_FIRST or not narrowing:
             return None
         found: set[str] | None = None
@@ -1349,9 +1447,9 @@ class StoreReader:
                  **{f"n_{k}": v for k, v in params.items()}}).fetchall()
             ids = {row[0] for row in rows}
             if len(rows) > limit or len(ids) > self.NARROWED_IDS_CAP:
-                return None
+                continue   # not selective: a superset either way, the scan decides
             found = ids if found is None else found & ids
-        return sorted(found or ())
+        return None if found is None else sorted(found)
 
     def audience_of_version(self, handle: str) -> str | None:
         """The audience key of the record whose version ``handle`` is (``version_audience``),
@@ -1383,7 +1481,24 @@ class StoreReader:
         return frozenset(row[0] for row in rows), next(iter(keys))
 
     def visible_versions(self, scope: _Scope, object_ids: Sequence[str]) -> list[sqlite3.Row]:
-        """The version current at :at of each readable object among ``object_ids``."""
+        """The version current at :at of each readable object among ``object_ids``; inside
+        ``snapshot_reads`` each object's answer for the same query inputs is kept."""
+        snap = _SNAPSHOT.get()
+        if snap is None:
+            return self._visible_versions_read(scope, object_ids)
+        params = scope.params()
+        memo = snap["versions"].setdefault(
+            (id(self), tuple(sorted((k, str(v)) for k, v in params.items()))), {})
+        wanted = [oid for oid in dict.fromkeys(object_ids) if oid not in memo]
+        if wanted:
+            rows = self._visible_versions_read(scope, wanted)
+            found = {row["object_id"]: row for row in rows}
+            for oid in wanted:
+                memo[oid] = found.get(oid)
+        return [memo[oid] for oid in dict.fromkeys(object_ids) if memo.get(oid) is not None]
+
+    def _visible_versions_read(self, scope: _Scope, object_ids: Sequence[str]
+                               ) -> list[sqlite3.Row]:
         return list(self.conn.execute(
             "SELECT v.*, o.audience_key FROM object_versions v "
             "JOIN objects o ON o.object_id = v.object_id "
@@ -1582,6 +1697,19 @@ class StoreReader:
                          types=json.dumps(list(link_types)))))
 
     def links_of(self, object_id: str) -> list[sqlite3.Row]:
+        """Every link row with ``object_id`` at an end, read for no reader (the caller
+        judges each row for its own); inside ``snapshot_reads`` read once per object (a
+        margin's plan runs read the customer's thousands of links per order)."""
+        snap = _SNAPSHOT.get()
+        if snap is None:
+            return self._links_of_read(object_id)
+        memo = snap.setdefault("links", {})
+        key = (id(self), object_id)
+        if key not in memo:
+            memo[key] = self._links_of_read(object_id)
+        return list(memo[key])
+
+    def _links_of_read(self, object_id: str) -> list[sqlite3.Row]:
         return list(self.conn.execute(
             "SELECT * FROM links WHERE from_object = ? OR to_object = ? ORDER BY link_id",
             (object_id, object_id)))
@@ -2655,6 +2783,16 @@ class OntologyTools:
     (default deny); ``api://`` and ``bc://`` records have no item ACL.
     """
 
+    @property
+    def clock(self) -> Callable[[], dt.datetime]:
+        """'Now' for a call naming no ``as_known_at``: the clock given, or inside
+        ``snapshot_reads`` the snapshot's one moment (``pinned_clock``)."""
+        return self._clock
+
+    @clock.setter
+    def clock(self, value: Callable[[], dt.datetime]) -> None:
+        self._clock = pinned_clock(value)
+
     def __init__(self, store: StoreReader, policy: ReadPolicy, *,
                  item_gate: Callable[[Actor, str], bool] | None = None,
                  schema: SchemaView | None = None, grammar: Grammar | None = None,
@@ -2693,7 +2831,7 @@ class OntologyTools:
         self.grammar = grammar
         self.contracts = dict(contracts) if contracts is not None else load_contracts()
         self.limits = self.contracts["limits"]
-        self.clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        self.clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))   # pinned_clock
         self.monotonic = monotonic
         # Set handles are shared with every tool on this host (plx.around /
         # plx.timeline take and return the same handles).
@@ -5740,7 +5878,10 @@ class OntologyTools:
         limit = self.limits["max_untrusted_text_chars"]
         out: dict[str, dict | None] = {}
         by_object: dict[str, dict[str, sqlite3.Row]] = {}
-        for row in self.store.readable_values(scope, object_ids):
+        # only the display properties of these objects' types are read, never every value
+        shown = sorted({p for object_id in set(object_ids)
+                        for p in display.get(object_id.split(":", 1)[0], ())})
+        for row in self.store.readable_values(scope, object_ids, shown) if shown else ():
             if row["value"] is not None:
                 by_object.setdefault(row["object_id"], {}).setdefault(row["property"], row)
         idents: dict[str, sqlite3.Row] = {}

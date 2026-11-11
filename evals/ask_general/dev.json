@@ -1,0 +1,147 @@
+{
+ "format": "plx-ask-general/v1",
+ "evidence_label": "live-captures for mixed (the reader's own host), model-only for general and weird",
+ "split": "each kind sorted by SHA-256 of the question; the first half (rounded up) is dev, the rest held out outside git",
+ "items": [
+  {
+   "id": "general-01f4dced",
+   "kind": "general",
+   "question": "how do I compute gross margin from price and cost"
+  },
+  {
+   "id": "general-07e1c41a",
+   "kind": "general",
+   "question": "what's the difference between landed cost and standard cost"
+  },
+  {
+   "id": "general-0c491c22",
+   "kind": "general",
+   "question": "what is a reasonable safety stock formula"
+  },
+  {
+   "id": "general-132749ea",
+   "kind": "general",
+   "question": "what should a deviation report contain"
+  },
+  {
+   "id": "general-2968e5bb",
+   "kind": "general",
+   "question": "draft a message to the team announcing a new cycle count schedule"
+  },
+  {
+   "id": "general-2d9628fa",
+   "kind": "general",
+   "question": "how do I set reorder points for packaging components"
+  },
+  {
+   "id": "general-36c039e5",
+   "kind": "general",
+   "question": "what are the main GMP requirements for cosmetics manufacturing"
+  },
+  {
+   "id": "general-3768f613",
+   "kind": "general",
+   "question": "summarize the pros and cons of consignment inventory"
+  },
+  {
+   "id": "general-38fa7439",
+   "kind": "general",
+   "question": "write a job description for a production planner"
+  },
+  {
+   "id": "general-3949ecff",
+   "kind": "general",
+   "question": "If a batch is 1,200 kg and the yield is 96%, how many 500 g bottles can we fill?"
+  },
+  {
+   "id": "general-3a08e784",
+   "kind": "general",
+   "question": "how do I calculate inventory turnover"
+  },
+  {
+   "id": "general-3a4569e0",
+   "kind": "general",
+   "question": "what is economic order quantity and how is it calculated"
+  },
+  {
+   "id": "general-3ab5a9a6",
+   "kind": "general",
+   "question": "how should we structure a QC hold process"
+  },
+  {
+   "id": "general-4d89821c",
+   "kind": "general",
+   "question": "explain landed cost"
+  },
+  {
+   "id": "general-53a6ffc5",
+   "kind": "general",
+   "question": "write an email asking a customer to confirm their artwork before printing"
+  },
+  {
+   "id": "mixed-01a2568b",
+   "kind": "mixed",
+   "question": "what did our latest purchase order cost, and how do I work out its landed cost?"
+  },
+  {
+   "id": "mixed-0a8904b4",
+   "kind": "mixed",
+   "question": "who are our top suppliers by spend, and what should I look for when reviewing a supplier?"
+  },
+  {
+   "id": "mixed-0f854819",
+   "kind": "mixed",
+   "question": "is our most recent batch yield good for a soap batch?"
+  },
+  {
+   "id": "mixed-18180d1e",
+   "kind": "mixed",
+   "question": "which of our purchase orders are late, and how should I word a reminder to those suppliers?"
+  },
+  {
+   "id": "mixed-37df2abe",
+   "kind": "mixed",
+   "question": "summarize our open purchase orders and explain FIFO vs FEFO for receiving them"
+  },
+  {
+   "id": "mixed-5979f2a7",
+   "kind": "mixed",
+   "question": "is our landed cost on the most recent purchase order reasonable compared with industry norms?"
+  },
+  {
+   "id": "mixed-60539e42",
+   "kind": "mixed",
+   "question": "how much inventory of glycerin do we have, and how would I set a reorder point for it?"
+  },
+  {
+   "id": "mixed-7fe5fbed",
+   "kind": "mixed",
+   "question": "how does our current late purchase order count compare with what's typical for a manufacturer our size?"
+  },
+  {
+   "id": "weird-10fee44c",
+   "kind": "weird",
+   "question": "who won the 1998 world cup"
+  },
+  {
+   "id": "weird-13788d0d",
+   "kind": "weird",
+   "question": "tell me a joke about forklifts"
+  },
+  {
+   "id": "weird-5d09b4cd",
+   "kind": "weird",
+   "question": "how far is the moon from earth"
+  },
+  {
+   "id": "weird-70964c46",
+   "kind": "weird",
+   "question": "write a haiku about soap"
+  },
+  {
+   "id": "weird-75b49f72",
+   "kind": "weird",
+   "question": "explain quantum entanglement to a ten year old"
+  }
+ ]
+}

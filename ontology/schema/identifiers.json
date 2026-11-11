@@ -1468,7 +1468,9 @@
    "alias_kinds": [
     "item_code"
    ],
-   "source_prefixes": ["sage-dist-"],
+   "source_prefixes": [
+    "sage-dist-"
+   ],
    "forms": [
     {
      "form": "sage",
@@ -1830,7 +1832,9 @@
    "exact_compare": "trim",
    "auto_merge": false,
    "alias_kinds": [],
-   "source_prefixes": ["MAKE:"],
+   "source_prefixes": [
+    "MAKE:"
+   ],
    "forms": [
     {
      "form": "decimal",
@@ -2035,6 +2039,51 @@
      "upstream": "ontology/project_graph.py member_rows (a zip/.msg/.eml drive item member's bytes, sha256 from integrations/captured_text.py container_members)"
     }
    ]
+  },
+  "gl_account": {
+   "object_type": "RelSageGlAccount",
+   "description": "A Sage 300 GL account number: unformatted (GL ACCTID 9999001) or formatted with its segment separator (ACCTFMTTD and AR/AP IDGLACCT/IDACCT 99990-01); normalised without spaces or hyphens, so both forms meet. No mention pattern: account numbers overlap other numbers.",
+   "value_pattern": "[0-9](?:[ -]?[0-9]){2,44}",
+   "flags": "",
+   "normalizer": "compact_upper",
+   "identity": "lead",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "unformatted",
+     "example": "9999001",
+     "upstream": "ontology/schema/generated/meta/portal_catalog.json (sage.gl_account.acctid)"
+    },
+    {
+     "form": "formatted",
+     "example": "99990-01",
+     "upstream": "ontology/schema/generated/meta/portal_catalog.json (sage.gl_account.acctfmttd)"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "sage.gl_account",
+     "field": "acctid",
+     "role": "primary",
+     "served": true,
+     "upstream": "ontology/schema/generated/meta/portal_catalog.json"
+    },
+    {
+     "system": "portal",
+     "relation": "sage.gl_account",
+     "field": "acctfmttd",
+     "role": "alias",
+     "served": true,
+     "upstream": "ontology/schema/generated/meta/portal_catalog.json"
+    }
+   ],
+   "no_fixed_format": {
+    "why": "Sage GL account numbers follow the company's account structure (segments and separators), not one fixed format.",
+    "upstream": "ontology/schema/generated/meta/portal_catalog.json (sage.gl_account, sage.gl_asv segments)"
+   }
   }
  },
  "label_kind_map": {

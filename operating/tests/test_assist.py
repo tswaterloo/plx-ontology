@@ -130,11 +130,48 @@ class HistoryRecipientTests(unittest.TestCase):
         self.assertEqual((got.to, got.withheld), (["laura@plx.test"], 1))
 
 
+    def test_the_company_own_name_is_no_topic(self):
+        # the company's own name (its internal mail domain's) is in every subject it
+        # writes: it ties no thread; the newest mail sent there decides
+        sent = [{"to": ["amy@atlas.example"], "subject": "Pallet pickup"},
+                {"to": ["joe@atlas.example"], "subject": "Plxco samples"}]
+        people = People(NAMES)
+        people.internal = ("plxco-1.test", "plx.test")
+        got = assist.resolve(assist.parse("email Atlas: Plxco quality"), me=ME,
+                             people=people, sent=sent, roles={})
+        self.assertEqual(got.to, ["amy@atlas.example"])
+        got = assist.resolve(assist.parse("email Atlas: samples"), me=ME,
+                             people=people, sent=sent, roles={})
+        self.assertEqual(got.to, ["joe@atlas.example"])
+
+
 class RecordsNamedTests(unittest.TestCase):
     def test_a_day_range_is_not_a_record_an_id_is(self):
         self.assertEqual(assist.parse("email Pat: Time sheet Oct. 05-10").records, [])
         self.assertEqual(assist.parse("email Pat: return MC3025-GR and PO 90412").records,
                          ["MC3025-GR", "90412"])
+        # a quantity with its unit is not a record
+        self.assertEqual(assist.parse("email Pat: 100ml amber dropper, 250 pcs of 12x20kg"
+                                      ).records, [])
+
+
+class DraftTests(unittest.TestCase):
+    def test_a_long_subject_fits_the_copy_check_and_outside_facts_name_the_record(self):
+        line = ("email Stefan: CoA | Sahajan | AO26278A - (Finished Product - Sahajan "
+                "Essential Cleansing Oil)")
+        it = assist.parse(line)
+        made = assist.draft(it, assist.Recipients(to=["stefan@acme.example"]), [
+            {"question": "status of AO26278A", "facts": [
+                {"text": "Assembly order AO-26278A in FileMaker: status Released.",
+                 "sources": ["h1"]},
+                {"text": "Lot 26261F expires on 2027-01-01.", "sources": ["h2"]}]}],
+            outside=True)
+        self.assertLessEqual(len(made["subject"]), 60)
+        self.assertIsNotNone(made["body"], made["gaps"])
+        # the record in another written form goes out; another record stays inside
+        self.assertEqual([f["text"][:24] for f in made["facts"]], ["Assembly order AO-26278A"])
+        self.assertIn("1 facts about other records were left out: the message goes outside "
+                      "the company", made["gaps"])
 
 
 if __name__ == "__main__":

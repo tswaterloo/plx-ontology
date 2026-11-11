@@ -18,7 +18,7 @@ describe("record page head", () => {
       related: [{ object_id: "s", type: "Supplier", label: "DSM", open_url: "/object/Supplier/s" }],
       trail: {
         kind: "purchase_order",
-        title: "How we know: 106001",
+        title: "Evidence for 106001",
         trails: [
           {
             subject: { object_id: "o", type: "PurchaseOrder", label: "106001", open_url: "/o" },

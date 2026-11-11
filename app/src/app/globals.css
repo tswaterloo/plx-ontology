@@ -7,15 +7,10 @@
 @theme inline {
   --animate-fade-in: fade-in 120ms ease-out both;
   --animate-blink: blink 1s steps(2, start) infinite;
-  --animate-breathe: breathe 1.2s ease-in-out infinite;
 
   @keyframes fade-in {
     from { opacity: 0; }
     to { opacity: 1; }
-  }
-  @keyframes breathe {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
   }
   @keyframes blink {
     to { visibility: hidden; }
@@ -123,4 +118,11 @@
   [role="tab"] {
     min-width: 40px;
   }
+}
+
+/* Figures that are data (IDs, counts, money, days late) set in Geist Mono with tabular
+   digits. Size and tracking stay with the element's own text classes. */
+@utility num {
+  font-family: var(--font-mark);
+  font-variant-numeric: tabular-nums;
 }

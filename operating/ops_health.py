@@ -16,6 +16,13 @@ overriding any of them):
   (``host/host.sqlite`` ``source_state``); a breach past twice its normal turn (interval
   plus run budget, ``host/serve-health.json`` ``turn_seconds``; else ``capture_minutes``)
   or with ``stale_since``.
+* ``capture:sage``, ``capture:filemaker``, ``capture:calendar``, ``capture:planner``: the
+  sources one capture carries (``source_checks``): Sage and FileMaker relations of the
+  Portal mirror (its newest refresh of a relation of that lineage), calendar events and
+  Planner tasks of the meetings capture (its last complete run of that kind), bounded by
+  their carrier's turn; checked only while the carrier is configured.
+* ``search_follow_last_pass``: minutes since the search index follower last saved its
+  cursor (``search/follow.json``).
 * ``ingest_start``: the host's ``serve`` refused to start (bad config, state dir) at least
   ``ingest_start_failures`` times in a row with no start after: a unit in a restart loop.
 * ``pg_follow``: delta layers Postgres has not applied; more than the bound behind, any
@@ -58,6 +65,16 @@ DEFAULT_TARGETS: dict[str, float] = {
     "truth_contradicted_share": 0.25,
     "ai_watcher_last_run_minutes": 120,
     "api_page_p95_ms": 5000,
+    "search_follow_minutes": 60,
+    # operating.ops_alarms
+    "pg_connections_share": 0.8,
+    "pg_idle_in_transaction_minutes": 10,
+    "disk_free_gb": 60,
+    "memory_available_gb": 6,
+    "memory_warn_gb": 8,          # early warning: any one sample, top consumers named
+    "memory_low_minutes": 5,
+    "unit_activating_hours": 6,
+    "backup_age_hours": 30,
 }
 
 Check = dict[str, Any]
@@ -173,6 +190,109 @@ def capture_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[C
                           ("no success for twice its normal interval"
                            if age is not None and age > bound else "")))
     return out
+
+
+def _capture_bounds(state: Path, t: Mapping[str, float]) -> dict[str, float]:
+    """Each configured capture source's bound: twice its normal turn, else the fixed one."""
+    rows = []
+    ledger = state / "host" / "host.sqlite"
+    if ledger.is_file():
+        try:
+            conn = _ro(ledger)
+            try:
+                rows = [r[0] for r in conn.execute(
+                    "SELECT source FROM source_state WHERE configured = 1")]
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            rows = []
+    turns = serve_health(state).get("turn_seconds") or {}
+    out = {}
+    for source in rows:
+        turn = turns.get(source) if isinstance(turns, dict) else None
+        out[source] = (round(2 * float(turn) / 60, 1) if isinstance(turn, (int, float))
+                       and not isinstance(turn, bool) and turn > 0 else t["capture_minutes"])
+    return out
+
+
+def _relation_lineage(relation: str, rules: list[Mapping[str, Any]]) -> Optional[str]:
+    """A relation's lineage from the first relation-level rule (no row ``when``) matching it
+    (``integrations/source_mirror_ingest.json``)."""
+    from fnmatch import fnmatchcase
+    for rule in rules:
+        if not rule.get("when") and any(fnmatchcase(relation, p)
+                                         for p in rule.get("relations") or ()):
+            return rule.get("lineage")
+    return None
+
+
+# The sources a capture carries: Portal mirror lineages and meetings run kinds.
+CARRIED_LINEAGE = {"sage": "sage_bronze", "filemaker": "fm_bronze"}
+CARRIED_RUN_KINDS = {"calendar": "calendar_event", "planner": "planner_%"}
+# operating.case_runtime CASE_RUNTIME_DIR / MIRROR_FILE (not imported: two seconds)
+MIRROR_PATH = Path("case-runtime") / "source-mirror.sqlite"
+
+
+def source_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[Check]:
+    """Sage and FileMaker (Portal mirror relations by lineage) and calendar and Planner
+    (meetings capture runs by kind): minutes since each last refreshed, bounded by its
+    carrier's (``portal``, ``meetings``) turn; nothing while the carrier is not configured
+    or its store holds none of that source."""
+    bounds = _capture_bounds(state, t)
+    out: list[Check] = []
+    if "portal" in bounds:
+        newest: dict[str, Optional[str]] = {}
+        try:
+            from integrations.source_mirror import load_ingest_config
+            rules = list(load_ingest_config().get("lineage_rules") or [])
+            mirror = state / MIRROR_PATH
+            if mirror.is_file():
+                conn = _ro(mirror)
+                try:
+                    for relation, at in conn.execute(
+                            "SELECT relation, last_refresh_at FROM relation_state"):
+                        lineage = _relation_lineage(relation, rules)
+                        for name, wanted in CARRIED_LINEAGE.items():
+                            if lineage == wanted and isinstance(at, str):
+                                newest[name] = max(newest.get(name) or "", at)
+                finally:
+                    conn.close()
+        except (sqlite3.Error, OSError, ValueError, ImportError):
+            newest = {name: None for name in CARRIED_LINEAGE}
+        for name in CARRIED_LINEAGE:
+            if name in newest:
+                out.append(_age_check(f"capture:{name}", now, newest[name], bounds["portal"],
+                                      "mirror unreadable"))
+    if "meetings" in bounds:
+        try:
+            from integrations import capture_meetings
+            store = state / capture_meetings.STORE_DIR / capture_meetings.DB_FILE
+        except ImportError:
+            store = None
+        for name, kind in CARRIED_RUN_KINDS.items():
+            if store is None or not store.is_file():
+                break
+            seen = _scalar(store, "SELECT count(*) FROM runs WHERE kind LIKE "
+                           f"'{kind}'")
+            if not seen:
+                continue
+            last = _scalar(store, "SELECT max(finished_at) FROM runs WHERE kind LIKE "
+                           f"'{kind}' AND state = 'complete'")
+            out.append(_age_check(f"capture:{name}", now, last or "", bounds["meetings"],
+                                  "no complete run"))
+    return out
+
+
+def search_follow_check(state: Path, now: datetime, t: Mapping[str, float]) -> Check:
+    """Minutes since the search index follower last saved its cursor (any pass, idle ones
+    included); unknown where search is not set up."""
+    try:
+        cursor = json.loads((state / "search" / "follow.json").read_text())
+        stamp = cursor.get("updated_at") if isinstance(cursor, dict) else None
+    except (OSError, ValueError):
+        stamp = None
+    return _age_check("search_follow_last_pass", now, stamp, t["search_follow_minutes"],
+                      "search not set up")
 
 
 def serve_health(state: Path) -> dict[str, Any]:
@@ -306,6 +426,7 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
     checks: list[Check] = []
     checks += delta_checks(state, now, t)
     checks += capture_checks(state, now, t)
+    checks += source_checks(state, now, t)
     for extra in (start_check(state, t), config_keys_check(state)):
         if extra is not None:
             checks.append(extra)
@@ -315,6 +436,7 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
         _scalar(state / "projection" / "ontology.sqlite.gap-inbox.sqlite",
                 "SELECT max(run_at) FROM runs"),
         t["proactive_last_pass_minutes"], "no run recorded"))
+    checks.append(search_follow_check(state, now, t))
     checks.append(truth_check(state, t))
     checks.append(_age_check(
         "ai_watcher_last_run", now,

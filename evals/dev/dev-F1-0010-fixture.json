@@ -19,7 +19,7 @@
  "as_known_at": {
   "time": "2099-01-02T03:04:05Z",
   "l1_generations": {
-   "portal_api": "8a5851cbdc2e491a",
+   "portal_api": "3e2441a266431c3d",
    "bc": "828210a5a6c9274d"
   }
  },
@@ -139,7 +139,7 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f1_chain@305211c73a11",
+  "id": "oracle:f1_chain@8656201efb4b",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
    "devloop/CONTEXT/03-PORTAL.md#3.5 app_purchase_order.po_number (unique)",
@@ -156,7 +156,7 @@
    "devloop/CONTEXT/03-PORTAL.md#3.5 derivePoFulfillmentCode over header + summed lines = RECEIVED, or closed_at (P@59b0548:src/lib/mrp/po-fulfillment-status.ts:12, apply-po-line-receive.ts:298)"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
-  "query_digest": "d32ca247e54e535b3ad480cc26483c60ae7443841ac4110aaecc418301da3130"
+  "query_digest": "753372a7742feaa98f29f72a7d439dddf701a9ba3337e5377dccb86ca6c0750b"
  },
  "label": {
   "status": "oracle_only",

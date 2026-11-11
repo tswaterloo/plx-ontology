@@ -19,7 +19,7 @@
  "as_known_at": {
   "time": "2099-01-02T03:04:05Z",
   "l1_generations": {
-   "portal_api": "8a5851cbdc2e491a",
+   "portal_api": "3e2441a266431c3d",
    "bc": "0665c42392d6755c"
   }
  },
@@ -181,7 +181,7 @@
   "invent_absent_value"
  ],
  "oracle": {
-  "id": "oracle:f1_chain@305211c73a11",
+  "id": "oracle:f1_chain@8656201efb4b",
   "interface": "plx-eval-oracle/v1",
   "derived_from": [
    "devloop/CONTEXT/03-PORTAL.md#3.4 resolveOrderByNumber: exact order_number",
@@ -197,7 +197,7 @@
    "SO closed: SHIPPED/COMPLETE, FM text complet/closed/realiz (P@c3ffda3:src/lib/wms/source-status.ts:24) or Sage header complete 1/Y (etl-sage-distribution-gold.mjs:1393)"
   ],
   "computed_at": "2099-01-02T04:00:00Z",
-  "query_digest": "74888480ef9012e9c386493ad8bf124d6f29a3d313e3656f9de99faf074d3ba9"
+  "query_digest": "9b1a17f851be9554557e45b83612246ffc831f837a5473e0bd2fc6353650266a"
  },
  "label": {
   "status": "oracle_only",

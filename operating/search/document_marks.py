@@ -108,6 +108,8 @@ class _Marked:
         self.lock = threading.Lock()
         self.kept: dict[str, tuple[float, Any]] = {}
         self.refreshing: set[str] = set()
+        self.split_of: Any = None
+        self.splits: dict[frozenset[str], tuple[frozenset[str], frozenset[str]]] = {}
 
     @staticmethod
     def _read(dsn: str) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
@@ -154,9 +156,29 @@ class _Marked:
                     return hit[1]
         return self._load(dsn)
 
+    def withheld(self, got: Any, held: frozenset[str]
+                 ) -> tuple[frozenset[str], frozenset[str]]:
+        """``got``'s (object ids, handles) marked beyond ``held``, kept per reader marking
+        set for as long as ``got`` is the loaded set (a refresh loads a new one): an inbox
+        read asks once per cited handle, and each pass walks every marked document."""
+        with self.lock:
+            if self.split_of is not got:
+                self.split_of, self.splits = got, {}
+            hit = self.splits.get(held)
+        if hit is not None:
+            return hit
+        ids, handles = got
+        out = (frozenset(o for o, m in ids.items() if not m <= held),
+               frozenset(h for h, m in handles.items() if not m <= held))
+        with self.lock:
+            if self.split_of is got:
+                self.splits[held] = out
+        return out
+
     def forget(self) -> None:
         with self.lock:
             self.kept.clear()
+            self.split_of, self.splits = None, {}
 
 
 _MARKED = _Marked()
@@ -176,9 +198,7 @@ def withheld_set(held: Iterable[str]) -> tuple[frozenset[str], frozenset[str]] |
     got = _MARKED.get()
     if got is None:
         return None
-    ids, handles = got
-    return (frozenset(o for o, m in ids.items() if not m <= held),
-            frozenset(h for h, m in handles.items() if not m <= held))
+    return _MARKED.withheld(got, held)
 
 
 def params(held: Iterable[str]) -> dict[str, str]:

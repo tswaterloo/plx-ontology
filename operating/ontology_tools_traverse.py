@@ -180,6 +180,7 @@ from operating.ontology_tools import (  # noqa: F401 - re-exported for hosts
     LIVE_LOOKUP_HINT,
     SET_TTL_SECONDS,
     OntologyTools,
+    current_snapshot,
     encoded_list,
     reader_grants,
     run_memo_for,
@@ -474,23 +475,46 @@ def _from_t(alias: str) -> str:
             f"OR plx_l9_time({alias}.superseded_at) > :t)")
 
 
-def _visible_object(alias: str, gate: str) -> str:
-    """SQL: object ``alias`` is readable at T (see the module docstring)."""
+def _visible_object(alias: str, gate: str | None) -> str:
+    """SQL: object ``alias`` is readable at T (see the module docstring). ``gate`` None:
+    everything but the item gate, which the caller then applies to the handles of the
+    object's versions from T on (``_hop_reach``)."""
+    gated = "" if gate is None else f"OR NOT {gate}(v2.l1_handle) "
     return (f"{alias}.audience_key IN (SELECT value FROM json_each(:aud)) "
             f"AND EXISTS (SELECT 1 FROM object_versions v1 WHERE v1.object_id = {alias}.object_id "
             f"AND {_live('v1')}) "
             f"AND NOT EXISTS (SELECT 1 FROM object_versions v2 WHERE v2.object_id = "
             f"{alias}.object_id AND {_from_t('v2')} AND (v2.markings NOT IN "
-            f"(SELECT value FROM json_each(:marks)) OR NOT {gate}(v2.l1_handle) "
+            f"(SELECT value FROM json_each(:marks)) {gated}"
             f"OR plx_l9_time(v2.recorded_at) IS NULL)) "
             f"AND {document_marks.sql(alias + '.object_id')}")
 
 
-def _visible_value(alias: str, gate: str) -> str:
+def _all_pass(check: Callable[[Any], int], encoded: Any) -> bool:
+    """Whether every handle of a JSON handle list passes the item gate ``check``, as
+    ``NOT EXISTS (... json_each(list) WHERE NOT gate(value))`` decides it; a list that
+    does not parse fails (closed)."""
+    if encoded is None:
+        return True
+    try:
+        value = json.loads(encoded) if isinstance(encoded, (str, bytes)) else encoded
+    except ValueError:
+        return False
+    members = (value.values() if isinstance(value, dict)
+               else value if isinstance(value, list) else (value,))
+    try:
+        return all(check(h) for h in members)
+    except Exception:  # noqa: BLE001 - a failing check denies
+        return False
+
+
+def _visible_value(alias: str, gate: str | None) -> str:
     """SQL: value row ``alias`` is live at T, held, gated, and no later row of the
-    same property carries a marking the reader lacks."""
+    same property carries a marking the reader lacks. ``gate`` None: not item-gated
+    here; the caller gates each row's ``l1_handle`` (``_displays``)."""
+    gated = "" if gate is None else f"AND {gate}({alias}.l1_handle) "
     return (f"{_live(alias)} AND {alias}.markings IN (SELECT value FROM json_each(:marks)) "
-            f"AND {gate}({alias}.l1_handle) AND NOT EXISTS (SELECT 1 FROM object_values w "
+            f"{gated}AND NOT EXISTS (SELECT 1 FROM object_values w "
             f"WHERE w.object_id = {alias}.object_id AND w.property = {alias}.property "
             f"AND {_from_t('w')} AND w.markings NOT IN (SELECT value FROM json_each(:marks)))")
 
@@ -518,6 +542,9 @@ class TraverseTools:
         # gate, for ``SLICE_GATE_SECONDS``: one page's many walks over the same message
         # types re-check thousands of mail items once, not per walk.
         self._slice_gate: dict[tuple, tuple[float, bool]] = {}
+        # This tools' registered item gates: SQL function name -> the same check in
+        # Python (``_hop_reach`` applies it to a hop's rows read once without it).
+        self._gate_checks: dict[str, Callable[[Any], int]] = {}
         with self.store.lock:
             self.store.conn.create_function("plx_l9_time", 1, _store_time,
                                             deterministic=True)
@@ -561,10 +588,15 @@ class TraverseTools:
         if problems:
             return self._checked(name, _error("invalid_input", "; ".join(problems)))
         handler = {"plx.around": self._around, "plx.timeline": self._timeline}[name]
-        gate_name = "plx_l9_gate_" + secrets.token_hex(8)
+        snap = current_snapshot()
         with self.store.lock:  # one call at a time on the shared connection
-            self.store.conn.create_function(gate_name, 1, self._gate_function(actor),
-                                            deterministic=True)
+            if snap is not None:   # one gate per reader for the whole snapshot
+                gate_name = self._snapshot_gate(snap, actor)
+            else:
+                gate_name = "plx_l9_gate_" + secrets.token_hex(8)
+                check = self._gate_function(actor)
+                self.store.conn.create_function(gate_name, 1, check, deterministic=True)
+                self._gate_checks[gate_name] = check
             work = (_CallWork(self.store.conn)
                     if _CALLS is not None and name == "plx.around" else None)
             try:
@@ -585,8 +617,38 @@ class TraverseTools:
                     entry = work.finish(arguments)
                     if _CALLS is not None:
                         _CALLS.append(entry)
-                self.store.conn.create_function(gate_name, 1, None)
+                if snap is None:
+                    self._gate_checks.pop(gate_name, None)
+                    self.store.conn.create_function(gate_name, 1, None)
         return self._checked(name, result)
+
+    def _snapshot_gate(self, snap: dict[str, Any], actor: Actor) -> str:
+        """The item gate's SQL function for ``actor`` on this store for the rest of the
+        snapshot (``snapshot_reads``), registered on first use and dropped when the
+        snapshot ends: its per-handle decisions, which a call's own gate decides afresh
+        (on Postgres each gated statement runs again for the handles it has not seen),
+        are the same reader's decisions for every call of one page read, as a plan run's
+        are (``run_memo``). Another reader, or another store, is another gate. Called
+        under ``store.lock``."""
+        gates = snap.setdefault("gates", {})
+        conn, store = self.store.conn, self.store
+        key = (id(conn), id(self.base), actor)
+        held = gates.get(key)
+        if held is not None and held[0] is conn and held[1] is self.base:
+            return held[2]
+        name = "plx_l9_gate_" + secrets.token_hex(8)   # a reused id is a new gate
+        check = self._gate_function(actor)
+        conn.create_function(name, 1, check, deterministic=True)
+        self._gate_checks[name] = check
+        gates[key] = (conn, self.base, name)
+        checks = self._gate_checks
+
+        def drop() -> None:
+            with store.lock:
+                checks.pop(name, None)
+                conn.create_function(name, 1, None)
+        snap.setdefault("closers", []).append(drop)
+        return name
 
     def _checked(self, name: str, result: dict[str, Any]) -> dict[str, Any]:
         problems = validate(result, self.contracts["tools"][name]["output"],
@@ -843,7 +905,13 @@ class TraverseTools:
         before = old[1].get(_LAYER_MARK)
         kept = {key: value for key, value in old[1].items()
                 if isinstance(key, tuple) and key[:1] in (("slice_of",), ("slices",))}
-        if before is None or mark is None or not kept:
+        # Also carried, each patched by adding the replaced objects' own rows: the
+        # audience keys per object type and the links with an odd slot text (both
+        # whole-table reads, half a minute each under load, 2026-11-11). Only adding
+        # keeps them safe: an extra audience key makes a slice look less covered, an
+        # extra odd link is read the composed way, which is right for any link.
+        more = {key: old[1][key] for key in ("audiences", _LINK_ODD) if key in old[1]}
+        if before is None or mark is None or not (kept or more):
             return {}
         try:
             changed = _pg_changed_since(self.store.conn, old[0][0])
@@ -855,11 +923,36 @@ class TraverseTools:
                 return {}
             patch = {kind: self._read_slice_rows(kind, owned) for kind in _SLICE_ROWS
                      if owned and any(key[1] == kind for key in kept)}
+            carried_more = self._patched_more(more, owned)
         except Exception:   # noqa: BLE001 - any doubt (a failed read): read them again
             return {}
-        return {key: _patched_slices(value, patch.get(key[1]) or {}, key[2]
-                                     if key[0] == "slice_of" else None)
-                for key, value in kept.items()}
+        return {**carried_more, **{key: _patched_slices(value, patch.get(key[1]) or {}, key[2]
+                                                        if key[0] == "slice_of" else None)
+                                   for key, value in kept.items()}}
+
+    def _patched_more(self, more: Mapping[Any, Any], owned: Sequence[str]) -> dict:
+        """``_carried``'s audiences and odd links with the rows of the ``owned`` objects
+        added. The odd links are carried only while they stay within the reader's cap
+        and it can read them by object (else dropped: read again)."""
+        out: dict[Any, Any] = {}
+        if "audiences" in more:
+            grown = {name: set(keys) for name, keys in more["audiences"].items()}
+            if owned:
+                for name, key in self.store.conn.execute(
+                        "SELECT object_type, audience_key FROM objects WHERE object_id IN "
+                        "(SELECT value FROM json_each(:ids)) GROUP BY 1, 2",
+                        {"ids": json.dumps(list(owned))}):
+                    grown.setdefault(name, set()).add(key)
+            out["audiences"] = {name: tuple(sorted(keys, key=str))
+                                for name, keys in grown.items()}
+        odd, odd_of = more.get(_LINK_ODD), getattr(self.store, "link_odd_of", None)
+        if odd is not None and odd_of is not None:
+            added = odd_of(list(owned)) if owned else []
+            if added is not None:
+                joined = sorted(set(odd) | set(added))
+                if len(joined) <= getattr(self.store, "link_odd_cap", 0):
+                    out[_LINK_ODD] = joined
+        return out
 
     def _read_slice_rows(self, kind: str, owned: Sequence[str]
                          ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
@@ -1009,11 +1102,21 @@ class TraverseTools:
         ids = sorted(set(ids))
         if not ids:
             return set()
-        rows = self.store.conn.execute(
-            "SELECT o.object_id FROM objects o WHERE o.object_id IN "
-            f"(SELECT value FROM json_each(:ids)) AND {_visible_object('o', scope.gate)}",
-            scope.params(ids=json.dumps(ids)))
-        strict = {row[0] for row in rows}
+        check = self._gate_checks.get(scope.gate)
+        if check is None:
+            rows = self.store.conn.execute(
+                "SELECT o.object_id FROM objects o WHERE o.object_id IN "
+                f"(SELECT value FROM json_each(:ids)) AND {_visible_object('o', scope.gate)}",
+                scope.params(ids=json.dumps(ids)))
+            strict = {row[0] for row in rows}
+        else:   # read once without the item gate, gated here (``_hop_reach``)
+            rows = self.store.conn.execute(
+                "SELECT o.object_id, (SELECT json_group_array(v3.l1_handle) FROM "
+                f"object_versions v3 WHERE v3.object_id = o.object_id AND {_from_t('v3')}) "
+                "AS x_handles FROM objects o WHERE o.object_id IN "
+                f"(SELECT value FROM json_each(:ids)) AND {_visible_object('o', None)}",
+                scope.params(ids=json.dumps(ids)))
+            strict = {row[0] for row in rows if _all_pass(check, row[1])}
         return strict & set(self.base._visible_versions(self._l8_scope(scope), sorted(strict)))
 
     def _captured_after(self, scope: _Scope, ids: Iterable[str]) -> set[str]:
@@ -1125,21 +1228,36 @@ class TraverseTools:
         display = self.schema.display() if self.schema else {}
         limit = self.limits["max_untrusted_text_chars"]
         params = scope.params(ids=json.dumps(sorted(set(ids))))
+        # only the display properties of these objects' types are read (an order's every
+        # value, each item-gated, was 16 s of a customer's 38-order margin on Postgres)
+        shown = sorted({p for object_id in set(ids)
+                        for p in display.get(object_id.split(":", 1)[0], ())})
+        # With the call's gate known in Python each row is read once without the item
+        # gate and gated here on its own handle, in the same order (``_hop_reach``).
+        check = self._gate_checks.get(scope.gate)
+        gate = None if check is not None else scope.gate
+        allowed = (lambda row: True) if check is None else \
+            (lambda row: _all_pass(check, [row["l1_handle"]]))
         by_object: dict[str, dict[str, sqlite3.Row]] = {}
         for row in self.store.conn.execute(
                 "SELECT v.* FROM object_values v WHERE v.object_id IN "
                 f"(SELECT value FROM json_each(:ids)) AND v.value IS NOT NULL AND "
-                f"{_visible_value('v', scope.gate)} ORDER BY v.object_id, v.property, "
-                "v.authority_rank IS NULL, v.authority_rank, v.l1_handle, v.field_path", params):
-            by_object.setdefault(row["object_id"], {}).setdefault(row["property"], row)
+                "v.property IN (SELECT value FROM json_each(:shown)) AND "
+                f"{_visible_value('v', gate)} ORDER BY v.object_id, v.property, "
+                "v.authority_rank IS NULL, v.authority_rank, v.l1_handle, v.field_path",
+                dict(params, shown=json.dumps(shown))) if shown else ():
+            if allowed(row):
+                by_object.setdefault(row["object_id"], {}).setdefault(row["property"], row)
         idents: dict[str, sqlite3.Row] = {}
+        gated = "" if gate is None else f"AND {gate}(i.l1_handle) "
         for row in self.store.conn.execute(
                 "SELECT i.* FROM identifiers i WHERE i.object_id IN "
                 f"(SELECT value FROM json_each(:ids)) AND i.role = 'primary' AND {_live('i')} "
                 f"AND i.markings IN (SELECT value FROM json_each(:marks)) "
-                f"AND {scope.gate}(i.l1_handle) ORDER BY i.object_id, i.identifier_kind, "
+                f"{gated}ORDER BY i.object_id, i.identifier_kind, "
                 "i.l1_handle, i.field_path", params):
-            idents.setdefault(row["object_id"], row)
+            if allowed(row):
+                idents.setdefault(row["object_id"], row)
         out: dict[str, dict | None] = {}
         for object_id in ids:
             values = by_object.get(object_id, {})
@@ -1237,14 +1355,47 @@ class TraverseTools:
         except ToolError:
             return True
 
+    def _hop_reach(self, scope: _Scope, link_type: str, direction: str,
+                   frontier: Sequence[str]) -> tuple[list[sqlite3.Row], bool | None]:
+        """A hop's rows as ``_hop_edges`` reads them for this reader, and whether the
+        item gate held back any row (None: not known, ask ``_owner_hidden``). With the
+        call's gate known in Python the reach is read once without the item gate and the
+        gate applied here to each row's evidence handles and to the handles of the
+        reached object's versions from T on: the rows the SQL gate keeps, in the same
+        order, in one statement (on Postgres a gated statement runs again for the
+        handles it has not decided, and the reach with every item open was a third).
+        A reach past ``HOP_SCAN_CAP`` before the gate is read gated as before and counts
+        as held back (``_owner_hidden``'s rule); an unreadable handle list fails closed."""
+        check = self._gate_checks.get(scope.gate)
+        if check is None:
+            return self._hop_edges(scope, link_type, direction, frontier), None
+        reach = self._hop_edges(scope, link_type, direction, frontier, gate=None,
+                                _open=True)
+        if reach is None:   # past the cap before the gate
+            return self._hop_edges(scope, link_type, direction, frontier), True
+        kept = [row for row in reach
+                if _all_pass(check, row["evidence_handles"])
+                and _all_pass(check, row["x_handles"])]
+        return kept, len(kept) != len(reach)
+
     def _hop_edges(self, scope: _Scope, link_type: str, direction: str,
-                   frontier: Sequence[str], *, gate: str | None = None
-                   ) -> list[sqlite3.Row]:
+                   frontier: Sequence[str], *, gate: str | None = None,
+                   _open: bool = False) -> list[sqlite3.Row] | None:
+        """The links of one hop from ``frontier`` this reader may read at T, with the
+        reached object readable (``gate``: the item gate's SQL function, the scope's by
+        default). ``_open``: no item gate at all, each row with ``x_handles`` (the
+        reached object's version handles from T on), None past the cap."""
         anchor, other = (("from_object", "to_object") if direction == "forward"
                          else ("to_object", "from_object"))
-        gate = scope.gate if gate is None else gate
+        if not _open:
+            gate = scope.gate if gate is None else gate
+        evidence = ("" if _open else f"""AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
+                                WHERE NOT {gate}(h.value))""")
+        handles = (f""", (SELECT json_group_array(v3.l1_handle) FROM object_versions v3
+                     WHERE v3.object_id = x.object_id AND {_from_t('v3')}) AS x_handles"""
+                   if _open else "")
         rows = list(self.store.conn.execute(
-            f"""SELECT l.*,
+            f"""SELECT l.*{handles},
                   (SELECT v.lineage FROM object_versions v WHERE v.object_id = l.from_object
                      AND {_live('v')}) AS from_lineage,
                   (SELECT v.lineage FROM object_versions v WHERE v.object_id = l.to_object
@@ -1252,13 +1403,14 @@ class TraverseTools:
                 FROM links l JOIN objects x ON x.object_id = l.{other}
                 WHERE l.link_type = :lt AND l.{anchor} IN (SELECT value FROM json_each(:frontier))
                 AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
-                AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
-                                WHERE NOT {gate}(h.value))
-                AND {_visible_object('x', gate)}
+                {evidence}
+                AND {_visible_object('x', None if _open else gate)}
                 ORDER BY l.link_id LIMIT :cap""",
             scope.params(lt=link_type, frontier=json.dumps(list(frontier)),
                          cap=HOP_SCAN_CAP + 1)))
         if len(rows) > HOP_SCAN_CAP:
+            if _open:
+                return None
             raise ToolError("fan_out_refused",
                             f"{link_type} {direction} reaches more than {HOP_SCAN_CAP} links "
                             "from this root", "narrow the root set, add filters or raise "
@@ -1330,10 +1482,12 @@ class TraverseTools:
         owner_hidden = False
         for index, (link_type, direction, _source, target) in enumerate(hops):
             frontiers.append(list(frontier))
-            rows = self._hop_edges(scope, link_type, direction, frontier) if frontier else []
+            rows, held_back = (self._hop_reach(scope, link_type, direction, frontier)
+                               if frontier else ([], False))
             if owner_open and frontier and not owner_hidden:
-                owner_hidden = self._owner_hidden(scope, link_type, direction, frontier,
-                                                  len(rows))
+                owner_hidden = (held_back if held_back is not None else
+                                self._owner_hidden(scope, link_type, direction, frontier,
+                                                   len(rows)))
             self._read_corroboration(scope, rows)
             reached: dict[str, list[tuple[str, sqlite3.Row]]] = {}
             best_any: dict[str, str] = {}
@@ -1704,11 +1858,19 @@ class TraverseTools:
                      ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
         """``_slices``' read, of every type of ``kind`` or of the type ``name`` alone."""
         native = getattr(self.store, "slice_rows", None)
-        if kind == "link" and name is not None and native is not None:
+        odd_links = getattr(self.store, "link_odd", None)
+        if kind == "link" and name is not None and native is not None \
+                and odd_links is not None:
             # Postgres: the type's own rows by its index, without composing each
             # evidence text through the ``links`` view (a big type's read held a host
-            # for minutes and gigabytes)
-            found = native(kind, sorted(GATED_SCHEMES), name=name)
+            # for minutes and gigabytes). The links with an odd slot text are the same
+            # for every type: read once per store state (a whole-table scan, measured
+            # 2026-11-11 as most of a cold customer margin when it ran per type), never
+            # read again over a layer (``_carried`` adds the layer's own). None: too many odd
+            # links, every type is read the composed way below.
+            odd = self._store_cached(_LINK_ODD, odd_links)
+            found = None if odd is None else native(kind, sorted(GATED_SCHEMES), name=name,
+                                                    odd=odd)
             if found is not None:
                 return _folded_slices(found)
         rows = _SLICE_ROWS[kind] if name is None else \
@@ -2917,6 +3079,8 @@ def _read_slice_part(store: str, kind: str, low: Any, high: Any
 
 # The key of a Postgres store state's load mark among its facts (``_pg_layer_mark``).
 _LAYER_MARK = ("layer_mark",)
+# The links with an odd evidence slot text of a Postgres store state (``link_odd``).
+_LINK_ODD = ("link_odd",)
 
 
 def _pg_layer_mark(conn: Any) -> dict[str, Any] | None:

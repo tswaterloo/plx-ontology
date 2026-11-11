@@ -371,8 +371,9 @@ class AggregateTools:
         handler = {"plx.aggregate": self._aggregate, "plx.compare": self._compare}[name]
         gate_name = "plx_l9_gate_" + secrets.token_hex(8)
         with self.store.lock:  # one call at a time on the shared connection
-            self.store.conn.create_function(gate_name, 1, self.walk._gate_function(actor),
-                                            deterministic=True)
+            check = self.walk._gate_function(actor)
+            self.store.conn.create_function(gate_name, 1, check, deterministic=True)
+            self.walk._gate_checks[gate_name] = check   # gated in Python (``_hop_reach``)
             try:
                 began = time.monotonic()
                 result = handler(arguments, actor, gate_name)
@@ -391,6 +392,7 @@ class AggregateTools:
                                 f"the projection store could not be read "
                                 f"({type(exc).__name__})", "rebuild or reopen the projection store")
             finally:
+                self.walk._gate_checks.pop(gate_name, None)
                 self.store.conn.create_function(gate_name, 1, None)
         return self._checked(name, result)
 
@@ -443,8 +445,9 @@ class AggregateTools:
         figure. A refusal is ``{"error": ...}``."""
         gate_name = "plx_l9_gate_" + secrets.token_hex(8)
         with self.store.lock:
-            self.store.conn.create_function(gate_name, 1, self.walk._gate_function(actor),
-                                            deterministic=True)
+            check = self.walk._gate_function(actor)
+            self.store.conn.create_function(gate_name, 1, check, deterministic=True)
+            self.walk._gate_checks[gate_name] = check   # gated in Python (``_hop_reach``)
             try:
                 return self._rows(arguments, actor, gate_name)
             except ToolError as exc:
@@ -453,6 +456,7 @@ class AggregateTools:
                 return _error("store_unavailable", f"the projection store could not be "
                               f"read ({type(exc).__name__})")
             finally:
+                self.walk._gate_checks.pop(gate_name, None)
                 self.store.conn.create_function(gate_name, 1, None)
 
     def select(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
@@ -463,8 +467,9 @@ class AggregateTools:
         ``{"error": ...}``. Read for ``plx.query``'s filtered starts."""
         gate_name = "plx_l9_gate_" + secrets.token_hex(8)
         with self.store.lock:
-            self.store.conn.create_function(gate_name, 1, self.walk._gate_function(actor),
-                                            deterministic=True)
+            check = self.walk._gate_function(actor)
+            self.store.conn.create_function(gate_name, 1, check, deterministic=True)
+            self.walk._gate_checks[gate_name] = check   # gated in Python (``_hop_reach``)
             try:
                 return self._select(arguments, actor, gate_name)
             except ToolError as exc:
@@ -473,6 +478,7 @@ class AggregateTools:
                 return _error("store_unavailable", f"the projection store could not be "
                               f"read ({type(exc).__name__})")
             finally:
+                self.walk._gate_checks.pop(gate_name, None)
                 self.store.conn.create_function(gate_name, 1, None)
 
     def _select(self, arguments: Mapping[str, Any], actor: Actor, gate: str
@@ -1052,7 +1058,7 @@ class AggregateTools:
                 seen: set[str] = set()
                 firm: set[tuple[str, str]] = set()      # pairs a verified or reviewed link holds
                 refused: set[tuple[str, str]] = set()   # pairs a person's rejection names
-                for row in self.walk._hop_edges(scope, link_type, direction, frontier):
+                for row in self.walk._hop_reach(scope, link_type, direction, frontier)[0]:
                     seen.add(row["link_id"])
                     near, far = ((row["from_object"], row["to_object"]) if direction == "forward"
                                  else (row["to_object"], row["from_object"]))
