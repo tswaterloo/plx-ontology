@@ -9,6 +9,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getApprovals, getAutopilot, getMe, getOpsAlarms, getWrites, type OpsAlarms } from "@/lib/api";
+import { systemLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { ago, formatDateTime, objectHref, plural } from "@/lib/format";
 import type { ApprovalsQueue, AutopilotArea, Me, WriteIntentView } from "@/lib/types";
@@ -59,7 +60,7 @@ export function needsOf(s: NeedsSources, now = new Date()): { needs: Need[]; unr
   if (s.autopilot) {
     for (const i of s.autopilot.items ?? []) {
       if (!i.mine || i.state !== "waiting") continue;
-      needs.push({ key: `ap:${i.item_id}`, kind: "decide", title: i.title, detail: `${i.label && i.label !== i.title ? `${i.label} · ` : ""}${i.system ? `${i.system} · ` : ""}due ${formatDateTime(i.due_at, now)}`, href: `/autopilot?item=${encodeURIComponent(i.item_id)}`, rank: stamp(i.due_at) });
+      needs.push({ key: `ap:${i.item_id}`, kind: "decide", title: i.title, detail: `${i.label && i.label !== i.title ? `${i.label} · ` : ""}${i.system ? `${systemLabel(i.system)} · ` : ""}due ${formatDateTime(i.due_at, now)}`, href: `/autopilot?item=${encodeURIComponent(i.item_id)}`, rank: stamp(i.due_at) });
     }
   } else unread.push("the autopilot review queue");
   if (s.writes) {

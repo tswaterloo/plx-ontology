@@ -2543,6 +2543,13 @@ class HostAccess:
                     memo[handle] = self._decide(handle, gated, policy, item_gate, keyed)
         return {handle: memo[handle] for handle in handles}
 
+    def visible_objects(self, object_ids: Iterable[str]) -> frozenset[str]:
+        """Those of ``object_ids`` the reader may read now under the request's policy, as
+        ``plx.object`` decides a record (``host.visible_objects``), in batched reads."""
+        gated, policy, _memo = self._state()
+        with self.host.per_call():
+            return self.host.visible_objects(gated, policy, list(object_ids))
+
     def records_of(self, handle: str) -> frozenset[str]:
         """The records whose captured version ``handle`` (its record part, before any
         ``#``) is, as the host reads them now (``_version_holders``); none when no one

@@ -1306,10 +1306,7 @@ class StoreBuilder:
                          f"value_cells c WHERE c.rowid > ? AND {D._INDEXED.format('c')} "
                          "ORDER BY c.rowid", (first,))
             conn.execute(trigger)
-            conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'value_cells'")
-            conn.executemany("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES (?, ?, ?)",
-                             [x for x in D.PLANNER_STATS if x[0] == "value_cells"])
-            conn.execute("ANALYZE sqlite_master")
+            D.planner_stats(conn)
         return total
 
     def _intern_part(self, table: str, key_column: str, columns: Sequence[str],

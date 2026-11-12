@@ -151,6 +151,14 @@ class ChunkedUnitsTests(unittest.TestCase):
         self.assertTrue(out["applied"], out)
         _equal(self, case.dsn, self.other)
         self.assertTrue(ontology_migrate.check(self.other, case.new.digest)["ok"])
+        # the apply ends with the big tables vacuumed: every page visible again
+        self.assertEqual(set(out["vacuum"]), set(migrate_chunks.VACUUMED), out["vacuum"])
+        with psycopg.connect(self.other) as pg:
+            for table in migrate_chunks.VACUUMED:
+                pages, visible = pg.execute(
+                    "SELECT relpages, relallvisible FROM pg_class WHERE oid = %s::regclass",
+                    (f"ontology.{table}",)).fetchone()
+                self.assertEqual(visible, pages, table)
         again = migrate_chunks.apply_chunked(layer, self.other)
         self.assertEqual((again["applied"], again["reason"]), (False, "already_applied"))
 

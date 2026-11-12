@@ -23,6 +23,13 @@ dropped before its first range and built once after its last (one sort each); th
 definitions are kept in ``load_state`` (``indexes:<name>``) so a resumed load builds them.
 ``--replace`` empties the tables named and their records first.
 
+A table the load deferred (``DEFERRABLE``) is filled later on the ontology already served
+and taking delta layers: a live fill (``_fills``). Its primary key and btree indexes stay
+(a layer upserts and deletes by them), only its GIN word index is dropped and built again
+CONCURRENTLY; the generation's ``store_meta`` is not written again (the layers moved its
+freshness keys); rows whose field or chunk a layer removed meanwhile are deleted after the
+last range under the layers' lock (``_ORPHANS``); and no sequence moves back.
+
 The generation is recorded under ``generation`` (its path and content digest); a load
 over a different generation is refused unless ``--replace``, and every range checks that
 the store file still holds the recorded generation (a generation published or pruned
@@ -408,9 +415,32 @@ def _put(cur: Any, name: str, value: Any) -> None:
                 (name, json.dumps(value)))
 
 
-def _drop_indexes(cur: Any, name: str) -> list[str]:
+def _drop_indexes(cur: Any, name: str, *, live: bool = False) -> list[str]:
     """Drop ``name``'s indexes and primary key; returns the statements that rebuild them
-    (kept in ``load_state`` so a resumed load still has them)."""
+    (kept in ``load_state`` so a resumed load still has them).
+
+    ``live``: the table is filled on an ontology already served and taking delta layers
+    (``_fills``). Its primary key and unique constraints stay (a layer's upsert conflicts
+    on them, and adding one back locks the table), and so do its btree indexes (a layer's
+    delete finds its rows by them); only its GIN indexes go, rebuilt CONCURRENTLY after
+    the last range (``_rebuild_live``): a word index the readers check for validity
+    (``ontology_reader._WORDS_SQL``), so the words are read from the SQLite generation
+    until it is whole."""
+    if live:
+        kept = _state(cur, f"indexes:{name}")
+        if kept is None:
+            cur.execute("SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = %s "
+                        "AND tablename = %s AND indexdef LIKE '%% USING gin %%'",
+                        (SCHEMA, name))
+            kept = [d for _i, d in cur.fetchall()]
+            _put(cur, f"indexes:{name}", kept)
+        if any(not str(d).startswith("CREATE ") for d in kept):
+            # kept by a full load that dropped the key too: not a live fill's to finish
+            raise RuntimeError(f"index_state_of_a_full_load:{name}: finish it with the "
+                               "load that began it, or clear indexes:{name}")
+        for statement in kept:
+            cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {SCHEMA}.{_index_name(statement)}")
+        return list(kept)
     kept = _state(cur, f"indexes:{name}")
     if kept is not None:
         statements = list(kept)
@@ -437,6 +467,146 @@ def _drop_indexes(cur: Any, name: str) -> list[str]:
     return statements
 
 
+def _index_name(statement: str) -> str:
+    """The index a ``pg_indexes.indexdef`` statement creates (unqualified)."""
+    words = statement.split()
+    at = words.index("INDEX") + 1
+    if words[at] == "CONCURRENTLY":
+        at += 1
+    if words[at:at + 3] == ["IF", "NOT", "EXISTS"]:
+        at += 3
+    return words[at].rsplit(".", 1)[-1]
+
+
+def _rebuild_live(cur: Any, statements: Sequence[str]) -> None:
+    """Build a live fill's dropped indexes CONCURRENTLY (readers and layers go on); an
+    invalid one a stopped build left is dropped first, else IF NOT EXISTS would keep it."""
+    for statement in statements:
+        index = _index_name(statement)
+        cur.execute("SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = "
+                    "i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = %s AND c.relname = %s", (SCHEMA, index))
+        row = cur.fetchone()
+        if row is not None and row[0]:
+            continue
+        if row is not None:
+            cur.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {SCHEMA}.{index}")
+        cur.execute(statement.replace("CREATE INDEX ", "CREATE INDEX CONCURRENTLY ", 1)
+                    .replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX CONCURRENTLY ", 1))
+
+
+# Rows of a live fill whose owner a delta layer removed after the generation was loaded
+# (the layer deleted the field, or the chunk, and found none of the deferred rows to
+# delete with it): deleted after the last range, under the layers' lock, so no chunk of a
+# removed field (and its words) comes back.
+_ORPHANS = {
+    "text_chunks": ("DELETE FROM {schema}.text_chunks c WHERE c.chunk_id > %s AND "
+                    "c.chunk_id <= %s AND NOT EXISTS (SELECT 1 FROM {schema}.text_fields f "
+                    "WHERE f.field_id = c.field_id)"),
+    "chunk_words": ("DELETE FROM {schema}.chunk_words w WHERE w.chunk_id > %s AND "
+                    "w.chunk_id <= %s AND NOT EXISTS (SELECT 1 FROM {schema}.text_chunks c "
+                    "WHERE c.chunk_id = w.chunk_id)"),
+}
+# The sweep's row numbers per locked step: the layers wait at most one step, never the
+# whole sweep.
+ORPHAN_STEP = 500_000
+# Chunks whose words are made from their Postgres body per batch (``_complete_words``).
+WORD_BATCH = 5_000
+_LOCK = "SELECT pg_advisory_lock(hashtext('ontology_delta'))"
+_UNLOCK = "SELECT pg_advisory_unlock(hashtext('ontology_delta'))"
+
+
+def _sweep_orphans(cur: Any, name: str, top: int) -> int:
+    """Delete ``name``'s rows of a live fill whose owner is gone (``_ORPHANS``), in steps
+    of ``ORPHAN_STEP`` row numbers, each under the layers' lock."""
+    deleted = 0
+    for low in range(0, top, ORPHAN_STEP):
+        cur.execute(_LOCK)
+        try:
+            cur.execute(_ORPHANS[name].format(schema=SCHEMA), (low, min(low + ORPHAN_STEP, top)))
+            deleted += cur.rowcount
+        finally:
+            cur.execute(_UNLOCK)
+    return deleted
+
+
+def _add_words(cur: Any, after: int) -> tuple[int, int]:
+    """Words for every chunk numbered past ``after`` that has none, made from its Postgres
+    body (``words.chunk_word_rows``, FTS5's tokenizer, as a layer's): (words added, the
+    last chunk looked at). A chunk a layer gave words meanwhile keeps the layer's."""
+    from operating.pg.words import chunk_word_rows
+    added = 0
+    cur.execute("CREATE TEMP TABLE IF NOT EXISTS fill_words (chunk_id bigint, words tsvector)")
+    while True:
+        cur.execute(f"SELECT c.chunk_id, c.body FROM {SCHEMA}.text_chunks c WHERE "
+                    f"c.chunk_id > %s AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.chunk_words w "
+                    "WHERE w.chunk_id = c.chunk_id) ORDER BY c.chunk_id LIMIT %s",
+                    (after, WORD_BATCH))
+        rows = cur.fetchall()
+        if not rows:
+            return added, after
+        after = rows[-1][0]
+        cur.execute("TRUNCATE fill_words")
+        with cur.copy("COPY fill_words (chunk_id, words) FROM STDIN") as copy:
+            for row in chunk_word_rows(rows):
+                copy.write_row(row)
+        cur.execute(f"INSERT INTO {SCHEMA}.chunk_words (chunk_id, words) SELECT chunk_id, "
+                    "words FROM fill_words ON CONFLICT (chunk_id) DO NOTHING")
+        added += cur.rowcount
+
+
+def _complete_words(cur: Any) -> int:
+    """Every chunk Postgres holds has its words before ``chunk_words`` is recorded loaded
+    (recording it moves document word search to Postgres: a chunk without words would be
+    found by no word). The generation's chunks got theirs from the SQLite generation; the
+    rest (a layer's or a migration's) get them from their Postgres body: first unlocked,
+    then, under the layers' lock (which every writer of chunks takes), the chunks numbered
+    past the highest one there was when the first pass began. Raises when a chunk is still
+    without words."""
+    cur.execute(_LOCK)
+    try:   # no writer is mid-way: every chunk up to this number is committed
+        cur.execute(f"SELECT coalesce(max(chunk_id), 0) FROM {SCHEMA}.text_chunks")
+        mark = int(cur.fetchone()[0])
+    finally:
+        cur.execute(_UNLOCK)
+    added, _last = _add_words(cur, 0)
+    cur.execute(_LOCK)
+    try:
+        more, _last = _add_words(cur, mark)
+        cur.execute(f"SELECT count(*) FROM {SCHEMA}.text_chunks c WHERE c.chunk_id > %s AND "
+                    f"NOT EXISTS (SELECT 1 FROM {SCHEMA}.chunk_words w WHERE "
+                    "w.chunk_id = c.chunk_id)", (mark,))
+        left = int(cur.fetchone()[0])
+    finally:
+        cur.execute(_UNLOCK)
+    # and none up to the mark (one scan, unlocked: such a chunk never loses its words)
+    cur.execute(f"SELECT count(*) FROM {SCHEMA}.text_chunks c WHERE c.chunk_id <= %s AND "
+                f"NOT EXISTS (SELECT 1 FROM {SCHEMA}.chunk_words w WHERE "
+                "w.chunk_id = c.chunk_id)", (mark,))
+    left += int(cur.fetchone()[0])
+    if left:
+        raise RuntimeError(f"chunks_without_words:{left}")
+    return added + more
+
+
+def _fills(held: Any, tables: Sequence[str], replace: bool) -> frozenset[str]:
+    """The tables of this load that fill a deferred table of the generation already
+    loaded (``held``): live, beside readers and delta layers (``_drop_indexes``)."""
+    if replace or not held:
+        return frozenset()
+    return frozenset(t for t in tables if t in (held.get("deferred") or ()))
+
+
+def _ranges_top(path: str, table: Table) -> int:
+    """The generation's highest row number of ``table``'s source: the rows a fill copied
+    are at or below it, a layer's are past it (``SEQUENCES``)."""
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return conn.execute(f"SELECT max(rowid) FROM {table.source}").fetchone()[0] or 0
+    finally:
+        conn.close()
+
+
 def _write_meta(cur: Any, meta: dict[str, str]) -> None:
     """The generation's ``store_meta`` (a delta layer later updates its freshness keys)."""
     cur.execute(f"DELETE FROM {SCHEMA}.store_meta")
@@ -450,11 +620,14 @@ def _settings(cur: Any) -> None:
         cur.execute(f"SET {key} = '{value}'")
 
 
-def _word_index(path: str, dsn: str, started: float) -> dict[str, Any]:
+def _word_index(path: str, dsn: str, started: float, *, live: bool = False
+                ) -> dict[str, Any]:
     """The ``value_words`` step: the generation's packed sources (``packed_sources``: a
     source holding a packed record, whose values SQLite never word-indexes) and the value
     cells' word index, built when missing (a value_cells load rebuilds it with the table's
-    other indexes). Once per generation (``table:value_words``)."""
+    other indexes). Once per generation (``table:value_words``). ``live``: the ontology is
+    served and takes layers (``_fills``), so the index is built CONCURRENTLY (a plain build
+    would hold the layers' writes to the value cells for its whole run)."""
     import psycopg
 
     with psycopg.connect(dsn, autocommit=True) as pg, pg.cursor() as cur:
@@ -477,7 +650,18 @@ def _word_index(path: str, dsn: str, started: float) -> dict[str, Any]:
             with cur.copy(f"COPY {SCHEMA}.packed_sources (src) FROM STDIN") as copy:
                 for src in packed:
                     copy.write_row((src,))
-        if not held:
+        if live:
+            # a source a layer removed since the generation was loaded does not come back
+            cur.execute(_LOCK)
+            try:
+                cur.execute(f"DELETE FROM {SCHEMA}.packed_sources p WHERE p.src <= %s AND NOT "
+                            f"EXISTS (SELECT 1 FROM {SCHEMA}.value_sources s WHERE "
+                            "s.src = p.src)", (top,))
+            finally:
+                cur.execute(_UNLOCK)
+            _settings(cur)
+            _rebuild_live(cur, [WORD_INDEX.format(schema=SCHEMA)])
+        elif not held:
             _settings(cur)
             cur.execute(WORD_INDEX.format(schema=SCHEMA))
         cur.execute(f"ANALYZE {SCHEMA}.packed_sources")
@@ -547,21 +731,36 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
             cur.execute(f"DELETE FROM {SCHEMA}.load_state WHERE name LIKE 'delta%%'")
         elif held and held.get("content_digest") != generation["content_digest"]:
             raise RuntimeError("ontology_holds_another_generation: load with --replace")
+        # tables a load deferred, filled now on an ontology that is served and takes layers
+        fills = _fills(held, tables, replace)
+        if "chunk_words" in fills and "text_chunks" in (held or {}).get("deferred", ()) \
+                and "text_chunks" not in tables:
+            # its orphans are told by the chunks it indexes: those must be in first
+            cur.execute("SELECT pg_advisory_unlock(hashtext('ontology_delta'))")
+            raise ValueError("chunk_words_before_text_chunks: load text_chunks first")
         if not replace and held:   # a table deferred before stays so until it is loaded
             generation["deferred"] = sorted(set(generation["deferred"])
                                             | set(held.get("deferred") or ()))
         _put(cur, "generation", {**(held or {}), **generation} if not replace else generation)
-        if not replace and held:   # resuming: what migrations moved since the load stays
-            cur.execute(f"SELECT key, value FROM {SCHEMA}.store_meta WHERE key IN "
-                        "('schema_digest', 'steps_digest')")
-            meta.update(dict(cur.fetchall()))
-        _write_meta(cur, meta)
+        cur.execute(f"SELECT value FROM {SCHEMA}.store_meta WHERE key = 'content_digest'")
+        written = cur.fetchone()
+        if not replace and held and written is not None \
+                and written[0] == generation["content_digest"]:
+            # the generation's meta is in, and the layers applied since moved its freshness
+            # keys (and migrations its digests): rewriting it would set them back
+            pass
+        else:
+            if not replace and held:   # resuming: what migrations moved since the load stays
+                cur.execute(f"SELECT key, value FROM {SCHEMA}.store_meta WHERE key IN "
+                            "('schema_digest', 'steps_digest')")
+                meta.update(dict(cur.fetchall()))
+            _write_meta(cur, meta)
         cur.execute("SELECT pg_advisory_unlock(hashtext('ontology_delta'))")
     for name in tables:
         table = TABLES[name]
         started = time.monotonic()
         if name == "value_words":
-            report[name] = _word_index(path, dsn, started)
+            report[name] = _word_index(path, dsn, started, live=name in fills)
             print(f"ontology_load {name} {json.dumps(report[name])}", file=log, flush=True)
             continue
         with psycopg.connect(dsn, autocommit=True) as pg, pg.cursor() as cur:
@@ -571,7 +770,7 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
                 print(f"ontology_load {name} already loaded {json.dumps(done)}", file=log,
                       flush=True)
                 continue
-            statements = _drop_indexes(cur, name)
+            statements = _drop_indexes(cur, name, live=name in fills)
         ranges = _ranges(path, table)
         rows = nuls = resumed = 0
         if workers <= 1:   # in this process (a small store: tests, a fixture)
@@ -610,8 +809,16 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
             cur.execute(f"SELECT coalesce(sum(rows), 0) FROM {SCHEMA}.load_ranges "
                         "WHERE table_name = %s", (name,))
             total = int(cur.fetchone()[0])
-            for statement in statements:
-                cur.execute(statement)
+            orphans = words_added = 0
+            if name in fills:
+                if name == "chunk_words":
+                    words_added = _complete_words(cur)
+                if name in _ORPHANS:
+                    orphans = _sweep_orphans(cur, name, _ranges_top(path, table))
+                _rebuild_live(cur, statements)
+            else:
+                for statement in statements:
+                    cur.execute(statement)
             # built: the kept definitions (schema-qualified) are no longer needed
             cur.execute(f"DELETE FROM {SCHEMA}.load_state WHERE name = %s", (f"indexes:{name}",))
             if name == "chunk_words":
@@ -620,9 +827,15 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
             cur.execute(f"ANALYZE {SCHEMA}.{name}")
             if name in SEQUENCES:
                 sequence, column = SEQUENCES[name]
+                # a live fill never moves a sequence back (a layer's deleted rows took
+                # numbers past the table's highest)
+                held_last = (f", (SELECT last_value FROM {SCHEMA}.{sequence})"
+                             if name in fills else "")
                 cur.execute(f"SELECT setval('{SCHEMA}.{sequence}', greatest(coalesce("
-                            f"(SELECT max({column}) FROM {SCHEMA}.{name}), 0), 1))")
-            report[name] = {"rows": total, "rows_this_run": rows,
+                            f"(SELECT max({column}) FROM {SCHEMA}.{name}), 0), 1{held_last}))")
+            report[name] = {"rows": total - orphans + words_added, "rows_this_run": rows,
+                            "orphans_deleted": orphans, "live": name in fills,
+                            "words_added": words_added,
                             "ranges": len(ranges), "ranges_resumed": resumed,
                             "nul_rows": nuls, "copy_seconds": round(loaded - started, 1),
                             "index_seconds": round(time.monotonic() - loaded, 1)}

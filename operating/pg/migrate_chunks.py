@@ -33,7 +33,14 @@ transaction, so a rerun of the same command skips the chunks done:
 4. ``steps:<n>`` per re-run step's owned links (its prefix, from its from types), as in
    step 2; ``steps:rest``; ``steps:values``: the steps' values (``_apply_step_values``);
    ``steps:text_marks``: the text fields of the documents a marks-only text index change
-   marks get those markings (``ontology_migrate._apply_text_marks``);
+   marks get those markings (``ontology_migrate._apply_text_marks``). An owned entry
+   naming ``objects`` (a table of the step layer: the documents an in-place step run
+   re-derived, ``ontology.pg_step_inplace``) scopes its chunk to the links from those
+   objects; such a layer's ``from`` carries :data:`SCOPED` first, so the plain apply
+   (which would read the entry as the whole prefix) refuses it as of other step code;
+   ``steps:staged:<step>``: a step whose difference to the served links the run staged in
+   Postgres (``operating.pg.step_staging``, a layer whose ``from`` carries :data:`STAGED`):
+   its removed and replaced links deleted and its new ones inserted, set-based;
 5. ``final``: the objects a delta replaced since either snapshot queued again, the served
    schema and step code switched, the migrations recorded, the chunk records removed.
 
@@ -60,6 +67,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import time
@@ -68,6 +76,8 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 from operating.pg import ontology_migrate as om
 
 FLAG = "migration_in_progress"
+SCOPED = "objects-scoped:"   # a step layer whose owned entries may name ``objects``
+STAGED = "staged:"   # a step layer whose links are staged in Postgres (operating.pg.step_staging)
 PREFIX = "migration_chunk:"
 _BATCH = 20_000
 
@@ -116,6 +126,7 @@ def chunks(record: Mapping[str, Any] | None, steps: Mapping[str, Any] | None) ->
         out.append("units:new")
     if steps is not None:
         out += [f"steps:{n}" for n in range(len(steps["owned"]))]
+        out += [f"steps:staged:{name}" for name in sorted(steps.get("staged") or ())]
         out.append("steps:rest")
         if steps.get("values"):
             out.append("steps:values")
@@ -232,8 +243,32 @@ def _unit_link_scope(link: Mapping[str, Any]) -> tuple[str, list[Any], str, list
     return pg, pgp, " AND ".join(lite), litep
 
 
-def _step_scope(o: Mapping[str, Any]) -> tuple[str, list[Any], str, list[Any]]:
-    """(Postgres where, params, SQLite where, params) of one step's owned links."""
+def steps_from(step_record: Mapping[str, Any]) -> str:
+    """The served step code a step layer migrates from (:data:`SCOPED` taken off)."""
+    held = step_record["from"]
+    for marker in (SCOPED, STAGED):
+        if held.startswith(marker):
+            return held[len(marker):]
+    return held
+
+
+def _scope_objects(sconn: sqlite3.Connection, table: str) -> list[str]:
+    """The object ids of the step layer's object table ``table``."""
+    if not re.fullmatch(r"scope_objects_[0-9]+", table):
+        raise ValueError(f"scope_objects_table:{table}")
+    return [r[0] for r in sconn.execute(f"SELECT object_id FROM {table} ORDER BY object_id")]
+
+
+def _step_scope(o: Mapping[str, Any], objects: Sequence[str] | None = None
+                ) -> tuple[str, list[Any], str, list[Any]]:
+    """(Postgres where, params, SQLite where, params) of one step's owned links
+    (``objects``: the ids of the entry's object table, when it names one)."""
+    if o.get("objects"):   # the links from the layer's objects
+        table = o["objects"]
+        return ("l.from_object = ANY(%s::text[]) AND l.link_id COLLATE \"C\" >= %s AND "
+                "l.link_id COLLATE \"C\" < %s", [list(objects or ()), o["prefix"], o["end"]],
+                f"link_id >= ? AND link_id < ? AND from_object IN (SELECT object_id FROM "
+                f"{table})", [o["prefix"], o["end"]])
     pg = ("l.link_id COLLATE \"C\" >= %s AND l.link_id COLLATE \"C\" < %s AND "
           "(%s::text[] IS NULL OR EXISTS (SELECT 1 FROM unnest(%s::text[]) f WHERE "
           "starts_with(l.from_object, f)))")
@@ -252,9 +287,11 @@ def _in_unit_scope(row: Sequence[Any], table: Mapping[tuple[str, str], list[tupl
                for f, t in table.get((row[1], row[5]), ()))
 
 
-def _in_step_scope(row: Sequence[Any], owned: Sequence[Mapping[str, Any]]) -> bool:
+def _in_step_scope(row: Sequence[Any], owned: Sequence[Mapping[str, Any]],
+                   objects: Mapping[str, set[str]] | None = None) -> bool:
     return any(o["prefix"] <= row[0] < o["end"] and
-               (o["from"] is None or any(row[2].startswith(f) for f in o["from"]))
+               (row[2] in (objects or {}).get(o["objects"], ()) if o.get("objects") else
+                o["from"] is None or any(row[2].startswith(f) for f in o["from"]))
                for o in owned)
 
 
@@ -785,7 +822,32 @@ def apply_chunked(layer: str | Path | None, dsn: str, *, steps: str | Path | Non
         run.close()
     report["seconds"] = round(time.monotonic() - started, 3)
     report["totals"] = _totals(report["chunks"])
+    if write and applied_now:
+        report["vacuum"] = vacuum_after_apply(dsn)
     return {**report, "applied": write}
+
+
+# The tables a bulk apply rewrites most, whose index-only reads need a current visibility
+# map (a hub's link count fell to heap reads at a 29% map, 11-11).
+VACUUMED = ("link_rows", "value_cells", "object_versions", "objects", "identifiers")
+
+
+def vacuum_after_apply(dsn: str, tables: Sequence[str] = VACUUMED) -> dict[str, Any]:
+    """``VACUUM (ANALYZE)`` of ``tables`` once a bulk apply has written: their visibility
+    map and statistics current before the next reader, not when autovacuum gets to them.
+    Outside the apply's transactions; a table that fails (cancelled, a lock wait) is
+    reported and left to autovacuum, the apply stands."""
+    import psycopg
+    out: dict[str, Any] = {}
+    with psycopg.connect(dsn, autocommit=True) as pg:
+        for table in tables:
+            t = time.monotonic()
+            try:
+                pg.execute(f"VACUUM (ANALYZE) ontology.{table}")
+                out[table] = {"seconds": round(time.monotonic() - t, 1)}
+            except psycopg.Error as why:
+                out[table] = {"error": type(why).__name__}
+    return out
 
 
 def _wave(pool: Any, width: int, todo: list[str], write: bool, stopping: Any,
@@ -840,7 +902,7 @@ def _checks(cur: Any, record: Any, step_record: Any, key: str, write: bool) -> s
         held = om.served_steps(cur)
         if held is None:
             return "steps_baseline_unknown"
-        if held != step_record["from"]:
+        if held != steps_from(step_record):
             return "other_steps"
     cur.execute("SELECT value FROM ontology.store_meta WHERE key = %s", (FLAG,))
     row = cur.fetchone()
@@ -876,9 +938,19 @@ def _chunk(cur: Any, name: str, conn: sqlite3.Connection | None,
         return _new_objects(cur, conn, layer, record, groups, write)
     if kind == "units":
         return _unit_group(cur, conn, layer, record, groups[int(which)], write)
+    if kind == "steps" and which.startswith("staged:"):
+        # set-based from the run's stage schema: its removed and replaced links deleted,
+        # its new and replacing ones inserted (one statement each)
+        from operating.pg import step_staging
+        from ontology import store_ddl
+        step = which[len("staged:"):]
+        return step_staging.apply_step(cur, step, step_record["staged"][step], write,
+                                       store_ddl.LINK_COLUMNS)
     if kind == "steps" and which == "rest":
-        return _rest(cur, sconn, lambda row: _in_step_scope(row, step_record["owned"]),
-                     write, keys)
+        objects = {o["objects"]: set(_scope_objects(sconn, o["objects"]))
+                   for o in step_record["owned"] if o.get("objects")}
+        return _rest(cur, sconn, lambda row: _in_step_scope(row, step_record["owned"],
+                                                            objects), write, keys)
     if kind == "steps" and which == "text_marks":
         # the text index's re-marking (``step_migrate.MARKS_ONLY``): markings only ever
         # added, so a rerun after a stop adds nothing twice
@@ -895,7 +967,9 @@ def _chunk(cur: Any, name: str, conn: sqlite3.Connection | None,
             om._apply_step_values(cur, steps, step_record["values"], out)
         return out
     if kind == "steps":
-        pg, pgp, lite, litep = _step_scope(step_record["owned"][int(which)])
+        o = step_record["owned"][int(which)]
+        pg, pgp, lite, litep = _step_scope(
+            o, _scope_objects(sconn, o["objects"]) if o.get("objects") else None)
         return _diff_links(cur, _served_links(cur, pg, pgp), _layer_links(sconn, lite, litep),
                            write, keys)
     if name == "final":
@@ -949,7 +1023,7 @@ def _final(cur: Any, record: Any, step_record: Any, key: str) -> dict[str, Any]:
         stepped.update(migration=step_record["id"], steps=step_record["steps"], chunked=True)
         cur.execute("INSERT INTO ontology.schema_migrations (id, from_digest, to_digest, "
                     "scope, report) VALUES (%s, %s, %s, %s, %s)",
-                    ("steps:" + step_record["id"], step_record["from"], step_record["to"],
+                    ("steps:" + step_record["id"], steps_from(step_record), step_record["to"],
                      json.dumps(step_record["scope"]), json.dumps(stepped, sort_keys=True)))
         out["reproject.steps"] = stepped["reproject"]
     cur.execute("DELETE FROM ontology.load_state WHERE starts_with(name, %s)",

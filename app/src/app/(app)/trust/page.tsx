@@ -212,7 +212,10 @@ export default function TrustRoute() {
             <section aria-labelledby="trust-autopilot">
               <h2 id="trust-autopilot" className="text-[13px] font-semibold">Autopilot workflows</h2>
               <p className="text-[12px] text-muted">
-                Practice score: replayed days the rules were tuned on. Gate: at least 15 items judged on fresh days, 90% or more right, before a workflow may act on approval.
+                Practice score: replayed days the rules were tuned on.{" "}
+                {page.autopilot_gate
+                  ? `Gate: at least ${page.autopilot_gate.need_judged} items judged on fresh days, ${page.autopilot_gate.need_percent}% or more right, before a workflow may act on approval.`
+                  : "Gate: the rules cannot be read, so no workflow acts."}
               </p>
               {rows.length === 0 ? (
                 <p className="mt-1 text-[13px] text-muted">{page.autopilot_note}</p>
@@ -224,7 +227,9 @@ export default function TrustRoute() {
                       <th className="py-1 pr-3 font-normal">For</th>
                       <th className="py-1 pr-3 font-normal">Mode</th>
                       <th className="py-1 pr-3 text-right font-normal">Practice</th>
-                      <th className="py-1 font-normal">Gate: fresh items at ≥90%</th>
+                      <th className="py-1 font-normal">
+                        {page.autopilot_gate ? `Gate: fresh items at ≥${page.autopilot_gate.need_percent}%` : "Gate"}
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">

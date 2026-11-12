@@ -149,6 +149,27 @@ class SyncGaps(Engine):
         self.assertEqual(summary["not_evaluated"][sync.RULE], {"status_unknown": 1})
         self.assertNotIn(odd, found)
 
+    def test_an_item_keyed_under_another_code_or_a_test_item_is_never_missing(self):
+        w = World()
+        for i in range(6):                                  # BC is in use for items
+            w.link("Product.bc_posted_as",
+                   item(w, "portal.app_product", f"R-SYN-J{i}", uom="kg"),
+                   item(w, "bc.items", f"R-SYN-J{i}", bc_base_uom="KG"))
+        renamed = item(w, "bc.items", "EU-SYN-1", name="Synth Serum - 50ml")
+        item(w, "portal.app_product", "SYN-1", name="synth  serum - 50ML")
+        lonely = item(w, "bc.items", "R-SYN-L", name="Synth Towel")
+        item(w, "portal.app_product", "R-SYN-T", name="Synth Towels 12")   # not the same name
+        demo = item(w, "bc.items", "FG-SYN-D", name="V1 Demo 60 mL")
+        e2e = item(w, "bc.items", "E2E-SYN-FG-1", name="E2E SYN FG 1")
+        unnamed = item(w, "bc.items", "R-SYN-U", name="")
+        item(w, "portal.app_product", "R-SYN-V", name="")                  # names nothing
+        self.assertEqual(self.run_rule(w)["detectors"][sync.RULE], "complete")
+        found = sorted(g["follow_up"]["object_id"] for g in self.kinds(sync.MISSING))
+        self.assertEqual(found, sorted([lonely, unnamed]))
+        self.assertNotIn(renamed, found)   # the Portal holds it under its own code
+        for test_item in (demo, e2e):
+            self.assertNotIn(test_item, found)
+
     def test_a_system_not_in_use_and_two_spellings_of_one_value_raise_nothing(self):
         w = World()
         for i in range(3):                              # BC holds orders, none joined
@@ -160,6 +181,11 @@ class SyncGaps(Engine):
                    item(w, "bc.items", f"R-SYN-C{i}", bc_base_uom="PCS"))
         odd = item(w, "bc.items", "R-SYN-O", bc_base_uom="KG")
         w.link("Product.bc_posted_as", item(w, "portal.app_product", "R-SYN-O", uom="L"), odd)
+        for i, (bc_unit, portal_unit) in enumerate((("CSE", "cs"), ("CSE", "case"),
+                                                    ("EACH", "ea"))):   # one unit each
+            w.link("Product.bc_posted_as",
+                   item(w, "portal.app_product", f"R-SYN-S{i}", uom=portal_unit),
+                   item(w, "bc.items", f"R-SYN-S{i}", bc_base_uom=bc_unit))
         summary = self.run_rule(w)
         self.assertEqual(self.kinds(sync.MISSING), [])
         self.assertEqual(summary["not_evaluated"][sync.RULE],

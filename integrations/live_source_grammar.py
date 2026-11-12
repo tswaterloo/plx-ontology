@@ -277,6 +277,9 @@ _BC_PLX = "/v2.0/{tenant:tenant}/{environment:environment}/api/plx/integration/v
 _CHANNEL = "/v1.0/teams/{team:guid}/channels/{channel:teams_thread}"
 TEMPLATES: dict[str, tuple[str, str]] = {
     "graph.users": (GRAPH, "/v1.0/users"),
+    # The tenant's verified mail domains (``verifiedDomains`` only): while the groups
+    # listing fails, an address in any of them may be a distribution list (withheld).
+    "graph.organization": (GRAPH, "/v1.0/organization"),
     # The directory's groups (mail and SMTP proxy addresses only): the people exclusion
     # records them so a distribution list's address is decided offline (GET only).
     "graph.groups": (GRAPH, "/v1.0/groups"),

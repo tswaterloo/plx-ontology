@@ -32,6 +32,7 @@ const page = (over: Partial<TrustPage> = {}): TrustPage => ({
   ],
   autopilot: [row(), row({ workflow: "mc_question", countdown: null, dev: { judged: 22, matched: 18, percent: 81.8 } })],
   autopilot_note: null,
+  autopilot_gate: { need_judged: 15, need_percent: 90 },
   lines: [
     { state: "live", words: "Reading BC, Email, read only." },
     { state: "gated", words: "Autopilot sends and writes: a workflow acts only after 15 judged fresh items at 90% or better and the owner's switch." },
@@ -76,6 +77,28 @@ describe("Trust page", () => {
     expect(within(sw).getByText("Business Central").closest("tr")).toHaveTextContent("Off");
     expect(within(sw).getByText("Mission Control").closest("tr")).toHaveTextContent("None");
     expect(screen.getByTestId("trust-lines")).toHaveTextContent("Gated");
+  });
+
+  it("says when the newest scorer run was not counted, beside the older counts", async () => {
+    const older = { judged: 12, matched: 11, need_judged: 15, need_percent: 90, percent: 91.7, passes: false, window: [], data_end: null, run: "run-a", refused: "status:partial", refused_run: "run-b" };
+    api.trust.mockResolvedValue(page({ autopilot: [row({ countdown: older })] }));
+    render(<TrustRoute />);
+    const auto = await screen.findByTestId("trust-autopilot");
+    expect(within(auto).getByText("Teams chat").closest("tr")).toHaveTextContent(
+      "12 of 15 items at ≥90% · 91.7% right so far · newest scorer run not counted (status:partial): these counts are from an earlier run",
+    );
+  });
+
+  it("words the gate from the server's rules, and says nothing acts when they are unreadable", async () => {
+    api.trust.mockResolvedValue(page({ autopilot_gate: { need_judged: 20, need_percent: 95 } }));
+    const { unmount } = render(<TrustRoute />);
+    expect(await screen.findByText(/at least 20 items judged on fresh days, 95% or more right/)).toBeInTheDocument();
+    expect(screen.getByText("Gate: fresh items at ≥95%")).toBeInTheDocument();
+    expect(screen.queryByText(/at least 15 items/)).toBeNull();
+    unmount();
+    api.trust.mockResolvedValue(page({ autopilot_gate: null }));
+    render(<TrustRoute />);
+    expect(await screen.findByText(/Gate: the rules cannot be read, so no workflow acts\./)).toBeInTheDocument();
   });
 
   it("shows held-out and development scores with date and sample size", async () => {

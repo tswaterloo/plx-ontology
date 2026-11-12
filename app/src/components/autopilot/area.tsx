@@ -398,7 +398,7 @@ function QueueView({ area, filters, split, decided, onDecided }: { area: Area; f
             </span>
           ) : (
             <span className="flex-1">
-              <span className="num text-fg">{items.length}</span> {items.length === 1 ? "item" : "items"} · j k move · a e r s act
+              <span className="num text-fg">{items.length}</span> {items.length === 1 ? "item" : "items"}<span className="max-sm:hidden"> · j k move · a e r s act</span>
             </span>
           )}
         </div>
@@ -670,20 +670,22 @@ export function AutopilotView({ area: initial, onReload }: { area: Area; onReloa
         )}
       </div>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <nav className="flex h-9 items-stretch gap-4" role="tablist" aria-label="Autopilot">
+        <nav className="flex h-9 max-w-full items-stretch gap-3 sm:gap-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Autopilot">
           {tabs.map(([t, label], i) => (
             <button
               key={t}
               id={`ap-tab-${t}`}
               type="button"
               role="tab"
+              aria-label={label}
               aria-selected={tab === t}
               tabIndex={tab === t ? 0 : -1}
-              className={cn("relative flex items-center text-[13px] cursor-pointer", tab === t ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg")}
+              className={cn("relative flex shrink-0 items-center whitespace-nowrap text-[13px] cursor-pointer", tab === t ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg")}
               onClick={() => setTab(t)}
               onKeyDown={(e) => onTabKey(e, i)}
             >
-              {label}
+              {/* the full name stays the control's name; a phone row has no room for "Review" and "queue" */}
+              {t === "queue" ? <><span className="sm:hidden" aria-hidden>Queue</span><span className="max-sm:hidden">{label}</span></> : label}
               {t === "queue" && open.length > 0 && <span className="num ml-1.5 text-[11px] text-faint">{open.length}</span>}
             </button>
           ))}

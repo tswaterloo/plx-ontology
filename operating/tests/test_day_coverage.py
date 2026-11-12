@@ -78,6 +78,30 @@ class Activity(World):
         key = lambda a: (a["person"], a["kind"], a["at"])   # noqa: E731
         self.assertEqual(sorted(map(key, cached)), sorted(map(key, fresh)))
 
+    def test_a_postgres_count_is_refused_when_postgres_does_not_hold_the_store(self):
+        """A fresh window counted on Postgres (``--source postgres``) is refused, never a
+        quiet read of the older SQLite file; an unknown source is refused by the parser."""
+        import io
+        import os
+        from unittest import mock
+        self.build_world()
+        self.store().close()
+        out = self.dir / "cover.json"
+        args = ["--store", str(self.dir / "s.sqlite"), "--replay", str(self.dir),
+                "--role", f"person:{OURS_OID}", "--since", SINCE, "--until", UNTIL,
+                "--out", str(out)]
+        with mock.patch.dict(os.environ, {"PLX_PG_DSN": f"postgresql:///none?host={self.dir}"}):
+            os.environ.pop("PLX_ONTOLOGY_PG", None)
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as said:
+                code = dc.main(args + ["--source", "postgres"])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(said.getvalue())["reason"], "store_source_mismatch")
+        self.assertFalse(out.exists())
+        with mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaises(SystemExit):
+            dc.main(args + ["--source", "mysql"])
+        self.assertFalse(out.exists())
+
 
 class Codes(unittest.TestCase):
     def test_a_code_two_people_share_is_nobody(self):

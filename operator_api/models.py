@@ -1627,6 +1627,7 @@ class CopyCheck(_Model):
 class AlertPrecision(_Model):
     value: float = Field(ge=0, le=1)
     checked: int = Field(ge=0, description="Live items hand-checked.")
+    correct: Optional[int] = Field(None, ge=0, description="How many of them were right.")
     on: str = Field(description="Day of the check.")
     source: str
     commit: Optional[str] = None
@@ -2879,9 +2880,10 @@ class AutopilotScore(_Model):
 
 
 class AutopilotCountdown(_Model):
-    """The workflow's way to its write gate (``operating.autopilot_fresh``): items judged
-    on fresh days against the ``need_judged`` the gate asks for, and the precision so far
-    against ``need_percent``. Recomputed from the counts at every read."""
+    """The workflow's way to its write gate: the counts the gate admitted
+    (``autopilot_write.gate_counts``), items judged on fresh days against the
+    ``need_judged`` the gate asks for, and the precision so far against ``need_percent``.
+    Recomputed from the counts at every read."""
     judged: int
     matched: int
     need_judged: int
@@ -2891,6 +2893,11 @@ class AutopilotCountdown(_Model):
     passes: bool
     window: list[str] = Field(default_factory=list)
     data_end: Optional[str] = None
+    run: Optional[str] = Field(None, description="The scorer run these counts came from.")
+    refused: Optional[str] = Field(None, description="Why the role's newest scorer run was "
+                                   "not admitted (status:partial, not_fresh, counts...): the "
+                                   "counts are then an earlier run's. Absent when it was.")
+    refused_run: Optional[str] = None
 
 
 class AutopilotWorkflowRow(_Model):
@@ -3410,6 +3417,12 @@ class TrustSwitch(_Model):
     words: str
 
 
+class TrustGate(_Model):
+    """The autopilot's write gate as the write rules set it (``rules.gate``)."""
+    need_judged: int = Field(description="Judged items from fresh days a workflow needs.")
+    need_percent: float = Field(description="Precision it needs on them, in percent.")
+
+
 class TrustPage(_Model):
     """What a reader needs to judge the Workbench: data freshness per system, answer
     scores per question set, alert precision per type, the autopilot's workflows and
@@ -3421,6 +3434,9 @@ class TrustPage(_Model):
     alerts: list[TrustAlert] = Field(default_factory=list)
     autopilot: list[AutopilotWorkflowRow] = Field(default_factory=list)
     autopilot_note: Optional[str] = None
+    autopilot_gate: Optional[TrustGate] = Field(None, description="The write gate's numbers; "
+                                                "absent when the write rules are unreadable "
+                                                "(then nothing acts).")
     lines: list[TrustLine] = Field(default_factory=list)
     switches: list[TrustSwitch] = Field(default_factory=list)
 

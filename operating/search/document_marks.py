@@ -46,6 +46,10 @@ RECORD_KINDS = ("record_text", "bc_text", "record_words")
 REFRESH_S = 120.0
 RETRY_S = 30.0
 _PAGE = re.compile(r"[#&]page=[0-9]+$")
+# The marked documents, read from the partial index on marked chunks (migration 0015,
+# ``chunks_marked``): its predicate is this read's, so it never scans every chunk.
+MARKED_SQL = ("SELECT object_id, source_handle, markings FROM search.chunks "
+              "WHERE kind <> ALL(%s) AND markings <> '{}'")
 
 
 def _every_marking() -> frozenset[str]:
@@ -115,9 +119,7 @@ class _Marked:
     def _read(dsn: str) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
         import psycopg
         with psycopg.connect(dsn, connect_timeout=5) as conn:
-            rows = conn.execute(
-                "SELECT object_id, source_handle, markings FROM search.chunks "
-                "WHERE kind <> ALL(%s) AND markings <> '{}'", (list(RECORD_KINDS),)).fetchall()
+            rows = conn.execute(MARKED_SQL, (list(RECORD_KINDS),)).fetchall()
         ids: dict[str, set[str]] = {}
         handles: dict[str, set[str]] = {}
         for object_id, handle, marks in rows:

@@ -137,6 +137,56 @@ class MentionCacheTests(unittest.TestCase):
         again = self.build(root, rows, "again", mention_cache.cached_step(_step, cache))
         self.assertEqual(again, plain)
 
+    def test_parallel_parts_open_one_cache_and_keep_the_steps_view(self):
+        # 11-10 served: 12 in-place mention parts opened one file at once and two failed
+        # "view mentions already exists"; an opening process reset the view to no code
+        import multiprocessing
+        cache = self.root / "parallel" / "extract.sqlite"
+        mention_cache.ExtractionCache(cache).close()
+        ctx = multiprocessing.get_context("spawn")
+        for n in (1, 12):
+            with self.subTest(processes=n), ctx.Pool(n) as pool:
+                got = pool.map(_open_for_step, [(str(cache), "ab12")] * (n * 16))
+            self.assertEqual(set(got), {"ok"})
+            mention_cache.ExtractionCache(cache).close()     # a prefill opening the file
+            with closing(sqlite3.connect(cache)) as db:
+                self.assertIn("'ab12' AS code", db.execute(
+                    "SELECT sql FROM sqlite_master WHERE name = 'mentions'").fetchone()[0])
+
+    def test_a_write_after_another_process_committed_is_kept(self):
+        # 11-10 served: a prefill whose open transaction went stale when a parallel part
+        # committed dropped every later write ("database is locked", swallowed)
+        path = self.root / "stale" / "extract.sqlite"
+        a = mention_cache.ExtractionCache(path)
+        a.holds("x")
+        b = mention_cache.ExtractionCache(path)
+        b.keep("k0", {"citation": "c"}, [])
+        b.close()
+        for n in range(60):
+            a.keep(f"a{n}", {"citation": "c"}, [])
+            if n == 9:
+                a.flush()
+        a.keep_group("g", ["a0", "a1"])
+        self.assertTrue(a.holds("a59") and a.holds_whole("g"))   # before its flush too
+        a.close()
+        self.assertEqual(a.counts["not_kept"], 0)
+        with closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM extracted").fetchone()[0], 61)
+            self.assertEqual(db.execute("SELECT count(*) FROM groups").fetchone()[0], 1)
+
+
+def _open_for_step(args):
+    path, code = args
+    try:
+        cache = mention_cache.ExtractionCache(path)
+        try:
+            cache.for_step(code)
+        finally:
+            cache.close()
+        return "ok"
+    except Exception as exc:    # noqa: BLE001 - the failure is the result
+        return repr(exc)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,7 +74,8 @@ def surface(kind: str) -> str | None:
 def off_gap_kinds(enabled: Iterable[str] = ()) -> frozenset[str]:
     """The gap kinds of every type that is off in the registry and not switched on by the
     reader (``enabled``: type names): what no reader-facing read returns (briefing, digest,
-    agent tools, alerts). A gap kind of no registered type is not an alert and is kept."""
+    agent tools, alerts). A gap kind of no registered type is not here: an unnarrowed read
+    drops it by ``registered_gap_kinds``."""
     from .briefing import EVENT_TYPES
     on = set(enabled)
     out: set[str] = set()
@@ -88,6 +89,19 @@ def off_gap_kinds(enabled: Iterable[str] = ()) -> frozenset[str]:
         if t["default"] == "on" or t["type"] in on:
             spec = EVENT_TYPES.get(t["type"])
             out.difference_update(spec["kinds"] if spec else (t["type"],))
+    return frozenset(out)
+
+
+def registered_gap_kinds() -> frozenset[str]:
+    """Every gap kind some registered type names, on or off. A kind outside it was never
+    measured as an alert: an unnarrowed read (Home, plx.find's home mode, a workload) never
+    returns it, as an off type's (``proactive_engine.read_inbox``); a page that names it
+    (a record page's facts, the R&D or label lists) still reads it."""
+    from .briefing import EVENT_TYPES
+    out: set[str] = set()
+    for t in registry()["types"]:
+        spec = EVENT_TYPES.get(t["type"])
+        out.update(spec["kinds"] if spec else (t["type"],))
     return frozenset(out)
 
 

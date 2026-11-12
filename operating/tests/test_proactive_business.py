@@ -205,6 +205,50 @@ class BusinessAlerts(Engine):
         # the latest and each averaged order: its unit cost and its order date
         self.assertEqual(len(gap["citations"]), 8)
 
+    def test_an_order_whose_copy_disputes_its_total_is_no_unit_cost(self):
+        """An order carried into BC with each line's total as its unit cost: its Portal
+        copy states a total far from BC's, so none of its figures enters the average; a
+        copy agreeing on the total, another currency or an unpriced copy disputes nothing."""
+        w = World()
+        p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
+
+        def bc_order(cost: str, day: str, total: str, copy_total: str | None,
+                     currency: str = "CAD") -> str:
+            order = cost_line(w, p, cost, day)
+            for row in w.rows["object_values"]:
+                if row["object_id"] == order:
+                    stamp = dict(row)
+            w.rows["object_values"].append({**stamp, "property": "total_cost",
+                                            "value": total, "field_path": "row.total"})
+            money(w, order, "total_cost", "CAD")
+            if copy_total is not None:
+                copy = w.obj("PurchaseOrder", {"order_date": day, "status": "Cancel",
+                                               "total_cost": copy_total},
+                             binding="portal.app_purchase_order", audience="api:po")
+                money(w, copy, "total_cost", currency)
+                w.link("PurchaseOrder.bc_posted_as", copy, order, tier="corroborated")
+            return order
+
+        for _ in range(3):                                   # 72 units at 48.76: 3510.72
+            bc_order("3510.72", "2026-03-28", "252771.84", "3510.72")
+        bc_order("48.76", "2026-07-30", "3510.72", "3510.72")       # copies agree
+        bc_order("48.76", "2026-08-30", "3510.72", "0")             # an unpriced copy
+        bc_order("48.76", "2026-09-30", "3510.72", "99.00", "USD")  # another currency
+        bc_order("48.76", "2026-10-10", "3510.72", None)
+        summary = self.run_rules(w)
+        self.assertEqual(summary["detectors"][pb.COST_JUMP], "complete")
+        self.assertEqual(self.kinds(pb.COST_JUMP), [])
+        self.assertEqual(summary["not_evaluated"][pb.COST_JUMP],
+                         {"order_copies_disagree": 3})
+        # without the copies the carried figures would read as a 99% drop
+        w2 = World()
+        q = w2.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
+        for c, d in (("3510.72", "2026-03-28"), ("3510.72", "2026-03-28"),
+                     ("3510.72", "2026-03-28"), ("48.76", "2026-10-10")):
+            cost_line(w2, q, c, d)
+        self.run_rules(w2)
+        self.assertEqual(len(self.kinds(pb.COST_JUMP)), 1)
+
     # ------------------------------------------------------------------ readers
 
     def test_finance_figures_only_for_a_finance_reader(self):

@@ -95,6 +95,17 @@ SOURCES = ("portal_api", "graph_mail") + STORE_FAMILIES + ("sharepoint",)
 # A served object gaining a link is owned (projected with every partner) up to this many
 # links; a hub keeps its served page until the next generation.
 BACKLINK_CAP = 400
+# A cycle needs at least this much room per record it follows, on top of
+# ``PREFLIGHT_FLOOR`` each: lower bounds of the 11-11 catch-up (443k records: a work
+# directory past 42 GB while projecting, temp sorts of whole attachment rows 3.8 GB per
+# reader before they sorted keys alone, a closure peak of 13.8 GB). Below it the cycle is
+# refused before its closure (``preflight``), its records stay open and its checkpoint
+# kept, instead of failing "database or disk is full" or out of memory an hour in.
+# ``PLX_DELTA_PREFLIGHT=0``: no check.
+PREFLIGHT_DISK_PER_RECORD = 80_000
+PREFLIGHT_TEMP_PER_RECORD = 2_000
+PREFLIGHT_MEMORY_PER_RECORD = 20_000
+PREFLIGHT_FLOOR = 1 << 30
 # Layers served at once before a cycle folds them itself; the fold
 # (``python3 -m ontology.delta compact``, hourly) normally folds them first, apart.
 MAX_LAYERS = 48
@@ -222,20 +233,36 @@ class Base:
     def close(self) -> None:
         self.conn.close()
 
+    def meta_digest(self) -> str:
+        """Digest of every ``store_meta`` row: what the base holds changes it (a layer
+        applied, a migration, a load)."""
+        import hashlib
+        rows = sorted((str(r[0]), str(r[1])) for r in self.conn.execute(
+            "SELECT key, value FROM store_meta"))
+        return hashlib.sha256(json.dumps(rows).encode("utf-8")).hexdigest()
+
     def mark(self, source: str, relation: str) -> int | None:
         entry = (self.freshness.get(source) or {}).get(relation) or {}
         value = entry.get("last_capture_id")
         return int(value) if isinstance(value, int) else None
 
     def objects_of(self, source: str, keys: Iterable[Any]) -> dict[str, Any]:
-        """object id -> record key, for the served objects of these records."""
+        """object id -> record key, for the served objects of these records (an object
+        of several records: the last of ``keys``). One read per 500 records: one per
+        record was ~1 ms each over Postgres, minutes of a catch-up's closure (11-11)."""
+        keys = list(keys)
+        prefixes = [handle_prefix(source, key) for key in keys]
+        held: dict[str, set[str]] = {}
+        for part in _chunks(sorted(set(prefixes))):
+            for prefix, oid in self.conn.execute(
+                    "SELECT DISTINCT p.value, v.object_id FROM json_each(?) p JOIN "
+                    "object_versions v ON v.l1_handle >= p.value AND v.l1_handle < "
+                    "p.value || ?", (json.dumps(list(part)), "\U0010ffff")):
+                held.setdefault(prefix, set()).add(oid)
         out: dict[str, Any] = {}
-        for key in keys:
-            prefix = handle_prefix(source, key)
-            for row in self.conn.execute(
-                    "SELECT DISTINCT object_id FROM object_versions WHERE l1_handle >= ? "
-                    "AND l1_handle < ?", (prefix, prefix + "\U0010ffff")):
-                out[row[0]] = key
+        for key, prefix in zip(keys, prefixes):
+            for oid in held.get(prefix, ()):
+                out[oid] = key
         return out
 
     def links_of(self, object_ids: Sequence[str]) -> list[sqlite3.Row]:
@@ -247,6 +274,24 @@ class Base:
                 "WHERE from_object IN (SELECT value FROM json_each(?)) UNION ALL "
                 "SELECT link_type, from_object, to_object, evidence_handles FROM links "
                 "WHERE to_object IN (SELECT value FROM json_each(?))", (ids, ids)))
+        return rows
+
+    def typed_links(self, object_ids: Sequence[str], link_types: Iterable[str]
+                    ) -> list[sqlite3.Row]:
+        """(link_type, from_object, to_object) of the links of these types either end of
+        which is one of these objects: the stored columns, no packed text, and by the
+        (end, type) indexes, so a hub's other links are never read (a lineage step
+        reading a person's every link through ``links`` took most of a cycle, 11-11)."""
+        types = json.dumps(sorted(set(link_types)))
+        rows: list[sqlite3.Row] = []
+        for part in _chunks(list(object_ids)):
+            ids = json.dumps(list(part))
+            rows.extend(self.conn.execute(
+                "SELECT link_type, from_object, to_object FROM link_rows WHERE from_object "
+                "IN (SELECT value FROM json_each(?)) AND link_type IN (SELECT value FROM "
+                "json_each(?)) UNION ALL SELECT link_type, from_object, to_object FROM "
+                "link_rows WHERE to_object IN (SELECT value FROM json_each(?)) AND link_type "
+                "IN (SELECT value FROM json_each(?))", (ids, types, ids, types)))
         return rows
 
     def handles_of(self, object_ids: Iterable[str]) -> dict[str, str]:
@@ -273,25 +318,41 @@ class Base:
         and how many lookups named more than ``LOOKUP_CAP`` (not followed)."""
         out: set[str] = set()
         capped = 0
+        by_kind: dict[str, set[str]] = {}
         for kind, normalized in keys:
-            rows = self.conn.execute(
-                "SELECT DISTINCT i.object_id FROM identifiers i JOIN objects o ON "
-                "o.object_id = i.object_id WHERE i.normalized = ? AND i.identifier_kind = ? "
-                "AND (? IS NULL OR o.binding_id = ?) LIMIT ?",
-                (normalized, kind, binding, binding, LOOKUP_CAP + 1)).fetchall()
-            if len(rows) > LOOKUP_CAP:
-                capped += 1
-                continue
-            out.update(r[0] for r in rows)
+            by_kind.setdefault(kind, set()).add(normalized)
+        # one read per kind and 500 values (a cycle looks up ~10^5-10^6 identifiers: one
+        # round trip each was most of its closure, 11-11), each value's holders still
+        # read no further than the cap + 1
+        for kind in sorted(by_kind):
+            for part in _chunks(sorted(by_kind[kind], key=str)):
+                for _value, held in self.conn.execute(
+                        "SELECT j.value, (SELECT json_group_array(h.object_id) FROM (SELECT "
+                        "DISTINCT i.object_id FROM identifiers i JOIN objects o ON "
+                        "o.object_id = i.object_id WHERE i.normalized = j.value AND "
+                        "i.identifier_kind = ? AND (? IS NULL OR o.binding_id = ?) LIMIT ?) h) "
+                        "FROM json_each(?) j",
+                        (kind, binding, binding, LOOKUP_CAP + 1, json.dumps(list(part)))):
+                    found = json.loads(held) if held else []
+                    if len(found) > LOOKUP_CAP:
+                        capped += 1
+                        continue
+                    out.update(found)
         return out, capped
 
-    def degree(self, object_ids: Iterable[str]) -> dict[str, int]:
-        """object id -> how many links it holds (either end)."""
-        out = {}
-        for oid in object_ids:
-            out[oid] = sum(self.conn.execute(
-                f"SELECT COUNT(*) FROM link_rows WHERE {end} = ?", (oid,)).fetchone()[0]
-                for end in ("from_object", "to_object"))
+    def degree(self, object_ids: Iterable[str], cap: int) -> dict[str, int]:
+        """object id -> how many links it holds (either end), counted up to ``cap`` + 1
+        per end: a caller asks only whether an object holds more than ``cap``, so a hub
+        (160k links on a person) costs ``cap`` + 1 index entries per end, not its whole
+        page; 500 objects a round trip."""
+        out: dict[str, int] = {}
+        for part in _chunks(sorted(set(object_ids))):
+            for row in self.conn.execute(
+                    "SELECT j.value, (SELECT COUNT(*) FROM (SELECT 1 FROM link_rows WHERE "
+                    "from_object = j.value LIMIT ?)) + (SELECT COUNT(*) FROM (SELECT 1 FROM "
+                    "link_rows WHERE to_object = j.value LIMIT ?)) FROM json_each(?) j",
+                    (cap + 1, cap + 1, json.dumps(list(part)))):
+                out[row[0]] = row[1]
         return out
 
     def identifiers_of(self, object_ids: Sequence[str]) -> set[tuple[str, str]]:
@@ -427,16 +488,38 @@ class State:
             raise
         self.conn.execute("COMMIT")
 
+    def opened(self, source: str, keys: Iterable[Any]) -> dict[str, list[Any]]:
+        """(seen_at, mark) of each of these open records, by its JSON key: what a cycle
+        read them as; a record changed again since is reopened under another."""
+        out: dict[str, list[Any]] = {}
+        for part in _chunks([json.dumps(k) for k in keys]):
+            for key, seen, mark in self.conn.execute(
+                    "SELECT key, seen_at, mark FROM changed WHERE source = ? AND closed = 0 "
+                    "AND key IN (SELECT value FROM json_each(?))", (source, json.dumps(part))):
+                out[key] = [seen, mark]
+        return out
+
     def close_over(self, records: Mapping[str, Iterable[Any]],
-                   closed: Mapping[str, Iterable[Any]]) -> None:
+                   closed: Mapping[str, Iterable[Any]],
+                   read: Mapping[str, Mapping[str, Sequence[Any]]] | None = None) -> None:
         """Keep the closure of the changed records a published layer holds, and mark them
-        done: a record's closure is read from the served generation once."""
+        done: a record's closure is read from the served generation once. ``read``
+        (:meth:`opened`, per source): a record is closed only as the cycle read it; one
+        changed again meanwhile stays open, for the next cycle to follow."""
         for source, keys in records.items():
             self.conn.executemany("INSERT OR IGNORE INTO context VALUES (?, ?)",
                                   [(source, json.dumps(k)) for k in keys])
         for source, keys in closed.items():
-            self.conn.executemany("UPDATE changed SET closed = 1 WHERE source = ? AND key = ?",
-                                  [(source, json.dumps(k)) for k in keys])
+            if read is None:
+                self.conn.executemany(
+                    "UPDATE changed SET closed = 1 WHERE source = ? AND key = ?",
+                    [(source, json.dumps(k)) for k in keys])
+                continue
+            held = read.get(source, {})
+            self.conn.executemany(
+                "UPDATE changed SET closed = 1 WHERE source = ? AND key = ? AND "
+                "seen_at = ? AND mark IS ?",
+                [(source, key, *held[key]) for key in map(json.dumps, keys) if key in held])
 
     def remember_owned(self, owned: Mapping[str, tuple[str, Any]]) -> None:
         self.conn.executemany("INSERT OR REPLACE INTO owned VALUES (?, ?, ?)",
@@ -1059,6 +1142,14 @@ def closure(plan: Plan, base: Base, captures: Captures, changed: Mapping[str, li
     counts = report.setdefault("closure", {})
     counts["unsupported_records"] = 0
     counts["capped_lookups"] = 0
+    # seconds per step: where a long closure goes (11-11: 17 min, not broken down)
+    took = counts.setdefault("seconds", {})
+    clock = [time.monotonic()]
+
+    def timed(step: str) -> None:
+        now = time.monotonic()
+        took[step] = round(took.get(step, 0.0) + now - clock[0], 2)
+        clock[0] = now
 
     def add_handles(handles: Iterable[str]) -> list[tuple[str, Any]]:
         new = []
@@ -1078,6 +1169,7 @@ def closure(plan: Plan, base: Base, captures: Captures, changed: Mapping[str, li
         for oid, key in base.objects_of(source, changed.get(source, ())).items():
             owned_base[oid] = (source, key)
     counts["changed_objects_in_base"] = len(owned_base)
+    timed("objects")
 
     # 1. the other end of every link they hold, and every record those links cite
     partners: set[str] = set()
@@ -1090,10 +1182,12 @@ def closure(plan: Plan, base: Base, captures: Captures, changed: Mapping[str, li
         except ValueError:
             pass
     partners -= set(owned_base)
+    timed("links")
 
     # 2. the records their own values name through the schema's link bindings
     named: set[str] = set()
     idkeys: set[tuple[str, str]] = set()
+    wanted: dict[str, set[tuple[str, str]]] = {}
     for source in SOURCES:
         for key in changed.get(source, ()):
             relation = _relation_of(source, key)
@@ -1125,20 +1219,26 @@ def closure(plan: Plan, base: Base, captures: Captures, changed: Mapping[str, li
                                     except Exception:  # noqa: BLE001 - unparsed: no lookup
                                         normalized = None
                                     if normalized:
-                                        found, capped = base.holders([(kind, normalized)],
-                                                                     target)
-                                        counts["capped_lookups"] += capped
-                                        named.update(found)
+                                        wanted.setdefault(target, set()).add(
+                                            (kind, normalized))
+    timed("values")
+    # their holders, read together per binding (each lookup once, however many rows name it)
+    for target in sorted(wanted):
+        found, capped = base.holders(wanted[target], target)
+        counts["capped_lookups"] += capped
+        named.update(found)
     # an object the generation does not hold may be one an earlier cycle projected
     earlier = state.owned_records(named) if state is not None and named else {}
     for _oid, (source, key) in earlier.items():
         records[source].add(key)
     named = base.exists(sorted(named)) if named else set()
+    timed("named")
 
     # 3. every object holding one of their identifiers (ambiguity stays ambiguous)
     idkeys |= base.identifiers_of(sorted(owned_base))
     holders, capped = base.holders(sorted(idkeys))
     counts["capped_lookups"] += capped
+    timed("holders")
 
     context = (partners | named | holders) - set(owned_base)
     # served objects a changed record's values now name that it was not linked with:
@@ -1150,6 +1250,7 @@ def closure(plan: Plan, base: Base, captures: Captures, changed: Mapping[str, li
     handles = base.handles_of(context)
     add_handles(handles.values())
     add_handles(cited)
+    timed("handles")
 
     # 4. lineage chains of the context records
     frontier = set(context)
@@ -1163,7 +1264,7 @@ def closure(plan: Plan, base: Base, captures: Captures, changed: Mapping[str, li
         if not types:
             break
         nxt: set[str] = set()
-        for link in base.links_of(sorted(types)):
+        for link in base.typed_links(sorted(types), set().union(*types.values())):
             for here, there in ((link["from_object"], link["to_object"]),
                                 (link["to_object"], link["from_object"])):
                 if link["link_type"] in types.get(here, ()) and there not in seen:
@@ -1171,6 +1272,7 @@ def closure(plan: Plan, base: Base, captures: Captures, changed: Mapping[str, li
         seen |= nxt
         add_handles(base.handles_of(nxt).values())
         frontier = nxt
+    timed("lineage")
     counts["records"] = {s: len(v) for s, v in records.items()}
     return records
 
@@ -1564,31 +1666,86 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         if report.get("mail_skipped"):
             fresh["graph_mail"] = []
         report["followed"] = {s: len(v) for s, v in fresh.items()}
-        found = closure(plan, base, captures, fresh, report, state)
-        # Back-links: a served object a changed record now links to is projected again
-        # with all its partners and owned, so it lists the new link (up to BACKLINK_CAP
-        # links: a hub's page keeps the served links until the next generation).
-        gaining = report.pop("_gaining", [])
-        degrees = base.degree(gaining)
-        linked = [oid for oid in gaining if degrees[oid] <= BACKLINK_CAP]
-        report["closure"]["backlinked"] = len(linked)
-        report["closure"]["backlink_hubs_skipped"] = len(gaining) - len(linked)
-        extra: dict[str, list[Any]] = {}
-        for handle in base.handles_of(linked).values():
-            hit = record_of_handle(handle)
-            if hit is not None and hit[1] not in set(fresh.get(hit[0], ())):
-                extra.setdefault(hit[0], []).append(hit[1])
-        if extra:
-            more = closure(plan, base, captures, extra, {}, state)
-            for source in SOURCES:
-                found[source] |= more[source]
-                if extra.get(source):
-                    keys = sorted(set(extra[source]), key=_order)
-                    if not force_changed:
-                        state.add(source, keys)
-                    fresh[source] = sorted(set(fresh.get(source, ())) | set(keys), key=_order)
-                    if source in changed:
-                        changed[source] = sorted(set(changed[source]) | set(keys), key=_order)
+        if not force_changed and not compact_only:
+            short = preflight(sum(report["followed"].values()), delta_dir, environ)
+            if short is not None:
+                report["layer"] = "none: no room for this cycle"
+                report["status"] = "preflight_refused"
+                report["preflight"] = short
+                report["seconds"]["total"] = round(time.monotonic() - started, 2)
+                return report
+        # over Postgres a cycle keeps its closure and mention listing until it publishes:
+        # one that failed after them resumes from them, and closes (and reads the mentions
+        # of) only the records opened or changed again since
+        checkpoint = (_checkpoint_key(base, state, environ) if base.postgres and publish
+                      and not force_changed and not compact_only else None)
+        resumed = _resume(delta_dir, checkpoint, state) if checkpoint else None
+        opened_as: dict[str, dict[str, Any]] | None = (
+            {s: state.opened(s, fresh[s]) for s in SOURCES} if checkpoint else None)
+
+        def close(part: Mapping[str, list[Any]], counts: dict[str, Any]) -> dict[str, set[Any]]:
+            """The closure of ``part`` (records of ``fresh``) with its back-links; a
+            back-linked record is opened and joins ``fresh``."""
+            got = closure(plan, base, captures, part, counts, state)
+            # Back-links: a served object a changed record now links to is projected again
+            # with all its partners and owned, so it lists the new link (up to BACKLINK_CAP
+            # links: a hub's page keeps the served links until the next generation).
+            gaining = counts.pop("_gaining", [])
+            degrees = base.degree(gaining, BACKLINK_CAP)
+            linked = [oid for oid in gaining if degrees[oid] <= BACKLINK_CAP]
+            counts["closure"]["backlinked"] = len(linked)
+            counts["closure"]["backlink_hubs_skipped"] = len(gaining) - len(linked)
+            following = {s: set(fresh.get(s, ())) for s in SOURCES}
+            extra: dict[str, list[Any]] = {}
+            for handle in base.handles_of(linked).values():
+                hit = record_of_handle(handle)
+                if hit is not None and hit[1] not in following[hit[0]]:
+                    extra.setdefault(hit[0], []).append(hit[1])
+            if extra:
+                more = closure(plan, base, captures, extra, {}, state)
+                for source in SOURCES:
+                    got[source] |= more[source]
+                    if extra.get(source):
+                        keys = sorted(set(extra[source]), key=_order)
+                        if not force_changed:
+                            state.add(source, keys)
+                            if opened_as is not None:
+                                opened_as[source].update(state.opened(source, keys))
+                        fresh[source] = sorted(following[source] | set(keys), key=_order)
+                        if source in changed:
+                            changed[source] = sorted(set(changed[source]) | set(keys), key=_order)
+            return got
+
+        # the records whose mentions this cycle reads: all it follows, or on a resume
+        # after the mention listing only those opened or changed again since
+        to_mention = fresh
+        if resumed is not None:
+            assert opened_as is not None
+            since = {s: [k for k in fresh[s] if opened_as[s].get(json.dumps(k))
+                         != resumed["read"][s].get(json.dumps(k))] for s in SOURCES}
+            report["resumed"] = resumed["stage"]
+            report["resumed_since"] = {s: len(v) for s, v in since.items() if v}
+            report["closure"] = resumed["closure"]
+            report["readings_seeded"] = resumed["readings_seeded"]
+            found = resumed["found"]
+            if any(since.values()):
+                again: dict[str, Any] = {}
+                for source, keys in close(since, again).items():
+                    found[source] |= keys
+                report["closure"]["resumed_since"] = again.get("closure", {})
+                if resumed["stage"] == "mentions":   # opened by the back-links too
+                    since = {s: [k for k in fresh[s] if opened_as[s].get(json.dumps(k))
+                                 != resumed["read"][s].get(json.dumps(k))] for s in SOURCES}
+            if resumed["stage"] == "mentions":
+                to_mention = since
+            report["followed"] = {s: len(v) for s, v in fresh.items()}
+            t = lap("resumed", t)
+        else:
+            found = close(fresh, report)
+            if checkpoint:
+                _save_checkpoint(delta_dir, checkpoint, "closure", fresh, found, opened_as, report)
+        read_at = time.monotonic()
+        report["seconds"]["closure_read"] = round(read_at - t, 2)
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
         work = delta_dir / f"work-{stamp}"
         work.mkdir(parents=True)
@@ -1598,14 +1755,15 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         documents = None if force_changed else bound_reading(work, state, environ)
         if unavailable is not None:   # no mail at all, not even as a link partner
             found["graph_mail"] = set()
-        # only the changed mail is read for mentions: a context message is never served
-        new_mail = sorted(k for k in fresh["graph_mail"] if not excluded(k[0]))
-        if new_mail and fresh["graph_mail"]:
+        # only the changed mail is read for mentions (a context message is never served),
+        # and on a resume after the mention listing only the records not listed yet
+        new_mail = sorted(k for k in to_mention["graph_mail"] if not excluded(k[0]))
+        if new_mail and to_mention["graph_mail"]:
             # the identifiers the new mail names: every holder comes too (mentions)
             mail_subset(state_dir, work / "mentions", new_mail)
             readings.close()
-            report["readings_seeded"] = seed_readings(state_dir, delta_dir,
-                                                      _mail_digests(work / "mentions"))
+            report["readings_seeded"] = report.get("readings_seeded", 0) + seed_readings(
+                state_dir, delta_dir, _mail_digests(work / "mentions"))
             readings.enter_context(kept(delta_dir, [state_dir / "mail-capture" / "blobs"]))
             for handle in mention_targets(work / "mentions", base, report,
                                           domains=_internal_domains(environ),
@@ -1614,10 +1772,10 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 if hit is not None and hit[0] != "graph_mail":
                     found[hit[0]].add(hit[1])
             shutil.rmtree(work / "mentions", ignore_errors=True)
-        if fresh.get("sharepoint"):
+        if to_mention.get("sharepoint"):
             # the identifiers the changed files name: every holder comes too (mentions)
             mentions = work / "mentions-sharepoint"
-            sharepoint_subset(state_dir, mentions, fresh["sharepoint"])
+            sharepoint_subset(state_dir, mentions, to_mention["sharepoint"])
             readings.close()
             report["readings_seeded"] = report.get("readings_seeded", 0) + seed_readings(
                 state_dir, delta_dir, _drive_digests(mentions))
@@ -1630,12 +1788,15 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     found[hit[0]].add(hit[1])
             shutil.rmtree(mentions, ignore_errors=True)
         for family, live in stores.items():
-            if fresh.get(family):
-                for handle in store_mention_targets(family, live, fresh[family], work, base,
-                                                    report):
+            if to_mention.get(family):
+                for handle in store_mention_targets(family, live, to_mention[family], work,
+                                                    base, report):
                     hit = record_of_handle(handle)
                     if hit is not None:
                         found[hit[0]].add(hit[1])
+        report["seconds"]["mentions_read"] = round(time.monotonic() - read_at, 2)
+        if checkpoint:
+            _save_checkpoint(delta_dir, checkpoint, "mentions", fresh, found, opened_as, report)
         # A layer projects only the changes no earlier layer holds (with their closure);
         # every MAX_LAYERS layers (or with nothing published yet) one cumulative layer
         # replaces them all.
@@ -1655,6 +1816,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             if not any(fresh.values()):
                 report["seconds"]["total"] = round(time.monotonic() - started, 2)
                 report["layer"] = "none: nothing new"
+                (delta_dir / CHECKPOINT).unlink(missing_ok=True)
                 shutil.rmtree(work, ignore_errors=True)
                 return report
         report["layer"] = "compacted" if compact else "added"
@@ -1740,13 +1902,14 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 # only now are the changes this layer holds marked done: a cycle that
                 # fails before this leaves them open, and the next cycle projects them
                 if not force_changed and not compact_only:
-                    state.close_over(found, fresh)
+                    state.close_over(found, fresh, opened_as)
                 state.remember_owned(owned_ids)
                 # a record holding a file not read yet stays open (opened again when a
                 # fold re-projected it): the next cycle projects it with the reading
                 for source, keys in held.items():
                     state.add(source, keys)
                 state.timed_out(timed)
+            (delta_dir / CHECKPOINT).unlink(missing_ok=True)   # its records are closed
             prune(delta_dir, keep={Path(item["store"]) for item in layers})
             if environ.get("PLX_DELTA_PG") == "1" or base.postgres:
                 # the same layer into the Postgres ontology, over the generation it holds
@@ -2217,6 +2380,126 @@ def _derivation_code() -> str | None:
         return None
 
 
+# A cycle's closure and mention listing (17+ min on 11-11), kept until its layer is
+# published: a cycle that fails after them resumes from here (``_resume``).
+CHECKPOINT = "cycle-checkpoint.json.gz"
+CHECKPOINT_FORMAT = 1
+
+
+def _checkpoint_key(base: Base, state: "State", environ: Mapping[str, str]) -> str:
+    """What a checkpoint was read from: this code and the code projections read with, the
+    base's contents, the published layers and the people exclusion (its digest only)."""
+    import hashlib
+    from ontology.project import derivation_code
+    return hashlib.sha256(json.dumps([
+        CHECKPOINT_FORMAT, hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        derivation_code(), base.digest, base.meta_digest(), state.get("layers") or [],
+        hashlib.sha256(environ.get("PLX_EXCLUDED_PEOPLE_OIDS", "").encode()).hexdigest(),
+    ], sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _save_checkpoint(delta_dir: Path, key: str, stage: str, fresh: Mapping[str, list[Any]],
+                     found: Mapping[str, set[Any]], read: Mapping[str, Mapping[str, Any]],
+                     report: Mapping[str, Any]) -> None:
+    """The cycle's change set as it read it, its closure (``stage`` ``closure``) and its
+    mention targets (``mentions``), written whole or not at all."""
+    import gzip
+    body = {"format": CHECKPOINT_FORMAT, "key": key, "stage": stage,
+            "fresh": {s: list(v) for s, v in fresh.items()},
+            "found": {s: sorted(v, key=_order) for s, v in found.items()},
+            "read": read, "closure": report.get("closure", {}),
+            "followed": report.get("followed", {}),
+            "readings_seeded": report.get("readings_seeded", 0)}
+    tmp = delta_dir / (CHECKPOINT + ".tmp")
+    with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=3) as out:
+        json.dump(body, out, default=list)
+    os.replace(tmp, delta_dir / CHECKPOINT)
+
+
+def _resume(delta_dir: Path, key: str, state: "State") -> dict[str, Any] | None:
+    """The checkpoint of a cycle that failed after its closure, when it still holds: the
+    same key (:func:`_checkpoint_key`) and every record it read still open (one changed
+    again since is closed again by the resuming cycle: ``read`` holds the version the
+    checkpoint read). Otherwise it is removed and None returned (the cycle reads
+    everything again)."""
+    import gzip
+    path = delta_dir / CHECKPOINT
+    if not path.is_file():
+        return None
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            body = json.load(fh)
+        if not isinstance(body, dict) or body.get("format") != CHECKPOINT_FORMAT or \
+                body.get("key") != key or body.get("stage") not in ("closure", "mentions"):
+            raise ValueError("another cycle's checkpoint")
+        read = {s: dict(body["read"].get(s) or {}) for s in SOURCES}
+        found = {s: {_tuple(k) for k in body["found"].get(s, [])} for s in SOURCES}
+        for source in SOURCES:   # a record closed since: its layer was published
+            if len(state.opened(source, map(json.loads, read[source]))) != len(read[source]):
+                raise ValueError("a record closed since")
+        resumed = {"stage": body["stage"], "found": found, "read": read,
+                   "closure": dict(body["closure"]),
+                   "readings_seeded": int(body.get("readings_seeded") or 0)}
+    except (OSError, ValueError, EOFError, KeyError, TypeError, AttributeError):
+        path.unlink(missing_ok=True)
+        return None
+    return resumed
+
+
+def _memory_room() -> int | None:
+    """Bytes this process may still take: the system's available memory, within what its
+    cgroup (a unit's ``MemoryMax``) leaves; None when the system does not say."""
+    room = None
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                room = int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    try:
+        group = Path("/proc/self/cgroup").read_text().splitlines()[0].split("::", 1)[1]
+        cg = Path("/sys/fs/cgroup") / group.lstrip("/")
+        limit = (cg / "memory.max").read_text().strip()
+        if room is not None and limit != "max":
+            # what the group holds that is not file cache (the cache it was charged for
+            # reading the captures is given back under pressure)
+            held = dict(line.split() for line in (cg / "memory.stat").read_text().splitlines())
+            room = min(room, int(limit) - int(held["anon"]) - int(held.get("shmem", 0)))
+    except (OSError, ValueError, IndexError, KeyError):
+        pass   # no cgroup v2 limit: the system's
+    return room
+
+
+def preflight(records: int, delta_dir: Path, environ: Mapping[str, str]
+              ) -> dict[str, Any] | None:
+    """None when a cycle following ``records`` records has room (``PREFLIGHT_*``): free
+    disk where its work directory and its temp files go (summed when one file system holds
+    both) and memory; else what it needs and has, per place. A place whose room cannot be
+    read is not held against the cycle (said in the log by its absence)."""
+    import tempfile
+    if environ.get("PLX_DELTA_PREFLIGHT") == "0":
+        return None
+    temp = Path(environ.get("SQLITE_TMPDIR") or environ.get("TMPDIR") or tempfile.gettempdir())
+    wanted: dict[int, list[Any]] = {}
+    for place, per_record in ((delta_dir, PREFLIGHT_DISK_PER_RECORD),
+                              (temp, PREFLIGHT_TEMP_PER_RECORD)):
+        need = PREFLIGHT_FLOOR + per_record * records
+        try:
+            dev = place.stat().st_dev
+            free = shutil.disk_usage(place).free
+        except OSError:
+            continue
+        held = wanted.setdefault(dev, [str(place), 0, free])
+        held[1] += need
+    short = {f"disk:{where}": {"need": want, "free": free}
+             for where, want, free in wanted.values() if free < want}
+    memory = _memory_room()
+    want = PREFLIGHT_FLOOR + PREFLIGHT_MEMORY_PER_RECORD * records
+    if memory is not None and memory < want:
+        short["memory"] = {"need": want, "free": memory}
+    return ({"records": records, "short": short} if short else None)
+
+
 def prune(delta_dir: Path, keep: set[Path], *, grace: float = 900.0) -> None:
     """Remove earlier delta stores (after ``grace`` seconds, so a reader holding one open
     finishes) and abandoned work directories (:func:`sweep`)."""
@@ -2432,6 +2715,21 @@ def _terminated(signum: int, _frame: Any) -> None:
     raise SystemExit(128 + signum)
 
 
+def _temp_beside(delta_dir: Path, environ: Any) -> Path:
+    """SQLite's and Python's temp files of a cycle (its sorts spill gigabytes, and its
+    workers inherit the environment) on the delta's own file system unless the unit
+    names a place: 11-11, a cycle on a unit without TMPDIR sorted to /tmp on the small
+    root disk and failed "database or disk is full"."""
+    if not environ.get("SQLITE_TMPDIR") or not environ.get("TMPDIR"):
+        temp = delta_dir / "tmp"
+        temp.mkdir(mode=0o700, exist_ok=True)
+        environ.setdefault("SQLITE_TMPDIR", str(temp))
+        environ.setdefault("TMPDIR", str(temp))
+        import tempfile
+        tempfile.tempdir = None   # read TMPDIR again
+    return Path(environ.get("SQLITE_TMPDIR") or environ["TMPDIR"])
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ontology.delta")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2456,6 +2754,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     state_dir = Path(args.state_dir)
     delta_dir = Path(args.delta_dir) if args.delta_dir else state_dir / "projection" / "delta"
     delta_dir.mkdir(parents=True, exist_ok=True)
+    _temp_beside(delta_dir, os.environ)
     mirror = Path(args.mirror) if args.mirror else _mirror_path(state_dir)
     folding = args.command == "compact"
     # stopped (a unit's timeout): unwind, so what the cycle kept is committed and its
@@ -2479,8 +2778,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     line = {k: report.get(k) for k in (
                         "started_at", "layer", "changed", "new_changes", "records", "owned",
                         "projected", "seconds", "mail_skipped", "closure", "postgres",
-                        "documents", "swept")}
+                        "documents", "swept", "status", "resumed", "resumed_since",
+                        "preflight")}
                     line["command"] = args.command
+                    if report.get("status") == "preflight_refused":   # the unit fails: seen
+                        line["error"] = "preflight_refused: " + json.dumps(
+                            report["preflight"]["short"], sort_keys=True)
         except Exception as exc:  # noqa: BLE001 - the last published delta stays served
             import traceback
             trace = traceback.format_exc()

@@ -15,7 +15,10 @@ existing cross-system joins only, never a guess made here:
   lead (a number match) only says one probably exists;
 * key joins: a primary identifier (``identifiers``: the record's own number, kind and
   normalized value) the record shares with a primary identifier of a record of the same
-  type in the counterpart system, a probable copy as well.
+  type in the counterpart system, a probable copy as well;
+* a pair's ``names`` (an item's name): a counterpart record of the type stating the same
+  folded name is a probable copy keyed under another code, so the record is not raised
+  missing (never compared, never a join).
 
 A record is judged only when it is in the active population (``inactive``: the engine's
 one predicate for orders, else its own status words or deleted/blocked flags and its
@@ -33,8 +36,9 @@ is not placed yet, so nothing must reach the other system);
 its claim rests on what the counterpart system does not hold, so it requires a grant on
 every audience that system's records of the type sit in (``requires``). Differs
 (``sync_mismatch``): a compared copy states another value of a key field (an amount as
-``Decimal`` in one currency, another currency never compared; a text or a unit by its
-folded words; a side that states none, or a total of zero, is not compared; the same
+``Decimal`` in one currency, another currency never compared; a text by its folded
+words, a unit by its canonical token (``ontology.units.unit_token``: CSE, cs and case are
+one unit); a side that states none, or a total of zero, is not compared; the same
 two values on ``CONVENTION_MIN`` or more copies and ``CONVENTION_SHARE`` of those compared
 is how the two systems spell it, counted ``convention``, never raised), ONE gap per pair of records and
 field, each record its own cited group (a reader who may not open both never sees it),
@@ -52,6 +56,8 @@ from datetime import date
 from decimal import Decimal
 import json
 from typing import Any, Callable, Iterable, Mapping, Sequence
+
+from ontology.units import unit_token
 
 from . import active_population as active
 from . import proactive_business as pb
@@ -74,7 +80,7 @@ FLAG_PROPS = ("deleted_at", "bc_blocked", "blocked", "is_active")
 CREATED_PROPS = ("portal_created_at", "fm_created_at")
 SYSTEM_WORDS = {"bc": "Business Central", "portal": "the Portal", "sage": "Sage",
                 "fm": "FileMaker"}
-AMOUNT, TEXT = "amount", "text"
+AMOUNT, TEXT, UNIT = "amount", "text", "unit"
 MIN_JOINED = Decimal("0.5")   # of a pair's judged records, the share joined to a copy
 CONVENTION_MIN = 20           # copies two values must differ the same way on ...
 CONVENTION_SHARE = Decimal("0.2")   # ... and their share of the compared copies
@@ -100,6 +106,9 @@ class SyncPair:
     dates: tuple[str, ...]   # the business dates that age a record
     label: str
     by_status: bool          # active by its status words (else by its flags)
+    # names whose exact folded text on a counterpart record makes it a probable copy (an
+    # item keyed under another code in each system): never a join, only "not missing"
+    names: tuple[str, ...] = ()
 
 
 PAIRS = (
@@ -115,8 +124,8 @@ PAIRS = (
               Field("customer PO", ("customer_po",), TEXT, PII)),
              ("invoice_date",), "Sales invoice", False),
     SyncPair("Product", "bc", "portal",
-             (Field("unit", ("bc_base_uom", "uom"), TEXT),),
-             (), "Item", False),
+             (Field("unit", ("bc_base_uom", "uom"), UNIT),),
+             (), "Item", False, ("name",)),
 )
 
 
@@ -156,6 +165,27 @@ def _key_partners(st: Any, ids: Sequence[str], want: set[str]) -> dict[str, set[
     return out
 
 
+def _name_partners(st: Any, pair: SyncPair, ids: Sequence[str], want: set[str]
+                   ) -> dict[str, set[str]]:
+    """record -> the records of ``want`` stating the same folded name: a probable copy the
+    other system keyed under its own code. An empty or placeholder name joins nothing."""
+    if not ids or not want:
+        return {}
+    named: dict[str, set[str]] = defaultdict(set)
+    for oid, entry in st.values([pair.type], pair.names, objects=sorted(want)).items():
+        for prop in pair.names:
+            for row in entry["props"].get(prop, ()):
+                if _stated(row):
+                    named[_fold(row.get("value"))].add(oid)
+    out: dict[str, set[str]] = defaultdict(set)
+    for oid, entry in st.values([pair.type], pair.names, objects=list(ids)).items():
+        for prop in pair.names:
+            for row in entry["props"].get(prop, ()):
+                if _stated(row) and named.get(_fold(row.get("value"))):
+                    out[oid] |= named[_fold(row.get("value"))]
+    return out
+
+
 def _first_recorded(st: Any, ids: Sequence[str]) -> dict[str, date]:
     out = {}
     for start in range(0, len(ids), 500):
@@ -185,6 +215,9 @@ def _value(field: Field, props: Mapping[str, list], codes: Mapping[tuple, str | 
                 return None   # an unpriced copy states no total, never a total of nothing
             currency = pb._currency(codes, row)
             return ((number, currency), row) if number is not None and currency else False
+        if field.kind == UNIT:
+            # a unit by its canonical token: CSE, cs and case are one unit
+            return unit_token(row.get("value")) or _fold(row.get("value")), row
         return _fold(row.get("value")), row
     return None
 
@@ -255,6 +288,10 @@ def sync_gaps(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: C
         lonely = [o for o in source if o not in partners and o not in probable]
         for mine, theirs in _key_partners(st, lonely, held_there).items():
             probable[mine] |= theirs
+        if pair.names:
+            lonely = [o for o in lonely if o not in probable]
+            for mine, theirs in _name_partners(st, pair, lonely, held_there).items():
+                probable[mine] |= theirs
         props = (*pair.dates, *CREATED_PROPS, *active.EDIT_TIME_PROPS, *STATUS_PROPS,
                  *FLAG_PROPS, *LABEL_PROPS, *(p for f in pair.fields for p in f.props))
         copies = sorted({c for held in partners.values() for c in held})

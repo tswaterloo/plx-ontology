@@ -851,6 +851,51 @@ def _results(todo: list[tuple], width: int) -> Iterator[tuple[str, str, list, fl
         pool.shutdown(wait=False, cancel_futures=True)
 
 
+def _store_conn(store: Path | None) -> Any:
+    """The ontology the sources' records are resolved in: Postgres when it serves the
+    generation at ``store`` (``PLX_ONTOLOGY_PG``; ``only``: always, with no generation
+    file), through the compat layer that runs ``_record_of``'s SQL as written; else the
+    SQLite generation file; else None (no store: no source has a record). With Postgres
+    the only store and not whole, the pass stops here (``store_not_whole``) and the
+    sources keep the records they had, never rewritten without one."""
+    from operating.pg import ontology_reader
+    if ontology_reader.pg_only():
+        problem = ontology_reader.whole()
+        if problem is not None:
+            raise RuntimeError(f"store_not_whole:{problem}")
+    if ontology_reader.serves(store):
+        from operating.pg.sqlite_compat import PgCompatConnection
+        return PgCompatConnection(ontology_reader.dsn())
+    if store is not None and Path(store).is_file():
+        return sqlite3.connect(f"file:{store}?mode=ro", uri=True, timeout=60)
+    return None
+
+
+def _resolve(store: Any, handles: Sequence[str]
+             ) -> tuple[dict[str, tuple[str, str, str, str]], set[str]]:
+    """(``_record_of`` of ``handles``, the handles left unsure). On Postgres each batch is
+    followed by a check that Postgres was whole while it was read (a load emptying tables
+    mid-pass); a handle of a batch read while it was not, and found in no record, is unsure:
+    its source is skipped this pass (it keeps the record it had), never written without
+    one. A handle found keeps its record (a row read is a row held)."""
+    if store is None or isinstance(store, sqlite3.Connection):
+        return _record_of(store, handles), set()
+    from operating.pg import ontology_reader
+    out: dict[str, tuple[str, str, str, str]] = {}
+    unsure: set[str] = set()
+    for i in range(0, len(handles), RESOLVE_BATCH):
+        batch = handles[i:i + RESOLVE_BATCH]
+        found = _record_of(store, batch)
+        out.update(found)
+        if ontology_reader.whole() is not None:
+            unsure.update(h for h in batch if h not in found)
+    return out, unsure
+
+
+# sources whose records are read between two checks that Postgres is whole
+RESOLVE_BATCH = 500
+
+
 def _record_of(store: sqlite3.Connection | None, handles: Sequence[str]
                ) -> dict[str, tuple[str, str, str, str]]:
     """handle -> (object id, type, audience, markings) of the store record holding its text,
@@ -943,19 +988,19 @@ def run(state: Path, out: Path, *, store: Path | None, workers: int | None = Non
     store_batch(batch)
     counts["read_seconds"] = round(time.monotonic() - started, 1)
     # sources: (re)resolved every pass (a record the store gains later is picked up)
-    sconn = sqlite3.connect(f"file:{store}?mode=ro", uri=True, timeout=60) \
-        if store is not None and Path(store).is_file() else None
+    sconn = _store_conn(store)
     with_tables = {k for (k,) in conn.execute("SELECT file_key FROM files WHERE status = "
                                                "'read'")}
     useful = [s for s in listed if s.file_key in with_tables]
-    records = dict(records) if records is not None else _record_of(
+    records, unsure = (dict(records), set()) if records is not None else _resolve(
         sconn, [s.handle for s in useful])
     with conn:
         conn.executemany(
             "INSERT OR REPLACE INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(s.handle, s.file_key, s.origin, s.name[:200], *(records.get(s.handle) or
               (None, None, None, None)), s.received_at, json.dumps(list(s.participants)),
-              stamp) for s in useful])
+              stamp) for s in useful if s.handle not in unsure])
+    counts["sources_skipped_not_whole"] = len(unsure)
     if sconn is not None:
         sconn.close()
     counts.update(status=status, readings=kinds, sources_with_tables=len(useful),

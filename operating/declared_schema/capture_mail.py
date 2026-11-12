@@ -126,6 +126,17 @@ _FOLDER_LISTING_DDL = """CREATE TABLE IF NOT EXISTS mailbox_folders (
     total INTEGER,
     listed_at TEXT NOT NULL,
     PRIMARY KEY (mailbox_id, folder_id))"""
+# Messages a capture round listed but the people guard could not decide (no complete groups
+# listing, or a list whose members cannot be read): their ids only, re-read by a later
+# round once the guard can decide them (``MailCapture._retry_undecided``). Nothing else
+# of such a message is kept. Applied when the first such message is held (not at open).
+_UNDECIDED_DDL = """CREATE TABLE IF NOT EXISTS people_undecided (
+    mailbox_id TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    held_at TEXT NOT NULL,
+    tried_at TEXT,
+    PRIMARY KEY (mailbox_id, message_id))"""
 _PRIORITY_DDL = (
     "CREATE TABLE IF NOT EXISTS priority_folders (mailbox_id TEXT NOT NULL, folder_id TEXT "
     "NOT NULL, oldest TEXT, newest TEXT, PRIMARY KEY (mailbox_id, folder_id))",

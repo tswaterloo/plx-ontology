@@ -194,6 +194,14 @@ def _smtp_addresses(raw: Mapping[str, Any]) -> set[str]:
     return found
 
 
+def _undecided_id(raw: Mapping[str, Any]) -> str:
+    """The id of a message the people guard could not decide, kept (nothing else of it) so
+    the capture re-reads it once the guard can decide it."""
+    if not grammar.TYPES["mail_id"].valid(raw.get("id")):
+        raise SourceUnavailable("Graph message lacks a valid id or changeKey")
+    return raw["id"]
+
+
 class GraphMailReader:
     """Entitlement-checked reads of mailbox messages (metadata, optional text body).
 
@@ -250,19 +258,28 @@ class GraphMailReader:
         self.people.require()
         self.people.bind(self._api)
         # The groups' addresses, recorded with the listing so offline a distribution list
-        # is decided as no person's (a refusal records none: they stay undecided).
+        # is decided by its members (a list with an excluded or unread member records none).
+        # Read once per run (``forget_groups``), not on every mailbox open.
         self.people.list_groups(self._api)
 
     def _excluded_party(self, raw: Mapping[str, Any]) -> str | None:
         """``sender`` when an excluded person sent the message, ``recipient`` when one is
         a To/Cc/Bcc recipient (the message is kept out of every mailbox's capture, not
-        only theirs), else None."""
+        only theirs), ``withheld`` when the ready guard cannot decide an address on it (a
+        list whose members cannot be read, or any possible list while the groups listing
+        failed): that one message is withheld and the folder goes on. Else None. A guard
+        that is not ready at all still raises ``ExclusionUnavailable``."""
         senders = [raw.get(key) for key in ("from", "sender") if isinstance(raw.get(key), Mapping)]
-        if self.people.excluded(_addresses(senders)):
-            return "sender"
         recipients = [entry for key in ("toRecipients", "ccRecipients", "bccRecipients")
                       if isinstance(raw.get(key), list) for entry in raw[key]]
-        return "recipient" if self.people.excluded(_addresses(recipients)) else None
+        try:
+            if self.people.excluded(_addresses(senders)):
+                return "sender"
+            return "recipient" if self.people.excluded(_addresses(recipients)) else None
+        except people_exclusion.ExclusionUnavailable:
+            if self.people.unavailable or not self.people.bound:
+                raise
+            return "withheld"
 
     def _open(self, actor: Actor, mailbox: Any) -> Mailbox:
         if not self._audience.may_read_any(actor, "mail:"):
@@ -429,7 +446,7 @@ class GraphMailReader:
             following = self._api.continuation_url(first, page[links[0]])
             if following is None:
                 raise nextlink_refused("graph nextLink escaped the collection")
-            items, removed, dropped, people_dropped = [], [], 0, 0
+            items, removed, dropped, people_dropped, undecided = [], [], 0, 0, []
             for raw in page["value"]:
                 if not isinstance(raw, Mapping):
                     raise SourceUnavailable("graph listing item invalid")
@@ -445,14 +462,18 @@ class GraphMailReader:
                 if not self._belongs(box, raw, {}, folder_id):
                     dropped += 1
                     continue
-                if self._excluded_party(raw):
+                party = self._excluded_party(raw)
+                if party == "withheld":
+                    undecided.append(_undecided_id(raw))   # re-read once decidable
+                    continue
+                if party:
                     people_dropped += 1   # never recorded, stored or indexed
                     continue
                 items.append(self._record(box, raw))
             last = links[0] == "@odata.deltaLink"
             yield {"source": "graph-mail", "mailbox": box.object_id, "folder_id": folder_id,
                    "items": items, "removed": removed, "provenance_dropped": dropped,
-                   "people_dropped": people_dropped,
+                   "people_dropped": people_dropped, "people_undecided": undecided,
                    "next_url": None if last else following,
                    "delta_url": following if last else None}
             if last:
@@ -552,20 +573,25 @@ class GraphMailReader:
                 following = self._api.continuation_url(first, page["@odata.nextLink"])
                 if following is None:
                     raise nextlink_refused("graph nextLink escaped the collection")
-            items, dropped, people_dropped = [], 0, 0
+            items, dropped, people_dropped, undecided = [], 0, 0, []
             for raw in page["value"]:
                 if not isinstance(raw, Mapping):
                     raise SourceUnavailable("graph listing item invalid")
                 if not self._belongs(box, raw, {}, folder_id):
                     dropped += 1
                     continue
-                if self._excluded_party(raw):
+                party = self._excluded_party(raw)
+                if party == "withheld":
+                    undecided.append(_undecided_id(raw))   # re-read once decidable
+                    continue
+                if party:
                     people_dropped += 1   # never recorded, stored or indexed
                     continue
                 items.append(self._record(box, raw))
             yield {"source": "graph-mail", "mailbox": box.object_id, "folder_id": folder_id,
                    "items": items, "removed": [], "provenance_dropped": dropped,
-                   "people_dropped": people_dropped, "next_url": following}
+                   "people_dropped": people_dropped, "people_undecided": undecided,
+                   "next_url": following}
             if following is None:
                 return
             url = following
@@ -674,18 +700,23 @@ class GraphMailReader:
             first = grammar.url("graph.messages", query, user=box.object_id)
         raws, completeness = self._api.get_pages(first, max_pages=max_pages,
                                                  max_items=max_items, headers=_IMMUTABLE)
-        records, dropped, people_dropped = [], 0, 0
+        records, dropped, people_dropped, undecided = [], 0, 0, 0
         for raw in raws:
             if not self._belongs(box, raw, cache, expected):
                 dropped += 1
                 continue
-            if self._excluded_party(raw):
+            party = self._excluded_party(raw)
+            if party == "withheld":
+                undecided += 1
+                continue
+            if party:
                 people_dropped += 1
                 continue
             records.append(self._record(box, raw))
         result = completeness_with_withheld(completeness, dropped)
         result["provenance_dropped"] = dropped
         result["people_dropped"] = people_dropped
+        result["people_undecided"] = undecided
         return {"source": "graph-mail", "mailbox": box.object_id, "mailbox_upn": box.upn,
                 "items": records, "completeness": result}
 
@@ -723,6 +754,8 @@ class GraphMailReader:
         if not self._belongs(box, raw, {}, expected_folder_id):
             raise NotVisible()
         party = self._excluded_party(raw)
+        if party == "withheld":
+            raise people_exclusion.ExclusionUnavailable("excluded_people_unresolved")
         if party:
             raise people_exclusion.PeopleExcluded(party)
         body, truncated = None, False

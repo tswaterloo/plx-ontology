@@ -16,6 +16,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 from ontology.store import StoreBuilder
 from operating import ai_watcher as aw
@@ -169,9 +170,33 @@ class World(unittest.TestCase):
         path = make_layer(self.state / "projection" / "layer1.sqlite", layer,
                           [r["object_id"] for r in layer.rows["objects"]], self.served)
         publish(self.served, [path])
+        self.layer_path = path
 
 
 class DiscoverTest(World):
+    def test_postgres_alone_never_opens_the_generation_file(self) -> None:
+        """``PLX_ONTOLOGY_PG=only``: the served generation's file, still on disk until it
+        is retired, is never opened (nothing is known before the first look, as once it
+        is gone), and an excluded person's mail stays withheld."""
+        self.world()
+        opened = []
+        real = aw._ro
+
+        def ro(path):
+            opened.append(str(path))
+            return real(path)
+
+        changes = ("postgres:sha256:x", [str(self.layer_path)], ro, aw._layer_owned)
+        with closing(aw.open_store(self.watch)) as ws, \
+                mock.patch.object(aw, "_postgres_changes", return_value=changes), \
+                mock.patch.object(aw, "_ro", ro):
+            found = aw.discover(ws, self.served, now=NOW, guard=Guard(), excluded=excluded)
+            queued = {r[0] for r in ws.execute("SELECT object_id FROM queue")}
+        self.assertNotIn(str(self.served), opened)
+        self.assertIn(str(self.layer_path), opened)
+        self.assertNotIn("Email:fx:19", queued)
+        self.assertEqual(found["people_withheld"], 1)
+
     def test_only_real_changes_are_queued(self) -> None:
         self.world()
         with closing(aw.open_store(self.watch)) as ws:

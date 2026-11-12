@@ -64,6 +64,24 @@ class MigrationTest(unittest.TestCase):
         params = self.conn.execute("SELECT DISTINCT params FROM plx_meta.migrations").fetchall()
         self.assertEqual(params, [(values,)])
 
+    def test_the_marked_documents_read_is_served_by_its_partial_index(self) -> None:
+        """The marked documents read (every serving process, every two minutes) reads the
+        marked chunks from ``chunks_marked``, never every chunk."""
+        from operating.search import document_marks
+        migrate.migrate(self.conn, values={"embed_model": "m", "embed_dim": 3})
+        for n in range(200):
+            insert_chunk(self.conn, f"c{n}", object_id=f"Email:m:{n}",
+                         markings=["pii"] if n % 50 == 0 else [])
+        self.conn.execute("ANALYZE search.chunks")
+        self.conn.execute("SET enable_seqscan = off")
+        plan = "\n".join(row[0] for row in self.conn.execute(
+            "EXPLAIN " + document_marks.MARKED_SQL, (list(document_marks.RECORD_KINDS),)))
+        self.assertIn("chunks_marked", plan)
+        rows = self.conn.execute(document_marks.MARKED_SQL,
+                                 (list(document_marks.RECORD_KINDS),)).fetchall()
+        self.assertEqual(sorted(r[0] for r in rows), [f"Email:m:{n}" for n in (0, 100, 150, 50)])
+        self.conn.rollback()
+
     def test_check_names_every_departure_from_the_contract(self) -> None:
         migrate.migrate(self.conn, values={"embed_model": "BAAI/bge-m3", "embed_dim": 1024})
         self.conn.execute("DROP INDEX search.chunks_embedding_hnsw")

@@ -147,6 +147,7 @@ from .page_parts import (  # noqa: F401 - re-exported
     SECTION_PLANS, PLAN_SECTIONS, POOL_SECTIONS, TRAIL_TYPES, plans_before, CUSTOMER_SUMS,
     CUSTOMER_DAYS, CUSTOMER_ROWS, _CLOSED, _cited, page_knows, _refusal, customer_summary,
     label_timeline, page_handles, shown_handles, PAGE_PLANS, _PLANS_RUN, plans_once, _entries, money_of,
+    shown_objects,
     entry_sources, landed_cost_of, people_of, page_hidden, late_of, STAGE_WORDS,
     reconciled_not_found, MAX_ORDER_COPIES, order_state, page_import_days,
     sales_order_view, FULFILMENT_TYPES, LINK_RECORDS, LINK_EVIDENCE, _LINK_WORDS,
@@ -886,9 +887,17 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         return with_delta_freshness(entries, path, digest[0] if digest else None)
 
     def _served_store(self) -> tuple[Optional[Path], Optional[str]]:
-        """The served projection's path and content digest (None when unreadable)."""
+        """The served projection's path and content digest (None when unreadable).
+        Postgres the only store: the path names only where the delta pointer sits
+        (``delta_overlay.pointer_path``), the file is never opened (it may be gone), and
+        the digest is Postgres's own, the base the layers record."""
+        from operating.pg import ontology_reader
         path = self.store_path or (self.state_dir / "projection" / "ontology.sqlite"
                                    if self.state_dir else None)
+        if path is not None and ontology_reader.pg_only():
+            meta = ontology_reader.store_meta(("content_digest",)) or {}
+            digest = meta.get("content_digest")
+            return path, digest if isinstance(digest, str) else None
         if path is None or not path.is_file():
             return None, None
         try:
@@ -2497,7 +2506,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         self._remember_read(key, reader, read, inputs_of)
         held = self._held_good(key)
         before = self._access_later(reader, shown_handles(held[1]) if held else (),
-                                    screen=key[2])
+                                    screen=key[2], objects=getattr(held, "objects", None))
         snapshot = self._snapshot(key, held, before, inputs)
         if snapshot is not None:
             if getattr(snapshot, "stale_since", None) is not None:
@@ -2744,7 +2753,13 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
 
     def _held_good(self, key: tuple) -> Optional[tuple]:
         """The last good page of ``key``: in memory, else in the page store on disk (the
-        same entry another process or an earlier run kept), within ``LAST_GOOD_SECONDS``."""
+        same entry another process or an earlier run kept), within ``LAST_GOOD_SECONDS``.
+
+        One read by other code (a deploy since: its ``code_version`` is not this one's) is
+        held as ``_ReadByOtherCode``, naming every record it shows (``shown_objects``): it
+        is served only once each of them, as well as each source it cites, is decided
+        open for the reader by the code serving it (``_access_later``). One whose records
+        cannot all be named is a miss."""
         with self._lock:
             held = self._good.get(key)
         if held is not None:
@@ -2752,17 +2767,24 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         store = getattr(getattr(self, "page_cache", None), "store", None)
         if store is None:
             return None
-        found = store.get(("last-good",) + key)
+        from .page_store import kept_code
+        found = store.get(("last-good",) + key, code=kept_code())
         if found is None:
             return None
-        value = found[1]
-        if not (isinstance(value, tuple) and len(value) == 3
+        value = _kept_good_model(found[1])
+        if not (isinstance(value, tuple) and len(value) == 4
                 and isinstance(value[0], float) and isinstance(value[2], tuple)
                 and hasattr(value[1], "model_copy")
                 and getattr(value[1], "stale_since", None) is None):
             return None   # not a kept page of this shape: never served
+        held = value[:3]
+        if value[3] != store.code:
+            objects = shown_objects(value[1])
+            if objects is None:
+                return None   # a record it shows cannot be named: never served
+            held = _ReadByOtherCode(held, objects)
         with self._lock:
-            held = self._good.setdefault(key, value)
+            held = self._good.setdefault(key, held)
         return held
 
     def _finish_later(self, reader: Reader, key: tuple, box: Future, before: Future,
@@ -2801,15 +2823,22 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         threading.Thread(target=run, name="last-good-keep", daemon=True).start()
 
     def _access_later(self, reader: Reader, handles: Iterable[str] = (),
-                      screen: Any = None) -> Future:
+                      screen: Any = None, objects: Optional[Iterable[str]] = None) -> Future:
         """(the reader's access state, every one of ``handles`` still opens for them),
         asked of the read worker ahead of the screen's own read (it runs before it, or the
         worker is stuck and it never does). The state: policy fingerprint, unrestricted,
         people exclusion stamp, the parts ``page_key`` keys a page on, and for a screen of
         ``GRANT_SCREENS`` (``screen``: its name) the owner's workload grants as they stand:
-        a team grant revoked serves no copy kept under it, not even marked stale."""
+        a team grant revoked serves no copy kept under it, not even marked stale.
+
+        ``objects`` (a page read by other code: ``_ReadByOtherCode``): record ids that must
+        each also be readable by the reader now, decided by this code's tools as a fresh
+        read decides them (``visible_objects``: the reader's audiences with the people
+        exclusion, markings, the time and every item permission, in one batched read); an
+        access without that decision opens none."""
         from operating.pg.permissions import _fingerprint, exclusion_stamp
         listed = sorted(set(handles))
+        records = None if objects is None else sorted(set(objects))
         granted = bool(screen) and screen[0] in GRANT_SCREENS
 
         def job(view: Any) -> tuple:
@@ -2823,6 +2852,10 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 decided = view.access.decide(listed) if listed else {}
                 opens = isinstance(decided, dict) and all(
                     h in decided and decided[h] is None for h in listed)
+                if opens and records is not None:
+                    visible = getattr(view.access, "visible_objects", None)
+                    seen = visible(records) if callable(visible) else None
+                    opens = isinstance(seen, (set, frozenset)) and seen >= set(records)
                 return state, opens
         worker = getattr(self, "access_worker", None)
         if worker is None or worker.stopped.is_set():
@@ -2868,7 +2901,8 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             kept = before is not None and before == after
         if not kept:   # the page may not match any one access state: never served stale
             if store is not None:   # nor its disk copy, not left there for 12 h
-                store.pop(("last-good",) + key)
+                from .page_store import kept_code
+                store.pop(("last-good",) + key, code=kept_code())
             return
         with self._lock:
             while len(self._good) >= LAST_GOOD_KEPT:
@@ -2876,8 +2910,11 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             held = self._good[key] = (time.time(), value.model_copy(deep=True), before)
             if inputs is not None:
                 self._snap_inputs()[key] = inputs
-        if store is not None:   # on disk too: a restart starts from it
-            store.put(("last-good",) + key, held, LAST_GOOD_SECONDS)
+        if store is not None:   # on disk too: a restart or a deploy starts from it
+            from .page_store import kept_code
+            store.put(("last-good",) + key,
+                      (held[0], _portable_model(held[1]), held[2], store.code),
+                      LAST_GOOD_SECONDS, code=kept_code())
 
     def _refresh_later(self, reader: Reader, key: tuple, read: Callable[[], Any]) -> None:
         """Read the screen again off the request (one at a time per screen and reader)."""
@@ -3006,6 +3043,9 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             self, reader, kind), self._screen_inputs())
 
     def home(self, reader: Reader) -> m.Home:
+        # read ahead for the reader on every Home visit, also when a kept page answers it
+        # (a snapshot runs no read, so the call inside ``_home`` is not made then)
+        self.warm(reader)
         return self._serving(reader, ("home",), lambda: self._home(reader))
 
     def _home(self, reader: Reader) -> m.Home:
@@ -3014,7 +3054,6 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             named=self.test_named())
         inbox = aged_to_today(inbox, self.today() if self.today else None)
         late, risk = attention_items(inbox, labels, suppliers=suppliers)
-        self.warm(reader)
         status = inbox.get("status")
         with self._lock:
             recent = list(self._recent.get(reader.key, []))
@@ -4290,6 +4329,43 @@ def object_impact(backend: WorkspaceBackend, view: Any, object_type: str, object
                  if g.get("state") in ("unknown", "inaccessible")][:10],
         partial=not done.get("complete", True), partial_reason=done.get("reason"))
     return presentation.polished(panel)
+
+
+class _ReadByOtherCode(tuple):
+    """A last good page (when read, the page, the access state) read by another code
+    version (``_held_good``), with ``objects``: every record id it shows, each decided for
+    the reader again before it is served."""
+
+    objects: frozenset[str]
+
+    def __new__(cls, held: tuple, objects: Iterable[str]) -> "_ReadByOtherCode":
+        out = super().__new__(cls, held)
+        out.objects = frozenset(objects)
+        return out
+
+
+def _portable_model(value: Any) -> tuple[str, str, Any]:
+    """A screen's page as data any code version reads back (``_kept_good_model``): its
+    model's name in ``operator_api.models`` and its JSON form."""
+    return ("model", type(value).__name__, value.model_dump(mode="json"))
+
+
+def _kept_good_model(value: Any) -> Any:
+    """A last good page as kept on disk (``_portable_model`` in place of the model, the
+    code version it was read under last), built again with the code serving it: None when
+    it no longer fits that code's model (a field added or changed by a deploy) or is not of
+    that shape."""
+    if not (isinstance(value, tuple) and len(value) == 4 and isinstance(value[1], tuple)
+            and len(value[1]) == 3 and value[1][0] == "model"):
+        return None
+    model = getattr(m, str(value[1][1]), None)
+    from pydantic import BaseModel
+    if not (isinstance(model, type) and issubclass(model, BaseModel)):
+        return None
+    try:
+        return (value[0], model.model_validate(value[1][2]), value[2], value[3])
+    except ValueError:   # pydantic's ValidationError: the page no longer fits
+        return None
 
 
 def page_sections(backend: WorkspaceBackend, view: Any, object_type: str,

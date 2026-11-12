@@ -35,8 +35,11 @@ converted, never summed across units or currencies):
   ordered within ``RECENT_DAYS`` of the run's day. Only costs the ontology declares per one
   unit (``money_measure: unit_price``) on a purchase order line are read, never one whose
   schema says it is not a unit price (``NOT_UNIT_COST``); a change of currency, unit or
-  cost source is a different series, never a jump. The latest and every averaged line are
-  each their own group, marked ``finance``.
+  cost source is a different series, never a jump. An order whose copy in another system
+  (a firm twin) states a total in the same currency differing by ``COST_CHANGE`` or more
+  disputes its own figures (an order carried into BC at go-live with each line's total as
+  its unit cost): none of its lines is read, counted ``order_copies_disagree``. The latest
+  and every averaged line are each their own group, marked ``finance``.
 
 * ``shipped_not_invoiced``: a customer order (one gap per settled identity cluster) that a
   settled shipment fulfils, shipped ``INVOICE_GRACE_DAYS`` to ``UNBILLED_LOOKBACK_DAYS``
@@ -107,6 +110,7 @@ OVERDUE_HIGH_DAYS = 30
 
 PO = "PurchaseOrder"
 PO_LINE = "PurchaseOrderLine"
+PO_TOTAL = "total_cost"
 NOT_UNIT_COST = frozenset({"unit_price"})   # gold stores extended totals here (ERP-M-033)
 COST_CHANGE = Decimal("0.25")
 TRAILING_LINES = 6
@@ -664,8 +668,35 @@ def unit_cost_jump(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     for_item = {l["from_object"]: l for l in st.links([PO_LINE_ITEM], settled)}
     lines = sorted(set(line_of) & set(for_item))
     costs = st.values([PO_LINE], props, objects=lines)
-    dated = st.values([PO], ("order_date", "po_number"),
-                      objects=sorted({line_of[l]["to_object"] for l in costs}))
+    orders = sorted({line_of[l]["to_object"] for l in costs})
+    # an order's copies in another system (its firm twins): a copy whose total differs
+    # from the order's own by COST_CHANGE or more (an order carried into BC at go-live with
+    # each line's total as its unit cost) disputes every unit cost the order states
+    copies = {o: sorted({t for t, _marks in po_source.firm.get(o, ())}) for o in orders}
+    dated = st.values([PO], ("order_date", "po_number", PO_TOTAL),
+                      objects=sorted({*orders, *(c for cs in copies.values() for c in cs)}))
+    totals = _currencies(st, [r for e in dated.values()
+                              for r in (e.get("props") or {}).get(PO_TOTAL, ())])
+
+    def total(order: str) -> tuple[Decimal, str] | None:
+        row = _one(((dated.get(order) or {}).get("props") or {}).get(PO_TOTAL))
+        amount = _dec(row["value"]) if row else None
+        currency = _currency(totals, row) if row else None
+        # an unpriced copy (a total of 0) states no total, never a total of nothing
+        return (amount, currency) if amount and amount > 0 and currency else None
+
+    def disputed(order: str) -> bool:
+        mine = total(order)
+        if mine is None:
+            return False
+        for copy in copies.get(order, ()):
+            theirs = total(copy)
+            if theirs is not None and theirs[1] == mine[1] and \
+                    max(mine[0], theirs[0]) > min(mine[0], theirs[0]) * (1 + COST_CHANGE):
+                return True
+        return False
+
+    disputes = {o for o in orders if disputed(o)}
     codes = _currencies(st, [r for e in costs.values() for rs in e["props"].values()
                              for r in rs])
     # series (item, property, currency, per unit) -> {order cluster: (day, cost, rows, marks)}
@@ -676,6 +707,9 @@ def unit_cost_jump(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         when = _one(((dated.get(order) or {}).get("props") or {}).get("order_date"))
         day = _day(when["value"]) if when else None
         if day is None or day > as_of:
+            continue
+        if order in disputes:
+            skipped.note("order_copies_disagree", [order], [(order, FINANCE)])
             continue
         item = item_root.get(for_item[line]["to_object"], for_item[line]["to_object"])
         cluster = po_root.get(order, order)

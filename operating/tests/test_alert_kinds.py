@@ -22,6 +22,12 @@ class Registry(unittest.TestCase):
                     self.assertEqual(t["default"], "on", "My work needs default on")
                 if t["precision"] is not None:
                     self.assertTrue({"value", "checked", "on", "source"} <= set(t["precision"]))
+                    # a measurement stating its judged count agrees with its precision
+                    if "correct" in t["precision"]:
+                        p = t["precision"]
+                        self.assertLessEqual(p["correct"], p["checked"])
+                        self.assertAlmostEqual(p["value"], p["correct"] / p["checked"],
+                                               places=3)
                 else:
                     # every type carries a measurement or says why it has none yet
                     self.assertTrue(str(t.get("unmeasured", "")).startswith(

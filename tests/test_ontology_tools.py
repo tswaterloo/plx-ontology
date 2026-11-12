@@ -965,6 +965,50 @@ class ObjectTests(ContractMixin, unittest.TestCase):
         # the invoice is a BC record this reader is not granted: nothing beyond it
         self.assertNotIn("linked_beyond", self.ok(t, "plx.object", {"object_id": SO}, SALES))
 
+    def test_the_links_of_many_records_are_read_at_once_as_each_reads_them(self):
+        """``links_of_many`` gives each record exactly its ``links_of`` links (the hop
+        columns), in order (a link between two of them is each one's, a link to itself
+        once), for 1, 10 and 60 records in one statement; inside ``snapshot_reads`` a record
+        read before (by either) is not read again."""
+        store = build()
+        kids = [f"SalesOrderLine:portal.app_sales_order_line:l-{n}" for n in range(60)]
+        for n, kid in enumerate(kids):
+            store.obj(kid, "api:public.app_sales_order_line",
+                      f"api://public.app_sales_order_line/l-{n}@0000000000000001-9",
+                      "gold_etl_from_fm")
+            store.link(f"lnk-l{n}-so", "SalesOrderLine.line_of", kid, SO, "verified", "fk",
+                       [SO_V1])
+            store.link(f"lnk-l{n}-po", "SalesOrderLine.supplied_by", kid, PO, "verified",
+                       "fk", [PO_H])
+            if n:
+                store.link(f"lnk-l{n}-prev", "SalesOrderLine.follows", kid, kids[n - 1],
+                           "verified", "fk", [SO_V1])
+        store.conn.commit()
+        reader = ot.StoreReader(store.conn)
+        statements: list[str] = []
+        store.conn.set_trace_callback(statements.append)
+        for size in (1, 10, 60):
+            wanted = [*kids[:size], kids[0]]   # one named twice: read once
+            statements.clear()
+            got = reader.links_of_many(wanted)
+            self.assertEqual(len([q for q in statements if "FROM links" in q]), 1, size)
+            self.assertEqual(list(got), kids[:size])
+            for kid in kids[:size]:
+                self.assertEqual([{c: r[c] for c in reader.HOP_COLUMNS} for r in got[kid]],
+                                 [{c: r[c] for c in reader.HOP_COLUMNS}
+                                  for r in reader.links_of(kid)], kid)
+                self.assertTrue(got[kid])
+        with ot.snapshot_reads():
+            reader.links_of(kids[0])
+            statements.clear()
+            self.assertEqual(len(reader.links_of_many(kids[:2])[kids[1]]),
+                             len(reader.links_of(kids[1])))
+            self.assertIn(json.dumps([kids[1]]), " ".join(statements))   # only the new one
+            statements.clear()
+            reader.links_of_many(kids[:2])
+            self.assertEqual(statements, [])
+        store.conn.set_trace_callback(None)
+
     def test_per_source_values_with_lineage_citations_and_envelopes(self):
         result = self.ok(self.t, "plx.object", {"object_id": SO, "response_format": "detailed"})
         values = {v["property"]: v for v in result["values"]}
@@ -1892,6 +1936,38 @@ class GenericityTests(unittest.TestCase):
         for word in sorted(words):
             self.assertIsNone(re.search(rf"(?<![A-Za-z0-9_.]){re.escape(word)}(?![A-Za-z0-9_])",
                                         source), word)
+
+
+class IdentifiersByValueTests(unittest.TestCase):
+    """The store read behind a generic label's number ("order 465"): the types asked are
+    filtered in the statement, before the cap, in a set order."""
+
+    def test_types_filtered_before_the_cap_in_a_set_order(self):
+        s = build()
+        for n in range(70):   # many records of another type carry the same number
+            oid = f"Lot:portal.fm_lot:{n:03d}"
+            handle = f"api://public.fm_lot/{n}@0000000000000001-{100 + n}"
+            s.obj(oid, "api:public.fm_lot", handle, "fm_bronze")
+            s.ident(oid, "fm_id", "465", "465", "fm_id", handle, "row.id", "fm_bronze")
+        s.ident(FM, "fm_id", "465", "465", "fm_id", FM_H, "row.id", "fm_bronze")
+        s.conn.commit()
+        t = tools(s)
+        scope = t._scope(FULL, NOW)
+        reader = t.store
+        rows = reader.identifiers_by_value(scope, ["465"], types=["SalesOrder"], cap=60)
+        self.assertEqual([r["object_id"] for r in rows], [FM])
+        capped = reader.identifiers_by_value(scope, ["465"], types=["Lot", "SalesOrder"],
+                                             cap=60)
+        ids = [r["object_id"] for r in capped]
+        self.assertEqual(len(ids), 60)
+        self.assertEqual(ids, sorted(ids))   # Lot before SalesOrder, then by object
+        self.assertEqual(ids, [r["object_id"] for r in reader.identifiers_by_value(
+            scope, ["465"], types=["SalesOrder", "Lot"], cap=60)])
+        # without types: every readable carrier, as before
+        self.assertEqual(len(reader.identifiers_by_value(scope, ["465"])), 71)
+        # a reader who may read none of them gets none
+        self.assertEqual(reader.identifiers_by_value(
+            t._scope(OUTSIDER, NOW), ["465"], types=["SalesOrder"], cap=60), [])
 
 
 class LiveIdCapTests(unittest.TestCase):

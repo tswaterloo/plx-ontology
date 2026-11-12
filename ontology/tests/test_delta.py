@@ -228,6 +228,28 @@ class DeltaEquivalenceTests(DeltaCase):
         self.assertEqual(delta.compare(Path(report["store"]), self.full("gen2.sqlite"),
                                        owned)["differ"], 0)
 
+    def test_a_cycle_without_room_for_its_size_is_refused_and_its_changes_kept(self):
+        """11-11: cycles failed "database or disk is full" and near the memory limit an
+        hour in. A cycle short of disk (work and temp) or memory for the records it follows
+        is refused before its closure; its changes stay open for the next cycle."""
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        self.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        self.capture(T2)
+        with mock.patch.object(delta, "PREFLIGHT_DISK_PER_RECORD", 1 << 60), \
+                mock.patch.object(delta, "closure", side_effect=AssertionError("closure")):
+            refused = self.cycle(base)
+        self.assertEqual(refused["status"], "preflight_refused", refused)
+        self.assertGreaterEqual(refused["preflight"]["records"], 1)
+        self.assertTrue(all(k.startswith("disk:") for k in refused["preflight"]["short"]))
+        with mock.patch.object(delta, "_memory_room", return_value=1 << 20):
+            refused = self.cycle(base)
+        self.assertEqual(list(refused["preflight"]["short"]), ["memory"], refused)
+        self.assertFalse((self.root / "delta" / delta.POINTER).exists())
+        report = self.cycle(base)   # room again: the kept change is projected
+        self.assertNotIn("status", report)
+        self.assertTrue(any('"po-a"' in o for o in self.owned(report["store"])))
+
     def test_a_value_changed_and_changed_back_is_projected_with_its_history(self):
         """A -> B -> A: the current row reads as the served one, but a version in between
         differs, so the record is a change (a full build holds all three versions)."""
@@ -573,3 +595,20 @@ class WherePathsTest(__import__("unittest").TestCase):
             self.skipTest("no binding filters on categorymo in this schema")
         for _tid, b in hits:
             self.assertIn("categorymo", set(delta._where_paths(b.get("where"))))
+
+
+class CycleTempTests(unittest.TestCase):
+    def test_a_cycle_without_a_temp_place_spills_beside_its_delta_not_to_the_root_disk(self):
+        """11-11: a cycle on a unit without TMPDIR sorted to /tmp on the small root disk and
+        failed "database or disk is full": its temp files go beside the delta then; a
+        place the unit names is kept."""
+        import tempfile as tf
+        with tf.TemporaryDirectory() as tmp:
+            env = {}
+            got = delta._temp_beside(Path(tmp), env)
+            self.assertEqual(got, Path(tmp) / "tmp")
+            self.assertEqual((env["SQLITE_TMPDIR"], env["TMPDIR"]), (str(got), str(got)))
+            self.assertTrue(got.is_dir())
+            named = {"SQLITE_TMPDIR": "/data/x", "TMPDIR": "/data/x"}
+            self.assertEqual(delta._temp_beside(Path(tmp), named), Path("/data/x"))
+            self.assertEqual(named, {"SQLITE_TMPDIR": "/data/x", "TMPDIR": "/data/x"})

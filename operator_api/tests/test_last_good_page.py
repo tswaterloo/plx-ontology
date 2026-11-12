@@ -14,6 +14,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+from urllib.parse import quote
 
 from operator_api import backend as be
 from operator_api import errors
@@ -46,7 +47,7 @@ class Reads:
 
     def __init__(self):
         self.policy, self.stuck, self.denied = policy("finance"), False, set()
-        self.decided = []
+        self.decided, self.hidden, self.looked_up = [], set(), []
 
     def submit(self, who, job, *, priority=0, deadline=None):
         future = Future()
@@ -54,12 +55,19 @@ class Reads:
             return future
         gated = Gated("t", frozenset(who.key.split(",")), None)
         view = SimpleNamespace(_request=contextlib.nullcontext, access=SimpleNamespace(
-            reader_policy=lambda: (gated, self.policy), decide=self.decide))
+            reader_policy=lambda: (gated, self.policy), decide=self.decide,
+            visible_objects=self.visible_objects))
         try:
             future.set_result(job(view))
         except Exception as error:  # noqa: BLE001
             future.set_exception(error)
         return future
+
+    def visible_objects(self, ids):
+        """The records the reader may read now, of ``ids``, in one batch (as the case
+        host decides them for ``plx.object``)."""
+        self.looked_up.append(sorted(ids))
+        return frozenset(i for i in ids if i not in self.hidden)
 
     def decide(self, handles):
         self.decided.append(list(handles))
@@ -350,7 +358,7 @@ class NeverServedCold(LastGoodPage.__base__):
 
     def test_after_a_restart_no_disk_copy_read_across_a_revoke_is_served(self):
         import tempfile
-        from operator_api.page_store import PageStore
+        from operator_api.page_store import PageStore, kept_code
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         store = PageStore(Path(folder.name), "c1")
@@ -358,14 +366,146 @@ class NeverServedCold(LastGoodPage.__base__):
         who = reader("grp-a")
         key = ("last-good", who.key, who.mode, ("late", 0, 25))
         self.serve(who, lambda: page(3))
-        self.assertIsNotNone(store.get(key))
+        self.assertIsNotNone(store.get(key, code=kept_code()))
         self.backend._good.clear()                 # a restart: the disk copy only
         self.serve(who, self.revoked_mid_read(page(99)))
         self.wait_finished()
-        self.assertIsNone(store.get(key))          # the copy that no longer matches is gone
+        self.assertIsNone(store.get(key, code=kept_code()))   # the copy no longer matching: gone
         self.backend._good.clear()                 # another restart
         with self.assertRaises(TimeoutError):
             self.serve(who, busy)
+
+    def test_after_a_deploy_the_readers_last_page_is_served_and_a_misfit_is_not(self):
+        """A deploy (a new code version) serves the reader's last good page from disk, marked
+        stale while it is read again, under the same access checks; a kept page that no
+        longer fits the new code's model is never served."""
+        import pickle
+        import sqlite3
+        import tempfile
+        from operator_api import page_store
+        from operator_api.page_store import PageStore, disk_key, kept_code
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.backend.page_cache = SimpleNamespace(store=PageStore(Path(folder.name), "c1"))
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        self.backend._good.clear()                 # a deploy: new code, the disk copy only
+        self.backend.page_cache = SimpleNamespace(store=PageStore(Path(folder.name), "c2"))
+        got = self.serve(who, busy)
+        self.assertEqual((got.total, got.stale_since is not None), (3, True))
+        # revoked since: the copy kept before the deploy is not served either
+        self.backend._good.clear()
+        self.serve(who, self.revoked_mid_read(page(99)))
+        self.wait_finished()
+        self.backend._good.clear()
+        with self.assertRaises(TimeoutError):
+            self.serve(who, busy)
+        # a page kept by code whose model had another shape: a miss, never a broken page
+        self.reads.policy = policy()
+        self.serve(who, lambda: page(4))
+        self.backend._good.clear()
+        key = disk_key(("last-good", who.key, who.mode, ("late", 0, 25)), kept_code())
+        with sqlite3.connect(Path(folder.name) / "page-cache.sqlite") as conn:
+            kept = pickle.loads(conn.execute("SELECT value FROM pages WHERE key=?",
+                                             (key,)).fetchone()[0])
+            kept = (kept[0], ("model", "LateList", {"total": "four"}), kept[2])
+            conn.execute("UPDATE pages SET value=? WHERE key=?", (pickle.dumps(kept), key))
+        with self.assertRaises(TimeoutError):
+            self.serve(who, busy)
+        # kept and served across c1 -> c2 (the records it shows re-decided: none here)
+        self.serve(who, lambda: page(5))
+        self.backend._good.clear()
+        self.assertEqual(self.serve(who, busy).total, 5)
+
+    def deployed(self, value, who=None, *, hidden=()):
+        """``value`` read and kept by code "c1"; then a deploy (code "c2", nothing in
+        memory) whose code reads ``hidden`` as no longer readable by the reader: what a
+        request that times out is served (None: the refusal)."""
+        import tempfile
+        from operator_api.page_store import PageStore
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        who = who or reader("grp-a")
+        self.backend.page_cache = SimpleNamespace(store=PageStore(Path(folder.name), "c1"))
+        self.serve(who, lambda: value)
+        self.backend._good.clear()
+        self.backend.page_cache = SimpleNamespace(store=PageStore(Path(folder.name), "c2"))
+        self.reads.hidden, self.reads.looked_up = set(hidden), []
+        try:
+            return self.serve(who, busy)
+        except TimeoutError:
+            return None
+
+    def late_page(self, *ids, extra=None):
+        items = [m.LatePo(object_id=oid, label=oid, reason="late",
+                          open_url=f"/object/PurchaseOrder/{quote(oid, safe='')}")
+                 for oid in ids]
+        if extra is not None:
+            items[0] = items[0].model_copy(update={"sources": [extra]})
+        return m.LateList(total=len(items), offset=0, items=items, more=False,
+                          next_offset=0)
+
+    def test_after_a_deploy_a_record_the_reader_lost_under_the_new_code_is_not_served(self):
+        """The new code (any module: no list of them decides it) reads a record the kept
+        page shows as no longer the reader's: the page is never served, not even stale;
+        with every record still readable it is, after one batched check of all of them."""
+        ids = ("PurchaseOrder:bc:PO-1", "PurchaseOrder:bc:PO-2", "PurchaseOrder:bc:PO 3/x")
+        got = self.deployed(self.late_page(*ids))
+        self.assertEqual((got.total, got.stale_since is not None), (3, True))
+        self.assertEqual(self.reads.looked_up, [sorted(ids)])   # one batch, every record
+        self.assertIsNone(self.deployed(self.late_page(*ids), hidden={ids[1]}))
+        for n in (1, 10, 60):   # every record, asked once, whatever the count
+            many = [f"PurchaseOrder:bc:{i}" for i in range(n)]
+            self.assertEqual(self.deployed(self.late_page(*many)).total, n)
+            self.assertEqual(self.reads.looked_up, [sorted(many)])
+            self.assertIsNone(self.deployed(self.late_page(*many), hidden={many[-1]}))
+        # in memory after the deploy, until a fresh read replaces it: still re-decided
+        got = self.deployed(self.late_page(*ids))
+        self.reads.hidden = {ids[2]}
+        with self.assertRaises(TimeoutError):
+            self.serve(reader("grp-a"), busy)
+
+    def test_after_a_deploy_an_excluded_persons_record_is_never_served(self):
+        """A page the old code kept showing a record of a person the exclusion names (the
+        exclusion unchanged: the old code missed the trim) is not served once the new code
+        decides that record withheld, wherever on the page it is named."""
+        person = "Employee:entra:33333333-3333-4333-8333-333333333333"
+        with mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS":
+                                          "33333333-3333-4333-8333-333333333333"}):
+            for shown in (m.Source(handle="portal://po/1", system="Portal", label="PO",
+                                   open_url=f"/object/Employee/{quote(person, safe='')}"),
+                          m.Source(handle="portal://po/1", system="Portal", label=person,
+                                   open_url="/source?handle=portal%3A%2F%2Fpo%2F1")):
+                page = self.late_page("PurchaseOrder:bc:PO-1", extra=shown)
+                self.assertIsNotNone(self.deployed(page))
+                self.assertIn(person, self.reads.looked_up[0])
+                self.assertIsNone(self.deployed(page, hidden={person}))
+
+    def test_after_a_deploy_a_page_whose_records_cannot_all_be_named_is_a_miss(self):
+        """A record link that does not parse: the page cannot be re-decided record by
+        record, so it is never served across a deploy (the same code still serves it)."""
+        page = self.late_page("PurchaseOrder:bc:PO-1").model_copy(deep=True)
+        page.items[0].open_url = "/object/PurchaseOrder/"
+        self.assertIsNone(self.deployed(page))
+        self.assertEqual(self.reads.looked_up, [])
+        from operator_api.page_parts import shown_objects
+        self.assertIsNone(shown_objects({"rows": [{"object_id": 5}]}))
+        self.assertIsNone(shown_objects({"record_ids": "PurchaseOrder:x"}))
+        self.assertIsNone(shown_objects([object()]))
+        self.assertEqual(shown_objects({"a": [{"record_id": "SalesOrder:1", "n": 2.5}],
+                                        "b": "/object/X/Item%3A9?tab=1", "c": None}),
+                         frozenset({"SalesOrder:1", "Item:9"}))
+
+    def test_a_round_trip_through_the_disk_keeps_every_handle_and_record(self):
+        """The page rebuilt from its kept JSON names the same sources and records as the
+        page read, so the checks before serving it see all of them."""
+        from operator_api.page_parts import shown_handles
+        page = self.late_page("PurchaseOrder:bc:PO-1", "PurchaseOrder:bc:PO-2", extra=m.Source(
+            handle="graph-mail://m/1", system="Email", label="mail", open_url="/source?x"))
+        back = be._kept_good_model((1.0, be._portable_model(page), (), "c1"))[1]
+        self.assertEqual(shown_handles(back), shown_handles(page))
+        from operator_api.page_parts import shown_objects
+        self.assertEqual(shown_objects(back), shown_objects(page))
 
 
 class RewarmOnDeltaLayer(unittest.TestCase):
@@ -688,6 +828,17 @@ class OtherScreens(LastGoodPage.__base__):
         self.assertEqual(([i.title for i in got.items], calls), (["first"], []))
         self.assertRegex(got.read_at, r"^\d{4}-\d\d-\d\dT[\d:]+Z$")
         self.assertIsNone(got.stale_since)
+
+    def test_a_home_visit_reads_ahead_also_when_a_kept_page_answers_it(self):
+        """A snapshot runs no read, so the read-ahead must not live inside the read
+        (polish-8 review): Home asks for it itself, once per visit, for that reader."""
+        who = reader("grp-a")
+        warmed = []
+        self.backend.warm = lambda r, **kw: warmed.append(r.key)
+        kept = object()
+        self.backend._serving = lambda r, key, read, *a, **kw: kept   # a kept page, no read
+        self.assertIs(self.backend.home(who), kept)
+        self.assertEqual(warmed, [who.key])
 
     def test_another_persons_decision_in_the_queue_is_not_hidden_behind_the_snapshot(self):
         """Someone else decided an item (the queue file moved, not this reader's write):

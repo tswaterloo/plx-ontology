@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from operating import autopilot as ap
-from operating import autopilot_fresh
 from operating import autopilot_write as aw
 from operating import workflows as wf
 from operating.card_actions import Journal
@@ -319,7 +318,7 @@ class AutopilotAreaMixin:
             rules = aw.load_rules()
             gate = aw.WriteGate(state / aw.WRITE_GATE_FILE, rules) if state else None
         except aw.RulesInvalid:
-            gate = None
+            rules = gate = None
             notes.append("The write rules are unreadable: nothing is performed.")
         passing = set(gate.passing()) if gate else set()
         master = env.get(aw.MASTER_ENV) == "1"
@@ -328,13 +327,13 @@ class AutopilotAreaMixin:
             if it.state in ("waiting", "edited"):
                 open_by[it.workflow] = open_by.get(it.workflow, 0) + 1
         # Draft (``autopilot.load_draft``): per person role, the workflows prepared before
-        # the gate passed; the fresh-day scorer's published counts give the countdown
+        # the gate passed; the counts the write gate admitted give the countdown
         # (a person role a gate document measured: a draft for someone never replayed
         # still prepares their items, it has no scores to show here)
         drafted = {r: f for r, f in draft_roles(ap.load_draft(env), {**dev, **fresh}).items()
                    if r in dev or r in fresh}
         held = _identities(reader)
-        published = (autopilot_fresh.read(state).get("roles") or {}) if state else {}
+        published = aw.gate_counts(state, rules) if gate is not None and rules else {}
         for role in sorted(set(dev) | set(fresh) | set(drafted)):
             if not owner and role not in mine_roles and not (
                     role in drafted and role[len("person:"):] in held):
@@ -370,7 +369,7 @@ class AutopilotAreaMixin:
                     scored_at=str(window[-1]) if window else None,
                     open_items=open_by.get(flow, 0),
                     draft=flow in (drafted.get(role) or ()) and st == "dry_run",
-                    countdown=_countdown(published.get(role), flow)))
+                    countdown=_countdown(published.get(role), flow, rules)))
         if not dev and not fresh:
             notes.append("No replay has scored the workflows yet.")
         # items are prepared only for a workflow that passed its replay gate
@@ -395,7 +394,8 @@ class AutopilotAreaMixin:
                     off & {w.workflow for w in workflows})),
             people=sorted(people.values(), key=lambda p: (not p.you, not p.name, p.name, p.id)),
             roles=sorted(roles_seen), items=items, workflows=workflows, notes=notes,
-            known_workflows=_known_workflows())
+            known_workflows=_known_workflows() if owner else sorted(
+                {w.workflow for w in workflows} | {it.workflow for it in items}))
 
     # ------------------------------------------------------------ decisions
 
@@ -679,10 +679,12 @@ def _identities(reader: Reader) -> set[str]:
     return held
 
 
-def _countdown(entry: Optional[Mapping[str, Any]], flow: str
-               ) -> Optional[m.AutopilotCountdown]:
+def _countdown(entry: Optional[Mapping[str, Any]], flow: str,
+               rules: Optional[Mapping[str, Any]]) -> Optional[m.AutopilotCountdown]:
+    if not rules:            # unreadable rules: no countdown, nothing is performed
+        return None
     try:
-        found = autopilot_fresh.countdown(entry, flow)
+        found = aw.countdown(entry, flow, rules)
     except Exception:  # noqa: BLE001 - unreadable rules: no countdown, never a guess
         return None
     return m.AutopilotCountdown(**found) if found else None

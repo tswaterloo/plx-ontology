@@ -2175,6 +2175,11 @@ export type components = {
             checked: number;
             /** Commit */
             commit?: string | null;
+            /**
+             * Correct
+             * @description How many of them were right.
+             */
+            correct?: number | null;
             /** Note */
             note?: string | null;
             /**
@@ -2695,9 +2700,10 @@ export type components = {
         };
         /**
          * AutopilotCountdown
-         * @description The workflow's way to its write gate (``operating.autopilot_fresh``): items judged
-         *     on fresh days against the ``need_judged`` the gate asks for, and the precision so far
-         *     against ``need_percent``. Recomputed from the counts at every read.
+         * @description The workflow's way to its write gate: the counts the gate admitted
+         *     (``autopilot_write.gate_counts``), items judged on fresh days against the
+         *     ``need_judged`` the gate asks for, and the precision so far against ``need_percent``.
+         *     Recomputed from the counts at every read.
          */
         AutopilotCountdown: {
             /** Data End */
@@ -2717,6 +2723,18 @@ export type components = {
              * @description matched / judged, one decimal; absent when nothing was judged.
              */
             percent?: number | null;
+            /**
+             * Refused
+             * @description Why the role's newest scorer run was not admitted (status:partial, not_fresh, counts...): the counts are then an earlier run's. Absent when it was.
+             */
+            refused?: string | null;
+            /** Refused Run */
+            refused_run?: string | null;
+            /**
+             * Run
+             * @description The scorer run these counts came from.
+             */
+            run?: string | null;
             /** Window */
             window?: string[];
         };
@@ -7675,6 +7693,22 @@ export type components = {
              */
             system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
         };
+        /**
+         * TrustGate
+         * @description The autopilot's write gate as the write rules set it (``rules.gate``).
+         */
+        TrustGate: {
+            /**
+             * Need Judged
+             * @description Judged items from fresh days a workflow needs.
+             */
+            need_judged: number;
+            /**
+             * Need Percent
+             * @description Precision it needs on them, in percent.
+             */
+            need_percent: number;
+        };
         /** TrustLine */
         TrustLine: {
             /**
@@ -7703,6 +7737,8 @@ export type components = {
             answers?: components["schemas"]["TrustAnswerSet"][];
             /** Autopilot */
             autopilot?: components["schemas"]["AutopilotWorkflowRow"][];
+            /** @description The write gate's numbers; absent when the write rules are unreadable (then nothing acts). */
+            autopilot_gate?: components["schemas"]["TrustGate"] | null;
             /** Autopilot Note */
             autopilot_note?: string | null;
             /** Checked At */

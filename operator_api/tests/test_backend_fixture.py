@@ -168,6 +168,68 @@ class FixtureBackend(unittest.TestCase):
             "answer_id": answer["answer_id"], "rating": 1})
         self.assertEqual(other.status_code, 404)
 
+    def test_after_a_deploy_a_kept_page_is_served_only_while_the_new_code_reads_its_records(
+            self):
+        """A record page kept on disk by the code before a deploy is served (marked stale)
+        while the page cannot be read in time, only after the code serving it decides every
+        record the page shows readable for the reader again, through the case host's own
+        visibility read (``HostAccess.visible_objects``). A deploy whose visibility read
+        (here ``operating/ontology_tools.py``'s, a module no list names) withholds one of
+        them serves nothing kept."""
+        from operating import ontology_tools
+        from operator_api.page_parts import shown_objects
+        from operator_api.page_store import PageStore
+        backend = self.ops.app.state.backend
+        store = PageStore(self.tmp / "deploy-pages", "the-code-before")
+        kept = mock.patch.object(backend.page_cache, "store", store)
+        kept.start()
+        self.addCleanup(kept.stop)
+        from operator_api.page_store import kept_code
+
+        def new_process():   # nothing in memory: an earlier test's copy is not this one's
+            with backend._lock:
+                backend._good.clear()
+                backend._snap_inputs().clear()
+
+        path = f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}"
+        new_process()
+        fresh = self.ops.client.get(path)
+        self.assertEqual(fresh.status_code, 200, fresh.text)
+        records = shown_objects(m.ObjectPage.model_validate(fresh.json()))
+        self.assertIn(fresh.json()["object_id"], records)
+        self.assertGreater(len(records), 1)
+        disk = ("last-good", "staff:operations,staff:purchasing,staff:quality", "dev",
+                ("page", "PurchaseOrder", case_fixtures.PO_NUMBER, False))
+        for _ in range(400):   # kept off the request
+            if store.get(disk, code=kept_code()) is not None:
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(store.get(disk, code=kept_code()))
+
+        def busy(*_args, **_kwargs):
+            raise TimeoutError("workbench_busy")
+
+        def deployed():
+            new_process()   # a deploy: a new process, the disk copy only
+            with mock.patch.object(store, "code", "a-deployed-code-version"), \
+                    mock.patch.object(be, "object_page", busy):
+                return self.ops.client.get(path)
+
+        served = deployed()
+        self.assertEqual(served.status_code, 200, served.text)
+        self.assertIsNotNone(served.json()["stale_since"])
+        self.assertEqual(served.json()["object_id"], fresh.json()["object_id"])
+        withheld = sorted(r for r in records if r != fresh.json()["object_id"])[0]
+        read = ontology_tools.StoreReader._visible_versions_read
+
+        def new_code(reader, scope, ids):   # the deploy's visibility read withholds one
+            return [row for row in read(reader, scope, ids) if row["object_id"] != withheld]
+
+        with mock.patch.object(ontology_tools.StoreReader, "_visible_versions_read", new_code):
+            refused = deployed()
+        self.assertNotEqual(refused.status_code, 200, refused.text)
+        self.assertNotIn(withheld, refused.text)
+
     def test_object_page_and_suggest_for_the_reader(self):
         found = self.ops.client.get("/api/suggest",
                                     params={"q": case_fixtures.PO_NUMBER}).json()

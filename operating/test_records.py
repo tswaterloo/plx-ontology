@@ -14,8 +14,9 @@ What counts as one, and nothing else:
   is still the business's order, and a late one is still late;
 * **a test mark**: a record whose own label carries a test, UAT, demo or proof mark
   (``TEST_MARK``: ``INVOICETEST``, ``UAT-SH100034``, ``DEMO-``, ``pipeline-proof``,
-  ``PLX-VAL-`` ...; a word such as "UAT-ready" is none). The proactive engine also reads it
-  on the documents an order owns (its invoices, receipts, lines);
+  ``PLX-VAL-``, an ``E2E-`` run's record ...; a word such as "UAT-ready" is none). The
+  proactive engine also reads it on the documents an order owns (its invoices, receipts,
+  lines) and on an item's name (``V1 Demo 60 mL``);
 * **the Portal's environment prefix**: a number issued by a prefix-setting Portal database
   (``UAT-SO100004``, ``UAT-AO-...``; ``ontology/schema/identifiers.json``,
   ``environment_prefixes``) is a staging record, not the business's;
@@ -47,7 +48,7 @@ from typing import Any, Iterable, Optional
 # word such as "UAT-ready"
 TEST_MARK = re.compile(r"(?:\binvoice ?test|\btest ?invoice|(?:\b|-)uat(?:-[a-z0-9-]*\d|\s*$)|"
                        r"\bdemo-|[- ]demo\b|pipeline[- ]proof|\bo2c[- ]proof|\bbanktest|"
-                       r"\bproof line\b|\bplx-val-|\btest ?po\b)", re.I)
+                       r"\bproof line\b|\bplx-val-|\btest ?po\b|\be2e[- ])", re.I)
 NAME_RULE = re.compile(r"\(\s*DO\s+NOT\s+USE\s*\)", re.I)
 # "TEST" exactly as the placeholder names write it, upper case only: a real "XYZ Lab Test"
 # or "Covid test" stays

@@ -6,6 +6,7 @@ nothing."""
 from __future__ import annotations
 
 import os
+import gzip
 import io
 import json
 from pathlib import Path
@@ -19,7 +20,8 @@ from operating.tests import pg_testdb
 MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
               for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
                            "0008_ontology_read.sql", "0009_schema_migrations.sql",
-                           "0010_ontology_words.sql", "0011_ontology_word_order.sql")]
+                           "0010_ontology_words.sql", "0011_ontology_word_order.sql",
+                           "0013_link_rows_step_reads.sql", "0014_ontology_autovacuum.sql")]
 
 
 class ReloadRoomTests(unittest.TestCase):
@@ -705,6 +707,123 @@ class DeltaToPostgresTests(unittest.TestCase):
                                      f"{part}:{oid}")
 
 
+    def test_a_cycle_that_fails_after_its_closure_resumes_from_it_while_it_holds(self):
+        """Over the Postgres base a cycle keeps its closure and mention listing until it
+        publishes: one that failed later (11-11: the disk filled at projection, 17 min of
+        closure lost) resumes from them, with the same result as a fresh cycle; a record
+        changed again since is the only one closed again."""
+        from datetime import timedelta
+        from unittest import mock
+        from ontology import delta
+        from ontology.tests.test_delta import DeltaEquivalenceTests, normalizer
+        from ontology.tests.test_projection import T1, T2
+        from operating.pg import ontology_load
+        from operating.pg.ontology_parity import _BY_OBJECT, _pg_rows, _sqlite_rows
+        import psycopg
+
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+        environ = {"PLX_DELTA_BASE_PG": "1", "PLX_PG_DSN": self.dsn}
+        checkpoint = fixture.root / "delta" / delta.CHECKPOINT
+
+        def cycle(**options):
+            return delta.build_delta(fixture.state, fixture.mirror_path, fixture.root / "delta",
+                                     base_path=base, schema=fixture.schema,
+                                     normalizer=normalizer, environ=environ, **options)
+
+        full_disk = sqlite3.OperationalError("database or disk is full")
+        closure = delta.closure
+        fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        fixture.fake.set("public.app_purchase_order", "po-b", status="CANCELLED")
+        fixture.capture(T2)
+        with mock.patch.object(delta, "project_layer", side_effect=full_disk):
+            with self.assertRaises(sqlite3.OperationalError):
+                cycle()
+        self.assertTrue(checkpoint.is_file())
+        # failed again after the checkpoint: still held, the closure is never read again
+        with mock.patch.object(delta, "closure", side_effect=AssertionError("re-read")), \
+                mock.patch.object(delta, "project_layer", side_effect=full_disk):
+            with self.assertRaises(sqlite3.OperationalError):
+                cycle()
+        held = json.loads(gzip.open(checkpoint, "rt").read())
+        self.assertGreater(sum(map(len, held["read"].values())), 1, held["read"])
+        # a record changed again since: only it is closed again, the rest is resumed
+        fixture.fake.set("public.app_purchase_order", "po-a", status="CLOSED")
+        fixture.capture(T2 + timedelta(hours=1))
+        reads = []
+        with mock.patch.object(delta, "closure",
+                               side_effect=lambda p, b, c, part, *a, **k: reads.append(
+                                   {s: list(v) for s, v in part.items() if v})
+                               or closure(p, b, c, part, *a, **k)), \
+                mock.patch.object(delta, "project_layer", side_effect=full_disk):
+            with self.assertRaises(sqlite3.OperationalError):
+                cycle()
+        self.assertEqual([sorted(r) for r in reads[:1]], [["portal_api"]], reads)
+        self.assertEqual(len(reads[0]["portal_api"]), 1, reads)
+        self.assertIn("po-a", json.dumps(reads[0]), reads)
+        with mock.patch.object(delta, "closure", side_effect=AssertionError("re-read")):
+            resumed = cycle()
+        self.assertEqual((resumed["resumed"], resumed["layer"]), ("mentions", "added"), resumed)
+        self.assertEqual(resumed["postgres"]["applied_now"], 1, resumed)
+        self.assertFalse(checkpoint.exists())
+        again = cycle()   # its records closed: nothing left open
+        self.assertEqual(again["layer"], "none: nothing new", again)
+        full = fixture.full("gen2.sqlite")
+        conn = sqlite3.connect(f"file:{full}?mode=ro", uri=True)
+        self.addCleanup(conn.close)
+        with sqlite3.connect(resumed["store"]) as layer:
+            owned = {r[0] for r in layer.execute("SELECT object_id FROM delta_owned")}
+        self.assertTrue(owned)
+        with psycopg.connect(self.dsn) as pg, pg.cursor() as cur:
+            for oid in sorted(owned):
+                for part in [*_BY_OBJECT, "object_values"]:
+                    self.assertEqual(_sqlite_rows(conn, part, oid), _pg_rows(cur, part, oid),
+                                     f"{part}:{oid}")
+
+    def test_an_unreadable_or_foreign_checkpoint_is_removed_and_never_resumed(self):
+        """A checkpoint that is torn, of another key or format, or names a record closed
+        since is removed: the cycle reads its closure again."""
+        from ontology import delta
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = delta.State(root / "state.sqlite")
+            state.add("portal_api", [("r", "1")], {("r", "1"): "a"})
+            read = {"portal_api": state.opened("portal_api", [("r", "1")])}
+            path = root / delta.CHECKPOINT
+
+            def save(key="k", stage="closure"):
+                delta._save_checkpoint(root, key, stage, {"portal_api": [("r", "1")]},
+                                       {"portal_api": {("r", "1")}}, read, {"closure": {}})
+                return delta._resume(root, "k", state) if path.is_file() else "gone"
+            self.assertEqual(save()["found"]["portal_api"], {("r", "1")})
+            self.assertIsNone(save(key="other"))
+            self.assertFalse(path.exists())
+            self.assertIsNone(save(stage="projected"))
+            path.write_bytes(b"\x1f\x8b torn")
+            self.assertIsNone(delta._resume(root, "k", state))
+            self.assertFalse(path.exists())
+            save()
+            state.close_over({}, {"portal_api": [("r", "1")]}, read)   # published since
+            self.assertIsNone(delta._resume(root, "k", state))
+            self.assertFalse(path.exists())
+
+    def test_a_record_changed_again_during_a_cycle_stays_open_for_the_next(self):
+        """A cycle closes its records as it read them: one changed again while it ran
+        (reopened under a newer mark) stays open, so the next cycle follows the change."""
+        from ontology import delta
+        with tempfile.TemporaryDirectory() as tmp:
+            state = delta.State(Path(tmp) / "state.sqlite")
+            state.add("portal_api", [("r", "1"), ("r", "2")], {("r", "1"): "a", ("r", "2"): "a"})
+            read = {"portal_api": state.opened("portal_api", [("r", "1"), ("r", "2")])}
+            state.add("portal_api", [("r", "2")], {("r", "2"): "b"})   # changed meanwhile
+            state.close_over({}, {"portal_api": [("r", "1"), ("r", "2")]}, read)
+            self.assertEqual(state.changed("portal_api", open_only=True), [("r", "2")])
+
     def test_a_postgres_base_never_builds_over_a_layer_it_lacks_and_a_trim_is_said(self):
         """Over the Postgres base: a published layer Postgres has not applied is applied
         before the closure reads it, and while it cannot be no layer is built (the changes
@@ -777,6 +896,164 @@ class DeltaToPostgresTests(unittest.TestCase):
         self.assertEqual((published()["base"], published()["partial"]), ("sqlite", False))
 
 
+    def test_link_degree_decides_the_backlink_cap_alike_on_both_bases_in_one_read(self):
+        """``Base.degree``: whether an object gaining a link holds more than the cap is
+        decided as an exact count would, on the SQLite generation and on Postgres, counted
+        no further than the cap + 1 per end and in one read per 500 objects (11-11: a
+        per-object full count took 6-9 s on a 160k-link hub)."""
+        from ontology import delta
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1
+        from operating.pg import ontology_load
+
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        store = fixture.full("gen1.sqlite")
+        ontology_load.load(store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        with sqlite3.connect(store) as conn:
+            exact = dict(conn.execute(
+                "SELECT o, COUNT(*) FROM (SELECT from_object AS o FROM link_rows UNION ALL "
+                "SELECT to_object FROM link_rows) GROUP BY o"))
+            ids = [r[0] for r in conn.execute("SELECT object_id FROM objects")]
+        ids.append("no-such-object")
+        top = max(exact.values())
+        self.assertGreaterEqual(top, 3)   # the fixture holds an object over a small cap
+        bases = [delta.Base(store), delta.Base(store, postgres=self.dsn)]
+        for base in bases:
+            self.addCleanup(base.close)
+
+        class Counted:
+            def __init__(self, conn):
+                self.conn, self.reads = conn, 0
+
+            def execute(self, *args):
+                self.reads += 1
+                return self.conn.execute(*args)
+
+        for base in bases:
+            for cap in (0, 1, top - 1, top):
+                real, base.conn = base.conn, Counted(base.conn)
+                try:
+                    got = base.degree(ids * 2, cap)   # duplicates name one object once
+                    reads = base.conn.reads
+                finally:
+                    base.conn = real
+                self.assertEqual(reads, 1, (base.postgres, cap))
+                self.assertEqual(set(got), set(ids))
+                for oid in ids:
+                    held = exact.get(oid, 0)
+                    self.assertEqual(got[oid] <= cap, held <= cap, (base.postgres, cap, oid))
+                    if held <= cap:
+                        self.assertEqual(got[oid], held, (base.postgres, cap, oid))
+
+    def test_identifier_holders_are_read_per_kind_alike_on_both_bases(self):
+        """``Base.holders``: the objects holding each (kind, value), of one binding or any,
+        a value held by more than the cap counted and not followed, as one lookup per value
+        did; read once per kind and 500 values, on SQLite and on Postgres."""
+        from ontology import delta
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1
+        from operating.pg import ontology_load
+
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        store = fixture.full("gen1.sqlite")
+        ontology_load.load(store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        with sqlite3.connect(store) as conn:
+            held: dict[tuple[str, str], set[tuple[str, str]]] = {}
+            for kind, value, oid, binding in conn.execute(
+                    "SELECT i.identifier_kind, i.normalized, i.object_id, o.binding_id FROM "
+                    "identifiers i JOIN objects o ON o.object_id = i.object_id"):
+                held.setdefault((kind, value), set()).add((oid, binding))
+        keys = sorted(held) + [(sorted(held)[0][0], "no-such-value")]
+        bindings = sorted({b for pairs in held.values() for _, b in pairs})
+        top = max(len(v) for v in held.values())
+        self.assertGreaterEqual(top, 2)   # a value over a small cap
+        kinds = len({k for k, _ in keys})
+
+        class Counted:
+            def __init__(self, conn):
+                self.conn, self.reads = conn, 0
+
+            def execute(self, *args):
+                self.reads += 1
+                return self.conn.execute(*args)
+
+        bases = [delta.Base(store), delta.Base(store, postgres=self.dsn)]
+        for base in bases:
+            self.addCleanup(base.close)
+        for cap in (1, top - 1, top):
+            for binding in (None, bindings[0]):
+                want, over = set(), 0
+                for key in keys:
+                    oids = {o for o, b in held.get(key, ()) if binding in (None, b)}
+                    if len(oids) > cap:
+                        over += 1
+                    else:
+                        want |= oids
+                for base in bases:
+                    real, base.conn = base.conn, Counted(base.conn)
+                    try:
+                        with mock.patch.object(delta, "LOOKUP_CAP", cap):
+                            got = base.holders(keys + keys[:3], binding)
+                        reads = base.conn.reads
+                    finally:
+                        base.conn = real
+                    self.assertEqual(got, (want, over), (base.postgres, cap, binding))
+                    self.assertEqual(reads, kinds, (base.postgres, cap, binding))
+
+    def test_lineage_links_of_the_asked_types_are_the_links_rows_of_those_types(self):
+        """``Base.typed_links`` (the closure's lineage chains): the links of the asked types
+        at either end of the objects, every one ``links_of`` returns of those types and no
+        other, in one read per 500 objects, on SQLite and on Postgres."""
+        from collections import Counter
+        from ontology import delta
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1
+        from operating.pg import ontology_load
+
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        store = fixture.full("gen1.sqlite")
+        ontology_load.load(store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        with sqlite3.connect(store) as conn:
+            ids = sorted(r[0] for r in conn.execute("SELECT object_id FROM objects"))
+            types = sorted({r[0] for r in conn.execute("SELECT link_type FROM link_rows")})
+        self.assertGreaterEqual(len(types), 2)
+        bases = [delta.Base(store), delta.Base(store, postgres=self.dsn)]
+        for base in bases:
+            self.addCleanup(base.close)
+        for base in bases:
+            every = Counter((r["link_type"], r["from_object"], r["to_object"])
+                            for r in base.links_of(ids))
+            for asked in ([types[0]], types[1:], types, ["no-such-type"]):
+                want = Counter({k: n for k, n in every.items() if k[0] in asked})
+                reads = []
+                real = base.conn
+
+                class Counted:
+                    def execute(self, *args):
+                        reads.append(args[0])
+                        return real.execute(*args)
+
+                base.conn = Counted()
+                try:
+                    got = Counter((r["link_type"], r["from_object"], r["to_object"])
+                                  for r in base.typed_links(ids, asked))
+                finally:
+                    base.conn = real
+                self.assertEqual(got, want, (base.postgres, asked))
+                self.assertEqual(len(reads), 1, (base.postgres, asked))
+
     def test_a_new_generation_loads_beside_the_served_one_and_swaps_in_at_once(self):
         """``ontology_swap``: generation 2 loads into ``ontology_next`` while generation 1
         is served, then one swap; every row read afterwards is generation 2's."""
@@ -811,6 +1088,18 @@ class DeltaToPostgresTests(unittest.TestCase):
                                          "'ontology_next'").fetchone())
             self.assertGreater(pg.execute("SELECT count(*) FROM ontology.links").fetchone()[0], 0)
             self.assertGreater(pg.execute("SELECT ontology.sq_data_version()").fetchone()[0], 0)
+            # the steps' per-object reads keep their partial indexes (migration 0013)
+            held = {r[0] for r in pg.execute(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = 'ontology' "
+                "AND tablename = 'link_rows'")}
+            self.assertLessEqual({"link_rows_lead_from", "link_rows_contra_from"}, held)
+            # and the big tables their autovacuum options (migration 0014)
+            options = dict(pg.execute(
+                "SELECT relname, reloptions FROM pg_class WHERE relnamespace = "
+                "'ontology'::regnamespace AND relname IN ('link_rows', 'value_cells')"))
+            for table in ("link_rows", "value_cells"):
+                self.assertIn("autovacuum_vacuum_insert_scale_factor=0.01",
+                              options[table] or [], table)
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ import sys
 import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-from ontology.mention_memo import DocumentMemo, _pack
+from ontology.mention_memo import DocumentMemo, _pack, _unpack
 
 FORMAT = "plx-mention-extract/v1"
 ENV = "PLX_MENTION_CACHE"
@@ -101,7 +101,12 @@ class ExtractionCache(DocumentMemo):
         self.xcode = xcode or extractor_code()
         self.path = Path(path)
         self._pending = 0
-        self.counts = {"held": 0, "kept": 0, "groups_kept": 0}
+        self._code: str | None = None
+        # writes wait here and go in short BEGIN IMMEDIATE transactions (:meth:`flush`);
+        # no transaction stays open between them (module note on parallel writers)
+        self._rows: dict[str, bytes] = {}
+        self._groups: dict[str, bytes] = {}
+        self.counts = {"held": 0, "kept": 0, "groups_kept": 0, "not_kept": 0}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         os.close(os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600))
         os.chmod(self.path, 0o600)
@@ -113,8 +118,8 @@ class ExtractionCache(DocumentMemo):
             from operating.declared_schema import mention_cache as declared
             declared_schema.apply(self._db, declared)
             self._db.execute("INSERT OR REPLACE INTO meta VALUES ('format', ?)", (FORMAT,))
-            self.for_step(None)
-            self._db.execute("BEGIN")
+            # another process's step may be reading this file: its view is left as it is
+            self._show(None, replace=False)
         except BaseException:
             self._db.close()
             raise
@@ -123,20 +128,36 @@ class ExtractionCache(DocumentMemo):
         """Show the entries of this extractor code as ``mentions`` entries of the step's
         memo ``code`` (``mentions._memo_code``; None: of no code), to this process and
         to every reader of the file (the step's workers open it read-only)."""
-        open_before = self._db.in_transaction
-        if open_before:
-            self._db.execute("COMMIT")
+        self.flush()
+        self._show(code, replace=True)
+        self._code = code
+
+    def _show(self, code: str | None, *, replace: bool) -> None:
+        """The ``mentions`` view of ``code``, in one write transaction: many processes open
+        one file at once (the in-place step's parts, a prefill), so the view is read, and
+        only (re)made when it is missing or (``replace``) shows another code. Two drops
+        and creates interleaving failed 12 parallel parts ("view mentions already exists",
+        11-10), and a process opening the file reset a running step's view to no code."""
         shown = _literal(code) if code is not None else "NULL"
-        self._db.execute("DROP VIEW IF EXISTS mentions")
-        self._db.execute(
-            f"CREATE VIEW mentions AS SELECT key, {shown} AS code, NULL AS valid_at, value, "
-            f"used FROM extracted WHERE xcode = {_literal(self.xcode)}")
-        if open_before:
-            self._db.execute("BEGIN")
+        sql = (f"CREATE VIEW mentions AS SELECT key, {shown} AS code, NULL AS valid_at, "
+               f"value, used FROM extracted WHERE xcode = {_literal(self.xcode)}")
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._db.execute("SELECT sql FROM sqlite_master WHERE type = 'view' "
+                                   "AND name = 'mentions'").fetchone()
+            if row is None or (replace and row[0] != sql):
+                self._db.execute("DROP VIEW IF EXISTS mentions")
+                self._db.execute(sql)
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
 
     # -- what the step reads -------------------------------------------------------
 
     def holds(self, key: str) -> bool:
+        if key in self._rows:
+            return True
         try:
             return self._db.execute("SELECT 1 FROM extracted WHERE key = ? AND xcode = ?",
                                     (key, self.xcode)).fetchone() is not None
@@ -148,7 +169,14 @@ class ExtractionCache(DocumentMemo):
         found = self.peek_group(group)
         return found is not None and all(self.holds(key) for key in found)
 
+    def peek_group(self, key: str) -> list[str] | None:
+        if key in self._groups:
+            return list(_unpack(self._groups[key]))
+        return super().peek_group(key)
+
     def mentions(self, key: str, code: str) -> tuple[dict[str, Any], bool] | None:
+        if key in self._rows:
+            return (_unpack(self._rows[key]), False) if code == self._code else None
         found = super().mentions(key, code)
         return None if found is None else (found[0], False)   # never a base's resolution
 
@@ -162,21 +190,43 @@ class ExtractionCache(DocumentMemo):
         self.keep(key, entry["document"], entry["mentions"])
 
     def keep(self, key: str, facts: Mapping[str, Any], mentioned: Sequence[Any]) -> None:
-        try:
-            self._db.execute(
-                "INSERT INTO extracted (key, xcode, value, used) VALUES (?, ?, ?, 0) "
-                "ON CONFLICT (key) DO UPDATE SET xcode = excluded.xcode, "
-                "value = excluded.value", (key, self.xcode,
-                                           _pack({"document": dict(facts),
-                                                  "mentions": list(mentioned)})))
-            self.counts["kept"] += 1
-            self._wrote()
-        except sqlite3.Error:   # not kept: read again next time
-            return
+        self._rows[key] = _pack({"document": dict(facts), "mentions": list(mentioned)})
+        self._flush_when_full()
 
     def keep_group(self, key: str, documents: Sequence[str]) -> None:
-        super().keep_group(key, documents)
-        self.counts["groups_kept"] += 1
+        self._groups[key] = _pack(list(documents))
+        self._flush_when_full()
+
+    def _flush_when_full(self) -> None:
+        if len(self._rows) + len(self._groups) >= self._BATCH:
+            self.flush()
+
+    def flush(self) -> None:
+        """The waiting writes in one short write transaction. A deferred transaction kept
+        open between writes (as before 11-11) read a snapshot that went stale as soon as
+        another process (a parallel part, a prefill) committed, after which every write of
+        this one failed "database is locked" and was dropped silently: the 11-10 prefill
+        extracted for an hour and kept nothing."""
+        if not self._rows and not self._groups:
+            return
+        rows, groups = self._rows, self._groups
+        self._rows, self._groups = {}, {}
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            self._db.executemany(
+                "INSERT INTO extracted (key, xcode, value, used) VALUES (?, ?, ?, 0) "
+                "ON CONFLICT (key) DO UPDATE SET xcode = excluded.xcode, "
+                "value = excluded.value", [(k, self.xcode, v) for k, v in rows.items()])
+            self._db.executemany("INSERT OR REPLACE INTO groups (key, value, used) "
+                                 "VALUES (?, ?, ?)",
+                                 [(k, v, self.number) for k, v in groups.items()])
+            self._db.execute("COMMIT")
+            self.counts["kept"] += len(rows)
+            self.counts["groups_kept"] += len(groups)
+        except sqlite3.Error:   # not kept: read again next time
+            self.counts["not_kept"] += len(rows) + len(groups)
+            if self._db.in_transaction:
+                self._db.execute("ROLLBACK")
 
     def still_valid(self, key: str) -> None:
         return
@@ -196,9 +246,9 @@ class ExtractionCache(DocumentMemo):
     def close(self, *, prune: bool = False) -> None:
         """Commit and close; ``prune``: drop the entries of other extractor codes."""
         try:
+            self.flush()
             if prune:
                 self._db.execute("DELETE FROM extracted WHERE xcode <> ?", (self.xcode,))
-            self._db.execute("COMMIT")
         except sqlite3.Error:
             pass
         finally:
@@ -239,6 +289,7 @@ def cached_step(step: Callable[[Any, Any], Any], path: str | Path
                 result = step(builder, projector)
             finally:
                 projector.build_context = held
+            cache.flush()   # the step's writes counted as kept once they are in the file
             LAST.clear()
             LAST.update(cache.counts, hash_seed_fixed=not sys.flags.hash_randomization)
             print(f"mention cache {path}: {json.dumps(LAST, sort_keys=True)}",

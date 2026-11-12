@@ -18,6 +18,7 @@ import unittest
 from operating import inbox_triage as it
 from operating import label_changes as lc
 from operating import label_revisions as lr
+from operating import proactive_threads as pt
 from operating.tests.test_proactive_engine import (AS_OF, EXCLUDED_OID, OURS_OID, Engine,
                                                    World)
 from operating.tests.test_proactive_threads import (APPROVER, APPROVER_OID, BOSS, OURS,
@@ -598,6 +599,25 @@ class Revisions(Engine):
                           for r in f["revisions"]], ["Rev 2"])
         # the superseded alert is off for readers until it is measured (alert registry)
         self.assertEqual(self.read(kinds=[lr.SUPERSEDED], include_off=False)["gaps"], [])
+
+    def test_without_a_word_index_the_names_are_scanned_to_the_same_revisions(self):
+        """Postgres serves no value word index yet: the names are read by type, a chunk of
+        ids at a time, the conversations matched in the store and their mail read by id, and the
+        same revisions come out (every chunk boundary crossed)."""
+        from unittest import mock
+
+        w, _ids = self.world()
+        self.run_engine(w, only=[lr.RULE], people=people_with_drive())
+        indexed = sorted((g["id"], g["summary"]) for g in self.read(
+            kinds=list(lr.KINDS), limit=1000)["gaps"])
+        self.assertTrue(indexed)
+        with mock.patch.object(pt, "_word_ids", return_value=None), \
+                mock.patch.object(lr, "SCAN_CHUNK", 1), mock.patch.object(pt, "MEMBER_CHUNK", 1):
+            summary = self.run_engine(w, only=[lr.RULE], people=people_with_drive())
+        self.assertEqual(summary["detectors"][lr.RULE], "complete")
+        scanned = sorted((g["id"], g["summary"]) for g in self.read(
+            kinds=list(lr.KINDS), limit=1000)["gaps"])
+        self.assertEqual(scanned, indexed)
 
     def test_fails_closed_without_the_exclusion_and_reads_each_copy_once(self):
         w, _ids = self.world()

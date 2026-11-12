@@ -429,7 +429,18 @@ MARKS_ONLY: dict[str, frozenset[tuple[str, str]]] = {
 # ``operating/declared_schema`` (version 1 is the earlier DDL, idempotent): document_fields'
 # kept-fields memo (``KeptFields``) and kind_confirmation's confirmation store. Neither
 # step's rows read or depend on that DDL. From the build of 11-10 (fb77cd38eb's step code) to the tree that moved it.
+# with_owners, 352991482b..ed679e9772 (main, 11-11): distribution-list membership in
+# ``integrations/people_exclusion.py``. Every change is on the bound guard (a live tenant
+# listing: ``list_groups``, ``_group_excluded``) or the recorded listing (``attach_listing``,
+# ``tenant_listing_rows``, ``mail_capture_listing``); the step's guard is
+# ``PeopleExclusion.from_env`` (never bound, no listing or directory attached), whose
+# ``from_env``, ``decides`` and ``is_excluded`` on object ids are unchanged. From the served
+# step code (be37cefd36, the in-place run of 11-11) to ed679e9772. Old and new code agreed
+# on all 92,248 served Person ids and addresses and on the step's fixture links.
 SAME_ROWS: dict[str, frozenset[tuple[str, str]]] = {
+    "with_owners": frozenset({
+        ("a2887e8a79b92a6f292887258f83414460eceaed3b0bad5f37abf4f5aea9d14b",
+         "f8b5571f8f1d35ccfe76cae434b2b602eb8e92e168b7ffb06d1af1fa63f8454e")}),
     "document_fields": frozenset({
         ("ab0f767f19df54ad663aae34db67584c2ee1d25230104edea7735af56e68eb38",
          "b4256f70d305a06e1a7ee37bb9068ddb6f39bfe6fe720fe9342bc016d8ff1de2")}),
@@ -807,12 +818,15 @@ def _parts_in_order(job: Callable[..., str], jobs: Sequence[tuple[Any, ...]], wo
         for name, args in zip(names, jobs):
             yield Path(job(name, *args))
         return
-    import importlib
     from ontology.store import main_not_imported
-    # named by this module's import name, never ``__main__`` (``python -m`` runs it as
-    # that): a worker imports nothing of the build's main (main_not_imported)
-    module = job.__module__ if job.__module__ != "__main__" else "ontology.step_migrate"
-    job = getattr(importlib.import_module(module), job.__name__)
+    if job.__module__ == "__main__":
+        # ``python -m`` runs this file as ``__main__``: a worker imports nothing of the
+        # build's main (main_not_imported), so the job is this module's own, by its import
+        # name (static attributes of the three jobs, never a computed lookup)
+        from ontology import step_migrate as canonical
+        job = {"_served_value_part": canonical._served_value_part,
+               "_layer_value_part": canonical._layer_value_part,
+               "_layer_link_part": canonical._layer_link_part}[job.__name__]
     with main_not_imported():
         pool = cf.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
     try:
@@ -1354,12 +1368,8 @@ def analyze_input(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA analysis_limit = 0")
     conn.execute("ANALYZE link_rows")
     conn.execute("PRAGMA analysis_limit = 400")
-    fixed = [x for x in store_ddl.PLANNER_STATS]
-    conn.executemany("DELETE FROM sqlite_stat1 WHERE tbl = ? AND idx = ?",
-                     [(t, i) for t, i, _ in fixed])
-    conn.executemany("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES (?, ?, ?)", fixed)
+    store_ddl.planner_stats(conn)
     conn.commit()
-    conn.execute("ANALYZE sqlite_master")   # this connection plans with them too
 
 
 class UndeclaredRead(RuntimeError):

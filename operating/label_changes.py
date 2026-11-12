@@ -248,9 +248,8 @@ def thread_population(st: Any, rows: dict[str, Any], inside: set[str], indexed: 
     members = pt.conversations_of(rows, conversations) if windowed \
         else pt._members(st, conversations, indexed)
     others = sorted({o for ms in members.values() for o in ms[:pt.MAX_THREAD]} - set(rows))
-    rows.update(pt._read(st, others, MAIL_PROPS) if indexed else
-                {o: r for o, r in pt._scan(st, MAIL_PROPS).items() if o in set(others)}
-                if others else {})
+    # read by id: no word index needed (the whole-mail scan held every message, over 4 GB)
+    rows.update(pt._read(st, others, MAIL_PROPS) if others else {})
     rows = pt.seen_by(rows, as_of)
     audience: dict[str, str] = {}
     wanted = sorted(rows)

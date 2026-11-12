@@ -412,5 +412,118 @@ class FindRoots(unittest.TestCase):
         self.assertEqual(records['Product:bc.items:{"id":"lead"}']["status"], "lead")
 
 
+class SharedNumber(unittest.TestCase):
+    """W-0070 (dev 11-10): "order 465" named a cancelled purchase order PO#0465 (the only
+    one the entity index carries) while the sales order the question meant is known by
+    its number alone; the Ask read the purchase order as the thing asked."""
+
+    PO_IDX = 'PurchaseOrder:portal.app_purchase_order:{"id":"fm-po-488"}'
+    SO_FM = 'SalesOrder:portal.fm_order_entry:{"id":465}'
+    HIDDEN_SO = 'SalesOrder:portal.fm_order_entry:{"id":9465}'
+    LOT = 'Lot:portal.fm_lot:{"id":465}'
+
+    def resolver(self, store_rows, hidden=()):
+        index_rows = [row(self.PO_IDX, "purchase_order", "PO465", ["PO#0465"])]
+
+        class Index(FakeIndex):
+            def by_identifier(self, forms, scope, types=None):
+                forms = {f.upper() for f in forms}
+                return [r for r in index_rows
+                        if forms & {a.upper().replace("#0", "") for a in r.alias}], set()
+
+            def split_candidates(self, digits, scope):
+                return []
+
+        class Store(FakeStore):
+            asked = []
+
+            def identifiers_by_value(self, scope, values, types=None, cap=None):
+                # the statement's contract: the reader's scope, then the types, a set
+                # order and the cap (StoreReader.identifiers_by_value)
+                Store.asked.append(sorted(values))
+                rows = [r for r in store_rows if r["normalized"] in values
+                        and r["object_id"] not in hidden]
+                if types is not None:
+                    rows = [r for r in rows if r["object_id"].split(":", 1)[0] in types]
+                if cap is not None:
+                    rows = sorted(rows, key=lambda r: (r["object_id"].split(":", 1)[0],
+                                                       r["object_id"], r["property"]))[:cap]
+                return rows
+
+        base = FakeBase()
+        base.store = Store()
+        return er.Resolver(base, Index()), Store
+
+    @staticmethod
+    def ident(oid, prop, value):
+        return {"object_id": oid, "property": prop, "normalized": value, "raw": value,
+                "identifier_kind": "fm_id"}
+
+    def test_a_number_several_records_carry_names_none_of_them(self):
+        resolver, _ = self.resolver([self.ident(self.SO_FM, "fm_id", "465"),
+                                     self.ident(self.LOT, "fm_id", "465")])
+        q = "Which assembly orders are making the goods for order 465?"
+        entities, _ = resolver.resolve("scope", "actor", q)
+        offered = {r["object"]["object_id"]: e for e in entities for r in e["records"]}
+        # the sales order the index lacks is found; a lot sharing the number is no order
+        self.assertEqual(set(offered), {self.PO_IDX, self.SO_FM})
+        for entity in entities:
+            self.assertEqual(entity["status"], "derived")
+            self.assertTrue(entity["shares_number"])
+            self.assertEqual(entity["records"][0]["why"][0], er.SHARED_WHY)
+        found = objective_runner.find_roots(q, lambda arguments: (
+            {"status": "resolved", "entities": entities}
+            if arguments.get("mode") == "entities" else {"status": "not_found"}))
+        self.assertEqual(found["roots"], [])   # never one picked by its number
+        from operator_api import preread
+        told = preread.brief(None, found["roots"], entities=found["entities"])
+        self.assertIn('"order 465" is carried by several different records', told)
+        self.assertIn(self.SO_FM, told)
+        self.assertIn(self.PO_IDX, told)
+        self.assertNotIn("Possible only", told)
+
+    def test_many_other_records_sharing_the_number_never_crowd_out_the_order(self):
+        # in the store a short number is carried by many lots, lines and entries; they
+        # come back before the sales order, more of them than the resolver keeps
+        others = [self.ident(f'Lot:portal.fm_lot:{{"id":{n}}}', "fm_id", "465")
+                  for n in range(er.MAX_EXPAND + 5)]
+        resolver, _ = self.resolver([*others, self.ident(self.SO_FM, "fm_id", "465")])
+        entities, _ = resolver.resolve("scope", "actor", "what is the status of order 465?")
+        offered = {r["object"]["object_id"] for e in entities for r in e["records"]}
+        # never the one indexed purchase order as a silent match
+        self.assertEqual(offered, {self.PO_IDX, self.SO_FM})
+        self.assertEqual({e["status"] for e in entities}, {"derived"})
+
+    def test_one_record_carrying_it_stays_the_match(self):
+        resolver, _ = self.resolver([self.ident(self.HIDDEN_SO, "fm_id", "465")],
+                                    hidden={self.HIDDEN_SO})
+        entities, _ = resolver.resolve("scope", "actor", "what ships on order 465?")
+        # a record the reader may not read neither splits the number nor is named
+        self.assertEqual([e["status"] for e in entities], ["match"])
+        self.assertNotIn("shares_number", entities[0])
+        self.assertEqual([r["object"]["object_id"] for r in entities[0]["records"]],
+                         [self.PO_IDX])
+
+    def test_a_label_naming_one_kind_never_reads_the_store_numbers(self):
+        resolver, store = self.resolver([self.ident(self.SO_FM, "fm_id", "465")])
+        entities, _ = resolver.resolve("scope", "actor", "is PO 465 late?")
+        self.assertEqual(store.asked, [])
+        self.assertEqual([e["status"] for e in entities], ["match"])
+
+    def test_a_quantity_is_never_looked_up_as_a_number(self):
+        resolver, store = self.resolver([self.ident(self.SO_FM, "fm_id", "500")])
+        resolver.resolve("scope", "actor", "Should we order 500 units of glycerin?")
+        self.assertEqual(store.asked, [])
+
+    def test_a_failing_store_read_keeps_the_index_answer(self):
+        resolver, store = self.resolver([])
+
+        def boom(scope, values, types=None, cap=None):
+            raise RuntimeError("store down")
+        resolver.base.store.identifiers_by_value = boom
+        entities, gaps = resolver.resolve("scope", "actor", "order 465 status?")
+        self.assertEqual([e["status"] for e in entities], ["match"])
+
+
 if __name__ == "__main__":
     unittest.main()

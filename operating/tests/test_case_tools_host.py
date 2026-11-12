@@ -1432,6 +1432,39 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
             self.assertEqual(json.loads(cth._mailboxes_cache(key).read_text())["mailboxes"],
                              fresh)
 
+    def test_hosts_refreshing_the_list_at_once_scan_the_capture_once(self):
+        """Hosts of one user whose lists aged out together scan the capture one at a time:
+        the first scans and keeps its list, each waiting host takes that list."""
+        from operating import case_tools_host as cth
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        key = os.path.realpath("/nonexistent/mail-capture/capture-shared.db")
+        self.addCleanup(cth._MAILBOXES.pop, key, None)
+        listed = [{"mailbox_upn": "orders@example.com"}]
+        scans = []
+
+        def scan(path):
+            scans.append(path)
+            time.sleep(0.5)   # the scan of 2.3M attachments, shortened
+            return listed
+        with mock.patch.dict(os.environ, {cth.MAILBOXES_CACHE_ENV: temp.name}), \
+                mock.patch.object(cth, "_mailbox_list", side_effect=scan):
+            hosts = [threading.Thread(target=cth._read_mailboxes, args=(key, threading.Event()))
+                     for _ in range(4)]
+            for host in hosts:
+                host.start()
+            for host in hosts:
+                host.join(10)
+            self.assertEqual(scans, [key])
+            self.assertEqual(cth._MAILBOXES[key][1], listed)
+            # once the kept list is old, the next refresh scans again (once)
+            old = time.time() - cth.ATTACHMENT_MAILBOXES_SECONDS - 5
+            os.utime(cth._mailboxes_cache(key), (old, old))
+            done = threading.Event()
+            cth._read_mailboxes(key, done)
+            self.assertTrue(done.is_set())
+            self.assertEqual(len(scans), 2)
+
 
 class AttachmentFind(unittest.TestCase):
     """A message's find also searches its attachments' text (``PagedRead.

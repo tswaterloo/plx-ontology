@@ -306,10 +306,25 @@ class ChaseAndHolds(Engine):
                     audience="fm:lots")
         w.link("Lot.received_in", lot, w.obj("Receipt", {"received_date": day(20)},
                                              audience="api:receipts"))
+        raw = w.obj("Product", {"code": "SYNTH-RAW"}, audience="api:items")
+        for number, status in (("X", "Quarantine"), ("1", "Quarantine"),     # placeholders
+                               ("L-SYNTH-R", "Quarantine"), ("L-SYNTH-R", "Released"),
+                               ("L-SYNTH-S", "Quarantine")):
+            other = w.obj("Lot", {"qc_status": status, "lot_number": number},
+                          audience="fm:lots")
+            w.link("Lot.of_item", other, raw)
+            w.link("Lot.received_in", other, w.obj("Receipt", {"received_date": day(30)},
+                                                   audience="api:receipts"))
+            if number == "L-SYNTH-S":
+                kept = other
+        released_elsewhere = w.obj("Lot", {"qc_status": "Released",            # another item
+                                           "lot_number": "l synth s"}, audience="fm:lots")
+        w.link("Lot.of_item", released_elsewhere,
+               w.obj("Product", {"code": "SYNTH-RAW-2"}, audience="api:items"))
         summary = self.run_rules(w)
         self.assertEqual(summary["detectors"][pc.HOLDS], "complete")
         gaps = self.kinds(pc.HOLD_AGING)
-        self.assertEqual(sorted(g["object_id"] for g in gaps), sorted([waited, lot]))
+        self.assertEqual(sorted(g["object_id"] for g in gaps), sorted([waited, lot, kept]))
         by = {g["object_id"]: g for g in gaps}
         self.assertEqual(by[waited]["summary"],
                          "Batch BC-SYNTH-1 of SYNTH-BULK, 600 kg on On-Hold 40 days (counted "
@@ -317,10 +332,11 @@ class ChaseAndHolds(Engine):
                          "(SO-BC-SYNTH-1)")
         self.assertEqual(by[waited]["follow_up"]["priority"], "high")
         self.assertEqual(by[waited]["event"]["orders_affected"], 1)
-        self.assertEqual(summary["not_evaluated"][pc.HOLDS], {"hold_age_unknown": 1})
-        # a reader who may not open the batches sees the lot's hold only
-        self.assertEqual([g["object_id"] for g in self.kinds(
-            pc.HOLD_AGING, may_read=lambda a: a != "fm:batches")], [lot])
+        self.assertEqual(summary["not_evaluated"][pc.HOLDS],
+                         {"hold_age_unknown": 1, "lot_number_placeholder": 2})
+        # a reader who may not open the batches sees the lots' holds only
+        self.assertEqual(sorted(g["object_id"] for g in self.kinds(
+            pc.HOLD_AGING, may_read=lambda a: a != "fm:batches")), sorted([lot, kept]))
 
     def test_a_suppliers_rising_rejects_carry_a_complaint_draft(self):
         w = World()

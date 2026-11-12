@@ -197,6 +197,11 @@ COMPANY_REF = re.compile(
 PARTY_REF = re.compile(
     r"\b(?:[Yy]our|[Tt]he|[Tt]his|[Tt]hat|[Tt]hese|[Tt]hose)\s+(?:supplier|vendor|customer|"
     r"order|purchase order|sales order|PO|SO|lot|batch|invoice|shipment|receipt)s?\b")
+# what a party did or owes ("the supplier quoted $4.10", "the customer paid late"): a
+# claim about one party, not a worked example ("if the batch yield is 97%")
+PARTY_DID = re.compile(
+    r"(?i)\b(?:quoted|owes|owed|shipped|charged|billed|invoiced|paid|delivered|sent|"
+    r"received|promised|offered|confirmed|gave|agreed|raised|cut|refused|returned)\b")
 # a sentence whose subject is PLX itself ("PLX makes ...", "At PLX, ...", "PLX's lines
 # ..."): a claim about the company, which the general model cannot know
 COMPANY_SELF = re.compile(r"^\W*(?:(?:At|For|In)\s+)?PLX(?:['’]s)?\b")
@@ -244,15 +249,49 @@ def _novel_facts(sentence: str, given: tuple[str, set[Decimal], set[str]],
     return out
 
 
+# Words written all in capitals that name a topic, never a party: a regulation, a
+# standard, a method or a unit of trade. Every other all-capitals word (ULINE, BASF, UPS,
+# IFF) may be a supplier, customer or carrier, so a figure or date beside it goes
+# (``screen``). Kept short on purpose: a word missing here is screened as a party.
+TOPIC_TERMS = frozenset((
+    "gmp cgmp glp gdp ec fifo lifo fefo iso fda cfr usp nf nsf haccp sop sops coa coas sds "
+    "msds ghs osha epa usda eu us uk mrp erp bom sku skus moq eoq kpi kpis otif fob exw "
+    "ddp dap cif incoterms rfq rfqs ap ar gl cogs usd cad eur ph hplc qc qa capa ncr "
+    "lims abc wip ltl ftl otc spf").split())
+
+
+def _caps_name(token: str) -> bool:
+    """``token`` is written all in capitals like a company's short name (2-6 letters)."""
+    return bool(re.fullmatch(r"[A-Z]{2,6}", token)) and token not in ("PLX",)
+
+
 def _asker_names(text: str) -> set[str]:
     """The names the asker wrote (a supplier, a customer): capitalised words that are not
-    the first word of a sentence and not an ordinary sentence opener."""
+    the first word of a sentence and not an ordinary sentence opener, nor a topic term
+    written in capitals (``TOPIC_TERMS``: "the main GMP requirements" asks of no party)."""
     out = set()
-    for sentence in _SENTENCE.split(text):
+    for sentence in _sentences(text):
         for index, token in enumerate(_WORD.findall(sentence)):
             if index and token[:1].isupper() and token.casefold() not in OPENERS \
-                    and token not in ("I", "PLX"):
+                    and token not in ("I", "PLX") \
+                    and not (_caps_name(token) and token.casefold() in TOPIC_TERMS):
                 out.add(token.casefold())
+    return out
+
+
+# "e.g. 2%", "i.e. the lot": an abbreviation's full stop ends no sentence (dev 11-11: a
+# placeholder "[tolerance, e.g. 2% or $ amount]" was cut in two and its tail removed)
+_ABBREVIATION = re.compile(r"(?i)(?:\b(?:e\.g|i\.e|etc|vs|approx|incl|cf|no|ca)\.)$")
+
+
+def _sentences(line: str) -> list[str]:
+    """``line``'s sentences (``_SENTENCE``), never split after an abbreviation."""
+    out: list[str] = []
+    for piece in _SENTENCE.split(line):
+        if out and _ABBREVIATION.search(out[-1].rstrip()):
+            out[-1] = out[-1] + " " + piece
+        else:
+            out.append(piece)
     return out
 
 
@@ -293,6 +332,11 @@ def screen(text: str, question: str, earlier: Sequence[str] = (), *,
     named = _record_identifiers(asked)
     from_file = _record_identifiers(" ".join(quoted))
     parties = _asker_names(" ".join([question, *earlier]))
+    # "the batch", "the invoice" refer to one the asker named (a record or a name); asked
+    # of none, they are any batch or invoice ("if the batch yield is 97%, ..."), unless the
+    # sentence says what one did ("the supplier quoted $4.10"). "your", "this", "that",
+    # "these" and "those" always point at one of the reader's own.
+    specific = bool(named) or bool(parties)
     # words the answer writes in lower case somewhere, and the usual sentence openers:
     # a capitalised first word among them is an ordinary word, not a name
     ordinary = frozenset({word for word in _WORD.findall(text) if word.islower()}
@@ -300,7 +344,7 @@ def screen(text: str, question: str, earlier: Sequence[str] = (), *,
     kept_lines, removed = [], []
     for line in text.replace("\r", "").split("\n"):
         kept = []
-        for sentence in _SENTENCE.split(line):
+        for sentence in _sentences(line):
             plain = _PLACEHOLDER.sub(" ", sentence)
             novel_ids = _record_identifiers(plain) - named
             about_company = bool(COMPANY_REF.search(plain)) or bool(
@@ -308,8 +352,17 @@ def screen(text: str, question: str, earlier: Sequence[str] = (), *,
             facts = _novel_facts(plain, given, ordinary)
             numeric = any(any(ch.isdigit() for ch in fact) for fact in facts)
             if not strict:
-                about_party = about_company or bool(PARTY_REF.search(plain)) or bool(
-                    parties & {token.casefold() for token in _WORD.findall(plain)})
+                refs = PARTY_REF.findall(plain)
+                did = bool(PARTY_DID.search(plain))
+                about_party = about_company or any(
+                    specific or did or ref.split()[0].casefold() != "the" for ref in refs)
+                words = _WORD.findall(plain)
+                tokens = {token.casefold() for token in words}
+                # a name in capitals the asker did not write (or did) is a party too,
+                # unless it is a topic term or a word the answer writes in lower case
+                caps = any(_caps_name(token) and token.casefold() not in TOPIC_TERMS
+                           and token.casefold() not in ordinary for token in words)
+                about_party = about_party or bool(parties & tokens) or caps
                 named_new = any(not any(ch.isdigit() for ch in fact) for fact in facts)
                 if (_record_identifiers(plain) - from_file) \
                         or (about_party and _dated_or_figured(plain)) \

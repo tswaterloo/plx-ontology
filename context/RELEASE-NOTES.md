@@ -51,7 +51,7 @@ Fixed:
 - **Customer profitability:**
   - works with full-read access;
   - margins are labelled "on item cost only", because Business Central books no labour or overhead;
-  - no profitable/unprofitable verdict is given unless every invoiced order has a checked margin;
+  - no profitable or unprofitable conclusion is given unless every invoiced order has a checked margin;
   - a zero cost in Business Central is reported as "no cost value", not as a cost of zero.
 - **Ambiguous order numbers:** when an order number means different orders in Business Central and the Portal, the answer asks which one, showing each system's vendor and date. Records firmly linked as one order are treated as one.
 - **"Did you mean" keeps your original question.**
@@ -76,7 +76,7 @@ Added:
   - the requested-by date;
   - each vendor promise and revision, with its email;
   - follow-ups and receipts;
-  - the verdict under PLX's lateness rule;
+  - the result under PLX's lateness rule;
   - whether the ETA is backed by a vendor confirmation;
   - a suggested next step.
   The same works for why a lot is on hold, what we last told a customer, invoice/PO/receipt mismatches, assembly shortfalls, short shipments and who decided something.
@@ -86,7 +86,7 @@ Added:
   - orders ranked worst first;
   - why an order lost money, line by line with its cost sources;
   - every amount with its own currency.
-  When not every order could be read, no total or verdict is given.
+  When not every order could be read, no total or conclusion is given.
 - **The email behind a number:** a vendor's quoted price, unit, MOQ or lead time, quoted exactly from their email or attachment and compared with the system's value.
 - **Vendor replies:** proposed updates from replies (never applied), and a list of quote requests with no reply for 7 days, with a draft to copy. Nothing is sent.
 - **Full-read access for one named person** (set up for demos): they can see every captured mailbox, file, Teams message and finance figure. Quality documents still need QC access, excluded people stay excluded, and every view is labelled and logged.
@@ -337,7 +337,7 @@ Added:
 - Landed cost gives a total for every purchase order. When PLX has no recorded freight or duty for an order, the figure is estimated from PLX's own history and clearly marked as an estimate, with what it was based on.
 
 Changed:
-- Answers quote files and mail more reliably, and say plainly what they could not confirm.
+- Answers quote files and mail more reliably, and say what they could not confirm.
 - New data from every connected system is read continuously.
 
 Must keep working:

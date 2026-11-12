@@ -4113,17 +4113,60 @@ def _keep_mailboxes(path: str, found: list[dict[str, Any]]) -> None:
         pass   # each host reads its own
 
 
-def _read_mailboxes(path: str, done: threading.Event) -> None:
+# How long a host waits for another host's scan of the same capture before scanning itself.
+MAILBOXES_SCAN_WAIT_SECONDS = 180.0
+
+
+@contextmanager
+def _one_scan(path: str) -> Iterator[None]:
+    """Held while this process scans ``path``'s attachment mailboxes: an exclusive lock
+    beside the kept list, so the hosts of this user scan one at a time and each after the
+    first takes the list the first kept (11-11: four hosts rescanned the 2.3M attachments
+    side by side every ``ATTACHMENT_MAILBOXES_SECONDS``, 42% of the API's samples). No
+    private folder, or no lock within ``MAILBOXES_SCAN_WAIT_SECONDS``: scanned anyway."""
+    import fcntl
+    handle = None
     try:
+        file = _mailboxes_cache(path)
+        file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if _private(file.parent):
+            fd = os.open(file.with_name(file.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+            handle = os.fdopen(fd, "r+")
+            deadline = time.monotonic() + MAILBOXES_SCAN_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.2)
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.close()   # the lock goes with it (also when the process dies)
+
+
+def _scan_mailboxes(path: str) -> tuple[float, list[dict[str, Any]]]:
+    """(the monotonic time it stands for, the list) of ``path``: the list another host
+    kept within the refresh interval, else scanned now and kept, one host at a time."""
+    with _one_scan(path):
         kept = _cached_mailboxes(path)
         if kept is not None:
-            with _MAILBOXES_LOCK:
-                _MAILBOXES[path] = kept
-            return
+            return kept
         found = _mailbox_list(path)
-        with _MAILBOXES_LOCK:
-            _MAILBOXES[path] = (time.monotonic(), found)
         _keep_mailboxes(path, found)
+        return time.monotonic(), found
+
+
+def _read_mailboxes(path: str, done: threading.Event) -> None:
+    try:
+        got = _scan_mailboxes(path)
+        with _MAILBOXES_LOCK:
+            _MAILBOXES[path] = got
     except sqlite3.Error:
         pass   # read again by the next request that needs it
     finally:
@@ -4173,11 +4216,10 @@ def _attachment_mailboxes(store: Any) -> list[dict[str, Any]]:
             with _MAILBOXES_LOCK:
                 _MAILBOXES[key] = kept
             return kept[1]
-        found = _mailbox_list(key)
+        got = _scan_mailboxes(key)
         with _MAILBOXES_LOCK:
-            _MAILBOXES[key] = (time.monotonic(), found)
-        _keep_mailboxes(path=key, found=found)
-        return found
+            _MAILBOXES[key] = got
+        return got[1]
     if time.monotonic() - held[0] >= ATTACHMENT_MAILBOXES_SECONDS:
         _refresh_mailboxes(key)
     return held[1]

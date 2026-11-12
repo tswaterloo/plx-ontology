@@ -44,16 +44,16 @@ export function firedKinds(reg: AlertKinds | null, briefing: Briefing | null): F
 function ItemRow({ it }: { it: BriefingItem }) {
   const href = safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id);
   return (
-    <li className="grid grid-cols-[10px_minmax(0,11rem)_minmax(0,1fr)_auto] items-baseline gap-x-3 py-1.5 text-[13px]">
+    <li className="grid grid-cols-[10px_minmax(0,11rem)_minmax(0,1fr)_auto] items-baseline gap-x-3 py-1.5 text-[13px] max-sm:grid-cols-[10px_minmax(0,1fr)_auto]">
       <span aria-hidden className={cn("size-1.5 translate-y-[-1px] rounded-full", it.new_since_visit ? "bg-accent" : "")} />
-      <Link href={href} className="truncate font-medium hover:underline">
+      <Link href={href} className="truncate font-medium hover:underline max-sm:col-start-2">
         {recordLabel(it.object_type, it.subject_label)}
       </Link>
-      <span className="truncate text-muted" title={it.summary}>
+      <span className="truncate text-muted max-sm:col-span-2 max-sm:col-start-2 max-sm:row-start-2 max-sm:line-clamp-2 max-sm:whitespace-normal" title={it.summary}>
         {it.counterpart ? <span className="text-fg">{it.counterpart} · </span> : null}
         {it.summary}
       </span>
-      <span className={cn("num shrink-0 text-[12px]", it.days != null && it.days > 0 ? "text-late" : "text-muted")}>{it.days != null ? `${it.days} d` : ""}</span>
+      <span className={cn("num shrink-0 text-[12px] max-sm:col-start-3 max-sm:row-start-1", it.days != null && it.days > 0 ? "text-late" : "text-muted")}>{it.days != null ? `${it.days} d` : ""}</span>
       {it.new_since_visit && <span className="sr-only">new</span>}
       <ItemNext it={it} />
     </li>
@@ -67,7 +67,7 @@ function ItemNext({ it }: { it: BriefingItem }) {
   const since = it.first_seen ? formatDateTime(it.first_seen).split(", ")[0] : null;
   if (!next && !contact && !it.yours && !since) return null;
   return (
-    <p className="col-start-3 col-end-5 -mt-0.5 truncate text-[12px] leading-4 text-muted" data-testid="fired-next">
+    <p className="col-start-3 col-end-5 -mt-0.5 truncate text-[12px] leading-4 text-muted max-sm:col-start-2 max-sm:col-end-4 max-sm:whitespace-normal" data-testid="fired-next">
       {next && <span className="text-fg/80">{next}</span>}
       {contact && <span>{next ? " · " : ""}ask {contact}</span>}
       {it.yours && <span className="text-accent">{next || contact ? " · " : ""}yours</span>}

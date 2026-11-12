@@ -35,6 +35,9 @@ ENV_EXCLUDING_B = {**tm.ENV, people_exclusion.ENV_IDS: EXCLUDED}
 ENV_ABSENT = {k: v for k, v in tm.ENV.items() if k != people_exclusion.ENV_IDS}
 
 
+G1, G2, G3 = (f"abcdef00-0000-4000-8000-00000000000{n}" for n in (1, 2, 3))
+
+
 class StubApi:
     """``get_pages`` only: the directory listing ``bind`` reads."""
 
@@ -319,6 +322,101 @@ class MailGuardTests(unittest.TestCase):
         with self.assertRaises(ExclusionUnavailable):
             stale.is_excluded("c.person@example-plx.com")
 
+    def test_an_unreadable_list_withholds_only_its_mail_and_the_folder_goes_on(self):
+        """One list whose members cannot be read: its message is withheld (counted), the
+        rest of the folder is captured, and the groups are listed once for the run. Offline
+        a cleared list decides for 24 hours at most."""
+        import sqlite3
+        from datetime import datetime, timedelta, timezone
+        self.graph.groups = [
+            {"id": G1, "mail": "unreadable-list@example-plx.com", "groupTypes": []},
+            {"id": G2, "mail": "clean-list@example-plx.com", "groupTypes": []}]
+        self.graph.group_members = {G2: [{"id": tm.BOX_A, "@odata.type": "#microsoft.graph.user"}]}
+        for mid, to in (("MSG-1", None), ("MSG-2", "unreadable-list@example-plx.com"),
+                        ("MSG-3", "clean-list@example-plx.com")):
+            self.graph.put(tm.BOX_A, mid, "CK-" + mid, subject="Subject " + mid)
+            if to:
+                self.graph.messages[tm.BOX_A][mid]["toRecipients"] = [
+                    {"emailAddress": {"address": to}}]
+        scope = tm.CaptureScope([{"address": tm.UPN_A, "folders": ["inbox"]}], window_days=90,
+                                internal_domains=["example-plx.com"], allowlist=tm.SYNTHETIC)
+        run = self.capture(ENV_EXCLUDING_B).run(scope)
+        folder = run["mailboxes"][0]["folders"][0]
+        self.assertEqual((folder["counts"]["people_undecided"],
+                          folder["counts"]["people_dropped"]), (1, 0))   # held, not excluded
+        self.assertEqual((folder["complete"], folder["reason"]), (False, "people_undecided"))
+        self.assertEqual(folder["counts"]["versions_new"], 2)
+        self.assertEqual(sorted(m["message_id"] for m in self.store.index(
+            tm.CAPTURE, tm.capture_audience())["items"]), ["MSG-1", "MSG-3"])
+        self.assertEqual([u for u in self.naming("MSG-2") if "body" in
+                          parse_qs(urlsplit(u).query).get("$select", [""])[0].split(",")], [])
+        listings = [u for _m, u, _h in self.graph.calls
+                    if urlsplit(u).path == "/v1.0/groups"]
+        self.assertEqual(len(listings), 1)
+        with self.assertRaises(ExclusionUnavailable):
+            self.reader(ENV_EXCLUDING_B).get_message(tm.CAPTURE, tm.UPN_A, "MSG-2")
+        state = Path(self.tmp.name) / "state"
+        with sqlite3.connect(self.store.path) as db:
+            kinds = {r[0]: r[1] for r in db.execute(
+                "SELECT address, kind FROM tenant_listing").fetchall()}
+        self.assertEqual(kinds.get("clean-list@example-plx.com"), "group")
+        self.assertNotIn("unreadable-list@example-plx.com", kinds)
+        now = datetime.now(timezone.utc)
+        for hours, recorded in ((1, True), (25, False)):
+            rows = people_exclusion.mail_capture_listing(state, now=now + timedelta(hours=hours))
+            groups = [r for r in rows if r[2] == "group"]
+            self.assertEqual(bool(groups), recorded, hours)
+            self.assertTrue([r for r in rows if r[2] == "user"])   # users: the 7-day bound
+
+    def test_undecided_mail_is_held_and_captured_once_the_listing_succeeds(self):
+        """Run 1: the groups listing is throttled throughout, so mail to a list is held by id
+        (not dropped as excluded) and the folder is not complete. Run 2: the listing
+        succeeds; the message to a cleared list is captured, the one to a list with an
+        excluded member is dropped for good, and the folder completes."""
+        self.graph.groups = [
+            {"id": G1, "mail": "team-list@example-plx.com", "groupTypes": []},
+            {"id": G2, "mail": "secret-list@example-plx.com", "groupTypes": []}]
+        user = "#microsoft.graph.user"
+        self.graph.group_members = {G1: [{"id": tm.BOX_A, "@odata.type": user}],
+                                    G2: [{"id": EXCLUDED, "@odata.type": user}]}
+        for mid, to in (("MSG-1", None), ("MSG-2", "team-list@example-plx.com"),
+                        ("MSG-3", "secret-list@example-plx.com")):
+            self.graph.put(tm.BOX_A, mid, "CK-" + mid, subject="Subject " + mid)
+            if to:
+                self.graph.messages[tm.BOX_A][mid]["toRecipients"] = [
+                    {"emailAddress": {"address": to}}]
+        scope = tm.CaptureScope([{"address": tm.UPN_A, "folders": ["inbox"]}], window_days=90,
+                                internal_domains=["example-plx.com"], allowlist=tm.SYNTHETIC)
+        audience = tm.capture_audience()
+
+        def captured():
+            return sorted(m["message_id"] for m in self.store.index(tm.CAPTURE, audience)["items"])
+
+        self.graph.groups_status = 429
+        from unittest import mock
+        with mock.patch.object(people_exclusion, "GROUP_LIST_BACKOFF", 0.0):
+            run = self.capture(ENV_EXCLUDING_B).run(scope)
+        folder = run["mailboxes"][0]["folders"][0]
+        self.assertEqual((folder["counts"]["people_undecided"],
+                          folder["counts"]["people_dropped"]), (2, 0))
+        self.assertEqual((folder["complete"], folder["reason"]), (False, "people_undecided"))
+        self.assertEqual(captured(), ["MSG-1"])
+        self.graph.groups_status = 200
+        run = self.capture(ENV_EXCLUDING_B).run(scope)
+        folder = run["mailboxes"][0]["folders"][0]
+        self.assertEqual((folder["counts"]["people_recovered"],
+                          folder["counts"]["people_dropped"]), (1, 1))
+        self.assertEqual((folder["complete"], folder["reason"]), (True, None))
+        self.assertEqual(captured(), ["MSG-1", "MSG-2"])
+        run = self.capture(ENV_EXCLUDING_B).run(scope)
+        self.assertEqual(captured(), ["MSG-1", "MSG-2"])
+        self.assertTrue(run["mailboxes"][0]["folders"][0]["complete"])
+        stored = b"".join(p.read_bytes() for p in Path(self.tmp.name).rglob("*") if p.is_file())
+        self.assertNotIn(b"Subject MSG-3", stored)
+        self.assertEqual([u for u in self.naming("MSG-3") if "$select=" in unquote(u)
+                          and "body" in parse_qs(urlsplit(u).query)["$select"][0].split(",")],
+                         [])   # never a body read
+
     def test_only_a_listed_user_or_group_address_is_decided_offline(self):
         """Every other form of an excluded person's address stays undecided offline; a
         group's address clears; the recorded rows hold nothing of the excluded person."""
@@ -329,14 +427,17 @@ class MailGuardTests(unittest.TestCase):
                   "proxyAddresses": ["smtp:shared@example-plx.com"]},
                  {"id": EXCLUDED, "userPrincipalName": "b.person@example-plx.com",
                   "mail": EXCLUDED_UPN, "proxyAddresses": ["smtp:b.alias@example-plx.com"]}]
-        groups = [{"id": "g1", "mail": "all-staff@example-plx.com",
+        groups = [{"id": G1, "mail": "all-staff@example-plx.com", "groupTypes": [],
                    "proxyAddresses": ["SMTP:everyone@example-plx.com"]}]
+        members = {G1: [{"id": tm.BOX_A, "@odata.type": "#microsoft.graph.user"}]}
 
         class Api:
             def __init__(self, refuse_groups=False):
                 self.refuse_groups = refuse_groups
 
             def get_pages(self, url, **_kwargs):
+                if "/members" in url:
+                    return members[url.split("/groups/")[1].split("/")[0]], {"complete": True}
                 if "/v1.0/groups" in url:
                     if self.refuse_groups:
                         raise RuntimeError("403")
@@ -375,6 +476,224 @@ class MailGuardTests(unittest.TestCase):
         with self.assertRaises(ExclusionUnavailable):
             refused.is_excluded("all-staff@example-plx.com")
         self.assertIsNone(people_exclusion.tenant_listing_rows(PeopleExclusion([EXCLUDED])))
+
+class DistributionListTests(unittest.TestCase):
+    """Mail addressed to a distribution list is decided by who is on it (GroupMember.Read.All):
+    released when every member is read and none is excluded, withheld when an excluded person
+    is on it (directly or through a nested list) or when its members cannot be read. Synthetic
+    ids and addresses only."""
+
+    OTHER = "12345678-aaaa-bbbb-cccc-0000000000d1"
+    USERS = [{"id": tm.BOX_A, "userPrincipalName": tm.UPN_A},
+             {"id": OTHER, "userPrincipalName": "d1@example-plx.com"},
+             {"id": EXCLUDED, "userPrincipalName": "b.person@example-plx.com",
+              "mail": EXCLUDED_UPN}]
+    GROUPS = [{"id": G1, "mail": "clean-list@example-plx.com", "groupTypes": []},
+              {"id": G2, "mail": "with-excluded@example-plx.com", "groupTypes": []},
+              {"id": G3, "mail": "nested@example-plx.com", "groupTypes": ["Unified"]}]
+
+    def api(self, members, *, unreadable=(), incomplete=(), groups_fail=False, groups=None,
+            throttled=0, groups_cut=False, verified=None):
+        users, groups = self.USERS, self.GROUPS if groups is None else groups
+
+        class Api:
+            listings = 0
+            left = throttled
+
+            def get_pages(self, url, **_kwargs):
+                if "/v1.0/organization" in url:
+                    if verified is None:
+                        raise RuntimeError("403")
+                    return [{"verifiedDomains": [{"name": d} for d in verified]}], \
+                        {"complete": True}
+                if "/members" in url:
+                    gid = url.split("/groups/")[1].split("/")[0]
+                    if gid in unreadable:
+                        raise RuntimeError("403")
+                    return members.get(gid, []), {"complete": gid not in incomplete}
+                if "/v1.0/groups" in url:
+                    self.listings += 1
+                    if groups_fail:
+                        raise RuntimeError("403")
+                    if self.left:
+                        self.left -= 1
+                        error = RuntimeError("throttled")
+                        error.http_status = 429
+                        raise error
+                    return groups, {"complete": not groups_cut}
+                return users, {"complete": True}
+        return Api()
+
+    def bound(self, api):
+        guard = PeopleExclusion([EXCLUDED])
+        guard._sleep = lambda _s: None
+        guard.bind(api)
+        guard.list_groups(api)
+        return guard
+
+    def offline(self, guard):
+        _at, rows = people_exclusion.tenant_listing_rows(guard)
+        held = PeopleExclusion([EXCLUDED])
+        held.attach_listing(rows)
+        return held, rows
+
+    def user(self, oid):
+        return {"id": oid, "@odata.type": "#microsoft.graph.user"}
+
+    def test_a_list_without_excluded_members_is_released_a_list_with_one_is_withheld(self):
+        members = {G1: [self.user(tm.BOX_A), self.user(self.OTHER)],
+                   G2: [self.user(tm.BOX_A), self.user(EXCLUDED)],
+                   G3: [self.user(self.OTHER),
+                        {"id": G2, "@odata.type": "#microsoft.graph.group"}]}
+        guard = self.bound(self.api(members))
+        held, rows = self.offline(guard)
+        self.assertFalse({EXCLUDED, EXCLUDED_UPN.lower()} & {v for r in rows for v in r if v})
+        for view in (guard, held):
+            self.assertFalse(view.is_excluded("Clean-List@example-plx.com"))
+        self.assertTrue(guard.is_excluded("with-excluded@example-plx.com"))
+        self.assertTrue(guard.is_excluded("nested@example-plx.com"))   # through a nested list
+        for address in ("with-excluded@example-plx.com", "nested@example-plx.com"):
+            self.assertFalse(held.decides(address))     # never recorded as cleared offline
+            with self.assertRaises(ExclusionUnavailable):
+                held.is_excluded(address)
+
+    def test_a_list_whose_members_cannot_be_read_stays_withheld(self):
+        members = {G1: [self.user(tm.BOX_A)], G2: [self.user(self.OTHER)],
+                   G3: [self.user(self.OTHER)]}
+        for name, options in (("refused", {"unreadable": (G1,)}),
+                              ("truncated", {"incomplete": (G1,)}),
+                              ("member_nobody_can_name", None)):
+            with self.subTest(name):
+                if options is None:
+                    members = {**members, G1: [{"id": "not-an-id"}]}
+                    options = {}
+                guard = self.bound(self.api(members, **options))
+                with self.assertRaises(ExclusionUnavailable):
+                    guard.is_excluded("clean-list@example-plx.com")
+                held, _rows = self.offline(guard)
+                with self.assertRaises(ExclusionUnavailable):
+                    held.is_excluded("clean-list@example-plx.com")
+                self.assertFalse(guard.is_excluded("with-excluded@example-plx.com"))  # readable
+
+    def test_a_failed_throttled_or_cut_groups_listing_withholds_any_possible_list(self):
+        """No complete groups listing: a list with an excluded member must not be released
+        online; an address no listed user holds in a tenant domain may be one."""
+        members = {G1: [self.user(tm.BOX_A)], G2: [self.user(EXCLUDED)],
+                   G3: [self.user(self.OTHER)]}
+        for name, options in (("refused", {"groups_fail": True}),
+                              ("throttled", {"throttled": 99}),
+                              ("cut_short", {"groups_cut": True})):
+            with self.subTest(name):
+                guard = self.bound(self.api(members, **options))
+                for address in ("with-excluded@example-plx.com", "clean-list@example-plx.com",
+                                "unlisted@example-plx.com"):
+                    with self.assertRaises(ExclusionUnavailable):
+                        guard.is_excluded(address)
+                self.assertTrue(guard.is_excluded(EXCLUDED_UPN))
+                self.assertFalse(guard.is_excluded("d1@example-plx.com"))     # a listed user
+                self.assertFalse(guard.is_excluded("someone@elsewhere.example"))  # external
+                held, rows = self.offline(guard)
+                self.assertFalse([r for r in rows if r[2] == "group"])
+                with self.assertRaises(ExclusionUnavailable):
+                    held.is_excluded("clean-list@example-plx.com")
+
+    def test_a_failed_listing_withholds_list_domains_no_user_holds_an_address_in(self):
+        """A list addressed in a domain no listed user holds an address in: withheld while
+        the listing fails when the domain is verified or held a list in an earlier listing."""
+        lists = [{"id": G1, "mail": "team@lists.example-plx.net", "groupTypes": []}]
+        clean = {G1: [self.user(tm.BOX_A)]}
+        guard = self.bound(self.api(clean, groups=lists))
+        self.assertEqual(guard.group_domains(), {"lists.example-plx.net"})
+        self.assertFalse(guard.is_excluded("team@lists.example-plx.net"))
+        later = PeopleExclusion([EXCLUDED])                 # a later run, listing refused
+        later._sleep = lambda _s: None
+        later.remember_group_domains(guard.group_domains())
+        api = self.api(clean, groups_fail=True)
+        later.bind(api)
+        later.list_groups(api)
+        with self.assertRaises(ExclusionUnavailable):
+            later.is_excluded("other@lists.example-plx.net")
+        verified = self.bound(self.api(clean, groups_fail=True,
+                                       verified=["lists.example-plx.net"]))
+        with self.assertRaises(ExclusionUnavailable):
+            verified.is_excluded("team@lists.example-plx.net")
+        self.assertFalse(verified.is_excluded("someone@elsewhere.example"))
+
+    def test_the_groups_listing_is_retried_when_throttled_and_read_once_per_run(self):
+        members = {G1: [self.user(tm.BOX_A)], G2: [self.user(EXCLUDED)],
+                   G3: [self.user(self.OTHER)]}
+        api = self.api(members, throttled=2)
+        guard = self.bound(api)
+        self.assertEqual(api.listings, 3)                  # two 429s, then the listing
+        self.assertTrue(guard.is_excluded("with-excluded@example-plx.com"))
+        for _open in range(5):                             # every mailbox open of the run
+            guard.list_groups(api)
+        self.assertEqual(api.listings, 3)
+        guard.forget_groups()                              # the next run lists again
+        guard.list_groups(api)
+        self.assertEqual(api.listings, 4)
+        failed = self.api(members, throttled=99)
+        guard = self.bound(failed)
+        self.assertEqual(failed.listings, people_exclusion.GROUP_LIST_ATTEMPTS)
+        guard.list_groups(failed)                          # failed: unknown for the run
+        self.assertEqual(failed.listings, people_exclusion.GROUP_LIST_ATTEMPTS)
+        with self.assertRaises(ExclusionUnavailable):
+            guard.is_excluded("clean-list@example-plx.com")
+
+    def test_an_unconfirmable_membership_never_clears_a_list(self):
+        """Empty, hidden or rule-based membership, an untyped or unknown member (a nested
+        list without a type too): the list is withheld online and not recorded offline."""
+        clean = [self.user(tm.BOX_A)]
+        cases = {
+            "empty": ({}, {G1: []}),
+            "hidden": ({"hiddenMembership": True}, {G1: clean}),
+            "dynamic": ({"groupTypes": ["DynamicMembership"]}, {G1: clean}),
+            "rule": ({"membershipRule": "user.department -eq \"x\""}, {G1: clean}),
+            "no_group_types": ({"groupTypes": None}, {G1: clean}),
+            "untyped_member": ({}, {G1: [{"id": self.OTHER}]}),
+            "untyped_nested": ({}, {G1: [self.user(tm.BOX_A), {"id": G3}],
+                                    G3: [self.user(EXCLUDED)]}),
+            "service_principal": ({}, {G1: [{"id": self.OTHER, "@odata.type":
+                                             "#microsoft.graph.servicePrincipal"}]}),
+            "nested_empty": ({}, {G1: [{"id": G3, "@odata.type": "#microsoft.graph.group"}],
+                                  G3: []}),
+        }
+        for name, (extra, members) in cases.items():
+            with self.subTest(name):
+                groups = [{**self.GROUPS[0], **extra}]
+                guard = self.bound(self.api(members, groups=groups))
+                with self.assertRaises(ExclusionUnavailable):
+                    guard.is_excluded("clean-list@example-plx.com")
+                held, rows = self.offline(guard)
+                self.assertFalse([r for r in rows if r[2] == "group"])
+                with self.assertRaises(ExclusionUnavailable):
+                    held.is_excluded("clean-list@example-plx.com")
+
+    def test_guests_and_contacts_are_checked_by_address(self):
+        contact = "#microsoft.graph.orgContact"
+        cases = {
+            "contact_of_excluded": ([{"id": self.OTHER, "@odata.type": contact,
+                                      "mail": EXCLUDED_UPN.upper()}], True),
+            "guest_with_excluded_alias": ([{**self.user(self.OTHER), "proxyAddresses":
+                                            ["smtp:" + EXCLUDED_UPN]}], True),
+            "external_contact": ([self.user(tm.BOX_A), {"id": self.OTHER, "@odata.type": contact,
+                                                        "mail": "x@outside.example"}], False),
+            "contact_without_address": ([{"id": self.OTHER, "@odata.type": contact}], False),
+        }
+        for name, (on_list, excluded) in cases.items():
+            with self.subTest(name):
+                guard = self.bound(self.api({G1: on_list}, groups=[self.GROUPS[0]]))
+                self.assertIs(guard.is_excluded("clean-list@example-plx.com"), excluded)
+
+    def test_a_cleared_list_decides_nothing_offline_once_the_exclusion_list_changed(self):
+        members = {G1: [self.user(tm.BOX_A)], G2: [self.user(self.OTHER)],
+                   G3: [self.user(self.OTHER)]}
+        _held, rows = self.offline(self.bound(self.api(members)))
+        later = PeopleExclusion([EXCLUDED, tm.BOX_A])    # a member of the list is excluded now
+        later.attach_listing(rows)
+        with self.assertRaises(ExclusionUnavailable):
+            later.is_excluded("clean-list@example-plx.com")
+
 
 class TeamsGuardTests(unittest.TestCase):
     """capture_teams uses the same guard. Chats are read over the fake only: no Teams

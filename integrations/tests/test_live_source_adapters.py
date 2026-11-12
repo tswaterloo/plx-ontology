@@ -369,8 +369,13 @@ class MailTests(unittest.TestCase):
         self.assertTrue(self.sender.api_calls())
         for _m, url, _h, _b in self.sender.api_calls():
             self.assertNotIn("/messages", url)
-            self.assertEqual(parse_qs(urlsplit(url).query)["$select"],
-                             ["id,userPrincipalName,mail,proxyAddresses"])
+            # the user directory, or the people guard's groups listing (addresses only)
+            # or, that listing failing, the tenant's verified domains
+            expected = {"/v1.0/groups": "id,mail,proxyAddresses,groupTypes,membershipRule,"
+                                        "hiddenMembership",
+                        "/v1.0/organization": "verifiedDomains"}.get(
+                urlsplit(url).path, "id,userPrincipalName,mail,proxyAddresses")
+            self.assertEqual(parse_qs(urlsplit(url).query)["$select"], [expected])
 
     def test_listing_records_citations_completeness_and_immutable_ids(self):
         reader = GraphMailReader(self.api, audience())

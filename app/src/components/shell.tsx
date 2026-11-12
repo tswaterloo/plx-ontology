@@ -800,7 +800,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           Skip to content
         </a>
         <Sidebar />
-        <main id="main" className="flex min-w-0 flex-1 flex-col overflow-y-auto pb-[calc(52px+env(safe-area-inset-bottom))] lg:pb-0" data-app-main>
+        <main id="main" className="flex min-w-0 flex-1 flex-col overflow-y-auto max-lg:[&>*:not([data-own-scroll])]:basis-auto max-lg:[&>*:not([data-own-scroll])]:shrink-0 pb-[calc(52px+env(safe-area-inset-bottom))] lg:pb-0" data-app-main>
           <MobileTitleBar />
           <ViewAsBar />
           <OpsAlarmBanner />

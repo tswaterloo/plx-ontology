@@ -61,7 +61,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 import hashlib
 import json
 import os
@@ -467,6 +467,7 @@ def record_scores(run_dir: Path, gate_path: Path, rules: Mapping[str, Any]) -> d
     except (OSError, ValueError):
         doc = {}
     roles = dict(doc.get("roles") or {})
+    last_refused = dict(doc.get("refused") or {})
     admitted, refused = [], {}
     for role, entry in (counts.get("roles") or {}).items():
         r = results.get(role)
@@ -484,16 +485,84 @@ def record_scores(run_dir: Path, gate_path: Path, rules: Mapping[str, Any]) -> d
         if start < fresh_from:
             refused[role] = "not_fresh"
             continue
-        roles[role] = {"members": list(entry.get("members") or ()),
-                       "workflows": {f: {"judged": int(v["judged"]), "matched": int(v["matched"])}
-                                     for f, v in (entry.get("workflows") or {}).items()},
-                       "window": list(r["window"]), "run": run_dir.name}
+        try:
+            flows = {str(f): {"judged": int(v["judged"]), "matched": int(v["matched"])}
+                     for f, v in (entry.get("workflows") or {}).items()}
+        except (KeyError, ValueError, TypeError, AttributeError):
+            flows = None
+        if flows is None or any(not 0 <= c["matched"] <= c["judged"] for c in flows.values()):
+            refused[role] = "counts"
+            continue
+        roles[role] = {"members": list(entry.get("members") or ()), "workflows": flows,
+                       "window": list(r["window"]), "data_end": str(r.get("data_end") or ""),
+                       "run": run_dir.name}
         admitted.append(role)
+    # the newest run's refusal per role, beside the counts it did not replace (shown on the
+    # countdown: the counts are then an earlier run's); an admitted run clears it
+    for role in admitted:
+        last_refused.pop(role, None)
+    for role, reason in refused.items():
+        last_refused[role] = {"run": run_dir.name, "reason": reason}
     tmp = gate_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"schema": WRITE_GATE_SCHEMA, "roles": roles}, indent=1,
-                              sort_keys=True), encoding="utf-8")
+    tmp.write_text(json.dumps({"schema": WRITE_GATE_SCHEMA, "roles": roles,
+                               "refused": last_refused}, indent=1, sort_keys=True),
+                   encoding="utf-8")
     os.replace(tmp, gate_path)
     return {"admitted": sorted(admitted), "refused": refused}
+
+
+def gate_counts(state: Path | None, rules: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per role, the counts the write gate admitted (``WRITE_GATE_FILE``, what
+    ``WriteGate`` reads) whose window starts at or after ``fresh_from``: the countdown
+    shows these, so the page and the gate never disagree. Missing, unreadable or another
+    schema: {} (the gate passes nothing then either)."""
+    if state is None:
+        return {}
+    try:
+        fresh_from = _instant(rules["fresh_from"])
+        raw = json.loads((Path(state) / WRITE_GATE_FILE).read_text(encoding="utf-8"))
+        if raw.get("schema") != WRITE_GATE_SCHEMA:
+            return {}
+        refused = raw.get("refused") or {}
+        out = {}
+        for n, r in (raw.get("roles") or {}).items():
+            if _instant(r["window"][0]) >= fresh_from:
+                last = refused.get(n)
+                out[str(n)] = {**r, "last_refused": dict(last) if isinstance(last, Mapping)
+                               else None}
+        return out
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
+        return {}
+
+
+def countdown(entry: Mapping[str, Any] | None, workflow: str, rules: Mapping[str, Any]
+              ) -> dict[str, Any] | None:
+    """One role's workflow against the gate's rule (``rules.gate``: precision on at least
+    ``min_judged`` judged items from fresh days; items, never days), from its
+    ``gate_counts`` entry. None when the role was not scored (nothing to count)."""
+    if not entry:
+        return None
+    need = int(rules["gate"]["min_judged"])
+    bar = Decimal(str(rules["gate"]["precision"]))
+    try:
+        counts = (entry.get("workflows") or {}).get(workflow) or {"judged": 0, "matched": 0}
+        judged, matched = int(counts["judged"]), int(counts["matched"])
+        window = [str(x) for x in entry.get("window") or ()]
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+    pct = None
+    if judged:
+        pct = float((Decimal(matched) * 100 / Decimal(judged)).quantize(
+            Decimal("0.1"), rounding=ROUND_HALF_UP))
+    passes = judged >= need and 0 <= matched <= judged and \
+        Decimal(matched) / Decimal(judged) >= bar
+    last = entry.get("last_refused") or {}
+    return {"judged": judged, "matched": matched, "need_judged": need,
+            "need_percent": float((bar * 100).quantize(Decimal("0.1"))), "percent": pct,
+            "passes": passes, "window": window, "data_end": entry.get("data_end") or None,
+            "run": str(entry.get("run") or "") or None,
+            "refused": str(last.get("reason"))[:60] if last.get("reason") else None,
+            "refused_run": str(last.get("run"))[:120] if last.get("reason") else None}
 
 
 class WriteGate:

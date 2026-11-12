@@ -23,12 +23,12 @@ Offline (no listing this process): ``with_directory`` attaches what the mail cap
 recorded, read-only. The captured mailboxes' own identities map their addresses to object
 ids; the tenant listing the capture's last bound guard recorded (``tenant_listing_rows``,
 ``mail_capture_listing``) adds the addresses of every listed user the exclusion did not
-name (each with its object id) and of every group the directory lists. An address is
-decided only by membership there: a user's by that user's object id (excluded if the list
-names it now), a group's as no person's; any other address (an alias, a plus-address, an
+name (each with its object id) and of every group whose members were all read and none is
+excluded. An address is decided only by membership there: a user's by that user's object id
+(excluded if the list names it now), such a group's as no person's; any other address (an alias, a plus-address, an
 address of a deleted or excluded user, a display name) stays undecided (withheld). Nothing
-about an excluded person is recorded, and a listing older than ``DIRECTORY_MAX_AGE``
-decides nothing.
+about an excluded person is recorded, a listing older than ``DIRECTORY_MAX_AGE``
+decides nothing, and a list recorded as cleared decides nothing after ``GROUP_MAX_AGE``.
 """
 
 from __future__ import annotations
@@ -43,13 +43,31 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from . import live_source_grammar as grammar
-from .live_source_guard import NotVisible
+from .live_source_guard import NotVisible, RETRY_STATUSES as _RETRIED, is_transport_failure
 
 SCHEMA = "plx-people-exclusion/v1"
 ENV_IDS = "PLX_EXCLUDED_PEOPLE_OIDS"
 ENV_FILE = "PLX_EXCLUDED_PEOPLE_FILE"
 CONFIG = Path(__file__).with_name("people_exclusion.json")
 LATER_ASK = "excluded-people-oids"
+
+# A distribution list's members are read to this nesting depth and at most this many
+# group reads per listing; beyond either the list is unreadable (its mail withheld).
+_DIGEST_PREFIX = "ids:"
+GROUP_DEPTH = 4
+GROUP_READS = 2000
+# The groups listing is read once per capture run (``forget_groups`` starts a run) and
+# reused for at most ``GROUPS_TTL`` by a longer-lived guard; a throttled or failed listing is
+# tried ``GROUP_LIST_ATTEMPTS`` times with backoff, then the run withholds (unknown).
+GROUPS_TTL = timedelta(hours=1)
+GROUP_LIST_ATTEMPTS = 3
+GROUP_LIST_BACKOFF = 2.0
+# Member types: a user is decided by its id (and address); a group is followed; a contact by
+# its address. Any other type, or none, is unknown: its list is withheld.
+_MEMBER_USER, _MEMBER_GROUP, _MEMBER_CONTACT = ("#microsoft.graph.user", "#microsoft.graph.group",
+                                                "#microsoft.graph.orgcontact")
+_GROUP_SELECT = "id,mail,proxyAddresses,groupTypes,membershipRule,hiddenMembership"
+_MEMBER_SELECT = "id,mail,proxyAddresses,userPrincipalName"
 
 # Refusal kinds: what the refused read named.
 KINDS = frozenset({"mailbox", "chat_member", "chat", "sender", "recipient",
@@ -199,9 +217,19 @@ class PeopleExclusion:
         # every user, and when; None until bound (``tenant_listing_rows`` records it).
         self._listing: list[tuple[str, str | None, list[str]]] | None = None
         self._listing_at: datetime | None = None
-        # The group addresses of the last complete groups listing (``list_groups``);
-        # None: not read.
-        self._groups: frozenset[str] | None = None
+        # Every address a listed user holds, and their mail domains (the tenant's).
+        self._listed: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())
+        # The last complete groups listing (``list_groups``): each group address -> whether
+        # an excluded person is on it (directly, nested, or by a contact's address), or None
+        # when its members could not all be read and confirmed; None: no complete listing
+        # (never read, or failed: an address no listed user holds is then withheld).
+        self._groups: dict[str, bool | None] | None = None
+        self._groups_tried: float | None = None   # monotonic time of the last attempt
+        # Mail domains a list may be addressed in while no complete groups listing is held:
+        # those of the last complete listing (this process, or recorded by the capture:
+        # ``remember_group_domains``) and the tenant's verified domains read on a failure.
+        self._group_domains: set[str] = set()
+        self._sleep: Any = None    # injectable backoff sleep (tests); None: time.sleep
         # A recorded tenant listing (``attach_listing``): address -> object id of each
         # cleared listed user, and the group addresses; None: not loaded.
         self._tenant: dict[str, str] | None = None
@@ -308,6 +336,8 @@ class PeopleExclusion:
         self._addresses = frozenset(addresses)
         self._onedrive = frozenset(onedrive)
         self._listing, self._listing_at = listing, datetime.now(timezone.utc)
+        listed = frozenset(a for _oid, _upn, held in listing for a in held)
+        self._listed = (listed, frozenset(a.rsplit("@", 1)[1] for a in listed if "@" in a))
         self._bound = True
 
     def attach_directory(self, users: Iterable[tuple[Any, Any, Iterable[Any]]]) -> None:
@@ -342,32 +372,181 @@ class PeopleExclusion:
             onedrive.pop(key, None)
         self._directory, self._directory_onedrive = addresses, onedrive
 
+    @property
+    def groups_listed(self) -> bool:
+        """A complete groups listing was read (``list_groups``): lists are decided by it."""
+        return self._groups is not None
+
+    def group_domains(self) -> frozenset[str]:
+        """The mail domains the last complete groups listing held addresses in (domains
+        only: nothing names a list or a person), to record for a later run."""
+        return frozenset(a.rsplit("@", 1)[1] for a in self._groups or () if "@" in a)
+
+    def remember_group_domains(self, domains: Iterable[Any]) -> None:
+        """Domains a list was addressed in by an earlier complete listing (recorded by the
+        capture): while this run's listing fails, an address in one may be a list."""
+        self._group_domains.update(d.strip().lower() for d in domains
+                                   if isinstance(d, str) and d.strip())
+
+    def forget_groups(self) -> None:
+        """Start a capture run: the next ``list_groups`` reads the groups again."""
+        self._groups, self._groups_tried = None, None
+
     def list_groups(self, api: Any) -> None:
-        """Read the directory's groups' addresses (``GET /groups``, mail and SMTP proxy
-        addresses, every page) once bound, so a recorded listing can clear a group or
-        distribution list. A failed or truncated listing records no group (their
-        addresses then stay undecided offline); it never makes the guard unavailable."""
+        """Read the directory's groups (``GET /groups``, every page) and, for each group
+        that has an address, its members (``GET /groups/{id}/members``, every page; a
+        member group is followed to ``GROUP_DEPTH``) once bound, so mail addressed to a
+        distribution list is decided by who is on it: an excluded member excludes the
+        list's address; a list whose members cannot all be read and confirmed stays
+        undecided (``ExclusionUnavailable``: its mail stays withheld).
+
+        Read once per run: a later call within ``GROUPS_TTL`` of the last attempt reuses
+        it (``forget_groups`` starts a new run). A failed, throttled or truncated listing
+        is retried ``GROUP_LIST_ATTEMPTS`` times with backoff; if it never completes, no
+        group is known and every address no listed user holds is withheld (it may be a
+        list) until the next run. It never makes the guard unavailable."""
+        import time
         self.require_bound()
-        url = grammar.url("graph.groups", {"$select": "id,mail,proxyAddresses",
-                                            "$top": "999"})
-        try:
-            groups, completeness = api.get_pages(url, max_pages=50, max_items=20000)
-        except Exception:  # noqa: BLE001 - no groups: nothing is cleared by them
-            self._groups = None
+        now = time.monotonic()
+        if self._groups_tried is not None and now - self._groups_tried \
+                < GROUPS_TTL.total_seconds():
             return
-        if not completeness.get("complete"):
-            self._groups = None
+        self._groups, self._groups_tried = None, now
+        url = grammar.url("graph.groups", {"$select": _GROUP_SELECT, "$top": "999"})
+        groups = None
+        for attempt in range(GROUP_LIST_ATTEMPTS):
+            if attempt:
+                (self._sleep or time.sleep)(GROUP_LIST_BACKOFF * 2 ** (attempt - 1))
+            try:
+                listed, completeness = api.get_pages(url, max_pages=50, max_items=5000)
+            except Exception as exc:  # noqa: BLE001 - any failure: unknown (withheld)
+                if getattr(exc, "http_status", None) in _RETRIED or is_transport_failure(exc):
+                    continue   # throttled or transient: tried again
+                break          # refused, not found, malformed: not retried
+            if completeness.get("complete"):
+                groups = listed
+            break              # a truncated listing is not retried either
+        if groups is None:
+            self._read_verified_domains(api)
             return
-        found = set()
+        found: dict[str, bool | None] = {}
+        reads = [0]
         for group in groups:
             if not isinstance(group, Mapping):
                 continue
+            held = set()
             mail = group.get("mail")
             if isinstance(mail, str) and "@" in mail:
-                found.add(mail.strip().lower())
-            found.update(proxy[5:].strip().lower() for proxy in group.get("proxyAddresses") or ()
-                         if isinstance(proxy, str) and proxy.lower().startswith("smtp:"))
-        self._groups = frozenset(found)
+                held.add(mail.strip().lower())
+            held.update(proxy[5:].strip().lower() for proxy in group.get("proxyAddresses") or ()
+                        if isinstance(proxy, str) and proxy.lower().startswith("smtp:"))
+            held = {a for a in held if "@" in a}
+            if not held:
+                continue   # nobody can address it
+            types = group.get("groupTypes")
+            if group.get("hiddenMembership") is True or group.get("membershipRule") \
+                    or not isinstance(types, list) \
+                    or any(str(t).lower() == "dynamicmembership" for t in types):
+                # hidden or rule-based membership: what the members read shows cannot be
+                # confirmed to be everyone on it
+                excluded: bool | None = None
+            else:
+                excluded = self._group_members(api, group.get("id"), reads, set(),
+                                               GROUP_DEPTH)
+            for address in held:
+                # one address on two groups: excluded if either is, unreadable if either is
+                before = found.get(address, False)
+                found[address] = (None if excluded is None or before is None
+                                  else before or excluded)
+        self._groups = found
+        self._group_domains.update(self.group_domains())
+
+    def _read_verified_domains(self, api: Any) -> None:
+        """The tenant's verified domains (``GET /organization``), added to the domains an
+        address may be a list in; a failure adds none (the listed users' domains and the
+        remembered list domains still withhold)."""
+        try:
+            orgs, completeness = api.get_pages(
+                grammar.url("graph.organization", {"$select": "verifiedDomains"}),
+                max_pages=1, max_items=10)
+        except Exception:  # noqa: BLE001 - nothing more is learned
+            return
+        for org in orgs if completeness.get("complete") else ():
+            for domain in (org.get("verifiedDomains") or () if isinstance(org, Mapping) else ()):
+                name = domain.get("name") if isinstance(domain, Mapping) else None
+                if isinstance(name, str) and name.strip():
+                    self._group_domains.add(name.strip().lower())
+
+    def _group_members(self, api: Any, group_id: Any, reads: list[int], seen: set[str],
+                       depth: int) -> bool | None:
+        """Whether an excluded person is on one group (member groups followed); None when
+        any page, member or nested group cannot be read and confirmed: no members at all, a
+        member of no or an unknown type, a truncated page, a spent read budget."""
+        if not is_object_id(group_id) or depth < 0 or reads[0] >= GROUP_READS:
+            return None
+        gid = group_id.lower()
+        if gid in seen:
+            return False   # a cycle adds nobody the walk has not already counted
+        seen.add(gid)
+        reads[0] += 1
+        try:
+            members, completeness = api.get_pages(grammar.url(
+                "graph.group_members", {"$select": _MEMBER_SELECT, "$top": "999"}, group=gid),
+                max_pages=20, max_items=5000)
+        except Exception:  # noqa: BLE001 - unreadable: the list stays undecided
+            return None
+        if not completeness.get("complete") or not members:
+            return None   # an empty read may be hidden membership: never a cleared list
+        excluded = False
+        for member in members:
+            if not isinstance(member, Mapping):
+                return None
+            oid = member.get("id")
+            kind = str(member.get("@odata.type") or "").lower()
+            if not is_object_id(oid) or kind not in (_MEMBER_USER, _MEMBER_GROUP,
+                                                     _MEMBER_CONTACT):
+                return None   # a member this cannot name or type cannot be cleared
+            if kind == _MEMBER_GROUP:
+                inner = self._group_members(api, oid, reads, seen, depth - 1)
+                if inner is None:
+                    return None
+                excluded = excluded or inner
+                continue
+            # a user (members and guests alike) by its id; a user or an external contact
+            # also by any address it carries
+            addresses = {value.strip().lower() for value in
+                         (member.get("mail"), member.get("userPrincipalName"))
+                         if isinstance(value, str) and value.strip()}
+            addresses.update(proxy[5:].strip().lower()
+                             for proxy in member.get("proxyAddresses") or ()
+                             if isinstance(proxy, str) and proxy.lower().startswith("smtp:"))
+            if (kind == _MEMBER_USER and oid.lower() in self._ids) \
+                    or addresses & self._addresses:
+                excluded = True
+        return excluded
+
+    def _group_excluded(self, lowered: str) -> bool:
+        """Bound guard, an address no listed excluded user holds: True when it is a
+        distribution list with an excluded member; False for a list of cleared members, for
+        an address a listed user holds and (the groups listing complete) for an address that
+        is no group's; ``ExclusionUnavailable`` for a list whose members could not be read
+        and confirmed, and, when no complete groups listing was read this run, for every
+        tenant-domain address no listed user holds (it may be a list)."""
+        if self._groups is not None and lowered in self._groups:
+            excluded = self._groups[lowered]
+            if excluded is None:
+                raise ExclusionUnavailable("excluded_people_unresolved")
+            return excluded
+        if self._groups is None:
+            # No complete groups listing: an address in a tenant mail domain (one a listed
+            # user holds an address in, a verified domain, or one a list was addressed in
+            # by an earlier complete listing) that no listed user holds may be a list.
+            listed, domains = self._listed
+            if lowered not in listed and (
+                    "@" not in lowered
+                    or lowered.rsplit("@", 1)[1] in domains | self._group_domains):
+                raise ExclusionUnavailable("excluded_people_unresolved")
+        return False
 
     def attach_listing(self, rows: Iterable[tuple[Any, Any, Any]]) -> None:
         """Decide addresses offline from a recorded tenant listing (``tenant_listing_rows``):
@@ -389,14 +568,27 @@ class PeopleExclusion:
             seen.add(address)
             if kind == "user" and is_object_id(oid):
                 users[address] = oid.lower()
-            elif kind == "group" and oid is None:
-                groups.add(address)
+            elif kind == "group" and isinstance(oid, str) and oid.startswith(_DIGEST_PREFIX):
+                # cleared against the exclusion list it was recorded under: against a
+                # different list (someone added since) it decides nothing
+                if oid == self.members_checked_digest():
+                    groups.add(address)
+                else:
+                    clashes.add(address)
             else:
                 clashes.add(address)
         for address in clashes:
             users.pop(address, None)
             groups.discard(address)
         self._tenant, self._tenant_groups = users, frozenset(groups)
+
+    def members_checked_digest(self) -> str:
+        """A one-way tag of the exclusion list a group's members were checked against
+        (SHA-256 of the sorted ids, truncated): recorded with a cleared group so offline the
+        clearance holds only while the list is the same one; the ids are not recoverable."""
+        import hashlib
+        return _DIGEST_PREFIX + hashlib.sha256(
+            "\n".join(sorted(self._ids)).encode()).hexdigest()[:24]
 
     def known_domains(self) -> frozenset[str]:
         """The mail domains the tenant's directory (attached or bound) holds addresses in:
@@ -443,7 +635,7 @@ class PeopleExclusion:
         if is_object_id(lowered):
             return lowered in self._ids
         if self._bound:
-            return lowered in self._addresses
+            return lowered in self._addresses or self._group_excluded(lowered)
         oid = None if self._directory is None else self._directory.get(lowered)
         if oid is not None and oid in self._ids:
             return True
@@ -549,6 +741,9 @@ class ReloadingExclusion:
 # A captured mailbox identity checked longer ago than this decides nothing (an address
 # may have been given to someone else since): ``mail_capture_directory``.
 DIRECTORY_MAX_AGE = timedelta(days=7)
+# A list recorded as cleared decides offline for at most this long after it was read (a
+# member may have been added since): ``mail_capture_listing``.
+GROUP_MAX_AGE = timedelta(hours=24)
 
 
 def mail_capture_directory(state_dir: Any, *, now: datetime | None = None
@@ -590,8 +785,8 @@ def tenant_listing_rows(guard: PeopleExclusion
                         ) -> tuple[str, list[tuple[str, str | None, str]]] | None:
     """(read at, rows) of the complete listing ``guard`` was bound with, to record offline
     (``attach_listing``): (address, object id, ``user``) for each address of a listed user
-    the exclusion does not name, and (address, None, ``group``) for each address of the
-    groups listing (``list_groups``, when read). An address an excluded user holds, or that
+    the exclusion does not name, and (address, list tag, ``group``) for each address of a
+    group whose members were all read and none is excluded (``list_groups``, when read). An address an excluded user holds, or that
     two entries hold, is left out (undecided offline): nothing about an excluded person is
     recorded. None when the guard is not bound or unavailable."""
     if not isinstance(guard, PeopleExclusion) or guard.unavailable or not guard.bound \
@@ -604,7 +799,11 @@ def tenant_listing_rows(guard: PeopleExclusion
             withheld.update(held)
             continue
         entries.extend((address, oid, "user") for address in set(held))
-    entries.extend((address, None, "group") for address in guard._groups or ())
+    # a list is recorded as cleared only when every member was read and none is excluded;
+    # one with an excluded member, or unread members, stays undecided (withheld)
+    entries.extend((address, guard.members_checked_digest(), "group")
+                   for address, excluded in (guard._groups or {}).items()
+                   if excluded is False)
     count: dict[str, int] = {}
     for address, _oid, _kind in entries:
         count[address] = count.get(address, 0) + 1
@@ -641,6 +840,8 @@ def mail_capture_listing(state_dir: Any, *, now: datetime | None = None
             db.close()
     except (sqlite3.Error, ValueError, TypeError, OSError):
         return None
+    if now - at > GROUP_MAX_AGE:
+        rows = [row for row in rows if row[2] != "group"]   # cleared lists: 24 h at most
     return rows or None
 
 

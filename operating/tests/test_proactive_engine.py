@@ -33,6 +33,7 @@ from ontology.core import Actor
 from ontology import store as ostore
 from ontology.store import StoreBuilder
 from operating import po_status
+from operating import alert_kinds as ak
 from operating import proactive_engine as pe
 from operating.action_path import ActionPath
 from operating.ontology_tools_investigate import DRAFT_ACTION
@@ -336,6 +337,18 @@ class DetectorTest(Engine):
             ("undated_po", ids["undated"]),   # open, no due date: its own group, never late
             ("order_without_customer_po", ids["no_customer_po"]),
             ("expired_quote", ids["expired"])})
+        # a reader's unnarrowed read (Home, plx.find's home mode) holds only kinds a
+        # registered alert type names: a kind no one measured never reaches home, while a
+        # page that names the kind still reads it (business rule 11-11)
+        home = {(g["kind"], g["object_id"]) for g in self.read(include_off=False)["gaps"]}
+        unmeasured = {k for k, _ in found} - ak.registered_gap_kinds()
+        self.assertTrue({"receipt_without_qc", "conflicting_quantity"} <= unmeasured)
+        hidden = unmeasured | ak.off_gap_kinds()
+        self.assertEqual(home, {(k, o) for k, o in found if k not in hidden})
+        self.assertIn("late_po", {k for k, _ in home})
+        self.assertEqual(
+            self.read(include_off=False, kinds=["receipt_without_qc"])["gaps"][0]["object_id"],
+            ids["no_qc"])
         self.assertEqual(summary["scanned"], world.n)   # the whole store, not a sample
         self.assertEqual((summary["gaps_found"], summary["gaps_cited"],
                           summary["gaps_uncited"]), (12, 12, 0))

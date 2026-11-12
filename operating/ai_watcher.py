@@ -580,11 +580,12 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
         "SELECT object_id, digest, props FROM seen WHERE object_id IN (SELECT value FROM "
         "json_each(?))", (json.dumps(list(part)),))}
     served: dict[str, str] = {}
-    # the served generation's digests and values (Postgres alone: its generation's file
-    # when it is still there, else nothing is known before the first look)
-    with (closing(_ro(store)) if postgres is None or Path(store).is_file()
+    # the served generation's digests and values (Postgres alone: nothing is known before
+    # the first look; its generation's file is never opened, even while it is still
+    # there, so the file can be retired: ``sqlite-retire`` step 3)
+    with (closing(_ro(store)) if postgres is None
           else closing(sqlite3.connect(":memory:"))) as base:
-        if postgres is not None and not Path(store).is_file():
+        if postgres is not None:
             base.execute("CREATE TABLE object_versions (object_id, digest, superseded_at)")
             base.execute("CREATE TABLE object_values (object_id, property, value_type, value, "
                          "superseded_at)")

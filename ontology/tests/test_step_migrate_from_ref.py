@@ -114,7 +114,51 @@ class SameRowsTests(unittest.TestCase):
             self.skipTest("commits unavailable")
         for name in ("document_fields", "confirmations"):
             self.assertEqual(sm.SAME_ROWS[name], frozenset({(old[name], new[name])}))
-        self.assertEqual(set(sm.SAME_ROWS), {"document_fields", "confirmations"})
+        self.assertEqual(set(sm.SAME_ROWS), {"document_fields", "confirmations", "with_owners"})
+
+    def test_the_owner_pin_is_the_list_membership_change_from_the_served_steps(self):
+        # be37cefd36: the step code the in-place run of 11-11 serves; ed679e9772: the last
+        # distribution-list change of people_exclusion (nothing else in with_owners' files)
+        try:
+            old, new = sm.code_digests("be37cefd36"), sm.code_digests("ed679e9772")
+        except Exception as exc:   # noqa: BLE001 - a clone without those commits
+            self.skipTest(f"commits unavailable: {exc}")
+        if old == sm.code_digests("no-such-ref-xyz"):
+            self.skipTest("commits unavailable")
+        self.assertEqual(sm.SAME_ROWS["with_owners"],
+                         frozenset({(old["with_owners"], new["with_owners"])}))
+        self.assertEqual({k for k in old if old[k] != new[k]}, {"with_owners"})
+
+    def test_the_step_guard_decides_the_same_under_the_pinned_change(self):
+        # with_owners' guard (from_env: never bound, nothing attached) decides object ids
+        # alone, as at be37cefd36; an address stays undecided (the step skips it)
+        import subprocess
+        import types
+        from integrations import people_exclusion as new
+        done = subprocess.run(["git", "-C", str(sm.ROOT), "show",
+                               "be37cefd36:integrations/people_exclusion.py"],
+                              capture_output=True)
+        if done.returncode:
+            self.skipTest("commit unavailable")
+        old = types.ModuleType("integrations.people_exclusion")
+        old.__file__, old.__package__ = new.__file__, "integrations"
+        exec(compile(done.stdout, new.__file__, "exec"), old.__dict__)
+        barred, other = "22222222-2222-2222-2222-222222222222", \
+            "33333333-3333-3333-3333-333333333333"
+        values = [barred, other, barred.upper(), "omar@plx.test", "list@plx.test", "", None,
+                  "not-an-id", 7]
+        for environ in ({"PLX_EXCLUDED_PEOPLE_OIDS": barred, "PLX_EXCLUSION_ENV_FILE": ""},
+                        {"PLX_EXCLUSION_ENV_FILE": ""}):
+            def judged(mod):
+                guard = mod.PeopleExclusion.from_env(mod.environ_with_exclusion(environ))
+                return guard.unavailable, [(guard.decides(v), guard.decides(v)
+                                            and guard.is_excluded(v)) for v in values]
+            self.assertEqual(judged(old), judged(new))
+            if "PLX_EXCLUDED_PEOPLE_OIDS" in environ:   # barred by id; addresses undecided
+                self.assertEqual(judged(new)[1][:4], [(True, True), (True, False),
+                                                      (True, True), (False, False)])
+            else:   # no list: fail closed, nothing decided
+                self.assertEqual(judged(new)[0], "excluded_people_oids_absent")
 
 
 class DeclaredInputsTests(unittest.TestCase):
@@ -184,6 +228,46 @@ class ServedCodePinTests(unittest.TestCase):
             with self.subTest(payload=str(payload)[:60]):
                 with self.assertRaisesRegex(ValueError, "served_code_unverified"):
                     sm.served_code(self.pin(payload))
+
+
+class PartsInOrderJobTests(unittest.TestCase):
+    """``_parts_in_order`` names a ``__main__`` job by this module's import name (a
+    static table, never a computed lookup): the three jobs resolve, any other name is
+    refused before a worker starts."""
+
+    def run_with(self, name):
+        from concurrent import futures
+        from unittest import mock
+
+        def job(path, *args):
+            return path
+        job.__module__, job.__name__ = "__main__", name
+        submitted = []
+
+        class Pool:
+            def __init__(self, *a, **k):
+                pass
+
+            def submit(self, fn, *a):
+                submitted.append(fn)
+                done = futures.Future()
+                done.set_result(a[0])
+                return done
+
+            def shutdown(self, **k):
+                pass
+        with mock.patch.object(futures, "ProcessPoolExecutor", Pool):
+            return list(sm._parts_in_order(job, [("x",)], 2, Path("/tmp"))), submitted
+
+    def test_the_three_jobs_resolve_to_this_modules_own(self):
+        for name in ("_served_value_part", "_layer_value_part", "_layer_link_part"):
+            parts, submitted = self.run_with(name)
+            self.assertIs(submitted[0], getattr(sm, name))
+            self.assertEqual(len(parts), 1)
+
+    def test_an_unknown_main_job_is_refused_before_any_worker(self):
+        with self.assertRaises(KeyError):
+            self.run_with("os_system")
 
 
 if __name__ == "__main__":

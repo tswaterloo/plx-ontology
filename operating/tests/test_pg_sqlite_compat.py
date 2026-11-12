@@ -73,6 +73,23 @@ class CompatTests(unittest.TestCase):
                          "WHERE object_id = ?", ("A:b:2",)).fetchone()
         self.assertEqual((row["object_id"], row[1], row["later"]), ("A:b:2", 1, 1))
 
+    def test_a_json_array_inside_a_json_group_array_reads_as_sqlite_reads_it(self):
+        # the mention step's removal stretches (``mentions.REMOVALS_COLUMN``): Postgres gave
+        # an array of encoded strings, so every document with a removal failed to unpack
+        from operating.pg.sqlite_compat import PgCompatConnection
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sql = ("SELECT object_id, (SELECT json_group_array(json_array(v.recorded_at, "
+               "v.superseded_at)) FROM object_versions v WHERE v.object_id = o.object_id) "
+               "AS spans, json_array(o.digest, o.lineage) AS pair FROM object_versions o "
+               "ORDER BY object_id, recorded_at")
+        expected = [(r[0], json.loads(r[1]), json.loads(r[2]))
+                    for r in self.sqlite().execute(sql)]
+        got = [(r[0], json.loads(r[1]), json.loads(r[2])) for r in pg.execute(sql)]
+        self.assertEqual(got, expected)
+        self.assertTrue(all(isinstance(s, list) and len(s) == 2 for _, spans, _ in got
+                            for s in spans), got)
+
     def test_a_versions_text_fields_are_read_by_citation_range_on_both_stores(self):
         # plx.find's text read (StoreReader.object_chunks) seeks each version's fields on
         # the citation key; its range end is made in Python (no char(): Postgres has none).
@@ -159,6 +176,82 @@ class CompatTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(sqlite3.OperationalError):
                 pg.execute(by_row if bad == "[1.5]" else by_text,
                            {"rows": bad, "ids": bad})
+
+    def test_a_long_in_list_kept_on_the_session_reads_the_same_rows(self):
+        """An owner's audience list (thousands of keys) is read from the session's kept
+        list by its digest, never planned member by member: ``IN`` and ``NOT IN``, named
+        and positional, NULL members, as SQLite reads them; after the session is lost the
+        new one keeps it again; inside a caller's transaction, or for a list that is not
+        plain strings, the statement reads it as before."""
+        from operating.pg.sqlite_compat import LONG_LIST_CHARS, PgCompatConnection
+        from operating.tests.test_pg_reconnect import kill
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        lite = self.sqlite()
+        filler = [f"Z:filler:{n:05d}" for n in range(400)]
+        lists = {"some": json.dumps(["A:b:1", "A:b:3", *filler]),
+                 "null": json.dumps(["A:b:2", None, *filler]),
+                 "none": json.dumps(filler)}
+        self.assertTrue(all(len(t) >= LONG_LIST_CHARS for t in lists.values()))
+        named = ("SELECT object_id FROM object_versions WHERE object_id IN (SELECT value FROM "
+                 "json_each(:ids)) AND l1_handle LIKE '%@x' ORDER BY object_id")
+        negated = ("SELECT object_id FROM object_versions WHERE object_id NOT IN (SELECT value "
+                   "FROM json_each(:ids)) ORDER BY object_id")
+        both = ("SELECT object_id FROM object_versions WHERE recorded_at >= ? AND object_id IN "
+                "(SELECT value FROM json_each(?)) AND object_id NOT IN (SELECT value FROM "
+                "json_each(?)) ORDER BY object_id")
+
+        def same(sql, params):
+            self.assertEqual([r[0] for r in pg.execute(sql, params)],
+                             [r[0] for r in lite.execute(sql, params)], (sql, params))
+
+        def kept():
+            return pg.execute("SELECT count(*) FROM sq_lists").fetchone()[0]
+        for name, ids in lists.items():
+            with self.subTest(name=name):
+                same(named, {"ids": ids})
+                same(negated, {"ids": ids})
+                same(both, ("2026", ids, lists["none"]))
+                same(both, ("2026", lists["some"], json.dumps(["A:b:3", *filler])))
+        self.assertEqual(kept(), 4)   # each list written once, read by every statement
+        for _ in range(3):
+            same(named, {"ids": lists["some"]})
+        self.assertEqual(kept(), 4)
+        # the session lost: the new one holds no list and keeps each again on first read
+        kill(pg.execute("SELECT pg_backend_pid()").fetchone()[0])
+        same(named, {"ids": lists["some"]})
+        same(negated, {"ids": lists["null"]})
+        self.assertEqual(kept(), 2)
+        # inside a caller's transaction a list not yet kept is read as written
+        fresh = json.dumps(["A:b:2", *filler[:-1]])
+        pg.execute("BEGIN")
+        same(named, {"ids": fresh})
+        same(negated, {"ids": fresh})
+        pg.execute("ROLLBACK")
+        self.assertEqual(kept(), 2)
+        same(named, {"ids": fresh})   # outside it: kept, and it stays after a rollback
+        pg.execute("BEGIN")
+        pg.execute("ROLLBACK")
+        same(named, {"ids": fresh})
+        self.assertEqual(kept(), 3)
+        # a list of other JSON values is the SQL function's to read
+        mixed = json.dumps(["A:b:1", 7, *filler])
+        same(named, {"ids": mixed})
+        self.assertEqual(kept(), 3)
+        # the kept lists full: they are emptied before a statement keeps its own, never
+        # between two lists of one statement (an exclusion list read as empty excludes
+        # nothing)
+        from unittest import mock
+        from operating.pg import sqlite_compat
+        negated_first = ("SELECT object_id FROM object_versions WHERE object_id NOT IN "
+                         "(SELECT value FROM json_each(?)) AND object_id IN (SELECT value "
+                         "FROM json_each(?)) ORDER BY object_id")
+        shut = json.dumps(["A:b:1", *filler])
+        with mock.patch.object(sqlite_compat, "MAX_KEPT_LISTS", 4):
+            for n in range(6):
+                wide = json.dumps(["A:b:1", "A:b:2", "A:b:3", *filler[n:]])
+                same(negated_first, (shut, wide))
+                self.assertLessEqual(kept(), 4)
 
 
 if __name__ == "__main__":

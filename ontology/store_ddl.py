@@ -674,6 +674,22 @@ PLANNER_STATS = (("value_cells", "value_cells_by_layout", "10000000 200000"),
                  ("value_cells", "sqlite_autoindex_value_cells_1", "10000000 6 1"))
 
 
+def planner_stats(conn: sqlite3.Connection) -> None:
+    """Put :data:`PLANNER_STATS` (back) into ``sqlite_stat1``, other rows kept, and plan
+    with them on ``conn``. Dropping an index drops its row: a parallel build that made
+    ``value_cells_by_layout`` again after its merge lost it, and a value read by object
+    then took the layout index, every name cell of the store per read (27 s each; the
+    11-11 delta's ``key_joins`` sat hours on one core)."""
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1'"
+                    ).fetchone() is None:
+        conn.execute("ANALYZE store_meta")   # creates sqlite_stat1 (a one-row table)
+    conn.executemany("DELETE FROM sqlite_stat1 WHERE tbl = ? AND idx = ?",
+                     [(t, i) for t, i, _ in PLANNER_STATS])
+    conn.executemany("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES (?, ?, ?)",
+                     PLANNER_STATS)
+    conn.execute("ANALYZE sqlite_master")   # this connection plans with them too
+
+
 def create(conn: sqlite3.Connection) -> None:
     """Create every table and index (idempotent), enable foreign keys on ``conn``
     and stamp the store format."""
@@ -691,6 +707,4 @@ def create(conn: sqlite3.Connection) -> None:
                         ).fetchone() is None:
             conn.execute("ANALYZE store_meta")   # creates sqlite_stat1 (a one-row table)
         conn.execute("DELETE FROM sqlite_stat1")
-        conn.executemany("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES (?, ?, ?)",
-                         PLANNER_STATS)
-    conn.execute("ANALYZE sqlite_master")   # this connection plans with them too
+        planner_stats(conn)

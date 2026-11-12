@@ -62,6 +62,8 @@ CONTRACT_INDEXES: dict[str, tuple[str, str, str]] = {
     "chunks_content_sha": ("chunks", "btree", "content_sha"),
     "chunks_linked_ids_gin": ("chunks", "gin", "linked_ids"),
     "chunks_header_trgm": ("chunks", "gin", "header gin_trgm_ops"),
+    "chunks_marked": ("chunks", "btree", "(object_id) INCLUDE (source_handle, markings, kind) "
+                      "WHERE (markings <> '{}'::text[])"),
     "entities_pkey": ("entities", "btree", "entity_id"),
     "entities_normalized_trgm": ("entities", "gin", "normalized gin_trgm_ops"),
     "entities_name_embedding_hnsw": ("entities", "hnsw", "name_embedding halfvec_cosine_ops"),

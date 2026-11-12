@@ -18,7 +18,8 @@ from typing import Any
 
 NEXT = "ontology_next"
 MIGRATIONS = ("0006_ontology.sql", "0007_ontology_compact.sql", "0008_ontology_read.sql",
-              "0010_ontology_words.sql", "0011_ontology_word_order.sql")
+              "0010_ontology_words.sql", "0011_ontology_word_order.sql",
+              "0013_link_rows_step_reads.sql", "0014_ontology_autovacuum.sql")
 # Data and state tables a generation consists of (sequences move with them).
 TABLES = ("objects", "object_removals", "object_versions", "value_fields", "value_kinds",
           "value_sources", "value_cells", "identifiers", "events", "event_objects",

@@ -3418,9 +3418,10 @@ class MCPServer:
                     reader=proactive_engine.reader_key(self.actor),
                     may_read=lambda key: policy.may_read(gated, key),
                     held=frozenset(policy.held_markings(gated)), decide=decide,
-                    # a narrowed question (the late list) reads every item, so its total
-                    # is the true one past the inbox's first page
-                    **({"limit": NARROWED_READ} if kinds else {}))
+                    # a narrowed question (the late list) reads every item of its kinds,
+                    # so its total is the true one past the inbox's first page; an
+                    # unnarrowed one reads only measured kinds (``read_inbox``)
+                    **({"limit": NARROWED_READ, "kinds": list(kinds)} if kinds else {}))
             except (sqlite3.Error, OSError, ValueError):
                 inbox = {"status": "unreadable"}   # said, never a clean empty inbox
         result = _home_answer(inbox, kinds, arguments.get("limit", HOME_LIMIT),

@@ -19,6 +19,10 @@ call it has no answer for (answering NULL); after the statement the queue is ans
 Python and the statement runs again, until nothing is queued (``MAX_ROUNDS``). The final
 rows are those the real answers give.
 
+A long JSON list of strings (an owner's audience keys) is written once per session to a
+temp table and read from it by its digest (``_kept_lists``), so the planner does not weigh
+each member on every statement.
+
 Rows are :class:`Row` (index and name access, ``keys()``, as ``sqlite3.Row``) with
 SQLite's value types: a boolean is 0/1, an integral numeric an int, bytea bytes. A
 Postgres error is raised as ``sqlite3.OperationalError``, so the tools' existing handling
@@ -37,6 +41,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import functools
+import hashlib
 import json
 import logging
 import re
@@ -78,6 +83,16 @@ INT_COLUMNS = frozenset({"rowid", "ver", "src", "field_id", "chunk_id", "layout"
 LIST_SUFFIX = {False: "__list_text", True: "__list_int"}
 _PLACEHOLDER = re.compile(r"%%|%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s")
 _LISTED_AS = {"::text[]) AS u(value)": False, "::bigint[]) AS u(value)": True}
+# A text IN list this long (JSON characters) is kept on the connection and read from there
+# (``PgCompatConnection._kept_lists``): bound as constants, every statement was planned
+# over each member (plan_cache_mode is force_custom_plan), so an owner's 4,488 audience
+# keys (633 KB) cost 65-85 ms of planning per statement against 1-3 ms of execution, and
+# a cold record page ran thousands of such statements (11-11: 45-150 s).
+LONG_LIST_CHARS = 4096
+# How many kept lists a connection holds before it empties them all and starts again.
+MAX_KEPT_LISTS = 256
+_KEPT_ANY = re.compile(
+    r"(= ANY|<> ALL)\(ontology\.sq_json_array\((%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s)\)\)")
 _FALLBACK = {False: "SELECT array(SELECT value FROM ontology.sq_json_each(%s))",
              True: "SELECT array(SELECT value FROM ontology.sq_json_each_int(%s))"}
 _RENAME = {"julianday": "ontology.sq_julianday", "json_extract": "ontology.sq_json_extract",
@@ -348,7 +363,15 @@ def translate(sql: str, functions: tuple[str, ...] = (),
                                else "ontology.sq_json_each")
             elif call and name in ("json_array", "json_group_array"):
                 out.append("json_build_array" if name == "json_array" else "json_agg")
-                suffix[_close(tokens, j)] = "::text"
+                # SQLite reads a JSON function's result inside another as JSON: only the
+                # outermost is text (else ``json_group_array(json_array(a, b))`` would be
+                # an array of strings, each an encoded array)
+                p = _prev(tokens, i - 1)
+                p2 = _prev(tokens, p - 1) if p >= 0 else -1
+                nested = p2 >= 0 and tokens[p][1] == "(" and \
+                    tokens[p2][1].lower() in ("json_array", "json_group_array")
+                if not nested:
+                    suffix[_close(tokens, j)] = "::text"
             elif call and name == "group_concat":
                 close = _close(tokens, j)
                 spans = _args(tokens, j, close)
@@ -799,6 +822,11 @@ class PgCompatConnection:
                         "result boolean, PRIMARY KEY (fn, arg))")
             cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_pending (fn text, arg text, "
                         "PRIMARY KEY (fn, arg))")
+            # the long IN lists this session holds (``_kept_lists``): a new session holds none
+            cur.execute("CREATE TEMP TABLE IF NOT EXISTS sq_lists (digest text PRIMARY KEY, "
+                        "members text[] NOT NULL)")
+            cur.execute("DELETE FROM sq_lists")
+        self._kept: dict[str, str] = {}
 
     # -- the held connection, replaced when lost --------------------------------------
     @property
@@ -973,6 +1001,8 @@ class PgCompatConnection:
         try:
             if "AS u(value)" in text:
                 params = self._lists(text, params)
+            if "sq_json_array(" in text:
+                text, params = self._kept_lists(text, params)
             for _ in range(MAX_ROUNDS):
                 with self._cursor(text) as cur:
                     if fenced:   # joined from the word rows, in the written order
@@ -1139,6 +1169,74 @@ class PgCompatConnection:
                     raise sqlite3.ProgrammingError(f"no value for parameter :{base}")
                 out[key] = self._members_of(params[base], numeric)
         return out if named else tuple(out)
+
+    def _kept_lists(self, text: str, params: Any) -> tuple[str, Any]:
+        """``text`` and ``params`` with each long text IN list (``x = ANY(...)``, ``x <> ALL
+        (...)`` of a JSON list of at least ``LONG_LIST_CHARS`` characters) read from this
+        session's ``sq_lists`` row of its members, by the list's SHA-256, as ``x [NOT] IN
+        (SELECT unnest(members) ...)``: the same rows (``x = ANY(a)`` is ``x IN (SELECT
+        unnest(a))``, ``x <> ALL(a)`` its negation, NULLs included), planned without the
+        members as constants. A list is written to the session once (outside any
+        transaction, so it is committed at once and no rollback removes it; a new session
+        starts with none, ``_session``); inside a caller's transaction, or for a list not
+        of plain strings (``_members``), the statement keeps its text."""
+        import psycopg
+
+        named = isinstance(params, Mapping)
+        values: Any = dict(params) if named else list(params)
+        positions = {}   # placeholder start -> positional index
+        at = -1
+        for m in _PLACEHOLDER.finditer(text):
+            if m.group(0) != "%%" and m.group(1) is None:
+                at += 1
+                positions[m.start()] = at
+        found = []   # (match, name, positional index, the list's JSON text)
+        for m in _KEPT_ANY.finditer(text):
+            name = m.group(3)
+            index = positions.get(m.start(2)) if name is None else None
+            if name is None:
+                raw = values[index] if index is not None and index < len(values) else None
+            else:
+                raw = values.get(name) if named else None
+            if isinstance(raw, str) and len(raw) >= LONG_LIST_CHARS:
+                found.append((m, name, index, raw))
+        idle = self._conn.pgconn.transaction_status == psycopg.pq.TransactionStatus.IDLE
+        new = {raw for _, _, _, raw in found if raw not in self._kept}
+        if idle and new and len(self._kept) + len(new) > MAX_KEPT_LISTS:
+            # emptied before this statement keeps a list, never between two of its lists:
+            # one already bound to its digest would read as empty (``NOT IN`` of nothing
+            # excludes nothing)
+            with self._conn.cursor() as cur:
+                cur.execute("DELETE FROM sq_lists")
+            self._kept.clear()
+        out, last = [], 0
+        for m, name, index, raw in found:
+            digest = self._kept.get(raw)
+            if digest is None:
+                if not idle:
+                    continue
+                members = _members(raw, numeric=False)
+                if members is None:
+                    continue
+                digest = hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()
+                with self._conn.cursor() as cur:
+                    cur.execute("INSERT INTO sq_lists (digest, members) VALUES (%s, %s) "
+                                "ON CONFLICT (digest) DO NOTHING", (digest, members))
+                self._kept[raw] = digest
+            if name is None:
+                values[index] = digest
+                bound = "%s"
+            else:
+                values[f"{name}__kept"] = digest
+                bound = f"%({name}__kept)s"
+            out.append(text[last:m.start()])
+            out.append(f"{'IN' if m.group(1) == '= ANY' else 'NOT IN'} (SELECT unnest("
+                       f"kept.members) FROM pg_temp.sq_lists kept WHERE kept.digest = {bound})")
+            last = m.end()
+        if not out:
+            return text, params
+        out.append(text[last:])
+        return "".join(out), (values if named else tuple(values))
 
     def _members_of(self, raw: Any, numeric: bool) -> list[Any]:
         members = _members(raw, numeric=numeric)

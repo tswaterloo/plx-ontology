@@ -134,6 +134,13 @@ class AutopilotArea(unittest.TestCase):
         self.assertEqual([i["item_id"] for i in theirs["items"]], ["ap_sam"])
         self.assertEqual([w["role"] for w in theirs["workflows"]], ["receivables"])
         self.assertNotIn(OWNER[1], [p["id"] for p in theirs["people"]])
+        # the filter catalogue is the reader's too: the workflows their page shows, not the
+        # owner's whole catalogue (SP-05)
+        from operating import workflows as wf
+        shown = {w["workflow"] for w in theirs["workflows"]} | {i["workflow"] for i in theirs["items"]}
+        self.assertEqual(theirs["known_workflows"], sorted(shown))
+        self.assertLess(len(theirs["known_workflows"]), len(wf.names()))
+        self.assertEqual(area["known_workflows"], sorted(wf.names()))
         for path, body in (("/api/autopilot/switches", {"global_off": True}),
                            (f"/api/autopilot/workflows/{FLOW}", {"on": False}),
                            (f"/api/autopilot/workflows/{FLOW}", {"live": True, "role": ROLE}),

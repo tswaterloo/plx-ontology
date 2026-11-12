@@ -38,6 +38,18 @@ PRUNE_EVERY = 200         # writes between prunes
 CODE_PACKAGES = ("operator_api", "operating", "integrations", "ontology")
 
 _CODE: Optional[str] = None
+# The version a main screen's last good page is kept under (``WorkspaceBackend._keep_good``,
+# ``kept_code``): one for every code version, so a deploy serves the reader's last page
+# (marked stale and read again) instead of starting each screen cold (11-11: Home's
+# briefing and suggestions refused at 60 s, a purchase order page 103-150 s, on the first
+# visit after a deploy). It is kept as data with the ``code_version`` it was read under and
+# built again with the code serving it; one that no longer fits is a miss. Served under
+# another code version only after every record it shows (``page_parts.shown_objects``) and
+# every source it cites is decided for the reader again by the code serving it, in one
+# batched read; a page whose records cannot all be named is never served across a deploy.
+# No list of modules decides it: any code change is re-decided. Raise it only when the
+# kept entry's own shape changes.
+KEPT_FORMAT = "kept-2"
 
 
 @contextmanager
@@ -78,6 +90,12 @@ def code_version(root: Optional[Path] = None) -> str:
         if root is None:
             _CODE = out
         return out
+
+
+def kept_code() -> str:
+    """The version a last good page is kept under on disk (``KEPT_FORMAT``): the same in
+    every code version; the code version it was read under is kept with it."""
+    return KEPT_FORMAT
 
 
 class _Unkeyable(Exception):
@@ -137,10 +155,10 @@ class PageStore:
             self._local.conn = conn
         return conn
 
-    def get(self, key: Any) -> Optional[tuple[float, Any]]:
+    def get(self, key: Any, *, code: Optional[str] = None) -> Optional[tuple[float, Any]]:
         """(seconds left, value, when it was read: wall clock) of ``key`` while it is
-        unexpired, else None."""
-        digest = disk_key(key, self.code)
+        unexpired, else None. ``code``: kept under that code version, not this one's."""
+        digest = disk_key(key, self.code if code is None else code)
         if digest is None:
             return None
         try:
@@ -156,8 +174,8 @@ class PageStore:
         self.hits += 1
         return row[1] - time.time(), value, row[0]
 
-    def put(self, key: Any, value: Any, seconds: float) -> None:
-        digest = disk_key(key, self.code)
+    def put(self, key: Any, value: Any, seconds: float, *, code: Optional[str] = None) -> None:
+        digest = disk_key(key, self.code if code is None else code)
         if digest is None:
             return
         try:
@@ -176,8 +194,8 @@ class PageStore:
         except Exception as error:  # noqa: BLE001 - not kept: read again when asked
             LOG.warning("page not kept: %s", type(error).__name__)
 
-    def pop(self, key: Any) -> None:
-        digest = disk_key(key, self.code)
+    def pop(self, key: Any, *, code: Optional[str] = None) -> None:
+        digest = disk_key(key, self.code if code is None else code)
         if digest is None:
             return
         try:

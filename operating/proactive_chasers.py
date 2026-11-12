@@ -42,7 +42,10 @@ its other rules (each in its own time window, ``DETECTOR_SECONDS``):
     its item, quantity and the open customer orders waiting on it (``BatchAllocation``). A
     batch states no hold date: its age is counted from the earliest order allocated to it, a
     lot's from its receipt; neither known: ``not_evaluated`` (``hold_age_unknown``). A
-    cancelled batch is never a hold.
+    cancelled batch is never a hold. A lot whose number is a placeholder (fewer than
+    ``MIN_LOT_CHARS`` letters or digits: ``X``, ``1``) names no lot (``not_evaluated``,
+    ``lot_number_placeholder``); a lot whose same number of the same item is released on
+    another receipt line is released, not held (counted).
   - ``reject_trend``: per item and per supplier, rejected batches and lots within
     ``REJECT_DAYS`` of the run's day, at least ``MIN_REJECTS`` and more than in the
     ``REJECT_DAYS`` before. Playbook: notify QC; for a supplier's rejects (a rejected lot it
@@ -116,6 +119,9 @@ BATCH_PROPS = ("quality_status", "status", "batch_code", "batch_number", "lot_nu
                "planned_quantity", "produced_quantity")
 HELD = frozenset({"on-hold", "on hold", "hold", "on_hold", "quarantine", "quarantined"})
 REJECTED = frozenset({"rejected", "reject"})
+RELEASED = frozenset({"released", "release", "approved", "passed"})
+# a lot number of fewer alphanumeric characters (``X``, ``1``) is a placeholder: no lot
+MIN_LOT_CHARS = 3
 VOID_BATCH = frozenset({"cancelled", "canceled", "void", "voided", "deleted"})
 BATCH_ITEM = "Batch.makes_bulk"
 BATCH_TWINS = "Batch.same_record_as"
@@ -809,7 +815,28 @@ def quality_holds(st: Any, as_of: date, *, gap: Callable, cites: Callable, resul
         code = _row(e, "batch_code", "batch_number", "lot_number")
         holds.append((len(open_w), age, "batch", b, status, day_rows, item_row, qty, code,
                       [_row(ov[o], "order_number") for o in open_w]))
+    def lot_key(entry: Mapping[str, Any] | None) -> str:
+        row = _row(entry, "lot_number")
+        return "".join(ch for ch in str(row["value"] if row else "") if ch.isalnum()).casefold()
+
+    # the same supplier lot of the same item released on another receipt line: the hold
+    # was the receipt's first state, the lot is released
+    held_keys = {lot_key(lots[l]) for l in held_l}
+    released = {l for l, e in lots.items() if word(e, "qc_status") in RELEASED
+                and lot_key(e) in held_keys}
+    released_item = {l["from_object"]: l["to_object"] for l in _touch(
+        st, released, [LOT_ITEM], end="from_object") if l["tier"] in settled} \
+        if released else {}
+    released_keys = {(released_item[l], lot_key(lots[l])) for l in released
+                     if l in released_item}
     for l in sorted(held_l):
+        key = lot_key(lots[l])
+        if len(key) < MIN_LOT_CHARS:
+            skipped.note("lot_number_placeholder", [l], [(l, "[]")])
+            continue
+        if l in l_item and (l_item[l]["to_object"], key) in released_keys:
+            counts["released_on_another_line"] += 1
+            continue
         day, day_rows = lot_day(l)
         status = _row(lots[l], "qc_status")
         if day is None:

@@ -311,7 +311,21 @@ def brief(trail: Optional[m.EvidenceTrail], roots: Sequence[Mapping[str, Any]],
                          "the supplier or customer the question names; "
                          + ", ".join(root["others"]) + " share the number but are different "
                          "records (say so in one line, never read them as this one).")
+    shared: dict[str, list[str]] = {}
     for entity in entities or ():
+        if entity.get("shares_number"):
+            shared.setdefault(str(entity.get("mention")), []).extend(
+                r["object_id"] for r in entity.get("records") or () if r.get("object_id"))
+    for mention, ids in shared.items():
+        # a generic label's number several different records carry (``entity_resolution``
+        # ``SHARED_WHY``): none is the one asked until its records say so
+        lines.append(f"\"{mention}\" is carried by several different records: "
+                     f"{', '.join(ids[:8])}. Read each, answer for the one whose records "
+                     "fit the question, and say the others share the number; never pick one "
+                     "by its number alone.")
+    for entity in entities or ():
+        if entity.get("shares_number"):
+            continue
         # a lead or derived entity, and such records of a matched one, are offered only
         records = [r for r in entity.get("records") or ()
                    if entity.get("status") != "match" or r.get("status") != "match"]

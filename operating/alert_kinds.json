@@ -362,15 +362,21 @@
    "type": "unit_cost_jump",
    "kind": "margin_loss",
    "label": "Purchase cost jumped",
-   "precision": null,
+   "precision": {
+    "value": 0.167,
+    "checked": 6,
+    "correct": 1,
+    "on": "2026-11-11",
+    "source": "lane C (alerts-2): all 6 open on the served inbox (2026-11-11 12:32 UTC) judged against the purchase order lines: 1 true (a 52% rise over three like-for-like orders); 5 averaged Business Central go-live orders (dated 2026-03-28) that carry each line's total as its unit cost, their Portal copies stating totals 10-70 times smaller",
+    "note": "after the fix (an order whose firm copy states another total in the same currency is no figure; 150 such orders) a run alone finds 1, the true one: n<15, needs fresh days"
+   },
    "actionable": true,
    "default": "off",
    "home": false,
    "roles": [
     "PROC",
     "FIN"
-   ],
-   "unmeasured": "not measurable yet: 6 found by a run alone 2026-11-10, n<15; 4 of 6 are 91-99% drops that read as a pack cost against a per-kg trailing average (a unit defect to fix before measuring) (/data/scratch/alert-precision-1110.md)"
+   ]
   },
   {
    "type": "mc_task_overdue",
@@ -384,7 +390,7 @@
     "OPS",
     "PROD"
    ],
-   "unmeasured": "not measurable yet: the due date is served on 1 of 4,612 Mission Control tasks (2026-11-11); 0 found on the served run 2026-11-11 (complete) (/data/scratch/alerts-1.md)"
+   "unmeasured": "not measurable yet: the Mission Control capture states a due day on 17 of 4,648 tasks (16 without a year, never guessed; capture read 2026-11-11)"
   },
   {
    "type": "mc_task_stuck",
@@ -812,7 +818,6 @@
    "kind": "customer_chasing",
    "precision": null,
    "label": "Customer or supplier chase unanswered",
-   "precision": null,
    "actionable": true,
    "default": "off",
    "home": false,
@@ -833,7 +838,6 @@
    "kind": "customer_chasing",
    "precision": null,
    "label": "Colleague's order chase unanswered",
-   "precision": null,
    "actionable": true,
    "default": "off",
    "home": false,
@@ -851,7 +855,14 @@
    "type": "quality_hold_aging",
    "kind": "quality_hold",
    "label": "Quality hold open too long",
-   "precision": null,
+   "precision": {
+    "value": 0.0,
+    "checked": 7,
+    "correct": 0,
+    "on": "2026-11-11",
+    "source": "lane C (alerts-2): all 7 open on the served inbox (2026-11-11 12:32 UTC) judged against the receipt lots: 5 carry a placeholder lot number (X, 1); 2 are a supplier lot of the same item released on another receipt line",
+    "note": "after the fix (placeholder lot numbers name no lot; a lot released on another line is released) these are no longer raised: n<15, needs fresh days"
+   },
    "actionable": true,
    "default": "off",
    "home": false,
@@ -860,8 +871,7 @@
     "QA",
     "QC",
     "OPS"
-   ],
-   "unmeasured": "not measurable yet: 7 served, n<15 (4 name a placeholder lot 'X') (/data/scratch/alert-precision-1110.md)"
+   ]
   },
   {
    "type": "reject_trend",
@@ -1178,6 +1188,25 @@
    ]
   },
   {
+   "type": "order_without_customer_po",
+   "kind": "data_health",
+   "label": "Order without a customer PO",
+   "precision": {
+    "value": 1.0,
+    "checked": 15,
+    "on": "2026-11-08",
+    "source": "capability-audit.md:20,107: order without customer PO 15/15 after correct-1",
+    "note": "the gaps key_field_missing's measurement judged; its own type so Home reads it"
+   },
+   "actionable": true,
+   "default": "on",
+   "home": false,
+   "roles": [
+    "OPS",
+    "SALES"
+   ]
+  },
+  {
    "type": "twins_disagree",
    "kind": "data_health",
    "label": "Systems disagree on a record",
@@ -1204,11 +1233,12 @@
    "kind": "data_health",
    "label": "Record not keyed in its other system",
    "precision": {
-    "value": 0.22,
+    "value": 0.0,
     "checked": 9,
-    "on": "2026-11-09",
-    "source": "lane/sync-gap hand-check of 15 live sync alerts (seeded sample): 1/9 missing true; 8 were Business Central draft POs never placed, now excluded. Re-measured with drafts excluded 2026-11-09: all 9 left live checked, 2/9 true; 7 are BC test, demo or UAT items the test filter does not mark",
-    "note": "Portal orders and Sage invoices vs Business Central are reported not in use (BC holds almost none of them)"
+    "correct": 0,
+    "on": "2026-11-11",
+    "source": "lane C (alerts-2) re-judge of all 9 open on the served inbox (full run 2026-11-11 12:32 UTC) against the item records: 7 are test items (5 named Demo or UAT, 2 E2E runs), 2 are held by the Portal under its own code with the identical name. The 2026-11-09 re-measure counted those 2 true (2/9); its first round of 15 judged 1/9 after 8 Business Central draft POs (since excluded)",
+    "note": "after the fix (item names carry the test mark, an E2E mark, a same-name counterpart is a probable copy) a run alone on the served store finds 0: n<15, needs fresh days"
    },
    "actionable": true,
    "default": "off",

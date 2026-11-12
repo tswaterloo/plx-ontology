@@ -253,7 +253,8 @@ def resolve_entities(objective: str, find: Callable[[dict[str, Any]], Mapping[st
                         "object_type": entity.get("object_type"),
                         "confidence": entity.get("confidence"),
                         "status": entity.get("status"), "systems": entity.get("systems"),
-                        "records": records})
+                        "records": records,
+                        **({"shares_number": True} if entity.get("shares_number") else {})})
     return out[:MAX_ENTITIES]
 
 

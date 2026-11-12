@@ -80,7 +80,7 @@ function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: Auto
             {due}
           </span>
         </p>
-        <p className="truncate text-[12px] text-muted">
+        <p className="break-words text-[12px] text-muted">
           {[item.label !== item.title ? item.label : null, happenedLine(happened) || null].filter(Boolean).join(" · ")}
           {objectId && objectType && (
             <>
@@ -94,7 +94,6 @@ function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: Auto
         </p>
         {typeof prepared.summary === "string" && (
           <p className="max-w-[72ch]">
-            <span className="text-muted">I&apos;d </span>
             {prepared.summary}
           </p>
         )}
@@ -190,7 +189,7 @@ export function MyWorkList({ work }: { work: MyWork }) {
         {work.status === "off" && <p className="text-[13px] font-medium">The autopilot is switched off: nothing new is prepared and nothing can be approved.</p>}
         <header className="flex flex-wrap items-end gap-x-10 gap-y-3 border-b border-border pb-4">
           <div className="mr-auto">
-            <h2 className="text-[15px] font-semibold">What&apos;s open, and what I&apos;d do</h2>
+            <h2 className="text-[15px] font-semibold">What&apos;s open, and what is prepared</h2>
             <p className="text-[12px] text-muted">Nothing is sent or written until you confirm it.</p>
           </div>
           {(

@@ -80,8 +80,42 @@ class TextRemarkTests(unittest.TestCase):
         self.assertTrue(all(marks[f] == '["finance","pii"]' for f in marks if f != 4))
         self.assertEqual(after[1:], before[1:])               # chunks, store_meta, text
         self.assertEqual(tr.apply(self.work, _DSN, dry_run=False)["fields_marked"], 0)
+        checked = tr.check(self.work, _DSN)
+        self.assertEqual((checked["applied"], checked["fields"], checked["marked"]),
+                         (True, 62, 62))
+        self.assertEqual(tr.main(["check", "--work", str(self.work), "--dsn", _DSN]), 0)
         self.assertEqual(tr.undo(self.work, _DSN)["restored"], 62)
-        self.assertEqual(self._state(), before)
+        self.assertEqual(self._state(), before)               # the whole round trip
+        # undone: the fields lack the marks again, said so (exit 1)
+        undone = tr.check(self.work, _DSN)
+        self.assertEqual((undone["applied"], undone["reason"]),
+                         (False, "fields_without_the_marks"))
+        self.assertEqual(tr.main(["check", "--work", str(self.work), "--dsn", _DSN]), 1)
+        # applied again; a layer then removed one field and re-marked another with more:
+        # still applied
+        self.assertEqual(tr.apply(self.work, _DSN, dry_run=False)["fields_marked"], 62)
+        self.pg.execute("DELETE FROM ontology.text_fields WHERE field_id = 10")
+        self.pg.execute("UPDATE ontology.text_fields SET markings = "
+                        "'[\"finance\",\"hr\",\"pii\"]' WHERE field_id = 11")
+        checked = tr.check(self.work, _DSN)
+        self.assertEqual((checked["applied"], checked["gone"]), (True, 1))
+        self.pg.execute("UPDATE ontology.text_fields SET markings = '[\"hr\"]' "
+                        "WHERE field_id = 11")
+        self.assertFalse(tr.check(self.work, _DSN)["applied"])   # a field lost its marks
+        # every logged field gone: nothing is said to be applied
+        self.pg.execute("DELETE FROM ontology.text_fields WHERE field_id <> 4")
+        gone = tr.check(self.work, _DSN)
+        self.assertEqual((gone["applied"], gone["reason"]), (False, "every_field_gone"))
+
+    def test_check_without_an_apply_or_with_a_bad_log_is_not_applied(self) -> None:
+        self.assertEqual(tr.check(self.work, _DSN)["reason"], "no_apply_recorded")
+        (self.work / "undo.jsonl").write_text("")
+        self.assertEqual(tr.check(self.work, _DSN)["reason"], "no_apply_recorded")
+        (self.work / "undo.jsonl").write_text("not json\n")
+        self.assertEqual(tr.check(self.work, _DSN)["reason"], "undo_log_unreadable")
+        (self.work / "undo.jsonl").write_text('{"field_id": 1, "old": "[]", "new": "x"}\n')
+        self.assertEqual(tr.main(["check", "--work", str(self.work), "--dsn",
+                                  "postgresql:///plx_no_such_database_x"]), 1)
 
     def test_an_incomplete_or_stale_judge_is_refused(self) -> None:
         (self.work / "shards" / "shard-1.json").unlink()

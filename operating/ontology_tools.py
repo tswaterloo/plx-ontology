@@ -1064,10 +1064,30 @@ class StoreReader:
             "(SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') "
             "FROM json_each(:keys))", scope.params(keys=json.dumps([list(k) for k in keys]))))
 
-    def identifiers_by_value(self, scope: _Scope, values: Sequence[str]) -> list[sqlite3.Row]:
-        return list(self.conn.execute(
-            self._scoped_identifiers() + "AND i.normalized IN (SELECT value FROM json_each(:v))",
-            scope.params(v=json.dumps(list(values)))))
+    def identifiers_by_value(self, scope: _Scope, values: Sequence[str],
+                             types: Sequence[str] | None = None,
+                             cap: int | None = None) -> list[sqlite3.Row]:
+        """Readable identifiers whose canonical form is one of ``values`` (the index on
+        ``normalized``). ``types``: of those object types only, filtered here, before
+        ``cap`` cuts the rows, in a set order (type, object, property): a short number many
+        records of other types carry ("465") never crowds out the types asked."""
+        sql = self._scoped_identifiers() + "AND i.normalized IN (SELECT value FROM json_each(:v)) "
+        params: dict[str, Any] = {"v": json.dumps(list(values))}
+        if types is not None:
+            # on the identifier row itself (an object id starts with its type), one
+            # parameter per type: Postgres drops other types' rows in the index scan,
+            # before the per-row visibility checks (a common number, "1", carried by
+            # 53,774 identifiers: 2.2 s as a join filter, 17 ms here; EXPLAIN 11-11)
+            wanted = sorted(set(types))
+            if not wanted:
+                return []
+            sql += ("AND substr(i.object_id, 1, instr(i.object_id, ':') - 1) IN ("
+                    + ", ".join(f":t{n}" for n in range(len(wanted))) + ") ")
+            params.update({f"t{n}": t for n, t in enumerate(wanted)})
+        if cap is not None:
+            sql += "ORDER BY o.object_type, i.object_id, i.property, i.normalized LIMIT :cap"
+            params["cap"] = int(cap)
+        return list(self.conn.execute(sql, scope.params(**params)))
 
     def identifiers_by_prefix(self, scope: _Scope, kinds: Sequence[str], prefix: str
                               ) -> list[sqlite3.Row]:
@@ -1733,6 +1753,43 @@ class StoreReader:
         return list(self.conn.execute(
             "SELECT * FROM links WHERE from_object = ? OR to_object = ? ORDER BY link_id",
             (object_id, object_id)))
+
+    # What a hop over a record's links reads of each (``links_of_many``): its ends, type,
+    # tier and binding (``_beyond``'s firm links), markings and times (``_row_visible``).
+    # Not the link's reason and evidence: over Postgres the links view builds those text
+    # columns for every row it returns (``ontology.link_text``), 2-3x the cost of the read.
+    HOP_COLUMNS = ("link_id", "link_type", "from_object", "to_object", "tier",
+                   "binding_kind", "markings", "recorded_at", "superseded_at")
+
+    def links_of_many(self, object_ids: Iterable[str]) -> dict[str, list[Any]]:
+        """``links_of`` of each of ``object_ids`` (the same links, in the same order, each
+        row holding ``HOP_COLUMNS`` at least), read in one statement rather than one per
+        object (a record's children and their links: up to ``BEYOND_CHILDREN`` reads per
+        hop); inside ``snapshot_reads`` each object's rows are kept (apart from
+        ``links_of``'s full rows, which are reused when already read)."""
+        ids = list(dict.fromkeys(object_ids))
+        snap = _SNAPSHOT.get()
+        full = snap.setdefault("links", {}) if snap is not None else {}
+        memo = snap.setdefault("links_hop", {}) if snap is not None else None
+        kept = {oid: full.get((id(self), oid)) for oid in ids}
+        if memo is not None:
+            kept = {oid: rows if rows is not None else memo.get((id(self), oid))
+                    for oid, rows in kept.items()}
+        wanted = [oid for oid in ids if kept[oid] is None]
+        read: dict[str, list[Any]] = {oid: [] for oid in wanted}
+        if wanted:
+            for row in self.conn.execute(
+                    "SELECT " + ", ".join(self.HOP_COLUMNS) + " FROM links "
+                    "WHERE from_object IN (SELECT value FROM json_each(:ids)) "
+                    "OR to_object IN (SELECT value FROM json_each(:ids)) ORDER BY link_id",
+                    {"ids": json.dumps(wanted)}):
+                for end in {row["from_object"], row["to_object"]}:
+                    if end in read:   # a link between two of them is each one's
+                        read[end].append(row)
+            if memo is not None:
+                for oid, rows in read.items():
+                    memo[(id(self), oid)] = rows
+        return {oid: list(read[oid] if kept[oid] is None else kept[oid]) for oid in ids}
 
     def linked_markings(self, root_id: str, link_type: str) -> dict[str, frozenset[str]]:
         """For each object ``link_type`` currently attaches to ``root_id`` (either end), the
@@ -6272,7 +6329,8 @@ class OntologyTools:
                 continue
             kids = set(self._visible_versions(scope, kids))
             counts: dict[tuple[str, str], set[str]] = {}
-            rows = [(kid, row) for kid in sorted(kids) for row in self.store.links_of(kid)
+            linked = self.store.links_of_many(sorted(kids))
+            rows = [(kid, row) for kid in sorted(kids) for row in linked[kid]
                     if firm(row) and object_id not in (row["from_object"], row["to_object"])
                     and self._row_visible(scope, row)]
             others = {row["to_object"] if row["from_object"] == kid else row["from_object"]

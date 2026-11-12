@@ -107,6 +107,41 @@ class DocumentsPendingFlag(unittest.TestCase):
         self.assertIsNone(documents_pending(self.store, "sha256:" + "b" * 64,
                                             state_dir=self.state))
 
+    def test_postgres_alone_never_opens_the_generation_file(self):
+        """``PLX_ONTOLOGY_PG=only`` (the SQLite generation retired): the served digest is
+        Postgres's own and the generation file is never opened, so it can be gone; a file
+        left behind holding another digest is not read. Postgres not whole: no digest,
+        nothing said."""
+        from operator_api import backend as be
+        from operating.pg import ontology_reader
+        self.layer("box@x.example", "gone@x.example")
+        api = be.WorkspaceBackend(lambda s: None, data_label="t", state_dir=self.state)
+        opened = []
+        real = sqlite3.connect
+
+        def connect(target, *args, **kwargs):
+            opened.append(str(target))
+            return real(target, *args, **kwargs)
+
+        with mock.patch.dict(os.environ, {"PLX_ONTOLOGY_PG": "only"}), \
+                mock.patch.object(ontology_reader, "store_meta",
+                                  return_value={"content_digest": self.DIGEST}), \
+                mock.patch.object(sqlite3, "connect", connect):
+            path, digest = api._served_store()
+            self.assertFalse(path.exists())
+            self.assertEqual(digest, self.DIGEST)
+            found = documents_pending(path, digest, state_dir=self.state)
+            self.store.write_bytes(b"")   # a leftover file: never read
+            self.assertEqual(api._served_store()[1], self.DIGEST)
+        self.assertFalse([p for p in opened if "ontology.sqlite" in p], opened)
+        # the excluded person's mail stays withheld on the Postgres path too
+        self.assertEqual((found.records, found.files), (1, None))
+        with mock.patch.dict(os.environ, {"PLX_ONTOLOGY_PG": "only"}), \
+                mock.patch.object(ontology_reader, "store_meta", return_value=None):
+            path, digest = api._served_store()
+            self.assertIsNone(digest)
+            self.assertIsNone(documents_pending(path, digest, state_dir=self.state))
+
     def test_the_excluded_peoples_mail_is_not_counted(self):
         self.layer("box@x.example", "gone@x.example")
         found = self.pending(["graph-mail://gone@x.example/msg-2@v1"])

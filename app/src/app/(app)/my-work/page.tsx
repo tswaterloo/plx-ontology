@@ -29,7 +29,7 @@ export default function MyWorkPage() {
   useStaleRefresh(work?.stale_since, retry);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar heading title="Assist" />
+      <Toolbar heading title="My work" />
       <div className="w-full px-6 py-5">
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />

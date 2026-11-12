@@ -516,6 +516,76 @@ def shown_handles(value: Any) -> set[str]:
     return found
 
 
+# What names a record on a served screen: a field or key of these names (or ending in
+# them) holds its id; a link to its page is ``object_url``'s; an id is ``Type:key``.
+_ID_NAMES = ("object_id", "record_id")
+_ID_LISTS = ("object_ids", "record_ids")
+_OBJECT_ID = re.compile(r"[A-Z][A-Za-z0-9_]*:\S+")
+_OBJECT_LINK = re.compile(r"/object/([^/?#]+)/([^/?#]+)/?(?:[?#].*)?", re.S)
+
+
+def shown_objects(value: Any) -> Optional[frozenset[str]]:
+    """Every record a served screen shows, by its id: each ``object_id``/``record_id``
+    (or ``*_object_id``, ``object_ids`` ...) field or key, each link to a record's page
+    (``object_url``) and every string anywhere in it that is an id (``Type:key``); a
+    string that only looks like one is named too (deciding it finds no record: never
+    served). None when a record it shows cannot be named: an id field that is neither
+    text nor empty, a list of ids that is not a list of text, a record link that does not
+    parse. A page kept by other code is served only when every one of these still opens
+    for the reader (``WorkspaceBackend._held_good``), so None is never served."""
+    from urllib.parse import unquote
+    found: set[str] = set()
+
+    class _Unnamed(Exception):
+        pass
+
+    def named(field: Any, item: Any) -> None:
+        if not isinstance(field, str):
+            return
+        if field.endswith(_ID_NAMES):
+            if item is None:
+                return
+            if not isinstance(item, str) or not item.strip():
+                raise _Unnamed
+            found.add(item)
+        elif field.endswith(_ID_LISTS):
+            if item is None:
+                return
+            if not isinstance(item, (list, tuple, set, frozenset)) or not all(
+                    isinstance(i, str) and i.strip() for i in item):
+                raise _Unnamed
+            found.update(item)
+
+    def walk(item: Any) -> None:
+        if isinstance(item, str):
+            if item.startswith("/object/"):
+                link = _OBJECT_LINK.fullmatch(item)
+                oid = unquote(link.group(2)) if link else ""
+                if not oid.strip():
+                    raise _Unnamed
+                found.add(oid)
+            elif _OBJECT_ID.fullmatch(item):
+                found.add(item)
+        elif isinstance(item, Mapping):
+            for field, child in item.items():
+                named(field, child)
+                walk(child)
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            for child in item:
+                walk(child)
+        elif hasattr(type(item), "model_fields"):
+            for field in type(item).model_fields:
+                child = getattr(item, field)
+                named(field, child)
+                walk(child)
+        elif not (item is None or isinstance(item, (bool, int, float, Decimal, date))):
+            raise _Unnamed   # a value of a kind no screen carries: its records unknown
+    try:
+        walk(value)
+    except _Unnamed:
+        return None
+    return frozenset(found)
+
 PAGE_PLANS = ("late_po", "landed_cost", "people_on_record")
 _PLANS_RUN: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
     "plx_page_plans", default=None)

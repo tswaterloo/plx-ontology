@@ -4522,7 +4522,8 @@ TEST_MARK_PROPS = (("PurchaseInvoice", "vendor_invoice_number"),
                    ("SalesOrder", "customer_po"),
                    ("SalesInvoice", "external_document_number"),
                    ("SalesInvoice", "customer_po"),
-                   ("Receipt", "vendor_invoice_number"))
+                   ("Receipt", "vendor_invoice_number"),
+                   ("Product", "name"))
 # An order's own numbers and names the name rules read, and the links to its party.
 TEST_NAME_PROPS = ("po_number", "fm_po_number", "order_number")
 TEST_PARTY_LINKS = ("PurchaseOrder.ordered_from", "SalesOrder.ordered_by")
@@ -5527,11 +5528,15 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     # an alert type the registry keeps off (``alert_kinds``) yields nothing to a reader
     # unless they switched it on; only a page that lists it on purpose reads it
     # (``include_off``: the Late POs page's at-risk panel)
+    # An unnarrowed read (Home, plx.find's home mode) returns only kinds a registered type
+    # names: a kind no one measured never reaches home (business rule 11-11: an alert reaches
+    # home only once measured at the bar); a page naming its kinds still reads them.
     off_kinds: list[str] = []
     if not include_off:
         off = alert_kinds.off_gap_kinds(enabled)
-        if kinds is not None:
-            kinds = [k for k in kinds if k not in off] or ["\x00none"]
+        if kinds is None:
+            kinds = sorted(alert_kinds.registered_gap_kinds() - off)
+        kinds = [k for k in kinds if k not in off] or ["\x00none"]
         off_kinds = sorted(off)
 
     path = Path(inbox)

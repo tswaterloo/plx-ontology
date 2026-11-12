@@ -941,6 +941,19 @@
             ],
             "title": "Commit"
           },
+          "correct": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many of them were right.",
+            "title": "Correct"
+          },
           "note": {
             "anyOf": [
               {
@@ -2293,7 +2306,7 @@
       },
       "AutopilotCountdown": {
         "additionalProperties": false,
-        "description": "The workflow's way to its write gate (``operating.autopilot_fresh``): items judged\non fresh days against the ``need_judged`` the gate asks for, and the precision so far\nagainst ``need_percent``. Recomputed from the counts at every read.",
+        "description": "The workflow's way to its write gate: the counts the gate admitted\n(``autopilot_write.gate_counts``), items judged on fresh days against the\n``need_judged`` the gate asks for, and the precision so far against ``need_percent``.\nRecomputed from the counts at every read.",
         "properties": {
           "data_end": {
             "anyOf": [
@@ -2337,6 +2350,41 @@
             ],
             "description": "matched / judged, one decimal; absent when nothing was judged.",
             "title": "Percent"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the role's newest scorer run was not admitted (status:partial, not_fresh, counts...): the counts are then an earlier run's. Absent when it was.",
+            "title": "Refused"
+          },
+          "refused_run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refused Run"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The scorer run these counts came from.",
+            "title": "Run"
           },
           "window": {
             "items": {
@@ -14964,6 +15012,28 @@
         "title": "TrustFreshness",
         "type": "object"
       },
+      "TrustGate": {
+        "additionalProperties": false,
+        "description": "The autopilot's write gate as the write rules set it (``rules.gate``).",
+        "properties": {
+          "need_judged": {
+            "description": "Judged items from fresh days a workflow needs.",
+            "title": "Need Judged",
+            "type": "integer"
+          },
+          "need_percent": {
+            "description": "Precision it needs on them, in percent.",
+            "title": "Need Percent",
+            "type": "number"
+          }
+        },
+        "required": [
+          "need_judged",
+          "need_percent"
+        ],
+        "title": "TrustGate",
+        "type": "object"
+      },
       "TrustLine": {
         "additionalProperties": false,
         "properties": {
@@ -15017,6 +15087,17 @@
             },
             "title": "Autopilot",
             "type": "array"
+          },
+          "autopilot_gate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrustGate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The write gate's numbers; absent when the write rules are unreadable (then nothing acts)."
           },
           "autopilot_note": {
             "anyOf": [

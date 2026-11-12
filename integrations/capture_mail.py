@@ -229,7 +229,8 @@ from .live_source_guard import (HOLD_SCOPE, LiveSourceAudience, NotVisible, Sour
 from .plx_hub_guard import GRAPH_BLOCKS, upstream_blocks
 from operating import declared_schema as _schemas
 from operating.declared_schema import capture_mail as _CAPTURE_MAIL
-from operating.declared_schema.capture_mail import _FOLDER_LISTING_DDL, _PRIORITY_DDL
+from operating.declared_schema.capture_mail import (_FOLDER_LISTING_DDL, _PRIORITY_DDL,
+                                                    _UNDECIDED_DDL)
 
 SCOPE_SCHEMA = "plx-mail-capture-scope/v1"
 ALL_FOLDERS = "all"   # a scope's folders: every folder of the mailbox
@@ -1739,6 +1740,53 @@ class MailCaptureStore:
                                         "absent_after_resync")
         return len(rows)
 
+    # ---------------------------------------------------------------- undecided mail
+
+    def hold_undecided(self, mailbox_id: str, folder_id: str, message_ids: Iterable[str]) -> None:
+        """Keep the ids of messages the people guard could not decide (nothing else of
+        them), for a re-read once it can (``MailCapture._retry_undecided``)."""
+        rows = [(mailbox_id, folder_id, m, self.now()) for m in dict.fromkeys(message_ids)]
+        if rows:
+            with self.lock, self.db:
+                # made with the first held message (a store that never held one has none)
+                self.db.execute(_UNDECIDED_DDL)
+                self.db.executemany(
+                    "INSERT INTO people_undecided (mailbox_id, folder_id, message_id, held_at) "
+                    "VALUES (?,?,?,?) ON CONFLICT (mailbox_id, message_id) DO UPDATE SET "
+                    "folder_id=excluded.folder_id, tried_at=NULL", rows)
+
+    def clear_undecided(self, mailbox_id: str, message_ids: Iterable[str]) -> None:
+        ids = [(mailbox_id, m) for m in message_ids]
+        if ids and self._has_undecided_table():
+            with self.lock, self.db:
+                self.db.executemany("DELETE FROM people_undecided WHERE mailbox_id=? AND "
+                                    "message_id=?", ids)
+
+    def undecided(self, mailbox_id: str, folder_id: str, limit: int) -> list[str]:
+        """Up to ``limit`` held ids of this folder, the least recently tried first."""
+        if not self._has_undecided_table():
+            return []
+        return [r[0] for r in self.db.execute(
+            "SELECT message_id FROM people_undecided WHERE mailbox_id=? AND folder_id=? "
+            "ORDER BY tried_at IS NOT NULL, tried_at, held_at LIMIT ?",
+            (mailbox_id, folder_id, limit))]
+
+    def tried_undecided(self, mailbox_id: str, message_id: str) -> None:
+        with self.lock, self.db:
+            self.db.execute("UPDATE people_undecided SET tried_at=? WHERE mailbox_id=? AND "
+                            "message_id=?", (self.now(), mailbox_id, message_id))
+
+    def _has_undecided_table(self) -> bool:
+        return self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                               "name='people_undecided'").fetchone() is not None
+
+    def has_undecided(self, mailbox_id: str, folder_id: str) -> bool:
+        if not self._has_undecided_table():
+            return False
+        return self.db.execute("SELECT 1 FROM people_undecided WHERE mailbox_id=? AND "
+                               "folder_id=? LIMIT 1", (mailbox_id, folder_id)
+                               ).fetchone() is not None
+
     # ---------------------------------------------------------------- exclusion
 
     def record_tenant_listing(self, people: Any) -> int:
@@ -1752,12 +1800,28 @@ class MailCaptureStore:
         if found is None or not found[1]:
             return 0
         at, rows = found
+        domains = None
+        if people.groups_listed:
+            domains = json.dumps(sorted(set(self.group_domains()) | people.group_domains()))
         with self.db:
             self.db.execute("DELETE FROM tenant_listing")
             self.db.executemany("INSERT INTO tenant_listing VALUES (?,?,?)", rows)
             self.db.execute("INSERT INTO meta VALUES ('tenant_listing_at', ?) "
                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (at,))
+            if domains is not None:
+                self.db.execute("INSERT INTO meta VALUES ('group_domains', ?) ON "
+                                "CONFLICT(key) DO UPDATE SET value=excluded.value", (domains,))
         return len(rows)
+
+    def group_domains(self) -> list[str]:
+        """The mail domains complete groups listings held list addresses in (domains only),
+        so a run whose listing fails still withholds an address in one (it may be a list)."""
+        found = self.db.execute("SELECT value FROM meta WHERE key='group_domains'").fetchone()
+        try:
+            value = json.loads(found[0]) if found else []
+        except (TypeError, ValueError):
+            return []
+        return [d for d in value if isinstance(d, str)] if isinstance(value, list) else []
 
     def record_directory(self, departments: Mapping[str, Any]) -> None:
         """The directory department (any JSON value) of each mailbox a directory-wide
@@ -1920,7 +1984,8 @@ class MailCaptureStore:
                 db.execute("DELETE FROM priority_folders")
                 db.execute("DELETE FROM priority_senders")
                 db.execute("DELETE FROM meta WHERE key='priority_through'")
-                for table in ("folders", "mailbox_directory"):
+                for table in ("folders", "mailbox_directory") + (
+                        ("people_undecided",) if self._has_undecided_table() else ()):
                     db.execute(f"DELETE FROM {table} WHERE mailbox_id IN (SELECT id FROM "
                                "temp.purge_boxes)")
                 counts["mailboxes"] = db.execute(
@@ -2978,6 +3043,8 @@ def refused_parts(run: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 # Reader threads per capture at most (``MailCapture`` workers / ocr_workers).
 MAX_WORKERS = 16
+# Held undecided messages one round re-reads at most, per folder (one GET each).
+UNDECIDED_RETRIES = 200
 # A folder whose turn read ``pages_per_turn`` pages: the run comes back to it (run()).
 TURN = "turn"
 # The mailbox folder listing (``folders`` all) is read again after this long.
@@ -4042,8 +4109,8 @@ def _new_counts() -> dict[str, int]:
         "attachment_lists_incomplete",
         "attachment_lists_recovered", "attachment_lists_capped", "attachments_mismatched",
         "texts_ocr", "texts_ocr_unavailable", "texts_reextracted",
-        "provenance_dropped", "people_dropped", "throttle_waits", "round_restarts",
-        "backfill_pages")}
+        "provenance_dropped", "people_dropped", "people_undecided", "people_recovered",
+        "throttle_waits", "round_restarts", "backfill_pages")}
 
 
 # What a repair pass recovered (``MailCapture._repair_degraded``).
@@ -4675,6 +4742,45 @@ class MailCapture:
                 else "configured_id", "counts": _new_counts(), "round": None,
                 "status": "incomplete", "complete": False, "reason": reason}
 
+    def _hold_undecided(self, mailbox_id: str, folder_id: str, page: Mapping[str, Any],
+                        counts: dict[str, int]) -> None:
+        """A page's messages the people guard could not decide are held by id (re-read by
+        ``_retry_undecided``); a message the page lists decided is no longer held."""
+        held = list(page.get("people_undecided") or ())
+        counts["people_undecided"] += len(held)
+        self.store.hold_undecided(mailbox_id, folder_id, held)
+        self.store.clear_undecided(mailbox_id, [item["id"] for item in page["items"]])
+
+    def _retry_undecided(self, mailbox_id: str, folder_id: str,
+                         counts: dict[str, int]) -> None:
+        """Re-read up to ``UNDECIDED_RETRIES`` held messages of this folder (one GET each,
+        no folder re-read), when the people guard has a complete groups listing: decided
+        and cleared, it is captured; excluded, or gone from this folder, it is dropped
+        for good; still undecided, it stays held. A source failure ends the pass."""
+        people = getattr(self.reader, "people", None)
+        if not getattr(people, "groups_listed", True):
+            return   # nothing would decide differently this run
+        for message_id in self.store.undecided(mailbox_id, folder_id, UNDECIDED_RETRIES):
+            try:
+                record = self.reader.get_message(self.actor, mailbox_id, message_id,
+                                                 expected_folder_id=folder_id)
+            except ExclusionUnavailable:
+                self.store.tried_undecided(mailbox_id, message_id)
+                continue
+            except PeopleExcluded:
+                counts["people_dropped"] += 1   # never recorded, stored or indexed
+                self.store.clear_undecided(mailbox_id, [message_id])
+                continue
+            except NotVisible:
+                # gone, or moved (the other folder's round lists it again)
+                self.store.clear_undecided(mailbox_id, [message_id])
+                continue
+            except SourceUnavailable:
+                return   # tried again by a later round
+            self._capture_page(mailbox_id, folder_id, [record], counts, may_cut=False)
+            self.store.clear_undecided(mailbox_id, [message_id])
+            counts["people_recovered"] += 1
+
     def _capture_folder(self, mailbox_id: str, folder_key: str,
                         turn: int | None = None) -> dict[str, Any]:
         counts = _new_counts()
@@ -4746,6 +4852,7 @@ class MailCapture:
                     # Sent by an excluded person: dropped by the reader before any
                     # body read, never stored or indexed; only the count is kept.
                     counts["people_dropped"] += page.get("people_dropped", 0)
+                    self._hold_undecided(mailbox_id, folder_id, page, counts)
                     # Spent within a page (each message may read a body and attachments):
                     # cut there, the stored cursor still this page's, so the next run
                     # resumes from it (in progress, what this run stored of it counts
@@ -4761,6 +4868,7 @@ class MailCapture:
                     for gone in page["removed"]:
                         counts["removed"] += store.remove(mailbox_id, gone["id"], folder_id,
                                                           gone["reason"])
+                    store.clear_undecided(mailbox_id, [g["id"] for g in page["removed"]])
                     if page["delta_url"] is not None:
                         done = store.folder_state(mailbox_id, folder_key)
                         if done["round_kind"] == "initial":
@@ -4779,6 +4887,7 @@ class MailCapture:
                         if (mailbox_id, folder_id, "text") not in self._repaired:
                             self._repaired.add((mailbox_id, folder_id, "text"))
                             self._reextract(mailbox_id, folder_id, counts)
+                        self._retry_undecided(mailbox_id, folder_id, counts)
                         if self.history == "all" and done["backfill_status"] != "complete":
                             # The round is current: its deltaLink is kept, then the mail
                             # older than its window is read, newest first (_backfill).
@@ -4823,6 +4932,17 @@ class MailCapture:
                                               rounds_complete=done["rounds_complete"] + 1)
                             return {**result, "status": "incomplete", "complete": False,
                                     "reason": "attachment_bytes_mismatch"}
+                        if store.has_undecided(mailbox_id, folder_id):
+                            # Messages the people guard could not decide are held by id
+                            # and re-read by a later round once it can: not complete
+                            # until then (the deltaLink is kept).
+                            store.save_folder(mailbox_id, folder_key, next_url=None,
+                                              delta_url=page["delta_url"], status="incomplete",
+                                              reason="people_undecided",
+                                              last_run_at=store.now(),
+                                              rounds_complete=done["rounds_complete"] + 1)
+                            return {**result, "status": "incomplete", "complete": False,
+                                    "reason": "people_undecided"}
                         store.save_folder(mailbox_id, folder_key, next_url=None,
                                           delta_url=page["delta_url"], status="complete",
                                           reason=None, last_complete_at=store.now(),
@@ -4950,6 +5070,7 @@ class MailCapture:
                 self._pages_read[unit] = self._pages_read.get(unit, 0) + 1
                 counts["provenance_dropped"] += page["provenance_dropped"]
                 counts["people_dropped"] += page.get("people_dropped", 0)
+                self._hold_undecided(mailbox_id, folder_id, page, counts)
                 if not self._capture_page(mailbox_id, folder_id, page["items"], counts,
                                           may_cut=cursor is not None):
                     return stop(TIME_BUDGET)
@@ -5158,6 +5279,14 @@ class MailCapture:
         # The people guard first: without its ID list (or the directory listing that
         # finds the excluded people's addresses) no mailbox is opened, listed or read.
         try:
+            # a new run reads the groups listing again (once; reused by every mailbox open)
+            people = getattr(self.reader, "people", None)
+            forget = getattr(people, "forget_groups", None)
+            if callable(forget):
+                forget()
+                # domains a list was addressed in by an earlier run: withheld in this run
+                # too should its listing fail
+                people.remember_group_domains(self.store.group_domains())
             prepare = getattr(self.reader, "prepare_people", None)
             if prepare is not None:
                 prepare()
@@ -5452,7 +5581,7 @@ _FOLDER_COUNTS = ("pages", "messages_seen", "versions_new", "versions_superseded
                   "attachment_lists_recovered", "attachment_lists_capped",
                   "attachments_mismatched", "texts_ocr", "texts_ocr_unavailable",
                   "texts_reextracted", "provenance_dropped", "people_dropped",
-                  "throttle_waits", "round_restarts")
+                  "people_undecided", "people_recovered", "throttle_waits", "round_restarts")
 
 
 def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:

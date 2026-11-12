@@ -630,6 +630,60 @@ def undo(work: Path, dsn: str) -> dict[str, Any]:
     return {"undo_rows": len(rows), "restored": restored}
 
 
+def check(work: Path, dsn: str) -> dict[str, Any]:
+    """Whether the re-mark is applied in Postgres now, read-only: every field of the
+    apply's ``DIR/undo.jsonl`` that still exists holds the sensitive marks (a layer may
+    have removed a field since, or re-marked it with more). ``applied`` is False when no
+    apply was recorded (no undo log, or an empty one), when any field lacks the marks (an
+    undo, or a load over it), when every field is gone, or when the code is not a
+    marks-only target the apply took. Read-only session.
+    What a deploy gate states instead of a fixed warning."""
+    from ontology import step_migrate as sm
+    code = _code()
+    report: dict[str, Any] = {"code": code, "applied": False}
+    if not any(code == to for pairs in sm.MARKS_ONLY.values() for _f, to in pairs):
+        report["reason"] = "text_index_code_not_a_marks_only_target"
+        return report
+    path = work / "undo.jsonl"
+    try:
+        fields = sorted({int(json.loads(line)["field_id"]) for line in
+                         path.read_text(encoding="utf-8").splitlines() if line.strip()})
+    except FileNotFoundError:
+        report["reason"] = "no_apply_recorded"
+        return report
+    except (ValueError, KeyError, TypeError):
+        report["reason"] = "undo_log_unreadable"
+        return report
+    if not fields:
+        report["reason"] = "no_apply_recorded"
+        return report
+    held = gone = unmarked = 0
+    pg = _connect(dsn)
+    try:
+        pg.execute("SET default_transaction_read_only = on")
+        for i in range(0, len(fields), BATCH * 10):
+            part = fields[i:i + BATCH * 10]
+            found = dict(pg.execute("SELECT field_id, markings FROM ontology.text_fields "
+                                    "WHERE field_id = ANY(%s)", (part,)).fetchall())
+            gone += len(part) - len(found)
+            for markings in found.values():
+                try:
+                    has = set(MARKS) <= set(json.loads(markings))
+                except (ValueError, TypeError):
+                    has = False
+                held += has
+                unmarked += not has
+    finally:
+        pg.close()
+    report.update(fields=len(fields), marked=held, gone=gone, unmarked=unmarked,
+                  applied=unmarked == 0 and held > 0)
+    if unmarked:
+        report["reason"] = "fields_without_the_marks"
+    elif not held:   # nothing left to hold the marks: nothing is said to be applied
+        report["reason"] = "every_field_gone"
+    return report
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m operating.pg.text_remark")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -659,7 +713,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     u = sub.add_parser("undo")
     u.add_argument("--work", required=True)
     u.add_argument("--dsn", required=True)
+    c = sub.add_parser("check", help="read-only: whether the apply's fields hold the marks "
+                       "now (exit 0 applied, 1 not)")
+    c.add_argument("--work", required=True)
+    c.add_argument("--dsn", default=None, help="default: PLX_PG_DSN (never on a command line)")
     args = parser.parse_args(argv)
+    if args.command == "check":   # reads no group key: no hash seed needed
+        try:
+            from operating.pg import config
+            report = check(Path(args.work), args.dsn or config.dsn())
+        except Exception as error:  # noqa: BLE001 - cannot say: not applied
+            report = {"applied": False, "reason": f"unreadable:{type(error).__name__}"}
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report.get("applied") else 1
     if os.environ.get("PYTHONHASHSEED") != "0":
         print("refused: run with PYTHONHASHSEED=0 (group keys hold frozenset reprs)",
               file=sys.stderr)

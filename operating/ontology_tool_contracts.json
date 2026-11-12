@@ -5284,6 +5284,10 @@
                     "more_records": {
                       "type": "integer",
                       "minimum": 1
+                    },
+                    "shares_number": {
+                      "type": "boolean",
+                      "description": "A generic label's number (order 465) that several different records carry: each is offered (derived), none is the thing asked until its records say so."
                     }
                   }
                 }

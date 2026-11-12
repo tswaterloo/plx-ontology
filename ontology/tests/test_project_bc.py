@@ -368,6 +368,85 @@ class BcOnlyProjectionTests(unittest.TestCase):
         self.assertNotIn("due_by", due)
         self.assertIn(due["gap"]["reason"], ("no_due_date", "due_date_unproven"))
 
+    def test_a_bc_sales_order_line_carries_its_shipment_date_and_a_blank_one_none(self):
+        """The captured line's ``shipmentDate`` is the projected SalesOrderLine
+        ``shipment_date`` (the date supply pegging needs the line's goods by); BC's empty
+        date (0001-01-01) and an absent field project no date, never year 1. Every captured
+        line is projected once (N=1, 10 and 60 lines, all dated but the blank ones)."""
+        for n in (1, 10, 60):
+            fake = tb.FakeBc({name: 0 for name in CAPTURE_ENTITY_SETS}, companies=tb.CO)
+            customer, order = gid(1, 21), gid(1, 22)
+            fake.data[(MAN, "customers")] = [record(
+                customer, number="C-1", displayName="Customer", currencyCode="USD")]
+            fake.data[(MAN, "items")] = [record(
+                gid(1, 23), number="ITEM-A", displayName="Widget", baseUnitOfMeasureCode="EA")]
+            fake.data[(MAN, "salesOrders")] = [record(
+                order, number="SO-1", customerId=customer, customerNumber="C-1",
+                status="Open", orderDate="2026-09-01", requestedDeliveryDate="2026-09-30",
+                fullyShipped=False, currencyCode="USD")]
+            lines, expected = [], {}
+            for i in range(n):
+                line_id = gid(2, 100 + i)
+                fields = {"shipmentDate": f"2026-10-{1 + i % 28:02d}"}
+                if i % 5 == 3:
+                    fields = {"shipmentDate": "0001-01-01"}
+                elif i % 5 == 4:
+                    fields = {}
+                expected[line_id] = (fields["shipmentDate"] if fields.get("shipmentDate", "0")
+                                     .startswith("2026") else None)
+                lines.append(record(line_id, documentId=order, sequence=10000 * (i + 1),
+                                    lineType="Item", lineObjectNumber="ITEM-A",
+                                    quantity="#5", unitOfMeasureCode="EA",
+                                    unitPrice="#2.00", shippedQuantity="#0", **fields))
+            fake.lines[(MAN, "salesOrders", order)] = lines
+            w = BcWorld(self, fake, entity_sets=("salesOrders", "customers", "items"))
+            got = {}
+            for line_id in expected:
+                out = w.call("plx.object", {"object_id":
+                             f'SalesOrderLine:bc.sales_order_lines:{{"id":"{line_id}"}}'})
+                self.assertNotIn("error", out, line_id)
+                got[line_id] = {v["property"]: v["value"] for v in out["values"]}.get(
+                    "shipment_date")
+            self.assertEqual(got, expected, n)
+
+    def test_bank_accounts_dimensions_fixed_assets_and_quote_lines_are_captured_and_projected(self):
+        """The default BC capture reads the sets the grant already allows (bank accounts,
+        dimensions and their values, fixed assets, and quote lines through their quotes):
+        each unit completes and each record is a projected object (generated relation
+        types) the full-grant reader opens. A set missing from ``CAPTURE_ENTITY_SETS`` (or
+        from the committed ingest config, tested in operating/tests/test_ingest_forever)
+        would leave the unit uncaptured and the object absent."""
+        fake = tb.FakeBc({name: 0 for name in CAPTURE_ENTITY_SETS}, companies=tb.CO)
+        bank, dim, value, asset, quote, qline = (gid(1, k) for k in (51, 52, 53, 54, 55, 56))
+        fake.data[(MAN, "bankAccounts")] = [record(
+            bank, number="BA-1", displayName="Operating", currencyCode="CAD", blocked=False)]
+        fake.data[(MAN, "dimensions")] = [record(dim, code="DEPARTMENT",
+                                                 displayName="Department")]
+        fake.data[(MAN, "dimensionValues")] = [record(value, dimensionId=dim, code="SALES",
+                                                      displayName="Sales")]
+        fake.data[(MAN, "fixedAssets")] = [record(asset, number="FA-1", displayName="Filler")]
+        fake.data[(MAN, "salesQuotes")] = [record(
+            quote, number="SQ-1", status="Draft", currencyCode="USD",
+            documentDate="2026-09-01")]
+        fake.lines[(MAN, "salesQuotes", quote)] = [record(
+            qline, documentId=quote, sequence=10000, lineType="Comment",
+            description="Delivery terms")]
+        w = BcWorld(self, fake, entity_sets=("bankAccounts", "dimensions", "dimensionValues",
+                                             "fixedAssets", "salesQuotes"))
+        units = {u["entity_set"]: u for c in w.capture["companies"]
+                 if c["company_id"] == MAN for u in c["units"] if u.get("entity_set")}
+        for entity_set in ("bankAccounts", "dimensions", "dimensionValues", "fixedAssets",
+                           "salesQuotes", "salesQuoteLines"):
+            self.assertTrue(units[entity_set]["complete"], entity_set)
+        for object_id in (
+                f'RelBcBankAccounts:gen.bc.bank_accounts:{{"id":"{bank}"}}',
+                f'RelBcDimensions:gen.bc.dimensions:{{"id":"{dim}"}}',
+                f'RelBcDimensionValues:gen.bc.dimension_values:{{"id":"{value}"}}',
+                f'RelBcFixedAssets:gen.bc.fixed_assets:{{"id":"{asset}"}}',
+                f'RelBcSalesQuoteLines:gen.bc.sales_quote_lines:{{"id":"{qline}"}}'):
+            self.assertNotIn("error", w.call("plx.object", {"object_id": object_id}),
+                             object_id)
+
     def test_an_item_card_gives_its_on_hand_quantity_in_its_base_unit(self):
         """Product.quantity_on_hand is BC's item inventory, a decimal in the item's base unit
         (what the stock-out check reads); an item card without the field has no value."""

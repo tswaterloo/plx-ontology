@@ -90,6 +90,9 @@ class FakeGraph:
         self.groups: dict[str, tuple[list[str], list[str]]] = {}
         self.page_cap = 1000
         self.throttle: dict[str, int] = {}
+        # The people guard's own groups listing (no $filter): None leaves it unanswered
+        # (a failed listing), a list answers it complete.
+        self.guard_groups: list[dict] | None = None
         past = NOW - timedelta(days=2)
         self.event(A_ID, "EvA1", organizer=(A, "Ann Test"), attendees=[(B, "Bob Test")],
                    start=past, online=1, organizer_flag=True, subject="Weekly PO review")
@@ -150,6 +153,12 @@ class FakeGraph:
         return [url for method, url in self.calls if method == "GET"
                 and re.search(pattern, unquote(url))]
 
+    def group_pass_gets(self, pattern: str) -> list[str]:
+        """The planner group pass's group reads: not the people guard's own (unfiltered)
+        groups listing, which the mailbox opens read once per run."""
+        return [url for url in self.gets(pattern)
+                if not re.search(r"/v1\.0/groups\?(?!.*\$filter)", unquote(url))]
+
     def _page(self, parts, items):
         query = {k: v[0] for k, v in parse_qs(parts.query).items()}
         top = min(int(query.get("$top", "1000")), self.page_cap)
@@ -175,6 +184,9 @@ class FakeGraph:
             if owed and re.search(pattern, path):
                 self.throttle[pattern] = owed - 1
                 return 429, {"Retry-After": "1"}, b'{"error": {"code": "TooManyRequests"}}'
+        if path == "/v1.0/groups" and "$filter" not in query \
+                and self.guard_groups is not None:
+            return self._page(parts, self.guard_groups)
         if path == "/v1.0/groups":
             assert query["$filter"] == "groupTypes/any(c:c eq 'Unified')", query
             return self._page(parts, [{"id": g} for g in sorted(self.groups)])
@@ -416,7 +428,8 @@ class MeetingsCaptureTest(unittest.TestCase):
                 c = report["counts"]
                 self.assertEqual((c["groups_listed"], c["groups_excluded"],
                                   c["plans_from_groups"]), (n, (n + 1) // 2, n // 2))
-                self.assertEqual(len(self.graph.gets(r"/v1\.0/groups\?")), -(-n // 7))
+                self.assertEqual(len(self.graph.group_pass_gets(r"/v1\.0/groups\?")),
+                                 -(-n // 7))
                 self.assertNotIn("cap:group_listing", report["reasons"])
                 tokens = [u for m, u in self.graph.calls if m == "POST"]
                 self.assertEqual(len(tokens), 2)   # one token per application
@@ -449,14 +462,14 @@ class MeetingsCaptureTest(unittest.TestCase):
         self.graph.groups = {GROUP: ([A_ID], ["PlanOne_000000000000000001"])}
         report, _ = self.group_plans(out_of_time=lambda: True)
         self.assertIn(cm.TIME_BUDGET, report["reasons"])
-        self.assertEqual(self.graph.gets(r"/groups"), [])
+        self.assertEqual(self.graph.group_pass_gets(r"/groups"), [])
         self.setUp()
         self.graph.groups = {GROUP: ([A_ID], ["PlanOne_000000000000000001"]),
                              "0000dddd-0000-4000-8000-000000000001": ([B_ID], [])}
         report, _ = self.group_plans(
-            out_of_time=lambda: bool(self.graph.gets(r"/v1\.0/groups\?")))
+            out_of_time=lambda: bool(self.graph.group_pass_gets(r"/v1\.0/groups\?")))
         self.assertIn(cm.TIME_BUDGET, report["reasons"])
-        self.assertEqual(len(self.graph.gets(r"/groups")), 1)   # the listing only
+        self.assertEqual(len(self.graph.group_pass_gets(r"/groups")), 1)   # the listing only
         self.assertEqual(report["counts"]["plans_from_groups"], 0)
 
     def test_throttled_group_reads_are_retried_not_dropped(self) -> None:
@@ -570,7 +583,22 @@ class MeetingsCaptureTest(unittest.TestCase):
                          attendees=[(A, "Ann Test")], start=NOW - timedelta(days=1),
                          subject="pay review")
         report, _ = self.capture(parts=["calendar"])
-        self.assertEqual(report["counts"]["events_denied"], 1)
+        # This fake answers no people-guard groups listing, so payroll@ (an address no
+        # listed user holds, in a tenant domain) may be a distribution list: the event is
+        # withheld as undecided before the HR deny list is consulted. Withheld either way.
+        self.assertEqual((report["counts"]["events_undecided"],
+                          report["counts"]["events_denied"]), (1, 0))
+        self.assertEqual(self.graph.gets(r"/events/EvHr"), [])
+        self.assertNotIn("EvHr", {p[1] for p in self.rows(cm.EVENT_KIND)})
+        # With a complete groups listing (payroll@ is no list) the HR deny list decides it.
+        self.setUp()
+        self.graph.guard_groups = []
+        self.graph.event(A_ID, "EvHr", organizer=("payroll@example-plx.com", "Payroll"),
+                         attendees=[(A, "Ann Test")], start=NOW - timedelta(days=1),
+                         subject="pay review")
+        report, _ = self.capture(parts=["calendar"])
+        self.assertEqual((report["counts"]["events_undecided"],
+                          report["counts"]["events_denied"]), (0, 1))
         self.assertEqual(self.graph.gets(r"/events/EvHr"), [])
         self.assertNotIn("EvHr", {p[1] for p in self.rows(cm.EVENT_KIND)})
 

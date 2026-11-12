@@ -54,6 +54,9 @@ PARTY_TYPES = frozenset({"customer", "supplier", "person", "manufacturer", "cont
 # that person or party, so it is a lead at most (2026-11-06: an acronym in a question and
 # the company's own name each matched a message's participant, stated as the thing).
 MESSAGE_TYPES = frozenset({"Email", "TeamsChatMessage", "TeamsChannelMessage"})
+# Why a record carrying a generic label's number is offered, not matched (``_entities``).
+SHARED_WHY = ("several different records carry this number: read each, answer for the one "
+              "the records support, and say the others share the number")
 IDENTITY_TIER = {"verified": 0.95, "reviewed": 0.95, "corroborated": 0.85,
                  "stored_by_text_join": 0.75, "lead": 0.5}
 GROUPING_TIERS = frozenset({"verified", "reviewed", "corroborated", "stored_by_text_join"})
@@ -108,6 +111,7 @@ _CAPITALISED = re.compile(r"[A-Z][\w&'’.-]*")
 def mentions(text: str) -> list[dict[str, Any]]:
     """The mentions to resolve in ``text``: ``{"text", "kind": "code"|"name", "forms"}``.
     A short text (at most four words, no question) is itself one mention of each kind."""
+    from ontology.identifiers import is_quantity
     from operating.query_understanding import STOPWORDS, _CALENDAR_WORDS, identifier_leads
     text = " ".join(str(text or "").split())
     if not text:
@@ -115,12 +119,20 @@ def mentions(text: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def add(span: str, kind: str, forms: Sequence[str] = ()) -> None:
+    def add(span: str, kind: str, forms: Sequence[str] = (), lead: Any = None) -> None:
         key = (kind, span.upper())
         if span and str(key) not in seen and len(out) < MAX_MENTIONS:
             seen.add(str(key))
             out.append({"text": span, "kind": kind,
                         "forms": sorted({f for f in forms if f} | {span.upper()})})
+            number = re.search(r"\d[\w-]*$", span)
+            if lead is not None and not lead.exact and len(lead.types or ()) > 1 \
+                    and number is not None \
+                    and not is_quantity(text, number.group(0), lead.span[1]):
+                # a label naming several kinds of record ("order 465": a sales or a
+                # purchase order): the number is looked up on each (``SHARED_WHY``);
+                # never a quantity ("order 500 units")
+                out[-1]["label_types"] = sorted(lead.types)
 
     words = text.split()
     if len(words) <= 4 and "?" not in text:
@@ -130,7 +142,7 @@ def mentions(text: str) -> list[dict[str, Any]]:
                  if not re.fullmatch(r"[\d,.]+", text[lead.span[0]:lead.span[1]])]
         rest = text
         for lead in sorted(leads, key=lambda lead: -lead.span[0]):
-            add(text[lead.span[0]:lead.span[1]], "code", lead.forms)
+            add(text[lead.span[0]:lead.span[1]], "code", lead.forms, lead)
             rest = rest[:lead.span[0]] + " " + rest[lead.span[1]:]
         if leads and len(rest.split()) <= 1:
             return out   # the code and at most a label word: nothing else to name
@@ -144,7 +156,7 @@ def mentions(text: str) -> list[dict[str, Any]]:
         span = text[lead.span[0]:lead.span[1]]
         if re.fullmatch(r"[\d,.]+", span):
             continue   # a bare number is a quantity or a year far more often than a record
-        add(span, "code", lead.forms)
+        add(span, "code", lead.forms, lead)
         taken.append(lead.span)
     sentence_start = {0} | {m.end() for m in re.finditer(r"[.!?]\s+", text)}
     run: list[str] = []
@@ -309,6 +321,13 @@ class Resolver:
                     score = min(score, WEAK_SCORE)   # a lower-case word: a lead at most
                 self._note(scores, row.object_id, score, why, mention["text"],
                            row=row)
+        for mention in found:
+            if mention.get("label_types"):
+                for row, why, key in self._stored(scope, mention, held):
+                    if row["object_id"] not in scores:
+                        self._note(scores, row["object_id"], 0.97, why, mention["text"])
+                        scores[row["object_id"]]["type"] = row["object_id"].split(":", 1)[0]
+                    scores[row["object_id"]].setdefault("keys", set()).add(key)
         if not scores:
             return [], []
         # the store's gate first: nothing the reader may not read is matched or expanded
@@ -320,7 +339,36 @@ class Resolver:
             visible = self.base._visible_versions(scope, list(scores))
             scores = {oid: s for oid, s in scores.items() if oid in visible}
             displays = self.base._displays(scope, sorted(scores))
-        return self._entities(scores, visible, displays, object_type), []
+        shared = {m["text"] for m in found if m.get("label_types")}
+        return self._entities(scores, visible, displays, object_type, shared), []
+
+    def _stored(self, scope: Any, mention: Mapping[str, Any], held: Any):
+        """(row, why, key) of the store's identifiers equal to a generic label's number
+        (``mentions``' ``label_types``), of those types only, as this reader may read
+        them: a record the entity index does not carry (a FileMaker order entry known by
+        its number alone) is still found. ``key`` joins one record's copies (the same
+        number in the same property of one type)."""
+        types = set(mention["label_types"])
+        forms = sorted({f for f in mention["forms"] if f and " " not in f})
+        store = getattr(self.base, "store", None)
+        reader = getattr(store, "identifiers_by_value", None)
+        if not forms or not callable(reader):
+            return []
+        try:
+            with held:
+                # the label's types and the cap in the statement, in a set order: other
+                # records sharing a short number never push the asked type past the cap
+                rows = list(reader(scope, forms, types=sorted(types), cap=MAX_EXPAND))
+        except Exception:  # noqa: BLE001 - the store's identifiers are added value only
+            return []
+        out = []
+        for row in rows[:MAX_EXPAND]:
+            oid = str(row["object_id"])
+            if oid.split(":", 1)[0] not in types:
+                continue   # a store answering past its filter: still only those types
+            out.append((row, f"its identifier {row['raw']} is the number asked",
+                        f"{oid.split(':', 1)[0]}|{row['property']}|{row['normalized']}"))
+        return out
 
     def _lookup(self, index: Any, escope: Any, mention: Mapping[str, Any]):
         text = mention["text"]
@@ -449,7 +497,8 @@ class Resolver:
                       or t == "Product.bc_posted_as")
 
     def _entities(self, scores: Mapping[str, Mapping[str, Any]], visible: Mapping[str, Any],
-                  displays: Mapping[str, Any], object_type: str | None) -> list[dict]:
+                  displays: Mapping[str, Any], object_type: str | None,
+                  shared: Iterable[str] = ()) -> list[dict]:
         ids = sorted(scores)
         parent = {oid: oid for oid in ids}
 
@@ -475,7 +524,7 @@ class Resolver:
                     join(oid, by_address[entry["address"]])
                 else:
                     by_address[entry["address"]] = oid
-            for code in entry["codes"]:
+            for code in [*entry["codes"], *sorted(entry.get("keys", ()))]:
                 if code in by_code:
                     join(oid, by_code[code])
                 else:
@@ -525,6 +574,20 @@ class Resolver:
                 entity["more_records"] = len(members) - MAX_RECORDS
             out.append(entity)
         out.sort(key=lambda e: (-e["confidence"], -len(e["records"]), e["mention"]))
+        # A generic label's number ("order 465") carried by several different records
+        # (a cancelled purchase order and a sales order, W-0070 11-10) names none of
+        # them as the one: each is offered, to be read, never stated as the thing asked
+        # (``SHARED_WHY``; the Ask's brief says so, and none is a root).
+        for mention in shared:
+            alike = [e for e in out if e["mention"] == mention[:200]
+                     and e["status"] == "match"]
+            if len(alike) > 1:
+                for entity in alike:
+                    entity["status"], entity["shares_number"] = "derived", True
+                    for record in entity["records"]:
+                        if record["status"] == "match":
+                            record["status"] = "derived"
+                            record["why"] = [SHARED_WHY, *record["why"]][:4]
         matches = [e for e in out if e["status"] == "match"]
         # Each asked code's records read out of a longer reference (``derived``) are the
         # only records that code names: the first of every code is kept before any lead
@@ -532,7 +595,8 @@ class Resolver:
         # asking four purchase orders lost the fourth's reference to the cap).
         firsts, seconds, mentions = [], [], set()
         for entity in (e for e in out if e["status"] == "derived"):
-            (seconds if entity["mention"] in mentions else firsts).append(entity)
+            (seconds if entity["mention"] in mentions and not entity.get("shares_number")
+             else firsts).append(entity)
             mentions.add(entity["mention"])
         leads = [e for e in out if e["status"] == "lead"][:MAX_LEADS]
         return (matches + firsts + leads + seconds)[:MAX_ENTITIES]

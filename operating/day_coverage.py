@@ -30,7 +30,8 @@ workflow names, never names, addresses or text. People pass the exclusion first
 Run::
 
     python3 -m operating.day_coverage --store STORE --replay DIR --role ROLE \\
-        --since 2026-10-20T07:00:00Z --until 2026-10-23T07:00:00Z --out FILE
+        --since 2026-10-20T07:00:00Z --until 2026-10-23T07:00:00Z --out FILE \\
+        [--source postgres]
 """
 from __future__ import annotations
 
@@ -494,10 +495,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--capture-state", default=None)
     p.add_argument("--out", required=True)
     p.add_argument("--cache", default=None, help="a directory keeping each source's rows")
+    p.add_argument("--source", choices=ap.STORE_SOURCES, default=None,
+                   help="as the replay's --source: the SQLite generation at --store, or the "
+                        "Postgres ontology (a fresh window is counted on the data it was "
+                        "replayed on); refused when Postgres does not hold that generation")
     a = p.parse_args(argv)
+    from ontology import store as ostore
     store = Path(a.store)
+    try:
+        st = ap._store(a.store, a.source)
+    except ostore.StoreError as error:
+        print(json.dumps({"schema": SCHEMA, "role": a.role, "status": "blocked",
+                          "reason": error.code}))
+        return 2
     people = pe._people(store)
-    st = ap._store(a.store)
     if a.capture_state and (Path(a.capture_state) / "mc-capture" / "capture.sqlite").exists():
         from . import autopilot_work as aw
         st.autopilot_mc = aw.MCQuestions(a.capture_state)

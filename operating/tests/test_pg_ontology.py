@@ -4,6 +4,7 @@ built from equals the store's, object by object (``operating.pg.ontology_parity`
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 import io
@@ -23,7 +24,7 @@ CHUNK_WORDS_SQL = ("SELECT f.rowid, t.field_id FROM chunk_text f JOIN text_chunk
                    "ON t.chunk_id = f.rowid WHERE chunk_text MATCH :q AND f.rowid > :after")
 
 
-def _add_document(path, texts):
+def _add_document(path, texts, field_path="row.body_text"):
     """A made-up document text field (and its chunks, words indexed) on the first object
     of the store at ``path``; returns its chunk ids."""
     import zlib
@@ -33,8 +34,8 @@ def _add_document(path, texts):
         field = conn.execute(
             "INSERT INTO text_fields (object_id, version_handle, citation, field_path, "
             "document_kind, sender_class, markings, text_digest) VALUES (?, ?, ?, "
-            "'row.body_text', 'email', 'internal', '[]', 'sha256:made-up')",
-            (oid, handle, handle)).lastrowid
+            "?, 'email', 'internal', '[]', 'sha256:made-up')",
+            (oid, handle, handle, field_path)).lastrowid
         chunks = []
         for start, text in enumerate(texts):
             chunk = conn.execute("INSERT INTO text_chunks (field_id, start, body) VALUES "
@@ -214,6 +215,134 @@ class OntologyLoadTests(unittest.TestCase):
             ontology_load.load(self.store, self.dsn, workers=1, deferred=("objects",),
                                log=io.StringIO())
 
+    def test_a_deferred_text_table_fills_live_beside_the_layers(self):
+        """Filling the deferred document text on a served ontology keeps the keys a delta
+        layer upserts on (never dropped and added back), keeps the freshness the layers
+        wrote, brings back no chunk of a field a layer removed meanwhile (nor a packed
+        source), never moves a sequence back, gives words to every chunk a layer wrote
+        without them (a layer's own words kept) and builds the word index valid; the
+        words before their chunks are refused, and so is recording the words while a
+        chunk is without them."""
+        from unittest import mock
+        import zlib
+        from operating.pg import ontology_load, ontology_reader
+        import psycopg
+        import shutil
+        store = Path(self.tmp.name) / "fill.sqlite"
+        shutil.copyfile(self.store, store)
+        kept = _add_document(store, ["Made-up kept page about pallets 7731"])
+        gone = _add_document(store, ["Made-up removed page about cartons 9902",
+                                     "its second made-up page"], "row.attachment_text")
+        ontology_load.load(store, self.dsn, workers=1, replace=True, log=io.StringIO(),
+                           deferred=("text_chunks", "chunk_words", "value_words"))
+        with sqlite3.connect(f"file:{store}?mode=ro", uri=True) as conn:
+            packed = [r[0] for r in conn.execute(
+                "SELECT DISTINCT src FROM value_cells WHERE field IS NULL")]
+        with psycopg.connect(self.dsn, autocommit=True) as pg, pg.cursor() as cur:
+            cur.execute("SELECT max(field_id) FROM ontology.text_fields")
+            gone_field = cur.fetchone()[0]   # the last document added
+            # a layer meanwhile: removes the second document's field (none of its chunks
+            # are in yet), adds a chunk of its own past the generation's, and moves the
+            # freshness; a chunk it added and removed again left the sequence further on
+            cur.execute("DELETE FROM ontology.text_fields WHERE field_id = %s", (gone_field,))
+            # two chunks of its own: one with the words it wrote, one (a writer that
+            # wrote none) without any
+            layer_chunks = []
+            for text in ("Made-up layer page with its own words", "Made-up layer page 5512"):
+                cur.execute("INSERT INTO ontology.text_chunks (chunk_id, field_id, start, "
+                            "body) SELECT nextval('ontology.text_chunks_id'), min(field_id), "
+                            "0, %s FROM ontology.text_fields RETURNING chunk_id",
+                            (zlib.compress(text.encode()),))
+                layer_chunks.append(cur.fetchone()[0])
+            layer_chunk, wordless = layer_chunks
+            # the words as a layer writes them (words.tsvector_text: no positions)
+            cur.execute("INSERT INTO ontology.chunk_words (chunk_id, words) VALUES "
+                        "(%s, 'layer'::tsvector)", (layer_chunk,))
+            if packed:   # a source a layer removed: its packed record does not come back
+                cur.execute("DELETE FROM ontology.value_sources WHERE src = %s", (packed[0],))
+            cur.execute("SELECT nextval('ontology.text_chunks_id')")
+            sequence_at = cur.fetchone()[0]
+            cur.execute("UPDATE ontology.store_meta SET value = 'layer-freshness' "
+                        "WHERE key = 'built_at'")
+            keys = "SELECT conname, oid FROM pg_constraint WHERE contype = 'p' AND " \
+                   "conrelid IN ('ontology.text_chunks'::regclass, " \
+                   "'ontology.chunk_words'::regclass) ORDER BY 1"
+            cur.execute(keys)
+            before = cur.fetchall()
+        self.assertEqual(len(before), 2)
+        with self.assertRaises(ValueError):   # the words first: refused, nothing taken
+            ontology_load.load(store, self.dsn, workers=1, tables=("chunk_words",),
+                               log=io.StringIO())
+        # a chunk whose words cannot be made: the words are not recorded loaded
+        with mock.patch.object(ontology_load, "_add_words",
+                               side_effect=lambda cur, after: (0, after)), \
+                self.assertRaisesRegex(RuntimeError, "chunks_without_words"):
+            ontology_load.load(store, self.dsn, workers=1,
+                               tables=("text_chunks", "chunk_words"), log=io.StringIO())
+        self.assertIn("chunk_words", ontology_reader.whole(self.dsn) or "")
+        with psycopg.connect(self.dsn) as pg:
+            self.assertIsNone(pg.execute("SELECT 1 FROM ontology.load_state WHERE name = "
+                                         "'table:chunk_words'").fetchone())
+        report = ontology_load.load(store, self.dsn, workers=1, log=io.StringIO(),
+                                    tables=("text_chunks", "chunk_words", "value_words"))
+        self.assertTrue(report["text_chunks"]["live"] and report["chunk_words"]["live"])
+        self.assertEqual(report["text_chunks"]["orphans_deleted"], len(gone))
+        self.assertEqual(report["chunk_words"]["orphans_deleted"], len(gone))
+        self.assertEqual(report["chunk_words"]["words_added"], 1)
+        with psycopg.connect(self.dsn) as pg, pg.cursor() as cur:
+            cur.execute(keys)
+            self.assertEqual(cur.fetchall(), before)   # the same keys, never re-added
+            cur.execute("SELECT chunk_id FROM ontology.text_chunks WHERE chunk_id = ANY(%s) "
+                        "ORDER BY 1", (kept + gone + layer_chunks,))
+            self.assertEqual([r[0] for r in cur.fetchall()], kept + layer_chunks)
+            cur.execute("SELECT count(*) FROM ontology.text_chunks c WHERE NOT EXISTS "
+                        "(SELECT 1 FROM ontology.chunk_words w WHERE w.chunk_id = c.chunk_id)")
+            self.assertEqual(cur.fetchone()[0], 0)   # every chunk has its words
+            cur.execute("SELECT words::text FROM ontology.chunk_words WHERE chunk_id = %s",
+                        (layer_chunk,))
+            self.assertEqual(cur.fetchone()[0], "'layer'")   # the layer's own words kept
+            cur.execute("SELECT count(*) FROM ontology.packed_sources p WHERE NOT EXISTS "
+                        "(SELECT 1 FROM ontology.value_sources s WHERE s.src = p.src)")
+            self.assertEqual(cur.fetchone()[0], 0)
+            cur.execute("SELECT count(*) FROM ontology.chunk_words w WHERE NOT EXISTS "
+                        "(SELECT 1 FROM ontology.text_chunks c WHERE c.chunk_id = w.chunk_id)")
+            self.assertEqual(cur.fetchone()[0], 0)
+            cur.execute("SELECT (SELECT count(*) FROM ontology.text_chunks), "
+                        "(SELECT count(*) FROM ontology.chunk_words)")
+            chunks, words = cur.fetchone()
+            self.assertEqual(chunks, words)
+            cur.execute("SELECT value FROM ontology.store_meta WHERE key = 'built_at'")
+            self.assertEqual(cur.fetchone()[0], "layer-freshness")
+            cur.execute("SELECT last_value FROM ontology.text_chunks_id")
+            self.assertGreaterEqual(cur.fetchone()[0], sequence_at)
+            cur.execute("SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = "
+                        "'ontology.chunk_words_words'::regclass")
+            self.assertTrue(cur.fetchone()[0])
+            cur.execute("SELECT chunk_id FROM ontology.chunk_words WHERE words @@ "
+                        "to_tsquery('simple', '7731 | 9902 | 5512') ORDER BY 1")
+            self.assertEqual([r[0] for r in cur.fetchall()], kept + [wordless])
+        self.assertIsNone(ontology_reader.whole(self.dsn))
+        # after the words are recorded loaded, a delta layer's new chunks bring their words
+        # (the store standing in for a layer owning every object with document text)
+        from operating.pg import ontology_delta
+        lite = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
+        self.addCleanup(lite.close)
+        owned = [r[0] for r in lite.execute("SELECT DISTINCT object_id FROM text_fields")]
+        with psycopg.connect(self.dsn) as pg, pg.cursor() as cur:
+            cur.execute("CREATE TEMP TABLE owned (object_id text PRIMARY KEY) ON COMMIT DROP")
+            cur.executemany("INSERT INTO owned VALUES (%s)", [(o,) for o in owned])
+            for table, where in ontology_delta._DELETE:
+                cur.execute(f"DELETE FROM ontology.{table} WHERE {where}")
+            applied = ontology_delta._insert(lite, str(store), cur, json.dumps(owned))
+            self.assertGreater(applied["copied.text_chunks"], 0)
+            self.assertEqual(applied["copied.chunk_words"], applied["copied.text_chunks"])
+            cur.execute("SELECT count(*) FROM ontology.text_chunks c WHERE NOT EXISTS "
+                        "(SELECT 1 FROM ontology.chunk_words w WHERE w.chunk_id = c.chunk_id)")
+            self.assertEqual(cur.fetchone()[0], 0)
+            cur.execute("SELECT count(*) FROM ontology.chunk_words WHERE words @@ "
+                        "to_tsquery('simple', '7731')")
+            self.assertEqual(cur.fetchone()[0], 1)   # the kept page, renumbered, found once
+
     def test_postgres_alone_serves_a_whole_ontology_or_refuses(self):
         """``PLX_ONTOLOGY_PG=only``: the reader reads Postgres with no SQLite generation,
         its word index Postgres's own (values and documents, kept by a delta's rows), and
@@ -229,9 +358,46 @@ class OntologyLoadTests(unittest.TestCase):
         shutil.copyfile(self.store, store)
         _add_document(store, ["Made-up packing list Ünïcode naïve_Straße 4410",
                               "a second made-up page: pallets, cartons, 4410-B"])
+        _add_document(store, ["Made-up remittance sheet: invoice 4410, paid 12.00"],
+                      field_path="row.content_text")
         self.store = store   # this test's store (the class keeps its own)
         ontology_load.load(self.store, self.dsn, workers=1, replace=True, log=io.StringIO())
         self.assertIsNone(ontology_reader.whole(self.dsn))
+        # the sheet readings resolve their sources' records (object, type, audience,
+        # markings) in Postgres alone, as in the generation file
+        from integrations import sheet_readings
+        with closing(sqlite3.connect(f"file:{self.store}?mode=ro", uri=True)) as lite:
+            handles = [r[0] for r in lite.execute(
+                "SELECT citation FROM text_fields WHERE field_path = 'row.content_text' "
+                "UNION SELECT l1_handle FROM object_versions WHERE superseded_at IS NULL")]
+            want = sheet_readings._record_of(lite, handles)
+        self.assertTrue(want)
+        with mock.patch.dict("os.environ", {"PLX_ONTOLOGY_PG": "only", "PLX_PG_DSN": self.dsn}):
+            with closing(sheet_readings._store_conn(Path(self.tmp.name) / "gone.sqlite")) as pg:
+                self.assertNotIsInstance(pg, sqlite3.Connection)
+                self.assertEqual(sheet_readings._record_of(pg, handles), want)
+            # a pass: a source found keeps its record; one not found is written without a
+            # record only while Postgres stayed whole, and skipped when it did not
+            known = next(iter(want))
+            out = Path(self.tmp.name) / "sheets-pass.sqlite"
+            sources = [sheet_readings.Source(h, "mail", "made-up.xlsx", c, "t", None)
+                       for h, c in ((known, "a"), ("no-such-handle", "b"))]
+            with closing(sheet_readings.open_readings(out)) as rc, rc:
+                rc.executemany("INSERT INTO files VALUES (?, ?, 'read', '[]', 1, 1, 0, 'x')",
+                               [(src.file_key, sheet_readings.READER) for src in sources])
+            for problem, rows in ((None, {known: want[known][0], "no-such-handle": None}),
+                                  ("tables_not_loaded:text_chunks",
+                                   {known: want[known][0]})):
+                with closing(sqlite3.connect(out)) as rc:
+                    rc.execute("DELETE FROM sources")
+                    rc.commit()
+                with mock.patch.object(ontology_reader, "whole", side_effect=[None, problem]):
+                    got = sheet_readings.run(Path(self.tmp.name), out, store=None,
+                                             sources=sources)
+                self.assertEqual(got["sources_skipped_not_whole"], len(sources) - len(rows))
+                with closing(sqlite3.connect(out)) as rc:
+                    self.assertEqual(dict(rc.execute("SELECT handle, object_id FROM sources")),
+                                     rows)
         with mock.patch.dict("os.environ", {"PLX_ONTOLOGY_PG": "only"}):
             self.assertTrue(ontology_reader.serves(None))
             self.assertTrue(ontology_reader.serves(Path(self.tmp.name) / "no-such.sqlite"))
@@ -282,6 +448,11 @@ class OntologyLoadTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"PLX_ONTOLOGY_PG": "only"}), \
                 self.assertRaises(ontology_reader.PostgresNotWhole):
             ontology_reader.PgStoreReader.open(self.dsn)
+        # a sheet readings pass stops before it rewrites any source without its record
+        with mock.patch.dict("os.environ", {"PLX_ONTOLOGY_PG": "only", "PLX_PG_DSN": self.dsn}), \
+                self.assertRaisesRegex(RuntimeError, "store_not_whole:tables_not_loaded"):
+            sheet_readings.run(Path(self.tmp.name), Path(self.tmp.name) / "sheets.sqlite",
+                               store=self.store, sources=[], records={})
         # the host refuses the request and drops the reader (the next one opens again)
         closed = []
         host = SimpleNamespace(_reader=reader, _store_identity=None,

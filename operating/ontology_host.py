@@ -1546,6 +1546,36 @@ class CaseHostTools:
                     return "withheld"
             return None
 
+    def visible_objects(self, actor: Any, policy: Any, object_ids: Any) -> frozenset[str]:
+        """Those of ``object_ids`` ``actor`` (employee-gated) may read now under ``policy``,
+        decided as ``plx.object`` decides a record: by the delta layer that serves it,
+        else the served store (``OntologyTools._visible_versions``: the audiences the
+        policy grants, the people exclusion's included, the markings it holds, a version
+        current now, then each item permission), batched: one read per 500 ids of each
+        store. A projection of another format reads none; any failure raises (the caller
+        serves nothing on it)."""
+        ids = sorted({oid for oid in object_ids if isinstance(oid, str) and oid})
+        if not ids:
+            return frozenset()
+        tools = self.tools
+        if tools.store.format_problem() is not None:
+            return frozenset()
+        overlay = self._overlay
+        groups: dict[int, tuple[Any, list[str]]] = {}
+        for oid in ids:
+            layer = overlay.owner(oid) if overlay is not None else None
+            reader = tools if layer is None else layer.tools
+            groups.setdefault(id(reader), (reader, []))[1].append(oid)
+        found: set[str] = set()
+        for reader, wanted in groups.values():
+            reader.policy = policy
+            if reader is not tools:
+                reader.clock = tools.clock
+            with reader.store.lock:
+                scope = reader._scope(actor, reader._as_known_at({}))
+                found.update(reader._visible_versions(scope, wanted))
+        return frozenset(found) & frozenset(ids)
+
     def register(self, tool_table: dict[str, Any]) -> None:
         """Add ``plx.identity``/``plx.documents``/``plx.read`` to an in-process tool
         table (name -> spec with ``handler(arguments, actor)``), each call through

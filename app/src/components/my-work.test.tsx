@@ -30,7 +30,7 @@ const area = (liveFlow: string | null): AutopilotArea => ({
 
 beforeEach(() => Object.values(api).forEach((f) => f.mockReset()));
 
-describe("my work: Assist", () => {
+describe("my work", () => {
   it("shows the prepared work with approve only on the reader's own items", () => {
     api.area.mockRejectedValue(new Error("offline"));
     render(<MyWorkList work={work([base, { ...base, item_id: "ap_2", mine: false, card_id: null, write_ready: false }])} />);

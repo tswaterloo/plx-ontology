@@ -94,6 +94,10 @@ class FakeGraph:
         self.directory_code: str | None = "Authorization_RequestDenied"
         self.refusal = 403                   # the status both refusals answer (401: token)
         self.token_status = 200              # 401: the token request is refused
+        # Directory groups (``GET /groups``) and members by group id; None: unrouted (404).
+        self.groups: list[dict] | None = None
+        self.group_members: dict[str, list[dict]] = {}
+        self.groups_status = 200             # 429: the groups listing is throttled
 
     # -- mutations
     def put(self, user: str, mid: str, change_key: str, *, subject: str = SUBJECT_SECRET,
@@ -148,6 +152,15 @@ class FakeGraph:
                                  if self.directory_code else {})
                     return j(200, user)
             return j(404, {"error": {"code": "ResourceNotFound"}})
+        if path == "/v1.0/groups" and self.groups is not None:
+            if self.groups_status != 200:
+                return j(self.groups_status, {"error": {"code": "TooManyRequests"}})
+            return j(200, {"value": self.groups})
+        found = re.fullmatch(r"/v1\.0/groups/([^/]+)/members", path)
+        if found and self.groups is not None:
+            if found[1].lower() not in self.group_members:
+                return j(403, {"error": {"code": "Authorization_RequestDenied"}})
+            return j(200, {"value": self.group_members[found[1].lower()]})
         if path == "/v1.0/users":
             listed = [{"id": u["id"], "mail": u["mail"], "userType": u.get("userType", "Member"),
                        "userPrincipalName": u["userPrincipalName"]}

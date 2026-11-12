@@ -278,8 +278,10 @@ def _ends(tools: Any, scope: Any, starts: Iterable[str], link_type: str,
           direction: str) -> list[str]:
     """Objects one hop along ``link_type`` from ``starts`` that the reader may see."""
     found: list[str] = []
+    starts = list(dict.fromkeys(starts))
+    linked = tools.store.links_of_many(starts)
     for start in starts:
-        for row in tools.store.links_of(start):
+        for row in linked[start]:
             if row["link_type"] != link_type or not tools._row_visible(scope, row):
                 continue
             forward = row["from_object"] == start

@@ -87,6 +87,7 @@ PARTY_SETTLED = ("verified", "reviewed", "corroborated")
 SUBJECT_CHARS = 60
 MAX_THREAD = 400        # copies one conversation reads (a longer one is a list, not a thread)
 CHUNK = 500
+MEMBER_CHUNK = 5000   # conversations matched a statement without the word index (one pass each)
 MAIL = "Email"
 PROPS = ("sent_at", "conversation_id", "sender", "to_addresses", "cc_addresses", "subject",
          "body_preview", "internet_message_id")
@@ -500,13 +501,22 @@ def conversations_of(rows: Mapping[str, Mapping[str, Any]], conversations: set[s
 
 def _members(st: Any, conversations: set[str], indexed: bool, prop: str = "conversation_id",
              prefix: str = "Email:%") -> dict[str, list[str]]:
-    """conversation id -> its mail objects (exact value), by the id's words when indexed."""
+    """conversation id -> its mail objects (exact value), by the id's words when indexed;
+    else the property's values are matched in the store, ``MEMBER_CHUNK`` ids a statement,
+    and only the members come back (every mail's ids held in memory went over 4 GB on the
+    served store, 2026-11-11)."""
     out: dict[str, list[str]] = defaultdict(list)
     if not indexed:
-        for oid, row in _scan(st, ("conversation_id",)).items():
-            value = row.get("conversation_id", {}).get("value")
-            if value in conversations:
-                out[value].append(oid)
+        wanted = sorted(conversations)
+        for start in range(0, len(wanted), MEMBER_CHUNK):
+            _tick(st)
+            for oid, value in st.conn.execute(
+                    "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL "
+                    "AND property = ? AND object_id LIKE ? AND value IN (SELECT value FROM "
+                    "json_each(?)) ORDER BY object_id",
+                    (prop, prefix, json.dumps(wanted[start:start + MEMBER_CHUNK]))):
+                if oid not in out[value]:
+                    out[value].append(oid)
         return out
     sql = ("SELECT v.object_id, v.value FROM value_text f JOIN object_values_numbered v ON "
            "v.row_no = f.rowid WHERE value_text MATCH ? AND v.property = ? "

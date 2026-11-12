@@ -1198,18 +1198,51 @@ class MailCaptures(Reopenable):
     SPLIT_ROWS = 20000
     _SPLIT_QUEUE = 8   # batches of rows a reader holds ahead of the range being yielded
 
-    def _attached_query(self, low: Any = None, high: Any = None) -> tuple[str, list[Any]]:
+    _KEY_BATCH = 512   # rows fetched by key at a time (``_attached_sorted``)
+
+    def _attached_sorted(self, conn: sqlite3.Connection, low: Any = None, high: Any = None
+                         ) -> Iterator[list[Any]]:
+        """Batches of the rows of :meth:`_attached_query` (``low``/``high`` as there) in
+        its order, read on ``conn``: the query sorts only each row's keys (its attachment
+        rowid and its message version), and the rows are read by key, ``_KEY_BATCH`` at a
+        time. Sorting whole rows (the message record, the attachment metadata) spilled
+        gigabytes of temp files per reader; 11-11 a cycle failed "database or disk is
+        full" in this read."""
+        sql, args = self._attached_query(low, high, keys=True)
+        keys = conn.execute(sql, args)
+        rows = (f"SELECT {self._attached_select()} FROM json_each(?) k JOIN attachments a "
+                "ON a.rowid = json_extract(k.value, '$[0]') JOIN (SELECT m.*, "
+                "(m.removed_reason IS NOT NULL AND m.version_id = (SELECT MAX(x.version_id) "
+                "FROM messages x WHERE x.mailbox_id = m.mailbox_id AND x.message_id = "
+                "m.message_id)) AS gone FROM messages m) m ON m.version_id = "
+                "json_extract(k.value, '$[1]') ORDER BY k.key")
+        while True:
+            batch = keys.fetchmany(self._KEY_BATCH)
+            if not batch:
+                return
+            got = conn.execute(rows, (json.dumps([[r[0], r[1]] for r in batch]),)).fetchall()
+            if len(got) != len(batch):   # read in one snapshot: every key holds its row
+                raise ProjectionError("capture_snapshot_changed", "attachments")
+            yield got
+
+    def _attached_select(self) -> str:
+        return (f"a.*, {self._text}, m.message_id, m.recorded_at, m.superseded_at, "
+                "m.last_seen_at, m.gone, m.record AS message, m.body_sha256 AS message_body")
+
+    def _attached_query(self, low: Any = None, high: Any = None, *, keys: bool = False
+                        ) -> tuple[str, list[Any]]:
         """The attachments the projection reads with their message's latest interval, in
         their order; ``low``/``high``: only those of the mailboxes in [low, high) (None:
         unbounded). A message's handle is ``graph-mail://<its mailbox>/...`` and an
         attachment's mailbox is its message's (``capture_mail`` writes both from the
         message), so a range's rows are exactly the whole query's rows of those
         mailboxes: its messages' latest versions are found among the handles of the range
-        (on the handle index alone, as the whole query finds them among all handles)."""
+        (on the handle index alone, as the whole query finds them among all handles).
+        ``keys``: each row's attachment rowid and message version alone
+        (:meth:`_attached_sorted`)."""
         order = " ORDER BY a.mailbox_id, m.message_id, a.attachment_id, m.recorded_at"
-        select = (f"SELECT a.*, {self._text}, m.message_id, m.recorded_at, "
-                  "m.superseded_at, m.last_seen_at, m.gone, m.record AS message, "
-                  "m.body_sha256 AS message_body ")
+        select = ("SELECT a.rowid, m.version_id " if keys else
+                  f"SELECT {self._attached_select()} ")
         if low is None and high is None:
             return select + self._ATTACHED + order, []
         handles, mailboxes, args, boxes = [], [], [], []
@@ -1242,7 +1275,8 @@ class MailCaptures(Reopenable):
 
         slices = self._mailbox_ranges()
         if slices is None:
-            yield from self._conn.execute(self._attached_query()[0])
+            for rows in self._attached_sorted(self._conn):
+                yield from rows
             return
         done = object()
         queues = [queue.Queue(self._SPLIT_QUEUE) for _ in slices]
@@ -1275,13 +1309,11 @@ class MailCaptures(Reopenable):
                 go.wait()
                 if not ready or stop.is_set():
                     return
-                sql, args = self._attached_query(low, high)
-                cursor = conn.execute(sql, args)
-                while True:
-                    rows = cursor.fetchmany(256)
-                    if not rows or not put(out, rows):
+                for rows in self._attached_sorted(conn, low, high):
+                    if not put(out, rows):
                         break
-                put(out, (done, None))
+                else:
+                    put(out, (done, None))
             except BaseException as exc:  # noqa: BLE001 - raised where the rows are read
                 put(out, (done, exc))
             finally:
@@ -1296,7 +1328,8 @@ class MailCaptures(Reopenable):
             if not all([opened.get() for _ in threads]):
                 stop.set()
                 go.set()
-                yield from self._conn.execute(self._attached_query()[0])
+                for rows in self._attached_sorted(self._conn):
+                    yield from rows
                 return
             go.set()
             for out in queues:
@@ -4926,6 +4959,9 @@ def finish_generation(builder: StoreBuilder, projector: "Projector",
     done (``steps_done``, not run again); ``after_step`` is called with each step's name
     and report once it ran."""
     conn = builder.connection
+    # the steps read values by object: with the fixed statistics, a store projected
+    # (or resumed) without them included
+    store_ddl.planner_stats(conn)
     counts = dict(counts) if counts is not None else projected_counts(builder, projected)
     steps = {name: dict(report) for name, report in (steps_done or {}).items()}
     for name, step in sorted((post_project or {}).items()):

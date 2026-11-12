@@ -244,6 +244,27 @@ class SplitMailReadTests(unittest.TestCase):
         self.assertGreater(len(one_read[0]["documentFields"]), 0)
         self.assertTrue(any(bid.startswith("graph_mail.") for bid in one_read[1][2]))
 
+    def test_rows_read_by_sorted_keys_equal_the_whole_row_sort(self):
+        """The attachments are sorted by their keys alone and read by key in batches
+        (11-11: sorting whole rows filled the temp disk): the same rows in the same order
+        as the query sorting whole rows, for any batch size, read whole or by ranges."""
+        opener = self.store()
+        with opener() as one:
+            one.records(["attachments"])
+            whole = [tuple(r) for r in one._conn.execute(one._attached_query()[0])]
+        self.assertGreaterEqual(len(whole), 32)
+        for readers in (1, 3):
+            for batch in (1, 7, 512):
+                with mock.patch.object(MailCaptures, "SPLIT_READERS", readers), \
+                        mock.patch.object(MailCaptures, "SPLIT_ROWS", 1), \
+                        mock.patch.object(MailCaptures, "_KEY_BATCH", batch), opener() as one:
+                    one.records(["attachments"])
+                    got = [tuple(r) for r in one._attached_rows()]
+                    names = [d[0] for d in one._conn.execute(
+                        one._attached_query()[0]).description]
+                    self.assertEqual(list(next(iter(one._attached_rows())).keys()), names)
+                self.assertEqual(got, whole, (readers, batch))
+
     def test_a_mailbox_id_whose_handles_sort_apart_leaves_one_read(self):
         # ``<id>.x``'s handles sort before ``<id>``'s ('.' < '/'), its mailbox after
         opener = self.store(extra=(lambda held: held + ".x",))

@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import path from "node:path";
 
 // Usability pass in a real browser over operator_api --mock (fixture data): every page at
@@ -31,7 +31,7 @@ const PAGES = [
 ];
 
 /** Controls the pass never presses: anything that sends, confirms, approves, writes or signs out. */
-const NEVER = /\b(send|sent|confirm|approve|accept|execute|perform|undo|switch|stop|pause|resume|go live|sign out|log ?out|delete|remove|reject|snooze|dismiss|mark|save note|submit)\b/i;
+const NEVER = /\b(send|sent|confirm|approve|accept|execute|perform|undo|switch|stop|pause|resume|go live|sign out|log ?out|delete|remove|reject|snooze|dismiss|mark|save note|submit|prepare the entry)\b/i;
 
 /** Endpoints that act; the browser answers them itself and records the attempt. */
 const ACTING = /\/api\/(actions\/(confirm|preview)|writes(\/[^/]+\/(approve|execute|preview))?$|autopilot\/(items\/[^/]+\/decision|switches|workflows\/[^/]+|audit\/[^/]+\/undo)|meetings\/follow-up\/|my-work\/[^/]+\/write|feedback\/[^/]+\/status)/;
@@ -156,7 +156,11 @@ async function exercise(page: Page, where: string): Promise<string[]> {
   const out: string[] = [];
   const home = page.url();
   const back = async () => {
+    // a drawer that has only just opened does not take Escape yet; nobody presses it that fast
+    await page.waitForTimeout(400);
     await page.keyboard.press("Escape");
+    // a closing drawer's backdrop still takes clicks for a moment
+    await page.locator(".fixed.inset-0.z-50").first().waitFor({ state: "detached", timeout: 3_000 }).catch(() => {});
     if (page.url() !== home) {
       await page.goto(home);
       await settle(page);
@@ -183,6 +187,7 @@ async function exercise(page: Page, where: string): Promise<string[]> {
   const tabs = page.locator("main [role=tab]:visible");
   for (let i = 0; i < (await tabs.count()); i++) {
     const t = tabs.nth(i);
+    await clearOfTabBar(t);
     await t.click();
     await expect(t, `${where}: tab "${await t.innerText()}" did not select`).toHaveAttribute("aria-selected", "true");
   }
@@ -193,15 +198,20 @@ async function exercise(page: Page, where: string): Promise<string[]> {
     const o = openers.nth(i);
     const label = ((await o.getAttribute("aria-label")) || (await o.innerText()) || "").trim().slice(0, 40);
     if (NEVER.test(label) || (await o.isDisabled())) continue;
-    const before = await o.getAttribute("aria-expanded");
+    const h = (await o.elementHandle())!;
+    const before = await h.getAttribute("aria-expanded");
+    // centre it first: a pinned tab bar covers what sits at the screen edge
+    await clearOfTabBar(o);
     const clicked = await o.click().then(() => true, (e) => {
-      out.push(`${where}: "${label}" cannot be clicked: ${String(e).split("\n")[0].slice(0, 120)}`);
+      out.push(`${where}: "${label}" cannot be clicked: ${String(e).split("\n").filter((l) => /intercepts|covered|obscur|not stable|not visible/i.test(l)).concat(String(e).split("\n")[0]).join(" | ").slice(0, 400)}`);
       return false;
     });
     if (!clicked) continue;
-    const after = await o.getAttribute("aria-expanded");
+    const after = await h.getAttribute("aria-expanded");
     const popup = await page.locator("[role=menu]:visible, [role=dialog]:visible, [role=listbox]:visible").count();
-    if (after === before && popup === 0) out.push(`${where}: "${label}" did not open`);
+    // a disclosure that replaces itself with what it opens (More) is gone once opened
+    const gone = !(await h.evaluate((el) => el.isConnected).catch(() => false));
+    if (after === before && popup === 0 && !gone) out.push(`${where}: "${label}" did not open`);
     await back();
   }
   // every other button responds without an error
@@ -213,10 +223,29 @@ async function exercise(page: Page, where: string): Promise<string[]> {
     const label = ((await b.getAttribute("aria-label")) || (await b.innerText().catch(() => "")) || "").trim().slice(0, 40);
     if (!label) out.push(`${where}: a button has no name`);
     if (NEVER.test(label) || (await b.isDisabled().catch(() => true)) || (await b.getAttribute("role")) === "tab") continue;
-    await b.click({ timeout: 3_000 }).catch((e) => out.push(`${where}: "${label}" cannot be clicked: ${String(e).split("\n")[0].slice(0, 120)}`));
+    await clearOfTabBar(b);
+    await b.click({ timeout: 3_000 }).catch((e) => out.push(`${where}: "${label}" cannot be clicked: ${String(e).split("\n").filter((l) => /intercepts|covered|obscur|not stable|not visible/i.test(l)).concat(String(e).split("\n")[0]).join(" | ").slice(0, 400)}`));
     await back();
   }
   return out;
+}
+
+/** Brings a control above the phone's fixed tab bar: centred, then, if the page cannot scroll
+ * far enough to lift it clear (it sits at the very end), nudged by whatever still overlaps. */
+async function clearOfTabBar(loc: Locator): Promise<void> {
+  await loc.evaluate((el) => {
+    el.scrollIntoView({ block: "center" });
+    const bar = document.querySelector('[data-testid="tab-bar"]');
+    if (!bar || getComputedStyle(bar).display === "none") return;
+    const top = bar.getBoundingClientRect().top;
+    const r = el.getBoundingClientRect();
+    // the click lands on the middle of the control: that point must sit above the bar
+    const over = Math.min(r.top + r.height / 2, r.bottom) - (top - 8);
+    if (over <= 0) return;
+    let p: HTMLElement | null = el.parentElement;
+    while (p && !(/(auto|scroll)/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight)) p = p.parentElement;
+    (p ?? document.scrollingElement)?.scrollBy(0, over);
+  }).catch(() => {});
 }
 
 /** Tabs through the first controls of the page; each one that takes focus shows it. */
@@ -278,7 +307,8 @@ for (const theme of ["light", "dark"] as const) {
         }
       }
     }
-    expect.soft(w.acted, "an acting endpoint was called").toEqual([]);
+    // a preview is a dry run that changes nothing; every other acting call is a fault
+    expect.soft(w.acted.filter((a) => !/\/api\/actions\/preview$/.test(a)), "an acting endpoint was called").toEqual([]);
     expect.soft([...new Set(w.failed)], "failed API reads").toEqual([]);
     expect.soft([...new Set(w.errors)], "console errors").toEqual([]);
     expect.soft(faults, "usability faults").toEqual([]);
@@ -355,7 +385,7 @@ test("autopilot filters open and narrow the list", async ({ page }, info) => {
   await page.route(/\/api\/autopilot$/, (r) => (r.request().method() === "GET" ? r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(area) }) : r.fallback()));
   await page.goto("/autopilot");
   await settle(page);
-  const rows = page.getByTestId("autopilot-item");
+  const rows = page.getByTestId("autopilot-row");
   await expect(rows).toHaveCount(2);
   const wf = page.getByLabel("Workflow", { exact: true });
   await wf.selectOption("ar_collections");
@@ -369,4 +399,32 @@ test("autopilot filters open and narrow the list", async ({ page }, info) => {
   await shot(page, `${info.project.name}-autopilot-filters`);
   expect(w.acted).toEqual([]);
   expect(w.errors).toEqual([]);
+});
+
+// Ask keeps its own scroller: after several questions the follow-up box is still pinned above
+// the tab bar and the page itself does not scroll (a phone page that scrolls as a whole must
+// not change that).
+test("ask keeps the follow-up box pinned through a multi-turn thread", async ({ page }, info) => {
+  test.setTimeout(120_000);
+  const w = await watch(page);
+  await signIn(page);
+  await page.goto("/ask");
+  await settle(page);
+  const questions = ["Who is the supplier on PO 90412?", "When is it due?", "What is still open on it?"];
+  for (const [i, q] of questions.entries()) {
+    const box = page.getByRole("combobox").last();
+    await box.fill(q);
+    await box.press("Enter");
+    await expect(page.getByTestId("answer-card")).toHaveCount(i + 1);
+    await expect(page.getByTestId("answer-card").last()).toHaveAttribute("aria-busy", "false", { timeout: 20_000 });
+  }
+  await expect(page.getByTestId("answer-card")).toHaveCount(3);
+  await page.locator("[data-app-main]").evaluate((m) => { m.scrollTop = 0; });
+  const box = page.getByRole("combobox").last();
+  const r = await box.evaluate((el) => { const b = el.getBoundingClientRect(); return { bottom: b.bottom, vh: innerHeight, mainScrolls: (document.querySelector("[data-app-main]") as HTMLElement).scrollHeight > (document.querySelector("[data-app-main]") as HTMLElement).clientHeight + 1 }; });
+  expect(r.bottom, "follow-up box stays on screen at the top of the thread").toBeLessThanOrEqual(r.vh);
+  expect(r.mainScrolls, "the page does not scroll as a whole").toBe(false);
+  expect(await layoutFaults(page)).toEqual([]);
+  await shot(page, `${info.project.name}-ask-thread`);
+  expect(w.acted).toEqual([]);
 });

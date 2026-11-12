@@ -29,6 +29,7 @@ from verify import live_verify as lv
 from integrations.http import SourceHttpError
 from ontology.core import Actor
 from ontology.json_contract import validate
+from operating import alert_kinds as ak
 from operating import mcp_server
 from operating import proactive_engine as pe
 from operating.case_runtime import CaseRuntime
@@ -205,8 +206,16 @@ class HomeModeTest(Base):
     def test_a_restricted_reader_sees_only_what_its_grant_reads(self):
         world, ids = seeded(receipt_markings='["quality_controlled"]')
         self.engine(world, ids["coverage"])
-        full = self.find(Host(self.store), {"query": "what is at risk", "limit": 50})["home"]
         conflict_root = min(ids["conflict_a"], ids["conflict_b"])
+        # unmeasured kinds never reach home mode (only measured alert types do) ...
+        bare = self.find(Host(self.store), {"query": "what is at risk", "limit": 50})["home"]
+        self.assertFalse({conflict_root, ids["no_qc"]} & {g["object_id"] for g in bare["gaps"]})
+        # ... and once measured, the grant still trims them per reader
+        measured = ak.registered_gap_kinds() | {"conflicting_quantity", "receipt_without_qc"}
+        patched = mock.patch.object(ak, "registered_gap_kinds", return_value=measured)
+        patched.start()
+        self.addCleanup(patched.stop)
+        full = self.find(Host(self.store), {"query": "what is at risk", "limit": 50})["home"]
         self.assertIn(conflict_root, {g["object_id"] for g in full["gaps"]})
         self.assertIn(ids["no_qc"], {g["object_id"] for g in full["gaps"]})
         narrow = self.find(Host(self.store, units=("api:a", UNIT), held=()),

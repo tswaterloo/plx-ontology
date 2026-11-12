@@ -5,8 +5,9 @@
   when absent, a tampered entry dropped), alert precision with correct never above
   judged, write switches from the server's flags, and no record of any reader's queue.
 * Draft: the configured person's workflows are prepared before their gate passed, for
-  that person only; an unknown workflow or other_external refuses the whole config; the
-  workflow rows say draft and carry the fresh-day countdown the scorer published.
+  that person only (live follow; a replay never drafts); an unknown workflow or
+  other_external refuses the whole config; the workflow rows say draft and carry the
+  countdown from the counts the write gate admitted (the page and the gate agree).
 * Scorecard: a reader's own prepared / accepted / edited / rejected per Eastern day.
 
 SYNTHETIC queue, gate files, scorer output and people. Evidence label: ``isolated-fixture``.
@@ -28,7 +29,6 @@ from fastapi.testclient import TestClient
 from operating import eval_results as results_file
 from integrations.people_exclusion import PeopleExclusion
 from operating import autopilot as ap
-from operating import autopilot_fresh
 from operating import autopilot_write as aw
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operator_api import models as m
@@ -111,7 +111,9 @@ def ledger(path: Path, rows) -> None:
 
 
 def scorer_run(root: Path, role: str, *, status="complete", start="2026-11-06T07:00:00Z",
-               days=7, judged=12, matched=11) -> Path:
+               days=7, judged=12, matched=11, members=(TEAM[1],)) -> Path:
+    """A fresh-score run folder as ``fresh_score.sh`` leaves it: per role ``result.json``
+    and the run's replay gate counts (``autopilot-gate.json``, held-out split)."""
     run = root / "postgres-gen11-until-2026-11-12"
     slug = role.replace(":", "_").replace("@", "_").replace(".", "_")
     (run / slug).mkdir(parents=True, exist_ok=True)
@@ -119,7 +121,13 @@ def scorer_run(root: Path, role: str, *, status="complete", start="2026-11-06T07
         "schema": "plx-autopilot-replay/v1", "role": role, "status": status,
         "window": [start, "2026-11-12T07:00:00Z"], "data_end": "2026-11-15T07:00:00Z",
         "days_done": days, "splits": {},
-        "workflows": {FLOW: {"judged": judged, "matched": matched, "prepared": 20}}}))
+        "workflows": {FLOW: {"judged": judged + 5, "matched": matched, "prepared": 20}}}))
+    gate = run / ap.GATE_FILE
+    doc = json.loads(gate.read_text()) if gate.exists() else {"schema": ap.GATE_SCHEMA,
+                                                              "roles": {}}
+    doc["roles"][role] = {"members": list(members),
+                          "workflows": {FLOW: {"judged": judged, "matched": matched}}}
+    gate.write_text(json.dumps(doc))
     return run
 
 
@@ -187,6 +195,25 @@ class TrustAndDraft(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PLX_TEAM_VIEW_READERS": ""}):
             self.assertEqual(self.client(TEAM).get("/api/trust").status_code, 404)
             self.assertEqual(self.client(OWNER).get("/api/trust").status_code, 200)
+
+    def test_the_gate_words_come_from_the_write_rules(self):
+        rules = aw.load_rules()
+        line = "Autopilot sends and writes"
+        page = self.client(TEAM).get("/api/trust").json()
+        g = rules["gate"]
+        self.assertEqual(page["autopilot_gate"], {"need_judged": int(g["min_judged"]),
+                                                  "need_percent": float(g["precision"]) * 100})
+        stricter = {**rules, "gate": {**g, "min_judged": 20, "precision": "0.95"}}
+        with mock.patch.object(aw, "load_rules", return_value=stricter):
+            page = self.client(TEAM).get("/api/trust").json()
+        self.assertEqual(page["autopilot_gate"], {"need_judged": 20, "need_percent": 95.0})
+        words = next(x["words"] for x in page["lines"] if x["words"].startswith(line))
+        self.assertIn("after 20 judged fresh items at 95% or better", words)
+        with mock.patch.object(aw, "load_rules", side_effect=aw.RulesInvalid("schema")):
+            page = self.client(TEAM).get("/api/trust").json()
+        self.assertIsNone(page["autopilot_gate"])
+        words = next(x["words"] for x in page["lines"] if x["words"].startswith(line))
+        self.assertIn("no workflow acts", words)
 
     def test_freshness_answers_alerts_and_switches(self):
         page = self.client(OWNER).get("/api/trust").json()
@@ -261,28 +288,29 @@ class TrustAndDraft(unittest.TestCase):
 
     def test_draft_rows_and_the_fresh_day_countdown(self):
         rules = aw.load_rules()
-        # nothing published yet: no countdown, never a number
+        # nothing admitted yet: no countdown, never a number
         rows = [w for w in self.client(OWNER).get("/api/autopilot").json()["workflows"]
                 if w["role"] == ROLE]
         self.assertEqual({w["workflow"]: (w["draft"], w["countdown"]) for w in rows},
                          {FLOW: (True, None), "teams_chat": (True, None)})
-        # the scorer's run: one role complete and fresh, one partial, one tuned-on window
+        # the scorer's run: one role complete and fresh, one partial, one tuned-on window,
+        # admitted into the write gate's own counts file (what the gate reads)
         run = scorer_run(self.root / "fresh", ROLE)
-        scorer_run(self.root / "fresh", "receivables", status="partial")
+        scorer_run(self.root / "fresh", "receivables", status="partial", members=(OTHER[1],))
         scorer_run(self.root / "fresh", "owner", start="2026-10-26T07:00:00Z")
-        out = autopilot_fresh.publish(run, self.state, rules=rules)
+        out = aw.record_scores(run, self.state / aw.WRITE_GATE_FILE, rules)
         self.assertEqual(out, {"admitted": [ROLE], "refused": {
             "owner": "not_fresh", "receivables": "status:partial"}})
-        self.assertEqual(oct(os.stat(self.state / autopilot_fresh.FILE).st_mode & 0o777),
-                         "0o600")
         team = self.client(TEAM).get("/api/autopilot").json()["workflows"]
         row = next(w for w in team if w["role"] == ROLE and w["workflow"] == FLOW)
         self.assertEqual((row["draft"], row["state"], row["dev"]["percent"]),
                          (True, "dry_run", 87.9))
+        # the gate's counts (12 judged held-out), not result.json's whole-window 17
         self.assertEqual({k: row["countdown"][k] for k in (
-            "judged", "matched", "need_judged", "need_percent", "percent", "passes")},
+            "judged", "matched", "need_judged", "need_percent", "percent", "passes",
+            "data_end")},
             {"judged": 12, "matched": 11, "need_judged": 15, "need_percent": 90.0,
-             "percent": 91.7, "passes": False})
+             "percent": 91.7, "passes": False, "data_end": "2026-11-15T07:00:00Z"})
         # a reader outside the role sees none of it
         self.assertEqual([w["role"] for w in self.client(OTHER).get("/api/autopilot")
                           .json()["workflows"]], ["receivables"])
@@ -291,19 +319,123 @@ class TrustAndDraft(unittest.TestCase):
         self.assertIn(FLOW, {w["workflow"] for w in page["autopilot"] if w["draft"]})
         self.assertTrue(any(line["state"] == "live" and line["words"].startswith("Draft:")
                             for line in page["lines"]))
-        # publishing switched nothing on: the write gate file is untouched
-        self.assertFalse((self.state / aw.WRITE_GATE_FILE).exists())
-        # counts that do not add up are refused, never published
+        # counts that do not add up are refused, the admitted entry kept
         bad = scorer_run(self.root / "bad", ROLE, judged=3, matched=4)
-        self.assertEqual(autopilot_fresh.publish(bad, self.state, rules=rules)["refused"],
-                         {ROLE: "unreadable"})
-        self.assertEqual(autopilot_fresh.read(self.state)["roles"][ROLE]["workflows"][FLOW]
+        self.assertEqual(aw.record_scores(bad, self.state / aw.WRITE_GATE_FILE, rules)
+                         ["refused"], {ROLE: "counts"})
+        self.assertEqual(aw.gate_counts(self.state, rules)[ROLE]["workflows"][FLOW]
                          ["matched"], 11)
-        # 15 judged at 14: passes on the countdown (the write gate stays the owner's)
-        entry = {"workflows": {FLOW: {"judged": 15, "matched": 14}}}
-        self.assertTrue(autopilot_fresh.countdown(entry, FLOW, rules)["passes"])
-        entry["workflows"][FLOW]["matched"] = 13
-        self.assertFalse(autopilot_fresh.countdown(entry, FLOW, rules)["passes"])
+        # the refusal shows beside the older counts it did not replace
+        row = next(w for w in self.client(TEAM).get("/api/autopilot").json()["workflows"]
+                   if w["role"] == ROLE and w["workflow"] == FLOW)
+        self.assertEqual((row["countdown"]["matched"], row["countdown"]["run"],
+                          row["countdown"]["refused"], row["countdown"]["refused_run"]),
+                         (11, run.name, "counts", bad.name))
+        # 15 judged at 14 passes on the countdown and the gate alike; 13 fails both
+        for matched, passes in ((14, True), (13, False)):
+            good = scorer_run(self.root / f"m{matched}", ROLE, judged=15, matched=matched)
+            aw.record_scores(good, self.state / aw.WRITE_GATE_FILE, rules)
+            row = next(w for w in self.client(TEAM).get("/api/autopilot").json()["workflows"]
+                       if w["role"] == ROLE and w["workflow"] == FLOW)
+            self.assertEqual(row["countdown"]["passes"], passes)
+            self.assertIsNone(row["countdown"]["refused"])     # admitted: refusal cleared
+            self.assertEqual((ROLE, FLOW) in aw.WriteGate(
+                self.state / aw.WRITE_GATE_FILE, rules).passing(), passes)
+            # admitting counts switched nothing to live: the owner's flag is still unset
+            self.assertNotEqual(row["state"], "live")
+        # unreadable write rules: the page still answers, says nothing is performed and
+        # shows no countdown (review 81cfd5a948: it raised before)
+        with mock.patch.object(aw, "load_rules", side_effect=aw.RulesInvalid("schema")):
+            got = self.client(TEAM).get("/api/autopilot")
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertIn("nothing is performed", json.dumps(got.json()))
+        self.assertTrue(all(w["countdown"] is None for w in got.json()["workflows"]))
+        # an unreadable gate file: no countdown, and the gate passes nothing
+        (self.state / aw.WRITE_GATE_FILE).write_text("{not json")
+        row = next(w for w in self.client(TEAM).get("/api/autopilot").json()["workflows"]
+                   if w["role"] == ROLE and w["workflow"] == FLOW)
+        self.assertIsNone(row["countdown"])
+    def test_the_scorer_admits_a_run_through_the_repo_script(self):
+        """tools/autopilot_admit_scores.sh: the scorer's one admission step. A complete fresh
+        run lands in the gate's counts; a run without its gate counts admits nothing."""
+        import subprocess
+        import sys
+        script = Path(__file__).resolve().parents[2] / "tools" / "autopilot_admit_scores.sh"
+        env = {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin"}
+        empty = self.root / "empty-run"
+        empty.mkdir()
+        got = subprocess.run(["bash", str(script), str(empty), str(self.state)], env=env,
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(got.returncode, 2, got.stdout + got.stderr)
+        self.assertFalse((self.state / aw.WRITE_GATE_FILE).exists())
+        run = scorer_run(self.root / "fresh", ROLE)
+        scorer_run(self.root / "fresh", "receivables", status="partial", members=(OTHER[1],))
+        got = subprocess.run(["bash", str(script), str(run), str(self.state)], env=env,
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertEqual(json.loads(got.stdout)["admitted"], [ROLE])
+        counts = aw.gate_counts(self.state, aw.load_rules())
+        self.assertEqual(sorted(counts), [ROLE])
+        self.assertEqual(json.loads((self.state / aw.WRITE_GATE_FILE).read_text())
+                         ["refused"]["receivables"]["reason"], "status:partial")
+
+    def test_a_draft_reply_with_live_send_on_needs_its_confirm(self):
+        """Review 20dcbd014b: a Draft item (prepared for the drafted person before any gate
+        passed) accepted while live send is on: a single accept answers a confirm token and
+        sends nothing, a bulk accept is refused, someone else's confirm sends nothing, the
+        owner's confirm sends once and a repeat never sends twice."""
+        from operating import autopilot_write_adapters as wa
+
+        class Sender:
+            calls = 0
+
+            def dispatch(self, kind, sender, payload):
+                Sender.calls += 1
+                return {"status": "sent", "http_status": 202, "missing": []}
+
+        class FromMailbox(wa.MailAdapter):
+            def request(self, action):
+                return super().request({**action, "target": {"sender": TEAM[0]}})
+
+        q = ap.Queue(self.backend.autopilot_queue)
+        with q.conn:
+            q.add_item({**queued("ap_draft", TEAM[1]), "autopilot": "approval_request",
+                        "title": "Approval asked", "body": {
+                            "label": "Approval asked",
+                            "happened": {"event_type": "message.received",
+                                         "object_type": "Email", "sender": OTHER[0],
+                                         "subject": "Approve PO P-9?"},
+                            "prepared": {"summary": "Approve PO P-9", "gaps": [], "draft": {
+                                "channel": "email", "to": [{"address": OTHER[0]}],
+                                "subject": "RE: Approve PO P-9", "body": "Approved."}}}})
+        q.close()
+        live = {"PLX_ACTIONS_LIVE": "1", "PLX_ACTIONS_SENDERS": TEAM[0],
+                aw.APPROVED_ENV: "send_mail", aw.MASTER_ENV: "1"}
+        self.backend.writes_environ = {**self.backend.writes_environ, **live}
+        self.backend.autopilot_adapters = {
+            "send_mail": FromMailbox(Sender(), environ=self.backend.writes_environ)}
+        lee = self.client(TEAM)
+        listed = {i["item_id"]: i for i in lee.get("/api/autopilot").json()["items"]}
+        self.assertEqual((listed["ap_draft"]["workflow"], listed["ap_draft"]["live"],
+                          listed["ap_draft"]["live_kinds"]),
+                         (FLOW, True, ["send_mail"]))
+        url = "/api/autopilot/items/ap_draft/decision"
+        bulk = lee.post(url, json={"decision": "accept", "bulk": True})
+        self.assertEqual((bulk.status_code, Sender.calls), (409, 0), bulk.text)
+        first = lee.post(url, json={"decision": "accept"})
+        self.assertEqual(first.status_code, 200, first.text)
+        token = first.json()["confirm_token"]
+        self.assertTrue(token)
+        self.assertEqual((first.json()["state"], Sender.calls), ("waiting", 0))
+        # the app owner holding the token is not the item's owner: nothing is sent
+        other = self.client(OWNER).post(url, json={"decision": "accept",
+                                                   "confirm_token": token})
+        self.assertEqual((other.status_code, Sender.calls), (404, 0), other.text)
+        done = lee.post(url, json={"decision": "accept", "confirm_token": token})
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertEqual((done.json()["decision"]["outcome"], Sender.calls), ("done", 1))
+        lee.post(url, json={"decision": "accept", "confirm_token": token})
+        self.assertEqual(Sender.calls, 1)
 
 
 class Scorecard(unittest.TestCase):
@@ -377,10 +509,11 @@ from operating.tests.test_proactive_threads import OURS, people  # noqa: E402
 
 class DraftPrepares(Fixture):
     """The autopilot's own run into a queue people read (``autopilot.main``): with no
-    workflow over its replay gate, Draft prepares the configured person's workflows and
-    nothing else; with no draft for them nothing is prepared."""
+    workflow over its replay gate, live follow in Draft prepares the configured person's
+    workflows and nothing else; with no draft for them nothing is prepared; a replay
+    (a past window into the same shared queue) never drafts."""
 
-    def run_into(self, name: str, draft: dict) -> int:
+    def run_into(self, name: str, draft: dict, command: str = "follow") -> int:
         import contextlib
         import io
         texts = ("Please send the COA for lot 9.", "Where is order SO-2? When will it ship?")
@@ -394,9 +527,10 @@ class DraftPrepares(Fixture):
         with contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, {ap.DRAFT_ENV: str(conf)}), \
                 mock.patch.object(ap, "window_ids", return_value=ids), \
+                mock.patch.object(ap, "layer_ids", return_value=(set(ids), [])), \
                 mock.patch.object(pe, "_people", return_value=people()):
-            code = ap.main(["replay", "--store", str(store), "--queue", str(queue),
-                            "--until", ap._iso(NOW)])
+            code = ap.main([command, "--store", str(store), "--queue", str(queue)]
+                           + (["--until", ap._iso(NOW)] if command == "replay" else []))
         self.assertEqual(code, 0, out.getvalue())
         q = ap.Queue(queue)
         try:
@@ -416,3 +550,5 @@ class DraftPrepares(Fixture):
         other = sorted(wf.names() - set(flows) - ap.DRAFT_NEVER)[0]
         self.assertEqual(self.run_into("other", {OURS: [other]}), 0)
         self.assertEqual(self.run_into("nobody", {"nobody@plx.example": flows}), 0)
+        # the same draft in a replay prepares nothing into the shared queue
+        self.assertEqual(self.run_into("replayed", {OURS: flows}, "replay"), 0)

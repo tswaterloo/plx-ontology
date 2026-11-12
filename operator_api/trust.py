@@ -28,6 +28,7 @@ from typing import Any, Mapping, Optional
 
 from operating import eval_results as results_file
 from operating import alert_kinds
+from operating import autopilot_write as aw
 
 from . import models as m
 from .serving import LEDGER_SYSTEMS
@@ -181,9 +182,28 @@ def switches(environ: Mapping[str, str]) -> list[m.TrustSwitch]:
     return out
 
 
+def gate() -> Optional[m.TrustGate]:
+    """The write gate's numbers from the write rules (``rules.gate``); None when the rules
+    are unreadable (the write path then performs nothing)."""
+    try:
+        g = aw.load_rules()["gate"]
+        need = int(g["min_judged"])
+        bar = Decimal(str(g["precision"]))
+        if need < 1 or not 0 < bar <= 1:
+            return None
+    except (aw.RulesInvalid, KeyError, ValueError, TypeError, ArithmeticError):
+        return None
+    pct = (bar * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return m.TrustGate(need_judged=need, need_percent=float(pct))
+
+
+def _pct_words(value: float) -> str:
+    return f"{value:g}%"
+
+
 def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
           kinds: list[m.TrustAlert], rows: list[m.AutopilotWorkflowRow],
-          sw: list[m.TrustSwitch]) -> list[m.TrustLine]:
+          sw: list[m.TrustSwitch], g: Optional[m.TrustGate] = None) -> list[m.TrustLine]:
     out = []
     systems = ", ".join(r.system for r in fresh if r.served_at)
     if systems:
@@ -205,9 +225,13 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
         n = sum(1 for r in rows if r.state == "live")
         out.append(m.TrustLine(state="live", words=f"{n} autopilot workflow"
                                f"{'s' if n != 1 else ''} acting on approval."))
-    out.append(m.TrustLine(state="gated", words="Autopilot sends and writes: a workflow acts "
-                           "only after 15 judged fresh items at 90% or better and the "
-                           "owner's switch."))
+    if g is None:
+        out.append(m.TrustLine(state="gated", words="Autopilot sends and writes: the gate "
+                               "rules cannot be read, so no workflow acts."))
+    else:
+        out.append(m.TrustLine(state="gated", words="Autopilot sends and writes: a workflow "
+                               f"acts only after {g.need_judged} judged fresh items at "
+                               f"{_pct_words(g.need_percent)} or better and the owner's switch."))
     off = [s.system for s in sw if s.state == "off"]
     if off:
         out.append(m.TrustLine(state="gated", words="Writes switched off: " + ", ".join(off)
@@ -247,7 +271,8 @@ def build(backend: Any, reader: Any, environ: Optional[Mapping[str, str]] = None
     if not rows and note is None:
         note = "No workflow has been scored or put in draft on this server yet."
     sw = switches(env)
+    g = gate()
     return m.TrustPage(checked_at=_iso(now or datetime.now(timezone.utc)), freshness=fresh,
                        answers=sets, alert_rule=rule, alerts=kinds, autopilot=rows,
-                       autopilot_note=note, lines=lines(fresh, sets, kinds, rows, sw),
-                       switches=sw)
+                       autopilot_note=note, autopilot_gate=g,
+                       lines=lines(fresh, sets, kinds, rows, sw, g), switches=sw)

@@ -39,6 +39,11 @@ def schema_of(path):
         conn.close()
 
 
+def stats_of(path):
+    with closing(sqlite3.connect(str(path))) as conn:
+        return sorted(conn.execute("SELECT tbl, idx, stat FROM sqlite_stat1"))
+
+
 CLOCK = lambda: datetime(2026, 1, 3, tzinfo=timezone.utc)  # noqa: E731
 
 
@@ -121,8 +126,16 @@ class ParallelBuildTests(unittest.TestCase):
         self.assertEqual(sorted(u for task in cut for u in task), sorted(the_plan.units))
         self.assertEqual(set(record["seconds"]), {task[0] for task in cut})
         self.assertSameAsSerial(generation)
-        # The same schema, every index included (the merge builds some at its end).
+        # The same schema, every index included (the merge builds some at its end), and
+        # the same planner statistics: without the layout index's, a value read by object
+        # scanned every cell of the field (27 s a read on the 11-11 delta).
         self.assertEqual(schema_of(generation.store), schema_of(self.serial.store))
+        self.assertEqual(stats_of(generation.store), stats_of(self.serial.store))
+        with closing(sqlite3.connect(str(generation.store))) as conn:
+            plan = " ".join(r[-1] for r in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT value FROM object_values WHERE object_id = ? "
+                "AND property = 'name'", ("x",)))
+        self.assertNotIn("value_cells_by_layout", plan)
         # No part, working file or worker directory is left beside the generation.
         self.assertEqual(sorted(p.name for p in generation.store.parent.iterdir()),
                          ["store.sqlite", "timings.json", "units.json"])

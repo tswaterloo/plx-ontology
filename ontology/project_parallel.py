@@ -843,6 +843,8 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
             for sql in indexes:
                 builder.connection.execute(sql)
             builder.connection.execute(f"PRAGMA threads = {int(threads)}")
+            # dropping value_cells_by_layout dropped its fixed statistics
+            store_ddl.planner_stats(builder.connection)
         if not seeded:   # a seeded generation's keys are its caller's (above)
             builder.connection.execute("PRAGMA foreign_keys = ON")
         builder.connection.execute("BEGIN IMMEDIATE")

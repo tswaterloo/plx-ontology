@@ -164,14 +164,28 @@ def _named(st: Any) -> dict[str, str] | None:
     return out
 
 
+# object ids per name read when no word index serves the names (the whole scan)
+SCAN_CHUNK = 2000
+
+
 def _scan_named(st: Any) -> dict[str, str]:
-    out = {}
-    for oid, value in st.conn.execute(
-            "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND property "
-            "= 'name' AND (object_id LIKE ? OR object_id LIKE ?)",
-            (ATTACHMENT + ":%", FILE + ":%")):
-        if isinstance(value, str) and lc.ART.search(value):
-            out.setdefault(oid, value)
+    """The same as ``_named`` with no word index (Postgres until its value words are built):
+    the attachments and files listed by the type index, their names read a chunk of ids
+    at a time and only the label-worded kept. One statement over every name scanned the
+    store's value cells (statement timeout) and held them all (over 4 GB, 2026-11-11)."""
+    from ontology import store as ostore
+    out: dict[str, str] = {}
+    ids = [row[0] for row in st.conn.execute(
+        "SELECT o.object_id FROM objects o WHERE o.object_type IN (?, ?) AND NOT "
+        + ostore.removed_at_sql("o.object_id") + " ORDER BY o.object_id", (ATTACHMENT, FILE))]
+    for chunk in (ids[i:i + SCAN_CHUNK] for i in range(0, len(ids), SCAN_CHUNK)):
+        _tick(st)
+        for oid, value in st.conn.execute(
+                "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND "
+                "property = 'name' AND object_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(chunk),)):
+            if isinstance(value, str) and lc.ART.search(value):
+                out.setdefault(oid, value)
     return out
 
 

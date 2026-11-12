@@ -2812,9 +2812,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         # follow and replay both write the queue people read: each prepares only the
         # workflows a role's replay passed, in that role (``gate_from``)
         gate, passed = gate_from(os.environ, queue.path.parent)
-        # Draft (``load_draft``): the configured people's workflows are prepared before
-        # their gate passed; an accept still goes through the write path's own gates
-        drafted = draft_owners(load_draft(), _people_maps(people)[0], people)
+        # Draft (``load_draft``): live follow only. The configured people's workflows are
+        # prepared before their gate passed; an accept still goes through the write
+        # path's own gates. A replay never drafts: it would fill the shared queue with
+        # a past window's items nobody passed.
+        drafted = draft_owners(load_draft(), _people_maps(people)[0], people) \
+            if a.command == "follow" else {}
         gate = with_draft(gate, drafted)
         for oid, flows in drafted.items():
             passed = {**passed, oid: sorted(set(passed.get(oid) or ()) | flows)}
