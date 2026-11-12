@@ -73,10 +73,11 @@ from operating.declared_schema import proactive_incremental as _PROACTIVE_INCREM
 CHANGES_SUFFIX = ".changes.sqlite"
 READ_CAP = 400_000   # a scope larger than this: its rules are judged whole instead
 CHUNK = 500
-# a pass finding the full engine running waits this long for it (it then reads what that
-# pass folded and judges what changed since), well inside the unit's 30-minute limit; a
-# full pass still running then: "busy", the next timer tick tries again
-LOCK_WAIT_SECONDS = 900.0
+# a pass finding the full engine running exits at once ("busy"): it kept what it had seen
+# (the delta layers' fingerprints), so the next timer tick or publish judges everything that
+# changed meanwhile. Waiting for a full pass held the unit for up to 15 minutes a tick
+# (20 wall-hours of waiting in two days, CC-P-03); ``--wait-seconds`` still asks for it.
+LOCK_WAIT_SECONDS = 0.0
 
 
 @dataclass(frozen=True)

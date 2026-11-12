@@ -75,6 +75,11 @@ export function continueHref(thread: string): string {
     case "write":
       return "/my-work";
     case "record": {
+      // a note left on a general page (Team, Late orders) resumes on that page, as the server does
+      if (ref.startsWith("page/")) {
+        const path = ref.slice("page/".length).replace(/^\/+/, "");
+        return /^[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/.test(path) && !path.split("/").some((seg) => seg === "." || seg === "..") ? `/${path}` : "/work-log";
+      }
       const at = ref.indexOf("/");
       const type = ref.slice(0, at);
       return at > 0 && !["note", "saved", "rule", "watch"].includes(type) ? objectHref(type, ref.slice(at + 1)) : "/work-log";
@@ -117,6 +122,12 @@ export function LoopLine({ e }: { e: WorkLogEvent }) {
   return <span className="text-muted">Waiting for a reply{loop.due ? ` until ${formatDateTime(loop.due)}` : ""}</span>;
 }
 
+/** A dry-run action (nothing went out) is logged as "prepared"; never read it as sent. */
+function verbLabel(e: Pick<WorkLogEvent, "kind" | "verb">): string {
+  if (e.kind === "action" && e.verb === "prepared") return "Prepared (not sent)";
+  return VERB[e.verb] ?? e.verb;
+}
+
 export function WorkLogRow({ e, onChanged, showWho }: { e: WorkLogEvent; onChanged?: () => void; showWho?: boolean }) {
   const Icon = KIND_ICON[e.kind] ?? FileText;
   const people = e.people ?? [];
@@ -137,7 +148,7 @@ export function WorkLogRow({ e, onChanged, showWho }: { e: WorkLogEvent; onChang
       </span>
       <div className="min-w-0">
         <div className="truncate text-[13px] leading-[18px]">
-          <span className="text-muted">{VERB[e.verb] ?? e.verb}: </span>
+          <span className="text-muted">{verbLabel(e)}: </span>
           <span className="font-semibold">{e.thread_name || e.title}</span>
           {e.pinned && <Pin className="ml-1.5 inline size-3 text-muted" aria-label="Pinned" />}
         </div>

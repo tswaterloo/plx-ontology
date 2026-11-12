@@ -116,8 +116,9 @@ class OpsAlerts(Engine):
         self.assertNotIn(moving, gaps)
         self.assertNotIn(empty, gaps)
         self.assertEqual(gaps[slow]["summary"],
-                         f"Item SYNTH-ITEM: 100 kg on hand and no customer order or assembly "
-                         f"use in 200 days (last {ago(200)})")
+                         f"Item SYNTH-ITEM: 100 kg on hand and no customer order, assembly "
+                         f"use or ledger outflow (sale, use or transfer) in 200 days "
+                         f"(last {ago(200)})")
         self.assertEqual(gaps[slow]["follow_up"]["priority"], "medium")
         self.assertEqual(gaps[slow]["event"]["amount"]["value"], "250.00")
         self.assertEqual(gaps[slow]["event"]["amount"]["currency"], "CAD")
@@ -129,6 +130,71 @@ class OpsAlerts(Engine):
         held = {g["object_id"]: g for g in self.kinds(ops.SLOW, held=NO_FINANCE)}
         self.assertIn(slow, held)
         self.assertNotIn("amount", held[slow].get("event") or {})
+
+    def test_stock_whose_sales_or_use_may_sit_elsewhere_is_never_called_not_moving(self):
+        # an item tied to its twin only by a lead identity link, or named on a movement line
+        # only by a lead link, may be selling on that twin: not judged, never "no sale"; a
+        # ledger sale, consumption or transfer taking stock out (dated by its posting event)
+        # is movement; one bringing stock in is not, nor a count correction or write-off
+        # (it would reset a slow mover's clock)
+        w = World()
+        twin_sells = item(w, ("50",))
+        twin = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
+        w.link("Product.same_record_as", twin_sells, twin, tier="lead")
+        ordered(w, twin, 10)
+        lead_use = item(w, ("60",))
+        part = w.obj("AssemblyOrderComponent", {}, audience="api:assembly")
+        w.link("AssemblyOrderComponent.uses_item", part, lead_use, tier="lead")
+        moved = {}
+        for qty, kind, moves in (("-4", "Sale", True), ("-3", "Consumption", True),
+                                 ("-2", "Transfer", True), ("12", "Sale", False),
+                                 ("-5", "Negative_x0020_Adjmt_x002E_", False),
+                                 ("-6", "Purchase", False), ("-1", "Mystery", False)):
+            product = item(w, ("70",))
+            entry = w.obj("ItemLedgerEntry", {"quantity": (qty, "kg", "actual"),
+                                              "entry_type": kind}, audience="bc:ledger")
+            w.link("ItemLedgerEntry.for_item", entry, product)
+            w.event("ItemLedgerEntry.posted", entry, ago(15))
+            moved[product] = moves
+        summary = self.run_rules(w)
+        self.assertEqual(summary["detectors"][ops.SLOW_RULE], "complete")
+        mystery = list(moved)[-1]   # an entry type BC never named: not judged at all
+        self.assertEqual({g["object_id"] for g in self.kinds(ops.SLOW)},
+                         {p for p, moves in moved.items() if not moves} - {mystery})
+        skipped = summary["not_evaluated"][ops.SLOW_RULE]
+        self.assertEqual(skipped.get("identity_unsettled"), 1)
+        self.assertEqual(skipped.get("movement_unsettled"), 1)
+        self.assertEqual(skipped.get("movement_type_unknown"), 1)
+
+    def test_an_undated_movement_makes_recency_unproven_never_no_movement(self):
+        """A known customer order whose day is unknown may be the latest movement
+        (BIZ-016): the item is not judged and is counted, never "no ... recorded" nor the
+        oldest bucket; a recent dated movement still says the item moves."""
+        w = World()
+        undated = item(w, ("100",))
+        line = w.obj("SalesOrderLine", {"ordered_quantity": ("5", "kg")},
+                     audience="api:portal")
+        w.link("SalesOrderLine.line_of", line, w.obj(
+            "SalesOrder", {"status": "Open"}, binding="portal.app_sales_order",
+            audience="api:portal"))
+        w.link("SalesOrderLine.for_item", line, undated)
+        old_and_undated = item(w, ("100",))
+        ordered(w, old_and_undated, 400)
+        later = w.obj("SalesOrderLine", {"ordered_quantity": ("5", "kg")},
+                      audience="api:portal")
+        w.link("SalesOrderLine.line_of", later, w.obj(
+            "SalesOrder", {"status": "Open", "order_date": "not a day"},
+            binding="portal.app_sales_order", audience="api:portal"))
+        w.link("SalesOrderLine.for_item", later, old_and_undated)
+        recent = item(w, ("100",))
+        ordered(w, recent, 10)
+        w.link("SalesOrderLine.for_item", w.obj("SalesOrderLine", {}, audience="api:portal"),
+               recent)
+        dead = item(w, ("7",))
+        summary = self.run_rules(w)
+        self.assertEqual({g["object_id"] for g in self.kinds(ops.SLOW)}, {dead})
+        self.assertEqual(summary["not_evaluated"][ops.SLOW_RULE],
+                         {"movement_date_unknown": 2})
 
     def test_a_lot_with_stock_expiring_names_the_open_orders_that_could_use_it(self):
         w = World()
@@ -219,6 +285,22 @@ class OpsAlerts(Engine):
         self.assertEqual(summary["not_evaluated"][ops.CERT_RULE],
                          {"certificate_unidentified": 2})
 
+    def test_another_suppliers_or_a_partly_named_certificate_never_supersedes(self):
+        """A lot string is not proven unique across suppliers (BIZ-015): a later certificate
+        of the same material and lot from another supplier, or one missing its supplier or
+        lot, never erases the expiring one; the same supplier's later one does."""
+        w = World()
+        other = coa(w, ahead(9), lot_no="SYN-L9")
+        coa(w, ahead(200), lot_no="SYN-L9", supplier="SYNTH Other Supplier")
+        coa(w, ahead(201), lot_no="SYN-L9", supplier=None)
+        coa(w, ahead(202), lot_no=None)
+        coa(w, ahead(11), lot_no="SYN-L10")                              # superseded
+        coa(w, ahead(203), lot_no="SYN-L10")
+        self.run_rules(w)
+        days = sorted((g["event"]["days"], g["object_id"])
+                      for g in self.kinds(ops.CERT_EXPIRING))
+        self.assertEqual(days, [(9, other)])
+
     def test_a_freight_bill_far_above_its_carrier_and_lane_norm_is_raised(self):
         w = World()
         for day in (200, 150, 100):
@@ -275,7 +357,10 @@ class OpsAlerts(Engine):
         for rule in ops.RULES:
             with self.subTest(rule=rule):
                 self.assertIn(rule, pe.DETECTORS)
-                self.assertLessEqual(pe.DETECTOR_SECONDS[rule], 60)
+                # each under a minute, but slow-moving stock: every stocked item's movement
+                # (measured 199 s on a loaded served pass, 2026-11-12)
+                self.assertLessEqual(pe.DETECTOR_SECONDS[rule],
+                                     300 if rule == ops.SLOW_RULE else 60)
                 self.assertIn(rule, briefing.CHECK_WORDS)
                 self.assertIn(rule, vendor_watch.WHOLE_PASS)
                 self.assertIn(rule, declared_inputs.NOT_INCREMENTAL)
@@ -299,10 +384,13 @@ class OpsAlerts(Engine):
                 self.assertLess(time.monotonic() - started, 60)
                 for rule in ops.RULES:
                     self.assertEqual(summary["detectors"][rule], "complete", rule)
+                self.assertEqual(summary["not_evaluated"][ops.SLOW_RULE],
+                                 {"movement_date_unknown": n})
                 for kind in ops.KINDS:
                     found = self.kinds(kind)
-                    # three stocked items each: none sold or used (no assembly day stated)
-                    self.assertEqual(len(found), 3 * n if kind == ops.SLOW else n, kind)
+                    # three stocked items each; the component an assembly uses on no
+                    # stated day has a movement of unknown day: not judged (BIZ-016)
+                    self.assertEqual(len(found), 2 * n if kind == ops.SLOW else n, kind)
                     self.assertEqual(len({g["object_id"] for g in found}), len(found), kind)
 
 

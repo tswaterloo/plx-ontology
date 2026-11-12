@@ -46,5 +46,7 @@ export function onViewingAs(f: () => void): () => void {
 
 /** Paths that stay the owner's own while viewing: who is signed in, sign-in, the people list, health and ops. */
 export function ownPath(path: string): boolean {
-  return /^\/api\/(me|auth\/|view-as\/|health|ops\/)/.test(path);
+  // "me" and "health" end there: /api/meetings is a read of the viewed person's (which the
+  // server refuses while viewing), never the owner's own shown under their name
+  return /^\/api\/(?:(?:me|health)(?:[/?#]|$)|auth\/|view-as\/|ops\/)/.test(path);
 }

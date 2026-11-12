@@ -719,6 +719,7 @@ class MirrorPinReader:
                         "capture_id", "absent_since_capture"},
         "row_version": {"relation", "key_json", "capture_id", "run_index", "run_length",
                         "row_json", "superseded_by_capture"},
+        "row_removal": {"relation", "key_json", "since", "until"},
     }
 
     def __init__(self, path: Path) -> None:
@@ -761,6 +762,24 @@ class MirrorPinReader:
                 out[row["relation"]] = (int(row["capture_id"]), row["finished_at"])
         return out
 
+    def _removed_at(self, relation: str, key_json: str, capture_id: int) -> bool:
+        """Whether a ``row_removal`` stretch of the key covers the moment capture
+        ``capture_id`` finished (the key may have come back since: the stretch stays)."""
+        row = self._db.execute("SELECT finished_at FROM capture WHERE capture_id = ?",
+                               (capture_id,)).fetchone()
+        pin = _instant(row["finished_at"]) if row is not None else None
+        if pin is None:
+            return False
+        for stretch in self._db.execute(
+                "SELECT since, until FROM row_removal WHERE relation = ? AND key_json = ?",
+                (relation, key_json)):
+            since = _instant(stretch["since"])
+            until = _instant(stretch["until"]) if stretch["until"] is not None else None
+            # an end that does not parse counts as open: absent, never silently present
+            if since is not None and since <= pin and (until is None or pin < until):
+                return True
+        return False
+
     def row_at(self, relation: str, key: Mapping[str, Any], capture_id: int
                ) -> tuple[str, Mapping[str, Any] | None]:
         """("ok", row) of the version current at ``capture_id``, or (problem, None)."""
@@ -777,6 +796,8 @@ class MirrorPinReader:
                 continue
             if current["run_length"] > 1:
                 return "key_not_unique", None
+            if self._removed_at(relation, key_json, capture_id):
+                return "row_absent_at_pin", None   # a stretch that has since closed too
             if current["capture_id"] <= capture_id:
                 absent = current["absent_since_capture"]
                 if absent is not None and absent <= capture_id:
@@ -955,13 +976,7 @@ def harness_evidence(answer: Mapping[str, Any] | None, host: Host) -> dict[str, 
 
 
 def _cited_handles(answer: Mapping[str, Any] | None) -> list[str]:
-    handles: list[str] = []
-    for value in (answer or {}).get("values") or []:
-        for cite in [*(value.get("citations") or []),
-                     *((value.get("calculation") or {}).get("inputs") or [])]:
-            if cite["l1_handle"] not in handles:
-                handles.append(cite["l1_handle"])
-    return handles
+    return measuring.cited_handles(answer)
 
 
 class _ReadsExhausted(Exception):

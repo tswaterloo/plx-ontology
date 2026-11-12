@@ -17,6 +17,8 @@ Environment=PATH=/data/tools/node/bin:/usr/bin:/bin
 # Loopback only: Caddy is the only way in.
 ExecStart=/data/tools/node/bin/node node_modules/next/dist/bin/next start -p 3000 -H 127.0.0.1
 Restart=on-failure
+# next exits 143 on SIGTERM: a stop is not a failure
+SuccessExitStatus=143
 RestartSec=3
 
 # Hardening: read-only everywhere except Next's runtime cache.

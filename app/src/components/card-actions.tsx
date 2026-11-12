@@ -226,6 +226,10 @@ export function ActionDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [unknownOk, setUnknownOk] = useState(false);
+  // why the last confirm failed: kept apart from preview errors, so the review that follows
+  // a failed confirm cannot wipe it
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const ackedDomains = useRef("");
   const key = useRef(newIdempotencyKey());
   const sending = useRef(false);
 
@@ -233,6 +237,11 @@ export function ActionDialog({
     setError(null);
     return previewAction({ card_id: card.id, kind: offer.kind, payload: payload ? edits(offer.kind, payload) : undefined }).then(
       (p) => {
+        // an acknowledgement belongs to the recipients (and so the domains) it was given for
+        const people = [...(p.payload.to ?? []), ...(p.payload.cc ?? [])].map((a) => a.trim().toLowerCase()).sort().join(",");
+        const domains = `${[...(p.unknown_domains ?? [])].sort().join(",")}|${people}`;
+        if (domains !== ackedDomains.current) setUnknownOk(false);
+        ackedDomains.current = domains;
         setPreview(p);
         setForm(p.payload);
       },
@@ -250,6 +259,7 @@ export function ActionDialog({
     if (!preview || blocked || sending.current) return;
     sending.current = true;
     setBusy(true);
+    setConfirmError(null);
     confirmAction({
       card_id: card.id,
       kind: offer.kind,
@@ -264,7 +274,7 @@ export function ActionDialog({
       (e) => {
         sending.current = false;
         setBusy(false);
-        setError(plainError(e));
+        setConfirmError(plainError(e));
         void review(form);
       },
     );
@@ -300,6 +310,12 @@ export function ActionDialog({
       }
     >
       <div className="space-y-6" data-testid="action-dialog">
+        {confirmError && (
+          <p className="flex gap-2.5 text-[13px] leading-5" role="alert" data-testid="action-confirm-error">
+            <StatusGlyph status="late" size={14} className="mt-[3px]" />
+            <span>{confirmError} Review the draft below before you try again.</span>
+          </p>
+        )}
         {error && (
           <p className="flex gap-2.5 text-[13px] leading-5">
             <StatusGlyph status="late" size={14} className="mt-[3px]" />

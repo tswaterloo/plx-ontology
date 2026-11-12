@@ -8,9 +8,10 @@ one currency, never converted nor summed across currencies; every alert cites ea
 it counts. No rule names a record, a customer, an item or a supplier.
 
 * ``customer_demand_drop``: per customer (a settled ``Customer.same_record_as`` cluster)
-  and currency, the value of its orders (``SalesOrder.total_amount`` on each order's
-  governing record, the one sales-order definition: open or closed, never a draft or an
-  order of unknown status) dated in the last ``DEMAND_RECENT_DAYS`` against its run-rate
+  and currency, the value of its orders (``operating.order_value`` on each order's
+  governing record: its own total, else derived from the invoices or lines that price
+  it; the one sales-order definition: open or closed, never a draft or an order of
+  unknown status) dated in the last ``DEMAND_RECENT_DAYS`` against its run-rate
   over the ``DEMAND_BASELINE_DAYS`` before them (scaled to the same number of days). Only a
   customer above the size floor is judged: at least ``DEMAND_MIN_ORDERS`` baseline orders
   and a baseline value at least the median of every customer's in that currency (no
@@ -51,7 +52,8 @@ from decimal import Decimal
 from statistics import median
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .proactive_business import (FINANCE, _currencies, _currency, _day, _dec, _governing,
+from . import order_value
+from .proactive_business import (FINANCE, _day, _governing,
                                  _item_clusters, _one, _text, _tick)
 
 DEMAND = "customer_demand_drop"
@@ -157,12 +159,10 @@ def _named(summary: str, name_row: Mapping[str, Any] | None) -> str:
 
 # --------------------------------------------------------------------------- demand drop
 
-def _valued(entry: Mapping[str, Any] | None) -> bool:
-    """An order record stating a positive total (a zero total is a header zeroed once
-    invoiced, never the order's value)."""
-    row = _one(((entry or {}).get("props") or {}).get("total_amount"))
-    value = _dec(row["value"]) if row else None
-    return value is not None and value > 0
+def _positive(got: Any) -> bool:
+    """An order whose value (``order_value``: its own total, else derived) is known and
+    above 0."""
+    return got is not None and got.amount is not None and got.amount > 0
 
 
 def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable,
@@ -182,18 +182,25 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
                    for r in _found[m]["props"].get(n, ()))
     # an order cancelled was never demand; a draft or an unknown status is not judged
     judged = [v for v in verdicts if v.cls in ("open", "closed") and not cancelled(v)]
-    values = st.values(["SalesOrder"], ("total_amount", "order_date"),
-                       objects=sorted({m for v in judged for m in v.group}))
-    codes = _currencies(st, [r for e in values.values()
-                             for r in e["props"].get("total_amount", ())])
+    members = sorted({m for v in judged for m in v.group})
+    values = st.values(["SalesOrder"], ("total_amount", "currency", "order_date",
+                                        *so_status.READ_PROPS), objects=members)
     ties, root = _parties(st, [ORDERED_BY], CUSTOMER_TWINS, settled)
+
+    def in_windows(member: str) -> bool:
+        row = _one(((values.get(member) or {}).get("props") or {}).get("order_date"))
+        day = _day(row["value"]) if row else None
+        return day is not None and baseline_from < day <= as_of
+    # order -> its value (``order_value``: its own total, else derived from its invoices or
+    # lines), read once for the orders dated in the windows only (a derived value reads
+    # lines and invoices, never for an order the rule does not count)
+    worth = order_value.for_store(st, [m for m in members if in_windows(m)], header=values)
     newest: dict[str, date] = {}    # system -> its newest order date (not after as_of)
     read: list[tuple[Any, str, date, Decimal, str, list]] = []
     unvalued: list[tuple[Any, str]] = []   # orders in the windows of no known value
     for verdict in judged:
         _tick(st)
-        stating = [m for m in verdict.group if _valued(values.get(m))
-                   and values[m]["props"].get("order_date")]
+        stating = [m for m in verdict.group if _positive(worth.get(m))]
         record = _governing(stating or verdict.group, po_status.binding_of)
         props = (values.get(record) or {}).get("props") or {}
         day_row = _one(props.get("order_date"))
@@ -208,20 +215,17 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
         newest[system] = max(newest.get(system, day), day)
         if day <= baseline_from:
             continue
-        total_row = _one(props.get("total_amount"))
-        total = _dec(total_row["value"]) if total_row else None
-        if total is None or total <= 0:
-            # a zero total is no value: a source zeroes an order's header once it is
-            # invoiced (Sage), and an order of unknown value is no evidence of less demand
-            skipped.note("order_value_unknown", [verdict.top], cause)
+        got = worth.get(record)
+        if not _positive(got):
+            # an order of unknown value (a header zeroed once invoiced with nothing that
+            # prices it, an unpriced order) is no evidence of less demand
+            skipped.note("currency_unknown" if got is not None
+                         and got.reason == "currency_unknown" else "order_value_unknown",
+                         [verdict.top], cause)
             unvalued.append((verdict, record))
             continue
-        currency = _currency(codes, total_row)
-        if currency is None:
-            skipped.note("currency_unknown", [verdict.top], cause)
-            unvalued.append((verdict, record))
-            continue
-        read.append((verdict, record, day, total, currency, [total_row, day_row]))
+        total, currency = got.amount, got.currency
+        read.append((verdict, record, day, total, currency, [*got.rows, day_row]))
     # customer, currency -> its orders: (order, day, total, rows, marks, system)
     series: dict[tuple[str, str], list[tuple]] = defaultdict(list)
     for verdict, record, day, total, currency, rows in read:

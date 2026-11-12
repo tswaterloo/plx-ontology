@@ -597,6 +597,59 @@ class ReadTest(World):
             "markings": {row(1): "[]", row(6): '["finance"]'}}]
         with closing(aw.open_store(self.watch)) as ws:
             aw.fold(ws, items, run_id=1, now=NOW)
+        # the reading happens on the day the items were folded
+        clock = mock.patch.object(aw, "_now", return_value=NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def test_a_stopped_watcher_is_stale_and_its_items_expire_unfolded(self) -> None:
+        # STATE-006: a last run older than the hour is no current check, and an open item
+        # not seen for ITEM_DAYS is never listed even though no run expired it
+        grant = {"may_read": lambda key: True, "held": ("finance",), "decide": admit}
+        with closing(aw.open_store(self.watch)) as ws:
+            ws.execute("DELETE FROM runs")
+            ws.execute("INSERT INTO runs (run_at, status, model_run, summary) VALUES "
+                       "(?, 'complete', 1, '{}')", (aw._iso(NOW),))
+            ws.commit()
+
+        def status(at):
+            return aw.last_run(self.watch, now=at)
+        self.assertEqual(status(NOW + dt.timedelta(minutes=59)), ("complete", aw._iso(NOW)))
+        self.assertEqual(status(NOW + aw.STALE_AFTER + dt.timedelta(seconds=1)),
+                         ("stale", aw._iso(NOW)))
+        # (run_at is NOT NULL in the declared schema: a stored time is text, maybe bad)
+        for stamp, word in (("not a time", "unknown"), ("2026-10-20T12:00:00", "unknown"),
+                            ("", "unknown")):
+            with self.subTest(stamp=stamp), closing(aw.open_store(self.watch)) as ws:
+                ws.execute("UPDATE runs SET run_at = ?", (stamp,))
+                ws.commit()
+                self.assertEqual(status(NOW)[0], word)
+        with closing(aw.open_store(self.watch)) as ws:
+            ws.execute("UPDATE runs SET run_at = ?, status = 'failed'", (aw._iso(NOW),))
+            ws.commit()
+        self.assertEqual(status(NOW + dt.timedelta(days=3))[0], "failed")
+        # the items: listed up to ITEM_DAYS after their last sight, then gone unfolded
+        edge = NOW + dt.timedelta(days=aw.ITEM_DAYS)
+        self.assertEqual(len(aw.read_items(self.watch, self.served, now=edge, **grant)), 3)
+        self.assertEqual(aw.read_items(self.watch, self.served,
+                                       now=edge + dt.timedelta(seconds=1), **grant), [])
+        # the briefing over a stopped watcher: not checked, its items gone
+        aw.set_switch(self.state, "on")
+        with closing(aw.open_store(aw.watch_dir(self.state))) as ws, \
+                closing(aw.open_store(self.watch)) as src:
+            for table in ("items", "item_cites", "runs"):
+                rows = [tuple(r) for r in src.execute(f"SELECT * FROM {table}")]
+                marks = ",".join("?" * len(rows[0]))
+                ws.executemany(f"INSERT INTO {table} VALUES ({marks})", rows)
+            ws.execute("UPDATE runs SET status = 'complete'")
+            ws.commit()
+        found = {"status": "read", "gaps": [], "detectors": {}}
+        later = NOW + dt.timedelta(days=8)
+        with mock.patch.object(aw, "_now", return_value=later):
+            merged = aw.merge_briefing(found, self.served, **grant)
+        self.assertEqual((merged["detectors"][aw.DETECTOR], merged["gaps"]), ("stale", []))
+        self.assertEqual(merged["detector_run_at"][aw.DETECTOR], aw._iso(NOW))
+        self.assertEqual(bf._check_state(merged, aw.DETECTOR)[0], "not_checked")
 
     def shown(self, may_read=lambda key: True, held=("finance",), decide=admit):
         return sorted(i["summary"] for i in aw.read_items(

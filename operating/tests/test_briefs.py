@@ -57,6 +57,7 @@ class Store:
         self.edges: list[tuple[str, str, str, str]] = []
         self.calls: list[tuple[str, dict]] = []
         self.sees, self.held, self.leaky = ALL, frozenset(FIN), False
+        self.derived: dict[str, list[dict]] = {}    # plx.object ``derived`` per record
 
     def add(self, oid: str, label: str, aud: str = "ops", **values) -> str:
         rows = []
@@ -103,7 +104,8 @@ class Store:
                 return {"error": {"code": "object_not_found", "message": "no"}}
             return {"object": {"object_id": oid, "object_type": br.type_of(oid), "display": {
                 "untrusted_text": self.objects[oid]["label"], "origin": {"citation": h(oid)}}},
-                "values": self._values(oid, args.get("properties"))}
+                "values": self._values(oid, args.get("properties")),
+                **({"derived": self.derived[oid]} if oid in self.derived else {})}
         if tool == "plx.around":
             start, hop = args["from"], args["path"][0]
             if not self.visible(start):
@@ -238,6 +240,26 @@ class MeetingBrief(unittest.TestCase):
     def brief(self, st, alerts, oid=EVENT, held=FIN):
         return br.meeting_brief(st, frozenset(held), alerts, oid, now=NOW, declared=None,
                                 people=PEOPLE)
+
+    def test_a_derived_order_value_says_how_it_was_derived(self):
+        # review of C-01: an order row valued from its invoices (its header reads 0) says
+        # so; the amount alone would read as the order's own total
+        st, alerts, orders = world()
+        zeroed = st.add("SalesOrder:portal.sage_oe_order_header:synth-z", "SO-Z",
+                        order_number="SO-Z", status="Released", currency="USD",
+                        total_amount=("0", FIN))
+        st.link(zeroed, "SalesOrder.ordered_by", CUS)
+        st.derived[zeroed] = [{
+            "property": "order_value", "value_type": "money", "value": "60",
+            "currency": "USD", "derived_from": "invoices",
+            "description": "derived: the sum of the invoices that bill it, before tax",
+            "inputs": [{"l1_handle": h("SalesInvoice:x:synth-inv", "subtotal")}],
+            "markings": FIN}]
+        rows = {r["label"]: r for r in section(self.brief(st, alerts), "orders")["rows"]}
+        self.assertEqual(rows["Order SO-Z"]["amount"], {"amount": "60.00", "currency": "USD"})
+        self.assertIn("value derived from the invoices that bill it, before tax",
+                      rows["Order SO-Z"]["detail"])
+        self.assertNotIn("derived", rows["Order SO-000"]["detail"])
 
     def test_full_reader_sees_every_section_cited(self):
         st, alerts, orders = world()

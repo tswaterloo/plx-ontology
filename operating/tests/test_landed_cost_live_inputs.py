@@ -266,6 +266,27 @@ class InvestigateActualsTest(unittest.TestCase):
         self.assertTrue(all(v > 0 for v in per_line))
         self.assertTrue(result["claim_checks"]["passed"], result["claim_checks"])
 
+    def test_a_rate_on_charges_of_unknown_posting_says_so(self):
+        unstated = {GOLDEN_PO: {**self.PAID[GOLDEN_PO], "duty": {
+            **self.PAID[GOLDEN_PO]["duty"], "posting_unknown": 2}}}
+        def every_page(provider) -> str:
+            table, args, pages = self.table(provider), {
+                "family": "landed_cost", "root": {"identifier": GOLDEN_PO},
+                "as_known_at": world.AT}, []
+            while len(pages) < 30:
+                result = table["plx.investigate"]["handler"](dict(args), self.actor)
+                world._ok(self, result)
+                pages.append(result)
+                if result["completeness"]["next_cursor"] is None:
+                    return json.dumps(pages)
+                args["cursor"] = result["completeness"]["next_cursor"]
+            self.fail("runaway paging")
+
+        said = every_page(self.artifact(unstated))
+        self.assertIn("duty basis: recorded actual; posting unknown for 2 of its 2 charges "
+                      "(BC did not state it)", said)
+        self.assertNotIn("posting unknown", every_page(self.artifact(self.PAID)))
+
     def test_reader_without_the_finance_marking_gets_no_recorded_charge(self):
         for table in (self.table(self.artifact(self.PAID),
                                  markings=[m for m in store_ddl.MARKINGS if m != "finance"]),

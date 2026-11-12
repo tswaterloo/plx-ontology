@@ -52,6 +52,10 @@ import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 MAX_ROUNDS = 24
+# A streamed read (``PgCompatConnection.stream``) takes this many rows a round trip, on one
+# of at most this many connections of its own (none free: the read is run whole).
+STREAM_BATCH = 2000
+STREAM_CONNECTIONS = 2
 # The seconds a reconnect may take: the caller's lock is held meanwhile.
 RECONNECT_TIMEOUT_S = 5
 # How long a command left in progress is given to end after its cancel (``live``).
@@ -386,8 +390,18 @@ def translate(sql: str, functions: tuple[str, ...] = (),
                 skip_until = close
             elif call and name in ("max", "min"):
                 close = _close(tokens, j)
-                many = len(_args(tokens, j, close)) > 1
-                out.append(("greatest" if name == "max" else "least") if many else text)
+                spans = _args(tokens, j, close)
+                if len(spans) > 1:
+                    # SQLite's scalar max/min is NULL when any argument is; greatest/least
+                    # skip NULLs. Each argument becomes a row of a VALUES list (written
+                    # once, so a positional parameter is not repeated), NULL if any is.
+                    out.append("(SELECT CASE WHEN count(sq_mm.v) < count(*) THEN NULL "
+                               f"ELSE {name}(sq_mm.v) END FROM (VALUES ")
+                    for _, end in spans[:-1]:
+                        replace[end] = "),("
+                    suffix[close] = ") AS sq_mm(v))"
+                else:
+                    out.append(text)
             elif call and name in ("coalesce", "ifnull"):
                 # SQLite's comparisons are 0/1: COALESCE(a <= b, 1) is a boolean there
                 close = _close(tokens, j)
@@ -703,39 +717,130 @@ class Row:
 
 
 class Cursor:
-    """The rows of one statement, fetched whole."""
+    """The rows of one statement, fetched whole. Each row is made (its values converted
+    with ``convert``, then a ``Row`` unless ``plain``) as it is taken, not all up front:
+    the driver's row list is the one full copy a result holds."""
 
     def __init__(self, names: tuple[str, ...], rows: list[tuple], rowcount: int,
-                 plain: bool) -> None:
+                 plain: bool, *, convert: bool = False) -> None:
         self.description = tuple((n, None, None, None, None, None, None) for n in names)
         self.rowcount = rowcount
         self.lastrowid = None
-        self._rows = [tuple(r) if plain else Row(names, r) for r in rows]
+        self._names, self._plain, self._convert = names, plain, convert
+        self._rows = rows
         self._at = 0
+
+    def _make(self, raw: Any) -> Any:
+        values = tuple(_value(v) for v in raw) if self._convert else tuple(raw)
+        return values if self._plain else Row(self._names, values)
 
     def fetchone(self) -> Any:
         if self._at >= len(self._rows):
             return None
         self._at += 1
-        return self._rows[self._at - 1]
+        return self._make(self._rows[self._at - 1])
 
     def fetchmany(self, size: int = 1) -> list[Any]:
-        out = self._rows[self._at:self._at + size]
+        out = [self._make(r) for r in self._rows[self._at:self._at + size]]
         self._at += len(out)
         return out
 
     def fetchall(self) -> list[Any]:
-        out = self._rows[self._at:]
+        out = [self._make(r) for r in self._rows[self._at:]]
         self._at = len(self._rows)
         return out
 
     def __iter__(self) -> Iterator[Any]:
         while self._at < len(self._rows):
             self._at += 1
-            yield self._rows[self._at - 1]
+            yield self._make(self._rows[self._at - 1])
 
     def close(self) -> None:
         self._rows = []
+
+
+class StreamCursor:
+    """The rows of one read taken from a server-side cursor ``batch`` rows at a time
+    (``PgCompatConnection.stream``): what the caller has not asked for is not read. Holds
+    its own connection's transaction until it is read to the end or closed."""
+
+    def __init__(self, owner: "PgCompatConnection", conn: Any, cur: Any, batch: int,
+                 plain: bool) -> None:
+        self._owner, self._conn, self._cur, self._batch = owner, conn, cur, batch
+        self.description = cur.description
+        self._names = tuple(d.name for d in cur.description or ())
+        self._plain = plain
+        self.rowcount = -1
+        self.lastrowid = None
+        self.fetched = 0   # rows read from the server so far
+        self._buffer: list[Any] = []
+        self._at = 0
+        self._done = False
+
+    def _make(self, raw: Any) -> Any:
+        values = tuple(_value(v) for v in raw)
+        return values if self._plain else Row(self._names, values)
+
+    def _fill(self) -> bool:
+        """Whether a row is buffered, reading the next batch when none is."""
+        if self._at < len(self._buffer):
+            return True
+        if self._done:
+            return False
+        import psycopg
+        try:
+            self._buffer, self._at = self._cur.fetchmany(self._batch), 0
+        except psycopg.errors.QueryCanceled as exc:
+            self.close()
+            raise sqlite3.OperationalError("interrupted") from exc
+        except psycopg.Error as exc:
+            self.close()
+            raise sqlite3.OperationalError(
+                f"postgres: {type(exc).__name__}: {str(exc).splitlines()[0][:300]}"
+            ) from exc
+        self.fetched += len(self._buffer)
+        if len(self._buffer) < self._batch:
+            self.close(keep_buffer=True)
+        return self._at < len(self._buffer)
+
+    def fetchone(self) -> Any:
+        if not self._fill():
+            return None
+        self._at += 1
+        return self._make(self._buffer[self._at - 1])
+
+    def fetchmany(self, size: int = 1) -> list[Any]:
+        out = []
+        while len(out) < size and self._fill():
+            take = self._buffer[self._at:self._at + size - len(out)]
+            self._at += len(take)
+            out.extend(self._make(r) for r in take)
+        return out
+
+    def fetchall(self) -> list[Any]:
+        out = []
+        while self._fill():
+            out.extend(self._make(r) for r in self._buffer[self._at:])
+            self._at = len(self._buffer)
+        return out
+
+    def __iter__(self) -> Iterator[Any]:
+        while (row := self.fetchone()) is not None:
+            yield row
+
+    def close(self, *, keep_buffer: bool = False) -> None:
+        if not keep_buffer:
+            self._buffer, self._at = [], 0
+        if self._done:
+            return
+        self._done = True
+        self._owner._stream_done(self._conn, self._cur)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 - interpreter teardown
+            pass
 
 
 def read_only(sql: str) -> bool:
@@ -780,6 +885,10 @@ class PgCompatConnection:
         # queries run here only then, else they raise (``translate``).
         self.words: tuple[str, ...] = ()
         self.row_factory: Any = sqlite3.Row
+        # idle connections streamed reads run on, and how many are open (``stream``)
+        self._streams: list[Any] = []
+        self._streams_open = 0
+        self._streams_lock = threading.Lock()
         self._conn = self._open()
         from operating.ontology_tools_traverse import GATED_SCHEMES
         self._gated = tuple(sorted(GATED_SCHEMES))
@@ -1023,7 +1132,7 @@ class PgCompatConnection:
                 f"postgres: {type(exc).__name__}: {str(exc).splitlines()[0][:300]}"
             ) from exc
         plain = self.row_factory is None
-        return Cursor(columns, [tuple(_value(v) for v in r) for r in rows], count, plain)
+        return Cursor(columns, rows, count, plain, convert=True)
 
     def _cursor(self, text: str) -> Any:
         """A server-side cursor (the statement prepared once, its plan reused) unless the
@@ -1060,6 +1169,115 @@ class PgCompatConnection:
         with psycopg.ClientCursor(self._conn) as client:
             client.execute(text, params)
             return read(client)
+
+    def stream(self, sql: str, parameters: Any = (), *, batch: int = STREAM_BATCH) -> Any:
+        """A read whose rows are taken from a server-side cursor ``batch`` at a time as the
+        caller goes (``StreamCursor``), on a connection of its own, so a scan that stops
+        early reads no further and a long one holds one batch in memory, not the whole
+        result. A statement that is not one plain read, that asks the item gate or a
+        session's kept lists, or finds no stream connection free runs whole
+        (``execute``), with the same rows."""
+        import psycopg
+
+        if not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
+            raise ValueError(f"stream_batch_invalid:{batch!r}")
+        if not read_only(sql):
+            return self.execute(sql, parameters)
+        with self._lock:
+            names = tuple(sorted(self._functions))
+            text = translate(sql, names, self._gated, self.words, self.arrays)
+            if "ontology.sq_call(" in text or "sq_json_array(" in text \
+                    or text in self._client_only:
+                return self.execute(sql, parameters)
+            conn = self._stream_conn()
+            if conn is None:
+                return self.execute(sql, parameters)
+            cur = None
+            try:
+                params = self._params(parameters)
+                if self.words and "MATCH" in sql.upper():
+                    params = self._word_queries(sql, params)
+                if "AS u(value)" in text:
+                    params = self._lists(text, params)
+                if text.startswith("WITH sq_words_"):   # as ``_execute`` reads it
+                    conn.execute("SET LOCAL join_collapse_limit = 1")
+                cur = conn.cursor(name=f"sq_stream_{id(conn):x}", scrollable=False,
+                                  withhold=False)
+                cur.itersize = batch
+                cur.execute(text, params)
+            except (psycopg.errors.IndeterminateDatatype, psycopg.errors.UndefinedFunction,
+                    psycopg.errors.DatatypeMismatch, psycopg.errors.AmbiguousFunction,
+                    psycopg.errors.InvalidTextRepresentation,
+                    psycopg.errors.AmbiguousParameter, psycopg.errors.InvalidParameterValue,
+                    psycopg.errors.CannotCoerce):
+                # a parameter typed by its context: bound client side, whole (``_run``)
+                self._stream_done(conn, cur)
+                return self.execute(sql, parameters)
+            except BaseException as exc:
+                self._stream_done(conn, cur)
+                if isinstance(exc, psycopg.errors.QueryCanceled):
+                    raise sqlite3.OperationalError("interrupted") from exc
+                if isinstance(exc, psycopg.Error):
+                    raise sqlite3.OperationalError(
+                        f"postgres: {type(exc).__name__}: "
+                        f"{str(exc).splitlines()[0][:300]}") from exc
+                raise
+            if self._trace is not None:
+                self._trace(sql)
+            return StreamCursor(self, conn, cur, batch, self.row_factory is None)
+
+    def _stream_conn(self) -> Any:
+        """An idle stream connection, a new one while fewer than ``STREAM_CONNECTIONS``
+        are open, else None."""
+        import psycopg
+        from operating.pg.pool import alive
+
+        with self._streams_lock:
+            while self._streams:
+                conn = self._streams.pop()
+                if alive(conn):
+                    return conn
+                self._streams_open -= 1
+                conn.close()
+            if self._streams_open >= STREAM_CONNECTIONS:
+                return None
+            self._streams_open += 1
+        try:
+            conn = psycopg.connect(self.dsn, autocommit=True)
+            with conn.cursor() as cur:
+                cur.execute("SET search_path = ontology, public")
+                cur.execute("SET TimeZone = 'UTC'")
+                cur.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
+                cur.execute("SET jit = off")
+                cur.execute("SET plan_cache_mode = force_custom_plan")
+                cur.execute("SET default_transaction_read_only = on")
+            conn.autocommit = False
+        except BaseException:
+            with self._streams_lock:
+                self._streams_open -= 1
+            raise
+        return conn
+
+    def _stream_done(self, conn: Any, cur: Any) -> None:
+        """A stream's connection back to the idle list, its transaction ended (the
+        server cursor with it); one that cannot be ended is closed."""
+        keep = False
+        try:
+            if cur is not None:
+                cur.close()
+            conn.rollback()
+            keep = not conn.closed and not conn.broken
+        except Exception:  # noqa: BLE001 - a broken stream connection is dropped
+            keep = False
+        with self._streams_lock:
+            if keep and not self._closed:
+                self._streams.append(conn)
+                return
+            self._streams_open -= 1
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     def executemany(self, sql: str, seq: Any) -> Cursor:
         last = Cursor((), [], 0, True)
@@ -1104,6 +1322,11 @@ class PgCompatConnection:
     def close(self) -> None:
         self._closed = True
         self._conn.close()
+        with self._streams_lock:
+            idle, self._streams = self._streams, []
+            self._streams_open -= len(idle)
+        for conn in idle:
+            conn.close()
 
     def __enter__(self) -> "PgCompatConnection":
         return self

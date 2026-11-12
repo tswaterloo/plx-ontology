@@ -940,6 +940,47 @@ class InboxTest(Engine):
                 finally:
                     st.close()
 
+    def test_ranged_scans_reuse_their_part_connections(self):
+        """CC-P-09: the ranged scans' parts read on connections kept for the run, not one
+        opened and closed per range: two scans of 12 ranges on 4 threads open at most 4
+        part connections, all closed with the store; a part whose read failed is not
+        reused."""
+        world, _ids = seeded()
+        world.build(self.store)
+        opened = []
+        real = pe._connect
+
+        def counted(path):
+            conn = real(path)
+            opened.append(conn)
+            return conn
+        with mock.patch.object(pe, "PARALLEL_LINK_ROWS", 1), \
+                mock.patch.object(pe, "LINK_PARTS_PER_THREAD", 3), \
+                mock.patch.object(pe, "_connect", side_effect=counted):
+            st = pe._Store(self.store, threads=4)
+            try:
+                first = st.audience_firsts()
+                again = st._ranged("objects", "o", "SELECT o.object_id FROM objects o "
+                                   "WHERE 1", " ORDER BY o.rowid", {}, lambda r: r[0])
+            finally:
+                st.close()
+        self.assertTrue(first)
+        self.assertGreater(sum(len(part) for part in again), 0)
+        self.assertLessEqual(len(opened), 1 + 4)   # the run's own and at most one a thread
+        for conn in opened:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")   # every one closed with the store
+        st = pe._Store(self.store, threads=2)
+        try:
+            bad = st._part_conn()
+            st._part_done(bad, False)
+            self.assertNotIn(bad, st._parts)
+            good = st._part_conn()
+            st._part_done(good, True)
+            self.assertIs(st._part_conn(), good)
+        finally:
+            st.close()
+
     def test_a_full_run_scans_the_link_table_once_and_finds_the_same_gaps(self):
         """Every link type a detector reads is in the run's one up-front scan
         (``_run_link_types``): no detector scans the link table again at its turn (each scan
@@ -1126,6 +1167,45 @@ class ServedGenerationTest(Engine):
         self.assertNotIn(ids["unconfirmed"], self.late_ids(fresh))
         self.assertIn(ids["overdue_root"], {g["object_id"] for g in fresh["gaps"]})
         self.assertFalse(pe.served_behind(self.store))
+
+    def test_a_rule_cut_short_on_new_data_lists_its_older_gaps_marked_never_current(self):
+        # the live failure (2026-11-11): three rules slower than their windows were cut
+        # short on every pass, so their last good findings were of older data. Those stay
+        # listed, each marked with when it was last checked, never as current; what the
+        # cut-short run did find again is current.
+        from operating import briefing as bf
+        world, ids = seeded()
+        first = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        self.run_engine(world, ids["coverage"], at=first)
+        before = self.late_ids(self.read())
+        self.assertIn(ids["unconfirmed"], before)
+        world.obj("ForwarderQuote", {"valid_until": "2026-02-01"})   # new data: new digest
+        with mock.patch.object(pe, "_late_or_unconfirmed_po",
+                               side_effect=pe.TimeBudgetSpent()):
+            summary = self.run_engine(world, ids["coverage"], at=first + timedelta(hours=1))
+        self.assertEqual(summary["detectors"]["late_or_unconfirmed_po"], "truncated")
+        shown = self.read()
+        self.assertFalse(shown["complete"])
+        late = [g for g in shown["gaps"] if g["kind"] == "unconfirmed_po"]
+        self.assertEqual({g["object_id"] for g in late} & before, before)
+        for g in late:
+            self.assertEqual(g["carried"]["reason"], "check_incomplete")
+            self.assertEqual(g["carried"]["last_checked"], first.isoformat())
+            self.assertIn("the latest check did not finish; last checked", g["summary"])
+        # a rule that ran to the end over the new data is current: nothing of it marked
+        self.assertTrue(any(g["kind"] == "expired_quote" and "carried" not in g
+                            for g in shown["gaps"]))
+        brief = bf.read(self.inbox, self.store, reader="plx:ops", may_read=everyone,
+                        held=ALL_MARKINGS, decide=admit,
+                        routing=bf.Routing(basis="fixture", everything=True))
+        marked = [i for i in brief["items"] if i.get("carried")]
+        self.assertTrue(marked)
+        self.assertTrue(all(i["carried"]["reason"] == "check_incomplete" for i in marked))
+        # the next run that reaches the end lists them as current again
+        self.run_engine(world, ids["coverage"], at=first + timedelta(hours=2))
+        again = self.read()
+        self.assertIn(ids["unconfirmed"], self.late_ids(again))
+        self.assertFalse(any(g.get("carried") for g in again["gaps"]))
 
     def test_a_rule_that_fails_on_new_data_keeps_its_older_gaps_unlisted(self):
         world, ids = seeded()
@@ -1470,6 +1550,68 @@ def view_quantity_rows(st):
         + ostore.removed_at_sql("o.object_id"))]
 
 
+class GoLiveFirstTest(Engine):
+    """A BC number series' first document (and its same-day siblings) is a go-live test
+    record only on the go-live day the deployment states; past a thousand a number ending
+    in 001 is an ordinary order, and a series begun on another day is ordinary business
+    (AUTOMATION-015)."""
+
+    def marked(self, numbers, go_live):
+        w = World()
+        ids = {}
+        for number, day in numbers:
+            ids[number] = w.obj("PurchaseOrder", {"po_number": number, "order_date": day},
+                                binding="bc.po")
+            line = w.obj("PurchaseOrderLine", {"ordered_quantity": ("100", "each")},
+                         binding="bc.po")
+            w.link("PurchaseOrderLine.line_of", line, ids[number])
+        w.build(self.store)
+        st = pe._Store(self.store, threads=1)
+        self.addCleanup(st.close)
+        env = {} if go_live is None else {"PLX_BC_GO_LIVE_DATE": go_live}
+        with mock.patch.dict(os.environ, env):
+            if go_live is None:
+                os.environ.pop("PLX_BC_GO_LIVE_DATE", None)
+            return {n: pe.test_records(st, AS_OF).get(oid) for n, oid in ids.items()
+                    if pe.test_records(st, AS_OF).get(oid)}
+
+    def test_a_number_ending_in_001_past_a_thousand_is_an_ordinary_order(self):
+        marked = self.marked((
+            ("PO100000", "2025-06-01"), ("PO100001", "2025-06-01"),
+            ("PO100002", "2025-06-01"), ("PO100003", "2025-06-02"),
+            ("PO100999", "2026-09-30"), ("PO101000", "2026-10-01"),
+            ("PO101001", "2026-10-01"), ("PO101002", "2026-10-01"),
+            ("106001", "2025-06-01"), ("106002", "2025-06-01"),
+            ("107001", "2026-10-02"), ("107002", "2026-10-02")), "2025-06-01")
+        self.assertEqual(set(marked), {"PO100000", "PO100001", "PO100002", "106001", "106002"})
+        self.assertEqual(set(marked.values()), {"go_live_first"})
+
+    def test_a_new_series_with_lines_on_another_day_stays_business(self):
+        # PO1001/PO1002 order 100 and 200 on one day of a new series; only
+        # the stated go-live day's firsts are go-live records
+        numbers = (("PO1001", "2026-11-12"), ("PO1002", "2026-11-12"),
+                   ("PO1003", "2026-11-13"), ("106001", "2026-03-28"),
+                   ("106002", "2026-03-28"), ("106003", "2026-03-29"))
+        self.assertEqual(set(self.marked(numbers, "2026-03-28")), {"106001", "106002"})
+
+    def test_no_stated_go_live_day_marks_nothing(self):
+        numbers = (("PO1001", "2026-11-12"), ("PO1002", "2026-11-12"),
+                   ("106001", "2026-03-28"))
+        for unreadable in (None, "", "28/03/2026", "2026-3-28", "2026-02-30", "soon"):
+            with self.subTest(go_live=unreadable):
+                self.assertEqual(self.marked(numbers, unreadable), {})
+
+    def test_only_a_series_one_first_in_its_own_width_counts(self):
+        # a different prefix or width is another series; two firsts in one series mark none
+        mem = [("a", "SO-2024-001", "2025-01-01"), ("b", "SO-2024-002", "2025-01-01"),
+               ("c", "SO-2025-001", "2025-01-01"), ("d", "1001", "2025-01-01"),
+               ("e", "01001", "2025-01-01"), ("f", "X001", "2025-01-01"),
+               ("g", "X001", "2025-01-01"), ("h", "Y001", None), ("i", "", "2025-01-01"),
+               ("j", "Z001", "2025-01-02")]
+        self.assertEqual(pe.series_firsts(mem, date(2025, 1, 1)), {"a", "b", "c", "d", "e"})
+        self.assertEqual(pe.series_firsts(mem, None), set())
+
+
 class HomeLateCountTest(Engine):
     """Home's late count (``plx.find`` home ``late_orders``, which Ask's count and the late
     list say) is the late rule's: exact when that rule ran over the served data and every
@@ -1652,6 +1794,58 @@ class FastReadEquivalenceTest(Engine):
                 self.assertEqual(pe._quantity_rows(st), view_quantity_rows(st))
             finally:
                 st.close()
+
+    def test_removed_ends_are_read_per_type_never_the_whole_store(self):
+        """The link reads looked every removed record of the store
+        up first (one statement over every record, 55-77 s live, past the statement
+        timeout). Each end type's removals are read alone now; a link whose end is of a
+        type the schema does not declare is still marked gone, never read as held."""
+        w = World()
+        order = w.obj("PurchaseOrder", {"po_number": "SYNTH-PO-R"})
+        line = w.obj("PurchaseOrderLine", {"description": "Synthetic"})
+        kept = w.obj("PurchaseOrderLine", {"description": "Synthetic kept"})
+        loose = w.obj("SynthLoose", {"name": "x"})
+        supplier = w.obj("Supplier", {"name": "Synthetic Supplier"})
+        w.link("PurchaseOrderLine.line_of", line, order)
+        w.link("PurchaseOrderLine.line_of", kept, w.obj("PurchaseOrder", {"po_number": "K"}))
+        w.link("SynthUndeclared.ties", loose, supplier)
+        w.link("SynthUndeclared.ties", supplier, kept)
+        for gone in (order, loose):
+            w.rows["objects"][[r["object_id"] for r in w.rows["objects"]].index(gone)][
+                "missing_from_source_since"] = "2026-10-05T00:00:00.000000Z"
+        w.build(self.store)
+        whole = []
+        real = ostore.removed_ids_sql
+
+        def counted(*a, **k):
+            if not k.get("object_type_sql"):
+                whole.append(1)
+            return real(*a, **k)
+        types = ("PurchaseOrderLine.line_of", "SynthUndeclared.ties")
+        single = pe._Store(self.store)
+        try:
+            want = {held: single_query_links(single, types, held=held)
+                    for held in (True, False)}
+        finally:
+            single.close()
+        with mock.patch.object(ostore, "removed_ids_sql", counted):
+            for threads, parallel in ((1, 10 ** 9), (4, 0)):
+                with self.subTest(threads=threads), \
+                        mock.patch.object(pe, "PARALLEL_LINK_ROWS", parallel):
+                    st = pe._Store(self.store, threads=threads)
+                    try:
+                        for held in (True, False):
+                            self.assertEqual(st.links(types, held=held), want[held])
+                        self.assertEqual(
+                            {(r[3], r[4]): r[7] for r in st.of_type("SynthUndeclared.ties")},
+                            {(loose, supplier): True, (supplier, kept): False})
+                        self.assertEqual(st.removed(["PurchaseOrder"]), {order})
+                        self.assertEqual(st.removed(["SynthLoose", "Supplier"]), {loose})
+                    finally:
+                        st.close()
+        self.assertEqual(whole, [])
+        self.assertEqual([(l["from_object"], l["to_object"]) for l in want[True]],
+                         [(kept, w.rows["links"][1]["to_object"]), (supplier, kept)])
 
     def test_no_detector_read_builds_a_transient_index(self):
         seeded()[0].build(self.store)
@@ -2400,3 +2594,16 @@ class ExclusionReachesTheEngine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatementTimeoutTests(unittest.TestCase):
+    def test_detector_statement_limit_is_ten_minutes_unless_set(self):
+        import os
+        from unittest import mock
+        from operating import proactive_engine as engine
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PLX_PROACTIVE_STATEMENT_SECONDS", None)
+            self.assertEqual(engine.statement_timeout_ms(), 600_000)
+        for value, want in (("90", 90_000), ("0", 600_000), ("-5", 600_000), ("x", 600_000)):
+            with mock.patch.dict(os.environ, {"PLX_PROACTIVE_STATEMENT_SECONDS": value}):
+                self.assertEqual(engine.statement_timeout_ms(), want)

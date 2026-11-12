@@ -40,6 +40,7 @@ import time
 from typing import Any, Mapping, Sequence
 
 from ontology import store_ddl
+from operating.pg import whole_steps as _whole_steps
 from operating.pg.ontology_load import TABLES, _clean, _context, _number
 
 _CHUNK = 200_000   # sources whose value cells are read at once
@@ -52,9 +53,10 @@ _FIELDS_PG = f"(SELECT field_id FROM ontology.text_fields WHERE object_id IN {_O
 _DELETE = (
     ("events", f"event_id IN {_EVENTS_PG}"),
     ("event_objects", f"event_id IN {_EVENTS_PG}"),
-    # two deletes, each on its own index (one with OR scans every link)
-    ("link_rows", f"from_object IN {_OWNED_PG}"),
-    ("link_rows", f"to_object IN {_OWNED_PG}"),
+    # two deletes, each on its own index (one with OR scans every link); the links of a
+    # whole-store step are not the layer's to replace (``operating.pg.whole_steps``)
+    ("link_rows", f"from_object IN {_OWNED_PG} AND {_whole_steps.pg_excluded()}"),
+    ("link_rows", f"to_object IN {_OWNED_PG} AND {_whole_steps.pg_excluded()}"),
     ("value_cells", f"src IN (SELECT src FROM ontology.value_sources WHERE ver IN {_VERS_PG})"),
     ("packed_sources", f"src IN (SELECT src FROM ontology.value_sources WHERE ver IN "
                        f"{_VERS_PG})"),
@@ -435,8 +437,9 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
 
     links = conn.execute(
         f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links" if every_link else
-        f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links WHERE from_object IN "
-        f"{_OWNED} OR to_object IN {_OWNED}", {} if every_link else {"ids": ids})
+        f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links WHERE (from_object IN "
+        f"{_OWNED} OR to_object IN {_OWNED}) AND {_whole_steps.sqlite_excluded()}",
+        {} if every_link else {"ids": ids})
     report["copied.link_rows"] = _copy(cur, "link_rows", store_ddl.LINK_COLUMNS, links, keys=keys)
 
     try:
@@ -503,12 +506,28 @@ def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None
            "refused": sorted({r.get("reason") for r in results
                               if not r.get("applied") and r.get("reason")
                               != "already_applied"} - {None})}
+    out["whole_steps"] = recompute_whole_steps(dsn, log=log)
     stalled = [r for r in results if r.get("reason") in STALLS]
     if stalled:
         out["stalled"] = stall(stalled[0])
         print(f"ONTOLOGY DELTA STALLED: {json.dumps(out['stalled'], sort_keys=True)}",
               file=sys.stderr, flush=True)
     return out
+
+
+def recompute_whole_steps(dsn: str, *, log: Any = None) -> dict[str, Any]:
+    """The whole-store steps brought up to date over the layers applied since their last
+    run (``operating.pg.whole_steps``): their report, ``{"pending": False}`` when nothing
+    is to be done, or ``{"error": ...}`` (the served links stay as they were and the next
+    cycle tries again)."""
+    try:
+        report = _whole_steps.recompute(dsn)
+    except Exception as exc:   # the layers are committed: report, keep the mark, go on
+        report = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        print(f"ONTOLOGY WHOLE STEPS FAILED: {report['error']}", file=sys.stderr, flush=True)
+    if log is not None and report != {"pending": False}:
+        print(json.dumps({"whole_steps": report}, sort_keys=True), file=log, flush=True)
+    return report
 
 
 # a layer of code no migration leads from: every later layer waits behind it (the delta
@@ -723,6 +742,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 3 if out.get("state") == "stalled" else 0
     for layer in args.layers:
         print(json.dumps(apply_layer(layer, dsn), sort_keys=True), flush=True)
+    if args.layers:   # the whole-store steps over what they applied (``whole_steps``)
+        print(json.dumps({"whole_steps": recompute_whole_steps(dsn)}, sort_keys=True,
+                         default=str), flush=True)
     return 0
 
 

@@ -712,8 +712,16 @@ def _ready(state_dir: Path) -> bool:
     if all((key, a.name) in _VERSIONS or a.name in OVERRIDES or not a.roots
            for a in ARTIFACTS):
         return True
-    if any((d / f"deployed-{key}.json").is_file() for d in _cache_dirs(state_dir)):
-        return True
+    # a cache file counts only when it holds a version for every artifact still to be known:
+    # one written for a single artifact (a ``deployed(names=...)`` call) is no reason to
+    # compute the rest inside a page read, where a cold tree held it for minutes
+    needed = {a.name for a in ARTIFACTS
+              if a.roots and a.name not in OVERRIDES and (key, a.name) not in _VERSIONS}
+    for directory in _cache_dirs(state_dir):
+        doc = _read_json(directory / f"deployed-{key}.json")
+        if isinstance(doc, dict) and doc.get("scheme") == SCHEME \
+                and needed <= set(doc.get("versions") or ()):
+            return True
     thread = _WARMING.get(key)
     if thread is None:
         thread = threading.Thread(target=deployed, kwargs={"state_dir": state_dir},

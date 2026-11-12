@@ -142,7 +142,7 @@ class WriteIntentsMixin:
         try:
             found = self._wdesk().execute(intent_id, self._person(reader), self._write_ctx(),
                                           idempotency_key=body.idempotency_key,
-                                          checked_bc=body.checked_bc)
+                                          checked_bc=body.checked_bc, live=body.live)
         except wi.WriteRefused as refused:
             raise self._refused(refused)
         return m.WriteIntentView(**found)

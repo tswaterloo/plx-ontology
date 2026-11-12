@@ -6,7 +6,7 @@ readers) read it. Evidence: isolated-fixture; nothing is ever sent."""
 from __future__ import annotations
 
 from contextlib import redirect_stdout
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
@@ -205,6 +205,24 @@ class AlarmPassTest(unittest.TestCase):
         status = self.run_at(fake, 25)
         self.assertIn("pg_connections", [i["key"] for i in status["open"]])
 
+    def test_failed_postgres_probe_keeps_an_open_idle_incident_open(self) -> None:
+        fake = Fake()
+        fake.pg_value = {"clients": 5, "max": 100, "idle": 1, "idle_in_transaction": 2,
+                         "longest_idle_in_transaction_minutes": 30.0}
+        status = self.run_at(fake, 0)
+        self.assertIn("pg_idle_in_transaction", [i["key"] for i in status["open"]])
+        fake.pg_value = RuntimeError("too many clients")      # two failed probes
+        for minutes in (5, 10, 15):
+            status = self.run_at(fake, minutes)
+        keys = [i["key"] for i in status["open"]]
+        self.assertIn("pg_idle_in_transaction", keys)
+        self.assertIn("pg_connections", keys)
+        # measured healthy twice: both close
+        fake.pg_value = {"clients": 5, "max": 100, "idle": 1, "idle_in_transaction": 0}
+        for minutes in (20, 25, 30):
+            status = self.run_at(fake, minutes)
+        self.assertNotIn("pg_idle_in_transaction", [i["key"] for i in status["open"]])
+
     def test_memory_opens_only_when_low_for_five_minutes(self) -> None:
         fake = Fake(mem_gb=4.0)
         status = self.run_at(fake, 0)
@@ -319,6 +337,90 @@ class AlarmPassTest(unittest.TestCase):
                 self.assertEqual(len(set(keys)), n)
                 self.assertEqual(sorted(keys), [f"unit:plx-u{i:02d}.service"
                                                 for i in range(n)])
+
+    def test_a_service_that_exited_cleanly_and_a_long_delta_cycle_are_stops(self) -> None:
+        """An enabled long-running service that is not running stopped (exit 0 never
+        restarts under Restart=on-failure); an enabled oneshot that is idle did not. The
+        delta's cycle is read from systemd against its own, shorter bound."""
+        system = healthy_units()[:3] + [
+            unit("plx-caddy.service", UnitFileState="enabled", Type="simple",
+                 StateChangeTimestamp=f"@{STAMP - 5 * 3600}"),
+            unit("plx-api.service", "active", "running", UnitFileState="enabled",
+                 Type="simple"),
+            unit("plx-suite.service", UnitFileState="enabled", Type="oneshot"),
+            unit("plx-quiet.service", UnitFileState="disabled", Type="simple"),
+            unit("plx-delta.service", "activating", "start", Type="oneshot",
+                 StateChangeTimestamp=f"@{STAMP - 3 * 3600}"),
+            unit("plx-search-follow.service", "activating", "start", Type="oneshot",
+                 StateChangeTimestamp=f"@{STAMP - 3 * 3600}")]
+        status = self.run_at(Fake(system=system))
+        lines = {i["key"]: i["line"] for i in status["open"]}
+        self.assertEqual(set(lines), {"unit:plx-caddy.service", "unit:plx-delta.service"})
+        self.assertIn("enabled but not running for 5 h (it exited cleanly",
+                      lines["unit:plx-caddy.service"])
+        self.assertIn("still starting after 3 h", lines["unit:plx-delta.service"])
+
+    def test_the_capture_service_says_it_stopped_and_why(self) -> None:
+        """Capture ended on low disk (exit 0): one incident naming the reason, the free
+        space and who restarts it, never a second one for its unit; switched off on
+        purpose: still an incident, naming who, why and until when; started again: it
+        recovers. The Home line says the same."""
+        health = self.root / "host" / "serve-health.json"
+        off = self.root / "host" / ops_health.CAPTURE_OFF_FILE
+        health.write_text(json.dumps({"schema": "plx-serve-health/v1",
+                                      "started_at": "2030-01-02T08:00:00Z", "failures": [],
+                                      "stop": {"at": "2030-01-02T10:00:00Z",
+                                               "reason": "low_disk",
+                                               "free_bytes": 3 * GB}}))
+        system = healthy_units() + [unit("plx-ingest.service", UnitFileState="enabled",
+                                         Type="simple")]
+        status = self.run_at(Fake(system=system))
+        lines = {i["key"]: i["line"] for i in status["open"]}
+        self.assertNotIn("unit:plx-ingest.service", lines)
+        self.assertEqual(lines["ingest_service"],
+                         "Capture service: stopped on low disk at 2030-01-02T10:00:00Z, "
+                         "3 GB free; the ingest keeper restarts it once the disk has room "
+                         "again (2 h ago)")
+        home = ops_health.capture_alarm(ops_health.collect(self.root, now=NOW, environ={},
+                                                            include_api=False))
+        # the Home line every reader sees says capture is not running, never why or who
+        self.assertEqual(home["line"], "capture service not running")
+        off.write_text(json.dumps({"since": "2030-01-02T10:30:00Z", "by": "operator",
+                                   "reason": "held for the delta catch-up",
+                                   "until": "2030-01-02T18:00:00Z"}))
+        lines = {i["key"]: i["line"] for i in self.run_at(Fake(system=system), 5)["open"]}
+        home = ops_health.capture_alarm(ops_health.collect(self.root, now=NOW, environ={},
+                                                            include_api=False))
+        self.assertNotIn("operator", home["line"])
+        self.assertNotIn("catch-up", home["line"])
+        self.assertIn("off on purpose since 2030-01-02T10:30:00Z (operator): held for "
+                      "the delta catch-up; until 2030-01-02T18:00:00Z",
+                      lines["ingest_service"])
+        # an unreadable off record is no record: the stop still shows with its reason
+        off.write_text("{not json")
+        lines = {i["key"]: i["line"] for i in self.run_at(Fake(system=system), 10)["open"]}
+        self.assertIn("stopped on low disk", lines["ingest_service"])
+        # a stop that is not low disk: nothing restarts it, and it says so
+        held = json.loads(health.read_text())
+        held["stop"]["reason"] = "stopped"
+        health.write_text(json.dumps(held))
+        lines = {i["key"]: i["line"] for i in self.run_at(Fake(system=system), 15)["open"]}
+        self.assertIn("(stopped), 3 GB free; nothing restarts it", lines["ingest_service"])
+        # started after the stop: recovers after two passing runs
+        off.unlink()
+        held["started_at"] = "2030-01-02T12:10:00Z"
+        health.write_text(json.dumps(held))
+        running = healthy_units() + [unit("plx-ingest.service", "active", "running",
+                                          UnitFileState="enabled", Type="simple")]
+        self.run_at(Fake(system=running), 20)
+        status = self.run_at(Fake(system=running), 25)
+        self.assertNotIn("ingest_service", {i["key"] for i in status["open"]})
+        self.assertIn("ingest_service", {i["key"] for i in status["recovered"]})
+        # the service ended with no stop record (killed): its unit names it
+        held.pop("stop")
+        health.write_text(json.dumps(held))
+        status = self.run_at(Fake(system=system), 30)
+        self.assertIn("unit:plx-ingest.service", {i["key"] for i in status["open"]})
 
     def test_backups_too_old_or_never_run(self) -> None:
         t = ops_health.targets({})
@@ -498,6 +600,36 @@ class OpsStatusRouteTest(unittest.TestCase):
                                      ["unit:plx-proactive.service"])
                     self.assertNotIn("paging", body)
 
+
+
+class CredentialExpiryTest(unittest.TestCase):
+    NOW = datetime(2030, 1, 2, 12, 0, tzinfo=timezone.utc)
+
+    def check(self, items, checked="2030-01-02T06:00:00Z", write=True):
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "ops-alarms").mkdir()
+        if write:
+            (tmp / "ops-alarms" / "expiry.json").write_text(
+                json.dumps({"checked_at": checked, "items": items}))
+        return ops_alarms.expiry_checks(tmp, self.NOW, ops_health.targets({}))[0]
+
+    def test_a_credential_inside_thirty_days_opens_and_names_the_nearest(self):
+        got = self.check([{"name": "Claude login", "days_left": 22.5},
+                          {"name": "AZURE_CLIENT_SECRET", "days_left": 9.0},
+                          {"name": "Portal key", "days_left": None},
+                          {"name": "TLS", "days_left": 80.0},
+                          {"name": "access token", "days_left": 0.1, "renews_itself": True}])
+        self.assertEqual((got["state"], got["value"]), ("breach", 9.0))
+        self.assertIn("AZURE_CLIENT_SECRET expires in 9 days and 1 more", got["detail"])
+        self.assertNotIn("access token", got["detail"])
+
+    def test_nothing_soon_is_ok_expired_breaches_and_a_missing_or_stale_list_is_unknown(self):
+        self.assertEqual(self.check([{"name": "TLS", "days_left": 80.0}])["state"], "ok")
+        self.assertIn("expired 2 days ago", self.check([{"name": "k", "days_left": -2.0}])["detail"])
+        self.assertEqual(self.check([], write=False)["state"], "unknown")
+        self.assertEqual(self.check([{"name": "k", "days_left": 1}],
+                                    checked="2029-12-20T00:00:00Z")["state"], "unknown")
+        self.assertEqual(self.check([{"name": "k", "days_left": True}])["state"], "ok")
 
 if __name__ == "__main__":
     unittest.main()

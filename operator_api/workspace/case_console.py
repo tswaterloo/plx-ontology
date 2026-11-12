@@ -406,6 +406,9 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
     parser.add_argument("--portal-access", type=Path, default=None,
                         help="plx-portal-access-snapshot/v1 JSON of Portal user rows, re-read "
                              "per request; without it every employee is refused")
+    parser.add_argument("--portal-access-max-age-hours", type=float, default=None,
+                        help="refuse the Portal access snapshot (every employee denied) "
+                             "once its read_at is older than this many hours")
     parser.add_argument("--session-ticket-env", default=None,
                         help="live --open: environment variable holding the signed session "
                              "ticket (author 'human') of the employee who opens the cases")
@@ -748,6 +751,7 @@ def _identity_from_args(parser: argparse.ArgumentParser, args: argparse.Namespac
     employee_flags = [flag for flag, given in (
         ("--employee-policy", args.employee_policy is not None),
         ("--portal-access", args.portal_access is not None),
+        ("--portal-access-max-age-hours", args.portal_access_max_age_hours is not None),
         ("--session-ticket-env", args.session_ticket_env is not None)) if given]
     if args.fixture:
         if employee_flags:
@@ -766,7 +770,8 @@ def _identity_from_args(parser: argparse.ArgumentParser, args: argparse.Namespac
     if args.employee_policy is None:
         parser.error("a live console needs --employee-policy (or --fixture for a demo)")
     try:
-        resolver = employee_resolver(args.employee_policy, args.portal_access, args.state_dir)
+        resolver = employee_resolver(args.employee_policy, args.portal_access, args.state_dir,
+                                     max_age_hours=args.portal_access_max_age_hours)
     except ValueError as error:
         parser.error(str(error))
     if args.tenant is not None and args.tenant != resolver.policy.tenant:
@@ -784,23 +789,26 @@ def _identity_from_args(parser: argparse.ArgumentParser, args: argparse.Namespac
 
 
 def employee_resolver(employee_policy: Path, portal_access: Path | None,
-                      state_dir: Path | None = None) -> Any:
+                      state_dir: Path | None = None, *,
+                      max_age_hours: float | None = None) -> Any:
     """The live console's ``EmployeePermissionResolver``: the employee policy and the Portal
     access snapshot (re-read per request; without one every employee is refused).
     ``ValueError`` names what is unusable."""
-    from operating.employee_permissions import (EmployeePermissionPolicy,
-                                                EmployeePermissionResolver,
+    from operating.employee_permissions import (EmployeePermissionResolver, PolicyFile,
                                                 PortalAccessSnapshot)
 
     try:
-        policy = EmployeePermissionPolicy.from_file(employee_policy)
+        # re-read when the file changes: an edit applies on the next request without a
+        # restart; an edit that does not load keeps the last good policy and raises the
+        # host alarm (SEC-005)
+        policy = PolicyFile(employee_policy)
     except (ValueError, OSError, UnicodeDecodeError) as error:
         raise ValueError("employee policy is invalid: " + (
             str(error) if isinstance(error, ValueError) else type(error).__name__)) from None
     access: Callable[[Any], Any] = lambda principal: None  # noqa: E731
     if portal_access is not None:
         try:
-            access = PortalAccessSnapshot(portal_access)
+            access = PortalAccessSnapshot(portal_access, max_age_hours=max_age_hours)
         except (ValueError, OSError, UnicodeDecodeError) as error:
             raise ValueError("portal access snapshot is invalid: " + (
                 str(error) if isinstance(error, ValueError) else type(error).__name__)) from None

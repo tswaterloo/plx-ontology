@@ -18,6 +18,15 @@ describe("work log", () => {
     expect(continueHref("autopilot:it-9")).toBe("/autopilot?item=it-9");
     expect(continueHref("record:PurchaseOrder/PO-90412")).toContain("PO-90412");
     expect(continueHref("record:saved/question")).toBe("/work-log");
+    // a note left on a general page continues on that page (WEB-035), as the server's resume says
+    expect(continueHref("record:page/team")).toBe("/team");
+    expect(continueHref("record:page/late")).toBe("/late");
+    expect(continueHref("record:page/rd-projects")).toBe("/rd-projects");
+    expect(continueHref("record:page/ask/history")).toBe("/ask/history");
+    // never a path that leaves the app or climbs out of it
+    expect(continueHref("record:page//evil.example/x")).toBe("/evil.example/x"); // still a path in this app, never a host
+    for (const bad of ["record:page/..%2F..", "record:page/../../etc", "record:page/a b", "record:page/http://x", "record:page/"])
+      expect(continueHref(bad)).toBe("/work-log");
   });
 
   it("an overdue send nudges, drafts the follow-up in Ask and can be closed by its person", async () => {
@@ -29,6 +38,13 @@ describe("work log", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(api.organiseWorkThread).toHaveBeenCalledWith("card:card-1", { closed: true }));
     expect(changed).toHaveBeenCalled();
+  });
+
+  it("a dry-run send reads as prepared, never as sent", () => {
+    render(<ul><WorkLogRow e={sent({ verb: "prepared", loop: null })} /></ul>);
+    const row = screen.getByTestId("work-log-row");
+    expect(row).toHaveTextContent("Prepared (not sent): PO 90412 ship date");
+    expect(row).not.toHaveTextContent(/\bSent\b/);
   });
 
   it("someone else's line (the owner's view) offers no continue, pin or close", () => {

@@ -167,6 +167,103 @@ class LastGoodPage(unittest.TestCase):
             threading.Event().wait(0.05)
         self.assertEqual(self.serve(who, lambda: page(9)).total, 9)
 
+    def wait_over(self):
+        for _ in range(200):
+            if not self.backend._refreshing:
+                return
+            threading.Event().wait(0.05)
+        self.fail("the background read did not end")
+
+    def test_a_first_read_cut_at_the_request_limit_goes_on_with_more_time_and_the_retry_finds_it(self):
+        """SP-05: a page never read before whose read outran the request limit answered
+        busy, and its work was lost with it: a page needing longer than the limit could
+        never be served, however often the app retried (12 % CPU: three 150 s refusals).
+        The read now goes on off the request with BACKGROUND_READ_BUDGET times the limit,
+        keeps its page, and the retry is served that page without a third read."""
+        from operator_api import serving
+        who = reader("grp-a")
+        budgets, calls = [], []
+
+        def read():
+            calls.append(1)
+            budgets.append(serving.READ_BUDGET.get())
+            if len(calls) == 1:
+                raise TimeoutError("workbench_busy")   # the request's read, cut at its limit
+            return page(11)
+
+        with self.assertRaises(TimeoutError):
+            self.serve(who, read)
+        self.wait_over()
+        self.assertEqual(budgets, [1, serving.BACKGROUND_READ_BUDGET])
+        got = self.serve(who, read)
+        self.assertEqual((got.total, got.stale_since), (11, None))
+        # never another reader's page
+        with self.assertRaises(TimeoutError):
+            self.serve(reader("grp-b"), busy)
+
+    def test_a_retry_during_the_first_read_waits_for_it_and_starts_no_second(self):
+        who = reader("grp-a")
+        release, started, calls = threading.Event(), threading.Event(), []
+
+        def read():
+            calls.append(1)
+            if len(calls) == 1:
+                raise TimeoutError("workbench_busy")
+            started.set()
+            release.wait(10)
+            return page(12)
+
+        with self.assertRaises(TimeoutError):
+            self.serve(who, read)
+        self.assertTrue(started.wait(5))      # the background read is under way
+        got = []
+        retry = threading.Thread(target=lambda: got.append(self.serve(who, read)))
+        retry.start()
+        threading.Event().wait(0.4)
+        self.assertEqual(len(calls), 2)       # the retry waits: no read beside the background's
+        self.assertEqual(got, [])
+        release.set()
+        retry.join(10)
+        self.assertEqual(got[0].total, 12)
+
+    def test_a_retry_that_outwaits_the_first_read_is_refused_busy_not_read_beside_it(self):
+        from unittest import mock
+        from operator_api import backend as be
+        who = reader("grp-a")
+        release, calls = threading.Event(), []
+
+        def read():
+            calls.append(1)
+            if len(calls) == 1:
+                raise TimeoutError("workbench_busy")
+            release.wait(10)
+            return page(14)
+
+        with self.assertRaises(TimeoutError):
+            self.serve(who, read)
+        with mock.patch.object(be, "PAGE_TIMEOUT_SECONDS", 0.2):
+            with self.assertRaises(TimeoutError):
+                self.serve(who, read)
+        self.assertEqual(len(calls), 2)   # still no read beside the background's
+        release.set()
+        self.wait_over()
+        self.assertEqual(self.serve(who, read).total, 14)
+
+    def test_a_retry_whose_first_read_kept_nothing_reads_for_itself(self):
+        who = reader("grp-a")
+        calls = []
+
+        def read():
+            calls.append(1)
+            if len(calls) <= 2:
+                raise TimeoutError("workbench_busy")   # the request's, then the background's
+            return page(13)
+
+        with self.assertRaises(TimeoutError):
+            self.serve(who, read)
+        self.wait_over()
+        self.assertEqual(self.serve(who, read).total, 13)
+
     def test_unchanged_access_still_serves_the_kept_page(self):
         who = reader("grp-a")
         self.serve(who, lambda: page(5))
@@ -814,6 +911,17 @@ class OtherScreens(LastGoodPage.__base__):
         patch.start()
         self.addCleanup(patch.stop)
 
+    def background_reads_over(self):
+        """Wait for every background read of this backend (``_refresh_later``) to end."""
+        for _ in range(400):
+            with self.backend._lock:
+                events = list(self.backend.__dict__.get("_refresh_events", {}).values())
+            if not events:
+                return
+            for event in events:
+                event.wait(0.05)
+        self.fail("a background read never ended")
+
     def visit(self, who):
         self.calls.clear()
         got = self.backend.my_work(who)
@@ -895,6 +1003,9 @@ class OtherScreens(LastGoodPage.__base__):
                 with mock.patch.object(be.AutopilotMixin, "my_work", busy):
                     with self.assertRaises(errors.UserFacing):
                         self.backend.my_work(who)
+                    # the refusal reads again in the background: let that read end (still
+                    # refused busy) so it never lands in the next round's counted reads
+                    self.background_reads_over()
         # a grants file that cannot be read: nothing kept is served
         self.titles = ["fresh"]
         self.visit(who)

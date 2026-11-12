@@ -87,7 +87,12 @@ ORDERS = {"Customer": ("SalesOrder.ordered_by",
                         "order_date", "expected_date", "currency", "total_cost"))}
 ORDER_NUMBER = ("order_number", "po_number")
 ORDER_DUE = ("required_date", "expected_date")
-ORDER_AMOUNT = ("total_amount", "total_cost")
+# a sales order's value derived where its header states none (``operating.order_value``)
+# first: such a header reads 0, which is no amount
+ORDER_AMOUNT = ("order_value", "total_amount", "total_cost")
+# how a derived order value was reached, said on its row (``order_value`` bases)
+DERIVED_WORDS = {"invoices": "derived from the invoices that bill it, before tax",
+                 "order_lines": "derived from its lines"}
 DONE_FLAGS = ("bc_fully_shipped", "bc_fully_received", "sage_complete", "sage_is_complete")
 # Other records of a party whose alerts belong to its brief (ids only, never read).
 RELATED = {"Customer": ("SalesInvoice.billed_to", "Shipment.shipped_to", "Quote.for_customer",
@@ -543,16 +548,24 @@ def _order_rows(reads: Reads, party: str, ptype: str, ids: list[str]
         number, n_handle = reads.cell(record, *ORDER_NUMBER)
         status, s_handle = reads.cell(record, "status")
         due, d_handle = reads.cell(record, *ORDER_DUE)
-        amount = None
+        amount = amount_basis = None
         a_handle = c_handle = None
         if reads.finance():
             value, a_handle = reads.cell(record, *ORDER_AMOUNT)
-            cur, c_handle = reads.cell(record, "currency")
+            derived = (record.values or {}).get("order_value") or {}
+            cur, c_handle = ((derived.get("currency"), a_handle)
+                             if derived and derived.get("value") == value
+                             else reads.cell(record, "currency"))
             number_value, currency = _decimal(value), _clip(cur, 3)
-            if number_value is not None and currency and len(currency) == 3:
+            if number_value and currency and len(currency) == 3:   # 0 is no amount
                 amount = (number_value, currency.upper())
+                if derived and derived.get("value") == value:
+                    # a value the order's header does not state says how it was derived
+                    amount_basis = derived.get("derived_from")
         detail = (f"status {_clip(status, 40)}" if status is not None
                   else "status not recorded") + ("" if state else " (open or closed unknown)")
+        if amount_basis in DERIVED_WORDS:
+            detail += f"; value {DERIVED_WORDS[amount_basis]}"
         due_day = _day(due)
         if state and due_day is not None and due_day < reads.today:
             detail += f"; {(reads.today - due_day).days} days past its " + (

@@ -23,6 +23,7 @@ import {
   roleLabel,
   rowRole,
   splitItems,
+  outcomeWords,
   systemLabel,
   workflowLabel,
 } from "@/lib/autopilot";
@@ -68,19 +69,31 @@ function Select({ label, value, onChange, options }: { label: string; value: str
 
 const uniq = (xs: string[]) => [...new Set(xs.filter(Boolean))].sort();
 
-/** Snooze choices: in an hour, tomorrow 8 AM Toronto, next Monday 8 AM. */
+const TZ = "America/Toronto";
+
+/** Toronto's calendar date and hour at an instant, as numbers. */
+function torontoParts(t: Date): { y: number; m: number; d: number; h: number } {
+  const get: Record<string, number> = {};
+  for (const p of new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "numeric", day: "numeric", hour: "numeric", hourCycle: "h23" }).formatToParts(t))
+    if (p.type !== "literal") get[p.type] = Number(p.value);
+  return { y: get.year, m: get.month, d: get.day, h: get.hour };
+}
+
+/** Snooze choices: in an hour, tomorrow 8 AM Toronto, next Monday 8 AM (calendar days in Toronto, so a daylight-saving change never moves the date or the hour). */
 export function snoozeChoices(now: Date = new Date()): [string, string][] {
+  const today = torontoParts(now);
+  // the instant that reads 8:00 on the Toronto calendar day `days` after today
   const at8 = (days: number) => {
-    const d = new Date(now.getTime() + days * 86_400_000);
-    const day = d.toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
-    // 8 AM Toronto is 12:00 or 13:00 UTC; take the one that reads 8 in Toronto
+    const day = new Date(Date.UTC(today.y, today.m - 1, today.d + days));
+    const [y, m, d] = [day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate()];
     for (const h of [12, 13]) {
-      const t = new Date(`${day}T${String(h).padStart(2, "0")}:00:00Z`);
-      if (t.toLocaleTimeString("en-CA", { hour: "numeric", hour12: false, timeZone: "America/Toronto" }).startsWith("8")) return t;
+      const t = new Date(Date.UTC(y, m, d, h));
+      const p = torontoParts(t);
+      if (Number(p.h) === 8 && p.y === y && p.m === m + 1 && p.d === d) return t;
     }
-    return new Date(`${day}T13:00:00Z`);
+    return new Date(Date.UTC(y, m, d, 13));
   };
-  const dow = new Date(now.toLocaleString("en-US", { timeZone: "America/Toronto" })).getDay();
+  const dow = new Date(Date.UTC(today.y, today.m - 1, today.d)).getUTCDay();
   const toMonday = ((8 - dow) % 7) || 7;
   const iso = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
   return [
@@ -249,11 +262,7 @@ function Item({
           {ITEM_STATE[item.state]} {formatDateTime(item.decision.at)}
           {item.decision.by_you ? " by you" : ""}
           {item.decision.until ? `, until ${formatDateTime(item.decision.until)}` : ""}
-          {outcome === "dry_run" && ". Dry run: your decision is recorded, nothing was sent or written."}
-          {outcome === "done" && ". Done live through the write path."}
-          {outcome === "killed" && ". Recorded; switched off, so nothing was performed."}
-          {outcome && !["dry_run", "done", "killed"].includes(outcome) &&
-            `. Recorded; the write path would not perform it (${[outcome, ...(item.decision.reasons ?? []).slice(0, 2)].join(", ").replace(/_/g, " ")}), so nothing was sent or written.`}
+          {outcome && outcomeWords(outcome, item.decision.reasons ?? [], systemLabel(item.system), item.decision.steps ?? [])}
         </p>
       )}
       {error && <ErrorNotice message={error} />}

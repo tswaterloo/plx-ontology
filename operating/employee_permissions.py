@@ -105,10 +105,13 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 import functools
 from hashlib import sha256
 import inspect
 import json
+import logging
+import os
 from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Iterator, Mapping
@@ -213,6 +216,21 @@ def _guid(value: Any, label: str) -> str:
     if _GUID.fullmatch(text) is None:
         raise ValueError(f"{label}_invalid")
     return text
+
+
+def parse_read_at(value: Any) -> datetime:
+    """A snapshot's ``read_at``: an ISO-8601 instant with its offset ("2026-11-11T04:02:46Z",
+    "...+00:00"); anything else (a date alone, no offset, free text) is refused
+    (``portal_access_snapshot_read_at_invalid``)."""
+    text = value.strip() if isinstance(value, str) else ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?"
+                        r"(Z|[+-]\d{2}:\d{2})", text):
+        raise ValueError("portal_access_snapshot_read_at_invalid")
+    try:
+        when = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError:
+        raise ValueError("portal_access_snapshot_read_at_invalid") from None
+    return when.astimezone(timezone.utc)
 
 
 def _text(value: Any, label: str) -> str:
@@ -407,6 +425,18 @@ def groups_unavailable(principal: EmployeePrincipal) -> EntraGroupRead:
     return EntraGroupRead("unavailable", reason=GROUP_READ_BLOCKER)
 
 
+def portal_access_status(path: str | Path, *, max_age_hours: float | None = None,
+                         clock: Callable[[], datetime] | None = None) -> dict[str, Any]:
+    """``PortalAccessSnapshot.status`` for a configured path, never raising: a file that
+    cannot be loaded reads ``invalid`` with its code."""
+    try:
+        return PortalAccessSnapshot(path, max_age_hours=max_age_hours, clock=clock).status()
+    except (ValueError, OSError, UnicodeDecodeError) as error:
+        return {"path": str(path), "max_age_hours": max_age_hours, "state": "invalid",
+                "reason": str(error) if isinstance(error, ValueError)
+                else type(error).__name__}
+
+
 class PortalAccessSnapshot:
     """A ``PortalAccessProvider`` over a cited export of Portal user rows.
 
@@ -448,30 +478,76 @@ class PortalAccessSnapshot:
     _MRP = (("mrpWarehouse", "warehouse"), ("mrpProduction", "production"),
             ("mrpRnD", "rnd"))
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        self._cache: tuple[tuple[int, ...], list[PortalAccessRead]] | None = None
-        # Loud at startup; every later call re-reads and fails closed.
-        self._rows()
+    # A read_at this far ahead of the clock is a wrong clock or a hand-typed date: refused.
+    FUTURE_SKEW = timedelta(minutes=5)
 
-    def _rows(self) -> list[PortalAccessRead]:
+    def __init__(self, path: str | Path, *, max_age_hours: float | None = None,
+                 clock: Callable[[], datetime] | None = None) -> None:
+        """``max_age_hours``: older than this (by ``read_at``) the snapshot is refused
+        (``portal_access_snapshot_stale``, an outage: every employee is denied with
+        ``rights_unresolved``) until it is exported again; None: no age bound."""
+        if max_age_hours is not None and (isinstance(max_age_hours, bool) or not isinstance(
+                max_age_hours, (int, float)) or not 0 < max_age_hours < float("inf")):
+            raise ValueError("portal_access_max_age_invalid")
+        self.path = Path(path)
+        self.max_age_hours = None if max_age_hours is None else float(max_age_hours)
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._cache: tuple[tuple[int, ...], datetime, list[PortalAccessRead]] | None = None
+        # Loud at startup (an unreadable file, a bad read_at); every later call re-reads
+        # and fails closed. Age alone does not stop a start: it denies per call.
+        self._rows(age=False)
+
+    def _rows(self, *, age: bool = True) -> list[PortalAccessRead]:
         info = self.path.stat()
         stamp = (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
         cached = self._cache
-        if cached is not None and cached[0] == stamp:
-            return cached[1]
-        rows = self._load()
-        self._cache = (stamp, rows)
-        return rows
+        if cached is None or cached[0] != stamp:
+            cached = (stamp, *self._load())
+            self._cache = cached
+        # The age is checked on every call, the parse only when the file changed.
+        self._fresh(cached[1], age=age)
+        return cached[2]
 
-    def _load(self) -> list[PortalAccessRead]:
+    def _fresh(self, read_at: datetime, *, age: bool = True) -> None:
+        now = self._clock()
+        if read_at > now + self.FUTURE_SKEW:
+            raise ValueError("portal_access_snapshot_read_at_future")
+        if age and self.max_age_hours is not None \
+                and now - read_at > timedelta(hours=self.max_age_hours):
+            raise ValueError("portal_access_snapshot_stale")
+
+    def status(self) -> dict[str, Any]:
+        """When the snapshot was read, its age and bound, and whether it is served now
+        (``fresh``) or refused (``stale``, ``read_at_future``, ``invalid``)."""
+        out: dict[str, Any] = {"path": str(self.path), "max_age_hours": self.max_age_hours}
+        try:
+            self._rows()
+            state = "fresh"
+        except ValueError as error:
+            code = str(error)
+            state = {"portal_access_snapshot_stale": "stale",
+                     "portal_access_snapshot_read_at_future": "read_at_future"}.get(
+                         code, "invalid")
+            if state == "invalid":
+                out["reason"] = code
+        except OSError as error:
+            state, out["reason"] = "invalid", type(error).__name__
+        cached = self._cache
+        if cached is not None and state != "invalid":
+            out["read_at"] = cached[1].isoformat()
+            out["age_hours"] = round((self._clock() - cached[1]).total_seconds() / 3600, 1)
+        out["state"] = state
+        return out
+
+    def _load(self) -> tuple[datetime, list[PortalAccessRead]]:
         doc = _strict_json(self.path.read_bytes())
         if not isinstance(doc, dict) or doc.get("schema") != PORTAL_ACCESS_SNAPSHOT_SCHEMA \
                 or set(doc) - self._DOC_FIELDS or not isinstance(doc.get("users"), list):
             raise ValueError("portal_access_snapshot_invalid")
         source = _text(doc.get("source"), "portal_access_snapshot_source")
         read_at = _text(doc.get("read_at"), "portal_access_snapshot_read_at")
-        return [self._row(user, source, read_at) for user in doc["users"]]
+        when = parse_read_at(read_at)
+        return when, [self._row(user, source, read_at) for user in doc["users"]]
 
     def _row(self, user: Any, source: str, read_at: str) -> PortalAccessRead:
         if not isinstance(user, dict) or set(user) - self._USER_FIELDS:
@@ -880,6 +956,186 @@ class EmployeePermissionPolicy:
         return cls.from_json(_strict_json(Path(path).read_bytes()))
 
 
+OPS_DIR = Path("/var/lib/plx-ops")          # the host's alarm files (deploy/ops/host)
+OPS_DIR_ENV = "PLX_OPS_DIR"
+OPS_SCHEMA = "plx-ops-host-status/v1"      # deploy/ops/host/unit_alarm.py's STATUS
+POLICY_ALARM_FILE = "employee-policy.json"
+POLICY_ALARM_UNIT = "employee-policy"
+_KEEP_FAILURES = 500
+_OPS_DEFAULT = object()
+_policy_log = logging.getLogger("operating.employee_permissions.policy")
+
+
+def ops_dir_default() -> Path | None:
+    """Where a policy alarm is written: ``$PLX_OPS_DIR``, else ``/var/lib/plx-ops`` when it
+    exists (the ops install made it); None: log only."""
+    named = os.environ.get(OPS_DIR_ENV, "").strip()
+    if named:
+        return Path(named)
+    return OPS_DIR if OPS_DIR.is_dir() else None
+
+
+def write_policy_alarm(ops: Path, record: Mapping[str, Any]) -> None:
+    """The host alarm for the employee policy (deploy/ops/host pattern): ``<ops>/
+    employee-policy.json`` says what is in force now, and ``status.json`` (under its lock)
+    gets a ``failures`` entry and an ``attention`` line when an edit is refused; both lines
+    go when the file loads again. Codes, digests and times only: never a policy value."""
+    import fcntl
+    import tempfile
+
+    def put(path: Path, value: Mapping[str, Any]) -> None:
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump(value, handle, indent=1, sort_keys=True)
+            os.chmod(tmp, 0o640)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    with open(ops / "status.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        put(ops / POLICY_ALARM_FILE, record)
+        try:
+            held = json.loads((ops / "status.json").read_text())
+        except (OSError, ValueError):
+            held = None
+        if not isinstance(held, dict) or held.get("schema") != OPS_SCHEMA:
+            held = {"schema": OPS_SCHEMA}
+        attention = [a for a in held.get("attention") or ()
+                     if isinstance(a, str) and not a.startswith("employee policy ")]
+        if record["state"] == "kept_last_good":
+            line = (f"employee policy edit refused at {record['since']}: "
+                    f"{record['reload_error']}; the last good policy "
+                    f"({record['digest_in_force'][:12]}) stays in force")
+            attention.append(line)
+            entry = {"at": record["since"], "unit": POLICY_ALARM_UNIT, "scope": "app",
+                     "result": record["reload_error"], "exit_status": None,
+                     "restarts": None}
+            held["failures"] = ([entry] + list(held.get("failures") or []))[:_KEEP_FAILURES]
+            held["last_failure_at"] = entry["at"]
+        held["attention"] = sorted(set(attention))
+        put(ops / "status.json", held)
+
+
+class PolicyFile:
+    """The employee policy as its file says now (SEC-005): re-read when the file changes
+    (inode, size, mtime, ctime), so an edit applies on the next request without a restart.
+
+    A changed file that does not load, is gone, or names another tenant does not lock
+    everyone out (owner prefers usability): the last good
+    policy stays in force, ``status()`` says ``kept_last_good`` with the code, the refusal
+    is logged and raises the host alarm (``write_policy_alarm``: ``<ops>/
+    employee-policy.json`` and an attention line in ``status.json``), once per refused
+    version; the next version that loads applies and clears the alarm. Nobody is granted
+    from a policy that never loaded: the file must load at construction (else
+    ``ValueError``, the process does not start), and its tenant then is the one sessions
+    and tickets are bound to (``policy``)."""
+
+    def __init__(self, path: str | Path, *, ops_dir: Any = _OPS_DEFAULT,
+                 clock: Callable[[], Any] | None = None) -> None:
+        import threading
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._ops = ops_dir_default() if ops_dir is _OPS_DEFAULT else \
+            (Path(ops_dir) if ops_dir is not None else None)
+        self._clock = clock
+        self._stamp = self._stat()
+        self._policy = EmployeePermissionPolicy.from_file(self.path)
+        self.tenant, self.entra_tenant_id = self._policy.tenant, self._policy.entra_tenant_id
+        self.reload_error: str | None = None
+        self.refused_since: str | None = None
+        self.reloads = 0
+        self.alarm_error: str | None = None   # the alarm file could not be written
+
+    def _stat(self) -> tuple[int, ...] | None:
+        try:
+            info = self.path.stat()
+        except OSError:
+            return None
+        return (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def state(self) -> tuple[EmployeePermissionPolicy, str | None]:
+        """(the policy in force, None) when the file as it is now loaded; (the last good
+        policy, the code why the latest version was refused) when it does not. Either way
+        the policy returned is the one in force."""
+        stamp = self._stat()
+        with self._lock:
+            if stamp != self._stamp:
+                # the stamp is read before the bytes: a write racing this read changes it
+                # again and the next call loads the newer file
+                self._stamp = stamp
+                self._reload(stamp)
+            return self._policy, self.reload_error
+
+    def _now(self) -> str:
+        from datetime import datetime, timezone
+        moment = self._clock() if self._clock else datetime.now(timezone.utc)
+        return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _reload(self, stamp: tuple[int, ...] | None) -> None:
+        try:
+            if stamp is None:
+                raise ValueError("employee_policy_missing")
+            loaded = EmployeePermissionPolicy.from_file(self.path)
+        except (ValueError, OSError, UnicodeDecodeError) as error:
+            self._refuse(str(error) if isinstance(error, ValueError)
+                         else type(error).__name__)
+            return
+        if (loaded.tenant, loaded.entra_tenant_id) != (self.tenant, self.entra_tenant_id):
+            # sessions and tickets are bound to the tenant read at start: a restart applies
+            self._refuse("employee_policy_tenant_changed")
+            return
+        if loaded.digest != self._policy.digest:
+            self.reloads += 1
+        was_refused = self.reload_error is not None
+        self._policy, self.reload_error, self.refused_since = loaded, None, None
+        if was_refused:
+            _policy_log.warning("employee policy %s loads again: digest %s in force",
+                                self.path.name, loaded.digest[:12])
+            self._alarm()
+
+    def _refuse(self, code: str) -> None:
+        """Keep the last good policy; log and alarm once per refused version."""
+        code = code[:200]
+        self.reload_error = code
+        self.refused_since = self._now()
+        _policy_log.error("employee policy %s refused (%s): the last good policy %s stays "
+                          "in force", self.path.name, code, self._policy.digest[:12])
+        self._alarm()
+
+    def _alarm(self) -> None:
+        if self._ops is None:
+            return
+        record = {"schema": "plx-employee-policy-alarm/v1", "policy_file": str(self.path),
+                  "state": "kept_last_good" if self.reload_error else "in_force",
+                  "reload_error": self.reload_error, "since": self.refused_since,
+                  "digest_in_force": self._policy.digest, "reloads": self.reloads,
+                  "checked_at": self._now(), "pid": os.getpid()}
+        try:
+            write_policy_alarm(self._ops, record)
+            self.alarm_error = None
+        except OSError as error:   # the alarm never changes who is served
+            self.alarm_error = type(error).__name__
+            _policy_log.error("employee policy alarm not written to %s: %s", self._ops,
+                              type(error).__name__)
+
+    @property
+    def policy(self) -> EmployeePermissionPolicy:
+        """The policy in force (its tenant never changes)."""
+        return self.state()[0]
+
+    def status(self) -> dict[str, Any]:
+        """The policy digest in force, why the file's latest version was refused
+        (``reload_error``; the last good policy stays in force: ``kept_last_good``), since
+        when, how many edits were applied since start, and whether the alarm was written."""
+        policy, error = self.state()
+        return {"digest": policy.digest, "reload_error": error, "reloads": self.reloads,
+                "state": "kept_last_good" if error else "in_force",
+                "refused_since": self.refused_since, "alarm_error": self.alarm_error}
+
+
 # ------------------------------------------------------------------- result
 
 @dataclass(frozen=True)
@@ -1079,11 +1335,13 @@ _DECIDED = functools.lru_cache(maxsize=8192)(_decide_portal)
 class EmployeePermissionResolver:
     """``resolve(principal)`` derives one employee's entitlement from cited inputs."""
 
-    def __init__(self, policy: EmployeePermissionPolicy, portal_access: PortalAccessProvider,
+    def __init__(self, policy: EmployeePermissionPolicy | PolicyFile,
+                 portal_access: PortalAccessProvider,
                  groups: GroupProvider = groups_unavailable, *,
                  directory: DirectoryProvider | None = None,
                  people_exclusion: Any = None) -> None:
-        if not isinstance(policy, EmployeePermissionPolicy):
+        """``policy``: fixed, or a ``PolicyFile`` read again when its file changes."""
+        if not isinstance(policy, (EmployeePermissionPolicy, PolicyFile)):
             raise TypeError("employee permission policy required")
         if not callable(portal_access) or not callable(groups) or not (
                 directory is None or callable(directory)):
@@ -1091,7 +1349,7 @@ class EmployeePermissionResolver:
         if directory is not None and groups is not groups_unavailable:
             # One Entra input: the directory read carries the membership.
             raise ValueError("directory_replaces_group_provider")
-        self.policy = policy
+        self._policy = policy
         self._portal = portal_access
         self._groups = groups
         self._directory = directory
@@ -1099,6 +1357,25 @@ class EmployeePermissionResolver:
         # principal whose rule declares entra_job_title_keywords; without a usable one no
         # job title grants anything (the Portal department path still decides).
         self._exclusion = people_exclusion
+
+    @property
+    def policy(self) -> EmployeePermissionPolicy:
+        """The policy in force (a ``PolicyFile``'s last version that loaded; its tenant is
+        fixed at start)."""
+        return self._policy_state()[0]
+
+    def _policy_state(self) -> tuple[EmployeePermissionPolicy, str | None]:
+        source = self._policy
+        return source.state() if isinstance(source, PolicyFile) else (source, None)
+
+    def policy_status(self) -> dict[str, Any]:
+        """The policy digest in force and, for a ``PolicyFile``, why its file's latest
+        version was refused (None: the file's latest version is in force)."""
+        source = self._policy
+        if isinstance(source, PolicyFile):
+            return source.status()
+        return {"digest": source.digest, "reload_error": None, "reloads": 0,
+                "state": "in_force", "refused_since": None, "alarm_error": None}
 
     def _title_exclusion(self, principal: EmployeePrincipal) -> str:
         """``excluded``, ``exclusion_unavailable`` or ``clear`` for this employee."""
@@ -1115,13 +1392,18 @@ class EmployeePermissionResolver:
     def resolve(self, principal: EmployeePrincipal) -> EmployeeEntitlement:
         if not isinstance(principal, EmployeePrincipal):
             raise TypeError("EmployeePrincipal required")
-        p = self.policy
+        # one policy for the whole decision: an edit landing mid-call applies to the next
+        p, _refused = self._policy_state()
 
         def denied(reason: str, inputs: tuple = (), *,
                    unresolved: bool = False) -> EmployeeEntitlement:
             return EmployeeEntitlement(principal, None, reason, inputs=inputs,
-                                       fingerprint=self._fingerprint(None, frozenset(), reason),
+                                       fingerprint=self._fingerprint(
+                                           None, frozenset(), reason, policy_digest=p.digest),
                                        rights_unresolved=unresolved)
+
+        # a policy file whose latest version does not load keeps the last good policy
+        # (``p``) in force; ``PolicyFile`` logged it and raised the host alarm (SEC-005)
 
         # Agents and service principals never gain employee entitlements, and
         # nothing is read for them.
@@ -1288,7 +1570,8 @@ class EmployeePermissionResolver:
                                    self._fingerprint(actor, frozenset(identities), None,
                                                      access.user_id, file_clearance, qc_reader,
                                                      None if full_read is None
-                                                     else full_read.grant.code()),
+                                                     else full_read.grant.code(),
+                                                     policy_digest=p.digest),
                                    access.user_id, file_clearance,
                                    dict(p.library_security_classes),
                                    qc_document_reader=qc_reader, full_read=full_read,
@@ -1300,9 +1583,11 @@ class EmployeePermissionResolver:
     def _fingerprint(self, actor: Actor | None, identities: frozenset[str],
                      reason: str | None, user_id: str = "",
                      file_clearance: frozenset[str] = frozenset(),
-                     qc_document_reader: bool = False, full_read: str | None = None) -> str:
+                     qc_document_reader: bool = False, full_read: str | None = None, *,
+                     policy_digest: str | None = None) -> str:
         """Cache-key material: any change in access changes it (never the shared key)."""
-        body = {"policy": self.policy.digest, "reason": reason, "identities": sorted(identities),
+        body = {"policy": self.policy.digest if policy_digest is None else policy_digest,
+                "reason": reason, "identities": sorted(identities),
                 "actor": None if actor is None else
                 [actor.tenant, sorted(actor.principals), actor.clearance],
                 "portal_user": user_id, "file_clearance": sorted(file_clearance),
@@ -1562,7 +1847,8 @@ __all__ = ["DIRECTORY_SOURCE", "EMPLOYEE_IDENTITY_REQUIRED", "EMPLOYEE_PREFIX",
            "EntraDirectoryRead", "EmployeePermissionPolicy", "EmployeePermissionResolver",
            "EmployeePrincipal", "EntraGroupRead", "GROUP_MEMBERSHIP_UNAVAILABLE",
            "GROUP_READ_BLOCKER", "MAILBOX_ACCESS_UNDETERMINED", "POLICY_SCHEMA",
-           "PORTAL_ACCESS_SNAPSHOT_SCHEMA", "PortalAccessRead", "PortalAccessSnapshot",
+           "PORTAL_ACCESS_SNAPSHOT_SCHEMA", "PolicyFile", "PortalAccessRead",
+           "PortalAccessSnapshot", "parse_read_at", "portal_access_status",
            "PrincipalDecision", "PrincipalRule", "employee_principals",
            "gate_actor_methods", "groups_unavailable", "live_source_audience_document",
            "reader_unrestricted"]

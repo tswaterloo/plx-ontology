@@ -42,6 +42,7 @@ def capture_alarm_status(state_dir: Any, now: Optional[datetime] = None
         checks = (ops_health.capture_checks(state, now, t)
                   + ops_health.source_checks(state, now, t))
         extra = [c for c in (ops_health.start_check(state, t),
+                             ops_health.service_check(state, now),
                              ops_health.config_keys_check(state)) if c is not None]
         alarm = ops_health.capture_alarm({"checks": checks + extra})
     except Exception:  # noqa: BLE001 - a health line never breaks a page

@@ -78,7 +78,7 @@ export function AutopilotScorecardPanel({ days = 7 }: { days?: number }) {
           {gates.map((r) => (
             <li key={`${r.role}/${r.workflow}`} className="flex gap-2">
               <span className="w-40 shrink-0 font-medium">{workflowLabel(r.workflow)}</span>
-              <span className="num text-muted">{countdownText(r.countdown) ?? "No fresh items judged yet"}</span>
+              <span className="num text-muted">{countdownText(r.countdown) ?? "No held-out items judged yet"}</span>
             </li>
           ))}
         </ul>

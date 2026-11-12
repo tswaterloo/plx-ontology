@@ -51,9 +51,74 @@ class ChargeTest(unittest.TestCase):
 
     def test_non_numeric_amount_is_excluded_and_counted_not_zero(self):
         out = da.build_charges(rows([line("B1", "I1", "4110101", "n/a"),
-                                     line("B1", "I1", "4110101", "5")]))
+                                     line("B1", "I1", "4110101", "5", glref="PO90000001")]))
         self.assertEqual(out["charges"][0]["amount"], D("5"))
         self.assertEqual(out["excluded"]["amount_not_numeric"], 1)
+        # the readable remainder is no actual: the invoice is incomplete (BIZ-012)
+        self.assertEqual(out["charges"][0]["problems"], ["AMOUNT_UNREADABLE"])
+        [link] = da.link_charges(out["charges"], POS)
+        got = da.po_effective_rates([link], {"PO90000001": {"value": "100",
+                                                            "currency": "CAD"}})
+        self.assertEqual((got["PO90000001"]["rate"], got["PO90000001"]["gap"]),
+                         (None, "CHARGE_INCOMPLETE_AMOUNT_UNREADABLE"))
+        # nor a quarter's aggregate ratio
+        dated = [{**c, "date": "2026-02-01"} for c in out["charges"]]
+        ratio = da.aggregate_ratio(dated, [{"date": "2026-02-01", "extended": "100",
+                                            "currency": "CAD"}], "duty")
+        self.assertEqual(ratio["counts"]["quarters_incomplete"], 1)
+        self.assertEqual(ratio["counts"]["quarters_kept"], 0)
+
+    def test_only_one_posted_bc_document_in_one_currency_is_a_charge(self):
+        """A BC snapshot row is one invoice document: a draft, in-review or canceled one
+        records no charge, an unknown status is not posted (BIZ-014); two documents sharing
+        a vendor and number, or one number in two currencies, are never summed under the
+        first row's currency (BIZ-013); the same document served twice counts once."""
+        def bc(number, amount, cur="CAD", status="Open", sid=None):
+            return {"vendor_number": "V1", "vendor_name": "Harbour Customs Broker",
+                    "number": number, "amount_excluding_tax": amount, "currency_code": cur,
+                    "order_number": "PO90000001", "status": status,
+                    **({"bc_system_id": sid} if sid else {})}
+        out = da.build_charges(rows([], bc=[
+            bc("PI1", "70", sid="a"), bc("PI1", "70", sid="a"),        # one document, twice
+            bc("PI2", "10", status="Paid", sid="b"),
+            bc("PI3", "5", status="Draft"), bc("PI4", "5", status="In Review"),
+            bc("PI5", "5", status="Canceled"), bc("PI6", "5", status=""),
+            bc("PI7", "100", "CAD", sid="c"), bc("PI7", "100", "USD", sid="d"),
+            bc("PI8", "3", sid="e"), bc("PI8", "4", sid="f")]))
+        by = {(c["invoice"], c["currency"]): c for c in out["charges"]}
+        self.assertEqual(sorted(by), [("PI1", "CAD"), ("PI2", "CAD"), ("PI6", "CAD"),
+                                      ("PI7", "CAD"), ("PI7", "USD"), ("PI8", "CAD")])
+        self.assertEqual((by[("PI1", "CAD")]["amount"], by[("PI1", "CAD")]["problems"]),
+                         (D("70"), []))
+        self.assertEqual(by[("PI2", "CAD")]["problems"], [])
+        self.assertEqual(by[("PI6", "CAD")]["problems"], ["STATUS_NOT_POSTED"])
+        for key in (("PI7", "CAD"), ("PI7", "USD"), ("PI8", "CAD")):
+            self.assertEqual(by[key]["problems"], ["DOCUMENT_IDENTITY_AMBIGUOUS"], key)
+        self.assertEqual(by[("PI7", "USD")]["amount"], D("100"))
+        self.assertEqual((out["excluded"]["not_posted"], out["excluded"]["canceled"]), (2, 1))
+        goods = {"PO90000001": {"value": "10000", "currency": "CAD"}}
+        clean = [c for c in out["charges"] if not c["problems"]]
+        self.assertEqual(da.po_effective_rates(da.link_charges(clean, POS), goods)[
+            "PO90000001"]["rate"], D("0.008"))                         # (70 + 10) / 10000
+        got = da.po_effective_rates(da.link_charges(out["charges"], POS), goods)["PO90000001"]
+        self.assertIsNone(got["rate"])
+        self.assertEqual(got["problems"], ["DOCUMENT_IDENTITY_AMBIGUOUS", "STATUS_NOT_POSTED"])
+        # a snapshot served without a status column says nothing of posting: the charge
+        # keeps its rate, said as posting unknown, never dropped as unposted
+        bare = da.build_charges(rows([], bc=[{k: v for k, v in bc("PI1", "70").items()
+                                              if k != "status"}]))
+        (charge,) = bare["charges"]
+        self.assertEqual((charge["problems"], charge["posting"]), ([], "unknown"))
+        rated = da.po_effective_rates(da.link_charges(bare["charges"], POS), goods)
+        self.assertEqual((rated["PO90000001"]["rate"], rated["PO90000001"]["posting_unknown"]),
+                         (D("0.007"), 1))
+        record = da.build_artifact({"duty": rated}, {}, ["PO90000001"],
+                                   built_at="x")["records"]["PO90000001"]["duty"]
+        self.assertEqual((record["rate"], record["posting_unknown"]), ("0.007", 1))
+        # a served status column with a blank value is still not posted, and posted rows
+        # carry no unknown
+        self.assertNotIn("posting_unknown", da.po_effective_rates(da.link_charges(
+            clean, POS), goods)["PO90000001"])
 
     def test_unknown_account_shape_never_matches(self):
         out = da.build_charges(rows([line("B1", "I1", "41101-0000-01", "5")]))
@@ -64,7 +129,8 @@ class ChargeTest(unittest.TestCase):
                "amount_excluding_tax": "70.25", "currency_code": "CAD",
                "order_number": "PO90000001"},
               {"vendor_number": "V2", "vendor_name": "Box Maker", "number": "PI2",
-               "amount_excluding_tax": "10", "currency_code": "CAD", "order_number": "PO90000001"}]
+               "amount_excluding_tax": "10", "currency_code": "CAD", "order_number": "PO90000001",
+               "status": "Open"}]
         out = da.build_charges(rows([], bc=bc))
         [c] = out["charges"]
         self.assertEqual((c["source"], c["amount"]), ("public.bc_purchase_invoice_snapshot",

@@ -383,7 +383,7 @@ class TimeSaved(unittest.TestCase):
                                       "at": self.now.isoformat(), "replayed": False})
         events, _ = self.store.events(reader="plx:staff:ana")
         self.assertEqual(sorted((e["kind"], e["verb"]) for e in events),
-                         [("action", "messaged"), ("write", "executed")])  # logged, as work
+                         [("action", "prepared"), ("write", "executed")])  # logged, as work
         found = wl.time_saved(self.store, reader="plx:staff:ana")
         self.assertEqual(sum(w["minutes"] for p in found["people"] for w in p["weeks"]), 0)
         # the same two, live, count 2 + 5 minutes
@@ -396,6 +396,41 @@ class TimeSaved(unittest.TestCase):
         [person] = wl.time_saved(self.store, reader="plx:staff:ana")["people"]
         self.assertEqual(person["weeks"][-1]["items"], {"teams_sent": 1, "record": 1})
         self.assertEqual(person["weeks"][-1]["minutes"], 2 + 5)
+
+    def test_a_dry_run_send_is_logged_and_recalled_as_prepared_never_sent(self):
+        """API-005: a dry-run send (nothing went out) reads "Prepared (not sent)" in the log
+        and in Ask's recall, opens no reply loop, also for a row logged before the fix
+        (verb "sent", status dry_run); a live send still reads "Sent"."""
+        notes, ana = wl.Notes(self.store, lambda who: "ana@plx.example"), self.reader("ana")
+        for seq, (kind, status) in enumerate([("send_email", "dry_run"),
+                                              ("reply_in_thread", "dry_run"),
+                                              ("forward", "dry_run"),
+                                              ("send_email", "sent")], 1):
+            notes.action(ana, {"card_id": f"card-{seq}", "kind": kind, "status": status,
+                               "text": "x", "at": self.now.isoformat(), "seq": seq},
+                         {"to": ["buyer@vendor.example"], "subject": f"PO 9041{seq} date",
+                          "in_reply_to": "msg-1"}, None)
+        self.put("ana", "action", "sent", "old", sent=False, outcome="dry_run")  # legacy row
+        events, total = self.store.events(reader="plx:staff:ana")
+        self.assertEqual(total, 5)
+        said = {e["title"]: (e["verb"], wl.say(e), e["loop"]) for e in events}
+        for subject in ("PO 90411 date", "PO 90412 date", "PO 90413 date", "t"):
+            verb, line, loop = said[subject]
+            self.assertEqual(verb, "prepared")
+            self.assertTrue(line.startswith("Prepared (not sent): "), line)
+            self.assertIsNone(loop)
+        verb, line, loop = said["PO 90414 date"]
+        self.assertEqual((verb, line[:6]), ("sent", "Sent: "))
+        self.assertIsNotNone(loop)
+        answer = wl.recall_answer(wl.recall(self.store, "plx:staff:ana",
+                                            "what did I send today"))
+        self.assertEqual(answer.count("Prepared (not sent): "), 4, answer)
+        self.assertEqual(answer.count("Sent: "), 1, answer)
+        # an unknown action status is not logged as anything that happened
+        notes.action(ana, {"card_id": "card-9", "kind": "send_email", "status": "unknown",
+                           "text": "x", "at": self.now.isoformat(), "seq": 9},
+                     {"to": ["buyer@vendor.example"], "subject": "PO 90419"}, None)
+        self.assertEqual(self.store.events(reader="plx:staff:ana")[1], 5)
 
     def test_cardinality_and_the_exclusion(self):
         for n in (1, 10, 60):

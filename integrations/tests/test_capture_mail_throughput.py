@@ -12,6 +12,7 @@ listings, child folders and a newest-first message listing. Evidence label:
 
 from __future__ import annotations
 
+from collections import Counter
 import os
 from pathlib import Path
 import re
@@ -295,6 +296,31 @@ class EveryFolderAndHistoryTests(ThroughputCase):
         self.assertFalse(run["complete"])
         self.assertIn("folder_listing_incomplete", run["incomplete_reasons"])
         self.assertEqual(self.stored(BOX_A), [("IN-1", "AAMkFOLDER-A=")])   # inbox still
+
+    def test_a_partial_folder_listing_is_listed_again_and_never_held_whole(self):
+        # CAPTURE-006: a listing that missed folders is stored marked partial: the next
+        # run (well inside FOLDER_RELIST_SECONDS) lists again and the mailbox stays not
+        # complete until a whole listing comes back
+        self.graph.put(BOX_A, "IN-1", "CK-1")
+        real = GraphMailReader.list_folders
+        calls = []
+
+        def partial(reader, actor, mailbox, **kwargs):
+            calls.append(mailbox)
+            found = real(reader, actor, mailbox, **kwargs)
+            return dict(found, complete=False)
+        with mock.patch.object(GraphMailReader, "list_folders", partial):
+            for _ in range(2):
+                run = self.capture(throttle_waits=()).run(every_folder_scope())
+                self.assertFalse(run["complete"])
+                self.assertIn("folder_listing_incomplete", run["incomplete_reasons"])
+        # each of the two mailboxes listed by both runs, not read from the store
+        self.assertEqual(sorted(Counter(calls).values()), [2, 2])
+        self.assertFalse(self.store.folder_listing_whole(BOX_A))
+        run = self.capture(throttle_waits=()).run(every_folder_scope())
+        self.assertTrue(run["complete"], run["incomplete_reasons"])
+        self.assertTrue(self.store.folder_listing_whole(BOX_A))
+        self.assertEqual(self.stored(BOX_A), [("IN-1", "AAMkFOLDER-A=")])
 
     def test_a_user_without_an_exchange_mailbox_reads_as_no_mailbox_never_a_gap(self):
         """Graph 404 ``MailboxNotEnabledForRESTAPI``: no mail exists, so the run is not

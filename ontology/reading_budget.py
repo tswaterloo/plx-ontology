@@ -207,7 +207,8 @@ def _bounded(budget: Budget, digest: str, read: Callable[[], Any]) -> Callable[[
 
         previous = signal.signal(signal.SIGALRM, fire)
         _ARMED.on = True
-        signal.setitimer(signal.ITIMER_REAL, limit)
+        outer_left, _outer_every = signal.setitimer(signal.ITIMER_REAL, limit)
+        started = time.monotonic()
         try:
             found = read()
         except BaseException as exc:   # an extractor may turn the interrupt into its error
@@ -217,6 +218,9 @@ def _bounded(budget: Budget, digest: str, read: Callable[[], Any]) -> Callable[[
             _ARMED.on = False
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous)
+            if outer_left > 0:   # an outer timer was running: it keeps its remaining time
+                signal.setitimer(signal.ITIMER_REAL,
+                                 max(outer_left - (time.monotonic() - started), 0.001))
         if fired[0]:   # a reading an interrupt cut short is not what the file holds
             _settle()
             budget.defer(digest, TIMED_OUT)

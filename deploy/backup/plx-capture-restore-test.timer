@@ -1,0 +1,9 @@
+[Unit]
+Description=PLX capture backup restore test, nightly (10:45 UTC = 5:45 AM ET)
+
+[Timer]
+OnCalendar=*-*-* 10:45:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

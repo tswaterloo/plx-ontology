@@ -59,17 +59,38 @@ export function factText(f: Fact, currency?: string | null): string {
   return `${label}: ${value}`;
 }
 
-/** The currency the facts state ("Currency: CAD", or a cited currency field), if one. */
-export function factsCurrency(facts: Fact[] | undefined): string | null {
-  for (const f of facts ?? []) {
-    const m = /^Currency(?:\s*\([^)]*\))?:\s*([A-Z]{3})\b/.exec(f.text.trim());
-    if (m) return m[1];
-    for (const s of f.sources) {
-      const c = Object.entries(s.fields ?? {}).find(([k]) => /(?:^|\.)(?:currency|currencyCode|currency_code)$/i.test(k));
-      if (c && /^[A-Z]{3}$/.test(c[1].trim().toUpperCase())) return c[1].trim().toUpperCase();
+const CURRENCY_FACT = /^Currency(?:\s*\([^)]*\))?:\s*([A-Za-z]{3})\s*$/;
+const CURRENCY_FIELD = /(?:^|\.)(?:currency|currencyCode|currency_code)$/i;
+
+/** The one currency these sources' own fields state; null when none or they disagree. */
+function sourcesCurrency(sources: Source[]): string | null {
+  const codes = new Set<string>();
+  for (const s of sources) {
+    for (const [k, v] of Object.entries(s.fields ?? {})) {
+      if (CURRENCY_FIELD.test(k) && typeof v === "string" && /^[A-Za-z]{3}$/.test(v.trim())) codes.add(v.trim().toUpperCase());
     }
   }
-  return null;
+  return codes.size === 1 ? [...codes][0] : null;
+}
+
+/**
+ * The currency of one fact's amount, from its own record only (WEB-028: a CAD and a USD vendor
+ * in one answer): a currency field of the sources it cites, else a "Currency: X" fact citing the
+ * same record. Two currencies, or none, is null: the amount is then shown as written, never in
+ * another fact's currency.
+ */
+export function factCurrency(f: Fact, facts: Fact[] | undefined): string | null {
+  if (f.sources.length === 0) return null;
+  const own = sourcesCurrency(f.sources);
+  if (own) return own;
+  if (f.sources.some((s) => Object.keys(s.fields ?? {}).some((k) => CURRENCY_FIELD.test(k)))) return null;
+  const handles = new Set(f.sources.map((s) => s.handle).filter(Boolean));
+  const codes = new Set<string>();
+  for (const other of facts ?? []) {
+    const m = CURRENCY_FACT.exec(other.text.trim());
+    if (m && other.sources.length > 0 && other.sources.every((s) => !!s.handle && handles.has(s.handle))) codes.add(m[1].toUpperCase());
+  }
+  return codes.size === 1 ? [...codes][0] : null;
 }
 
 const UNCONFIRMED = new Set(["lead", "text_match", "not_established", "unchecked"]);
@@ -124,7 +145,6 @@ export function FactList({
   const [all, setAll] = useState(false);
   const list = facts ?? [];
   if (list.length === 0 && extra.length === 0) return null;
-  const currency = factsCurrency(list);
   const handles = new Set(list.flatMap((f) => f.sources.map((s) => s.handle)));
   const oneSource = list.length > 1 && handles.size === 1 && list.every((f) => f.sources.length > 0) ? list[0].sources[0] : null;
   const shown = max && !all ? list.slice(0, Math.max(0, max - extra.length)) : list;
@@ -141,7 +161,7 @@ export function FactList({
           <li key={i} className="flex gap-3 text-[13px] leading-5">
             <span className="mt-[9.5px] h-px w-2.5 shrink-0 bg-[color-mix(in_srgb,var(--fg)_35%,transparent)]" aria-hidden />
             <span className="min-w-0 break-words">
-              {factText(f, currency)}
+              {factText(f, factCurrency(f, list))}
               {unconfirmed(f) && <span className="text-muted"> (not confirmed)</span>}{" "}
               {!oneSource && <SourceChips sources={f.sources} record={record} />}
             </span>

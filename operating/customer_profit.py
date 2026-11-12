@@ -666,8 +666,11 @@ def read_order(call: Call, order: Order) -> Order:
     for line in order.lines:        # a line margin only beside both of its figures
         if line.revenue is None or line.cost is None:
             line.margin = None
-    currency = (by_name.get("order_margin") or {}).get("currency") or next(
-        (ln.currency for ln in order.lines if ln.currency), None)
+    # the order's currency: the margin's own, else the lines' one currency; lines in
+    # several currencies give none (never the first line's)
+    line_currencies = {ln.currency for ln in order.lines if ln.currency}
+    currency = (by_name.get("order_margin") or {}).get("currency") or (
+        next(iter(line_currencies)) if len(line_currencies) == 1 else None)
     for line in order.lines:
         line.currency = line.currency or currency
     if not (run.get("claim_checks") or {}).get("passed"):
@@ -758,14 +761,18 @@ def _line_input(line: Line, entry: Mapping[str, Any] | None, returns: set) -> No
 def customer_orders(call: Call, customer: str, period: Period,
                     skip: Callable[[str], bool] | None = None,
                     late: Callable[[], bool] | None = None,
-                    fan_out: FanOut | None = None
+                    fan_out: FanOut | None = None, counts: dict[str, int] | None = None
                     ) -> tuple[list[Order], bool, bool | None, int, int]:
     """(the customer's orders dated in the period, whether orders were withheld from this
     reader (never how many or which), whether every page was read (None: the time budget,
     ``late``, ran out before every order's dates were read: the count is a lower bound),
     orders of the customer outside the period, orders ``skip`` left out by their number:
     test and staging orders the caller does not count, never read for their dates).
-    Each order's dates are read by ``fan_out`` (default ``in_turn(call)``)."""
+    Each order's dates are read by ``fan_out`` (default ``in_turn(call)``).
+    Period membership is three-way (SEMANTIC-001): in, out, or unknown for an order no date
+    of which could be read (no posted invoice date and no order date, or a failed read).
+    An unknown one is never counted outside: it makes the list not whole (False), so no
+    total is exact, and its count goes into ``counts["undated"]``."""
     objects, _edges, withheld, complete = _around(call, customer, [(ORDER_LINK, "reverse")],
                                                   MAX_ORDERS * 4)
     refs, skipped = [], 0
@@ -785,13 +792,21 @@ def customer_orders(call: Call, customer: str, period: Period,
         return task
     done = (fan_out or in_turn(call))([dated(oid) for oid, _n, _h in refs],
                                       late or (lambda: False))
-    out, outside = [], 0
+    out, outside, undated = [], 0, 0
     for (oid, number, handle), (dates, card) in zip(refs, done):
-        if not dates or not period.start <= min(dates) <= period.end:
+        if not dates:
+            undated += 1        # in or out of the period is not known
+            continue
+        if not period.start <= min(dates) <= period.end:
             outside += 1
             continue
         out.append(Order(oid, number, sorted(dates), handle, **card))
-    return out, withheld, (complete if len(done) == len(refs) else None), outside, skipped
+    if counts is not None:
+        counts["undated"] = counts.get("undated", 0) + undated
+    whole = complete if len(done) == len(refs) else None
+    if undated and whole:
+        whole = False
+    return out, withheld, whole, outside, skipped
 
 
 OPEN_PROPERTIES = ("order_date", "bc_status", "subtotal")
@@ -1007,13 +1022,14 @@ def quote_comparison(call: Call, order: Order, items: Mapping[str, Mapping[str, 
                "actual_cost": line.per_unit(line.cost), "price_change_pct": None,
                "cost_change_pct": None, "quoted_margin_pct": None,
                "uom": _text((lc.get("uom") or {}).get("value"))}
-        same_unit = row["uom"] is None or line.unit is None or \
-            row["uom"].casefold() == line.unit.casefold()
+        # both units known and one after the spelling fold (SEMANTIC-002): a quote with no
+        # unit is never compared with an order line's price per kg
+        same_unit = _same_unit(row["uom"], line.unit)
         if q_currency != line.currency or not same_unit:
             gaps.append(("QUOTE_NOT_COMPARABLE", f"{item_label(card_)}: the quote is in "
                          f"{q_currency or 'an unstated currency'} per "
-                         f"{row['uom'] or 'unit'}, the order in {line.currency} per "
-                         f"{line.unit}; nothing is converted"))
+                         f"{row['uom'] or 'an unstated unit'}, the order in {line.currency} "
+                         f"per {line.unit or 'an unstated unit'}; nothing is converted"))
             row["actual_price"] = row["actual_cost"] = None
         elif price and row["actual_price"] is not None:
             row["price_change_pct"] = (row["actual_price"] - price) * 100 / price
@@ -1137,11 +1153,13 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
                    "invoice, by its order date)"},
         "gaps": [], "withheld": 0}
     fan_out = fan_out or in_turn(call)
+    tally: dict[str, int] = {}
     orders, trimmed, whole, outside, skipped = customer_orders(call, customer, period,
-                                                               skip_order, late, fan_out)
+                                                               skip_order, late, fan_out,
+                                                               counts=tally)
     for other in cards[1:]:
         more, held_back, all_read, out_of, skipped_too = customer_orders(
-            call, other["object_id"], period, skip_order, late, fan_out)
+            call, other["object_id"], period, skip_order, late, fan_out, counts=tally)
         known = {o.object_id for o in orders}
         orders += [o for o in more if o.object_id not in known]
         trimmed = trimmed or held_back
@@ -1151,6 +1169,13 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         skipped += skipped_too
     out["orders_outside_period"] = outside
     out["test_orders_skipped"] = skipped
+    if tally.get("undated"):
+        out["orders_undated"] = tally["undated"]
+        out["gaps"].append({"code": "ORDER_DATES_UNREAD", "subject": "customer orders",
+                            "detail": f"{tally['undated']} order(s) of this customer have no "
+                                      "readable invoice posting date or order date, so whether "
+                                      "they fall in the period is not known; no customer total "
+                                      "is exact"})
     # Coverage: a customer total and a verdict only over every order of the period. Past
     # MAX_ORDERS the most recent are read and ranked as a partial ranking, never totalled;
     # an order list not read whole gives its count as a lower bound.
@@ -1827,22 +1852,52 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
                 items: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
     """One suggested next step from the facts only (nothing is written or sent)."""
     name = out["customer"]["name"]
-    losing: dict[str, list[Order]] = {}
+    # each item's orders, newest first, and whether its line there lost (None: margin not
+    # known): a recency claim ("the last N orders") holds only for a run of losses from the
+    # newest order with it, every one of them dated
+    with_item: dict[str, list[list[Any]]] = {}
     for order in sorted(orders, key=lambda o: o.dates[-1] if o.dates else date.min,
                         reverse=True):
         for line in order.lines:
-            if line.item and line.margin is not None and line.margin < 0:
-                losing.setdefault(line.item, [])
-                if order not in losing[line.item]:
-                    losing[line.item].append(order)
-    repeat = sorted(losing.items(), key=lambda kv: -len(kv[1]))
+            if not line.item:
+                continue
+            lost = None if line.margin is None else line.margin < 0
+            seen = with_item.setdefault(line.item, [])
+            held = next((entry for entry in seen if entry[0] is order), None)
+            if held is None:
+                seen.append([order, lost])
+            elif lost is True or (lost is None and held[1] is False):
+                held[1] = lost   # any losing line: lost; else any unknown: unknown
+    losing = {item: [o for o, lost in seq if lost is True] for item, seq in with_item.items()}
+    repeat = sorted(((item, found) for item, found in losing.items() if found),
+                    key=lambda kv: -len(kv[1]))
     if repeat and len(repeat[0][1]) >= 2:
         item, with_loss = repeat[0]
-        numbers = ", ".join(o.number for o in with_loss[:5])
+        seq = with_item[item]
+        run = 0
+        for _order, lost in seq:
+            if lost is not True:
+                break
+            run += 1
+        dated = all(order.dates for order, _lost in seq)
+        if dated and run >= 2:
+            named, said = with_loss[:run], f"the last {run} orders with it ran below item cost"
+        else:
+            period = (out.get("period") or {}).get("words")
+            named = with_loss
+            said = (f"{len(with_loss)} of the {len(seq)} orders with it"
+                    + (f" in {period}" if period else "") + " ran below item cost")
+        numbers = ", ".join(o.number for o in named[:5])
+        if len(named) > 5:
+            numbers += f", and {len(named) - 5} more"
+        latest, latest_lost = seq[0]
+        after = f"; the latest, {latest.number}, did not" \
+            if dated and latest_lost is False else ""
         return {"text": f"Review the price for {name} on {item_label(items.get(item, {}))}: "
-                f"the last {len(with_loss)} orders with it ran below item cost ({numbers}).",
+                f"{said} ({numbers}){after}.",
                 "rule": "item_below_cost_on_repeat_orders",
-                "basis": [o.object_id for o in with_loss[:5]], "writes": 0}
+                "basis": [o.object_id for o in named[:5]]
+                + ([latest.object_id] if after else []), "writes": 0}
     breakdown = out.get("breakdown")
     if breakdown and breakdown["order"].margin is not None and breakdown["order"].margin < 0:
         order = breakdown["order"]

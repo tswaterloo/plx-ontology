@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None, *, directory: Callable[[Any], Any] | Non
     builds it when configured); ``jwks`` (tests): injected signing keys instead of the
     resource file's ``jwks_file``; ``ready``: called with the bound server before it
     serves (tests stop it with ``shutdown``)."""
-    from .employee_permissions import (EmployeePermissionPolicy, EmployeePermissionResolver,
+    from .employee_permissions import (EmployeePermissionResolver, PolicyFile,
                                        PortalAccessSnapshot)
 
     parser = argparse.ArgumentParser(prog="python3 -m operating.mcp_http_host",
@@ -309,6 +309,9 @@ def main(argv: list[str] | None = None, *, directory: Callable[[Any], Any] | Non
     parser.add_argument("--portal-access", type=Path,
                         help="plx-portal-access-snapshot/v1 JSON, re-read on every request; "
                              "without it every employee is refused (portal_access_unavailable)")
+    parser.add_argument("--portal-access-max-age-hours", type=float, default=None,
+                        help="refuse the Portal access snapshot (every employee denied) "
+                             "once its read_at is older than this many hours")
     parser.add_argument("--bind", default="127.0.0.1", help="loopback address only")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--allowed-origin", action="append", default=[],
@@ -319,7 +322,11 @@ def main(argv: list[str] | None = None, *, directory: Callable[[Any], Any] | Non
                      "see devloop/DECISIONS/2026-10-08-employee-host-hosting.md)")
     capture_bounds = mcp_server.check_host_arguments(parser, args)
     try:
-        policy = EmployeePermissionPolicy.from_file(args.employee_policy)
+        # re-read when the file changes: an edit applies on the next request without a
+        # restart; an edit that does not load keeps the last good policy and raises the
+        # host alarm (SEC-005)
+        policy_file = PolicyFile(args.employee_policy)
+        policy = policy_file.policy
         resource = EntraResource.from_file(args.entra_resource, jwks=jwks)
     except (ValueError, OSError, UnicodeDecodeError) as error:
         parser.error("identity configuration is invalid: " +
@@ -327,7 +334,8 @@ def main(argv: list[str] | None = None, *, directory: Callable[[Any], Any] | Non
     portal_access: Callable[[Any], Any] = lambda principal: None  # noqa: E731
     if args.portal_access is not None:
         try:
-            portal_access = PortalAccessSnapshot(args.portal_access)
+            portal_access = PortalAccessSnapshot(
+                args.portal_access, max_age_hours=args.portal_access_max_age_hours)
         except (ValueError, OSError, UnicodeDecodeError) as error:
             parser.error("portal access snapshot is invalid: " +
                          (str(error) if isinstance(error, ValueError) else type(error).__name__))
@@ -335,7 +343,7 @@ def main(argv: list[str] | None = None, *, directory: Callable[[Any], Any] | Non
     # unset or invalid, no job title grants anything.
     # Re-read when the list file changes or every few minutes (``ReloadingExclusion``).
     from integrations.people_exclusion import ReloadingExclusion
-    resolver = EmployeePermissionResolver(policy, portal_access, directory=directory,
+    resolver = EmployeePermissionResolver(policy_file, portal_access, directory=directory,
                                           people_exclusion=ReloadingExclusion.from_env(
                                               os.environ, state_dir=args.state_dir))
     services = SessionHost(parser, args, tenant=policy.tenant, resolver=resolver,

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Mint a demo access link for the Workbench app running in --dev --dev-ticket-login mode.
 #
-#   deploy/demo-access-link.sh [TTL_MINUTES]      # default 120 (the console's maximum)
+#   deploy/demo-access-link.sh [TTL_MINUTES]      # default 120; console_ticket allows up to 480
 #
 # Writes https://<PLX_APP_HOST>/#ticket=<ticket> to ~/.config/plx/workbench-access-link
 # (mode 0600). The link is never printed: open the file yourself and paste the link into
@@ -9,10 +9,11 @@
 # console session ticket (operator_api.workspace.console_ticket mint) for the reader in
 # PLX_EVAL_READER, signed with the API's own PLX_WORKBENCH_SESSION_SECRET, verified
 # against the host config's employee policy and Portal snapshot; the mint appends one
-# audit row to <state>/console-ticket-audit.jsonl. A ticket lives at most two hours;
-# the app session ends with it. Revoke early with:
+# audit row to <state>/console-ticket-audit.jsonl. A ticket lives TTL_MINUTES; the app
+# session ends with it. List live links and revoke any of them by its session reference:
+#   python3 -m operator_api.workspace.console_ticket sessions --state-dir /data/plx-state
 #   python3 -m operator_api.workspace.console_ticket revoke --state-dir /data/plx-state \
-#       --ticket-file ~/.config/plx/workbench-ticket.url
+#       --session <reference>     (or --ticket-file ~/.config/plx/workbench-ticket.url)
 set -euo pipefail
 TTL=${1:-120}
 CHECKOUT=${PLX_DEPLOY_CHECKOUT:-/data/scratch/wt/deploy}

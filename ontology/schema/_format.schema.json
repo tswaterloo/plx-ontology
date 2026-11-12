@@ -1965,6 +1965,10 @@
         "identifier_kind": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "split_from": {
+          "type": "boolean",
+          "description": "The from value is a list of lines (separated by line breaks): each distinct line is one key, so one record links to every target a line names. Only on the one pair of an fk binding that compares an identifier; the link is N:M, and a line naming several targets is left unresolved under unique_target."
         }
       },
       "if": {

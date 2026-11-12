@@ -18,6 +18,7 @@ import unittest
 from operating import inbox_triage as it
 from operating import label_changes as lc
 from operating import label_revisions as lr
+from operating import proactive_engine as pe
 from operating import proactive_threads as pt
 from operating.tests.test_proactive_engine import (AS_OF, EXCLUDED_OID, OURS_OID, Engine,
                                                    World)
@@ -606,18 +607,32 @@ class Revisions(Engine):
         same revisions come out (every chunk boundary crossed)."""
         from unittest import mock
 
-        w, _ids = self.world()
+        w, ids = self.world()
+        # a revision file its mailbox no longer holds (removed at the source): neither
+        # read finds it
+        m = mail(w, day(20), sender=OUTSIDE, to=(OURS,), conversation="art-gone",
+                 body="Here is the label.", subject="Label", n=59_999)
+        w.link("Email.mentions_product", m, ids["item"])
+        gone = attach(w, m, "Synth Gone Back Label Rev 7.pdf")
+        w.rows["objects"][[r["object_id"] for r in w.rows["objects"]].index(gone)][
+            "missing_from_source_since"] = "2026-10-05T00:00:00.000000Z"
         self.run_engine(w, only=[lr.RULE], people=people_with_drive())
         indexed = sorted((g["id"], g["summary"]) for g in self.read(
             kinds=list(lr.KINDS), limit=1000)["gaps"])
         self.assertTrue(indexed)
-        with mock.patch.object(pt, "_word_ids", return_value=None), \
-                mock.patch.object(lr, "SCAN_CHUNK", 1), mock.patch.object(pt, "MEMBER_CHUNK", 1):
-            summary = self.run_engine(w, only=[lr.RULE], people=people_with_drive())
-        self.assertEqual(summary["detectors"][lr.RULE], "complete")
-        scanned = sorted((g["id"], g["summary"]) for g in self.read(
-            kinds=list(lr.KINDS), limit=1000)["gaps"])
-        self.assertEqual(scanned, indexed)
+        self.assertNotIn("Gone Back Label", " ".join(s for _i, s in indexed))
+        # one chunk after another and side by side on the store's threads: the same
+        for threads in (1, 4):
+            with self.subTest(threads=threads), \
+                    mock.patch.object(pt, "_word_ids", return_value=None), \
+                    mock.patch.object(lr, "SCAN_CHUNK", 1), \
+                    mock.patch.object(pt, "MEMBER_CHUNK", 1), \
+                    mock.patch.object(pe, "scan_threads", return_value=threads):
+                summary = self.run_engine(w, only=[lr.RULE], people=people_with_drive())
+                self.assertEqual(summary["detectors"][lr.RULE], "complete")
+                scanned = sorted((g["id"], g["summary"]) for g in self.read(
+                    kinds=list(lr.KINDS), limit=1000)["gaps"])
+                self.assertEqual(scanned, indexed)
 
     def test_fails_closed_without_the_exclusion_and_reads_each_copy_once(self):
         w, _ids = self.world()

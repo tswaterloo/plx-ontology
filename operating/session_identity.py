@@ -322,9 +322,26 @@ class TicketReplayGuard:
             return db.execute("SELECT 1 FROM ticket_jti WHERE jti_sha256=? AND kind='revoked'",
                               (session_ref,)).fetchone() is not None
 
+    def used_ref(self, session_ref: str, now: int | None = None) -> bool:
+        """Whether the ticket of ``session_ref`` was presented (used up at a sign-in)."""
+        current = int(time.time()) if now is None else int(now)
+        with self._connect() as db:
+            db.execute("DELETE FROM ticket_jti WHERE exp <= ?", (current,))
+            return db.execute("SELECT 1 FROM ticket_jti WHERE jti_sha256=? AND kind='used'",
+                              (session_ref,)).fetchone() is not None
+
     def revoke(self, claims: Mapping[str, Any]) -> None:
         with self._connect() as db:
             self._record(db, self._key(claims), "revoked", claims["exp"])
+
+    def revoke_session_ref(self, session_ref: str, exp: int) -> None:
+        """Revoke the ticket whose session reference (the SHA-256 of its jti) is
+        ``session_ref`` until ``exp``, without the ticket itself (the operator holds only the
+        reference, e.g. from the mint audit)."""
+        if not re.fullmatch(r"[0-9a-f]{64}", session_ref or ""):
+            raise SessionIdentityRefused("session_ref_invalid")
+        with self._connect() as db:
+            self._record(db, session_ref, "revoked", int(exp))
 
 
 REPLAY_GUARD_FILE = "session-replay.sqlite"

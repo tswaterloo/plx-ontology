@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -315,6 +316,13 @@ class LayerChanges(unittest.TestCase):
             busy = pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
                                holds_layers=True, wait=0.3)
         self.assertEqual(busy["state"], "busy")
+        # by default a busy store is left at once, not waited for (CC-P-03)
+        with pe.pass_lock(pe.inbox_path(store)):
+            started = time.monotonic()
+            quick = pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
+                                holds_layers=True)
+        self.assertEqual(quick["state"], "busy")
+        self.assertLess(time.monotonic() - started, 2.0)
         held, release = threading.Event(), threading.Event()
 
         def full_pass() -> None:

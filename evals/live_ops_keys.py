@@ -25,6 +25,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import os
 import hashlib
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -207,7 +208,9 @@ class World:
 
     def lateness(self) -> dict[str, Any]:
         if "late" not in self._cache:
-            self._cache["late"] = po_lateness.late_orders(self.portal, list(self.bc), self.as_of)
+            self._cache["late"] = po_lateness.late_orders(
+                self.portal, list(self.bc), self.as_of,
+                go_live_day=os.environ.get("PLX_BC_GO_LIVE_DATE"))
         return self._cache["late"]
 
 

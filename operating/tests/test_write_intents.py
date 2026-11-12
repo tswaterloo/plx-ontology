@@ -14,6 +14,7 @@ from decimal import Decimal
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -235,6 +236,25 @@ class Approval(Base):
         self._refused(wi.Person("Pilot", autopilot="reorder"), self.ctx(), "signed-in, named",
                       spec=po_spec(reason="sixth"))
 
+    def test_the_preparer_cannot_approve_under_another_mailbox_or_without_one(self) -> None:
+        # SEC-002: the same Entra object id, or the same mailbox (case and +tag folded), is
+        # the same person; a renamed mailbox, an alias and a session without email included.
+        prep = wi.Person("Approver", "approver@example.test", ALLOWED_OID)
+        grants = wi.WriteGrants({k: ["bc:purchaseOrders"] for k in (
+            "renamed@example.test", ALLOWED_OID, "approver+w@example.test")})
+        for n, who in enumerate((
+                wi.Person("Approver", "renamed@example.test", ALLOWED_OID.upper()),  # rename
+                wi.Person("Approver", None, ALLOWED_OID),                           # no email
+                wi.Person("Approver", " Approver+W@Example.test", None))):          # alias
+            with self.subTest(who=who):
+                self._refused(who, self.ctx(grants=grants), "prepared a write cannot approve",
+                              spec=po_spec(reason=f"same {n}"), by=prep)
+        # a preparer recorded without an email is still matched by object id
+        self._refused(wi.Person("Approver", "renamed@example.test", ALLOWED_OID),
+                      self.ctx(grants=grants), "prepared a write cannot approve",
+                      spec=po_spec(reason="no email"), by=wi.Person("Approver", None,
+                                                                   ALLOWED_OID))
+
     def test_confirm_hash_and_warnings_are_required(self) -> None:
         iid = self.desk.prepare(po_spec(), AUTOPILOT)["intent"]["intent_id"]
         shown = self.desk.preview(iid, self.ctx())
@@ -323,6 +343,31 @@ class Execution(Base):
         self.assertEqual((done["status"], len(self.transport.sent)), ("written", 1))
         self.assertIn("/Sandbox/api/v2.0/", self.transport.sent[0]["path"])
 
+    def test_a_run_the_page_showed_as_a_dry_run_never_writes_live(self) -> None:
+        """WEB-008: with every switch on, a run whose page said "Write (dry run)" (the API's
+        default live=False) is refused and nothing is sent; the page showing the live
+        write (live=True) writes once; a dry-run gate ignores the flag."""
+        self.desk.transport = self.transport
+        on = {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc",
+              wi.APPROVED_ENV: wi.DESK_KIND}
+        iid = self.approved(po_spec(reason="shown dry", environment="Sandbox"),
+                            ctx=self.ctx(on))
+        self.assertEqual(self.desk.preview(iid, self.ctx(on))["live_missing"], [])
+        with self.assertRaises(wi.WriteRefused) as caught:
+            self.desk.execute(iid, APPROVER, self.ctx(on), idempotency_key="d" * 20,
+                              live=False)
+        self.assertEqual(caught.exception.status, 409)
+        self.assertIn("showed a dry run", " ".join(caught.exception.problems))
+        self.assertEqual(self.transport.sent, [])
+        done = self.desk.execute(iid, APPROVER, self.ctx(on), idempotency_key="e" * 20,
+                                 live=True)
+        self.assertEqual((done["status"], len(self.transport.sent)), ("written", 1))
+        # switches off: whatever the page said, a dry run
+        iid = self.approved(po_spec(reason="off anyway"), ctx=self.ctx({}))
+        done = self.desk.execute(iid, APPROVER, self.ctx({}), idempotency_key="f" * 20,
+                                 live=True)
+        self.assertEqual((done["status"], len(self.transport.sent)), ("would_write", 1))
+
     def test_an_unknown_outcome_blocks_a_repeat_until_bc_is_checked(self) -> None:
         env = {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc",
                wi.APPROVED_ENV: wi.DESK_KIND}
@@ -339,6 +384,36 @@ class Execution(Base):
             self.desk.execute(iid, APPROVER, self.ctx(env), idempotency_key="v" * 20)
         self.assertIn("check BC", " ".join(caught.exception.problems))
         self.assertEqual(len(self.desk.transport.sent), 1)
+
+    def test_an_active_run_cannot_be_dispatched_again_through_recovery(self) -> None:
+        # ACT-001 invariant: while the first run is out, a second run with "I checked BC"
+        # is refused, in this process and (by its young pending row) in any other.
+        env = {wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox", wi.SCOPES_FLAG: "bc",
+               wi.APPROVED_ENV: wi.DESK_KIND}
+        started, release = threading.Event(), threading.Event()
+
+        class Slow(FakeTransport):
+            def send(self, request):
+                self.sent.append(request)
+                started.set()
+                release.wait(5)
+                return {"status": "written", "http_status": 201}
+        self.desk.transport = Slow()
+        iid = self.approved(po_spec(environment="Sandbox"), ctx=self.ctx(env))
+        first: list = []
+        worker = threading.Thread(target=lambda: first.append(self.desk.execute(
+            iid, APPROVER, self.ctx(env), idempotency_key="a" * 20)))
+        worker.start()
+        self.assertTrue(started.wait(5))
+        other = wi.WriteDesk(self.desk.journal, transport=self.desk.transport)
+        for desk in (self.desk, other):
+            with self.assertRaises(wi.WriteRefused) as caught:
+                desk.execute(iid, APPROVER, self.ctx(env), idempotency_key="b" * 20,
+                             checked_bc=True)
+            self.assertIn("in progress", " ".join(caught.exception.problems))
+        release.set()
+        worker.join(5)
+        self.assertEqual((first[0]["status"], len(self.desk.transport.sent)), ("written", 1))
 
     def test_journal_rows_audit_every_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -374,6 +449,25 @@ class Visibility(Base):
         self.assertEqual(self.desk.listing(stranger, self.ctx()), [])
         self.assertEqual(len(self.desk.listing(PREPARER, self.ctx())), 1)
         self.assertEqual(len(self.desk.listing(APPROVER, self.ctx())), 1)
+
+    def test_the_preparer_is_known_by_object_id_not_by_a_reused_mailbox(self) -> None:
+        """ACT-006: an intent that recorded the preparer's object id is theirs alone: a
+        different person on the same (reused) mailbox, or a session without an object id,
+        does not see it without a grant; the preparer under a renamed mailbox does. An
+        intent recorded before object ids were kept is matched by its exact mailbox."""
+        self.desk.prepare(line_spec(), PREPARER)
+        other = "42424242-4242-4424-8424-424242424242"
+        for who, sees in (
+                (wi.Person("Next holder", PREPARER.email, other), 0),
+                (wi.Person("No oid", PREPARER.email, None), 0),
+                (wi.Person("Renamed", "renamed@example.test", PREPARER.oid.upper()), 1),
+                (PREPARER, 1)):
+            with self.subTest(who=who.name):
+                self.assertEqual(len(self.desk.listing(who, self.ctx())), sees)
+        legacy = {"name": "Old", "email": "old@example.test", "oid": None, "autopilot": None}
+        self.assertTrue(wi._prepared_by(legacy, wi.Person("Old", "old@example.test", other)))
+        self.assertFalse(wi._prepared_by(legacy, wi.Person("X", "x@example.test", other)))
+        self.assertFalse(wi._prepared_by(legacy, wi.Person("X", "OLD+x@example.test", None)))
 
 
 class NoWriteReach(unittest.TestCase):

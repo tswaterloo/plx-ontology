@@ -230,6 +230,19 @@ class ChiefExecutiveSignals(unittest.TestCase):
         self.assertNotIn("5,000", found["email"]["body"])
         self.assertIn("45% less", found["teams"]["body"])
         self.assertIn("5,000.00 CAD", found["teams"]["body"])
+        # the figure is exact (never rounded to cents) and an unreadable one is never said
+        for value, said in (("5000.125", "5,000.125 CAD"), ("NaN", None), ("Infinity", None)):
+            with self.subTest(value=value):
+                body = build(gap("customer_demand_drop", CUS, change_pct="-45", amount={
+                    "value": value, "currency": "CAD", "basis": "demand_shortfall"}),
+                    world())["teams"]
+                body = (body or {}).get("body") or ""
+                if said:
+                    self.assertIn(said, body)
+                else:
+                    self.assertNotIn("CAD", body)
+                    self.assertNotIn("NaN", body)
+                    self.assertNotIn("Infinity", body)
         # a reader without finance: no figure anywhere, even though this amount names no
         # markings of its own (the alert type is finance-marked)
         hidden = build(g, world(), held=("pii",))

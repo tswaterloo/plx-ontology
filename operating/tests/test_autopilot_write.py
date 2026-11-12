@@ -108,7 +108,8 @@ class Base(unittest.TestCase):
                            guard=guard() if g is None else g, rules_path=rules)
 
     def fresh_run(self, judged: int = 15, matched: int = 14, *,
-                  start: str = "2026-11-06T07:00:00Z", status: str = "complete",
+                  start: str = "2026-11-06T07:00:00Z", end: str = "2026-11-10T07:00:00Z",
+                  status: str = "complete",
                   workflows=("internal_approval", "customer_order_intake")) -> Path:
         run = Path(self.tmp.name) / f"gen1-until-x{time.monotonic_ns()}"
         (run / "slug").mkdir(parents=True)
@@ -116,7 +117,7 @@ class Base(unittest.TestCase):
             ROLE: {"members": [OWNER], "workflows": {
                 w: {"judged": judged, "matched": matched} for w in workflows}}}}))
         (run / "slug" / "result.json").write_text(json.dumps(
-            {"role": ROLE, "status": status, "window": [start, "2026-11-10T07:00:00Z"]}))
+            {"role": ROLE, "status": status, "window": [start, end]}))
         return run
 
     def pass_gate(self, **kw) -> None:
@@ -172,18 +173,86 @@ class GateAndFlags(Base):
         rules = aw.load_rules()
         path = self.state / aw.WRITE_GATE_FILE
         out = aw.record_scores(self.fresh_run(start="2026-10-27T07:00:00Z"), path, rules)
-        self.assertEqual(out["refused"], {ROLE: "not_fresh"})
+        self.assertEqual(out["refused"], {ROLE: "not_held_out"})
         out = aw.record_scores(self.fresh_run(status="partial"), path, rules)
         self.assertEqual(out["refused"], {ROLE: "status:partial"})
         for judged, matched, passes in ((14, 14, False), (15, 13, False), (15, 14, True),
                                         (20, 18, True)):
             aw.record_scores(self.fresh_run(judged, matched), path, rules)
             self.assertEqual(bool(aw.WriteGate(path, rules).passing()), passes, (judged, matched))
-        # a gate file edited to an old window is not fresh at read time either
+        # a gate file edited to an old window is not held out at read time either
         doc = json.loads(path.read_text())
+        doc["roles"][ROLE]["parts"][0]["window"][0] = "2026-10-20T07:00:00Z"
+        path.write_text(json.dumps(doc))
+        self.assertEqual(aw.WriteGate(path, rules).passing(), [])
+        # a gate file from before parts: its one window is re-checked the same way
+        doc["roles"][ROLE].pop("parts")
+        doc["roles"][ROLE]["window"] = ["2026-11-06T07:00:00Z", "2026-11-10T07:00:00Z"]
+        path.write_text(json.dumps(doc))
+        self.assertEqual(len(aw.WriteGate(path, rules).passing()), 2)
         doc["roles"][ROLE]["window"][0] = "2026-10-20T07:00:00Z"
         path.write_text(json.dumps(doc))
         self.assertEqual(aw.WriteGate(path, rules).passing(), [])
+
+    def test_past_days_never_tuned_on_count_like_fresh_days(self):
+        """A window
+        touching tuned days never counts; the rules' windows are re-checked at every read."""
+        rules = aw.load_rules()
+        path = self.state / aw.WRITE_GATE_FILE
+        flow = "internal_approval"
+
+        def counted():
+            got = aw.gate_counts(self.state, rules).get(ROLE)
+            return got and (got["workflows"][flow]["judged"], got["workflows"][flow]["matched"])
+
+        june = dict(start="2026-06-08T07:00:00Z", end="2026-06-15T07:00:00Z")
+        self.assertEqual(aw.record_scores(self.fresh_run(10, 10, **june), path, rules),
+                         {"admitted": [ROLE], "refused": {}})
+        self.assertEqual(counted(), (10, 10))
+        self.assertEqual(aw.WriteGate(path, rules).passing(), [])       # 10 < 15
+        # fresh items add to the past ones: 16 judged, 15 right passes
+        aw.record_scores(self.fresh_run(6, 5), path, rules)
+        self.assertEqual(counted(), (16, 15))
+        self.assertIn((ROLE, flow), aw.WriteGate(path, rules).passing())
+        c = aw.countdown(aw.gate_counts(self.state, rules)[ROLE], flow, rules)
+        self.assertEqual([(p["kind"], p["judged"], p["matched"]) for p in c["parts"]],
+                         [("historical", 10, 10), ("fresh", 6, 5)])
+        self.assertTrue(c["passes"])
+        # a later run over the same fresh days replaces that part; days never count twice
+        aw.record_scores(self.fresh_run(8, 6, end="2026-11-12T07:00:00Z"), path, rules)
+        self.assertEqual(counted(), (18, 16))
+        self.assertEqual(aw.WriteGate(path, rules).passing(), [])       # 88.9%
+        aw.record_scores(self.fresh_run(10, 10, **june), path, rules)  # same June rerun
+        self.assertEqual(counted(), (18, 16))
+        # windows that touch tuned days are refused, the counts kept
+        for start, end in (("2026-07-01T07:00:00Z", "2026-07-09T07:00:00Z"),
+                           ("2026-10-27T07:00:00Z", "2026-11-01T07:00:00Z"),
+                           ("2026-11-05T07:00:00Z", "2026-11-08T07:00:00Z")):
+            out = aw.record_scores(self.fresh_run(50, 50, start=start, end=end), path, rules)
+            self.assertEqual(out["refused"], {ROLE: "not_held_out"}, start)
+        self.assertEqual(counted(), (18, 16))
+        # rules that no longer hold the past window out: its items stop counting at once
+        narrowed = {**rules, "clean_windows": []}
+        self.assertEqual(aw.gate_counts(self.state, narrowed)[ROLE]["workflows"][flow],
+                         {"judged": 8, "matched": 6})
+        # a hand-edited file whose parts overlap would count days twice: nothing passes
+        doc = json.loads(path.read_text())
+        doc["roles"][ROLE]["parts"].append(dict(doc["roles"][ROLE]["parts"][-1]))
+        path.write_text(json.dumps(doc))
+        self.assertEqual(aw.gate_counts(self.state, rules), {})
+        self.assertEqual(aw.WriteGate(path, rules).roles, {})
+
+    def test_rules_refuse_a_past_window_that_was_tuned_on(self):
+        raw = json.loads(aw.RULES_FILE.read_text())
+        clean = raw["clean_windows"][0]
+        for bad in ({**clean, "until": "2026-08-01T00:00:00Z"},          # into tuned days
+                    {**clean, "from": "2026-11-01T00:00:00Z", "until": "2026-11-20T00:00:00Z"},
+                    {**clean, "evidence": " "},
+                    {**clean, "from": clean["until"], "until": clean["from"]}):
+            path = Path(self.tmp.name) / "rules.json"
+            path.write_text(json.dumps({**raw, "clean_windows": [bad]}))
+            with self.assertRaises(aw.RulesInvalid, msg=bad):
+                aw.load_rules(path)
 
     def test_lost_gate_stops_live_at_once(self):
         env = self.go_live()
@@ -394,6 +463,81 @@ class Safety(Base):
         with self.assertRaises(ValueError):         # a sent email has no undo
             ex.undo(out[1]["key"], NOW)
         self.assertEqual(len(mail.calls), 1)
+
+    def test_a_message_after_an_entry_that_was_only_a_dry_run_never_goes_out(self):
+        """ACT-002: only mail opened to approved writes, the BC entry a dry run: its
+        confirmation is a dry run too, nothing dispatched; both opened: both go."""
+        mail = Transport()
+        approve = aw.Approval(by=(OWNER, OWNER_OID), confirmed_live=True)
+        for n, opened in enumerate(("send_mail", "send_mail,mc_approval")):
+            env = {aw.APPROVED_ENV: opened}
+            item = po_item()
+            item["item_id"] = f"it_po_dry_{n}"
+            ex = self.executor(env, send_mail=wa.MailAdapter(_Sender(mail), environ=env))
+            # the page's preview agrees: nothing of this item would go live
+            self.assertEqual(ex.live_kinds(item), [])
+            out = ex.run(item, NOW, approve)
+            with self.subTest(opened=opened):
+                self.assertEqual([(r["kind"], r["status"]) for r in out],
+                                 [("bc_write", "dry_run"), ("send_mail", "dry_run")])
+                self.assertEqual(out[0]["reasons"][0], "approved_writes_off:bc_write")
+                self.assertEqual(out[1]["reasons"], ["earlier_action_dry_run:bc_write"])
+                self.assertIsNone(out[1]["live_by"])
+        self.assertEqual((mail.calls, self.bc.calls), ([], []))
+        self.assertFalse(any(r.get("event") == "attempt"
+                             for r in aw.Journal(self.state / aw.AUDIT_FILE).rows()))
+        # the control: both kinds opened, the entry is made and then confirmed
+        env = {aw.APPROVED_ENV: "bc_write,send_mail"}
+        self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": "W/\"1\""})]
+        ex = self.executor(env, send_mail=wa.MailAdapter(_Sender(mail), environ=env))
+        self.assertEqual(ex.live_kinds(po_item()), ["bc_write", "send_mail"])
+        out = ex.run(po_item(), NOW, approve)
+        self.assertEqual([(r["kind"], r["status"]) for r in out],
+                         [("bc_write", "done"), ("send_mail", "done")])
+        self.assertEqual((len(self.bc.calls), len(mail.calls)), (1, 1))
+
+    def test_a_kill_switch_thrown_mid_item_stops_what_comes_after(self):
+        """ACT-004: the kill file appears while the item runs: after its first action
+        (the next one is killed) or after an action was checked but before its attempt
+        row (that action is killed, nothing sent)."""
+        env = {**self.go_live(("customer_order_intake",)),
+               "PLX_AUTOPILOT_BC_COMPANY_ID": BC_COMPANY}
+        mail = Transport()
+        state = self.state
+
+        class KillOnPost(Transport):
+            def __call__(self, request, key):
+                (state / aw.KILL_FILE).write_text("stop", "utf-8")
+                return super().__call__(request, key)
+
+        bc = KillOnPost((201, {"id": NEW_ID, "@odata.etag": "W/\"1\""}))
+        out = self.executor(env, bc_write=wa.BCAdapter(bc, environ=env),
+                            send_mail=wa.MailAdapter(_Sender(mail), environ=env)
+                            ).run(po_item(), NOW)
+        self.assertEqual([(r["kind"], r["status"]) for r in out],
+                         [("bc_write", "done"), ("send_mail", "killed")])
+        self.assertEqual(out[1]["reasons"], ["global_kill_switch"])
+        self.assertEqual((len(bc.calls), mail.calls), (1, []))
+        (state / aw.KILL_FILE).unlink()
+
+        class KillWhenChecked(wa.MailAdapter):
+            def unavailable(self):
+                (state / aw.WORKFLOW_KILL_FILE).write_text(json.dumps(
+                    {"workflows": ["customer_order_intake"]}), "utf-8")
+                return super().unavailable()
+
+        item = po_item(draft=True)
+        item["item_id"] = "it_po_kill_2"
+        self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": "W/\"1\""})]
+        out = self.executor(env, send_mail=KillWhenChecked(_Sender(mail), environ=env)
+                            ).run(item, NOW)
+        self.assertEqual([(r["kind"], r["status"]) for r in out],
+                         [("bc_write", "done"), ("send_mail", "killed")])
+        self.assertEqual(out[1]["reasons"], ["workflow_kill_switch"])
+        self.assertEqual(mail.calls, [])
+        attempts = [r for r in aw.Journal(self.state / aw.AUDIT_FILE).rows()
+                    if r.get("event") == "attempt"]
+        self.assertEqual([r["kind"] for r in attempts], ["bc_write", "bc_write"])
 
     def test_unavailable_adapters_never_attempt(self):
         env = self.go_live()

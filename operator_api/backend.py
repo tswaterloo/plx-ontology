@@ -73,6 +73,7 @@ from .ask_drafts import AskDraftsMixin, draft_models
 from .write_intents_api import WriteIntentsMixin
 from .briefs import BriefsMixin
 from operating import general_answer
+from .team_view import TeamViewMixin
 from operating import labour_hours
 from .watch import WatchMixin
 from .auth import Reader
@@ -88,6 +89,7 @@ from .serving import (  # noqa: F401 - re-exported
     ASK_WAIT_REPORT_SECONDS, SessionSlots, memory_available_gb, READ_WORKERS, fan_out,
     MAX_QUEUED_ASKS, READ_TIMEOUT_SECONDS, PREREAD_FAILURES, _PREREAD_LOCK,
     _count_preread_failure, PAGE_TIMEOUT_SECONDS, SECTION_PRIORITY, WARM_PRIORITY,
+    BACKGROUND_READ_BUDGET, READ_BUDGET, read_budget,
     SECTION_WORKERS, SECTION_START_SECONDS, PREWARM_SECONDS, PAGE_DIR, WARM_SECONDS,
     WARM_LATE_PAGES, WARM_THREAD, WARM_IDLE_SECONDS, WARM_PAUSE_SECONDS, WARM_RECENT_PAGES,
     READER_CACHE_SECONDS, LAST_GOOD_SECONDS, SERVE_FAST_SECONDS, LAST_GOOD_KEPT,
@@ -145,12 +147,12 @@ from .page_parts import (  # noqa: F401 - re-exported
     inbox_state, INBOX_VISIT_TABLES, _INBOX_CONTENT, _INBOX_CONTENT_LOCK, inbox_content,
     identity_of, last_visit_of, _search_marked, merged, IMPACT_MODES, impact_change_words,
     SECTION_PLANS, PLAN_SECTIONS, POOL_SECTIONS, TRAIL_TYPES, plans_before, CUSTOMER_SUMS,
-    CUSTOMER_DAYS, CUSTOMER_ROWS, _CLOSED, _cited, page_knows, _refusal, customer_summary,
+    CUSTOMER_DAYS, CUSTOMER_ROWS, _cited, page_knows, _refusal, customer_summary,
     label_timeline, page_handles, shown_handles, PAGE_PLANS, _PLANS_RUN, plans_once, _entries, money_of,
     shown_objects,
     entry_sources, landed_cost_of, people_of, page_hidden, late_of, STAGE_WORDS,
     reconciled_not_found, MAX_ORDER_COPIES, order_state, page_import_days,
-    sales_order_view, FULFILMENT_TYPES, LINK_RECORDS, LINK_EVIDENCE, _LINK_WORDS,
+    sales_order_view, DERIVED_WORDS, FULFILMENT_TYPES, LINK_RECORDS, LINK_EVIDENCE, _LINK_WORDS,
     _schema_links, link_words, link_groups, walk_whole, fulfilment_absence, RECEIPT_EVENTS,
     record_fields, source_view, source_payload, source_records)
 from .cli import (  # noqa: F401 - re-exported
@@ -164,7 +166,7 @@ RESUME_HOST_CHECKS = 6   # host re-reads one resumed Ask turn may make; more: wi
 # The screens whose people and items follow the owner's workload grants
 # (``workload-grants.json``): the grants are part of the access state their kept copies are
 # checked against (``_access_later``), never an input only.
-GRANT_SCREENS = frozenset({"my_work", "autopilot", "workload", "owner_workload"})
+GRANT_SCREENS = frozenset({"my_work", "autopilot", "workload"})
 
 # The screens the warm-up process reads ahead through ``_serving`` after Today (a reader's
 # first visit after a restart then opens from the copy it kept on disk), one at a time on
@@ -209,7 +211,7 @@ def _clean_text(text: str, guard: Any) -> str:
 
 # ---- the backend ---------------------------------------------------------------------
 
-class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin,
+class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin,
                        AutopilotAreaMixin, AutopilotStudioMixin, InstructMixin,
                        WatchMixin,
                        AskDraftsMixin):
@@ -381,8 +383,10 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
                 if warm:
                     futures.append(future)
 
+        budget = read_budget(PAGE_TIMEOUT_SECONDS)   # the asking read's, at call time
+
         def wait() -> None:
-            deadline = time.monotonic() + PAGE_TIMEOUT_SECONDS
+            deadline = time.monotonic() + budget
             for future in futures:
                 try:
                     future.result(timeout=max(0.0, deadline - time.monotonic()))
@@ -407,7 +411,7 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         if slot is not None:
             future = pool.submit(slot, reader.key, (reader, object_type, object_id, section))
             try:
-                return future.result(timeout=PAGE_TIMEOUT_SECONDS)
+                return future.result(timeout=read_budget(PAGE_TIMEOUT_SECONDS))
             except FutureTimeout:
                 future.cancel()
                 raise TimeoutError("workbench_busy") from None
@@ -1089,17 +1093,30 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
 
     def _understanding(self, view: Any, request: m.AskRequest,
                        found: Mapping[str, Any]) -> m.UnderstandingEvent:
-        """the understanding when wired, its candidates re-checked against this
-        reader's own read at this boundary (one it cannot open is dropped, unnamed);
-        else the identifier grammar's roots the reader's ``plx.find`` resolved."""
+        """the understanding when wired, run under this reader's own read policy
+        (``view.access.reader_policy``: the gated actor and its ``ReadPolicy``, so its
+        entity index is the reader's; UNDERSTAND-001: called without one it resolved
+        nothing), its candidates re-checked against this reader's own read at this
+        boundary (one it cannot open is dropped, unnamed), and every root the reader's
+        ``plx.find`` already resolved kept (``_keep_found``); else, or when it fails, the
+        identifier grammar's roots alone."""
+        base = self._found_understanding(request, found)
         if self.understand is not None:
             try:
+                gated, policy = view.access.reader_policy()
                 got = understanding_event(self.understand(
                     request.question, history=[t.model_dump() for t in request.history],
-                    actor=view.actor))
-                return visible_understanding(view, got)
+                    actor=gated, policy=policy))
+                return visible_understanding(view, _keep_found(got, base))
             except Exception:  # noqa: BLE001 - understanding is a hint; the loop still runs
                 pass
+        return base
+
+    @staticmethod
+    def _found_understanding(request: m.AskRequest,
+                             found: Mapping[str, Any]) -> m.UnderstandingEvent:
+        """The identifier grammar's roots the reader's ``plx.find`` resolved, as an
+        understanding event."""
         q = request.question.lower()
         intent = next((name for name, rule in INTENT_RULES if re.search(rule, q)), "other")
         entities = []
@@ -2519,6 +2536,19 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             stale = self._stale_copy(key, held, before)
             if stale is not None:
                 return stale
+        if held is None and reading:
+            # the page's first read is already going on off a request (one that outran its
+            # limit): wait for it rather than starting a second beside it, and serve what it
+            # kept; when it kept nothing this request reads, as before
+            with self._lock:
+                under_way = self.__dict__.get("_refresh_events", {}).get(key)
+            if under_way is not None:
+                if not under_way.wait(read_budget(PAGE_TIMEOUT_SECONDS)):
+                    before.cancel()
+                    raise TimeoutError("workbench_busy")   # still going: no read beside it
+                if self._held_good(key) is not None:
+                    before.cancel()
+                    return self._serving(reader, name, read, inputs_of)
         box: Future = Future()
 
         def run() -> None:
@@ -2736,6 +2766,10 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
         stale = self._stale_copy(key, held, before)
         if stale is None:
             before.cancel()
+            # nothing to serve meanwhile: the read goes on off the request, with more time
+            # than a request has, and keeps its page for the app's retry (cut at the
+            # request's limit its work was lost, and a page needing longer never finished)
+            self._refresh_later(reader, key, read)
             raise error
         self._refresh_later(reader, key, read)
         return stale
@@ -2922,17 +2956,27 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
             if key in self._refreshing:
                 return
             self._refreshing.add(key)
+            self.__dict__.setdefault("_refresh_events", {})[key] = threading.Event()
 
         def run() -> None:
+            READ_BUDGET.set(BACKGROUND_READ_BUDGET)   # nobody waits on it: more time
             try:
                 self._read_and_keep(reader, key, read)
             except Exception:  # noqa: BLE001 - the next request tries again
                 pass
             finally:
-                with self._lock:
-                    self._refreshing.discard(key)
+                self._refresh_over(key)
 
         threading.Thread(target=run, name="last-good-refresh", daemon=True).start()
+
+    def _refresh_over(self, key: tuple) -> None:
+        """The screen's background read ended (kept or failed): a request waiting on it
+        goes on."""
+        with self._lock:
+            self._refreshing.discard(key)
+            done = self.__dict__.setdefault("_refresh_events", {}).pop(key, None)
+        if done is not None:
+            done.set()
 
     def _refresh_now(self, reader: Reader, key: tuple, read: Callable[[], Any]) -> bool:
         """``_refresh_later`` on this thread (False: one is under way or it failed)."""
@@ -2999,11 +3043,6 @@ class WorkspaceBackend(BriefsMixin, ActionsMixin, WriteIntentsMixin, AutopilotMi
     def workload(self, reader: Reader) -> m.Workload:
         return self._serving(reader, ("workload",), lambda: BriefsMixin.workload(
             self, reader), self._screen_inputs(files=(self._grants_file,)))
-
-    def owner_workload(self, reader: Reader) -> m.OwnerWorkload:
-        return self._serving(reader, ("owner_workload",), lambda: BriefsMixin.owner_workload(
-            self, reader), self._screen_inputs(files=(
-                self._grants_file, self._system_activity_path)))
 
     def approvals_queue(self, reader: Reader) -> m.ApprovalsQueue:
         return self._serving(reader, ("approvals",), lambda: BriefsMixin.approvals_queue(
@@ -4718,9 +4757,27 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
     if kind == "SalesOrder":
         # the order's customer is its customer link's, wherever the hop came in the walk
         customers = [r for g in links if g.role == "customer" for r in g.records]
+        worth, basis = None, None
+        for got in card.get("derived") or ():
+            # the order's value derived where its header states none: a fact of its own,
+            # citing what it sums, never in place of the source's total
+            inputs = [c.get("l1_handle") for c in got.get("inputs") or ()
+                      if isinstance(c, Mapping) and isinstance(c.get("l1_handle"), str)]
+            worth = _decimal_money(got.get("value"), got.get("currency"))
+            if got.get("property") != "order_value" or worth is None or not inputs:
+                worth = None
+                continue
+            basis = str(got.get("derived_from") or "")
+            shown = f"{worth.amount} {worth.currency}"
+            facts.insert(0, m.Fact(
+                text=f"Order value: {shown} {DERIVED_WORDS.get(basis, '(derived)')}",
+                sources=[backend._source(view, h, fields={"order_value": shown})
+                         for h in dict.fromkeys(inputs)][:LINK_EVIDENCE],
+                check="derived_from_records"))
+            break
         said, facts, absent = sales_order_view(
             label, values, customers + [r for r in related if r.type != "Customer"], facts,
-            currency)
+            currency, worth, basis)
         state = order_state(backend, view, oid)
         if state is not None:
             facts.insert(0, state)
@@ -5033,3 +5090,22 @@ def view_as_for(resolver: Any, state_dir: Any) -> Any:
     return va.ViewAs(candidates=candidates, excluded=excluded,
                      identity=lambda oid, exp: view_as_session(resolver, oid, expires_at=exp),
                      audit=va.Audit(Path(state_dir) if state_dir else None))
+
+
+def _keep_found(got: m.UnderstandingEvent, base: m.UnderstandingEvent
+                ) -> m.UnderstandingEvent:
+    """``got`` (the optional understanding) with every record ``base`` (the reader's own
+    ``plx.find`` of the question's identifiers) resolved that ``got`` did not: such a
+    root replaces ``got``'s unresolved entity of the same words, so an understanding that
+    could not resolve a record never erases one already found (UNDERSTAND-001)."""
+    have = {entity.resolved.object_id for entity in got.entities
+            if entity.resolved is not None}
+    kept = [entity for entity in base.entities
+            if entity.resolved is not None and entity.resolved.object_id not in have]
+    if not kept:
+        return got
+    words = {normalize(entity.text) for entity in kept}
+    rest = [entity for entity in got.entities
+            if entity.resolved is not None or normalize(entity.text) not in words]
+    got.entities = rest + kept
+    return got

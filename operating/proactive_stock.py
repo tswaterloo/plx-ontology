@@ -10,11 +10,15 @@ source serves leaves it ``blocked`` with ``not_served_<Type>__<property>`` reaso
 
 * ``slow_moving_stock``: an item (a settled ``Product.same_record_as`` cluster) with stock on
   hand (``proactive_business.ON_HAND``; the first source stating it wins, never summed across
-  sources) and no customer order, assembly use or ledger sale or consumption
-  (``MOVEMENTS``) in ``SLOW_DAYS`` (90, 180 or 365 days: the bucket names it), or none
-  recorded. The stock's value (on hand times the item's own unit cost, only when the cost is
-  stated per the unit on hand) is in the event only, finance-marked. The claim rests on no
-  later movement being recorded: ``REQUIRES_GRANT``.
+  sources) and no customer order, assembly use or ledger sale, consumption or transfer
+  taking stock out (``MOVEMENTS``; a ledger entry dated by its posting event; a count
+  correction or write-off is no movement) in ``SLOW_DAYS`` (90, 180 or
+  365 days: the bucket names it), or none recorded. An item tied to another record by an
+  unsettled (lead) identity or movement link is not judged (``identity_unsettled``,
+  ``movement_unsettled``): its sales or use may sit on that record. The stock's value (on
+  hand times the item's own unit cost, only when the cost is stated per the unit on hand) is
+  in the event only, finance-marked. The claim rests on no later movement being recorded:
+  ``REQUIRES_GRANT``.
 * ``expiring_lot_stock``: a lot with quantity on hand (an ``ON_HAND`` source of lots) whose
   expiry falls within ``LOT_DAYS`` (30 high, 60 medium), with the open customer orders (the
   one sales-order definition) that name its item and could use it.
@@ -82,6 +86,7 @@ FREIGHT_MIN_HISTORY = 3
 FREIGHT_RATIO = Decimal("1.5")
 FREIGHT_HIGH_RATIO = Decimal(2)
 MAX_CITED = 20                      # compared bills, open orders or inbound lines cited
+EVENT_CHUNK = 2000                  # records whose events one statement reads
 
 ITEM = pb.ITEM
 COMPONENT = "AssemblyOrderComponent"
@@ -116,7 +121,11 @@ CODE = "code"
 class Movement:
     """Records that show an item sold or used: a line naming the item (``item_link``),
     dated on itself or on its parent (``parent_link``, ``dated_type``) by the first of
-    ``day_props`` it states; ``status``: (property, words never counted, words required)."""
+    ``day_props`` it states, or by its ``day_event`` (an event of the dated record, its
+    time); ``status``: (property, words never counted, words required; Business Central
+    enum escapes decoded; with both sets named, a word in neither leaves the item unjudged:
+    ``movement_type_unknown``); ``outflow``: a quantity property that must be below zero (stock
+    taken out) for the line to count."""
     label: str
     line_type: str
     item_link: str
@@ -124,17 +133,29 @@ class Movement:
     dated_type: str
     day_props: tuple[str, ...]
     status: tuple[str, frozenset, frozenset | None] | None = None
+    day_event: str | None = None
+    outflow: str | None = None
 
 
+# the ledger entry types that are movement (``_enum_word``: BC's escapes decoded, folded)
+LEDGER_MOVES = frozenset({"sale", "consumption", "assembly consumption", "transfer"})
+# the other ledger entry types BC has: never movement (an adjustment is a count correction or
+# a write-off); a type in neither set leaves its item unjudged (``movement_type_unknown``)
+LEDGER_OTHER = frozenset({"purchase", "positive adjmt.", "negative adjmt.", "output",
+                          "assembly output"})
 MOVEMENTS = (
     Movement("customer order", "SalesOrderLine", pb.SO_LINE_ITEM, pb.SO_LINE_OF, "SalesOrder",
              ("order_date",), ("status", pb.VOID_ORDER, None)),
     Movement("assembly use", COMPONENT, COMPONENT_ITEM, COMPONENT_OF, ASSEMBLY, ASSEMBLY_DAYS,
              ("status", frozenset({"cancelled", "canceled"}), None)),
-    Movement("ledger sale or consumption", "ItemLedgerEntry", "ItemLedgerEntry.for_item", None,
-             "ItemLedgerEntry", ("posting_date",),
-             ("entry_type", frozenset(), frozenset({"sale", "consumption",
-                                                    "assembly consumption"}))),
+    # a ledger sale, consumption or transfer taking stock out (the quantity below zero),
+    # dated by its posting event (the ledger states no date property). A count correction or
+    # write-off (Negative Adjmt.) is no movement: it would reset the clock of a real slow
+    # mover (3,022 live, 2,075 of them on one count day)
+    Movement("ledger outflow (sale, use or transfer)", "ItemLedgerEntry",
+             "ItemLedgerEntry.for_item", None, "ItemLedgerEntry", (),
+             ("entry_type", LEDGER_OTHER, LEDGER_MOVES), day_event="ItemLedgerEntry.posted",
+             outflow="quantity"),
 )
 
 
@@ -160,7 +181,7 @@ FIELD_WORDS = {"Product.quantity_on_hand": "item stock on hand",
                "InventoryLot.quantity_on_hand": "lot stock on hand",
                "InventoryLot.expiry_date": "lot expiry date",
                "AssemblyOrder.start_date": "assembly order start date",
-               "ItemLedgerEntry.posting_date": "item ledger posting date",
+               "ItemLedgerEntry.posted": "item ledger posting date",
                "RelPublicAppSupplierCertification.expiry_date": "supplier certificate expiry",
                "RelPublicAppSupplierCertification.review_date": "supplier certificate review",
                "FreightBill.amount": "freight bill amount"}
@@ -192,6 +213,63 @@ def _schema() -> Any:
     from ontology.schema import load_schema
 
     return load_schema()
+
+
+def declares_event(event_type: str) -> bool:
+    """Whether the loaded schema declares the event type."""
+    return event_type in (_schema().event_types or {})
+
+
+def _served(m: Movement) -> bool:
+    """A movement source the loaded schema serves whole: its item link, parent link and
+    every day it is dated by."""
+    return (declares(m.line_type, link=m.item_link)
+            and (m.parent_link is None or declares(m.line_type, link=m.parent_link))
+            and all(declares(m.dated_type, p) for p in m.day_props)
+            and (m.day_event is None or declares_event(m.day_event))
+            and (m.outflow is None or declares(m.line_type, m.outflow)))
+
+
+def _unserved(m: Movement) -> list[str]:
+    return [*(f"{m.dated_type}.{p}" for p in m.day_props if not declares(m.dated_type, p)),
+            *((m.day_event,) if m.day_event and not declares_event(m.day_event) else ())]
+
+
+def _enum_word(row: Mapping[str, Any] | None) -> str | None:
+    """A status word folded, Business Central's XML escapes (``_x0020_``) decoded."""
+    if row is None:
+        return None
+    import re
+    text = re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)),
+                  str(row.get("value") or ""))
+    return " ".join(text.split()).casefold() or None
+
+
+def _event_days(st: Any, records: Sequence[str], event_type: str
+                ) -> dict[str, tuple[Mapping[str, Any], date]]:
+    """record -> (its latest ``event_type`` event as a cited row, its day), read by the
+    event-object index in chunks."""
+    out: dict[str, tuple[Mapping[str, Any], date]] = {}
+    ids = sorted(set(records))
+    sql = ("SELECT eo.object_id, e.time, e.l1_handle, e.markings FROM event_objects eo "
+           "JOIN events e ON e.event_id = eo.event_id WHERE e.event_type = :type "
+           "AND e.superseded_at IS NULL AND eo.object_id IN (SELECT value FROM json_each(:chunk))")
+    import json
+    for start in range(0, len(ids), EVENT_CHUNK):
+        pb._tick(st)
+        for oid, time, handle, markings in st.conn.execute(sql, {
+                "type": event_type, "chunk": json.dumps(ids[start:start + EVENT_CHUNK])}):
+            day = pb._day(time)
+            if day is None or (oid in out and out[oid][1] >= day):
+                continue
+            out[oid] = ({"object_id": oid, "l1_handle": handle, "markings": markings}, day)
+    return out
+
+
+def _words(labels: Sequence[str]) -> str:
+    """``a``, ``a or b``, ``a, b or c``."""
+    labels = list(dict.fromkeys(labels))
+    return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} or {labels[-1]}"
 
 
 def declares(object_type: str, prop: str | None = None, link: str | None = None) -> bool:
@@ -231,18 +309,36 @@ def _touch(st: Any, objects: Iterable[str], types: Sequence[str],
             for r in st.touching(objects, list(types)) if r[5] in keep and not r[7]]
 
 
+# Above this many records a link type is read whole by its type index (``_Store.of_type``,
+# once per run, shared by every rule asking it) rather than by its end indexes at each
+# record (two statements per 500 records: 40 s for the 18k customers, 2026-11-12).
+BY_TYPE_FROM = 2000
+
+
+def identity_rows(st: Any, ids: Iterable[str], link: str) -> list[tuple]:
+    """The current ``link`` rows (``_LinkRows``, contradicted ones too) with an end at one
+    of ``ids``, in rowid order: by the type index when ``ids`` are many, else by the end
+    indexes at ``ids``, never a whole-table scan."""
+    ids = set(ids)
+    if not ids:
+        return []
+    if len(ids) > BY_TYPE_FROM and callable(getattr(st, "of_type", None)):
+        return [r for r in st.of_type(link) if r[3] in ids or r[4] in ids]
+    return st.touching(sorted(ids), [link], every=True)
+
+
 def _clusters(st: Any, ids: Iterable[str], link: str, settled: Sequence[str]
               ) -> tuple[dict[str, str], dict[str, set[str]]]:
-    """member -> its settled identity cluster's least id over ``link`` (read by the link
-    table's end indexes at ``ids``, never a whole-table scan); member -> the records a lead
-    (unsettled) identity link alone ties it to."""
+    """member -> its settled identity cluster's least id over ``link`` (``identity_rows``);
+    member -> the records a lead (unsettled) identity link alone ties it to. A link a
+    person rejected (contradicted) ties nothing."""
     from . import po_status
 
     ids = set(ids)
     keep = frozenset(settled)
     pairs, leads = [], defaultdict(set)
-    for r in st.touching(sorted(ids), [link]) if ids else ():
-        if r[7]:
+    for r in identity_rows(st, ids, link):
+        if r[7] or r[5] == "contradicted":
             continue
         if r[5] in keep:
             pairs.append((r[3], r[4]))
@@ -252,14 +348,21 @@ def _clusters(st: Any, ids: Iterable[str], link: str, settled: Sequence[str]
     return po_status.clusters(pairs, ids | {e for p in pairs for e in p}), leads
 
 
-def _item_roots(st: Any, settled: Sequence[str]) -> dict[str, str]:
-    """Item record -> its settled ``Product.same_record_as`` cluster's least id, read once
-    per run over every item record by index."""
-    def read() -> dict[str, str]:
+def _item_identity(st: Any, settled: Sequence[str]
+                   ) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """(item record -> its settled ``Product.same_record_as`` cluster's least id, item
+    record -> the records a lead identity link alone ties it to), read once per run over
+    every item record by index."""
+    def read() -> tuple[dict[str, str], dict[str, set[str]]]:
         ids = [r[0] for r in st.conn.execute(
             "SELECT object_id FROM objects WHERE object_type = ?", (ITEM,))]
-        return _clusters(st, ids, pb.ITEM_TWINS, settled)[0]
-    return st.memo("stock:item_roots", read)
+        return _clusters(st, ids, pb.ITEM_TWINS, settled)
+    return st.memo("stock:item_identity", read)
+
+
+def _item_roots(st: Any, settled: Sequence[str]) -> dict[str, str]:
+    """Item record -> its settled ``Product.same_record_as`` cluster's least id."""
+    return _item_identity(st, settled)[0]
 
 
 def _members(item_root: Mapping[str, str], roots: Iterable[str]) -> set[str]:
@@ -384,31 +487,43 @@ def slow_moving_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                       on_hand: Sequence[tuple[str, str, str | None]] | None = None,
                       movements: Sequence[Movement] = MOVEMENTS) -> dict[str, Any]:
     sources, missing = _sources(on_hand)
-    served = [m for m in movements
-              if declares(m.line_type, link=m.item_link)
-              and (m.parent_link is None or declares(m.line_type, link=m.parent_link))
-              and all(declares(m.dated_type, p) for p in m.day_props)]
-    unserved = [f"{m.dated_type}.{p}" for m in movements if m not in served
-                for p in m.day_props if not declares(m.dated_type, p)]
+    served = [m for m in movements if _served(m)]
+    unserved = [f for m in movements if m not in served for f in _unserved(m)]
     if not served:
         missing += unserved
     if missing:
         return _blocked(result, missing)
     skipped = skips()
     counts: Counter = Counter()
-    item_root = _item_roots(st, settled)
+    item_root, item_leads = _item_identity(st, settled)
     stock, broken = _stock(st, sources, item_root, settled, cites)
     stocked = {top for top, (qty, _u, _g) in stock.items() if qty > 0}
     counts["stocked"] = len(stocked)
     for top, why in sorted(broken.items()):
         skipped.note(why, [top], [(top, "[]")])
     members = _members(item_root, stocked)
+    # item cluster -> why its movements cannot all be read: a lead identity link ties a
+    # member to another record (its sales may sit there), or a lead link names it on a
+    # movement line
+    unsettled: dict[str, str] = {}
+    for m in sorted(members):
+        if item_leads.get(m):
+            unsettled.setdefault(item_root.get(m, m), "identity_unsettled")
+    keep = frozenset(settled)
     # item cluster -> (day, rows, markings, label) of its latest sale or use
     latest: dict[str, tuple] = {}
+    undated: dict[str, list[str]] = defaultdict(list)   # item cluster -> undated movements
     for move in served:
         pb._tick(st)
-        lines = [l for l in _touch(st, members, [move.item_link], settled)
-                 if l["to_object"] in members]
+        lines = []
+        for r in st.touching(sorted(members), [move.item_link]) if members else ():
+            if r[7] or r[4] not in members:
+                continue
+            if r[5] in keep:
+                lines.append({"link_id": r[1], "link_type": r[2], "from_object": r[3],
+                              "to_object": r[4], "tier": r[5], "markings": r[6]})
+            else:
+                unsettled.setdefault(item_root.get(r[4], r[4]), "movement_unsettled")
         parent_of: dict[str, dict] = {}
         if move.parent_link is not None:
             parent_of = {l["from_object"]: l for l in _touch(
@@ -417,22 +532,44 @@ def slow_moving_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         dated = sorted({(parent_of[l["from_object"]]["to_object"] if move.parent_link
                          else l["from_object"]) for l in lines
                         if move.parent_link is None or l["from_object"] in parent_of})
-        props = list(move.day_props) + ([move.status[0]] if move.status else [])
+        props = [*move.day_props, *([move.status[0]] if move.status else []),
+                 *([move.outflow] if move.outflow else [])]
         found = st.values([move.dated_type], props, objects=dated)
+        posted = _event_days(st, dated, move.day_event) if move.day_event else {}
         for link in lines:
             tie = parent_of.get(link["from_object"]) if move.parent_link else None
             record = tie["to_object"] if tie else link["from_object"]
             entry = (found.get(record) or {}).get("props") or {}
+            unknown = False
             if move.status:
-                word = pb._word(pb._one(entry.get(move.status[0])))
-                if word in move.status[1] or (move.status[2] is not None
-                                              and word not in move.status[2]):
+                word = _enum_word(pb._one(entry.get(move.status[0])))
+                if word in move.status[1]:
                     continue
+                if move.status[2] is not None and word not in move.status[2]:
+                    if not move.status[1]:
+                        continue
+                    # neither a movement word nor a named other one: never read as "no
+                    # movement" (the item is not judged), once it takes stock out
+                    unknown = True
+            if move.outflow:
+                taken = pb._one(entry.get(move.outflow))
+                qty = pb._dec(taken["value"]) if taken is not None else None
+                if qty is None or qty >= 0:
+                    continue
+            if unknown:
+                unsettled.setdefault(item_root.get(link["to_object"], link["to_object"]),
+                                     "movement_type_unknown")
+                continue
             row, day = _first(entry, move.day_props)
+            if day is None and record in posted:
+                row, day = posted[record]
+            top = item_root.get(link["to_object"], link["to_object"])
             if day is None or day > as_of:
                 counts["undated_movement" if day is None else "future_movement"] += 1
+                # a known movement whose day is unknown: the item's recency is unproven
+                # (BIZ-016), never "no movement recorded" nor the oldest bucket
+                undated[top].append(record)
                 continue
-            top = item_root.get(link["to_object"], link["to_object"])
             marks = (link["markings"], *((tie["markings"],) if tie else ()))
             if top not in latest or day > latest[top][0]:
                 latest[top] = (day, [row], marks, move.label)
@@ -442,7 +579,7 @@ def slow_moving_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                                 for r in rows])
     requires = absence([*{t for m in served for t in (m.line_type, m.dated_type)},
                         *(t for t, _p, _v in sources)])
-    words = " or ".join(dict.fromkeys(m.label for m in served))
+    words = _words([m.label for m in served])
     gaps = []
     for top in sorted(stocked):
         pb._tick(st)
@@ -451,6 +588,13 @@ def slow_moving_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         age = (as_of - last[0]).days if last else None
         if age is not None and age < SLOW_DAYS[-1]:
             counts["moving"] += 1
+            continue
+        if top in unsettled:
+            skipped.note(unsettled[top], [top], [(top, "[]")])
+            continue
+        if undated.get(top):
+            # a later movement may be the undated one: not judged, said per item
+            skipped.note("movement_date_unknown", [top], [(top, "[]")])
             continue
         bucket = next(d for d in SLOW_DAYS if age is None or age >= d)
         counts[f"over_{bucket}"] += 1
@@ -776,17 +920,23 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         labels = [p for p in (cert.supplier, cert.material, cert.lot) if p]
         names = [p for p in (cert.material, cert.lot) if p]   # what the certificate is of
         found = st.values([cert.type], [*props, *labels])
-        # per material and lot, the latest date any of its certificates states: an older
-        # certificate of the same lot is superseded by a newer one stating a later date
+        # per supplier, material and lot, the latest date any of its certificates states:
+        # an older certificate of the same supplier's lot is superseded by a newer one
+        # stating a later date. Only a certificate stating every one of them is matched:
+        # a lot string is not proven unique across suppliers, and a blank part is no
+        # identity, so an ambiguous newer certificate never erases an expiry (BIZ-015)
+        def identity(values: Mapping[str, Any]) -> tuple | None:
+            ident = tuple(_fold(_stated(values, p)) for p in labels)
+            return ident if names and all(ident) else None
         latest: dict[tuple, date] = {}
         for entry in found.values():
-            of = tuple(_fold(_stated(entry["props"], p)) for p in names)
-            if names and any(of):
+            ident = identity(entry["props"])
+            if ident is not None:
                 for prop in props:
                     row = pb._one(entry["props"].get(prop) or ())
                     day = pb._day(row["value"]) if row is not None else None
                     if day is not None:
-                        latest[(prop, *of)] = max(latest.get((prop, *of), day), day)
+                        latest[(prop, *ident)] = max(latest.get((prop, *ident), day), day)
         for oid, entry in sorted(found.items()):
             pb._tick(st)
             values = entry["props"]
@@ -809,7 +959,8 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                     # what expires (live 11-10: 4 of 15 certificates)
                     skipped.note("certificate_unidentified", [oid], [(oid, "[]")])
                     continue
-                if names and latest.get((prop, *of), day) > day:
+                ident = identity(values)
+                if ident is not None and latest.get((prop, *ident), day) > day:
                     counts["superseded"] += 1
                     continue
                 key = (cert.type, prop, day,

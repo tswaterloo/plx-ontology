@@ -126,15 +126,21 @@ class Pool:
         conn = connect(self.dsn, **({"connect_timeout": max(1, int(self.connect_timeout))}
                                     if self.connect_timeout is not None else {}))
         try:
-            if self.statement_timeout_ms is not None:
-                with conn.cursor() as cur:
-                    cur.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
-                conn.commit()
+            self._limits(conn)
+            conn.commit()
             self._configure(conn)
         except BaseException:
             conn.close()
             raise
         return conn
+
+    def _limits(self, conn: psycopg.Connection) -> None:
+        """The pool's statement time limit, set on a new connection and set again after
+        every ``RESET ALL`` (which would otherwise put the server's limit back, so the
+        cap held on a connection's first borrow only)."""
+        if self.statement_timeout_ms is not None:
+            with conn.cursor() as cur:
+                cur.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
 
     def _take(self) -> psycopg.Connection | None:
         """An idle connection, or None after reserving a slot for a new one."""
@@ -189,7 +195,7 @@ class Pool:
     def _reset(self, conn: psycopg.Connection) -> bool:
         """Hand-back after every borrow, ok or failed: roll back an open transaction,
         restore the connection attributes, ``RESET ALL`` session settings a borrower
-        changed and re-apply the defaults. Any failure: the connection is discarded."""
+        changed and re-apply the defaults and the statement time limit. Any failure: the connection is discarded."""
         if conn.closed or conn.broken:
             return False
         try:
@@ -199,6 +205,7 @@ class Pool:
             conn.read_only = None
             conn.isolation_level = None
             conn.execute("RESET ALL")
+            self._limits(conn)
             self._configure(conn)
             if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
                 conn.commit()

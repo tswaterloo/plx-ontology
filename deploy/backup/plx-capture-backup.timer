@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX capture stores backup, nightly at a quiet hour (06:30 UTC = 1:30 AM ET)
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

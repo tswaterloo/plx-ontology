@@ -16,6 +16,7 @@ import copy
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import itertools
+import time
 import json
 import re
 import unittest
@@ -370,6 +371,45 @@ class FastAnswerTests(EmployeeDoorTestCase):
             else:
                 self.assertIsNone(out)                    # B's own read: refused
         self.assertEqual(served, [OID_A, OID_B])          # A's second read was A's cache
+
+    def test_an_expired_cached_read_is_read_anew_once_and_kept_again(self):
+        """An entry past ``CACHE_SECONDS`` is absent: the next call reads afresh and its
+        result replaces the old one, so the call after it is served from the cache (the
+        expired entry once blocked its own renewal: every later call read again). A failed
+        refresh is never kept and never brings back the old result."""
+        fast_answer._CACHE.clear()
+        self.addCleanup(fast_answer._CACHE.clear)
+        served, fail = [], [False]
+
+        def read_once():
+            reads = fast_answer.Reads.of_server(self.server(OID_A))
+            host_call = reads.host.call
+
+            def counted(*args, **kwargs):
+                served.append(1)
+                if fail[0]:
+                    return {"error": {"code": "tool_execution_failed"}}
+                return host_call(*args, **kwargs)
+            with mock.patch.object(reads.host, "call", side_effect=counted), \
+                    reads.request():
+                return reads.call("plx.object", {"object_id": PO}, cached=True)
+        read_once()
+        self.assertEqual((len(served), len(fast_answer._CACHE)), (1, 1))
+        key = next(iter(fast_answer._CACHE))
+        expired = time.monotonic() - 1
+        fast_answer._CACHE[key] = (expired, fast_answer._CACHE[key][1])
+        fail[0] = True                       # the refresh fails: nothing kept or served
+        with self.assertRaises(fast_answer.Unanswerable):
+            read_once()
+        self.assertEqual(len(served), 2)
+        self.assertEqual(fast_answer._CACHE[key][0], expired)
+        fail[0] = False
+        out = read_once()                    # read anew and kept in the expired one's place
+        self.assertEqual(out["object"]["object_id"], PO)
+        self.assertEqual(len(served), 3)
+        self.assertGreater(fast_answer._CACHE[key][0], time.monotonic())
+        self.assertEqual(read_once()["object"]["object_id"], PO)
+        self.assertEqual(len(served), 3)     # the next one is the cache's
 
     def test_a_recipe_still_reading_past_the_answers_budget_declines_and_says_nothing(self):
         reads_made = []
@@ -2426,6 +2466,65 @@ class PriceRecipeTests(unittest.TestCase):
         # an invoice that records no vendor name: the vendor card it is billed by
         draft, _ = self.recipe(fast_answer.last_price, 10, self.answers(""))
         self.assertIn("last bought from Acme Supply Card Name", " ".join(draft.sentences))
+
+
+class FastScopeAndLeadTests(unittest.TestCase):
+    """AGT-001/002: a fast answer is decided on the evidence the agent's gate sees, and
+    never answers a question narrower than its recipe reads. Evidence label
+    ``isolated-fixture``."""
+    LINE = "bc://purchaseInvoiceLines/L-1@0-1"
+
+    def test_a_lead_cell_stays_a_lead_through_the_fast_gate(self):
+        from operating import claim_checks, mcp_server
+        investigated = {"answer": [{"name": "last_price", "kind": "property",
+                                    "check": "passed", "lead_basis": True, "value": "9.50",
+                                    "citation": {"l1_handle": self.LINE,
+                                                 "field_path": "row.unitCost"}}]}
+        claim = {"id": "p", "value": "9.50", "citation": self.LINE, "field": "row.unitCost"}
+        row = {"handle": self.LINE, "revision": "0-1", "relation": "bc.purchaseInvoiceLines",
+               "row": {"unitCost": "9.50"}}
+        evidence = claim_checks.returned_evidence("plx.investigate", {}, investigated)
+        self.assertEqual(fast_answer.evidence_copy(evidence)["leads"],
+                         {(self.LINE, "row.unitCost"): True})
+
+        def decided(gate):
+            with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
+                    mock.patch.object(answer_gate, "gate_rows",
+                                      lambda runtime, actor, **_kw: lambda h: row):
+                return gate()
+        server = mock.Mock(case_runtime=None, actor=None, returned_names=())
+        agent = decided(lambda: mcp_server.answer_decision(
+            {"claims": [claim]}, server, seen={self.LINE}, returned=evidence,
+            may_repair=False, repairs_left=0, unread=None)[0])
+        reads = fast_answer.Reads(None, None, None, server)
+        reads.seen[self.LINE] = None
+        claim_checks.returned_evidence("plx.investigate", {}, investigated, reads.returned)
+        fast = decided(lambda: reads.gate({"claims": [claim]}))
+        self.assertEqual(fast["outcome"], agent["outcome"])
+        self.assertEqual([u["reason"] for u in fast["unsupported_claims"]],
+                         [u["reason"] for u in agent["unsupported_claims"]])
+        self.assertNotEqual(fast["outcome"], "answered")
+        # the price recipe never takes a lead-basis entry as the item's own price
+        with self.assertRaises(fast_answer.Unanswerable):
+            fast_answer._price_cell({"answer": [{**investigated["answer"][0],
+                                                 "object_id": "line"}]}, "line")
+        self.assertIs(fast_answer._price_cell({"answer": [{
+            **investigated["answer"][0], "object_id": "line", "lead_basis": False}]},
+            "line")["value"], "9.50")
+
+    def test_a_constraint_the_recipe_cannot_read_declines_to_the_agent(self):
+        served = ("how much stock of R-0162 do we have?",
+                  "how much R-0162 on hand in BC?",
+                  "R-0162 (Ethyl Alcohol 100% SDAG) on hand?",
+                  "what stage is TASK-123 at?")
+        for question in served:
+            self.assertTrue(fast_answer.serves(question), question)
+        for question in ("how much stock of R-0162 at the Toronto warehouse?",
+                         "how much stock of R-0162 next month?",
+                         "how much stock of R-0162 in Sage?",
+                         "how much stock of R-0162 as of 2025-01-01?",
+                         "what stage is TASK-123 (and TASK-456) at?"):
+            self.assertFalse(fast_answer.serves(question), question)
 
 
 if __name__ == "__main__":

@@ -31,8 +31,13 @@ class WindowGrammarTests(unittest.TestCase):
     def test_each_window_is_exact_days_through_today(self):
         cases = {
             "how many purchase receipts did we post in BC in the last 90 days?":
-                (date(2026, 8, 5), TODAY, "from Aug 5 through Nov 3"),
-            "# BC receipts last 30 days?": (date(2026, 10, 4), TODAY, "from Oct 4 through Nov 3"),
+                (date(2026, 8, 6), TODAY, "from Aug 6 through Nov 3"),
+            # BIZ-009: N days ending today, today counted (30 days, never 31)
+            "# BC receipts last 30 days?": (date(2026, 10, 5), TODAY, "from Oct 5 through Nov 3"),
+            "receipts last 2 weeks": (date(2026, 10, 21), TODAY, None),
+            "receipts last 3 months": (date(2026, 8, 4), TODAY, None),
+            "receipts the last month": (date(2026, 10, 4), TODAY, None),   # rolling
+            "receipts in the past week": (date(2026, 10, 28), TODAY, None),
             "how much have we invoiced Acme this quarter in BC?":
                 (date(2026, 10, 1), TODAY, "this quarter (Oct 1 through Nov 3)"),
             "Acme BC invoices this qtr?": (date(2026, 10, 1), TODAY, None),
@@ -55,7 +60,10 @@ class WindowGrammarTests(unittest.TestCase):
     def test_a_frame_it_does_not_read_is_no_window(self):
         for question in ("receipts between jan and feb", "receipts last 30 days and this month",
                          "receipts before march", "invoices next month", "receipts 2 weeks ago",
-                         "since 2026-02-30", "receipts", "invoices last 0 days"):
+                         "since 2026-02-30", "receipts", "invoices last 0 days",
+                         # BIZ-008: days no calendar holds are no window, never a crash
+                         "receipts in january 0000", "receipts in december 9999",
+                         "since 0000-01-01", "receipts last 9999 months"):
             with self.subTest(question=question):
                 self.assertIsNone(_window(question))
 
@@ -149,7 +157,7 @@ class ReceiptsWindowTests(unittest.TestCase):
         for n in (1, 10, fast_answer.MAX_WINDOW_COUNTED):
             with self.subTest(n=n):
                 inside = [(TODAY - timedelta(days=i % 80)).isoformat() for i in range(n)]
-                older = ["2026-01-05", "2026-08-04"]       # the day before the window
+                older = ["2026-01-05", "2026-08-05"]       # the day before the window
                 answers, handles = self.world(older + inside)
                 draft, reads = _run(fast_answer.receipts_window, answers, self.ask(question))
                 values = {v["name"]: v for v in draft.values}
@@ -159,7 +167,7 @@ class ReceiptsWindowTests(unittest.TestCase):
                 self.assertTrue(set(cited) <= set(handles[2:]))   # never the older ones
                 said = " ".join(draft.sentences)
                 self.assertIn(f"has {n} posted purchase receipt", said)
-                self.assertIn("from Aug 5 through Nov 3", said)
+                self.assertIn("from Aug 6 through Nov 3", said)
                 self.assertEqual("listed_j" in values, n == 10)
                 self.assertNotIn(f"listed_{fast_answer.MAX_WINDOW_LISTED + 1}", values)
                 self.assertEqual(_screened(draft, question), [])
@@ -178,7 +186,7 @@ class ReceiptsWindowTests(unittest.TestCase):
         answers, handles = self.world(["2026-09-18", "2026-09-26", "2026-07-01"])
         draft, _ = _run(fast_answer.receipts_window, answers, self.ask(question))
         said = " ".join(draft.sentences)
-        self.assertIn("no purchase receipts posted from Oct 4 through Nov 3 that you can see",
+        self.assertIn("no purchase receipts posted from Oct 5 through Nov 3 that you can see",
                       said)
         values = {v["name"]: v for v in draft.values}
         self.assertEqual(values["latest_receipt_posted"]["value"], "2026-09-26")

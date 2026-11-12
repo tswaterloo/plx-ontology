@@ -242,6 +242,58 @@ class AudienceTests(CaptureCase):
         self.assertEqual(self.store.resolve(old, READER)["error"], "not_visible")
         self.assertNotIn("1", {r["key"]["id"] for r in self.visible(READER)})
 
+    def test_item_permissions_not_read_again_within_the_bound_decide_nothing(self):
+        """INT-008: a capture that stops leaves each item's last read permissions; past
+        ITEM_ACL_MAX_AGE (by the current version's last_seen_at) every version is withheld
+        from listing and citations, old and new, unless the audience opens a stale grant
+        (an employee's full-read grant); the next run that reads the permissions again
+        serves only what they grant now."""
+        from integrations import capture_store as cstore
+        self.assertEqual(csl.LIST_KIND.acl_max_age, cstore.ITEM_ACL_MAX_AGE)
+        self.assertTrue(self.capture.run(scope())["complete"])
+        old = next(r["citation"] for r in self.visible(READER) if r["key"]["id"] == "1")
+        self.graph.add(1, price="1.40", version=2)
+        self.capture.run(scope())
+        rows = {r["key"]["id"]: r for r in self.visible(READER)}
+        self.assertEqual(sorted(rows), ["1", "2", "3", "4", "5"])
+        new = rows["1"]["citation"]
+        self.assertNotEqual(old, new)
+        self.assertEqual(self.store.resolve(old, READER)["status"], "superseded")
+        real = self.store._clock
+        start = real()
+        for hours, shown in ((47, True), (49, False), (24 * 365, False)):
+            with self.subTest(hours=hours):
+                self.store._clock = lambda h=hours: start + dt.timedelta(hours=h)
+                self.assertEqual(bool(self.visible(READER)), shown)
+                for cited in (new, old):
+                    got = self.store.resolve(cited, READER)
+                    self.assertEqual("error" not in got, shown, got)
+        # a stale grant opened by the audience (the employee full-read path), asked with
+        # the item's permissions and when they were read
+        asked = []
+
+        class Opening:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+            def stale_unit_acl_allows(self, actor, acl, read_at):
+                asked.append((acl.get("status"), read_at))
+                return True
+        self.store.audience = Opening(self.audience)
+        self.assertEqual(len(self.visible(READER)), 5)
+        self.assertTrue(asked and all(status == "read" for status, _ in asked))
+        self.store.audience = self.audience
+        # capture runs again (later): the reader's grant on item 2 was revoked meanwhile
+        self.graph.perms["2"] = [{"id": "9", "roles": ["read"], "grantedToV2": {
+            "user": {"email": "someone.else@example-plx.com"}}}]
+        self.assertTrue(self.capture.run(scope())["complete"])
+        self.assertEqual(sorted(r["key"]["id"] for r in self.visible(READER)),
+                         ["1", "3", "4", "5"])
+        self.store._clock = real
+
     def test_a_refused_permission_read_is_blocked_and_its_items_serve_no_reader(self):
         self.graph.forbidden = [r"/permissions$"]
         run = self.capture.run(scope())

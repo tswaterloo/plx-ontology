@@ -90,6 +90,7 @@ export function actionChip(state: ActionResult | null | undefined, drafted: bool
     case "dry_run":
       return { status: "suspect", label: "Dry run: permission missing", title: missing || state.text };
     case "pending":
+      return { status: "risk", label: "Sending", title: state.text };
     case "unknown":
       return { status: "risk", label: "Outcome unknown", title: state.text };
     case "follow_up":
@@ -107,9 +108,11 @@ export function actionChip(state: ActionResult | null | undefined, drafted: bool
   }
 }
 
-/** An earlier send may have gone out: the person checks Sent Items before sending again. */
+/** An earlier send may have gone out: the person checks Sent Items before sending again.
+ * Only "unknown": a "pending" send is still going out (the server shows one whose outcome
+ * was never recorded as "unknown"), so there is nothing to check yet and no resend. */
 export function outcomeUnknown(state: ActionResult | null | undefined): boolean {
-  return !!state && (state.status === "pending" || state.status === "unknown");
+  return !!state && state.status === "unknown";
 }
 
 /** Cards put away for now: done, dismissed or snoozed (an ended snooze is no state at all). */

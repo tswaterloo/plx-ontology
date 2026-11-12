@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth";
 import { LabourView } from "@/components/labour-view";
 import { hasTeamGrant } from "@/components/shell";
@@ -9,10 +8,10 @@ import { TeamApprovals } from "@/components/team/approvals";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
-import { OwnerWorkloadView, WorkloadView } from "@/components/workload-view";
-import { getLabour, getOwnerWorkload, getWorkload } from "@/lib/api";
+import { TeamDashboard } from "@/components/team/dashboard";
+import { getLabour, getTeam } from "@/lib/api";
 import { noticeKind, plainError } from "@/lib/errors";
-import type { LabourPage, Workload } from "@/lib/types";
+import type { LabourPage, TeamView } from "@/lib/types";
 
 function useLoad<T>(load: (s: AbortSignal) => Promise<T>, on: boolean) {
   const [data, setData] = useState<T | null>(null);
@@ -31,54 +30,43 @@ function useLoad<T>(load: (s: AbortSignal) => Promise<T>, on: boolean) {
   return { data, error, retry };
 }
 
-/** Team: what waits on other people (approvals), each team's load and, for a reader with
- * the hr or ops-management grant, labour hours. A reader with neither a team grant nor a
- * labour grant goes to My work. */
+/** Team: each person's activity across systems and open work (everyone for the owner and the
+ * named Team readers, else only your own row: the server decides), what waits on other people
+ * (approvals) for a reader with a team grant and, for a reader with the hr or ops-management
+ * grant, labour hours. */
 export default function TeamPage() {
   const { state } = useAuth();
-  const router = useRouter();
   const me = state.status === "signed-in" ? state.me : null;
   const team = hasTeamGrant(me);
-  const workload = useLoad<Workload>(getWorkload, team);
+  const people = useLoad<TeamView>(getTeam, !!me);
   const labour = useLoad<LabourPage>(getLabour, !!me);
-  // the per-person view is the owner's: any other reader is refused and sees nothing of it
-  const owner = useLoad(getOwnerWorkload, team);
   const labourOn = !!labour.data && labour.data.state !== "not_granted";
-  // a reader with no team and no labour grant leaves for My work; until the router has
-  // moved, the page says so instead of standing blank
-  const leaving = !!me && !team && !!labour.data && !labourOn;
-  useEffect(() => {
-    if (leaving) router.replace("/");
-  }, [leaving, router]);
+  const heading = people.data?.scope === "self" ? "Your activity" : "People";
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Team" />
-      <div className="mx-auto w-full max-w-6xl space-y-10 px-6 py-6">
-        {!me || (!team && !labour.data && !labour.error) ? <Pending page label="Checking your access" /> : null}
-        {leaving ? <Pending page label="Opening My work" testId="team-leaving" /> : null}
+      <div className="w-full space-y-10 px-4 py-5 lg:px-6">
+        {!me ? <Pending page label="Checking your access" /> : null}
+        {me && (
+          <section id="people" aria-labelledby="people-title" className="scroll-mt-16 space-y-3">
+            <h2 id="people-title" className="text-[15px] font-semibold">{heading}</h2>
+            {people.error ? (
+              <LoadProblem message={plainError(people.error)} busy={noticeKind(people.error) === "busy"} onRetry={people.retry} />
+            ) : people.data ? (
+              <TeamDashboard data={people.data} />
+            ) : (
+              <Pending label="Counting activity" />
+            )}
+          </section>
+        )}
         {team && (
-          <div className="grid grid-cols-1 gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
-          <section id="approvals" aria-labelledby="approvals-title" className="scroll-mt-16 space-y-3">
+          <section id="approvals" aria-labelledby="approvals-title" className="max-w-3xl scroll-mt-16 space-y-3">
             <h2 id="approvals-title" className="text-[15px] font-semibold">Approvals waiting on others</h2>
             <TeamApprovals />
           </section>
-          <section id="workload" aria-labelledby="workload-title" className="scroll-mt-16 space-y-3">
-            <h2 id="workload-title" className="text-[15px] font-semibold">Workload</h2>
-            {workload.error ? (
-              <LoadProblem message={plainError(workload.error)} busy={noticeKind(workload.error) === "busy"} onRetry={workload.retry} />
-            ) : workload.data ? (
-              <div className="space-y-6">
-                <WorkloadView data={workload.data} />
-                {owner.data && <OwnerWorkloadView data={owner.data} />}
-              </div>
-            ) : (
-              <Pending label="Counting open work" />
-            )}
-          </section>
-          </div>
         )}
         {labourOn && labour.data && (
-          <section id="labour" aria-labelledby="labour-title" className="scroll-mt-16 space-y-3" data-testid="team-labour">
+          <section id="labour" aria-labelledby="labour-title" className="max-w-3xl scroll-mt-16 space-y-3" data-testid="team-labour">
             <h2 id="labour-title" className="text-[15px] font-semibold">Labour hours</h2>
             <LabourView page={labour.data} />
           </section>

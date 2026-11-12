@@ -437,10 +437,18 @@ MARKS_ONLY: dict[str, frozenset[tuple[str, str]]] = {
 # ``from_env``, ``decides`` and ``is_excluded`` on object ids are unchanged. From the served
 # step code (be37cefd36, the in-place run of 11-11) to ed679e9772. Old and new code agreed
 # on all 92,248 served Person ids and addresses and on the step's fixture links.
+# with_owners, 0bfbe020a8..defb027118 (main, 11-12): ``PeopleExclusion.fingerprint`` added
+# to ``integrations/people_exclusion.py`` (a digest of the guard's ids for the commitments
+# cursor); nothing the step runs calls it, and no other line of the step's files moved.
+# From the served step code (eab7a9759c's pin target) to defb027118. Old and new code
+# agreed on all 92,248 served Person object ids and addresses (3 exclusion settings) and
+# on the step's fixture links.
 SAME_ROWS: dict[str, frozenset[tuple[str, str]]] = {
     "with_owners": frozenset({
         ("a2887e8a79b92a6f292887258f83414460eceaed3b0bad5f37abf4f5aea9d14b",
-         "f8b5571f8f1d35ccfe76cae434b2b602eb8e92e168b7ffb06d1af1fa63f8454e")}),
+         "f8b5571f8f1d35ccfe76cae434b2b602eb8e92e168b7ffb06d1af1fa63f8454e"),
+        ("f8b5571f8f1d35ccfe76cae434b2b602eb8e92e168b7ffb06d1af1fa63f8454e",
+         "5583b37cf462ccb7750b52d8e5b9de3b755fa945a44c469390171ba899c6b448")}),
     "document_fields": frozenset({
         ("ab0f767f19df54ad663aae34db67584c2ee1d25230104edea7735af56e68eb38",
          "b4256f70d305a06e1a7ee37bb9068ddb6f39bfe6fe720fe9342bc016d8ff1de2")}),

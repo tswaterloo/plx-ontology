@@ -298,7 +298,8 @@ class RawCaptures:
 
 def lateness(raw: Any, as_of: date) -> dict[str, Any]:
     """The oracle's answer over ``raw``'s captured rows, with the parts it could not read."""
-    result = po_lateness.late_orders(raw.portal(), raw.bc(), as_of)
+    result = po_lateness.late_orders(raw.portal(), raw.bc(), as_of,
+                                     go_live_day=os.environ.get("PLX_BC_GO_LIVE_DATE"))
     result["counts"]["unread"] = sorted(set(raw.unread))
     return result
 

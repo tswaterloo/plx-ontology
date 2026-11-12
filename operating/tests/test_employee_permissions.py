@@ -200,6 +200,158 @@ def outage_resolvers(tmp):
     }
 
 
+class PolicyReloadTests(unittest.TestCase):
+    """SEC-005 (owner prefers usability): the employee
+    policy follows its file without a restart; a latest version that does not load, is
+    gone or names another tenant keeps the last good policy in force, is logged and
+    raises the host alarm (``<ops>/employee-policy.json`` and ``status.json``); a fixed
+    file applies again and clears it; a policy that never loaded grants nobody."""
+
+    def test_an_edit_applies_and_a_bad_one_keeps_the_last_good_policy_with_an_alarm(self):
+        import os
+        import tempfile
+        from operating.employee_permissions import PolicyFile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "policy.json"
+            ops = Path(tmp) / "ops"
+            ops.mkdir()
+            # the host status as the unit alarm keeps it: another unit's failure and line
+            other = {"at": "2026-11-12T01:00:00Z", "unit": "plx-x.service", "scope": "user",
+                     "result": "exit-code", "exit_status": "1", "restarts": "0"}
+            (ops / "status.json").write_text(json.dumps({
+                "schema": "plx-ops-host-status/v1", "failures": [other],
+                "attention": ["plx-x.service (user) failed"]}))
+            path.write_text(json.dumps(POLICY))
+            source = PolicyFile(path, ops_dir=ops)
+            res = EmployeePermissionResolver(source, Calls(portal_user("SUPER_ADMIN")),
+                                             Calls(member(QA_GROUP)))
+            before = res.resolve(EMPLOYEE)
+            self.assertIn("admin:audit", held(before))
+            first = res.policy_status()
+            self.assertEqual((first["reload_error"], first["reloads"], first["state"]),
+                             (None, 0, "in_force"))
+            self.assertFalse((ops / "employee-policy.json").exists())   # nothing to say
+
+            def edit(doc, stamp):
+                path.write_text(doc if isinstance(doc, str) else json.dumps(doc))
+                os.utime(path, ns=(stamp, stamp))   # a same-size edit is still seen
+
+            def host():
+                return (json.loads((ops / "employee-policy.json").read_text()),
+                        json.loads((ops / "status.json").read_text()))
+            # an edit that removes a principal applies at once, and the entitlement's
+            # fingerprint (every derived cache key) changes with it
+            less = {**POLICY, "principals": {k: v for k, v in POLICY["principals"].items()
+                                             if k != "admin:audit"}}
+            edit(less, 10**18)
+            after = res.resolve(EMPLOYEE)
+            self.assertNotIn("admin:audit", held(after))
+            self.assertTrue(held(after))
+            self.assertNotEqual(after.fingerprint, before.fingerprint)
+            applied = res.policy_status()
+            self.assertEqual((applied["reload_error"], applied["reloads"]), (None, 1))
+            self.assertNotEqual(applied["digest"], first["digest"])
+            # the same bytes written again: no reload counted
+            edit(less, 10**18 + 1)
+            self.assertEqual(res.policy_status()["reloads"], 1)
+            # a broken file, another tenant, a deleted file: the last good policy stays in
+            # force (the removed principal stays removed: never the version before it);
+            # the status, the log and the host alarm name why
+            for n, (bad, code) in enumerate((
+                    ("{not json", None),
+                    ({**POLICY, "tenant": "other"}, "employee_policy_tenant_changed"),
+                    (None, "employee_policy_missing"))):
+                with self.subTest(code=code, bad=str(bad)[:20]):
+                    with self.assertLogs("operating.employee_permissions.policy",
+                                         "ERROR") as logged:
+                        if bad is None:
+                            path.unlink()
+                        else:
+                            edit(bad, 10**18 + 10 + n)
+                        ent = res.resolve(EMPLOYEE)
+                    self.assertEqual(held(ent), held(after))
+                    self.assertFalse(ent.rights_unresolved)
+                    self.assertEqual(ent.fingerprint, after.fingerprint)
+                    status = res.policy_status()
+                    self.assertEqual((status["state"], status["digest"]),
+                                     ("kept_last_good", applied["digest"]))
+                    self.assertTrue(status["reload_error"])
+                    if code:
+                        self.assertEqual(status["reload_error"], code)
+                    self.assertIn(status["reload_error"], logged.output[0])
+                    alarm, ops_status = host()
+                    self.assertEqual((alarm["state"], alarm["reload_error"],
+                                      alarm["digest_in_force"]),
+                                     ("kept_last_good", status["reload_error"],
+                                      applied["digest"]))
+                    lines = [a for a in ops_status["attention"]
+                             if a.startswith("employee policy")]
+                    self.assertEqual(len(lines), 1, ops_status["attention"])
+                    self.assertIn(status["reload_error"], lines[0])
+                    self.assertIn("plx-x.service (user) failed", ops_status["attention"])
+                    self.assertEqual(ops_status["failures"][0]["unit"], "employee-policy")
+                    self.assertEqual(ops_status["failures"][-1], other)
+                    # the tenant sessions are bound to never moves
+                    self.assertEqual(res.policy.tenant, POLICY["tenant"])
+            # one alarm per refused version, not one per request
+            failures = len(host()[1]["failures"])
+            for _ in range(5):
+                res.resolve(EMPLOYEE)
+            self.assertEqual(len(host()[1]["failures"]), failures)
+            self.assertEqual(failures, 4)               # three refusals + the other unit's
+            # fixed again: applied, the alarm cleared (the other unit's line stays)
+            with self.assertLogs("operating.employee_permissions.policy", "WARNING"):
+                edit(POLICY, 2 * 10**18)
+                self.assertIn("admin:audit", held(res.resolve(EMPLOYEE)))
+            self.assertEqual(res.policy_status()["state"], "in_force")
+            self.assertEqual(res.policy_status()["digest"], first["digest"])
+            alarm, ops_status = host()
+            self.assertEqual((alarm["state"], alarm["reload_error"]), ("in_force", None))
+            self.assertEqual(ops_status["attention"], ["plx-x.service (user) failed"])
+            # an alarm that cannot be written changes nothing about who is served
+            blocked = PolicyFile(path, ops_dir=Path(tmp) / "no-such-dir")
+            res = EmployeePermissionResolver(blocked, Calls(portal_user("SUPER_ADMIN")),
+                                             Calls(member(QA_GROUP)))
+            with self.assertLogs("operating.employee_permissions.policy", "ERROR"):
+                edit("{", 3 * 10**18)
+                self.assertIn("admin:audit", held(res.resolve(EMPLOYEE)))
+            self.assertEqual((res.policy_status()["state"], res.policy_status()["alarm_error"]),
+                             ("kept_last_good", "FileNotFoundError"))
+            # a policy that never loaded grants nobody: the process does not start
+            for broken in ("{", json.dumps({**POLICY, "schema": "nope"})):
+                path.write_text(broken)
+                with self.assertRaises(ValueError):
+                    PolicyFile(path, ops_dir=ops)
+            path.unlink()
+            with self.assertRaises((ValueError, OSError)):
+                PolicyFile(path, ops_dir=ops)
+        # a fixed policy object reports its digest, no reloads
+        self.assertEqual(resolver().policy_status()["reloads"], 0)
+
+    def test_every_long_running_resolver_follows_the_file(self):
+        """The live console/API resolver (``case_console.employee_resolver``, the one the
+        app serves with) reads the policy through ``PolicyFile`` and alarms in
+        ``$PLX_OPS_DIR``."""
+        import os
+        import tempfile
+        from unittest import mock
+        from operating.employee_permissions import PolicyFile
+        from operator_api.workspace.case_console import employee_resolver
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"PLX_OPS_DIR": tmp}):
+            path = Path(tmp) / "policy.json"
+            path.write_text(json.dumps(POLICY))
+            res = employee_resolver(path, None)
+            self.assertIsInstance(res._policy, PolicyFile)
+            digest = res.policy.digest
+            with self.assertLogs("operating.employee_permissions.policy", "ERROR"):
+                path.write_text("{")
+                self.assertEqual(res.policy_status()["state"], "kept_last_good")
+            self.assertEqual(res.policy.digest, digest)
+            self.assertEqual(json.loads((Path(tmp) / "employee-policy.json").read_text())
+                             ["state"], "kept_last_good")
+
+
 class PortalRoleTests(unittest.TestCase):
     """Each Portal role, with the role's own bootstrap access level, as Portal decides it."""
 
@@ -509,6 +661,80 @@ class ProviderOutageTests(unittest.TestCase):
             self.assertIsNotNone(res.resolve(EMPLOYEE).actor)
             snapshot_user(path, isActive=False)   # the export's answer: a refusal
             self.assertFalse(res.resolve(EMPLOYEE).rights_unresolved)
+
+
+class SnapshotReadAtTests(unittest.TestCase):
+    """SEC-004: a snapshot says when it was read as an ISO instant; free text, a date, an
+    instant without an offset or one in the future is refused at start and per call; with
+    an age bound a snapshot older than it denies every employee (rights unresolved, an
+    outage) until it is exported again, checked on every call, not only when the file
+    changes; the age shows in its status."""
+
+    def write(self, path, read_at):
+        snapshot_user(path)
+        doc = json.loads(path.read_text("utf-8"))
+        doc["read_at"] = read_at
+        path.write_text(json.dumps(doc), "utf-8")
+
+    def test_read_at_must_be_an_instant_and_not_ahead_of_the_clock(self):
+        from datetime import datetime, timezone
+        now = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portal-access.json"
+            for bad, code in (("generated at run time", "read_at_invalid"),
+                              ("2026-11-11", "read_at_invalid"),
+                              ("2026-11-11T09:00:00", "read_at_invalid"),
+                              ("2026-13-11T09:00:00Z", "read_at_invalid"),
+                              (" ", "read_at_required"), (1731400000, "read_at_required"),
+                              ("2026-11-12T12:10:00Z", "read_at_future")):
+                with self.subTest(bad):
+                    self.write(path, bad)
+                    with self.assertRaises(ValueError) as caught:
+                        PortalAccessSnapshot(path, clock=lambda: now)
+                    self.assertIn(code, str(caught.exception))
+            for good in ("2026-11-11T09:00:00Z", "2026-11-11T04:00:00-05:00",
+                         "2026-11-12T12:04:00.5+00:00"):
+                with self.subTest(good):
+                    self.write(path, good)
+                    self.assertIsNotNone(resolver(PortalAccessSnapshot(
+                        path, clock=lambda: now)).resolve(EMPLOYEE).actor)
+            # a served snapshot edited to free text later is refused on the next call
+            snap = PortalAccessSnapshot(path, clock=lambda: now)
+            self.write(path, "generated at run time")
+            self.assertTrue(resolver(snap).resolve(EMPLOYEE).rights_unresolved)
+            self.assertEqual(snap.status()["state"], "invalid")
+            for bound in (0, -1, float("inf"), float("nan"), True, "48"):
+                with self.subTest(bound=bound), self.assertRaises(ValueError):
+                    PortalAccessSnapshot(path, max_age_hours=bound)
+
+    def test_an_old_snapshot_denies_everyone_until_exported_again(self):
+        from datetime import datetime, timedelta, timezone
+        clock = {"now": datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "portal-access.json"
+            self.write(path, "2026-11-11T12:00:00Z")
+            snap = PortalAccessSnapshot(path, max_age_hours=48, clock=lambda: clock["now"])
+            res = resolver(snap)
+            self.assertIsNotNone(res.resolve(EMPLOYEE).actor)
+            self.assertEqual(snap.status(), {
+                "path": str(path), "max_age_hours": 48.0, "state": "fresh",
+                "read_at": "2026-11-11T12:00:00+00:00", "age_hours": 24.0})
+            clock["now"] += timedelta(hours=25)          # the file unchanged, now 49 h old
+            ent = res.resolve(EMPLOYEE)
+            self.assertIsNone(ent.actor)
+            self.assertTrue(ent.rights_unresolved, ent.denied_reason)
+            self.assertEqual(snap.status()["state"], "stale")
+            self.assertEqual(snap.status()["age_hours"], 49.0)
+            # stale at start: the host still starts and denies per call
+            late = PortalAccessSnapshot(path, max_age_hours=48, clock=lambda: clock["now"])
+            self.assertTrue(resolver(late).resolve(EMPLOYEE).rights_unresolved)
+            self.write(path, "2026-11-13T12:00:00Z")     # exported again
+            self.assertIsNotNone(res.resolve(EMPLOYEE).actor)
+            # no bound: the same old snapshot serves, its age still shown
+            unbounded = PortalAccessSnapshot(path, clock=lambda: clock["now"] + timedelta(
+                days=400))
+            self.assertIsNotNone(resolver(unbounded).resolve(EMPLOYEE).actor)
+            self.assertEqual(unbounded.status()["max_age_hours"], None)
 
 
 class SharePointItemAclTests(unittest.TestCase):

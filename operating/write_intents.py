@@ -49,7 +49,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from operating.card_actions import Journal, JournalBroken
+from operating.card_actions import Journal, JournalBroken, in_flight
 
 SCHEMA = "plx-write-intent/v1"
 LIVE_FLAG = "PLX_WRITES_LIVE"                    # owner's switch for production writes
@@ -333,6 +333,47 @@ class Person:
                 "oid": self.oid, "autopilot": self.autopilot}
 
 
+def _prepared_by(prepared_by: Mapping[str, Any], who: Person) -> bool:
+    """Whether ``who`` is the person (or autopilot) that prepared an intent, for seeing it
+    without a grant (ACT-006): by the Entra object id when the intent recorded one (a
+    session without one is not its preparer: a reused or re-pointed mailbox never takes
+    over another person's entries); by the exact mailbox only for an intent recorded before
+    object ids were kept; an autopilot by its name and kind."""
+    if prepared_by.get("autopilot") or who.autopilot:
+        return bool(who.autopilot) and who.email is None \
+            and prepared_by.get("autopilot") == who.autopilot \
+            and prepared_by.get("name") == who.name
+    oid = prepared_by.get("oid")
+    if isinstance(oid, str) and oid.strip():
+        return isinstance(who.oid, str) and who.oid.strip().lower() == oid.strip().lower()
+    email = prepared_by.get("email")
+    return bool(email) and email == (who.email or "").lower()
+
+
+def _person_ids(email: Any, oid: Any) -> set[str]:
+    """One person's comparable identities: the mailbox (trimmed, lower case, a ``+tag``
+    sub-address dropped: the rule of ``plx_hub_guard.normalize_email``, kept here because
+    this module imports nothing that reaches a source) and the Entra object id."""
+    ids = set()
+    if isinstance(email, str) and "@" in email.strip():
+        local, _, domain = email.strip().lower().rpartition("@")
+        ids.add("mail:" + local.split("+", 1)[0] + "@" + domain)
+    if isinstance(oid, str) and oid.strip():
+        ids.add("oid:" + oid.strip().lower())
+    return ids
+
+
+def _same_person(prepared_by: Mapping[str, Any], who: Person) -> bool:
+    """The two-person rule (SEC-002): the approver is the preparer when they share any
+    identity, the Entra object id or the mailbox. A renamed mailbox or an alias keeps the
+    object id; a session without an email still has it. An autopilot prepared nothing a
+    person could share."""
+    if prepared_by.get("autopilot"):
+        return False
+    return bool(_person_ids(prepared_by.get("email"), prepared_by.get("oid"))
+                & _person_ids(who.email, who.oid))
+
+
 def _excluded(guard: Any, person: Person) -> str | None:
     """Why the people-exclusion guard does not clear ``person`` (None: cleared). An
     unavailable guard clears nobody; an identity it cannot decide is not cleared."""
@@ -528,6 +569,7 @@ class WriteDesk:
     def __init__(self, journal: Journal, *, transport: Any = None,
                  clock: Callable[[], datetime] | None = None) -> None:
         self.journal, self.transport = journal, transport
+        self._dispatching: set[str] = set()   # intent ids this process is sending now
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     @classmethod
@@ -629,12 +671,8 @@ class WriteDesk:
 
     def visible_to(self, intent: Mapping[str, Any], who: Person, ctx: WriteContext) -> bool:
         """The preparer and readers holding the grant for the intent's entity see it."""
-        mine = intent["prepared_by"].get("email") and \
-            intent["prepared_by"]["email"] == (who.email or "").lower() or \
-            (who.email is None and intent["prepared_by"].get("name") == who.name
-             and intent["prepared_by"].get("autopilot") == who.autopilot and who.autopilot)
-        return bool(mine) or ctx.granted().holds(who.ids(), intent["system"],
-                                                 intent["entity_set"])
+        return _prepared_by(intent["prepared_by"], who) or ctx.granted().holds(
+            who.ids(), intent["system"], intent["entity_set"])
 
     def listing(self, who: Person, ctx: WriteContext, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._rows()
@@ -807,7 +845,7 @@ class WriteDesk:
             raise WriteRefused([f"You hold no write grant for {intent['system']} "
                                 f"{intent['entity_set']}."], 403)
         prep = intent["prepared_by"]
-        if prep.get("email") and who.email and prep["email"].lower() == who.email.lower():
+        if _same_person(prep, who):
             raise WriteRefused(["The person who prepared a write cannot approve it."], 403)
         excluded = _excluded(ctx.exclusion, who) or (
             _excluded(ctx.exclusion, Person(prep["name"], prep.get("email"), prep.get("oid")))
@@ -838,8 +876,12 @@ class WriteDesk:
     # ---- execute
 
     def execute(self, intent_id: str, who: Person, ctx: WriteContext, *,
-                idempotency_key: str, checked_bc: bool = False) -> dict[str, Any]:
-        """Run an approved intent once (module doc). Today the outcome is ``would_write``."""
+                idempotency_key: str, checked_bc: bool = False,
+                live: bool | None = None) -> dict[str, Any]:
+        """Run an approved intent once (module doc). Today the outcome is ``would_write``.
+        ``live``: what the person's page said the run would be (False: a dry run); a run
+        that would now write live is refused unless the page said so, so a person who
+        pressed "Write (dry run)" never writes BC. None: the caller states nothing."""
         if who.autopilot or not who.name or not who.ids():
             raise WriteRefused(["Only a signed-in, named person runs a write."], 403)
         if not isinstance(idempotency_key, str) or not _KEY.fullmatch(idempotency_key):
@@ -864,6 +906,9 @@ class WriteDesk:
         done = [r for r in mine if r["status"] in ("would_write", "written", "failed")]
         if done:
             return {**self._view(rows, intent_id), "replayed": True}
+        if self._running(mine):
+            raise WriteRefused(["Another run of this entry is in progress: wait for its "
+                                "outcome."], 409)
         if mine[-1]["status"] in UNDECIDED and checked_bc is not True:
             raise WriteRefused(["An earlier run of this entry has an unknown outcome: check "
                                 "BC, then confirm it is not there to run it again."], 409)
@@ -876,11 +921,15 @@ class WriteDesk:
                                409)
         request = found["request"]
         missing = desk_gate(ctx.environ, intent["environment"], self.transport)
+        if not missing and live is not None and live is not True:
+            raise WriteRefused(["This entry would now be written live in BC, but the page "
+                                "showed a dry run: preview it again before writing."], 409)
         with self.journal.locked() as held:
             now_rows = [r for r in held.rows if r["intent_id"] == intent_id]
             if any(r["status"] in ("would_write", "written", "failed") for r in now_rows):
                 return {**self._view(held.rows, intent_id), "replayed": True}
-            if now_rows[-1]["seq"] != mine[-1]["seq"] and now_rows[-1]["status"] in UNDECIDED:
+            if (now_rows[-1]["seq"] != mine[-1]["seq"]
+                    and now_rows[-1]["status"] in UNDECIDED) or self._running(now_rows):
                 raise WriteRefused(["Another run of this entry is in progress."], 409)
             base = {"intent_id": intent_id, "actor": who.record(),
                     "idempotency_key": idempotency_key, "request": request}
@@ -889,10 +938,21 @@ class WriteDesk:
                              "missing": missing})
                 return {**self._view(held.rows, intent_id), "replayed": False}
             held.append({**base, "status": "pending", "at": self._now()})
-        outcome = self.transport.send(request)   # reached only with nothing missing
-        status = outcome.get("status") if isinstance(outcome, Mapping) else None
-        with self.journal.locked() as held:
-            held.append({**base, "status": status if status in ("written", "failed")
-                         else "unknown", "at": self._now(),
-                         "http_status": (outcome or {}).get("http_status")})
-            return {**self._view(held.rows, intent_id), "replayed": False}
+            self._dispatching.add(intent_id)
+        try:
+            outcome = self.transport.send(request)   # reached only with nothing missing
+            status = outcome.get("status") if isinstance(outcome, Mapping) else None
+            with self.journal.locked() as held:
+                held.append({**base, "status": status if status in ("written", "failed")
+                             else "unknown", "at": self._now(),
+                             "http_status": (outcome or {}).get("http_status")})
+                return {**self._view(held.rows, intent_id), "replayed": False}
+        finally:
+            self._dispatching.discard(intent_id)
+
+    def _running(self, rows: Sequence[Mapping[str, Any]]) -> bool:
+        """Whether a run of this entry is still going out (ACT-001): this process is
+        sending it, or its latest row is a ``pending`` within
+        ``card_actions.IN_FLIGHT_SECONDS``. A check of BC never runs it again beside it."""
+        return bool(rows) and (rows[-1]["intent_id"] in self._dispatching
+                               or in_flight(rows[-1], self.clock()))

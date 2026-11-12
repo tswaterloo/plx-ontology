@@ -300,9 +300,14 @@ class FrontDoor:
             self._busy += 1
         keep = True
         try:
-            reply = _parse(session.turn(json.dumps(
-                {"question": question, "earlier": list(earlier)[-3:]}, ensure_ascii=False),
-                self.seconds))
+            from operating import model_ledger
+            asked = json.dumps({"question": question, "earlier": list(earlier)[-3:]},
+                               ensure_ascii=False)
+            turn_started = time.monotonic()
+            reply = _parse(session.turn(asked, self.seconds))
+            # one turn of a warm session: the reading's own seconds, not the queue wait
+            model_ledger.record("front_door", prompt=asked, ok=reply is not None, turns=1,
+                                seconds=time.monotonic() - turn_started)
             if reply is None:
                 keep = False
                 return None

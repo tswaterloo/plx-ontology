@@ -19,8 +19,13 @@ counted only as ``withheld`` in the system's coverage and appears nowhere else, 
 chain and in no hand-off. Actors the system marks as agents count as ``non_person`` and
 addresses outside every directory domain as ``external``; neither is in a coverage share.
 
-No row content leaves here: counts, ISO weeks, system and workflow names and object ids.
-Read-only: every store is opened ``mode=ro``.
+Beside the weekly counts each person carries daily counts for the last ``DAYS_KEPT`` days of
+the window (``days``: per day, per ``channel``: a system, with Mission Control split into
+approvals, questions and other task steps, and calendars as meetings), which the Team view
+(``operating.team_activity``) reads for its 7- and 28-day figures.
+
+No row content leaves here: counts, ISO weeks and days, system and workflow names and object
+ids. Read-only: every store is opened ``mode=ro``.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ ALIASES_FILE = "system-actors.json"
 SNAPSHOT_MAX_AGE = timedelta(days=8)
 WINDOW_WEEKS = 26
 HANDOFF_MAX_DAYS = 120
+DAYS_KEPT = 35     # the last days of the window counted per day (the Team view's 7 and 28)
 
 SYSTEMS = ("bc", "portal", "sage", "sharepoint", "mission_control", "planner", "calendar")
 LABELS = {"bc": "Business Central", "portal": "the Portal", "sage": "Sage",
@@ -76,6 +82,15 @@ def workflow_of(system: str, kind: str) -> str:
 
 def week_of(day: date) -> str:
     return (day - timedelta(days=day.weekday())).isoformat()
+
+
+def channel_of(system: str, kind: str, verb: str) -> str:
+    """The Team view's column an action counts in: its system, with Mission Control split into
+    approvals (requested, decided), questions (asked, answered) and other task steps."""
+    if system == "mission_control":
+        return ("mc_approvals" if kind == "approval" else
+                "mc_questions" if verb.startswith("question.") else "mc_tasks")
+    return "meetings" if system == "calendar" else system
 
 
 def day_of(value: Any) -> Optional[date]:
@@ -193,20 +208,24 @@ def directory_from_state(state_dir: Path, aliases: Optional[Path] = None) -> Dir
 
 # --------------------------------------------------------------------------- folding
 
-Key = tuple[str, str, str, str, Optional[str], bool]   # system, kind, verb, week, actor, agent
+Key = tuple[str, str, str, str, Optional[str], bool]   # system, kind, verb, stamp, actor, agent
 Link = tuple[str, str, str, str, Optional[str]]        # workflow, ref, day, system, actor
 
 
 def fold(actions: Iterable[Action], since: date, until: date
          ) -> tuple[Counter, list[Link]]:
-    """Counts per (system, kind, verb, week, actor, non_person) of the actions dated in
-    [since, until], and the dated links of those that carry a business number."""
+    """Counts per (system, kind, verb, stamp, actor, non_person) of the actions dated in
+    [since, until] (stamp: the day for the last ``DAYS_KEPT`` days, else the week's Monday,
+    which is always before them), and the dated links of those that carry a business
+    number."""
     counts: Counter = Counter()
     links: list[Link] = []
+    recent = until - timedelta(days=DAYS_KEPT - 1)
     for a in actions:
         if not since <= a.day <= until:
             continue
-        counts[(a.system, a.kind, a.verb, week_of(a.day), a.actor, a.non_person)] += 1
+        stamp = a.day.isoformat() if a.day >= recent else week_of(a.day)
+        counts[(a.system, a.kind, a.verb, stamp, a.actor, a.non_person)] += 1
         if a.ref:
             links.append((workflow_of(a.system, a.kind), a.ref, a.day.isoformat(),
                           a.system, a.actor))
@@ -233,10 +252,12 @@ def activity(counts: Mapping[Key, int], links: Iterable[Link], directory: Direct
         return resolved[key]
 
     def row(oid: str) -> dict[str, Any]:
-        return people.setdefault(oid, {"systems": {}, "weeks": {}, "workflows": Counter(),
-                                       "handoffs_out": Counter(), "handoffs_in": Counter()})
+        return people.setdefault(oid, {"systems": {}, "weeks": {}, "days": {},
+                                       "workflows": Counter(), "handoffs_out": Counter(),
+                                       "handoffs_in": Counter()})
 
-    for (system, kind, verb, week, actor, agent), n in counts.items():
+    recent = (until - timedelta(days=DAYS_KEPT - 1)).isoformat()
+    for (system, kind, verb, stamp, actor, agent), n in counts.items():
         c = cover.setdefault(system, Counter())
         c["actions"] += n
         if agent:
@@ -254,7 +275,9 @@ def activity(counts: Mapping[Key, int], links: Iterable[Link], directory: Direct
         c[f"by_{basis}"] += n
         r = row(oid)
         r["systems"].setdefault(system, Counter())[verb] += n
-        r["weeks"].setdefault(week, Counter())[system] += n
+        r["weeks"].setdefault(week_of(date.fromisoformat(stamp)), Counter())[system] += n
+        if stamp >= recent:
+            r["days"].setdefault(stamp, Counter())[channel_of(system, kind, verb)] += n
         r["workflows"][workflow_of(system, kind)] += n
 
     chains: dict[tuple[str, str], list[tuple[str, str, Optional[str]]]] = defaultdict(list)
@@ -294,6 +317,7 @@ def activity(counts: Mapping[Key, int], links: Iterable[Link], directory: Direct
         "coverage": coverage,
         "people": {oid: {"systems": {s: dict(v) for s, v in r["systems"].items()},
                          "weeks": {w: dict(v) for w, v in sorted(r["weeks"].items())},
+                         "days": {d: dict(v) for d, v in sorted(r["days"].items())},
                          "workflows": dict(r["workflows"]),
                          "handoffs_out": dict(r["handoffs_out"]),
                          "handoffs_in": dict(r["handoffs_in"])}
@@ -302,50 +326,7 @@ def activity(counts: Mapping[Key, int], links: Iterable[Link], directory: Direct
                      for (a, b, wf), n in sorted(edges.items())]}
 
 
-# --------------------------------------------------------------------------- owner view
-
-def owner_columns(snapshot: Optional[Mapping[str, Any]], excluded: Callable[[str], bool], *,
-                  today: date, days: int) -> tuple[dict[str, dict[str, int]], list, str]:
-    """(per cleared person: actions per system in the last ``days``; coverage rows; the
-    note naming exactly the systems covered). A missing, foreign or stale snapshot gives
-    nothing and the mail-only note. The exclusion is re-checked here (fail closed)."""
-    base = ("Floor and lab work, phone and paper are not seen, so these figures undercount "
-            "that work and are not a measure of effort.")
-    if not isinstance(snapshot, Mapping) or snapshot.get("schema") != SCHEMA:
-        return {}, [], "Covers mail, Teams and tasks only. " + base
-    try:
-        made = datetime.fromisoformat(str(snapshot.get("generated_at")))
-        if made.tzinfo is None or datetime.now(timezone.utc) - made > SNAPSHOT_MAX_AGE:
-            return {}, [], "Covers mail, Teams and tasks only. " + base
-    except ValueError:
-        return {}, [], "Covers mail, Teams and tasks only. " + base
-    since = week_of(today - timedelta(days=days))
-    per: dict[str, dict[str, int]] = {}
-    for oid, row in (snapshot.get("people") or {}).items():
-        if not isinstance(oid, str) or not _OID.match(oid) or excluded(oid):
-            continue
-        n: Counter = Counter()
-        for week, systems in (row.get("weeks") or {}).items():
-            if str(week) >= since and isinstance(systems, Mapping):
-                n.update({s: int(v) for s, v in systems.items() if s in SYSTEMS})
-        if n:
-            per[oid] = dict(n)
-    coverage = [{"system": c["system"], "share": float(c.get("share") or 0.0),
-                 "actions": int(c.get("actions") or 0)}
-                for c in snapshot.get("coverage") or () if c.get("system") in SYSTEMS]
-    covered = [f"{LABELS[c['system']]} ({round(c['share'] * 100)}% tied to a person)"
-               for c in coverage if c["share"] > 0]
-    unmatched = [LABELS[c["system"]] for c in coverage if c["share"] <= 0 and c["actions"]]
-    seen = {c["system"] for c in coverage if c["actions"]}
-    missing = [LABELS[s] for s in SYSTEMS if s not in seen]
-    note = "Covers mail, Teams and tasks"
-    note += (", and records created or changed in " + ", ".join(covered) if covered else
-             " only")
-    note += ". " + (f"Not tied to people: {', '.join(unmatched)} (their records name no user "
-                    "we can match). " if unmatched else "")
-    note += f"Not captured: {', '.join(missing)}. " if missing else ""
-    return per, coverage, note + base
-
+# --------------------------------------------------------------------------- snapshot
 
 def load_snapshot(path: Optional[Path]) -> Optional[dict[str, Any]]:
     if path is None:

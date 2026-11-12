@@ -3676,7 +3676,11 @@ RECEIVED_ESTIMATE_LABEL = ("ESTIMATE after receipt: the receipts read record no 
                            "a labelled default); not the actual landed cost")
 # The basis of each landed-cost part in an estimate's steps ("part <name>: <basis>"): what was
 # paid, what a record states, what PLX history suggests, or a default no record states.
-PART_BASES = ("actual", "recorded", "estimated_from_history", "default", "not_applicable")
+# ``in_freight_quote``: a part the forwarder quote used as freight states it includes (its
+# duty is in that one freight-and-duty charge, never added again, and never "recorded")
+IN_QUOTE = "included in the freight quote used as freight; never added again"
+PART_BASES = ("actual", "recorded", "in_freight_quote", "estimated_from_history", "default",
+              "not_applicable")
 ESTIMATE_BASIS =("pro-rated by ordered line value (unit price x ordered quantity); the "
                   "Portal's allocatePoFreightPerUnit splits by received line value, which "
                   "does not exist before receipt")
@@ -3774,7 +3778,8 @@ def _part_steps(*, freight_basis: str, freight_label: str, duty_basis: Mapping[s
     if len(counts) == 1:
         [basis] = counts
         steps.append(f"part duty: {basis}"
-                     + (hist("duty") if basis == "estimated_from_history" else ""))
+                     + (hist("duty") if basis == "estimated_from_history" else
+                        f" ({IN_QUOTE})" if basis == "in_freight_quote" else ""))
     elif counts:
         steps.append("part duty: " + ", ".join(f"{b} on {counts[b]} line(s)" for b in PART_BASES
                                                if counts.get(b))
@@ -3797,7 +3802,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
               quantities: Mapping[str, Mapping[str, Any]], linked: bool, complete: bool,
               covered: bool, held_back: int, freight_est: Mapping[str, Any] | None,
               duty_est: Mapping[str, Any] | None, partial_quote: bool,
-              quotes: Sequence[tuple[Decimal, str, Sequence[Mapping[str, Any]]]],
+              quotes: Sequence[tuple[Decimal, str, Sequence[Mapping[str, Any]], bool]],
               hs_of: Mapping[str, Mapping[str, Any] | None],
               assumptions: Sequence[Mapping[str, Any]], header_ids: set[str], as_of: str,
               resolver: Resolver | None, actor: Any,
@@ -3965,12 +3970,24 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                 "the header shipping estimate is the amount of a cited forwarder quote that is "
                 "not the total freight (see the freight quote gaps)", "freight_estimate",
                 who=FORWARDER)
+    # A forwarder quote whose total includes duties and taxes is one freight-and-duty charge
+    # (BIZ-002): no second duty is added beside it, and with another duty source recorded the
+    # split is unknown, so no estimate is stated
+    quote_duty = False
     if freight is None:
-        totals = sorted({value for value, _, _ in quotes})
-        if len(totals) == 1:
-            entries = [e for value, _, found in quotes for e in found]
+        totals = sorted({q[0] for q in quotes})
+        with_duty = {q[3] for q in quotes}
+        if len(totals) == 1 and len(with_duty) > 1:
+            unknown("FREIGHT_QUOTES_DIFFER_ON_DUTY", "estimate freight",
+                    f"{len(quotes)} usable forwarder quotes state the same total freight in "
+                    f"{target}, but not all of them include duties and taxes; none is chosen",
+                    "freight_estimate", who=FORWARDER)
+        elif len(totals) == 1:
+            entries = [e for q in quotes for e in q[2]]
+            quote_duty = with_duty == {True}
             freight = (totals[0], entries, "forwarder quote total " + ", ".join(
-                n for _, n, _ in quotes) + " (a lead read from a captured document)")
+                q[1] for q in quotes) + (" including duties and taxes" if quote_duty else "")
+                + " (a lead read from a captured document)")
         elif totals:
             unknown("FREIGHT_QUOTES_DIFFER", "estimate freight",
                     f"{len(totals)} usable forwarder quotes state different total freight in "
@@ -4057,7 +4074,34 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                               + " (countryoforigin on the FileMaker replica supplier row; with "
                               "the HS code it decides the duty rate, which no source projects)")
     duty_actual = actuals.get("duty")
-    if duty_actual is not None:
+    if quote_duty and (duty_actual is not None or assumption is not None
+                       or (duty_header is not None and duty_header > 0)):
+        source = ("the recorded actual duty rate" if duty_actual is not None else
+                  "a person's recorded duty-rate assumption" if assumption is not None else
+                  "the purchase order header's duty estimate")
+        unknown("DUTY_IN_FREIGHT_QUOTE_AND_RECORDED", "estimate duty",
+                "the forwarder quote used as freight includes duties and taxes, and "
+                f"{source} is recorded beside it; adding both would count duty twice and "
+                "the quote's split is not known, so no estimate is stated",
+                "duty_estimate", who=FORWARDER)
+        why = ("no estimate: the forwarder quote includes duties and taxes and a separate "
+               "duty is recorded (see the estimate duty gap)")
+        subtotal["steps"] = [why, label]
+        total["steps"] = [why, label]
+        for entry in lines:
+            entry["steps"] = [why, label]
+        return out
+    if quote_duty:
+        duty_shares = [Decimal(0) for _ in weights]
+        quote_from = [h for h in (handle(e) for e in freight_entries) if h] \
+            + list(weight_handles)
+        duty_rule = ("estimate duty: 0 beside freight; the forwarder quote total used as "
+                     "freight includes duties and taxes (one freight-and-duty charge)")
+        for oid in line_ids:
+            from_of[oid], rule_of[oid] = quote_from, duty_rule
+        listed.append("duty: included in the forwarder quote total, never added again")
+        duty_basis.update((oid, "in_freight_quote") for oid in line_ids)
+    elif duty_actual is not None:
         rate = Decimal(duty_actual["rate"])
         duty_shares = [rate * w for w in weights]
         duty_rule = (f"estimate duty: goods x the recorded actual duty rate {duty_actual['rate']} "
@@ -4706,10 +4750,15 @@ def _quote_record(quote: Mapping[str, Mapping[str, Any] | None], *, as_of: str,
                      + " (see the gaps)")
     if assessed is None or assessed["duties_and_taxes_separate"]:
         steps.append("duties and taxes: not in this quote; a separate duty input, never freight")
+    else:
+        steps.append("duties and taxes: included in this quote (one freight-and-duty charge); "
+                     "no separate duty is added beside it")
     if target is not None and currency != target:
         steps.append(f"the quote is in {currency}, the purchase order in {target}: no exchange "
                      "rate is projected, so it is not compared with the estimate")
     out["steps"] = steps
+    # read by the caller (``quote_totals``), never an answer-entry field
+    out["_duties_included"] = assessed is not None and not assessed["duties_and_taxes_separate"]
     out["digest"] = _sha(_canon({"amount": _dec_str(amount), "stated_total": stated is not None,
                                  "currency": currency, "basis": basis,
                                  "count": None if count_value is None else _dec_str(count_value),
@@ -5160,8 +5209,13 @@ def _recorded_actuals(numbers: Sequence[str], landed_actuals: Callable[[Sequence
                     f"usable rate is derived from them ({flag}); none is used",
                     holds=False, who="FIN")
             continue
+        # charges the BC snapshot stated no posting for: the rate stands, and says so
+        unstated = rec.get("posting_unknown")
+        caveat = (f"; posting unknown for {unstated} of its {rec.get('charges')} charges "
+                  "(BC did not state it)" if unstated else "")
         out[part] = {"rate": _dec_str(rate), "basis": "actual_recorded", "_source": cite,
-                     "includes_brokerage": bool(rec.get("includes_brokerage")), "note": note}
+                     "includes_brokerage": bool(rec.get("includes_brokerage")),
+                     "note": note + caveat, "posting_caveat": caveat}
     terms = {(str((r.get("incoterm") or {}).get("po") or ""),
               str((r.get("incoterm") or {}).get("vendor_default") or ""))
              for r in records.values() if isinstance(r.get("incoterm"), Mapping)}
@@ -5611,11 +5665,13 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     quote_entries: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
     partial_quotes: set[tuple[Decimal, str]] = set()
-    quote_totals: list[tuple[Decimal, str, list[Mapping[str, Any]]]] = []
+    # (total, entry name, its entries, whether the quote includes duties and taxes)
+    quote_totals: list[tuple[Decimal, str, list[Mapping[str, Any]], bool]] = []
     for index, oid in enumerate(quote_ids, start=1):
         fields = {role: next((e for e in got[role] if e["object_id"] == oid), None)
                   for role in QUOTE_ROLES}
         record, found, partial, disagree = _quote_record(fields, as_of=as_of, target=target)
+        duties_included = bool(record.pop("_duties_included", False))
         if partial is not None:
             partial_quotes.add(partial)
         subject = f"freight quote {index}"
@@ -5627,7 +5683,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         entry_name = f"{name}_freight_quote_{index}"[:64]
         if record.get("value") is not None and record.get("currency") == target:
             quote_totals.append((Decimal(record["value"]), entry_name,
-                                 [e for e in fields.values() if e]))
+                                 [e for e in fields.values() if e], duties_included))
         # A machine-read quote disagreeing with itself: a lead, never resolved here.
         conflicts += [{"kind": "value_disagreement", "subject": f"{entry_name}: {c['about']}"[:700],
                        "inputs": c["inputs"][:12], "note": c["note"][:600], "tier": "lead"}
@@ -5953,7 +6009,13 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         for item in record["unknowns"]:
             open_input(label, item["input"], open_reasons.get(item["input"], item["reason"]),
                        item.get("who_can_answer"))
-        entry["steps"] = [s[:MAX_STEP_CHARS] for s in record["steps"]][:39] + [freight_label]
+        # a recorded actual resting on BC charges whose posting the snapshot did not state
+        # says so on the line (the rate stands; its posting is unknown)
+        unstated = [f"{c['name']} basis: recorded actual{actuals[c['name']]['posting_caveat']}"
+                    for c in costs if (c.get("derived") or {}).get("basis") == "actual_recorded"
+                    and (actuals.get(c["name"]) or {}).get("posting_caveat")]
+        entry["steps"] = [s[:MAX_STEP_CHARS] for s in record["steps"]][:39] + [freight_label] \
+            + unstated
         entry["digest"] = record["digest"]
         if record["status"] == "computed":
             entry["value"] = record["per_unit"]["value"]
@@ -5965,7 +6027,10 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                              "check": "not_applicable"}
     if target is not None:
         total.update(unit=target, currency=target)
-    if line_ids and len(totals) == len(line_ids):
+    # a total over every line read is the purchase order's total only when the line set is
+    # proven whole: a line cut at the read or withheld from this reader may cost anything
+    # (BIZ-003), so a partial set states its lines and no total
+    if line_ids and len(totals) == len(line_ids) and lines_complete:
         steps: list[str] = [f"{label}: total {money_text(value, target)} {target} "
                             f"(record {digest[:12]})" for label, digest, value in totals]
         values = {f"line_{i}": (value, parse_unit(target))
@@ -5973,6 +6038,11 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         result, _ = _calc(" + ".join(values), values, steps, "purchase order landed cost")
         total.update(value=_dec_str(result), steps=steps,
                      digest=_sha(_canon({"lines": [d for _, d, _ in totals], "steps": steps})))
+    elif line_ids and len(totals) == len(line_ids):
+        total["steps"] = [f"{len(totals)} line(s) read have a computed landed cost, but the "
+                          "purchase order's line set is not proven whole (PO_LINES_INCOMPLETE: "
+                          "a line was not read or is withheld); no purchase order total is "
+                          "stated"]
     else:
         total["steps"] = [f"{len(line_ids) - len(totals)} of {len(line_ids)} line(s) have no "
                           "computed landed cost; no purchase order total is stated"]

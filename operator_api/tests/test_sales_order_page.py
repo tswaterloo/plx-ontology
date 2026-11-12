@@ -30,6 +30,13 @@ class SalesOrderView(unittest.TestCase):
         self.assertEqual(summary, "Customer order OR9 for Acme Foods; ordered 2026-03-04.")
         self.assertEqual([f.text for f in facts], ["Order date: 4 Mar 2026"])
         self.assertEqual([a.what for a in absent], ["The order total"])
+        # C-01: the value derived from its invoices is said as derived, never as its total
+        summary, _facts, absent = be.sales_order_view(
+            "OR9", [value("total_amount", "0.00")], [customer], [], "CAD",
+            m.Money(amount="398.04", currency="CAD"), "invoices")
+        self.assertEqual(summary, "Customer order OR9 for Acme Foods; value 398.04 CAD (from "
+                                  "its invoices, before tax; the order header holds 0).")
+        self.assertEqual(absent, [])
 
     def test_without_a_customer_or_total_it_says_so_and_never_invents(self):
         summary, facts, absent = self.view([], [], [])

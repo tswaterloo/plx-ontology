@@ -1965,6 +1965,41 @@
         "title": "AuthConfig",
         "type": "object"
       },
+      "AutopilotActionResult": {
+        "additionalProperties": false,
+        "description": "One action of an accepted item, in order: what it was and how it ended.",
+        "properties": {
+          "kind": {
+            "description": "The action kind: bc_write, send_mail, mc_task...",
+            "title": "Kind",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "status": {
+            "description": "done (went through), unknown or pending (could not be confirmed: check before retrying), failed, or why it never ran: unavailable, refused, killed, rate_limited, dry_run...",
+            "title": "Status",
+            "type": "string"
+          },
+          "system": {
+            "description": "The system it writes to: bc, mail, mc... or other.",
+            "title": "System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "system",
+          "status"
+        ],
+        "title": "AutopilotActionResult",
+        "type": "object"
+      },
       "AutopilotArea": {
         "additionalProperties": false,
         "description": "The autopilot area: today's prepared items you may see, per workflow its scores and\nstate, and the switches (``owner``: you may change them).",
@@ -2306,7 +2341,7 @@
       },
       "AutopilotCountdown": {
         "additionalProperties": false,
-        "description": "The workflow's way to its write gate: the counts the gate admitted\n(``autopilot_write.gate_counts``), items judged on fresh days against the\n``need_judged`` the gate asks for, and the precision so far against ``need_percent``.\nRecomputed from the counts at every read.",
+        "description": "The workflow's way to its write gate: the counts the gate admitted\n(``autopilot_write.gate_counts``), items judged on held-out days (fresh days, or past\ndays never tuned on) against the\n``need_judged`` the gate asks for, and the precision so far against ``need_percent``.\nRecomputed from the counts at every read.",
         "properties": {
           "data_end": {
             "anyOf": [
@@ -2335,6 +2370,14 @@
             "title": "Need Percent",
             "type": "number"
           },
+          "parts": {
+            "description": "The scored windows summed into these counts, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/AutopilotGatePart"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
           "passes": {
             "title": "Passes",
             "type": "boolean"
@@ -2360,7 +2403,7 @@
                 "type": "null"
               }
             ],
-            "description": "Why the role's newest scorer run was not admitted (status:partial, not_fresh, counts...): the counts are then an earlier run's. Absent when it was.",
+            "description": "Why the role's newest scorer run was not admitted (status:partial, not_held_out, counts...): the counts are then an earlier run's. Absent when it was.",
             "title": "Refused"
           },
           "refused_run": {
@@ -2445,7 +2488,7 @@
                 "type": "null"
               }
             ],
-            "description": "The write path's outcome of an accept: dry_run (recorded only), done, killed, refused...",
+            "description": "The write path's outcome of an accept over all its actions: done (all), partly_done (some, then one was not), unknown (one could not be confirmed: check before retrying), failed, dry_run (recorded only), killed, refused...",
             "title": "Outcome"
           },
           "reasons": {
@@ -2460,6 +2503,14 @@
             "description": "The item's email went out: its own send action's result is done (an entry before it may have succeeded while the send did not).",
             "title": "Sent",
             "type": "boolean"
+          },
+          "steps": {
+            "description": "Each action of an accept in order (empty before steps were kept).",
+            "items": {
+              "$ref": "#/components/schemas/AutopilotActionResult"
+            },
+            "title": "Steps",
+            "type": "array"
           },
           "text": {
             "anyOf": [
@@ -2656,6 +2707,42 @@
           "rule"
         ],
         "title": "AutopilotGate",
+        "type": "object"
+      },
+      "AutopilotGatePart": {
+        "additionalProperties": false,
+        "description": "One scored window the write gate counts for a workflow: fresh days (from the rules'\n``fresh_from``) or a historical window never used for tuning (the rules'\n``clean_windows``).",
+        "properties": {
+          "judged": {
+            "title": "Judged",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "fresh",
+              "historical"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "integer"
+          },
+          "window": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Window",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "judged",
+          "matched"
+        ],
+        "title": "AutopilotGatePart",
         "type": "object"
       },
       "AutopilotItem": {
@@ -11134,257 +11221,6 @@
         "title": "OrderRow",
         "type": "object"
       },
-      "OwnerWorkload": {
-        "additionalProperties": false,
-        "description": "Per person, for the owner only: open threads awaiting reply, open tasks, alerts,\nclosed alerts and the records they created or changed in each captured system. Counts\nonly, never message content; people the exclusion does not clear never appear. The\nnote names exactly the systems covered; floor and lab work is not seen, so these\nfigures undercount it.",
-        "properties": {
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/SystemCoverage"
-            },
-            "title": "Coverage",
-            "type": "array"
-          },
-          "note": {
-            "title": "Note",
-            "type": "string"
-          },
-          "people": {
-            "items": {
-              "$ref": "#/components/schemas/OwnerWorkloadPerson"
-            },
-            "title": "People",
-            "type": "array"
-          },
-          "read_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
-            "title": "Read At"
-          },
-          "stale_since": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
-            "title": "Stale Since"
-          },
-          "window_days": {
-            "title": "Window Days",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "window_days",
-          "note"
-        ],
-        "title": "OwnerWorkload",
-        "type": "object"
-      },
-      "OwnerWorkloadItem": {
-        "additionalProperties": false,
-        "properties": {
-          "age_days": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Age Days"
-          },
-          "channel": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Channel"
-          },
-          "counterpart": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Counterpart"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "record_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Record Id"
-          },
-          "record_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Record Type"
-          },
-          "snippet": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Snippet"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "waiting_on": {
-            "description": "The person (an Entra object id) for a thread awaiting their reply; else the departments that answer it.",
-            "title": "Waiting On",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "kind",
-          "title",
-          "waiting_on"
-        ],
-        "title": "OwnerWorkloadItem",
-        "type": "object"
-      },
-      "OwnerWorkloadItems": {
-        "additionalProperties": false,
-        "description": "One person's items behind one count of the owner workload, for the owner only: what\nthe owner may open through the normal path (marked HR, payroll and pay items stay\nwithheld and are counted in ``withheld``, never shown). The full message opens through\nits record page.",
-        "properties": {
-          "bucket": {
-            "title": "Bucket",
-            "type": "string"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/OwnerWorkloadItem"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "note": {
-            "title": "Note",
-            "type": "string"
-          },
-          "person": {
-            "title": "Person",
-            "type": "string"
-          },
-          "total": {
-            "title": "Total",
-            "type": "integer"
-          },
-          "truncated": {
-            "title": "Truncated",
-            "type": "boolean"
-          },
-          "withheld": {
-            "description": "Counted for the person but not shown to you (marked, or not readable by you); never named.",
-            "title": "Withheld",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "person",
-          "bucket",
-          "total",
-          "withheld",
-          "truncated",
-          "note"
-        ],
-        "title": "OwnerWorkloadItems",
-        "type": "object"
-      },
-      "OwnerWorkloadPerson": {
-        "additionalProperties": false,
-        "properties": {
-          "alerts": {
-            "title": "Alerts",
-            "type": "integer"
-          },
-          "alerts_closed": {
-            "description": "Alerts owned by the person that closed in the window (a count: nothing says who closed them).",
-            "title": "Alerts Closed",
-            "type": "integer"
-          },
-          "awaiting_reply": {
-            "title": "Awaiting Reply",
-            "type": "integer"
-          },
-          "person": {
-            "description": "An Entra object id, never a name or an address.",
-            "title": "Person",
-            "type": "string"
-          },
-          "systems": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "description": "Records the person created or changed per captured system in the window (bc, portal, sage, sharepoint, mission_control, planner, calendar); counts only.",
-            "title": "Systems",
-            "type": "object"
-          },
-          "tasks": {
-            "title": "Tasks",
-            "type": "integer"
-          },
-          "team": {
-            "title": "Team",
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "team",
-          "awaiting_reply",
-          "tasks",
-          "alerts",
-          "alerts_closed"
-        ],
-        "title": "OwnerWorkloadPerson",
-        "type": "object"
-      },
       "Person": {
         "additionalProperties": false,
         "properties": {
@@ -13997,6 +13833,14 @@
             "title": "Open Url",
             "type": "string"
           },
+          "same_as": {
+            "description": "The other records this reader's projection reads as this same record in another system (a shared code or a verified same_record_as link). A picker merges rows only on this or an identical id.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Same As",
+            "type": "array"
+          },
           "score": {
             "title": "Score",
             "type": "number"
@@ -14414,6 +14258,429 @@
           "actions"
         ],
         "title": "SystemCoverage",
+        "type": "object"
+      },
+      "TeamDay": {
+        "additionalProperties": false,
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "TeamDay",
+        "type": "object"
+      },
+      "TeamItem": {
+        "additionalProperties": false,
+        "properties": {
+          "age_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Days"
+          },
+          "bucket": {
+            "enum": [
+              "awaiting_reply",
+              "tasks",
+              "alerts"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel"
+          },
+          "counterpart": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterpart"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "record_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Type"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "waiting_on": {
+            "description": "The person's name for a thread awaiting their reply; else the departments that answer it.",
+            "title": "Waiting On",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "bucket",
+          "kind",
+          "title",
+          "waiting_on"
+        ],
+        "title": "TeamItem",
+        "type": "object"
+      },
+      "TeamPartner": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Their drill-down handle, when you may open their row.",
+            "title": "Key"
+          },
+          "n": {
+            "title": "N",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "n"
+        ],
+        "title": "TeamPartner",
+        "type": "object"
+      },
+      "TeamPerson": {
+        "additionalProperties": false,
+        "description": "One person's row of the Team view. ``key`` is an opaque handle for the drill-down\n(never an object id, a name or an address).",
+        "properties": {
+          "alerts": {
+            "default": 0,
+            "title": "Alerts",
+            "type": "integer"
+          },
+          "alerts_closed": {
+            "default": 0,
+            "description": "Their alerts closed in the last 28 days.",
+            "title": "Alerts Closed",
+            "type": "integer"
+          },
+          "awaiting_reply": {
+            "default": 0,
+            "title": "Awaiting Reply",
+            "type": "integer"
+          },
+          "d28": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "The same, last 28 days.",
+            "title": "D28",
+            "type": "object"
+          },
+          "d7": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Counts per channel, last 7 days (mail_sent, mail_received, teams, meetings, mc_approvals, mc_questions, mc_tasks, planner, sharepoint, bc, portal, sage).",
+            "title": "D7",
+            "type": "object"
+          },
+          "hours": {
+            "description": "Messages sent per hour of the day (US Eastern), last 28 days.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Hours",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "description": "Their Teams display name, else a calendar's name for them, else their address's local part; never an id.",
+            "title": "Name",
+            "type": "string"
+          },
+          "replies_28": {
+            "default": 0,
+            "title": "Replies 28",
+            "type": "integer"
+          },
+          "reply_minutes_28": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply Minutes 28"
+          },
+          "reply_minutes_7": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Median minutes to reply to a message addressed to them, last 7 days.",
+            "title": "Reply Minutes 7"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "self": {
+            "default": false,
+            "title": "Self",
+            "type": "boolean"
+          },
+          "tasks": {
+            "default": 0,
+            "title": "Tasks",
+            "type": "integer"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team"
+          },
+          "trend": {
+            "description": "Everything they did per day, the last 28 days, oldest first.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Trend",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "name"
+        ],
+        "title": "TeamPerson",
+        "type": "object"
+      },
+      "TeamPersonDetail": {
+        "additionalProperties": false,
+        "description": "One person's drill-down: their row, every day of the last 28 across systems, who they\nwork with most, and their open items (what you may open through the normal path; marked\nitems stay counted in ``withheld``, never shown).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TeamItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "partners": {
+            "items": {
+              "$ref": "#/components/schemas/TeamPartner"
+            },
+            "title": "Partners",
+            "type": "array"
+          },
+          "person": {
+            "$ref": "#/components/schemas/TeamPerson"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/TeamDay"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "withheld": {
+            "default": 0,
+            "title": "Withheld",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person"
+        ],
+        "title": "TeamPersonDetail",
+        "type": "object"
+      },
+      "TeamView": {
+        "additionalProperties": false,
+        "description": "The Team view: per person, activity in every captured system over 7 and 28 days,\nopen work, reply time, a daily trend and busiest hours. The owner and the named Team\nreaders see everyone; every other reader only their own row. The owner and the people\nthe exclusion does not clear are in no row and no count, for every reader.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the activity was counted (ISO).",
+            "title": "As Of"
+          },
+          "coverage": {
+            "items": {
+              "$ref": "#/components/schemas/SystemCoverage"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/TeamPerson"
+            },
+            "title": "People",
+            "type": "array"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
+          "scope": {
+            "enum": [
+              "everyone",
+              "self"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "not_built",
+              "blocked"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "window_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window To"
+          }
+        },
+        "required": [
+          "scope",
+          "state",
+          "note"
+        ],
+        "title": "TeamView",
         "type": "object"
       },
       "TeamsChat": {
@@ -15017,7 +15284,7 @@
         "description": "The autopilot's write gate as the write rules set it (``rules.gate``).",
         "properties": {
           "need_judged": {
-            "description": "Judged items from fresh days a workflow needs.",
+            "description": "Judged held-out items (fresh days or past days never tuned on) a workflow needs.",
             "title": "Need Judged",
             "type": "integer"
           },
@@ -17234,6 +17501,12 @@
             "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Idempotency Key",
             "type": "string"
+          },
+          "live": {
+            "default": false,
+            "description": "The page showed this run as a live write (the preview's live_missing was empty). A run that would write live is refused (409) unless this is true.",
+            "title": "Live",
+            "type": "boolean"
           }
         },
         "required": [
@@ -21243,130 +21516,6 @@
         ]
       }
     },
-    "/api/owner/workload": {
-      "get": {
-        "description": "Per person: open threads awaiting reply, open tasks, alerts and closed alerts.\nOwner only (403 for every other reader); counts only, never message content.",
-        "operationId": "owner_workload_api_owner_workload_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OwnerWorkload"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Forbidden"
-          }
-        },
-        "summary": "Owner Workload",
-        "tags": [
-          "actions"
-        ]
-      }
-    },
-    "/api/owner/workload/{person}/{bucket}": {
-      "get": {
-        "description": "The items behind one count of one person (bucket awaiting_reply, tasks or alerts):\nsubject, counterpart, age, who it waits on, a snippet and the record to open. Owner\nonly (403 for every other reader); excluded people never appear; marked items you\ncannot open stay withheld.",
-        "operationId": "owner_workload_items_api_owner_workload__person___bucket__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "person",
-            "required": true,
-            "schema": {
-              "title": "Person",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "bucket",
-            "required": true,
-            "schema": {
-              "title": "Bucket",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OwnerWorkloadItems"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Not Found"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Owner Workload Items",
-        "tags": [
-          "actions"
-        ]
-      }
-    },
     "/api/rd-projects": {
       "get": {
         "description": "R&D and sample projects per customer from the threads and records you may open:\nstatus, last activity, owner and who each waits on, with a drafted status update.\nNothing is sent.",
@@ -21741,6 +21890,101 @@
         "summary": "Suggestions",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/team": {
+      "get": {
+        "description": "Per person: activity in every captured system over 7 and 28 days, open work,\nmedian reply time, a daily trend and busiest hours. The owner and the named Team\nreaders see everyone; every other reader only their own row.",
+        "operationId": "team_view_api_team_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Team View",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/team/{key}": {
+      "get": {
+        "description": "One person's drill-down: each day of the last 28 across systems, who they work\nwith most and their open items (marked items you cannot open stay withheld). 404 for\na person you may not open.",
+        "operationId": "team_person_api_team__key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamPersonDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Team Person",
+        "tags": [
+          "actions"
         ]
       }
     },

@@ -151,9 +151,24 @@ class ViewAs:
         return table
 
     def people(self, owner_ids: Iterable[str]) -> list[dict[str, str]]:
+        """Everyone the owner may view as now: the kept table re-asked of the people
+        exclusion as it is now (a person excluded since the table was read is not named;
+        no exclusion: nobody) (SEC-011)."""
         mine = {str(i).lower() for i in owner_ids}
+        try:
+            test = self.excluded()   # type: ignore[misc]
+        except Exception:  # noqa: BLE001 - undecidable: nobody listed
+            return []
+        if test is None:
+            return []
+
+        def gone(oid: str) -> bool:
+            try:
+                return bool(test(oid))
+            except Exception:  # noqa: BLE001 - undecidable: not listed
+                return True
         out = [{"key": k, "name": name_of(email)} for k, (oid, email) in self._table().items()
-               if oid not in mine and email not in mine]
+               if oid not in mine and email not in mine and not gone(oid)]
         return sorted(out, key=lambda p: p["name"])
 
     def reader_for(self, owner: Any, key: str, *, method: str, route: str,

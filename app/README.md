@@ -9,7 +9,7 @@ notice, not found, freshness, feedback), object pages and a source reader.
 ## Run locally
 
 ```sh
-export PATH=/data/tools/node/bin:$PATH          # Node 20+
+export PATH=/data/tools/node/bin:$PATH          # Node 22.22.2+ (or 24.15+, 26+)
 npm ci
 (cd .. && python3 -m operator_api serve --mock --port 8780 --insecure-cookie) &   # fixture API
 npm run dev                                      # http://localhost:3000, /api -> :8780

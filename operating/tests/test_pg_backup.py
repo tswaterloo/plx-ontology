@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from operating.tests import pg_testdb
 
@@ -232,6 +233,43 @@ class BackupRestoreTest(unittest.TestCase):
         self.assertFalse((daily / "plx-20261001T000000Z.dump").exists())
 
 
+class HealthTest(unittest.TestCase):
+    """OPS-001/008: a set the backup could not take whole fails the restore test, and the
+    newest healthy set is never rotated or capped away behind failed ones."""
+
+    def set(self, directory: Path, stamp: str, **manifest) -> None:
+        import tarfile
+        directory.mkdir(parents=True, exist_ok=True)
+        state = directory / f"state-{stamp}.tar.gz"
+        with tarfile.open(state, "w:gz"):
+            pass
+        body = {"format": "plx-backup/v2", "stamp": stamp, "table_counts": {},
+                "pg_problem": None, "state_files": {}, "state_problems": [],
+                "files": {state.name: {"bytes": state.stat().st_size,
+                                       "sha256": plx_backup._sha256(state)}}, **manifest}
+        (directory / f"manifest-{stamp}.json").write_text(json.dumps(body))
+
+    def test_a_set_missing_state_files_fails_and_the_last_healthy_set_stays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            start = dt.datetime(2026, 9, 1, 2, 30, tzinfo=dt.timezone.utc)
+            stamps = [(start + dt.timedelta(days=d)).strftime("%Y%m%dT%H%M%SZ")
+                      for d in range(12)]
+            self.set(root / "daily", stamps[0])                 # the one healthy set
+            for stamp in stamps[1:]:
+                self.set(root / "daily", stamp, state_problems=["state_missing:x.sqlite"])
+                plx_backup.rotate(root, stamp, keep_daily=7)
+            self.assertEqual(plx_backup._sets(root / "daily"), [stamps[0]] + stamps[-7:])
+            with mock.patch.dict(os.environ, {"PLX_BACKUP_DIR": str(root)}):
+                code, out = plx_backup.restore_test()
+            self.assertEqual(code, 1)
+            self.assertIn("state_missing:x.sqlite", out["problems"])
+            # over the byte cap: the newest and the last healthy set stay
+            with mock.patch.dict(os.environ, {"PLX_BACKUP_MAX_GB": "0"}):
+                plx_backup.rotate(root, stamps[-1], keep_daily=7)
+            self.assertEqual(plx_backup._sets(root / "daily"), [stamps[0], stamps[-1]])
+
+
 class ExtraFilesTest(unittest.TestCase):
     """The app's data dir is kept whole: a directory stands for its files (no WAL or SHM
     sidecars), ``~`` and the XDG fallback expand, a relative path is never archived."""
@@ -257,6 +295,58 @@ class ExtraFilesTest(unittest.TestCase):
 
     def test_the_ai_watcher_store_is_a_required_state_file(self) -> None:
         self.assertIn("ai-watcher/watcher.sqlite", plx_backup.STATE_FILES)
+
+
+class GuardAndAgeTest(unittest.TestCase):
+    """No database needed: the disk guard follows the set's size, the restore test fails a
+    set that stopped being taken, and the small stores the app writes are in every set."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="plx-backup-guard-"))
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.stamp = "20261106T054914Z"
+        daily = self.tmp / "daily"
+        daily.mkdir()
+        import tarfile
+        with tarfile.open(daily / f"state-{self.stamp}.tar.gz", "w:gz"):
+            pass
+        (daily / f"plx-{self.stamp}.dump").write_bytes(b"x" * 7_000_000)
+        (daily / f"manifest-{self.stamp}.json").write_text(json.dumps(
+            {"files": {}, "state_files": {}, "table_counts": {}, "pg_problem": "skipped"}))
+        old = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(old)))
+        os.environ["PLX_BACKUP_DIR"] = str(self.tmp)
+        for name in ("PLX_BACKUP_MIN_FREE_GB", "PLX_BACKUP_MAX_AGE_HOURS"):
+            os.environ.pop(name, None)
+
+    def test_the_disk_guard_needs_twice_the_set_plus_ten_gb_not_a_fixed_200(self) -> None:
+        from unittest import mock
+        size = sum(f.stat().st_size for f in (self.tmp / "daily").iterdir())
+        for free, refused in ((84_000_000_000, False), (2 * size + 10_000_000_000, False),
+                              (2 * size + 10_000_000_000 - 1, True), (5_000_000_000, True)):
+            usage = mock.Mock(free=free)
+            with mock.patch.object(plx_backup.shutil, "disk_usage", return_value=usage):
+                out = plx_backup.disk_guard(self.tmp)
+            self.assertEqual(out is not None, refused, free)
+            if refused:
+                self.assertEqual((out["error"], out["min_free_bytes"]),
+                                 ("disk_guard", 2 * size + 10_000_000_000))
+
+    def test_the_restore_test_fails_a_set_older_than_36_hours(self) -> None:
+        made = plx_backup._stamp_time(self.stamp)
+        for hours, old in ((1, False), (36, False), (37, True), (150, True)):
+            code, out = plx_backup.restore_test(now=made + dt.timedelta(hours=hours))
+            self.assertEqual(code, 1)   # the fixture set has no dump: always a problem
+            self.assertEqual(f"set_too_old:{hours}h" in out["problems"], old, out)
+            self.assertEqual(out["age_hours"], hours)
+
+    def test_feedback_work_log_view_as_and_the_app_data_dir_are_kept(self) -> None:
+        for rel in ("feedback/feedback.sqlite", "work-log/work-log.sqlite",
+                    "view-as/audit.jsonl"):
+            self.assertIn(rel, plx_backup.OPTIONAL_STATE_FILES)
+        self.assertIn("${XDG_STATE_HOME:-~/.local/state}/plx-workbench-app",
+                      plx_backup.EXTRA_FILES)
+
 
 if __name__ == "__main__":
     unittest.main()

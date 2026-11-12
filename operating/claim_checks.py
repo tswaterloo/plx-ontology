@@ -236,6 +236,7 @@ from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ontology.core import ValidationError
+from ontology.measure import exact_normal
 from ontology.units import (ISO_4217, RECEIVE_ALIASES, SIGN_CURRENCIES, UOM_ALIASES,
                             UOM_CANONICAL, WORD_CODES, js_trim)
 
@@ -618,7 +619,8 @@ def number_value(match: re.Match[str]) -> Decimal:
 
 
 def _plain(number: Decimal) -> str:
-    text = format(number.normalize(), "f")
+    """``number`` as plain decimal text, every significant digit kept (QUERY-003)."""
+    text = format(exact_normal(number), "f")
     return text[:-2] if text.endswith(".0") else text
 
 

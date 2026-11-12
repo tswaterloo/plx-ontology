@@ -51,6 +51,16 @@ class DeployFilesTest(unittest.TestCase):
                 for unit_path in re.findall(r"(?:/data/OntologyProject|/data/scratch/wt/)", text):
                     self.fail(f"{path} runs from a checkout: {unit_path}")
 
+    def test_the_ingest_unit_spaces_restarts_and_stops_a_crash_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["python3", str(DEPLOY / "render.py"), "--out", f"{tmp}/out"],
+                           check=True, capture_output=True)
+            text = Path(tmp, "out", "plx-ingest.service").read_text()
+            for line in ("StartLimitIntervalSec=600", "StartLimitBurst=5", "RestartSec=60",
+                         "Restart=on-failure"):
+                self.assertIn(line, text)
+            self.assertLess(text.index("StartLimitBurst"), text.index("[Service]"))
+
     def test_proactive_units_keep_the_store_and_calling_refresh_and_name_no_host_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = Path(tmp, "deploy.env")
@@ -94,7 +104,8 @@ class DeployFilesTest(unittest.TestCase):
             for flag, out in ((["--user"], "u"), ([], "s")):
                 subprocess.run(["python3", str(DEPLOY / "render.py"), "--out", f"{tmp}/{out}",
                                 "--env", str(env), *flag], check=True, capture_output=True)
-            wanted = {"u": ["plx-sheet-readings", "plx-system-activity", "plx-work-graph"],
+            wanted = {"u": ["plx-sheet-readings", "plx-system-activity", "plx-team-activity",
+                           "plx-work-graph"],
                       "s": ["plx-proactive-whole", "plx-backup", "plx-restore-test",
                             "plx-ops-health"]}
             for out, names in wanted.items():

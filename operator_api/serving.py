@@ -9,6 +9,7 @@ from __future__ import annotations
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import contextvars
 import json
 import logging
 import os
@@ -283,6 +284,17 @@ def _count_preread_failure(error: BaseException) -> None:
 # checks every mail item of a message type against its item gate once (cold, measured
 # 60 s and more on the live store), so it gets longer than a plain read before "busy".
 PAGE_TIMEOUT_SECONDS = 150
+# A read nobody waits for any more (a page's first read that outran its request, finished
+# in the background so the retry finds it) gets this many times a request's time limit: at
+# the request's own limit it was cut and its work lost, so a read that needs longer than the
+# limit could never finish, however often the app retried.
+BACKGROUND_READ_BUDGET = 4
+READ_BUDGET: contextvars.ContextVar[int] = contextvars.ContextVar("plx_read_budget", default=1)
+
+
+def read_budget(seconds: float) -> float:
+    """``seconds`` scaled by the budget of the read asking (1 on a request)."""
+    return seconds * READ_BUDGET.get()
 # A page section (``object_section``) waits behind any page's first read on the read
 # worker (jobs run lowest number first): opening another record never waits on the
 # sections of the one before.
@@ -739,6 +751,7 @@ class Worker:
         deadline), so the worker is free for the next reader's job instead of finishing
         a read nobody waits for."""
         from operating.call_limits import SQL_GRACE
+        timeout = read_budget(timeout)
         future = self.submit(reader, job, priority=priority,
                              deadline=time.monotonic() + timeout + SQL_GRACE)
         try:

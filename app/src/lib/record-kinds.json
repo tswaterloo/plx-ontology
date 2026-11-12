@@ -517,6 +517,9 @@
     },
     "updated_at": {
      "role": "when"
+    },
+    "due_date": {
+     "role": "aging"
     }
    }
   },
@@ -633,6 +636,12 @@
      "role": "other"
     }
    }
+  },
+  "Notice": {
+   "role": "record"
+  },
+  "NoticeReference": {
+   "role": "record"
   },
   "PackingSlip": {
    "role": "document"
@@ -902,6 +911,9 @@
    "role": "document"
   },
   "PurchaseOrderLine": {
+   "role": "document"
+  },
+  "PurchaseOrderReference": {
    "role": "document"
   },
   "PurchaseRequisition": {

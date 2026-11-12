@@ -262,18 +262,36 @@ class RecordChunker(ProjectionChunker):
         min_chars = int(self.config.get("min_chars", 20))
         label_min = int(self.config.get("label_min_chars", 3))
         share = float(self.config.get("min_letter_share", 0.4))
+        by_type: dict[str, list[Any]] | None = None
+        if objects is not None:
+            # a layer's slice: only its own objects are read (by key, in id order), never
+            # every record of each type once per slice (a 700k-object layer read 35 times)
+            by_type = {}
+            wanted = sorted(objects)
+            for start in range(0, len(wanted), 500):
+                for row in self.conn.execute(
+                        "SELECT object_id, object_type, audience_key, "
+                        "missing_from_source_since AS missing FROM objects WHERE object_id "
+                        "IN (SELECT value FROM json_each(?)) ORDER BY object_id",
+                        (json.dumps(wanted[start:start + 500]),)):
+                    by_type.setdefault(row["object_type"], []).append(row)
         for object_type, props in sorted(self.plan.items()):
             after = ""
+            mine = None if by_type is None else by_type.get(object_type, [])
             while True:
-                rows = self.conn.execute(
-                    "SELECT object_id, audience_key, missing_from_source_since AS missing "
-                    "FROM objects WHERE object_type = ? AND object_id > ? ORDER BY object_id "
-                    "LIMIT ?", (object_type, after, BATCH)).fetchall()
-                if not rows:
-                    break
-                after = rows[-1]["object_id"]
-                if objects is not None:
-                    rows = [r for r in rows if r["object_id"] in objects]
+                if mine is not None:
+                    # a layer's slice: its own records of the type, read once by key
+                    rows, mine = mine[:BATCH], mine[BATCH:]
+                    if not rows:
+                        break
+                else:
+                    rows = self.conn.execute(
+                        "SELECT object_id, audience_key, missing_from_source_since AS missing "
+                        "FROM objects WHERE object_type = ? AND object_id > ? ORDER BY "
+                        "object_id LIMIT ?", (object_type, after, BATCH)).fetchall()
+                    if not rows:
+                        break
+                    after = rows[-1]["object_id"]
                 if shard is not None:
                     rows = [r for r in rows if zlib.crc32(r["object_id"].encode("utf-8"))
                             % shard[1] == shard[0]]

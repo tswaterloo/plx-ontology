@@ -214,6 +214,15 @@ class FeedbackLoop(unittest.TestCase):
             trimmed = self.owner.get("/api/feedback").json()["entries"][0]
         self.assertIn("source", trimmed["withheld"])
         self.assertTrue(all(c["text"] is None for c in trimmed["claims"] if c["i"] == 0))
+        # SEC-001: the answer and the expected text say what the withheld claim said
+        self.assertEqual((trimmed["answer"], trimmed["expected"]), (None, None))
+        claim = self.backend.feedback_store.list(reader=None)[0][0]["context"]["claims"][0]
+        with mock.patch.object(self.backend, "feedback_grant", lambda r, h: (
+                frozenset({"finance"}), {x: {"reason": "item_refused"} for x in h})):
+            body = self.owner.get("/api/feedback").text
+        self.assertTrue(claim["text"])
+        self.assertNotIn(claim["text"], body)
+        self.assertNotIn("4,821.75", body)
         # the owner (full-read grant) reads everything
         del self.backend.held_markings["staff:owner"]
         with mock.patch.object(fb, "owner_open", lambda session: True):
@@ -231,13 +240,48 @@ class FeedbackLoop(unittest.TestCase):
         # a usable exclusion that does not name the reader: named
         with mock.patch.object(fb, "exclusion", Guard):
             self.ben.post("/api/feedback/note", json={"note": "named author"})
-        named = next(e for e in self.owner.get("/api/feedback").json()["entries"]
-                     if e["note"] == "named author")
+        with mock.patch.object(fb, "exclusion", Guard):   # read with the list loaded too
+            named = next(e for e in self.owner.get("/api/feedback").json()["entries"]
+                         if e["note"] == "named author")
         self.assertNotEqual(named["reader_name"], "a colleague")
         self.assertTrue(named["reader_name"])
         self.assertTrue(fb.reader_excluded(mock.Mock(
             email="Excluded.Person@plx.example",
             session=mock.Mock(identities=(), principals=())), Guard()))
+
+    def test_a_person_excluded_since_writing_is_withheld_on_every_read(self):
+        """SEC-013: text cleaned when written is cleaned again with today's exclusion for
+        every reader (the owner's whole read included) and in the nightly digest; a writer
+        excluded since is "a colleague"; no list: withheld (fail closed)."""
+
+        class Nobody(Guard):
+            def is_excluded(self, value):
+                return False
+        later = client_for(self.backend, f"staff:{OID}")   # a writer keyed by their object id
+        said = f"ask excluded.person@plx.example ({OID}) about PO 90412"
+        with mock.patch.object(fb, "exclusion", Nobody):
+            self.ana.post("/api/feedback/note", json={"note": said, "page": "/late"})
+            later.post("/api/feedback/note", json={"note": "the list jumps", "page": "/"})
+            with mock.patch.object(fb, "owner_open", lambda session: True):
+                before = self.owner.get("/api/feedback").text
+        self.assertIn("excluded.person@plx.example", before)   # not excluded when written
+        for guard in (Guard, lambda: None):
+            with self.subTest(guard=guard), mock.patch.object(fb, "exclusion", guard), \
+                    mock.patch.object(fb, "owner_open", lambda session: True):
+                entries = self.owner.get("/api/feedback").json()["entries"]
+                body = json.dumps(entries)
+                self.assertNotIn("excluded.person", body)
+                self.assertNotIn(OID, body)
+                self.assertIn("about PO 90412", body)
+                self.assertEqual(next(e for e in entries if e["note"] == "the list jumps")
+                                 ["reader_name"], "a colleague")
+                day = fb.eastern_day(datetime.now(timezone.utc))
+                digest = json.dumps(self.backend.feedback_store.digest(day))
+                self.assertNotIn("excluded.person", digest)
+                self.assertNotIn(OID, digest)
+        with mock.patch.object(fb, "exclusion", Guard):
+            mine = self.ana.get("/api/feedback").json()["entries"][0]
+        self.assertNotIn("excluded.person", mine["note"])   # their own entry too
 
     def test_notes_on_a_record_list_by_type_and_page(self):
         self.ana.post("/api/feedback/note", json={

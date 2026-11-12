@@ -362,8 +362,9 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
     claim with no value is refused (``claim_states_no_value``). ``relevant(handles,
     read)``: whether the records ``handles`` cite name or link to a record the question
     names (None: undecided, which keeps the claim); a claim that its citations do not
-    connect stands only on a ``via`` that does (an unreadable one does not), else it is
-    refused (``OFF_QUESTION``). None: no such check."""
+    connect stands only on a ``via`` that does and that firm links join to the record the
+    claim cites (``relevant(handles, read, via=via)`` True; an unreadable or unjoined via
+    does not, GATE-001), else it is refused (``OFF_QUESTION``). None: no such check."""
     reader: list[Callable[[str], Any]] = []
 
     def read(handle: str) -> Any:
@@ -382,7 +383,7 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
             via = claim.get("via")
             # A via must connect as read now: one that cannot be read connects nothing.
             if relevant(claim["citations"], read) is False and not (
-                    via and relevant([via], read) is True):
+                    via and relevant(claim["citations"], read, via=via) is True):
                 dropped += 1
                 unsupported.append({"text": f"{claim['id']}: " + _shown_value(
                     claim["value_claims"][0].get("value")),
@@ -1078,7 +1079,11 @@ def _check(claims: list[dict], rows: Callable[[str], Any], returned: Mapping[str
                        "source": _source(claim["citations"][0]),
                        "check": {"status": "passed", "failures": [],
                                  **({"unit_basis": result.get("unit_basis")}
-                                    if "unit" in value_claim else {})}})
+                                    if "unit" in value_claim else {}),
+                                 # GATE-004: a count no complete count binds stays a lower
+                                 # bound in every representation of it
+                                 **({"bound": "at_least"}
+                                    if result.get("bound") == "at_least" else {})}})
     return passed, failed, {"schema": CLAIM_CHECKS_SCHEMA, "counts": counts,
                             "passed": report["passed"] and len(passed) == len(claims)}
 
@@ -1319,7 +1324,8 @@ def _names_blanked(prose: str, names: Collection[str], refused: Sequence[Any]) -
 
 def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
              refused: Sequence[Any] = (), percents: Sequence[Any] = (),
-             names: Collection[str] = (), passages: Sequence[str] = ()) -> list[str]:
+             names: Collection[str] = (), passages: Sequence[str] = (),
+             floors: Collection[Decimal] = ()) -> list[str]:
     """The factual statements of a final reply's ``text`` that no passed claim's value
     (``values``) backs, as written, in order and once, by the gate's own tokenisers:
     every number (``claim_checks.prose_numbers``: handles, identifiers and dates apart)
@@ -1343,7 +1349,10 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     ``passages_of``: its quote or text value, as its cited record writes it) states as
     the reply does (``passage_backed``: the same whole token, said of the same thing,
     neither negated nor bounded there, with the reply's unit and currency) is backed by
-    that passage. Plain prose, other words and the question restated
+    that passage. A number of ``floors`` (the value of a count the gate passed only as a
+    lower bound, ``lower_bounds``) is backed only written as a minimum (``at least 2``,
+    ``2 or more``): written exactly it states a total nothing established (GATE-004).
+    Plain prose, other words and the question restated
     are not statements. Fail closed: a text that is not a string, or longer than
     ``MAX_REPLY_CHARS``, is one unbacked statement."""
     if not isinstance(text, str) or len(text) > MAX_REPLY_CHARS:
@@ -1427,8 +1436,15 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     # bounded in the reply ("not 120", "at least 120", "120 or more") it says something
     # the claim does not, so it is dropped as unbacked (fail closed).
     for start, end in _prose_tokens(scan):
-        if scan[start:end] in backed_tokens and _qualified(scan, start, end):
-            add(scan[start:end])
+        token = scan[start:end]
+        if token not in backed_tokens:
+            continue
+        number = claim_checks.to_decimal(token) if floors else None
+        if number is not None and abs(number) in floors:
+            if not _at_least(scan, start, end):
+                add(token)
+        elif _qualified(scan, start, end):
+            add(token)
     rest = claim_checks.HANDLE.sub(" ", prose)
     for value in sorted(set(covered), key=len, reverse=True):
         rest = rest.replace(value, " ")
@@ -1462,6 +1478,140 @@ def _qualified(text: str, start: int, end: int) -> bool:
         or claim_checks._ANSWERED_NO.match(text, end, stop)
         or claim_checks._BOUND_AFTER.match(text, end, stop)
         or claim_checks._AT_LEAST_AFTER.match(text, end, stop))
+
+
+def _at_least(text: str, start: int, end: int) -> bool:
+    """Whether ``text[start:end]`` is written as a minimum (``at least 2``, ``2 or
+    more``, ``2+``), on its own line, as ``_qualified`` reads it."""
+    line = text.rfind("\n", 0, start) + 1
+    reach = max(line, start - 48)
+    stop = text.find("\n", end)
+    stop = len(text) if stop < 0 else stop
+    return bool(claim_checks._AT_LEAST_BEFORE.search(text, reach, start)
+                or claim_checks._AT_LEAST_AFTER.match(text, end, stop))
+
+
+def lower_bounds(claims: Sequence[Any]) -> frozenset[Decimal]:
+    """The values of the passed count claims the gate passed only as a lower bound
+    (``check.bound`` ``at_least``) that no other passed claim states exactly: the
+    figures a reply may write only as a minimum (``unbacked``'s ``floors``)."""
+    floors: set[Decimal] = set()
+    exact: set[Decimal] = set()
+    for claim in claims:
+        check = claim.get("check") if isinstance(claim, Mapping) else None
+        if not isinstance(check, Mapping) or check.get("status", "passed") != "passed":
+            continue
+        for value_claim in claim.get("value_claims") or ():
+            if not isinstance(value_claim, Mapping):
+                continue
+            number = claim_checks.to_decimal(plain(value_claim.get("value")))
+            if number is not None:
+                (floors if plain(check.get("bound")) == "at_least" else exact).add(abs(number))
+    return frozenset(floors - exact)
+
+
+# The words of a reply that assert a business state of a record (approved, shipped, paid,
+# cancelled, owned...): a sentence writing one, negated or not, states a fact a passed
+# claim must be about (GATE-003). Wording of the language, never of a case.
+ASSERTION_WORDS = re.compile(
+    r"\b(?:approved|approves|rejected|rejects|released|cancell?ed|cancels|refunded|paid|"
+    r"delivered|shipped|received|invoiced|confirmed|owns|owned|closed|completed|"
+    r"accepted|declined|dispatched|voided|returned|signed|expired|posted|"
+    r"fulfilled|overdue|late)\b", re.I)
+_ASSERTION_SUFFIX = re.compile(r"(?:ed|es|s|d)$")
+# A clause saying a state is not established keeps the reply's uncertainty, so it is never
+# dropped for its state word (dropping it would make the reply more certain than its
+# evidence). Recognised by its form, not by a list of sentences: a state word inside a
+# question (whether, if), an uncertainty (unknown, unclear, may, might, appears, not yet),
+# or a negated reading or search ("couldn't confirm", "haven't found", "no record", "the
+# search returned nothing": a negation beside a word about evidence). A negated state alone
+# ("the invoice was not paid") asserts a state and is checked like any other. A search
+# that ran out of time ("... before it returned anything") is a hedge too. The hedge
+# governs its own clause only (a contrast or a semicolon ends it): "The order shipped, but whether it was paid is unknown."
+# still checks "shipped".
+_UNCERTAIN = re.compile(
+    r"\b(?:whether|if|unknown|unclear|uncertain|unverified|unconfirmed|undetermined|"
+    r"(?-i:may)|might|possibly|probably|perhaps|likely|unlikely|appears?|seems?|presumably|"
+    r"not\s+yet|yet\s+to|pending\s+(?:confirmation|review|check)|to\s+be\s+confirmed|"
+    r"tbc|tbd|ran\s+out\s+of\s+time|time\s+limit|timed\s+out|cut\s+off|"
+    r"before\s+(?:it|they)\s+(?:returned|ran|finished))\b", re.I)
+_NEGATION = re.compile(r"\b(?:\w+n't|not|no|never|none|nothing|neither|nor|without|cannot|"
+                       r"unable|failed\s+to)\b", re.I)
+_EVIDENCE_WORDS = re.compile(
+    r"\b(?:confirm\w*|find|found|finding|verif\w*|see|seen|saw|show\w*|check\w*|"
+    r"establish\w*|know|known|tell|told|determin\w*|locat\w*|record\w*|evidence|"
+    r"sources?|sign|signs|mention\w*|data|information|info|says?|said|stat(?:e|es|ed)|"
+    r"open|read|search\w*|look\w*|lookup|quer\w*|results?|returned\s+nothing|"
+    r"documents?|trace|match\w*|link\w*|available|access|compar\w*|figures?|"
+    r"prices?|amounts?|line\s+(?:it\s+|them\s+)?up)\b", re.I)
+# a clause ends at a semicolon or a contrast ("..., but whether it was paid is unknown");
+# a comma alone continues it ("I couldn't confirm the date, or that customs released it")
+_CLAUSE = re.compile(r";|\s(?:but|however|although|though|whereas|while)\s", re.I)
+
+
+def _plain_apostrophes(text: str) -> str:
+    return text.replace("\u2019", "'").replace("\u2018", "'").replace("\u02bc", "'")
+
+
+def _hedged(clause: str) -> bool:
+    """Whether ``clause`` says its state is not established (the comment above)."""
+    return bool(_UNCERTAIN.search(clause)
+                or (_NEGATION.search(clause) and _EVIDENCE_WORDS.search(clause)))
+
+
+def _clause_at(sentence: str, at: int) -> str:
+    """The clause of ``sentence`` holding the character at ``at``."""
+    start, end = 0, len(sentence)
+    for cut in _CLAUSE.finditer(sentence):
+        if cut.end() <= at:
+            start = cut.end()
+        elif cut.start() > at:
+            end = cut.start()
+            break
+    return sentence[start:end]
+
+
+def _claim_words(claims: Sequence[Any]) -> frozenset[str]:
+    """The lowercase words of what passed ``claims`` are about and state: each value
+    claim's field, role and value, and the claim's rendered line."""
+    words: set[str] = set()
+    for claim in claims:
+        if not isinstance(claim, Mapping) or (claim.get("check") or {}).get(
+                "status", "passed") != "passed":
+            continue
+        texts = [plain(claim.get("text")), plain(claim.get("phrase")), *passages_of([claim])]
+        for value_claim in claim.get("value_claims") or ():
+            if isinstance(value_claim, Mapping):
+                texts += [plain(value_claim.get(key)) for key in ("field", "role", "value")]
+        for text in texts:
+            if isinstance(text, (str, int)) and not isinstance(text, bool):
+                words.update(claim_checks._name_words(str(text)))
+    return frozenset(words)
+
+
+def unbacked_assertions(sentence: str, words: Collection[str]) -> list[str]:
+    """The business-state words (``ASSERTION_WORDS``) ``sentence`` writes that no passed
+    claim is about (``words``, ``_claim_words``: a word of its field, role, value or line
+    sharing the state word's stem, ``received`` by ``quantity_received``, ``approved``
+    by ``approval_status``), as written, once each: an approval, shipment, payment,
+    cancellation or ownership no evidence states (GATE-003)."""
+    out: list[str] = []
+    sentence = _plain_apostrophes(sentence)
+    for match in ASSERTION_WORDS.finditer(sentence):
+        if _hedged(_clause_at(sentence, match.start())):
+            continue
+        word = match.group(0).lower()
+        stem = _ASSERTION_SUFFIX.sub("", word) if len(word) > 4 else word
+        if len(stem) > 3 and stem[-1] == stem[-2] and stem[-1] not in "aeiou":
+            stem = stem[:-1]   # shipped -> ship, cancelled -> cancel
+        need = min(len(stem), 5)
+        if any(other == word or len(other) >= min(need, 4) and (
+                other[:need] == stem[:need] or stem.startswith(other))
+               for other in words):
+            continue
+        if match.group(0) not in out:
+            out.append(match.group(0))
+    return out
 
 
 _UP_WORDS = re.compile(r"\b(?:up|rose|risen|rising|increased?|increases|higher|more)\b", re.I)
@@ -1888,7 +2038,10 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
 
     Each sentence, list item or line of ``text`` that carries an unbacked statement
     (``unbacked`` over what the claims state, the question, the names the run returned
-    verbatim, ``names``, and what ``unsupported`` and ``refused`` said), or that writes a passed value beside a currency other than the one
+    verbatim, ``names``, and what ``unsupported`` and ``refused`` said; a count the gate
+    passed as a lower bound written exactly, ``lower_bounds``), or that asserts a business
+    state no passed claim is about (``unbacked_assertions``, listed in ``asserted``: the
+    caller's answer is then partial), or that writes a passed value beside a currency other than the one
     the gate checked with it (``_currencies_as_checked``), is dropped; the rest stays as
     written, without a unit or currency beside a passed value that the gate did not check
     for it (``_unchecked_units_dropped``). A reply whose surviving text
@@ -1907,6 +2060,9 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     backed = backing(claims)
     percents = in_percent(claims)
     passages = passages_of(claims)
+    floors = lower_bounds(claims)
+    about = _claim_words(claims)
+    asserted: list[str] = []
     said = refused_said(unsupported) + [s for s in refused if isinstance(s, str)]
     lines = [str(plain(claim.get("text"))) for claim in claims if isinstance(claim, Mapping)
              and isinstance(plain(claim.get("text")), str)]
@@ -1923,11 +2079,13 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
             continue
         sentences += 1
         tokens = unbacked(sentence, backed, question=question, refused=said,
-                          percents=percents, names=names, passages=passages)
+                          percents=percents, names=names, passages=passages, floors=floors)
         tokens += [token for token in _denied(sentence, denials) if token not in tokens]
+        states = unbacked_assertions(sentence, about)
+        asserted += [word for word in states if word not in asserted]
         bare, other = _currencies_as_checked(sentence, marks)
         tokens += [token for token in other if token not in tokens]
-        if tokens:
+        if tokens or states:   # a state asserted is listed in ``asserted``, not ``unbacked``
             removed += 1
             found += [token for token in tokens if token not in found]
             if len(gone) < MAX_SHOWN_DROPPED:
@@ -1959,7 +2117,8 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     for unknown in unknowns:
         if isinstance(unknown, str) and not unbacked(unknown, backed, question=question,
                                                      refused=said, percents=percents,
-                                                     names=names, passages=passages):
+                                                     names=names, passages=passages,
+                                                     floors=floors):
             shown_unknowns.append(unknown)
         else:
             dropped += 1
@@ -1969,7 +2128,7 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
             "unknowns": shown_unknowns, "modified": modified, "replaced": replaced,
             "sentences": sentences, "removed_sentences": removed,
             "removed_unknowns": dropped, "unbacked": found[:MAX_SHOWN_UNBACKED],
-            "dropped": gone}
+            "dropped": gone, "asserted": asserted[:MAX_SHOWN_UNBACKED]}
 
 
 # A question asking for a computed figure: how many, how much, a count, number or total,
@@ -2287,6 +2446,8 @@ def passed_cells(decision: Any) -> list[dict[str, Any]]:
                                        if isinstance(given, Mapping)]
                             if "citation" not in value_claim else None,
                             "quote": _verbatim(plain(value_claim.get("quote"))),
+                            "bound": "at_least" if plain(check.get("bound")) == "at_least"
+                            else None,
                             "role": _text_or_none(plain(value_claim.get("role"))),
                             "currency": _text_or_none(plain(value_claim.get("currency"))),
                             "unit": _text_or_none(unit) if verified else None,
@@ -2346,6 +2507,8 @@ def answer_values(decision: Any) -> list[dict[str, Any]]:
                              ("currency", cell["currency"])):
             if checked is not None:
                 shown[key] = checked
+        if cell.get("bound"):
+            shown["bound"] = cell["bound"]
         if kept_value(shown, [cell]) == shown:   # only a form the final reply keeps whole
             out.append({"claim": cell["claim"], "answer_value": shown})
     return out
@@ -2448,7 +2611,12 @@ def kept_value(value: Mapping[str, Any], passed: Sequence[Mapping[str, Any]]
             kept["quote"] = cite["quote"]   # a text value quoted as itself: what was checked
         return kept
     out = {key: item for key, item in value.items()
-           if key not in ("citations", "calculation", "quantity_role", "unit", "currency")}
+           if key not in ("citations", "calculation", "quantity_role", "unit", "currency",
+                          "bound")}
+    # GATE-004: a value of a count the gate passed as a lower bound is one, whatever the
+    # answer said of it; an exact one carries no bound
+    if claim.get("bound"):
+        out["bound"] = claim["bound"]
     if "citations" in value:
         out["citations"] = [cite_as_checked(cite) for cite in value["citations"]]
     if "calculation" in value:

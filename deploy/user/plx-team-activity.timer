@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX Team view snapshot nightly (03:30 ET, after the system activity snapshot)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/New_York
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

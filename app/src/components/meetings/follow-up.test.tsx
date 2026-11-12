@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { groupActions, MeetingFollowUpView, MyActionItemsView, statusText, type Action, type FollowUp } from "./follow-up";
 
@@ -65,5 +66,26 @@ describe("meeting follow-up", () => {
     expect(screen.getAllByTestId("action-item")).toHaveLength(6);
     const figures = Object.fromEntries([...document.querySelectorAll("dl div")].map((d) => [d.querySelector("dt")?.textContent, d.querySelector("dd")?.textContent]));
     expect(figures).toMatchObject({ Open: "5", Overdue: "2", "Due this week": "1", Done: "1" });
+  });
+
+  it("a keyboard opens an action item's detail and its prepared actions, and closes it again (WEB-019)", async () => {
+    const user = userEvent.setup();
+    render(<MyActionItemsView items={[{ ...actions[0], meeting: "Ops weekly", meeting_id: "m1" }]} />);
+    const toggle = screen.getByRole("button", { name: /email Northfield Bakery/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("action-item-detail")).toBeNull();
+    await user.tab();
+    // the first stop in the row is the meeting link; the toggle is reachable by Tab
+    while (document.activeElement !== toggle && document.activeElement !== document.body) await user.tab();
+    expect(document.activeElement).toBe(toggle);
+    await user.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const detail = screen.getByTestId("action-item-detail");
+    expect(toggle.getAttribute("aria-controls")).toBe(detail.id);
+    // the prepared action's own button is reachable inside the revealed detail
+    expect(screen.getByRole("button", { name: /send email/i })).toBeTruthy();
+    await user.keyboard(" ");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("action-item-detail")).toBeNull();
   });
 });

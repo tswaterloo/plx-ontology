@@ -92,6 +92,17 @@ class Exclusion:
     def unavailable(self) -> str | None:
         return self.guard.unavailable
 
+    def fingerprint(self) -> str:
+        """A digest of every input a verdict here rests on: the guard's excluded IDs and
+        whether it loaded, the directory and our domains (``PeopleExclusion.fingerprint``)."""
+        import hashlib
+        import json
+        return hashlib.sha256(json.dumps(
+            [self.guard.fingerprint(), sorted(self.directory.items()), sorted(self.internal),
+             sorted(self.drive_owners.items(), key=str),
+             sorted((k, list(v)) for k, v in self.chat_members.items())],
+            default=str).encode("utf-8")).hexdigest()
+
     def _oid_clear(self, oid: str) -> bool:
         try:
             return not self.guard.is_excluded(oid)

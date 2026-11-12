@@ -3,8 +3,9 @@
 A key stores ``computed_at`` and the handles of the records it was read from. Two checks,
 both read-only on the published projection store:
 
-* ``touched``: a key record has no current version, a newer version or a newer link
-  (``recorded_at`` after the key's ``computed_at``).
+* ``touched``: a key record has no current version, a newer version, a newer link
+  (``recorded_at`` after the key's ``computed_at``) or a source absence opened or closed
+  after it (``object_removals``).
 * ``replay`` (graph-walk keys): the walk named by the key (links, directions, the word
   filter) is run again on the current links, and the answer is compared with the key's
   (an empty "none" set that now holds records, a count that moved).
@@ -54,6 +55,14 @@ def touched(conn: sqlite3.Connection, key: Mapping[str, Any]) -> list[str]:
         for oid, at, current in rows:
             if current and _day(at) > made:
                 reasons.append("record_version_newer")
+            # a source absence opened or closed after the key was made: the record's
+            # version is unchanged, but the source no longer (or again) holds it
+            for since, until in conn.execute(
+                    "SELECT since, until FROM object_removals WHERE object_id = ?", (oid,)):
+                if _day(since) > made:
+                    reasons.append("record_removed_since")
+                if until is not None and _day(until) > made:
+                    reasons.append("record_returned_since")
             if conn.execute("SELECT 1 FROM link_rows WHERE (from_object = ? OR to_object = ?) "
                             "AND recorded_at > ? AND tier IN (?, ?, ?) LIMIT 1",
                             (oid, oid, key["computed_at"], *FIRM)).fetchone():
@@ -100,17 +109,28 @@ def replay(conn: sqlite3.Connection, item: Mapping[str, Any], key: Mapping[str, 
            ) -> dict[str, Any] | None:
     """The key's walk run again: ``{"final": [object ids], "position": p}``; None when the
     walk cannot be replayed (not a word-filtered graph walk, or the start is not unique)."""
-    if key.get("family") != "graph_walk" or not (key.get("facts") or [{}])[0].get("records"):
+    if key.get("family") != "graph_walk":
         return None
     hops = hops_of(key)
     word = _WORD.search(str(item.get("question", {}).get("text", "")))
     if not hops or "filter word on" not in " ".join(key["query"]["reads"]) or not word:
         return None
-    handle = key["facts"][0]["records"][0] if key["facts"][0]["kind"] == "absent" else None
-    if handle is None:
-        return None
-    start = [r[0] for r in conn.execute("SELECT object_id FROM object_versions WHERE l1_handle = ? "
-                                        "AND superseded_at IS NULL", (handle,))]
+    # The walk's own root, kept in the query (a count key's facts hold the answer records,
+    # not the root); an older absent key names its root as its one fact record.
+    start_id = key["query"].get("start")
+    if isinstance(start_id, str) and start_id:
+        start = [r[0] for r in conn.execute("SELECT object_id FROM object_versions WHERE "
+                                            "object_id = ? AND superseded_at IS NULL "
+                                            "LIMIT 1", (start_id,))]
+    else:
+        facts = key.get("facts") or [{}]
+        handle = (facts[0].get("records") or [None])[0] if facts[0].get("kind") == "absent" \
+            else None
+        if handle is None:
+            return None
+        start = [r[0] for r in conn.execute("SELECT object_id FROM object_versions WHERE "
+                                            "l1_handle = ? AND superseded_at IS NULL",
+                                            (handle,))]
     if len(start) != 1:
         return None
     position = filter_position(item["question"]["text"], len(hops))
@@ -129,7 +149,8 @@ def replay(conn: sqlite3.Connection, item: Mapping[str, Any], key: Mapping[str, 
                     kept.append(oid)
             nxt = kept
         sets.append(nxt)
-    return {"final": sets[-1], "position": position, "sizes": [len(s) for s in sets]}
+    return {"final": sets[-1], "position": position, "sizes": [len(s) for s in sets],
+            "start": start[0]}
 
 
 def verdict(conn: sqlite3.Connection, item: Mapping[str, Any] | None,
@@ -163,7 +184,23 @@ def revised_key(conn: sqlite3.Connection, item: Mapping[str, Any], key: Mapping[
         "at": when, "reason": reason, "was": {"id": old["id"], "kind": old["kind"]},
         "now_count": len(final)}]
     new["computed_at"] = when
+    new["query"] = {**key["query"], "start": done["start"]}
     if not final:
+        if old["kind"] == "absent":
+            return new
+        # a count that fell to zero is the walk's "none" answer, rooted at the start record
+        root = conn.execute("SELECT l1_handle FROM object_versions WHERE object_id = ? AND "
+                            "superseded_at IS NULL", (done["start"],)).fetchone()
+        system = gw.fact_system(root[0]) if root else None
+        if not system:
+            raise ValueError("walk_not_replayable")
+        noun = (old.get("label") or ["records"])[0]
+        new["facts"] = [{"id": "none", "kind": "absent", "value": f"no {noun}",
+                         "accept": [f"no {noun}", *gw.NONE_FORMS], "records": [root[0]],
+                         "allowed": [system]}]
+        new["card"] = new["card"].removesuffix("count") + "none"
+        new["strata"] = {**new["strata"], "answer": "none"}
+        new["query"] = {**new["query"], "rule": "the walk's last set is empty"}
         return new
     handles, marks = [], set()
     for oid in final[:MAX_FOUND]:

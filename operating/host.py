@@ -301,7 +301,7 @@ _CONFIG_KEYS = {"schema", "note", "tenant", "capture_principal", "capture_audien
                 "live_audience", "mirror_audience", "employee_policy", "portal_access",
                 "entra_directory", "interval_seconds", "agent", "action_path",
                 "knowledge_namespaces", "case_coworker", "marking_grants", "ingest",
-                "freshness_hours"}
+                "freshness_hours", "portal_access_max_age_hours"}
 _COWORKER_KEYS = {"group", "principal", "member_of"}
 _SOURCE_KEYS = {"portal": {"base_url", "relations", "budget_seconds"},
                 "bc": {"entity_sets", "budget_seconds", "books"},
@@ -409,6 +409,15 @@ class HostConfig:
             raise HostError("host_config_invalid")
         self.interval_seconds = interval
         self.freshness_hours = self._freshness_hours(document.get("freshness_hours"))
+        # How old (by its read_at) the Portal access snapshot may be before every employee
+        # is denied until it is exported again; absent: no bound (a hand-made snapshot).
+        max_age = document.get("portal_access_max_age_hours")
+        if max_age is not None and (isinstance(max_age, bool)
+                                    or not isinstance(max_age, (int, float))
+                                    or not 0 < max_age <= MAX_FRESHNESS_HOURS
+                                    or self.portal_access is None):
+            raise HostError("host_config_invalid:portal_access_max_age_hours")
+        self.portal_access_max_age_hours = None if max_age is None else float(max_age)
         self.case_coworker = self._case_coworker(document.get("case_coworker"))
         # The agent definition the MCP session runs (operating/agent_definitions.json);
         # None: the definitions' default_agent.
@@ -2139,7 +2148,18 @@ class Host:
                     "age_seconds": _age(now, built["built_at"]), "objects": built["objects"],
                     "inputs": json.loads(built["inputs"])},
                 "last_cycle": None if last is None else dict(last),
-                "build_wait": build_wait(self.state_dir)}
+                "build_wait": build_wait(self.state_dir),
+                "portal_access": self._portal_access_status(now)}
+
+    def _portal_access_status(self, now: datetime) -> dict[str, Any] | None:
+        """The Portal access snapshot's read time, age and bound (None: none configured)."""
+        config = self.config
+        if config is None or config.portal_access is None:
+            return None
+        from .employee_permissions import portal_access_status
+        return portal_access_status(config.portal_access,
+                                    max_age_hours=config.portal_access_max_age_hours,
+                                    clock=lambda: now)
 
     def serve_cycle(self) -> dict[str, Any]:
         """``cycle``, or, while another process holds this directory's cycle (a ``run``,
@@ -2179,6 +2199,13 @@ class Host:
                             or self.stop_reason(stop_file):
                         return 0
                     continue
+                try:
+                    free: int | None = int(self.disk_free(self.state_dir))
+                except (OSError, TypeError, ValueError):
+                    free = None
+                record_serve_stop(self.state_dir, now=self.clock(),
+                                  reason=str(summary.get("reason") or "unknown"),
+                                  free_bytes=free)
                 if on_cycle is not None:
                     on_cycle(summary)
                 return summary["refreshes"]
@@ -3273,7 +3300,8 @@ def mcp_arguments(host: Host, *, session_ticket_env: str | None,
             "--source-mirror-audience", str(config.mirror_audience),
             "--employee-policy", str(config.employee_policy)]
     if config.portal_access is not None and declared is None:
-        argv += ["--portal-access", str(config.portal_access)]
+        argv += ["--portal-access", str(config.portal_access),
+                 *portal_access_age_arguments(config)]
     if session_ticket_env is not None:
         argv += ["--session-ticket-env", session_ticket_env]
     if declared is not None:
@@ -3425,6 +3453,12 @@ def serve_mcp_http(host: Host, *, entra_resource: Path, bind: str, port: int,
         directory=directory_provider(host, monotonic=monotonic), jwks=jwks, ready=ready)
 
 
+def portal_access_age_arguments(config: HostConfig) -> list[str]:
+    """The snapshot's age bound for a child that loads it (none when the config sets none)."""
+    hours = config.portal_access_max_age_hours
+    return [] if hours is None else ["--portal-access-max-age-hours", repr(hours)]
+
+
 def console_arguments(host: Host, port: int) -> list[str]:
     config = host.config
     if config.employee_policy is None:
@@ -3433,7 +3467,8 @@ def console_arguments(host: Host, port: int) -> list[str]:
             str(config.mirror_audience), "--employee-policy", str(config.employee_policy),
             "--port", str(port)]
     if config.portal_access is not None:
-        argv += ["--portal-access", str(config.portal_access)]
+        argv += ["--portal-access", str(config.portal_access),
+                 *portal_access_age_arguments(config)]
     if "portal" in config.sources:
         argv += ["--host-captures-portal"]
     argv += _freshness_arguments(config)
@@ -3544,6 +3579,10 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                          help="default: $PLX_WORKBENCH_STATE_DIR (unset: refused, naming it)")
         if name != "status":
             sub.add_argument("--config", required=True, type=Path)
+        else:
+            sub.add_argument("--config", type=Path, default=None,
+                             help="also list this config's sources and its Portal access "
+                                  "snapshot's read time and age")
     serve = commands.choices["serve"]
     serve.add_argument("--interval-seconds", type=int, default=None)
     serve.add_argument("--max-cycles", type=int, default=0)
@@ -3604,8 +3643,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
             print(json.dumps({"error": exc.code, "setting": exc.setting}), file=sys.stderr)
             return 2
     try:
-        config = None if args.command == "status" else HostConfig.from_file(
-            args.config, capture_sources=capture_sources)
+        config = None if args.command == "status" and args.config is None else \
+            HostConfig.from_file(args.config, capture_sources=capture_sources)
         from integrations.capture_mail import assert_outside_git
         state_dir = assert_outside_git(args.state_dir)   # as Host() does, before any write
         if args.command == "check" and args.interrupt_after_seconds is not None:
@@ -3720,18 +3759,49 @@ def record_serve_start(state_dir: Path, *, now: datetime, config: "HostConfig | 
                                   "turn_seconds": held.get("turn_seconds") or {},
                                   "config_warnings": held.get("config_warnings") or [],
                                   "failures": failures}
+        if isinstance(held.get("stop"), dict):
+            record["stop"] = held["stop"]
         if error is not None:
             record["failures"] = (failures + [{"at": _iso(now), "error": str(error)}]
                                   )[-_SERVE_FAILURES_KEPT:]
         else:
             record["started_at"] = _iso(now)
             record["failures"] = []
+            record.pop("stop", None)   # a start supersedes the last stop
             if config is not None:
                 record["turn_seconds"] = capture_turns(config)
                 record["config_warnings"] = list(config.config_warnings)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(record, sort_keys=True), "utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+
+def record_serve_stop(state_dir: Path, *, now: datetime, reason: str,
+                      free_bytes: int | None) -> None:
+    """Record in ``<state>/host/serve-health.json`` why the continuous ingest ended
+    (``stop``: ``at``, ``reason`` such as ``low_disk``, ``stop_file`` or ``stopped``, the
+    state file system's free bytes then). The process exits 0 after it, so systemd never
+    restarts it: ``ops_health`` ``ingest_service`` reads this to say the capture service
+    is stopped and why, and the host's ingest keeper (``deploy/ops/host``) restarts a
+    ``low_disk`` stop once the disk has recovered. The next start removes it. Codes and
+    numbers only; never raises."""
+    try:
+        path = Path(state_dir) / "host" / SERVE_HEALTH_FILE
+        if not path.parent.is_dir():
+            return
+        try:
+            held = json.loads(path.read_text("utf-8"))
+            if not isinstance(held, dict) or held.get("schema") != SERVE_HEALTH_SCHEMA:
+                held = {"schema": SERVE_HEALTH_SCHEMA}
+        except (OSError, ValueError):
+            held = {"schema": SERVE_HEALTH_SCHEMA}
+        held["stop"] = {"at": _iso(now), "reason": str(reason),
+                        "free_bytes": free_bytes if isinstance(free_bytes, int) else None}
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(held, sort_keys=True), "utf-8")
         os.replace(tmp, path)
     except OSError:
         return

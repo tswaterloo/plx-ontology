@@ -1183,50 +1183,6 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/api/owner/workload": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Owner Workload
-         * @description Per person: open threads awaiting reply, open tasks, alerts and closed alerts.
-         *     Owner only (403 for every other reader); counts only, never message content.
-         */
-        get: operations["owner_workload_api_owner_workload_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/owner/workload/{person}/{bucket}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Owner Workload Items
-         * @description The items behind one count of one person (bucket awaiting_reply, tasks or alerts):
-         *     subject, counterpart, age, who it waits on, a snippet and the record to open. Owner
-         *     only (403 for every other reader); excluded people never appear; marked items you
-         *     cannot open stay withheld.
-         */
-        get: operations["owner_workload_items_api_owner_workload__person___bucket__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/rd-projects": {
         parameters: {
             query?: never;
@@ -1372,6 +1328,50 @@ export type paths = {
          *     without your confirm).
          */
         get: operations["suggestions_api_suggestions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Team View
+         * @description Per person: activity in every captured system over 7 and 28 days, open work,
+         *     median reply time, a daily trend and busiest hours. The owner and the named Team
+         *     readers see everyone; every other reader only their own row.
+         */
+        get: operations["team_view_api_team_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Team Person
+         * @description One person's drill-down: each day of the last 28 across systems, who they work
+         *     with most and their open items (marked items you cannot open stay withheld). 404 for
+         *     a person you may not open.
+         */
+        get: operations["team_person_api_team__key__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2586,6 +2586,29 @@ export type components = {
             sign_in_available: boolean;
         };
         /**
+         * AutopilotActionResult
+         * @description One action of an accepted item, in order: what it was and how it ended.
+         */
+        AutopilotActionResult: {
+            /**
+             * Kind
+             * @description The action kind: bc_write, send_mail, mc_task...
+             */
+            kind: string;
+            /** Reasons */
+            reasons?: string[];
+            /**
+             * Status
+             * @description done (went through), unknown or pending (could not be confirmed: check before retrying), failed, or why it never ran: unavailable, refused, killed, rate_limited, dry_run...
+             */
+            status: string;
+            /**
+             * System
+             * @description The system it writes to: bc, mail, mc... or other.
+             */
+            system: string;
+        };
+        /**
          * AutopilotArea
          * @description The autopilot area: today's prepared items you may see, per workflow its scores and
          *     state, and the switches (``owner``: you may change them).
@@ -2701,7 +2724,8 @@ export type components = {
         /**
          * AutopilotCountdown
          * @description The workflow's way to its write gate: the counts the gate admitted
-         *     (``autopilot_write.gate_counts``), items judged on fresh days against the
+         *     (``autopilot_write.gate_counts``), items judged on held-out days (fresh days, or past
+         *     days never tuned on) against the
          *     ``need_judged`` the gate asks for, and the precision so far against ``need_percent``.
          *     Recomputed from the counts at every read.
          */
@@ -2716,6 +2740,11 @@ export type components = {
             need_judged: number;
             /** Need Percent */
             need_percent: number;
+            /**
+             * Parts
+             * @description The scored windows summed into these counts, oldest first.
+             */
+            parts?: components["schemas"]["AutopilotGatePart"][];
             /** Passes */
             passes: boolean;
             /**
@@ -2725,7 +2754,7 @@ export type components = {
             percent?: number | null;
             /**
              * Refused
-             * @description Why the role's newest scorer run was not admitted (status:partial, not_fresh, counts...): the counts are then an earlier run's. Absent when it was.
+             * @description Why the role's newest scorer run was not admitted (status:partial, not_held_out, counts...): the counts are then an earlier run's. Absent when it was.
              */
             refused?: string | null;
             /** Refused Run */
@@ -2753,7 +2782,7 @@ export type components = {
             note?: string | null;
             /**
              * Outcome
-             * @description The write path's outcome of an accept: dry_run (recorded only), done, killed, refused...
+             * @description The write path's outcome of an accept over all its actions: done (all), partly_done (some, then one was not), unknown (one could not be confirmed: check before retrying), failed, dry_run (recorded only), killed, refused...
              */
             outcome?: string | null;
             /** Reasons */
@@ -2764,6 +2793,11 @@ export type components = {
              * @default false
              */
             sent: boolean;
+            /**
+             * Steps
+             * @description Each action of an accept in order (empty before steps were kept).
+             */
+            steps?: components["schemas"]["AutopilotActionResult"][];
             /**
              * Text
              * @description The edited draft.
@@ -2852,6 +2886,25 @@ export type components = {
              * @description What passing takes, in words.
              */
             rule: string;
+        };
+        /**
+         * AutopilotGatePart
+         * @description One scored window the write gate counts for a workflow: fresh days (from the rules'
+         *     ``fresh_from``) or a historical window never used for tuning (the rules'
+         *     ``clean_windows``).
+         */
+        AutopilotGatePart: {
+            /** Judged */
+            judged: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "fresh" | "historical";
+            /** Matched */
+            matched: number;
+            /** Window */
+            window?: string[];
         };
         /**
          * AutopilotItem
@@ -6077,114 +6130,6 @@ export type components = {
             /** Status */
             status?: string | null;
         };
-        /**
-         * OwnerWorkload
-         * @description Per person, for the owner only: open threads awaiting reply, open tasks, alerts,
-         *     closed alerts and the records they created or changed in each captured system. Counts
-         *     only, never message content; people the exclusion does not clear never appear. The
-         *     note names exactly the systems covered; floor and lab work is not seen, so these
-         *     figures undercount it.
-         */
-        OwnerWorkload: {
-            /** Coverage */
-            coverage?: components["schemas"]["SystemCoverage"][];
-            /** Note */
-            note: string;
-            /** People */
-            people?: components["schemas"]["OwnerWorkloadPerson"][];
-            /**
-             * Read At
-             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
-             */
-            read_at?: string | null;
-            /**
-             * Stale Since
-             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
-             */
-            stale_since?: string | null;
-            /** Window Days */
-            window_days: number;
-        };
-        /** OwnerWorkloadItem */
-        OwnerWorkloadItem: {
-            /** Age Days */
-            age_days?: number | null;
-            /** Channel */
-            channel?: string | null;
-            /** Counterpart */
-            counterpart?: string | null;
-            /** Id */
-            id: string;
-            /** Kind */
-            kind: string;
-            /** Record Id */
-            record_id?: string | null;
-            /** Record Type */
-            record_type?: string | null;
-            /** Snippet */
-            snippet?: string | null;
-            /** Title */
-            title: string;
-            /**
-             * Waiting On
-             * @description The person (an Entra object id) for a thread awaiting their reply; else the departments that answer it.
-             */
-            waiting_on: string;
-        };
-        /**
-         * OwnerWorkloadItems
-         * @description One person's items behind one count of the owner workload, for the owner only: what
-         *     the owner may open through the normal path (marked HR, payroll and pay items stay
-         *     withheld and are counted in ``withheld``, never shown). The full message opens through
-         *     its record page.
-         */
-        OwnerWorkloadItems: {
-            /** Bucket */
-            bucket: string;
-            /** Items */
-            items?: components["schemas"]["OwnerWorkloadItem"][];
-            /** Note */
-            note: string;
-            /** Person */
-            person: string;
-            /** Total */
-            total: number;
-            /** Truncated */
-            truncated: boolean;
-            /**
-             * Withheld
-             * @description Counted for the person but not shown to you (marked, or not readable by you); never named.
-             */
-            withheld: number;
-        };
-        /** OwnerWorkloadPerson */
-        OwnerWorkloadPerson: {
-            /** Alerts */
-            alerts: number;
-            /**
-             * Alerts Closed
-             * @description Alerts owned by the person that closed in the window (a count: nothing says who closed them).
-             */
-            alerts_closed: number;
-            /** Awaiting Reply */
-            awaiting_reply: number;
-            /**
-             * Person
-             * @description An Entra object id, never a name or an address.
-             */
-            person: string;
-            /**
-             * Systems
-             * @description Records the person created or changed per captured system in the window (bc, portal, sage, sharepoint, mission_control, planner, calendar); counts only.
-             */
-            systems?: {
-                [key: string]: number;
-            };
-            /** Tasks */
-            tasks: number;
-            /** Team */
-            team: string;
-        };
         /** Person */
         Person: {
             /** Name */
@@ -7263,6 +7208,11 @@ export type components = {
             object_id: string;
             /** Open Url */
             open_url: string;
+            /**
+             * Same As
+             * @description The other records this reader's projection reads as this same record in another system (a shared code or a verified same_record_as link). A picker merges rows only on this or an identical id.
+             */
+            same_as?: string[];
             /** Score */
             score: number;
             /** Sublabel */
@@ -7451,6 +7401,205 @@ export type components = {
             share: number;
             /** System */
             system: string;
+        };
+        /** TeamDay */
+        TeamDay: {
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /** Day */
+            day: string;
+        };
+        /** TeamItem */
+        TeamItem: {
+            /** Age Days */
+            age_days?: number | null;
+            /**
+             * Bucket
+             * @enum {string}
+             */
+            bucket: "awaiting_reply" | "tasks" | "alerts";
+            /** Channel */
+            channel?: string | null;
+            /** Counterpart */
+            counterpart?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Record Id */
+            record_id?: string | null;
+            /** Record Type */
+            record_type?: string | null;
+            /** Snippet */
+            snippet?: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Waiting On
+             * @description The person's name for a thread awaiting their reply; else the departments that answer it.
+             */
+            waiting_on: string;
+        };
+        /** TeamPartner */
+        TeamPartner: {
+            /**
+             * Key
+             * @description Their drill-down handle, when you may open their row.
+             */
+            key?: string | null;
+            /** N */
+            n: number;
+            /** Name */
+            name: string;
+        };
+        /**
+         * TeamPerson
+         * @description One person's row of the Team view. ``key`` is an opaque handle for the drill-down
+         *     (never an object id, a name or an address).
+         */
+        TeamPerson: {
+            /**
+             * Alerts
+             * @default 0
+             */
+            alerts: number;
+            /**
+             * Alerts Closed
+             * @description Their alerts closed in the last 28 days.
+             * @default 0
+             */
+            alerts_closed: number;
+            /**
+             * Awaiting Reply
+             * @default 0
+             */
+            awaiting_reply: number;
+            /**
+             * D28
+             * @description The same, last 28 days.
+             */
+            d28?: {
+                [key: string]: number;
+            };
+            /**
+             * D7
+             * @description Counts per channel, last 7 days (mail_sent, mail_received, teams, meetings, mc_approvals, mc_questions, mc_tasks, planner, sharepoint, bc, portal, sage).
+             */
+            d7?: {
+                [key: string]: number;
+            };
+            /**
+             * Hours
+             * @description Messages sent per hour of the day (US Eastern), last 28 days.
+             */
+            hours?: number[];
+            /** Key */
+            key: string;
+            /**
+             * Name
+             * @description Their Teams display name, else a calendar's name for them, else their address's local part; never an id.
+             */
+            name: string;
+            /**
+             * Replies 28
+             * @default 0
+             */
+            replies_28: number;
+            /** Reply Minutes 28 */
+            reply_minutes_28?: number | null;
+            /**
+             * Reply Minutes 7
+             * @description Median minutes to reply to a message addressed to them, last 7 days.
+             */
+            reply_minutes_7?: number | null;
+            /** Roles */
+            roles?: string[];
+            /**
+             * Self
+             * @default false
+             */
+            self: boolean;
+            /**
+             * Tasks
+             * @default 0
+             */
+            tasks: number;
+            /** Team */
+            team?: string | null;
+            /**
+             * Trend
+             * @description Everything they did per day, the last 28 days, oldest first.
+             */
+            trend?: number[];
+        };
+        /**
+         * TeamPersonDetail
+         * @description One person's drill-down: their row, every day of the last 28 across systems, who they
+         *     work with most, and their open items (what you may open through the normal path; marked
+         *     items stay counted in ``withheld``, never shown).
+         */
+        TeamPersonDetail: {
+            /** Items */
+            items?: components["schemas"]["TeamItem"][];
+            /** Partners */
+            partners?: components["schemas"]["TeamPartner"][];
+            person: components["schemas"]["TeamPerson"];
+            /** Timeline */
+            timeline?: components["schemas"]["TeamDay"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /**
+             * Withheld
+             * @default 0
+             */
+            withheld: number;
+        };
+        /**
+         * TeamView
+         * @description The Team view: per person, activity in every captured system over 7 and 28 days,
+         *     open work, reply time, a daily trend and busiest hours. The owner and the named Team
+         *     readers see everyone; every other reader only their own row. The owner and the people
+         *     the exclusion does not clear are in no row and no count, for every reader.
+         */
+        TeamView: {
+            /**
+             * As Of
+             * @description When the activity was counted (ISO).
+             */
+            as_of?: string | null;
+            /** Coverage */
+            coverage?: components["schemas"]["SystemCoverage"][];
+            /** Note */
+            note: string;
+            /** People */
+            people?: components["schemas"]["TeamPerson"][];
+            /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "everyone" | "self";
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "not_built" | "blocked";
+            /** Window To */
+            window_to?: string | null;
         };
         /** TeamsChat */
         TeamsChat: {
@@ -7700,7 +7849,7 @@ export type components = {
         TrustGate: {
             /**
              * Need Judged
-             * @description Judged items from fresh days a workflow needs.
+             * @description Judged held-out items (fresh days or past days never tuned on) a workflow needs.
              */
             need_judged: number;
             /**
@@ -8614,6 +8763,12 @@ export type components = {
             checked_bc: boolean;
             /** Idempotency Key */
             idempotency_key: string;
+            /**
+             * Live
+             * @description The page showed this run as a live write (the preview's live_missing was empty). A run that would write live is refused (409) unless this is true.
+             * @default false
+             */
+            live: boolean;
         };
         /** WriteHistoryRow */
         WriteHistoryRow: {
@@ -11340,103 +11495,6 @@ export interface operations {
             };
         };
     };
-    owner_workload_api_owner_workload_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OwnerWorkload"];
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    owner_workload_items_api_owner_workload__person___bucket__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                person: string;
-                bucket: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OwnerWorkloadItems"];
-                };
-            };
-            /** @description Unauthorized */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     rd_board_api_rd_projects_get: {
         parameters: {
             query?: never;
@@ -11710,6 +11768,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    team_view_api_team_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamView"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    team_person_api_team__key__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPersonDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

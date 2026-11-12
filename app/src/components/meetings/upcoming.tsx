@@ -19,12 +19,16 @@ import {
   dayTitle,
   durationText,
   endOf,
+  hourSpan,
+  layoutDay,
   minutes,
   mondayOf,
   outsideDomains,
   peopleLine,
   relative,
   startOf,
+  type Placed,
+  weekBounds,
   whenOf,
 } from "./calendar";
 import { MeetingSheet } from "./meeting-sheet";
@@ -321,29 +325,32 @@ function Rail({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Dat
   );
 }
 
-const FIRST_HOUR = 7;
-const LAST_HOUR = 19;
 const HOUR_PX = 48;
 
-/** One week as a grid: a column per day, a block per meeting at its time, today's column and
- * the current time drawn in blue. */
-function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Date; onOpen: (m: UpcomingMeeting) => void }) {
+/** One week as a grid: a column per day, a block per meeting at its time (side by side when
+ * they overlap), all-day events in a row above, the hours widened to fit every meeting,
+ * today's column and the current time drawn in blue. */
+export function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Date; onOpen: (m: UpcomingMeeting) => void }) {
   const [offset, setOffset] = useState(0);
+  const bounds = useMemo(() => weekBounds(meetings, now), [meetings, now]);
   const monday = useMemo(() => addDays(mondayOf(now), 7 * offset), [now, offset]);
   const days = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
   const byKey = new Map(byDay(meetings).map((d) => [d.key, d.meetings]));
-  const hours = Array.from({ length: LAST_HOUR - FIRST_HOUR }, (_, i) => FIRST_HOUR + i);
-  const nowTop = ((now.getHours() - FIRST_HOUR) * 60 + now.getMinutes()) * (HOUR_PX / 60);
+  const inWeek = days.flatMap((d) => byKey.get(dayKey(d)) ?? []);
+  const { first, last } = hourSpan(inWeek);
+  const hours = Array.from({ length: last - first }, (_, i) => first + i);
+  const nowTop = ((now.getHours() - first) * 60 + now.getMinutes()) * (HOUR_PX / 60);
+  const anyAllDay = inWeek.some((m) => m.all_day);
   return (
     <div className="min-w-0 space-y-2" data-testid="meetings-week">
       <div className="flex items-center gap-1 text-[13px]">
-        <button type="button" aria-label="Earlier week" className="flex size-7 items-center justify-center rounded-md hover:bg-hover disabled:opacity-40 cursor-pointer" disabled={offset <= 0} onClick={() => setOffset((o) => o - 1)}>
+        <button type="button" aria-label="Earlier week" className="flex size-7 items-center justify-center rounded-md hover:bg-hover disabled:opacity-40 cursor-pointer" disabled={offset <= bounds.min} onClick={() => setOffset((o) => o - 1)}>
           <ChevronLeft className="size-4" aria-hidden />
         </button>
         <span className="min-w-[11rem] text-center font-medium">
           Week of {monday.toLocaleDateString("en-CA", { month: "short", day: "numeric" })}
         </span>
-        <button type="button" aria-label="Later week" className="flex size-7 items-center justify-center rounded-md hover:bg-hover disabled:opacity-40 cursor-pointer" disabled={offset >= 1} onClick={() => setOffset((o) => o + 1)}>
+        <button type="button" aria-label="Later week" className="flex size-7 items-center justify-center rounded-md hover:bg-hover disabled:opacity-40 cursor-pointer" disabled={offset >= bounds.max} onClick={() => setOffset((o) => o + 1)}>
           <ChevronRight className="size-4" aria-hidden />
         </button>
       </div>
@@ -359,6 +366,20 @@ function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Dat
               </div>
             );
           })}
+          {anyAllDay && (
+            <>
+              <div className="border-r border-b border-border px-1 py-1 text-right text-[11px] text-faint">All day</div>
+              {days.map((d) => (
+                <div key={dayKey(d)} className="space-y-0.5 border-r border-b border-border p-1" data-testid="week-all-day">
+                  {(byKey.get(dayKey(d)) ?? []).filter((m) => m.all_day).map((m) => (
+                    <button key={m.object.object_id} type="button" onClick={() => onOpen(m)} className="block w-full truncate rounded-[3px] border-l-[3px] border-accent bg-raised px-1.5 py-0.5 text-left text-[11px] leading-[15px] shadow-[0_0_0_1px_var(--border)] hover:bg-hover cursor-pointer" title={m.private ? "Private event" : m.object.label} data-testid="week-block">
+                      {m.private ? "Private event" : m.object.label}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </>
+          )}
           <div className="relative border-r border-border" style={{ height: hours.length * HOUR_PX }}>
             {hours.map((h, i) => (
               <span key={h} className="num absolute right-1.5 text-[11px] text-faint" style={{ top: i * HOUR_PX - 7 }}>
@@ -369,7 +390,7 @@ function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Dat
           {days.map((d) => {
             const key = dayKey(d);
             const today = key === dayKey(now);
-            const list = (byKey.get(key) ?? []).filter((m) => !m.all_day);
+            const placed = layoutDay(byKey.get(key) ?? []);
             return (
               <div key={key} className={cn("relative border-r border-border", today && "bg-[color-mix(in_srgb,var(--accent-soft)_45%,transparent)]")} style={{ height: hours.length * HOUR_PX }}>
                 {hours.map((h, i) => (
@@ -378,8 +399,8 @@ function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Dat
                 {today && nowTop > 0 && nowTop < hours.length * HOUR_PX && (
                   <div className="absolute inset-x-0 z-10 h-[2px] bg-accent" style={{ top: nowTop }} aria-label="Now" />
                 )}
-                {list.map((m) => (
-                  <WeekBlock key={m.object.object_id} m={m} now={now} onOpen={onOpen} />
+                {placed.map((p) => (
+                  <WeekBlock key={p.m.object.object_id} p={p} first={first} last={last} now={now} onOpen={onOpen} />
                 ))}
               </div>
             );
@@ -390,24 +411,25 @@ function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Dat
   );
 }
 
-function WeekBlock({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: (m: UpcomingMeeting) => void }) {
+function WeekBlock({ p, first, last, now, onOpen }: { p: Placed; first: number; last: number; now: Date; onOpen: (m: UpcomingMeeting) => void }) {
+  const m = p.m;
   const s = startOf(m)!;
   const mins = minutes(m) ?? 30;
-  const top = ((s.getHours() - FIRST_HOUR) * 60 + s.getMinutes()) * (HOUR_PX / 60);
-  const height = Math.max(20, mins * (HOUR_PX / 60) - 2);
-  if (top < 0 || top > (LAST_HOUR - FIRST_HOUR) * HOUR_PX) return null;
+  const top = ((s.getHours() - first) * 60 + s.getMinutes()) * (HOUR_PX / 60);
+  const height = Math.max(20, Math.min(mins * (HOUR_PX / 60), (last - first) * HOUR_PX - top) - 2);
   const when = whenOf(m, now);
   const outside = (m.parties ?? []).length > 0;
+  const width = 100 / p.cols;
   return (
     <button
       type="button"
       onClick={() => onOpen(m)}
       className={cn(
-        "absolute inset-x-1 overflow-hidden rounded-[3px] border-l-[3px] bg-raised px-1.5 py-0.5 text-left text-[11px] leading-[15px] shadow-[0_0_0_1px_var(--border)] hover:bg-hover cursor-pointer",
+        "absolute overflow-hidden rounded-[3px] border-l-[3px] bg-raised px-1.5 py-0.5 text-left text-[11px] leading-[15px] shadow-[0_0_0_1px_var(--border)] hover:bg-hover cursor-pointer",
         when === "past" ? "border-border-strong text-muted" : outside ? "border-accent" : "border-live",
         height < 34 && "truncate whitespace-nowrap",
       )}
-      style={{ top, height }}
+      style={{ top, height, left: `calc(${p.col * width}% + 2px)`, width: `calc(${width}% - 4px)` }}
       title={m.private ? "Private event" : m.object.label}
       data-testid="week-block"
     >

@@ -94,10 +94,15 @@ class FakeGraph:
         self.directory_code: str | None = "Authorization_RequestDenied"
         self.refusal = 403                   # the status both refusals answer (401: token)
         self.token_status = 200              # 401: the token request is refused
-        # Directory groups (``GET /groups``) and members by group id; None: unrouted (404).
-        self.groups: list[dict] | None = None
+        # Directory groups (``GET /groups``) and members by group id; [] by default (a tenant with no groups); None: unrouted (404).
+        self.groups: list[dict] | None = []   # a tenant with no groups; None: unrouted (404)
         self.group_members: dict[str, list[dict]] = {}
         self.groups_status = 200             # 429: the groups listing is throttled
+        # Answer a message read, listing or delta with only the fields its $select names,
+        # as Graph does (a field the reader does not select never reaches it).
+        self.strict_select = False
+        self.round_select: dict[str, list[str] | None] = {}
+        self.last_select: list[str] | None = None
 
     # -- mutations
     def put(self, user: str, mid: str, change_key: str, *, subject: str = SUBJECT_SECRET,
@@ -111,6 +116,8 @@ class FakeGraph:
             "sentDateTime": received or self.received,
             "from": {"emailAddress": {"address": "supplier@outside.example"}},
             "toRecipients": [{"emailAddress": {"address": self.users[user]["mail"]}}],
+            # Graph answers every selected property, an empty Bcc as []
+            "bccRecipients": [],
             "conversationId": "CONV-" + mid, "internetMessageId": f"<{mid}@x>",
             "hasAttachments": bool(attachments), "webLink": "https://outlook.office365.com/x",
             "bodyPreview": body[:40], "_body": body}
@@ -180,6 +187,19 @@ class FakeGraph:
         found = re.fullmatch(r"/v1\.0/users/([^/]+)/mailFolders/([^/]+)/messages/delta", path)
         if found:
             return self._delta(found[1].lower(), found[2], query, headers)
+        found = re.fullmatch(r"/v1\.0/users/([^/]+)/mailFolders/([^/]+)/messages", path)
+        if found:
+            user, folder = found[1].lower(), found[2]
+            items = [self._selected(self._public(m), query) for m in
+                     self.messages.get(user, {}).values() if m["parentFolderId"] == folder]
+            top, skip = int(query.get("$top", ["10"])[0]), int(query.get("$skip", ["0"])[0])
+            body = {"value": items[skip:skip + top]}
+            if skip + top < len(items):
+                kept = "&".join(p for p in parts.query.split("&")
+                                if not p.startswith("$skip="))
+                body["@odata.nextLink"] = (f"https://graph.microsoft.com{parts.path}?{kept}"
+                                           f"&$skip={skip + top}")
+            return j(200, body)
         found = re.fullmatch(r"/v1\.0/users/([^/]+)/mailFolders/([^/]+)", path)
         if found:
             folder = self.folders.get(found[1].lower(), {}).get(found[2].lower())
@@ -214,11 +234,17 @@ class FakeGraph:
             result = {k: v for k, v in raw.items() if k != "_body"}
             if "body" in query.get("$select", [""])[0].split(","):
                 result["body"] = {"contentType": "text", "content": raw["_body"]}
-            return j(200, result)
+            return j(200, self._selected(result, query))
         return j(404, {"error": {"code": "unrouted"}})
 
     def _public(self, raw: dict) -> dict:
         return {k: v for k, v in raw.items() if k != "_body"}
+
+    def _selected(self, raw: dict, query: dict) -> dict:
+        if not self.strict_select or "@removed" in raw:
+            return raw
+        names = set(query.get("$select", ["id"])[0].split(",")) | {"id"}
+        return {k: v for k, v in raw.items() if k in names}
 
     def _delta(self, user, folder, query, headers):
         if self.fail_delta:
@@ -248,8 +274,13 @@ class FakeGraph:
                            if m["receivedDateTime"] >= floor]
             round_id = f"r{len(self.rounds)}"
             self.rounds[round_id] = (entries, self.seq)
+            # a deltaLink round keeps the select its first round was sent with
+            self.last_select = query.get("$select") or self.last_select
+            self.round_select[round_id] = self.last_select
             offset = 0
-        page = entries[offset:offset + size]
+        # a continuation link carries the round's $select (Graph keeps it in the token)
+        selected = {"$select": self.round_select.get(round_id) or ["id"]}
+        page = [self._selected(e, selected) for e in entries[offset:offset + size]]
         body = {"value": page}
         if offset + size < len(entries):
             body["@odata.nextLink"] = keyed_delta(user, folder,
@@ -1256,6 +1287,46 @@ class ScopeAndCliTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_cli_reports_a_user_without_a_mailbox_beside_one_with_mail(self):
+        # CAPTURE-008: a mailbox Graph says has no Exchange Online mailbox (404) is held
+        # complete with every counter zero; the run report sums it without failing
+        graph = FakeGraph()
+        graph.put(BOX_A, "MSG-1", "CK-1-1")
+        plain = graph.__call__
+
+        def no_mailbox(method, url, headers, body, timeout, max_bytes):
+            if f"/users/{BOX_B}/mailFolders" in unquote(urlsplit(url).path):
+                graph.calls.append((method, url, dict(headers)))
+                return j(404, {"error": {"code": "MailboxNotEnabledForRESTAPI"}})
+            return plain(method, url, headers, body, timeout, max_bytes)
+        with tempfile.TemporaryDirectory() as tmp:
+            scope = Path(tmp) / "scope.json"
+            scope.write_text(json.dumps({"schema": capture_mail.SCOPE_SCHEMA,
+                                         "mailboxes": [{"address": UPN_A},
+                                                       {"address": UPN_B, "folders": "all"}]}))
+            audience = Path(tmp) / "audience.json"
+            audience.write_text(json.dumps({
+                "schema": "plx-live-source-audience/v1", "tenant": "plx",
+                "audiences": {f"mail:{UPN_A}": ["svc:mail-capture"],
+                              f"mail:{UPN_B}": ["svc:mail-capture"]},
+                "classifications": {"mail:*": "restricted"}}))
+            parser = argparse.ArgumentParser()
+            capture_mail.add_cli_arguments(parser)
+            args = parser.parse_args(["--state-dir", str(Path(tmp) / "state"), "--scope",
+                                      str(scope), "--live-audience", str(audience),
+                                      "--page-size", "2"])
+            with unittest.mock.patch.object(MailScope, "builtin", lambda: SYNTHETIC):
+                report = capture_mail.run_cli(args, environ=ENV, sender=no_mailbox,
+                                              sleep=lambda s: None)
+        summary = report["summary"]
+        self.assertEqual((summary["mailboxes"], summary["mailboxes_complete"]), (2, 2), report)
+        self.assertEqual(summary["messages_current"], 1)
+        self.assertEqual({k: summary[k] for k in (
+            "degraded_bodies", "degraded_attachments", "truncated_attachment_lists",
+            "mismatched_attachments")}, dict.fromkeys((
+                "degraded_bodies", "degraded_attachments", "truncated_attachment_lists",
+                "mismatched_attachments"), 0))
+
     def test_cli_reports_counts_only_and_proves_resume_and_no_leak(self):
         lv = require_live_verify(self)
         graph = FakeGraph()
@@ -1290,7 +1361,7 @@ class ScopeAndCliTests(unittest.TestCase):
                          {"messages": 3, "attachments": 1})
         # The Graph reads the run was answered for: the registry credits their endpoints.
         self.assertEqual(lv._recorded(spec, report)["operations_read"], [
-            "graph.folder_messages_delta", "graph.mail_folder", "graph.message",
+            "graph.folder_messages_delta", "graph.groups", "graph.mail_folder", "graph.message",
             "graph.message_attachment", "graph.message_attachments", "graph.user",
             "graph.users"])
         self.assertEqual(report["leak_check"], {"withheld_actor_mailboxes": 0,

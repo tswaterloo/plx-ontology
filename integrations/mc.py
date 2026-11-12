@@ -784,7 +784,9 @@ class MissionControlMcpClient:
             return value.strip() if isinstance(value, str) else ""
 
         status, requested_by, decided_by = text("status"), text("requestedBy"), text("decidedBy")
-        operator = self._config.operator_email.strip().lower()
+        # one identity per mailbox (``normalize_email``: case and a ``+tag`` folded), so a
+        # sub-address of the operator or requester never passes as a second person (INT-011)
+        operator = normalize_email(self._config.operator_email)
         gate_reason = gate.get("reason") if isinstance(gate.get("reason"), str) else ""
         reason_hash = hashlib.sha256(gate_reason.encode()).hexdigest()
         expected_hash = hashlib.sha256(expected_reason.encode()).hexdigest()
@@ -792,7 +794,7 @@ class MissionControlMcpClient:
         requested_at = _parse_time(gate.get("requestedAt"))
         if status != "approved":
             code = "not_approved"
-        elif requested_by.lower() != operator:
+        elif normalize_email(requested_by) != operator:
             code = "foreign_requester"
         elif not hmac.compare_digest(reason_hash, expected_hash):
             code = "reason_mismatch"
@@ -800,7 +802,7 @@ class MissionControlMcpClient:
             code = "decider_missing"
         elif _SERVICE_LABEL.match(decided_by) or not _HUMAN_EMAIL.fullmatch(decided_by):
             code = "decider_not_human"
-        elif decided_by.lower() in {operator, requested_by.lower()}:
+        elif normalize_email(decided_by) in {operator, normalize_email(requested_by)}:
             code = "self_decided"
         elif decided_at is None:
             code = "decided_at_missing"

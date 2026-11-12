@@ -5,7 +5,7 @@
 // here sends or writes: a drafted message goes out only through CardActions' preview and
 // your confirm, a write intent through the write desk's second-person approval.
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { CardActions } from "@/components/card-actions";
 import { Pending } from "@/components/ui/skeleton";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
@@ -196,6 +196,7 @@ export function groupActions(items: Action[], today: Date): Group[] {
 
 function ActionRow({ a, today }: { a: Action; today: Date }) {
   const [open, setOpen] = useState(false);
+  const detailId = useId();
   const n = dueIn(a, today);
   const late = a.status !== "done" && (a.status === "overdue" || (n != null && n < 0));
   return (
@@ -203,7 +204,10 @@ function ActionRow({ a, today }: { a: Action; today: Date }) {
       <div className="grid cursor-pointer grid-cols-[18px_minmax(0,1fr)_150px_120px_170px] items-baseline gap-x-4 py-2 hover:bg-hover" onClick={() => setOpen((o) => !o)}>
         <span aria-hidden className={cn("mt-1 size-3 rounded-full border-[1.5px]", a.status === "done" ? "border-ok bg-ok" : late ? "border-late" : "border-border-strong")} />
         <span className="min-w-0">
-          <span className={cn("font-medium", a.status === "done" && "line-through decoration-faint")}>{a.text}</span>
+          {/* the real control: a click or Enter here reaches the row's toggle below */}
+          <button type="button" aria-expanded={open} aria-controls={open ? detailId : undefined} className={cn("block text-left font-medium focus-visible:ring-2 focus-visible:ring-ring/50", a.status === "done" && "line-through decoration-faint")}>
+            {a.text}
+          </button>
           <span className="mt-0.5 flex flex-wrap items-baseline gap-x-3 text-[12px] text-muted">
             {a.meeting_id && (
               <Link className="hover:underline" href={`/meetings/${encodeURIComponent(a.meeting_id)}`} onClick={(e) => e.stopPropagation()}>
@@ -224,7 +228,7 @@ function ActionRow({ a, today }: { a: Action; today: Date }) {
         </span>
       </div>
       {open && (
-        <div className="space-y-2 pb-3 pl-[34px]" data-testid="action-item-detail">
+        <div id={detailId} className="space-y-2 pb-3 pl-[34px]" data-testid="action-item-detail">
           {a.said_by && (
             <p className="text-[12px] text-muted">
               Said by {a.said_by}

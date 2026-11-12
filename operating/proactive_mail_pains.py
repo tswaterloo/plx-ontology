@@ -9,7 +9,9 @@ beside its other rules (each in its own time window, ``DETECTOR_SECONDS``):
   message from the other side (ours after theirs, theirs after ours) in its conversation or
   naming the same order. The order being open is the "no shipment / no receipt" half: a
   shipped or invoiced customer order, or a received purchase order, is not open. One alert
-  per order, every ask cited.
+  per order, every ask cited. An automatic or out-of-office reply (by its subject) is
+  neither an ask nor an answer; a message with a notice's footer or an away note, or one of
+  ours sent to colleagues only, is never an ask.
 * ``supplier_shortage`` (kind ``supplier_shortage_open_orders``). An inbound message from
   outside (not automated) whose own text announces a shortage, an allocation, a delay, a
   longer lead time or an inability to supply (``SHORTAGE`` families) and names an OPEN
@@ -69,6 +71,7 @@ from .copy_gate import count as _count, say_date as _say
 from .proactive_business import FINANCE, _one, _tick
 from .proactive_chasers import (AUTOMATED, CUSTOMER_PO, PUBLIC_MAIL, SETTLED_MENTION, SO,
                                 _FORWARD, _REPLY, _addr, _instant, _touch, _words)
+from .proactive_threads import AUTO_REPLY, AWAY, FOOTER
 
 EXPEDITE = "expedite_requests"
 EXPEDITE_KIND = "expedite_unanswered"
@@ -158,6 +161,13 @@ PAYMENT_FAMILIES = {
 # expedite"); "as soon as possible" is no condition.
 _CONDITION = re.compile(r"\b(?:if|once|unless|provided|providing|assuming|in\s+case|"
                         r"when\s+we\s+receive)\b|\bas\s+soon\s+as\b(?!\s+possible)", re.I)
+# A notice's conditional clause ("Attached is your order confirmation; for any discrepancies,
+# please email us as soon as possible", "Should you need it sooner, let us know ASAP"): only
+# as a clause opener (sentence start, or after ; , : or a dash), and only that clause on is
+# dropped; the sentence before it is read as usual ("Your account is 60 days past due; for any
+# questions call me" still chases; "we need it for any orders shipping next week" is no clause).
+_CONDITION_CLAUSE = re.compile(r"(?:^|[;,:\u2013\u2014]|\s-)\W*(?:for\s+any|should\s+you|"
+                               r"in\s+the\s+event)\b", re.I)
 _QUESTION = re.compile(r"^\W*(?:can|could|would|will|shall|should|may|might|is|are|do|does|"
                        r"did|have|has|was|were)\b", re.I)
 _REQUEST = re.compile(r"^\W*(?:can|could|would|will)\s+(?:you|u)\b", re.I)
@@ -187,6 +197,9 @@ def phrase(text: Any, families: Mapping[str, re.Pattern], *, requests: bool = Fa
     quoted = QuotedRanges(text)
     own = "".join(ch for i, ch in enumerate(text) if not quoted.contains(i))
     for sentence in _SENTENCES.split(own):
+        clause = _CONDITION_CLAUSE.search(sentence)
+        if clause:
+            sentence = sentence[:clause.start()]
         if not sentence.strip() or _CONDITION.search(sentence):
             continue
         asked = sentence.rstrip().endswith("?") or _QUESTION.match(sentence)
@@ -324,18 +337,34 @@ class _Mail:
             self.skipped["automated_sender"] += 1
             return None
         subject = _words(entry, "subject") or ""
+        if AUTO_REPLY.match(subject):
+            # an automatic or out-of-office reply neither asks nor answers
+            self.skipped["automatic_reply"] += 1
+            return None
         family = None
+        outside = [a for a in to if not self.internal(a)]
         if phrased:
             if _FORWARD.match(subject):
                 self.skipped["forward_not_judged"] += 1
                 return None
-            family = phrase(_words(entry, "body_preview") or "", families,
-                            requests=requests) or (
+            preview = _words(entry, "body_preview") or ""
+            family = phrase(preview, families, requests=requests) or (
                 None if _REPLY.match(subject) else phrase(subject, families,
                                                           requests=requests))
+            if family is not None and (FOOTER.search(preview) or AWAY.search(preview)):
+                # a notice's footer or an away note: read (it may sit in the thread),
+                # never an ask
+                self.skipped["automated_text"] += 1
+                family = None
+            if family is not None and ours and to and not outside:
+                # ours to colleagues only: coordination, not an ask of the other side (no
+                # reply from outside could answer it); recipients not captured are unknown,
+                # never "colleagues only"
+                self.skipped["internal_only"] += 1
+                family = None
         return {"id": oid, "sender": sender, "ours": ours, "to": to, "family": family,
                 "conversation": _words(entry, "conversation_id"),
-                "outside": [a for a in to if not self.internal(a)],
+                "outside": outside,
                 "dedupe": (_words(entry, "internet_message_id") or oid).strip().casefold(),
                 "subject": (subject if subject != "None" else "")[:SUBJECT_CHARS]}
 

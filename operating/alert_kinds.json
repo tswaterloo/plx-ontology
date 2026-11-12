@@ -669,7 +669,7 @@
     "SALES",
     "CS"
    ],
-   "unmeasured": "not measurable yet: 7 served, n<15 (/data/scratch/alert-precision-1110.md)"
+   "unmeasured": "not measurable yet: 0/39 on the clean-day replay 2026-11-12 (order-confirmation boilerplate, automatic replies and internal-only mail read as asks; fixed in lane/mailpains), re-measure (/data/scratch/alerts-clean-days-judged-1112.tsv)"
   },
   {
    "type": "supplier_shortage_open_orders",
@@ -690,15 +690,20 @@
    "type": "supplier_chasing_payment",
    "kind": "payable_attention",
    "label": "Supplier chasing us for payment",
-   "precision": null,
+   "precision": {
+    "value": 0.931,
+    "checked": 29,
+    "on": "2026-11-12",
+    "source": "clean-day replay, five 30-day windows (as_of 2026-09-05, 08-06, 07-07, 06-07, 05-08; SQLite gen 11, days no lane developed this rule on; the as_of 10-05 window is left out because the rule was developed on September data), each alert judged against its cited mail and Sage AP: 27/29 independent alerts (30 judged, 28 right; one alert seen on both sides of a window boundary counted once) (/data/scratch/alerts-clean-days-judged-1112.tsv)",
+    "note": "both misses: a routine statement of account while no bill of the supplier's was past due"
+   },
    "actionable": true,
-   "default": "off",
-   "home": false,
+   "default": "on",
+   "home": true,
    "roles": [
     "FIN",
     "PROC"
-   ],
-   "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
+   ]
   },
   {
    "type": "tell_before_they_ask",

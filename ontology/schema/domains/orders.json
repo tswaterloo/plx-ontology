@@ -7049,8 +7049,7 @@
             {
               "from": "shinumber",
               "to": "shinumber",
-              "compare": "identifier",
-              "identifier_kind": "shipment_number"
+              "compare": "text_id"
             }
           ],
           "evidence": [
@@ -7058,6 +7057,11 @@
               "kind": "workbench_code",
               "path": "scripts/gen_raw_links.py",
               "note": "Link-completeness audit 2026-11-08 (read-only source mirror): 237,464 of 237,464 non-blank rows reach a shipment; 29 of 30 sampled pairs corroborated by the shipment's order number."
+            },
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/identifiers.json",
+              "note": "Compared as text_id: the shipment_number grammar is the Portal series (SH + 6-9 digits) and rejects every Sage shipment number (two letters + 10 digits); with it this kind served 0 links (live check 2026-11-11). Both columns are Sage CHAR(22), padded alike."
             }
           ]
         }

@@ -168,7 +168,7 @@
     "limit": 50
    },
    "if_declared": true,
-   "description": "The FileMaker order the batch's OE list names (one order only)."
+   "description": "The FileMaker orders the batch's OE list names (a list naming several orders links the batch to each)."
   },
   {
    "id": "batch_schedules",

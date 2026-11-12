@@ -647,6 +647,25 @@ class FollowUpTests(unittest.TestCase):
         self.assertEqual(follow.resolved_ids, [FX.object_of["po-349"]])
         self.assertEqual(follow.intent, "status")
 
+    def test_the_second_po_from_the_entity_index_s_own_type_spelling(self):
+        """UNDERSTAND-002: production rows carry the index's snake_case types
+        (``purchase_order``, ``chunking.entities.ENTITY_TYPES``); a typed follow-up
+        reads either spelling as one type."""
+        from operating.chunking.entities import ENTITY_TYPES
+
+        def as_indexed(value):
+            if isinstance(value, dict):
+                return {key: (ENTITY_TYPES[item][0] if key == "type" and item in ENTITY_TYPES
+                              else as_indexed(item)) for key, item in value.items()}
+            if isinstance(value, list):
+                return [as_indexed(item) for item in value]
+            return value
+        first = as_indexed(FX.ask("po5447 and po349 late?").to_dict())
+        self.assertIn("purchase_order", json.dumps(first))
+        follow = FX.ask("the second po", history=[first])
+        self.assertEqual(follow.resolved_ids, [FX.object_of["po-349"]])
+        self.assertEqual(FX.ask("the second customer", history=[first]).resolved_ids, [])
+
     def test_and_what_about_inherits_the_intent(self):
         first = FX.ask("how much was the g2 beauty quote")
         follow = FX.ask("and soapbox?", history=[first])
@@ -843,7 +862,8 @@ class TimeFrameAndIntentTests(unittest.TestCase):
         since = self.frame("what changed since september")
         self.assertEqual((since["start"], since["end"]), ("2026-09-01", "2026-10-30"))
         self.assertEqual(self.frame("since sept 2025")["start"], "2025-09-01")
-        self.assertEqual(self.frame("last 30 days")["start"], "2026-09-29")
+        # the 30 dates ending with today, today counted (as time_window counts them)
+        self.assertEqual(self.frame("last 30 days")["start"], "2026-09-30")
         self.assertEqual(self.frame("anything yesterday")["start"], "2026-10-28")
         self.assertEqual(self.frame("this week")["start"], "2026-10-26")
         self.assertEqual(self.frame("q3")["start"], "2026-07-01")
@@ -853,6 +873,34 @@ class TimeFrameAndIntentTests(unittest.TestCase):
         self.assertEqual(self.frame("the 14 oct agenda")["start"], "2026-10-14")
         self.assertIsNone(self.frame("po5447 status"))
         self.assertIsNone(self.frame("500 kg on 31 feb"))
+
+    def test_calendar_boundaries_give_a_valid_frame_or_none_never_an_error(self):
+        """UNDERSTAND-004: a rolling N-day frame holds exactly N dates; a 29 February with
+        no year is the latest one up to today (never an invalid date a year back); a frame
+        past year 9999 or before year 1 is None, not an arithmetic error."""
+        def frame(text, today):
+            return qu.parse_time_frame(text, today)
+
+        def dates(got):
+            return (dt.date.fromisoformat(got["end"]) - dt.date.fromisoformat(got["start"])).days
+        today = dt.date(2026, 11, 12)
+        for n in (1, 7, 30):
+            got = frame(f"last {n} days", today)
+            self.assertEqual((dates(got), got["end"]), (n, "2026-11-13"), n)
+        self.assertEqual(dates(frame("past 2 weeks", today)), 14)
+        self.assertIsNone(frame("last 0 days", today))
+        # leap day before, on and after 29 February of a leap year
+        self.assertEqual(frame("since february 29", dt.date(2028, 1, 1))["start"],
+                         "2024-02-29")
+        self.assertEqual(frame("since feb 29", dt.date(2028, 2, 29))["start"], "2028-02-29")
+        self.assertEqual(frame("since 29 feb", dt.date(2027, 6, 1))["start"], "2024-02-29")
+        self.assertIsNone(frame("since 2027-02-29", today))
+        # quarter and year ends a calendar cannot hold
+        self.assertIsNone(frame("q4 9999", today))
+        self.assertEqual(frame("q4 9998", today)["end"], "9999-01-01")
+        self.assertIsNone(frame("today", dt.date.max))
+        self.assertIsNone(frame("last 999 years", dt.date(500, 1, 1)))
+        self.assertEqual(frame("q1", today)["start"], "2026-01-01")
 
     def test_intent_rules_tolerate_typos(self):
         cases = {"why is it late": "why", "staus of the order": "status",

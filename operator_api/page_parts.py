@@ -23,6 +23,7 @@ from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
 from . import models as m
 from . import presentation
+from operating import sales_order_status as so_status
 from .serving import (MAX_SOURCES_PER_FACT, citation_handle, object_url, plain,
     record_words, system_of)
 from .answers import (CUSTOMER_ORDERS, _CURRENCY, _DECIMAL, _aggregate_read,
@@ -263,8 +264,6 @@ CUSTOMER_SUMS = (("SalesInvoice.billed_to", "invoice_date", "Invoiced (excluding
                  ("SalesOrder.ordered_by", "order_date", "Ordered (excluding tax)"))
 CUSTOMER_DAYS = 365
 CUSTOMER_ROWS = 5
-_CLOSED = re.compile(r"clos|cancel|complet|shipped|invoic|deliver|void|posted|fulfilled",
-                     re.IGNORECASE)
 
 
 def _cited(backend: "WorkspaceBackend", view: Any, citations: Iterable[Any],
@@ -411,8 +410,17 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
         if counts:
             states = {plain((g.get("key") or {}).get("status")): int(g.get("value") or 0)
                       for g in counts}
-            open_states = sorted(str(k) for k in states if k and not _CLOSED.search(str(k)))
+            # the one sales-order status definition (``operating.sales_order_status``):
+            # "partially shipped" is open, a Portal DRAFT is no open order; a word the
+            # Portal's status does not define is neither, and said
+            classed = {k: so_status.word_class(k, "status") for k in states if k}
+            open_states = sorted(str(k) for k, c in classed.items() if c == so_status.OPEN)
+            unread = sum(states[k] for k, c in classed.items() if c == so_status.UNKNOWN)
             out.open_orders = sum(states[k] for k in open_states)
+            if unread:
+                out.not_established.append(
+                    f"Open orders: {unread} order{'' if unread == 1 else 's'} hold a status "
+                    "not read as open or closed, and are not counted")
             if open_states:
                 out.open_list = rows_of([{"property": "status", "op": "in",
                                           "value": open_states[:50]}])[:CUSTOMER_ROWS]
@@ -863,16 +871,25 @@ def page_import_days(backend: Any, oid: str, kind: str,
                 (binding, str(v.get("property"))), frozenset())}
 
 
+# How a derived order value (``operating.order_value``) is said: never as the order's own
+# total.
+DERIVED_WORDS = {"invoices": "(from its invoices, before tax; the order header holds 0)",
+                 "order_lines": "(from its lines; the order header holds no total)"}
+
+
 def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
                      related: Sequence[m.ObjectRef], facts: list[m.Fact],
-                     currency: Optional[str]
+                     currency: Optional[str], derived: Optional[m.Money] = None,
+                     derived_from: Optional[str] = None
                      ) -> tuple[str, list[m.Fact], list[m.NotFound]]:
     """What a customer order's page says about itself, from the same records the briefing
     cites: a plain summary (the customer, the order date, the total when it is a real
     figure) instead of the bare kind, with the customer named, and what the records do
     not hold said plainly (``not_found``). A header total of zero is not shown as a fact:
     an invoiced order's header often reads 0.00, and its invoiced figures are in the
-    margin section (cost lines, profit, when this reader may read them)."""
+    margin section (cost lines, profit, when this reader may read them). ``derived``: the
+    order's value derived where its header states none (``operating.order_value``, from
+    ``derived_from``: its invoices or lines), said as such in the summary."""
     by_name = {str(v.get("property") or ""): plain(v.get("value")) for v in values}
     customer = next((r for r in related if r.type == "Customer"), None)
     name = customer.label if customer else (
@@ -898,6 +915,9 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
         parts.append(f"ordered {ordered[:10]}")
     if shown is not None:
         parts.append(f"total {shown.amount} {shown.currency}")
+    elif derived is not None:
+        parts.append(f"value {derived.amount} {derived.currency} "
+                     + DERIVED_WORDS.get(derived_from or "", "(derived)"))
     summary = "; ".join(parts) + "."
     absent = []
     if not name:
@@ -905,7 +925,7 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
             what="The customer of this order",
             where_it_would_live="No customer is linked to this order in the records you can "
                                 "open."))
-    if shown is None:
+    if shown is None and derived is None:
         absent.append(m.NotFound(
             what="The order total",
             where_it_would_live="The order header holds no amount; see the margin section "

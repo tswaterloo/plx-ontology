@@ -353,10 +353,12 @@ class FinalReplyGateTests(unittest.TestCase):
                 "2026-01-09; the carrier is late.\n1. Pick the blanks.\n2. Ship them.\n"
                 "Nothing else is open on the order.")
         reply = answer_gate.final_reply(text, claims, question="How many units are ordered?")
+        # "the carrier is late" asserts a state no passed claim is about (GATE-003)
         self.assertEqual(reply["text"].splitlines(), [
-            "The order asks for 2400 units, as the line states. the carrier is late.",
+            "The order asks for 2400 units, as the line states.",
             "Nothing else is open on the order.", answer_gate.WITHHELD_STATEMENTS])
-        self.assertEqual((reply["sentences"], reply["removed_sentences"]), (6, 3))
+        self.assertEqual((reply["sentences"], reply["removed_sentences"]), (6, 4))
+        self.assertEqual(reply["asserted"], ["shipped", "late"])
         self.assertEqual(reply["unbacked"], ["2350", "2026-01-09", "1", "2"])
         clean = answer_gate.final_reply("It asks for 2400 units.", claims)
         self.assertEqual((clean["text"], clean["modified"]), ("It asks for 2400 units.", False))
@@ -707,10 +709,13 @@ class FinalReplyGateTests(unittest.TestCase):
                 "carried more rows. They cost about 3,300. Code P-01234 and F-26-0001 were "
                 "flagged. It covered 1 row.")
         reply = answer_gate.final_reply(text, [claim("100", "percent")], question=question)
+        # the rejection is the question's premise, not a passed claim's (GATE-003): the
+        # sentence asserting it goes; the question never backs a state
         self.assertEqual(reply["text"].splitlines(), [
-            "The Q7 review rejected statement references. It asked that AI charges be 100% "
+            "It asked that AI charges be 100% "
             "project-dedicated. No individual Q7 cost row is identified.",
             answer_gate.WITHHELD_STATEMENTS])
+        self.assertEqual(reply["asserted"], ["rejected"])
         self.assertEqual(reply["unbacked"], ["Q8", "3,300", "P-01234", "F-26-0001", "1"])
         # the question names a label on token boundaries only (Q7 is not Q70 or AQ7)
         for asked in ("What did the Q70 review reject?", "What did AQ7 reject?"):

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HiddenNotice } from "@/components/answer-parts";
-import { loadHome, loadLate, MobileAccount, MobileSearch } from "@/components/shell";
+import { loadHome, loadLateRead, MobileAccount, MobileSearch } from "@/components/shell";
 import { ReplyList } from "@/components/reply-list";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
 import { Pending, SlowNote } from "@/components/ui/skeleton";
@@ -18,7 +18,7 @@ import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggesti
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
-import { headline, refreshingLine, staleLine, yourMorning } from "@/lib/home";
+import { headline, keyOwner, refreshingLine, staleLine, yourMorning } from "@/lib/home";
 import type { ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const TZ = "America/Toronto";
@@ -210,6 +210,8 @@ function Today() {
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingError, setBriefingError] = useState<string | null>(null);
   const [late, setLate] = useState<LatePo[] | null>(null);
+  // every late order the server counts, which can be more than Today reads (the rest are on Late orders)
+  const [lateAll, setLateAll] = useState<number | null>(null);
   const [suggestions, setSuggestions] = useState<ProactiveSuggestion[]>([]);
   const [suggestionsRead, setSuggestionsRead] = useState(false);
   const supplier = params.get("supplier");
@@ -240,7 +242,8 @@ function Today() {
     return () => c.abort();
   }, []);
   useEffect(() => load(), [load]);
-  const reloadHome = useCallback(() => void load(), [load]);
+  // a stale answer is asked for again from the server, not from the read already held
+  const reloadHome = useCallback(() => void load(true), [load]);
   useStaleRefresh(home?.stale_since, reloadHome);
 
   const loadBriefing = useCallback(() => {
@@ -264,7 +267,14 @@ function Today() {
 
   useEffect(() => {
     const c = new AbortController();
-    loadLate().then((l) => !c.signal.aborted && setLate(l), () => !c.signal.aborted && setLate([]));
+    loadLateRead().then(
+      (l) => {
+        if (c.signal.aborted) return;
+        setLate(l.items);
+        setLateAll(l.total);
+      },
+      () => !c.signal.aborted && setLate([]),
+    );
     getSuggestions(c.signal).then((s) => setSuggestions(s.status === "read" ? (s.items ?? []) : []), () => undefined).finally(() => !c.signal.aborted && setSuggestionsRead(true));
     getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
@@ -338,10 +348,12 @@ function Today() {
   // j / k and the arrows move the selection; Enter opens the record
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
       const t = e.target;
-      if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(t.tagName) && e.key === "Enter")) return;
-      if (t instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+      // a link, button, field or open dialog keeps its own keys (Enter on a focused link opens that link)
+      const owner = keyOwner(t);
+      if (owner === "own") return;
+      const rowLink = owner === "row" && t instanceof Element ? t.closest("[data-row-link]") : null;
       if (!flat.length || !desktop) return;
       const at = flat.findIndex((r) => r.key === selectedKey);
       if (e.key === "j" || e.key === "ArrowDown") {
@@ -350,9 +362,10 @@ function Today() {
       } else if (e.key === "k" || e.key === "ArrowUp") {
         e.preventDefault();
         pick(flat[Math.max(0, at - 1)].key);
-      } else if (e.key === "Enter" && selected) {
+      } else if (e.key === "Enter" && (rowLink || selected)) {
         e.preventDefault();
-        router.push(selected.href);
+        // on a focused row, Enter opens that row's own record
+        router.push(rowLink?.getAttribute("href") ?? selected!.href);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -492,6 +505,11 @@ function Today() {
                   <Row key={r.key} row={r} on={r.key === selectedKey} onPick={() => pick(r.key)} actionState={r.suggestion ? states[r.suggestion.id] : undefined} testId={g.type === "po_late" && n === 0 && !supplier ? "stat-oldest" : undefined} />
                 ))}
               </ul>
+              {g.type === "po_late" && late && lateAll !== null && lateAll > late.length && (
+                <Link href="/late" className="mx-5 mt-1 mb-2 block text-[12px] font-medium text-muted hover:text-fg" data-testid="late-partial">
+                  Showing the first {late.length} of {lateAll} late orders; all of them are on Late orders
+                </Link>
+              )}
               {g.more && pages[g.type]?.more !== false && (
                 <button type="button" onClick={() => more(g.type)} className="mx-5 mt-1 mb-2 text-[12px] font-medium text-muted hover:text-fg cursor-pointer">
                   Show more ({g.count - g.rows.length})

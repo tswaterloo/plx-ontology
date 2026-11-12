@@ -1086,7 +1086,9 @@ def order_value(members: Sequence[str], amounts: Mapping[str, Sequence[Mapping[s
                 currencies: Mapping[str, Sequence[Mapping[str, Any]]],
                 same: Callable[[Mapping[str, Any]], bool]
                 ) -> tuple[Decimal | None, str | None, list[Mapping[str, Any]], str | None]:
-    """(amount, currency, the entries it rests on, why none) of one order cluster."""
+    """(amount, currency, the entries it rests on, why none) of one order cluster: the
+    totals its records state (a total of 0 states none) or, read through ``plx.object``,
+    the value derived where a record's header states none."""
     from ontology.units import ISO_4217
     found: list[tuple[Decimal, str | None, Mapping[str, Any]]] = []
     for member in members:
@@ -1094,6 +1096,10 @@ def order_value(members: Sequence[str], amounts: Mapping[str, Sequence[Mapping[s
             amount = _number(entry.get("value"))
             if amount is None or not same(entry):
                 return None, None, [], "order_value_not_shown"
+            if amount == 0:
+                # a header total of 0 is no order value (``operating.order_value``: Sage
+                # zeroes it once invoiced, an unpriced copy holds 0): its twin's stands
+                continue
             currency = entry.get("currency")
             if not currency:
                 said = {str(c.get("value")).strip().upper() for c in currencies.get(member, ())
@@ -1328,12 +1334,10 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         for e in got:
             statuses.setdefault(oid, {}).setdefault(str(e.get("property")), []).append(
                 e.get("value"))
-    # a required date that is the record's own day is no requested date (the plan reads
-    # no population, so a bulk default is decided by the scheduled scan only)
-    own = {oid: [e.get("value") for e in got] for oid, got in by_object("order_own_days")
-           .items()} if args.get("order_own_days") else {}
-    required = {oid: [(d, ref) for d, ref in got
-                      if so_status.is_requested(d, own=own.get(oid, ()))]
+    # a required date that is the record's own day stays a requested date (a same-day
+    # rush order, BIZ-007); the plan reads no population, so a bulk default is decided by
+    # the scheduled scan only
+    required = {oid: [(d, ref) for d, ref in got if so_status.is_requested(d)]
                 for oid, got in required.items()}
     ao_statuses = {oid: [(e.get("value"), (e.get("citation") or {}).get("lineage"))
                          for e in got]
@@ -1653,18 +1657,17 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
                                       and link["to_object"] in visible)}
     aos = {oid: entry for oid, entry in st.values(("AssemblyOrder",), ("status",)).items()
            if visible is None or oid in visible}
-    # the requested dates only (``so_status.is_requested``): never a day a bulk share of
-    # the binding's records hold, nor the record's own creation or order day
+    # the requested dates only (``so_status.is_requested``): never a bulk day a load
+    # wrote (``so_status.date_defaults``: with provenance); a record's own day is kept
+    def own(entry: Mapping[str, Any]) -> list[Any]:
+        return [r.get("value") for n in so_status.OWN_DAYS for r in entry["props"].get(n, ())]
     defaults = so_status.date_defaults(_by_binding(
-        (_binding(oid), _day(row.get("value"))) for oid, entry in sales.items()
+        (_binding(oid), (_day(row.get("value")), own(entry))) for oid, entry in sales.items()
         for row in entry["props"].get(so_status.DATE_PROP, ())))
     required = {oid: [(d, row["l1_handle"])
                       for row in entry["props"].get(so_status.DATE_PROP, ())
-                      if so_status.is_requested(
-                          d := _day(row.get("value")),
-                          own=[r.get("value") for n in so_status.OWN_DAYS
-                               for r in entry["props"].get(n, ())],
-                          defaults=defaults.get(_binding(oid), ()))]
+                      if so_status.is_requested(d := _day(row.get("value")),
+                                                defaults=defaults.get(_binding(oid), ()))]
                 for oid, entry in sales.items()}
     statuses = {oid: {**{p: [row.get("value") for row in entry["props"].get(p, ())]
                          for p in so_status.READ_PROPS}, FULFILLED: oid in shipped}
@@ -1750,6 +1753,11 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
                         v.get("property"))
                     if named is not None:
                         named.setdefault(member, []).append(v)
+                for d in (answer or {}).get("derived") or () if isinstance(answer, Mapping) \
+                        else ():
+                    # the order's value derived where its header states none
+                    if isinstance(d, Mapping) and d.get("property") == "order_value":
+                        amounts.setdefault(member, []).append(d)
             amount, currency, _used, _why = order_value(order.members, amounts, currencies,
                                                         lambda _e: True)
             if amount is not None:

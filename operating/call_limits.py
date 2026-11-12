@@ -194,7 +194,8 @@ def bounded(limit: float | None) -> Iterator[None]:
             raise ToolTimedOut()
 
     previous = signal.signal(signal.SIGALRM, fire)
-    signal.setitimer(signal.ITIMER_REAL, float(limit))
+    outer_left, _outer_every = signal.setitimer(signal.ITIMER_REAL, float(limit))
+    started = time.monotonic()
     try:
         try:
             with sql_deadline(time.monotonic() + float(limit) + SQL_GRACE):
@@ -213,6 +214,9 @@ def bounded(limit: float | None) -> Iterator[None]:
         armed[0] = False
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+        if outer_left > 0:   # an outer timer was running: it keeps its remaining time
+            signal.setitimer(signal.ITIMER_REAL,
+                             max(outer_left - (time.monotonic() - started), 0.001))
 
 
 TIMED_OUT = "tool_timed_out"

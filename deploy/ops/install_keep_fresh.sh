@@ -5,7 +5,8 @@
 #
 #  user units (no sudo), ~/.config/systemd/user:
 #     plx-sheet-readings.timer   daily 02:40 ET   sheet readings (alert rules' not_set_up -> data)
-#     plx-system-activity.timer  Sunday 03:00 ET  per-system activity snapshot, 13 weeks
+#     plx-system-activity.timer  daily 02:50 ET   per-system activity snapshot, 13 weeks
+#     plx-team-activity.timer    daily 03:30 ET   Team view snapshot (people, days, systems)
 #     plx-work-graph.timer       Sunday 03:30 ET  role owners from what people did, 13 weeks
 #   system units (sudo -n), /etc/systemd/system:
 #     plx-proactive-whole.timer  every 4 h        whole-store proactive rules (not in after_build.sh)
@@ -13,6 +14,7 @@
 #     plx-restore-test.timer     04:30 ET         restore test of the newest set
 #     plx-ops-health.timer       every 5 min      reliability alarms (operating/ops_alarms.py): in-app banner + /ops
 #     plx-ops-memory.timer       every 1 min      memory early warning (under 8 GB, top consumers named)
+#     plx-expiry.timer           daily 06:20 UTC  credential expiry list (alarm within 30 days)
 #   and ~/.local/bin/plx-release -> $PLX_REPO/deploy/release/plx-release
 #
 #Nothing here writes to a business system or reads a secret; the units name env files, not
@@ -24,16 +26,27 @@ here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-USER_UNITS="plx-sheet-readings plx-system-activity plx-work-graph"
-SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory"
+USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
+SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry"
 
 python3 "$render" --user --out "$tmp/user" >/dev/null
 python3 "$render" --out "$tmp/sys" >/dev/null
-for u in $USER_UNITS; do systemd-analyze verify --user "$tmp/user/$u.service" "$tmp/user/$u.timer" 2>&1 \
-  | grep -v -E "not executable|plx-suite" || true; done
-for u in $SYS_UNITS; do systemd-analyze verify "$tmp/sys/$u.service" "$tmp/sys/$u.timer" 2>&1 \
-  | grep -v -E "not executable|plx-suite" || true; done
-for f in "$tmp"/user/plx-{sheet-readings,system-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory}.*; do
+# systemd-analyze verify: a non-zero exit is a failure unless every line it printed is a
+# documented harmless diagnostic (a binary of the release not installed yet, the plx-suite
+# unit of the nightly run, owned by another installer). Nothing is copied on any other error.
+NOISE='not executable|plx-suite'
+verify_unit() {  # verify_unit [--user] service timer
+  local out rc=0
+  out=$(systemd-analyze verify "$@" 2>&1) || rc=$?
+  local rest; rest=$(printf '%s\n' "$out" | grep -v -E "$NOISE" | grep -v -E '^[[:space:]]*$' || true)
+  if [ -n "$rest" ] || { [ $rc -ne 0 ] && [ -z "$out" ]; }; then
+    printf 'systemd-analyze verify failed (exit %s) for %s:\n%s\n' "$rc" "$*" "${rest:-$out}" >&2
+    exit 1
+  fi
+}
+for u in $USER_UNITS; do verify_unit --user "$tmp/user/$u.service" "$tmp/user/$u.timer"; done
+for u in $SYS_UNITS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.timer"; done
+for f in "$tmp"/user/plx-{sheet-readings,system-activity,team-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory,expiry}.*; do
   grep -q "^MemoryMax=" "$f" || [[ $f == *.timer ]] || { echo "no MemoryMax: $f" >&2; exit 1; }
   grep -q "^Nice=" "$f" || [[ $f == *.timer ]] || { echo "no Nice: $f" >&2; exit 1; }
 done
@@ -58,9 +71,11 @@ for u in $SYS_UNITS; do sudo -n systemctl enable --now "$u.timer"; done
 
 ln -sfn "$PLX_REPO/deploy/release/plx-release" "$HOME/.local/bin/plx-release"
 
-# the owner workload view reads the activity snapshot from the API's data directory, else
-# PLX_SYSTEM_ACTIVITY_FILE: point it at what the weekly unit writes.
-grep -qs "PLX_SYSTEM_ACTIVITY_FILE" /etc/plx/workbench-api.env 2>/dev/null \
-  || echo "note: set PLX_SYSTEM_ACTIVITY_FILE=$PLX_STATE/system-activity.json in the API's environment"
+# the Team view reads its snapshot from the API's data directory, else PLX_TEAM_ACTIVITY_FILE;
+# who sees everyone and who is hidden are PLX_TEAM_VIEW_READERS and PLX_TEAM_HIDDEN_PEOPLE.
+for v in PLX_TEAM_ACTIVITY_FILE PLX_TEAM_VIEW_READERS PLX_TEAM_HIDDEN_PEOPLE; do
+  grep -qs "^$v=" /etc/plx/workbench-api.env 2>/dev/null \
+    || echo "note: set $v in the API's environment (see operator_api/team_view.py)"
+done
 echo "note: the work-graph unit writes $PLX_STATE/work-graph/roles-derived.json (candidate roles); the autopilot reads it only if PLX_AUTOPILOT_ROLES_FILE names it"
-systemctl list-timers --all --no-legend 'plx-sheet*' 'plx-system*' 'plx-work*' 'plx-proactive-whole*' 'plx-backup*' 'plx-restore*' 'plx-ops*' || true
+systemctl list-timers --all --no-legend 'plx-sheet*' 'plx-system*' 'plx-team*' 'plx-work*' 'plx-proactive-whole*' 'plx-backup*' 'plx-restore*' 'plx-ops*' || true

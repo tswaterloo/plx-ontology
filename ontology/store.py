@@ -134,7 +134,9 @@ def instant(value: Any) -> str:
             moment = datetime.fromisoformat(text)
         except ValueError:
             raise StoreError("as_known_at_invalid", "not a valid timestamp") from None
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    utc = moment.astimezone(timezone.utc)
+    # strftime("%Y") is not zero-padded on every platform: years below 1000 stay 4 wide
+    return f"{utc.year:04d}" + utc.strftime("-%m-%dT%H:%M:%S.%fZ")
 
 
 # --------------------------------------------------------------------------- removals
@@ -180,14 +182,17 @@ def removed_at_sql(object_sql: str, at_sql: str = LATEST_SQL) -> str:
             f"AND {_in_force(at_sql)})")
 
 
-def removed_ids_sql(at_sql: str = LATEST_SQL) -> str:
+def removed_ids_sql(at_sql: str = LATEST_SQL, *, object_type_sql: str | None = None) -> str:
     """SQL listing every record not held by its source at ``at_sql``: exactly the records
     :func:`removed_at_sql` holds for, read once (its removal rows and its open absences)
-    rather than probed per row of a large read."""
+    rather than probed per row of a large read. ``object_type_sql`` (an SQL expression,
+    used twice): only the records of that type, read by the type index (the whole-store
+    form scans every record for its absence: 55-77 s on the served store, 2026-11-12)."""
+    typed = f"mo.object_type = {object_type_sql} AND " if object_type_sql else ""
     return (f"SELECT mo.object_id FROM object_removals rm JOIN objects mo "
-            f"ON mo.object_id = rm.object_id WHERE {_in_force(at_sql)} UNION "
+            f"ON mo.object_id = rm.object_id WHERE {typed}{_in_force(at_sql)} UNION "
             f"SELECT mo.object_id FROM {_REMOVALS_FROM} "
-            f"WHERE mo.missing_from_source_since IS NOT NULL AND {_in_force(at_sql)}")
+            f"WHERE {typed}mo.missing_from_source_since IS NOT NULL AND {_in_force(at_sql)}")
 
 
 def removals_at(conn: sqlite3.Connection, object_ids: Iterable[str], at: str
@@ -263,7 +268,7 @@ def held_stretches(begin: str, end: str | None,
     """[begin, end) less the removal stretches: where the records were held, in order."""
     out: list[tuple[str, str | None]] = []
     cursor = begin
-    for since, until in sorted(removed):
+    for since, until in sorted(removed, key=lambda s: (s[0], s[1] is None, s[1] or "")):
         if end is not None and since >= end:
             break
         if until is not None and until <= cursor:

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -24,6 +25,7 @@ from operating import autopilot_write as aw
 from operating import autopilot_write_adapters as wa
 from operating.session_identity import CHANNEL_CONSOLE, fixture_session
 from operating.tests.test_autopilot_write import BC_COMPANY, NEW_ID, Transport, po_item
+from operator_api import autopilot_area as ws
 from operator_api.app import create_app
 from operator_api.auth import DevAuth
 from operator_api.mock import MockBackend
@@ -41,6 +43,10 @@ def queued(item_id: str, owner: str, *, markings=(), created: str | None = None)
     return {**found, "item_id": item_id, "event_id": "e-" + item_id, "owner": owner,
             "audiences": ["mail:" + owner], "markings": list(markings),
             "due_at": created, "created_at": created}
+
+
+def steps(decision: dict) -> list[tuple[str, str, str]]:
+    return [(s["kind"], s["system"], s["status"]) for s in decision["steps"]]
 
 
 class AutopilotArea(unittest.TestCase):
@@ -247,7 +253,11 @@ class AutopilotArea(unittest.TestCase):
         owner.post(f"/api/autopilot/workflows/{FLOW}", json={"on": True})
         self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'}), (204, {})]
         item = self.accept_live(owner, "ap_own")
-        self.assertEqual(item["decision"]["outcome"], "done")
+        # the BC entry went through; the confirmation email has no sender wired here, so
+        # it never ran: partly done, each step named (WEB-036)
+        self.assertEqual((item["decision"]["outcome"], steps(item["decision"])),
+                         ("partly_done", [("bc_write", "bc", "done"),
+                                          ("send_mail", "mail", "unavailable")]))
         self.assertEqual([c[0]["method"] for c in self.bc.calls], ["POST"])
         audit = owner.get("/api/autopilot/audit").json()
         done = next(r for r in audit["rows"] if r["status"] == "done")
@@ -270,7 +280,10 @@ class AutopilotArea(unittest.TestCase):
         owner = self.client(OWNER)
         self.backend.writes_environ = {**ENV, aw.APPROVED_ENV: "bc_write"}
         self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'})]
-        self.assertEqual(self.accept_live(owner, "ap_own")["decision"]["outcome"], "done")
+        decision = self.accept_live(owner, "ap_own")["decision"]
+        self.assertEqual((decision["outcome"], steps(decision)),
+                         ("partly_done", [("bc_write", "bc", "done"),
+                                          ("send_mail", "mail", "unavailable")]))
         self.assertEqual([c[0]["method"] for c in self.bc.calls], ["POST"])
         rows = [r for r in owner.get("/api/autopilot/audit").json()["rows"]
                 if r.get("kind") == "bc_write" and r.get("status") == "done"]
@@ -308,7 +321,8 @@ class AutopilotArea(unittest.TestCase):
         self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": 'W/"1"'})]
         done = owner.post("/api/autopilot/items/ap_own/decision",
                           json={"decision": "accept", "confirm_token": token}).json()
-        self.assertEqual((done["decision"]["outcome"], len(self.bc.calls)), ("done", 1))
+        self.assertEqual((done["decision"]["outcome"], steps(done["decision"])[0],
+                          len(self.bc.calls)), ("partly_done", ("bc_write", "bc", "done"), 1))
         self.assertFalse(done["live"])                           # decided: nothing to confirm
         # the token is spent: sent again it is no confirm (and the key is used anyway)
         again = owner.post("/api/autopilot/items/ap_own/decision",
@@ -326,9 +340,25 @@ class AutopilotArea(unittest.TestCase):
         self.assertTrue(other["confirm_token"])
         self.assertEqual(len(self.bc.calls), 1)
 
+    def test_an_items_outcome_never_reads_an_unnamed_status_as_done_or_not_run(self) -> None:
+        """WEB-036: done only when every step was; a step the write path does not name
+        (or one still pending) makes the item unknown (check first), never partly done or
+        nothing sent."""
+        self.assertIsNone(ws.item_outcome([]))
+        self.assertEqual(ws.item_outcome(["done", "done"]), "done")
+        self.assertEqual(ws.item_outcome(["done", "unavailable"]), "partly_done")
+        self.assertEqual(ws.item_outcome(["done", "failed"]), "partly_done")
+        self.assertEqual(ws.item_outcome(["failed", "unavailable"]), "failed")
+        self.assertEqual(ws.item_outcome(["refused", "unavailable"]), "refused")
+        for odd in ("pending", "unknown", "sent", "", "DONE"):
+            self.assertEqual(ws.item_outcome(["done", odd]), "unknown", odd)
+            self.assertEqual(ws.item_outcome([odd]), "unknown", odd)
+
     def test_a_send_is_logged_only_when_the_email_itself_went_out(self) -> None:
-        """A customer PO: the BC entry is done but the confirmation email is not. The first
-        action's outcome says done; the work log records no send and opens no loop."""
+        """A customer PO: the BC entry is done but the confirmation email is not. The
+        item's outcome says partly done (never done, never "nothing was sent"); an email
+        that cannot be confirmed says unknown; the work log records no send and opens no
+        loop."""
         from operator_api import work_log as wl
         from operator_api.tests.test_work_log import Guard
 
@@ -342,6 +372,15 @@ class AutopilotArea(unittest.TestCase):
                         else 202, "missing": []}
 
         self.backend.work_log = wl.WorkLog(None, guard=lambda: Guard())
+        # four live accepts of two actions each: this workflow's own hourly cap is raised
+        # in a copy of the shipped rules (the shipped limits are unchanged and enforced)
+        rules = json.loads(aw.RULES_FILE.read_text("utf-8"))
+        rules["rate_limits"]["workflows"][FLOW] = {"per_hour": 20, "per_day": 40}
+        rules_file = self.state.parent / "rules.json"
+        rules_file.write_text(json.dumps(rules), "utf-8")
+        patcher = patch.object(aw, "RULES_FILE", rules_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         owner = self.client(OWNER)
         self.pass_fresh_gate()
         owner.post(f"/api/autopilot/workflows/{FLOW}", json={"live": True, "role": ROLE})
@@ -370,22 +409,33 @@ class AutopilotArea(unittest.TestCase):
         with q.conn:
             q.add_item(queued("ap_two", OWNER[1]))
             q.add_item(queued("ap_three", OWNER[1]))
+            q.add_item(queued("ap_four", OWNER[1]))
         q.close()
         # an email refused before sending (the item names no sender mailbox) is no send
         decision, calls = accept("ap_own", "sent", mailbox=None)
-        self.assertEqual((decision["outcome"], decision["sent"], calls), ("done", False, 0))
+        self.assertEqual((decision["outcome"], decision["sent"], calls),
+                         ("partly_done", False, 0))
+        self.assertEqual(steps(decision)[0], ("bc_write", "bc", "done"))
+        self.assertIn(steps(decision)[1][2], ws.NOT_RUN)
         decision, calls = accept("ap_two", "failed")
-        self.assertEqual((decision["outcome"], decision["sent"], calls), ("done", False, 1),
+        self.assertEqual((decision["outcome"], decision["sent"], calls, steps(decision)),
+                         ("partly_done", False, 1, [("bc_write", "bc", "done"),
+                                                    ("send_mail", "mail", "failed")]),
                          decision)
+        # an email whose send cannot be confirmed: check before retrying
+        decision, calls = accept("ap_four", "unknown")
+        self.assertEqual((decision["outcome"], decision["sent"], calls, steps(decision)),
+                         ("unknown", False, 1, [("bc_write", "bc", "done"),
+                                                ("send_mail", "mail", "unknown")]), decision)
         events = owner.get("/api/work-log").json()["events"]
-        self.assertEqual([e["verb"] for e in events], ["accepted", "accepted"])
+        self.assertEqual([e["verb"] for e in events], ["accepted", "accepted", "accepted"])
         self.assertTrue(all(e.get("loop") is None for e in events))
         # control: the same entry with the email delivered is a send that waits for a reply
         decision, calls = accept("ap_three", "sent")
         self.assertEqual((decision["outcome"], decision["sent"], calls), ("done", True, 1))
         events = owner.get("/api/work-log").json()["events"]
         self.assertEqual(sorted(e["verb"] for e in events),
-                         ["accepted", "accepted", "accepted", "sent"])
+                         ["accepted", "accepted", "accepted", "accepted", "sent"])
         self.assertEqual(next(e for e in events if e["verb"] == "sent")["loop"]["state"],
                          "waiting")
 

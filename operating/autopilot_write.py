@@ -20,7 +20,8 @@ of the audit log):
    or judgment-call item, a workflow the history shows people split on, or any kind,
    operation or MC scope the rules do not list (``not_routine``).
 6. **Write gate** (``write_state``): the workflow passed >= 90% on >= 15 judged items on
-   fresh held-out days (``record_scores``), the owner was told once
+   held-out days (``record_scores``: fresh days from ``fresh_from``, or a past window of
+   ``clean_windows``, ``held_out_kind``), the owner was told once
    (``gate_passed`` -> ``owner_notified`` rows), and the owner's live flag names it
    (``LIVE_ENV`` and ``LIVE_FILE``) with the master switch ``MASTER_ENV=1``. Otherwise the
    action is recorded as a ``dry_run`` with the exact request it would send.
@@ -182,7 +183,7 @@ def load_rules(path: Path | None = None) -> dict[str, Any]:
         # never looser than the product gate (90% on 15)
         if precision < ap.GATE_PRECISION or minimum < ap.GATE_MIN_JUDGED:
             raise RulesInvalid("gate looser than the product gate")
-        _instant(raw["fresh_from"])
+        _held_out_windows(raw)
         classes = {name: [re.compile(rx, re.IGNORECASE) for rx in rxs]
                    for name, rxs in raw["term_classes"].items()}
         for kind, spec in raw["actions"].items():
@@ -446,13 +447,114 @@ def _instant(value: str) -> datetime:
     return out
 
 
-def record_scores(run_dir: Path, gate_path: Path, rules: Mapping[str, Any]) -> dict[str, Any]:
-    """Admit a fresh-score run (``/data/scratch/autopilot-6/fresh_score.sh`` OUT_RUN) into
-    the write gate: per role, the replay's held-out counts (``autopilot-gate.json``) when
-    that role's ``result.json`` is complete and its window starts at or after the rules'
-    ``fresh_from`` (days never tuned on). Anything else is listed in ``refused``."""
-    run_dir = Path(run_dir)
+def _held_out_windows(rules: Mapping[str, Any]) -> tuple[datetime, list[tuple[datetime, datetime]],
+                                                     list[tuple[datetime, datetime]]]:
+    """``fresh_from``, the clean past windows and the tuned windows of the rules, checked:
+    a clean window is a past span (it ends by ``fresh_from``) with its evidence written down
+    that overlaps no window a tuning run used (``tuned_windows``). Anything else
+    is ``RulesInvalid`` (nothing is performed then)."""
     fresh_from = _instant(rules["fresh_from"])
+    tuned = []
+    for w in rules.get("tuned_windows") or ():
+        lo, hi = _instant(w["from"]), _instant(w["until"])
+        if not lo < hi or not str(w.get("why") or "").strip():
+            raise RulesInvalid("tuned window")
+        tuned.append((lo, hi))
+    clean = []
+    for w in rules.get("clean_windows") or ():
+        lo, hi = _instant(w["from"]), _instant(w["until"])
+        if not lo < hi <= fresh_from or not str(w.get("evidence") or "").strip():
+            raise RulesInvalid("clean window")
+        if any(lo < t_hi and t_lo < hi for t_lo, t_hi in tuned):
+            raise RulesInvalid("clean window overlaps a tuned window")
+        clean.append((lo, hi))
+    return fresh_from, clean, tuned
+
+
+def held_out_kind(window: Sequence[Any], rules: Mapping[str, Any]) -> str | None:
+    """``fresh`` when a scored window starts at or after ``fresh_from``, ``historical`` when
+    it lies inside one of the rules' ``clean_windows`` (past days never tuned on), else None
+    (or cannot be read: never counted)."""
+    try:
+        lo, hi = _instant(window[0]), _instant(window[1])
+        fresh_from, clean, tuned = _held_out_windows(rules)
+    except (KeyError, IndexError, ValueError, TypeError, RulesInvalid):
+        return None
+    if not lo < hi or any(lo < t_hi and t_lo < hi for t_lo, t_hi in tuned):
+        return None
+    if lo >= fresh_from:
+        return "fresh"
+    if any(c_lo <= lo and hi <= c_hi for c_lo, c_hi in clean):
+        return "historical"
+    return None
+
+
+def _flows(raw: Any) -> dict[str, dict[str, int]] | None:
+    try:
+        flows = {str(f): {"judged": int(v["judged"]), "matched": int(v["matched"])}
+                 for f, v in (raw or {}).items()}
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+    if any(not 0 <= c["matched"] <= c["judged"] for c in flows.values()):
+        return None
+    return flows
+
+
+def role_counts(entry: Mapping[str, Any], rules: Mapping[str, Any]) -> dict[str, Any] | None:
+    """One role's admitted counts, re-checked at every read: the sum over its scored
+    windows (``parts``; a gate file from before parts is one part) that are held out under
+    the rules now (``held_out_kind``). Parts that overlap would count a day twice: None then,
+    as for unreadable counts (the gate passes nothing for the role). None when no part
+    counts."""
+    try:
+        parts = entry.get("parts")
+        if parts is None:
+            parts = [{k: entry.get(k) for k in ("window", "workflows", "data_end", "run",
+                                                 "members")}]
+        kept = []
+        for part in parts:
+            kind = held_out_kind(part["window"], rules)
+            flows = _flows(part.get("workflows"))
+            if flows is None:
+                return None
+            if kind:
+                kept.append({**part, "kind": kind, "workflows": flows,
+                             "window": [str(x) for x in part["window"]]})
+        if not kept:
+            return None
+        kept.sort(key=lambda p: _instant(p["window"][0]))
+        for a, b in zip(kept, kept[1:]):
+            if _instant(b["window"][0]) < _instant(a["window"][1]):
+                return None
+        total: dict[str, dict[str, int]] = {}
+        for part in kept:
+            for f, c in part["workflows"].items():
+                t = total.setdefault(f, {"judged": 0, "matched": 0})
+                t["judged"] += c["judged"]
+                t["matched"] += c["matched"]
+        last = kept[-1]
+        members = last.get("members")
+        if members is None:
+            members = entry.get("members")
+        return {"members": [str(m) for m in members or ()], "workflows": total,
+                "window": [kept[0]["window"][0], last["window"][1]],
+                "data_end": str(last.get("data_end") or ""), "run": last.get("run"),
+                "parts": [{"window": p["window"], "kind": p["kind"], "run": p.get("run"),
+                           "workflows": p["workflows"]} for p in kept]}
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def record_scores(run_dir: Path, gate_path: Path, rules: Mapping[str, Any]) -> dict[str, Any]:
+    """Admit a scorer run (``fresh_score.sh`` OUT_RUN on fresh days, or a run on a clean
+    past window) into the write gate: per role, the replay's held-out counts
+    (``autopilot-gate.json``) when that role's ``result.json`` is complete and its window is
+    held out (``held_out_kind``: fresh, or inside a clean past window). The run becomes one
+    part of the role's counts, replacing every earlier part whose window it overlaps (a
+    later run of the same days wins; days are never counted twice). Anything else is listed
+    in ``refused``."""
+    run_dir = Path(run_dir)
+    _held_out_windows(rules)
     counts = json.loads((run_dir / ap.GATE_FILE).read_text(encoding="utf-8"))
     if counts.get("schema") != ap.GATE_SCHEMA:
         raise ValueError("not a replay gate file")
@@ -478,23 +580,42 @@ def record_scores(run_dir: Path, gate_path: Path, rules: Mapping[str, Any]) -> d
             refused[role] = f"status:{r.get('status')}"
             continue
         try:
-            start = _instant(r["window"][0])
+            window = [str(r["window"][0]), str(r["window"][1])]
+            lo, hi = _instant(window[0]), _instant(window[1])
         except (KeyError, IndexError, ValueError, TypeError):
             refused[role] = "window_unreadable"
             continue
-        if start < fresh_from:
-            refused[role] = "not_fresh"
+        kind = held_out_kind(window, rules)
+        if kind is None:
+            refused[role] = "not_held_out"
             continue
-        try:
-            flows = {str(f): {"judged": int(v["judged"]), "matched": int(v["matched"])}
-                     for f, v in (entry.get("workflows") or {}).items()}
-        except (KeyError, ValueError, TypeError, AttributeError):
-            flows = None
-        if flows is None or any(not 0 <= c["matched"] <= c["judged"] for c in flows.values()):
+        flows = _flows(entry.get("workflows"))
+        if flows is None:
             refused[role] = "counts"
             continue
-        roles[role] = {"members": list(entry.get("members") or ()), "workflows": flows,
-                       "window": list(r["window"]), "data_end": str(r.get("data_end") or ""),
+        old = roles.get(role) or {}
+        parts = old.get("parts")
+        if parts is None and old.get("window"):
+            parts = [{k: old.get(k) for k in ("window", "workflows", "data_end", "run",
+                                               "members")}]
+        kept = []
+        for part in parts or ():
+            try:
+                p_lo, p_hi = _instant(part["window"][0]), _instant(part["window"][1])
+            except (KeyError, IndexError, ValueError, TypeError):
+                continue          # an unreadable old part is dropped, never summed
+            if not (p_lo < hi and lo < p_hi):
+                kept.append(part)
+        kept.append({"window": window, "kind": kind, "workflows": flows,
+                     "data_end": str(r.get("data_end") or ""), "run": run_dir.name,
+                     "members": list(entry.get("members") or ())})
+        kept.sort(key=lambda p: str(p["window"][0]))
+        new = {"parts": kept}
+        summed = role_counts(new, rules) or {}
+        roles[role] = {**new, "members": summed.get("members") or list(entry.get("members") or ()),
+                       "workflows": summed.get("workflows") or flows,
+                       "window": summed.get("window") or window,
+                       "data_end": summed.get("data_end") or str(r.get("data_end") or ""),
                        "run": run_dir.name}
         admitted.append(role)
     # the newest run's refusal per role, beside the counts it did not replace (shown on the
@@ -513,33 +634,36 @@ def record_scores(run_dir: Path, gate_path: Path, rules: Mapping[str, Any]) -> d
 
 def gate_counts(state: Path | None, rules: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Per role, the counts the write gate admitted (``WRITE_GATE_FILE``, what
-    ``WriteGate`` reads) whose window starts at or after ``fresh_from``: the countdown
-    shows these, so the page and the gate never disagree. Missing, unreadable or another
-    schema: {} (the gate passes nothing then either)."""
+    ``WriteGate`` reads), summed over the windows still held out under the rules
+    (``role_counts``): the countdown shows these, so the page and the gate never disagree.
+    Missing, unreadable or another schema: {} (the gate passes nothing then either)."""
     if state is None:
         return {}
     try:
-        fresh_from = _instant(rules["fresh_from"])
+        _held_out_windows(rules)
         raw = json.loads((Path(state) / WRITE_GATE_FILE).read_text(encoding="utf-8"))
         if raw.get("schema") != WRITE_GATE_SCHEMA:
             return {}
         refused = raw.get("refused") or {}
         out = {}
         for n, r in (raw.get("roles") or {}).items():
-            if _instant(r["window"][0]) >= fresh_from:
+            got = role_counts(r, rules)
+            if got is not None:
                 last = refused.get(n)
-                out[str(n)] = {**r, "last_refused": dict(last) if isinstance(last, Mapping)
+                out[str(n)] = {**got, "last_refused": dict(last) if isinstance(last, Mapping)
                                else None}
         return out
-    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError,
+            RulesInvalid):
         return {}
 
 
 def countdown(entry: Mapping[str, Any] | None, workflow: str, rules: Mapping[str, Any]
               ) -> dict[str, Any] | None:
     """One role's workflow against the gate's rule (``rules.gate``: precision on at least
-    ``min_judged`` judged items from fresh days; items, never days), from its
-    ``gate_counts`` entry. None when the role was not scored (nothing to count)."""
+    ``min_judged`` judged items from held-out days; items, never days), from its
+    ``gate_counts`` entry, with each scored window's share (``parts``: fresh days or a
+    clean past window). None when the role was not scored (nothing to count)."""
     if not entry:
         return None
     need = int(rules["gate"]["min_judged"])
@@ -560,28 +684,36 @@ def countdown(entry: Mapping[str, Any] | None, workflow: str, rules: Mapping[str
     return {"judged": judged, "matched": matched, "need_judged": need,
             "need_percent": float((bar * 100).quantize(Decimal("0.1"))), "percent": pct,
             "passes": passes, "window": window, "data_end": entry.get("data_end") or None,
+            "parts": [{"window": [str(x) for x in p.get("window") or ()],
+                       "kind": str(p.get("kind") or ""),
+                       "judged": int(((p.get("workflows") or {}).get(workflow) or {})
+                                     .get("judged", 0)),
+                       "matched": int(((p.get("workflows") or {}).get(workflow) or {})
+                                      .get("matched", 0))}
+                      for p in entry.get("parts") or ()],
             "run": str(entry.get("run") or "") or None,
             "refused": str(last.get("reason"))[:60] if last.get("reason") else None,
             "refused_run": str(last.get("run"))[:120] if last.get("reason") else None}
 
 
 class WriteGate:
-    """The write gate read from ``WRITE_GATE_FILE``: per role, members and the fresh
-    held-out counts; the verdict is recomputed from the counts (``rules.gate``) and the
-    window re-checked against ``fresh_from`` at every read. Missing or unreadable: nothing
-    passes."""
+    """The write gate read from ``WRITE_GATE_FILE``: per role, members and the held-out
+    counts summed over the windows the rules still hold out (``role_counts``: fresh days,
+    clean past windows); the verdict is recomputed from the counts (``rules.gate``) at every
+    read. Missing or unreadable: nothing passes."""
 
     def __init__(self, path: Path, rules: Mapping[str, Any]) -> None:
         precision = Decimal(str(rules["gate"]["precision"]))
         minimum = int(rules["gate"]["min_judged"])
-        fresh_from = _instant(rules["fresh_from"])
         self.roles: dict[str, tuple[set[str], set[str], set[str]]] = {}
         try:
+            _held_out_windows(rules)
             raw = json.loads(Path(path).read_text(encoding="utf-8"))
             if raw.get("schema") != WRITE_GATE_SCHEMA:
                 raise ValueError("schema")
-            for name, role in (raw.get("roles") or {}).items():
-                if _instant(role["window"][0]) < fresh_from:
+            for name, entry in (raw.get("roles") or {}).items():
+                role = role_counts(entry, rules)
+                if role is None:
                     continue
                 ok, seen = set(), set()
                 for flow, c in (role.get("workflows") or {}).items():
@@ -592,7 +724,8 @@ class WriteGate:
                         ok.add(str(flow))
                 self.roles[str(name)] = ({str(m).lower() for m in role.get("members") or ()},
                                          ok, seen)
-        except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
+        except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError,
+                RulesInvalid):
             self.roles = {}
         # the product gate's semantics over our verdicts (a workflow our stricter rules or
         # the freshness check refuse is passed in as measured and failed)
@@ -834,9 +967,17 @@ class Executor:
         actions = actions_of(item)
         if not actions:
             return [self._record({**base, "status": "refused", "reasons": ["no_action"]}, now)]
-        results = []
+        results: list[dict[str, Any]] = []
         for action in actions:
-            result = self._one(base, item, action, rules, stop, now, approval)
+            if results:
+                # a kill switch thrown while the item runs stops the actions after it
+                stop = stop or killed(self.environ, state_dir, workflow)
+            # an action after one that did not happen (a dry run) never goes live: a
+            # confirmation would announce an entry that was never made (ACT-002)
+            unperformed = next((f"earlier_action_dry_run:{r.get('kind')}" for r in results
+                                if r["status"] == "dry_run"), None)
+            result = self._one(base, item, action, rules, stop, now, approval,
+                               dry_only=unperformed)
             results.append(result)
             if result["status"] not in ("done", "dry_run"):
                 break
@@ -849,7 +990,10 @@ class Executor:
 
     def _one(self, base: Mapping[str, Any], item: Mapping[str, Any],
              action: Mapping[str, Any], rules: Mapping[str, Any] | None, stop: str | None,
-             now: datetime, approval: Approval | None = None) -> dict[str, Any]:
+             now: datetime, approval: Approval | None = None,
+             dry_only: str | None = None) -> dict[str, Any]:
+        """``dry_only``: why this action may not go live whatever the gate or approval
+        says (an earlier action of the item was a dry run); it is then a dry run too."""
         kind = str(action.get("kind"))
         key = idempotency_key(item, action)
         row = {**base, "kind": kind, "system": action.get("system"),
@@ -908,6 +1052,8 @@ class Executor:
                     row["live_by"] = "approval"
                 elif mode != "live":
                     missing = [f"approved_writes_off:{kind}", *missing]
+            if dry_only and mode == "live":
+                mode, missing, row["live_by"] = "dry_run", [dry_only], None
             if mode != "live":
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "dry_run", "status": "dry_run",
@@ -937,6 +1083,12 @@ class Executor:
                 return held.append({"event": "decision", "at": _iso(now), **row,
                                     "mode": "live", "status": "unavailable",
                                     "reasons": [unavailable]})
+            # a kill switch thrown since the item started wins up to the last moment
+            # (checked under the journal lock, right before the attempt row) (ACT-004)
+            late = killed(self.environ, self.state, base["workflow"])
+            if late:
+                return held.append({"event": "decision", "at": _iso(now), **row,
+                                    "mode": "live", "status": "killed", "reasons": [late]})
             # the attempt is on the log before the request leaves: a crash after it reads
             # as pending, which blocks a repeat until a person reconciles it
             held.append({"event": "attempt", "at": _iso(now), **row, "mode": "live",
@@ -984,8 +1136,12 @@ class Executor:
                                      self.environ, self.state,
                                      str(item.get("owner") or "").lower(), workflow,
                                      ap.item_roles(spec) if spec else frozenset())
-        return [str(a.get("kind")) for a in actions_of(item)
-                if a.get("kind") in KINDS and (a.get("kind") in approved or mode == "live")]
+        live: list[str] = []
+        for a in actions_of(item):
+            if a.get("kind") not in KINDS or not (a.get("kind") in approved or mode == "live"):
+                break   # run() makes every action after a dry run a dry run too (ACT-002)
+            live.append(str(a.get("kind")))
+        return live
 
     def undo(self, key: str, now: datetime, by: str | None = None) -> dict[str, Any]:
         """Perform the recorded inverse of a ``done`` action once (its own key), under the

@@ -6,6 +6,7 @@ import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useSt
 import { suggest as fetchSuggest } from "@/lib/api";
 import { ACCEPT, addFiles, sizeWords, type Attachment } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
+import { MAX_QUESTION } from "@/lib/thread";
 import { plural, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 import { SystemCode } from "./ui/glyphs";
@@ -65,7 +66,7 @@ export type Arranged = Suggestion & { systems: string[]; facts: string; shared?:
 
 /**
  * The list as a reader wants it: one row per entity (same name and type family; the BC
- * record is the target, the other systems become dots), and, when the typed words name a
+ * record is the target, the other systems become dots; rows merge only on the server's `same_as`), and, when the typed words name a
  * kind ("po 1060"), records of that kind first. Order is otherwise the server's. Records
  * of one name the server kept apart (each with its own code) stay apart, side by side,
  * the first of them carrying how many share the name (`shared`).
@@ -78,8 +79,9 @@ export function arrange(list: Suggestion[], query: string): Arranged[] {
     const { facts, systems } = splitSublabel(s.sublabel, s.type);
     const same = rowsOf.get(name(s)) ?? [];
     rowsOf.set(name(s), same);
-    // a different code under one name is another record, never a copy of the first
-    const i = same.findIndex((r) => !facts || !r.facts || r.facts === facts);
+    // two rows are one record only when the server says so (the same id, or one lists the
+    // other in same_as): a shared name, or a missing code, never is
+    const i = same.findIndex((r) => r.object_id === s.object_id || (r.same_as ?? []).includes(s.object_id) || (s.same_as ?? []).includes(r.object_id));
     if (i < 0) {
       same.push({ ...s, systems, facts });
       continue;
@@ -195,6 +197,13 @@ export function AskBox({
   const [searching, setSearching] = useState(false);
   const [files, setFiles] = useState<Attachment[]>([]);
   const [fileNote, setFileNote] = useState("");
+  // reads in flight (a slow file): a question waits for them, and a read that finishes after
+  // the box was sent or cleared is dropped, never attached to the next question
+  const [reading, setReading] = useState(0);
+  const filesRef = useRef<Attachment[]>([]);
+  const generation = useRef(0);
+  const readChain = useRef<Promise<void>>(Promise.resolve());
+  filesRef.current = files;
   const picker = useRef<HTMLInputElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -318,18 +327,37 @@ export function AskBox({
     });
   }
 
-  async function attach(list: Iterable<File>) {
-    const { next, problems } = await addFiles(list, files);
-    setFiles(next);
-    setFileNote(problems.join(" "));
+  function attach(list: Iterable<File>) {
+    const mine = generation.current;
+    const batch = [...list];
+    setReading((n) => n + 1);
+    // one batch at a time, each checked against the files as they are when it starts
+    readChain.current = readChain.current.then(async () => {
+      try {
+        if (mine !== generation.current) return;
+        const have = filesRef.current;
+        const { next, problems } = await addFiles(batch, have);
+        if (mine !== generation.current) return;
+        const added = next.slice(have.length);
+        // merged into what is there now, so a file removed meanwhile stays removed
+        setFiles((cur) => [...cur, ...added]);
+        filesRef.current = [...filesRef.current, ...added];
+        setFileNote(problems.join(" "));
+      } finally {
+        setReading((n) => n - 1);
+      }
+    });
+    return readChain.current;
   }
 
   function submit() {
     // a question with only files asks what they show
     const q = value.trim() || (files.length ? "What does this show?" : "");
-    if (!q || disabled || busy) return;
+    if (!q || disabled || busy || reading > 0) return;
     const live = pins.filter((p) => q.includes(p.label));
     onSubmit(q, live, files);
+    generation.current += 1;
+    filesRef.current = [];
     setValue("");
     setPins([]);
     setFiles([]);
@@ -403,7 +431,10 @@ export function AskBox({
                 <button
                   type="button"
                   aria-label={`Remove ${f.name}`}
-                  onClick={() => setFiles(files.filter((x) => x.id !== f.id))}
+                  onClick={() => {
+                    filesRef.current = filesRef.current.filter((x) => x.id !== f.id);
+                    setFiles((cur) => cur.filter((x) => x.id !== f.id));
+                  }}
                   className="flex size-6 items-center justify-center rounded-md text-muted hover:text-fg cursor-pointer"
                 >
                   <X className="size-3" aria-hidden />
@@ -441,6 +472,7 @@ export function AskBox({
             rows={1}
             autoFocus={autoFocus}
             disabled={disabled}
+            maxLength={MAX_QUESTION}
             placeholder={placeholder}
             aria-label={label}
             role="combobox"
@@ -507,8 +539,8 @@ export function AskBox({
               type="submit"
               aria-label="Ask"
               title="Ask (Enter)"
-              disabled={(!value.trim() && files.length === 0) || disabled || busy}
-              aria-disabled={(!value.trim() && files.length === 0) || disabled || busy}
+              disabled={(!value.trim() && files.length === 0) || disabled || busy || reading > 0}
+              aria-disabled={(!value.trim() && files.length === 0) || disabled || busy || reading > 0}
               className={cn(
                 "flex shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-sm hover:brightness-110 disabled:bg-surface-2 disabled:text-faint disabled:shadow-none cursor-pointer disabled:cursor-default",
                 sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8",
@@ -588,6 +620,16 @@ export function AskBox({
           );
         })}
       </ul>
+      {reading > 0 && (
+        <p className="px-2 pt-1 text-[12px] text-muted" role="status" data-testid="attach-reading">
+          Reading {reading === 1 ? "your file" : "your files"}; you can ask when {reading === 1 ? "it is" : "they are"} attached.
+        </p>
+      )}
+      {value.length >= MAX_QUESTION - 100 && (
+        <p className={cn("px-2 pt-1 text-[12px]", value.length >= MAX_QUESTION ? "text-late" : "text-muted")} role="status" data-testid="question-count">
+          {value.length} of {MAX_QUESTION} characters{value.length >= MAX_QUESTION ? ": the limit. Shorten it; nothing past it is sent." : ""}
+        </p>
+      )}
       {fileNote && (
         <p className="px-2 pt-1 text-[12px] text-muted" role="status" data-testid="attach-note">
           {fileNote}

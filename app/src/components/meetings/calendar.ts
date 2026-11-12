@@ -122,3 +122,76 @@ export function outsideDomains(m: UpcomingMeeting): string[] {
   out.delete("");
   return [...out];
 }
+
+/** The week offsets (0 is this week) that hold any meeting, never narrower than this week and next. */
+export function weekBounds(meetings: UpcomingMeeting[], now: Date): { min: number; max: number } {
+  const base = mondayOf(now).getTime();
+  let min = 0;
+  let max = 1;
+  for (const m of meetings) {
+    const s = startOf(m);
+    if (!s) continue;
+    const w = Math.floor(Math.round((mondayOf(s).getTime() - base) / 86_400_000) / 7);
+    min = Math.min(min, w);
+    max = Math.max(max, w);
+  }
+  return { min, max };
+}
+
+/** The hours a day column shows: 7 AM to 7 PM, widened to whole hours when a timed meeting
+ * starts earlier or ends later, so none is cut off. `last` is an exclusive hour (24 at most). */
+export function hourSpan(meetings: UpcomingMeeting[]): { first: number; last: number } {
+  let first = 7;
+  let last = 19;
+  for (const m of meetings) {
+    const s = startOf(m);
+    if (!s || m.all_day) continue;
+    first = Math.min(first, s.getHours());
+    const e = endOf(m);
+    const end = e && e > s ? e : new Date(s.getTime() + 30 * 60000);
+    last = Math.max(last, dayKey(end) === dayKey(s) ? Math.min(24, end.getHours() + (end.getMinutes() > 0 ? 1 : 0)) : 24);
+  }
+  return { first, last };
+}
+
+export interface Placed {
+  m: UpcomingMeeting;
+  /** This meeting's column among the ones it overlaps, and how many columns that group needs. */
+  col: number;
+  cols: number;
+}
+
+/** Side-by-side columns for one day's timed meetings: any that overlap in time share the width, so none hides another. */
+export function layoutDay(meetings: UpcomingMeeting[]): Placed[] {
+  const timed = meetings
+    .filter((m) => !m.all_day && startOf(m))
+    .map((m) => {
+      const s = startOf(m)!.getTime();
+      const e = Math.max(endOf(m)?.getTime() ?? 0, s + 30 * 60000);
+      return { m, s, e };
+    })
+    .sort((a, b) => a.s - b.s || a.e - b.e);
+  const out: Placed[] = [];
+  let group: { m: UpcomingMeeting; s: number; e: number; col: number }[] = [];
+  let groupEnd = -Infinity;
+  const flush = () => {
+    const cols = group.reduce((n, g) => Math.max(n, g.col + 1), 0);
+    for (const g of group) out.push({ m: g.m, col: g.col, cols });
+    group = [];
+  };
+  const colEnds: number[] = [];
+  for (const t of timed) {
+    if (t.s >= groupEnd) {
+      flush();
+      colEnds.length = 0;
+      groupEnd = -Infinity;
+    }
+    let col = colEnds.findIndex((end) => end <= t.s);
+    if (col < 0) col = colEnds.length;
+    colEnds[col] = t.e;
+    group.push({ ...t, col });
+    groupEnd = Math.max(groupEnd, t.e);
+  }
+  flush();
+  return out;
+}

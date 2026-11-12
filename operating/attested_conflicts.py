@@ -426,6 +426,11 @@ def _same(kind: str, left: dict[str, Any], right: dict[str, Any],
         ua, ub = _unit(left.get("unit")), _unit(right.get("unit"))
         if ua and ub and ua != ub:
             return None
+        # a rate over a pack basis ('10 kg/case' stored before it was refused) is not the
+        # same measure as a plain quantity: never equal to one (DOC-002)
+        if any(re.match(r"^\s*(?:/|per\b|p/)", str(v.get("qualifier") or ""), re.I)
+               for v in (left, right)):
+            return None
         try:
             return Decimal(str(a)) == Decimal(str(b))
         except (InvalidOperation, ValueError):

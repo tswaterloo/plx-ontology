@@ -411,7 +411,6 @@ def claude_call(text: str, *, binary: str = "claude", model: Optional[str] = Non
     login (``agent_environment``: no paid API key passes); the result text, or None.
     ``images`` (``{"media_type", "data"}``, base64) go in the same turn as image blocks
     (stream-json input on stdin: no file is written)."""
-    from operating.agent_environment import agent_environment
     argv = [binary, "-p", "--setting-sources", "", "--tools", "",
             "--no-session-persistence", "--max-turns", "1"]
     if images:
@@ -426,6 +425,26 @@ def claude_call(text: str, *, binary: str = "claude", model: Optional[str] = Non
     model = model or os.environ.get(MODEL_SETTING) or None
     if model:
         argv += ["--model", model]
+    from operating import model_ledger
+    if not images:   # the same text to the same model: the same turn (``model_ledger``)
+        hit, kept = model_ledger.reused("general_answer", _asked(argv, text))
+        if hit:
+            return kept
+    return _claude_reply(argv, text, seconds, images)
+
+
+def _asked(argv: Sequence[str], text: str) -> str:
+    """What a reuse and the ledger key a turn by: the same text to the same model."""
+    return " ".join(argv) + "\n" + text
+
+
+def _claude_reply(argv: list[str], text: str, seconds: float,
+                  images: Sequence[Mapping[str, str]]) -> Optional[str]:
+    """``claude_call``'s one turn, recorded in the model ledger (``model_ledger``)."""
+    from operating import model_ledger
+    from operating.agent_environment import agent_environment
+    started = time.monotonic()
+    reply: Any = None
     try:
         done = subprocess.run(argv, input=text, capture_output=True, text=True,
                               timeout=seconds * (2 if images else 1),
@@ -439,11 +458,20 @@ def claude_call(text: str, *, binary: str = "claude", model: Optional[str] = Non
                     reply = event
         else:
             reply = json.loads(done.stdout or "{}")
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+        model_ledger.record("general_answer", prompt=_asked(argv, text), ok=False,
+                            seconds=time.monotonic() - started, reason=type(exc).__name__)
         return None
-    if not isinstance(reply, dict) or reply.get("is_error") \
-            or not isinstance(reply.get("result"), str):
+    turns, tokens = model_ledger.usage_of(reply)
+    good = isinstance(reply, dict) and not reply.get("is_error") \
+        and isinstance(reply.get("result"), str)
+    model_ledger.record("general_answer", prompt=_asked(argv, text), ok=good, turns=turns,
+                        tokens=tokens,
+                        seconds=time.monotonic() - started)
+    if not good:
         return None
+    if not images:
+        model_ledger.keep("general_answer", _asked(argv, text), reply["result"])
     return reply["result"]
 
 

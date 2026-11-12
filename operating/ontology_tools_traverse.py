@@ -148,7 +148,7 @@ L8's ``register`` does.
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 import datetime as dt
 from functools import cached_property, lru_cache
@@ -283,6 +283,9 @@ _SLICE_ROWS = {
              "superseded_at FROM events",
 }
 EVENT_SCAN_CAP = 5000
+# An event time written as a date (or a timestamp starting with one): ``_timeline``'s
+# window prefilter compares only these.
+_DAY_GLOB = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
 # The phase timings a probe reads (``phase_meter``); None while nobody meters.
 _METER: dict[str, dict[str, list[float]]] | None = None
 # The per-call work of plx.around a probe reads (``call_meter``); None while nobody meters.
@@ -596,6 +599,11 @@ class TraverseTools:
 
     def call(self, name: str, arguments: Any, actor: Actor) -> dict[str, Any]:
         """Run one tool for ``actor``; the result always satisfies the contract."""
+        pin = getattr(self.store, "one_version", None)
+        with pin() if pin is not None else nullcontext():
+            return self._call(name, arguments, actor)
+
+    def _call(self, name: str, arguments: Any, actor: Actor) -> dict[str, Any]:
         if name not in TOOL_NAMES:
             raise KeyError(name)
         contract = self.contracts["tools"][name]
@@ -865,7 +873,7 @@ class TraverseTools:
         reader may not see and what is absent, and a layer's new marking, audience or
         gated handle would read as absent instead of hidden."""
         conn = self.store.conn
-        stamp = (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
+        stamp = (_data_version(self.store, conn), conn.total_changes)
         facts = self.store.facts
         if facts is None or facts[0] != stamp:
             # Postgres: what is loaded now, read before any fact of this state is, so the
@@ -1824,7 +1832,7 @@ class TraverseTools:
             key: tuple = (shared, scope.actor, json.dumps(kept[1], sort_keys=True), digest)
         else:
             cache, lock = self._slice_gate, _SHARED_SLICE_GATE_LOCK
-            key = (scope.actor, conn.execute("PRAGMA data_version").fetchone()[0], digest)
+            key = (scope.actor, _data_version(self.store, conn), digest)
         now = time.monotonic()
         with lock:
             held = cache.get(key)
@@ -2395,11 +2403,23 @@ class TraverseTools:
         lap("root")
         trimmed = self._events_trimmed(scope, roots, event_types)
         lap("trimmed")
+        # The window first, conservatively, so a long history never hides a narrow window
+        # behind the scan cap: an event is left out here only when its time is written as
+        # a date (YYYY-MM-DD...) a whole day past the bound (an instant's offset moves its
+        # day by under one); ``_outside`` then decides exactly, and a time that does not
+        # read is kept (an unreadable event, said in a gap).
+        since_day, until_day = _day_past(since, -1), _day_past(until, 1)
         rows = list(self.store.conn.execute(
             f"""SELECT e.* FROM events e
                 WHERE e.event_id IN (SELECT eo.event_id FROM event_objects eo
                                      WHERE eo.object_id IN (SELECT value FROM json_each(:roots)))
                 AND (:types IS NULL OR e.event_type IN (SELECT value FROM json_each(:types)))
+                AND (:since_day IS NULL OR NOT (
+                     substr(coalesce(e.window_end, e.time), 1, 10) GLOB '{_DAY_GLOB}'
+                     AND substr(coalesce(e.window_end, e.time), 1, 10) < :since_day))
+                AND (:until_day IS NULL OR NOT (
+                     substr(coalesce(e.window_start, e.time), 1, 10) GLOB '{_DAY_GLOB}'
+                     AND substr(coalesce(e.window_start, e.time), 1, 10) > :until_day))
                 AND {_live('e')} AND e.markings IN (SELECT value FROM json_each(:marks))
                 AND {_item_gate_sql(gate, 'e.l1_handle')}
                 AND NOT EXISTS (SELECT 1 FROM event_objects eo2 JOIN objects o
@@ -2407,10 +2427,13 @@ class TraverseTools:
                                 AND NOT ({_visible_object('o', gate)}))
                 ORDER BY e.event_id LIMIT :cap""",
             scope.params(roots=json.dumps(roots), cap=EVENT_SCAN_CAP + 1,
-                         types=json.dumps(event_types) if event_types else None)))
+                         types=json.dumps(event_types) if event_types else None,
+                         since_day=since_day, until_day=until_day)))
         if len(rows) > EVENT_SCAN_CAP:
             raise ToolError("result_too_large", f"more than {EVENT_SCAN_CAP} events relate to "
-                            "this root", "narrow with event_types, since/until or a smaller set")
+                            "this root" + (" in this window" if since or until else ""),
+                            "narrow with event_types, a shorter since/until window or a "
+                            "smaller set")
         relations: dict[str, list[tuple[str, str]]] = {}
         if rows:
             for rel in self.store.conn.execute(
@@ -3131,6 +3154,13 @@ def _read_slice_part(store: str, kind: str, low: Any, high: Any
 _LAYER_MARK = ("layer_mark",)
 # The links with an odd evidence slot text of a Postgres store state (``link_odd``).
 _LINK_ODD = ("link_odd",)
+
+
+def _data_version(store: Any, conn: Any) -> Any:
+    """The store's data version, once per tool call (``StoreReader.data_version``)."""
+    version = getattr(store, "data_version", None)
+    return version() if version is not None else \
+        conn.execute("PRAGMA data_version").fetchone()[0]
 
 
 def _pg_layer_mark(conn: Any) -> dict[str, Any] | None:
@@ -4435,6 +4465,17 @@ def _event_out(row: Mapping[str, Any], relations: Sequence[tuple[str, str]],
     if markings:
         event["markings"] = markings
     return event
+
+
+def _day_past(moment: dt.datetime | None, days: int) -> str | None:
+    """The date ``days`` from ``moment`` (YYYY-MM-DD), None without one or past the
+    calendar's ends (no prefilter then)."""
+    if moment is None:
+        return None
+    try:
+        return (moment + dt.timedelta(days=days)).date().isoformat()
+    except OverflowError:
+        return None
 
 
 def _outside(row: Mapping[str, Any], span: tuple[dt.datetime, dt.datetime],

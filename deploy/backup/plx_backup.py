@@ -30,7 +30,10 @@ Rotation keeps the 7 newest daily sets and the 4 newest weekly sets (a weekly se
 when the newest weekly set is 7 days old or older, or there is none), then removes the
 oldest sets while all of them together exceed ``PLX_BACKUP_MAX_GB`` (default 20; the newest
 set is always kept). Disk guard: no set is started when the file system's free space,
-less the previous set's size, would fall under ``PLX_BACKUP_MIN_FREE_GB`` (default 200).
+less than twice the newest set's size plus ``PLX_BACKUP_MIN_FREE_GB`` (default 10) is free:
+the guard follows the set's size (a set is a few MB; the dump of the big schemas is DDL only).
+The restore test fails on a newest set older than ``PLX_BACKUP_MAX_AGE_HOURS`` (default 36): a
+backup that stopped being taken is a failed backup.
 
 Off-site copies (the owner chooses two destinations in other regions or providers, e.g. Azure
 Blob and S3): set ``PLX_BACKUP_OFFSITE_HOOK`` to an executable; it runs once per new set with
@@ -100,6 +103,9 @@ STATE_FILES = (
 OPTIONAL_STATE_FILES = (
     "actions.sqlite",           # the case console's action records
     "actions/journal.jsonl",    # card actions' journal
+    "feedback/feedback.sqlite",  # the readers' feedback (operator_api.feedback)
+    "work-log/work-log.sqlite",  # the work log (operator_api.work_log)
+    "view-as/audit.jsonl",       # the owner's view-as audit (operator_api.view_as)
 )
 # Outside the state dir, kept when present: the app's own data dir (feedback.jsonl, the
 # known readers, test records; ``operator_api.backend.DEFAULT_DATA_DIR``). A directory
@@ -377,6 +383,23 @@ def _set_files(directory: Path, stamp: str) -> list[Path]:
             directory / f"manifest-{stamp}.json"]
 
 
+def _healthy(directory: Path, stamp: str) -> bool:
+    """Whether a set's manifest reads and records a whole backup: a database dump and
+    every state file taken (no ``pg_problem``, no ``state_problems``)."""
+    try:
+        manifest = json.loads((directory / f"manifest-{stamp}.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(manifest, dict) and bool(manifest.get("files")) \
+        and not manifest.get("pg_problem") and not manifest.get("state_problems")
+
+
+def _newest_healthy(directory: Path) -> str | None:
+    """The newest healthy set of ``directory``: never rotated or capped away, so a run of
+    failed backups never leaves only failed sets."""
+    return next((s for s in reversed(_sets(directory)) if _healthy(directory, s)), None)
+
+
 def _stamp_time(stamp: str) -> dt.datetime:
     return dt.datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc)
 
@@ -395,7 +418,10 @@ def rotate(root: Path, stamp: str, *, keep_daily: int = KEEP_DAILY,
     removed = []
     for directory, keep in ((daily, keep_daily), (weekly, keep_weekly)):
         stamps = _sets(directory)
+        healthy = _newest_healthy(directory)
         for old in stamps[:max(0, len(stamps) - keep)]:
+            if old == healthy:
+                continue   # the last healthy set outlives the failed ones after it
             for path in _set_files(directory, old):
                 path.unlink(missing_ok=True)
             removed.append(f"{directory.name}/{old}")
@@ -426,11 +452,12 @@ def _sets_bytes(root: Path) -> int:
 
 def _cap(root: Path, keep: str, cap: int) -> list[str]:
     """Remove the oldest sets (from daily and weekly alike) while all exceed ``cap`` bytes;
-    the set ``keep`` (the newest) is never removed."""
+    the set ``keep`` (the newest) and the newest healthy set are never removed."""
     removed: list[str] = []
     dirs = (root / "daily", root / "weekly")
+    kept = {keep, max((s for s in map(_newest_healthy, dirs) if s), default=keep)}
     while _sets_bytes(root) > cap:
-        older = sorted({s for d in dirs for s in _sets(d) if s != keep})
+        older = sorted({s for d in dirs for s in _sets(d) if s not in kept})
         if not older:
             break
         for directory in dirs:
@@ -446,17 +473,17 @@ def _listed(name: str, default: tuple[str, ...]) -> list[str]:
 
 
 def disk_guard(root: Path) -> dict[str, Any] | None:
-    """None when a set may be written; else why not: the file system holding ``root`` would
-    keep less than ``PLX_BACKUP_MIN_FREE_GB`` free after a set as large as the newest one
-    (1 GB when there is none)."""
-    floor = int(float(_env("PLX_BACKUP_MIN_FREE_GB", "200")) * 1e9)
+    """None when a set may be written; else why not: the file system holding ``root`` has
+    less than twice the newest set's size (1 GB when there is none) plus
+    ``PLX_BACKUP_MIN_FREE_GB`` (default 10) free."""
+    floor = int(float(_env("PLX_BACKUP_MIN_FREE_GB", "10")) * 1e9)
     newest = _sets(root / "daily")
     need = (sum(p.stat().st_size for p in _set_files(root / "daily", newest[-1]) if p.exists())
             if newest else 1_000_000_000)
     free = shutil.disk_usage(root).free
-    if free - need < floor:
+    if free < 2 * need + floor:
         return {"error": "disk_guard", "free_bytes": free, "estimate_bytes": need,
-                "min_free_bytes": floor}
+                "min_free_bytes": 2 * need + floor}
     return None
 
 
@@ -532,7 +559,7 @@ def backup(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
     return code, out
 
 
-def restore_test() -> tuple[int, dict[str, Any]]:
+def restore_test(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
     """Restore the newest complete daily set: its dump into a throwaway database (every
     table the manifest names exists, with the counted row count where its data was dumped),
     every file digest, every state file's digest and each SQLite store's
@@ -547,12 +574,19 @@ def restore_test() -> tuple[int, dict[str, Any]]:
     dump, state, config, _secrets, manifest_path = _set_files(daily, stamp)
     manifest = json.loads(manifest_path.read_text())
     problems: list[str] = []
+    age = (now or dt.datetime.now(dt.timezone.utc)) - _stamp_time(stamp)
+    max_age = float(_env("PLX_BACKUP_MAX_AGE_HOURS", "36"))
+    if age > dt.timedelta(hours=max_age):
+        problems.append(f"set_too_old:{int(age.total_seconds() // 3600)}h")
     for name, info in sorted(manifest["files"].items()):
         path = daily / name
         if not path.is_file() or _sha256(path) != info["sha256"]:
             problems.append(f"digest_mismatch:{name}")
     if manifest.get("pg_problem") or dump.name not in manifest["files"]:
         problems.append("no_dump")
+    # what the backup itself could not take (a state file missing, too large): the set
+    # restores, but it is not whole
+    problems += [str(p) for p in manifest.get("state_problems") or ()]
     restored: dict[str, int | None] = {}
     if dump.name in manifest["files"] and dump.is_file():
         db = f"plx_restore_test_{os.getpid()}"
@@ -601,6 +635,7 @@ def restore_test() -> tuple[int, dict[str, Any]]:
                                     "rows": sum(v or 0 for v in restored.values()),
                                     "state_files": len(manifest["state_files"]),
                                     "config_files": config_files,
+                                    "age_hours": int(age.total_seconds() // 3600),
                                     "problems": problems}
 
 

@@ -2,7 +2,9 @@
 
     python3 -m operator_api.workspace.console_ticket mint --state-dir DIR --host-config FILE \\
         [--reader-env PLX_EMPLOYEE_READER] [--ttl-minutes 480] [--port 8765] --out FILE
-    python3 -m operator_api.workspace.console_ticket revoke --state-dir DIR --ticket-file FILE
+    python3 -m operator_api.workspace.console_ticket revoke --state-dir DIR \\
+        (--ticket-file FILE | --session REF)
+    python3 -m operator_api.workspace.console_ticket sessions --state-dir DIR
     python3 -m operator_api.workspace.console_ticket preflight --state-dir DIR --host-config FILE \\
         [--reader-env PLX_EMPLOYEE_READER]
 
@@ -37,9 +39,18 @@ file, so its row names a session no one was handed); a
 revoke whose row cannot be written still revokes (ending a session is never blocked) and
 prints ``"audit": "audit_unwritable"`` and exits 2.
 
-``revoke`` makes the ticket in ``--ticket-file`` unusable on every host over DIR for the
+``revoke`` makes the ticket in ``--ticket-file`` (or the session ``--session REF`` names: its
+session reference as ``mint`` and ``sessions`` print it, looked up in the audit file for
+its expiry) unusable on every host over DIR for the
 rest of its lifetime (the replay guard ``session_identity.replay_guard_for`` shares) and
 deletes the file; an already expired ticket needs no revocation and its file is deleted.
+A revoked ticket ends the app session opened with it on its next request (the app re-checks
+the replay guard per request).
+
+``sessions`` lists, from the audit file and the replay guard, every host-minted ticket that
+is still live (not expired, not revoked): session reference, employee principal, minted
+at, expiry and whether it has signed in (used). Never a ticket,
+e-mail address or secret.
 
 ``preflight`` mints nothing and reads no business system: it checks, by name, the run
 book's preconditions on this host (``employee_policy`` and ``portal_access`` named by the
@@ -60,6 +71,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any, Mapping, Sequence
 
 from operating import session_identity
@@ -146,6 +158,7 @@ def _resolver(args: argparse.Namespace) -> Any:
     from .case_console import employee_resolver
 
     policy, portal = args.employee_policy, args.portal_access
+    max_age = None
     if args.host_config is not None:
         from operating.host import HostConfig, HostError
         try:
@@ -153,10 +166,12 @@ def _resolver(args: argparse.Namespace) -> Any:
         except HostError as error:
             raise TicketRefused(error.code) from None
         policy, portal = config.employee_policy, config.portal_access
+        max_age = config.portal_access_max_age_hours
     if policy is None:
         raise TicketRefused("employee_policy_not_configured")
     try:
-        return employee_resolver(policy, portal, getattr(args, "state_dir", None))
+        return employee_resolver(policy, portal, getattr(args, "state_dir", None),
+                                 max_age_hours=max_age)
     except ValueError:
         raise TicketRefused("employee_policy_unusable") from None
 
@@ -214,8 +229,90 @@ def mint(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]
             "out": str(out)}
 
 
+def _audit_rows(state_dir: Path) -> list[dict[str, Any]]:
+    """The audit file's rows (unreadable lines skipped; a missing file is no rows)."""
+    rows: list[dict[str, Any]] = []
+    try:
+        with open(state_dir / AUDIT_FILE, "rb") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and isinstance(row.get("session_ref"), str):
+                    rows.append(row)
+    except FileNotFoundError:
+        return rows
+    except OSError:
+        raise TicketRefused("audit_unreadable") from None
+    return rows
+
+
+def _valid_ref(ref: Any) -> bool:
+    return isinstance(ref, str) and len(ref) == 64 \
+        and all(c in "0123456789abcdef" for c in ref)
+
+
+def revoke_session(state_dir: Path, session_ref: str) -> dict[str, Any]:
+    """Revoke the host-minted ticket whose session reference is ``session_ref``."""
+    ref = session_ref.strip().lower()
+    if not _valid_ref(ref):
+        raise TicketRefused("session_ref_invalid")
+    minted = [row for row in _audit_rows(state_dir)
+              if row.get("event") == "mint" and row.get("session_ref") == ref]
+    if not minted:
+        raise TicketRefused("session_unknown")
+    row = minted[-1]
+    expires_at = row.get("expires_at")
+    if isinstance(expires_at, bool) or not isinstance(expires_at, int):
+        raise TicketRefused("session_unknown")
+    if expires_at <= int(time.time()):
+        return {"status": "expired", "session": ref}
+    try:
+        session_identity.replay_guard_for(state_dir).revoke_session_ref(ref, expires_at)
+    except SessionIdentityRefused as error:
+        raise TicketRefused(error.reason) from None
+    result = {"status": "revoked", "expires_at": expires_at, "session": ref}
+    employee = row.get("employee") if isinstance(row.get("employee"), str) else None
+    try:
+        append_audit(state_dir, event="revoke", session_ref=ref, employee=employee,
+                     expires_at=expires_at, ttl=row.get("ttl") if isinstance(
+                         row.get("ttl"), int) else 0)
+    except TicketRefused as refusal:
+        result["audit"] = refusal.reason
+    return result
+
+
+def live_sessions(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]:
+    """Every host-minted ticket still live: not expired and not revoked (module doc)."""
+    state_dir = _live_state(args.state_dir)
+    now = int(time.time())
+    guard = session_identity.replay_guard_for(state_dir)
+    revoked = {row["session_ref"] for row in _audit_rows(state_dir)
+               if row.get("event") == "revoke"}
+    found: dict[str, dict[str, Any]] = {}
+    for row in _audit_rows(state_dir):
+        ref, expires_at = row["session_ref"], row.get("expires_at")
+        if row.get("event") != "mint" or not _valid_ref(ref) or ref in revoked \
+                or isinstance(expires_at, bool) or not isinstance(expires_at, int) \
+                or expires_at <= now:
+            continue
+        found[ref] = {"session": ref, "employee": row.get("employee"),
+                      "minted_at": row.get("at"), "expires_at": expires_at}
+    sessions = []
+    for ref, item in found.items():
+        if guard.revoked_ref(ref, now=now):
+            continue
+        item["signed_in"] = guard.used_ref(ref, now=now)
+        sessions.append(item)
+    sessions.sort(key=lambda item: item["expires_at"])
+    return {"status": "listed", "count": len(sessions), "sessions": sessions}
+
+
 def revoke(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]:
     state_dir = _live_state(args.state_dir)
+    if getattr(args, "session", None) is not None:
+        return revoke_session(state_dir, args.session)
     secret = session_identity.session_secret(environ)
     if secret is None:
         raise TicketRefused("session_secret_unavailable")
@@ -317,7 +414,11 @@ def main(argv: Sequence[str] | None = None, *,
                          help="new file for the console URL (mode 0600)")
     revoking = sub.add_parser("revoke", help="end a console session's ticket")
     revoking.add_argument("--state-dir", required=True, type=Path)
-    revoking.add_argument("--ticket-file", required=True, type=Path)
+    which = revoking.add_mutually_exclusive_group(required=True)
+    which.add_argument("--ticket-file", type=Path)
+    which.add_argument("--session", help="the session reference mint and sessions print")
+    listing = sub.add_parser("sessions", help="host-minted tickets still live")
+    listing.add_argument("--state-dir", required=True, type=Path)
     checking = sub.add_parser("preflight", help="check the run book's preconditions")
     checking.add_argument("--state-dir", required=True, type=Path)
     checking.add_argument("--host-config", required=True, type=Path)
@@ -331,8 +432,9 @@ def main(argv: Sequence[str] | None = None, *,
         result = preflight(args, environ)
         print(json.dumps(result, sort_keys=True))
         return 0 if result["status"] == "ready" else 2
+    command = {"mint": mint, "revoke": revoke, "sessions": live_sessions}[args.command]
     try:
-        result = (mint if args.command == "mint" else revoke)(args, environ)
+        result = command(args, environ)
     except TicketRefused as refusal:
         print(json.dumps({"status": "refused", "reason": refusal.reason}))
         return 2

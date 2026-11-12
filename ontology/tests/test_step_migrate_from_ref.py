@@ -125,9 +125,44 @@ class SameRowsTests(unittest.TestCase):
             self.skipTest(f"commits unavailable: {exc}")
         if old == sm.code_digests("no-such-ref-xyz"):
             self.skipTest("commits unavailable")
-        self.assertEqual(sm.SAME_ROWS["with_owners"],
-                         frozenset({(old["with_owners"], new["with_owners"])}))
+        self.assertIn((old["with_owners"], new["with_owners"]), sm.SAME_ROWS["with_owners"])
         self.assertEqual({k for k in old if old[k] != new[k]}, {"with_owners"})
+
+    def test_the_second_owner_pin_is_only_the_added_guard_fingerprint(self):
+        # 0bfbe020a8: the step code Postgres serves after the first owner pin; defb027118:
+        # PeopleExclusion.fingerprint added (the commitments cursor), nothing else in the
+        # step's files. The two pins are the whole with_owners entry.
+        import ast
+        import subprocess
+        try:
+            old, new = sm.code_digests("0bfbe020a8"), sm.code_digests("defb027118")
+            first = sm.code_digests("be37cefd36"), sm.code_digests("ed679e9772")
+        except Exception as exc:   # noqa: BLE001 - a clone without those commits
+            self.skipTest(f"commits unavailable: {exc}")
+        if old == sm.code_digests("no-such-ref-xyz"):
+            self.skipTest("commits unavailable")
+        self.assertEqual({k for k in old if old[k] != new[k]}, {"with_owners"})
+        self.assertEqual(sm.SAME_ROWS["with_owners"], frozenset({
+            (first[0]["with_owners"], first[1]["with_owners"]),
+            (old["with_owners"], new["with_owners"])}))
+
+        def tree(ref, path, drop=False):
+            done = subprocess.run(["git", "-C", str(sm.ROOT), "show", f"{ref}:{path}"],
+                                  capture_output=True, check=True)
+            module = ast.parse(done.stdout)
+            if drop:   # the one added method, and nothing else, comes out
+                for node in module.body:
+                    if isinstance(node, ast.ClassDef) and node.name == "PeopleExclusion":
+                        kept = [n for n in node.body if not (
+                            isinstance(n, ast.FunctionDef) and n.name == "fingerprint")]
+                        self.assertEqual(len(node.body) - len(kept), 1)
+                        node.body = kept
+            return ast.dump(module)
+        for path in sm.STEPS["with_owners"].code:
+            drop = path == "integrations/people_exclusion.py"
+            self.assertEqual(tree("0bfbe020a8", path), tree("defb027118", path, drop), path)
+            if path.startswith("ontology/"):   # the step never reaches the new method
+                self.assertNotIn("fingerprint", tree("defb027118", path))
 
     def test_the_step_guard_decides_the_same_under_the_pinned_change(self):
         # with_owners' guard (from_env: never bound, nothing attached) decides object ids

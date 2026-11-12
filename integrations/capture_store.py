@@ -95,6 +95,10 @@ MAX_RECORDS_LIMIT = 1000
 # membership a transient read failure kept (``integrations.capture_teams``) or one no capture
 # refreshed since is past it withheld from every reader until a members read records it again.
 UNIT_ACL_MAX_AGE = MAX_CAPTURE_AGE
+# How long an item's captured permissions decide after the capture last read them (its
+# current version's ``last_seen_at``; ``SourceKind.acl_max_age``): the same one-missed-day
+# bound (INT-008).
+ITEM_ACL_MAX_AGE = MAX_CAPTURE_AGE
 RUN_STATES = ("in_progress", "complete", "partial", "failed")
 
 _GENERATION = re.compile(r"^[0-9a-f]{16}$")
@@ -146,7 +150,12 @@ class SourceKind:
     its history from that reader too.
     ``current_acl``: a superseded version also needs its record's current version's source
     ACL (a SharePoint list item's permissions, ``integrations.capture_sharepoint_lists``), so
-    a reader an item's permissions no longer grant loses its history too."""
+    a reader an item's permissions no longer grant loses its history too.
+    ``acl_max_age``: the current version's source ACL decides only while the capture
+    last saw it (``last_seen_at``: a run that lists the item reads its permissions again)
+    within this bound; past it every version is withheld (INT-008), unless the audience
+    opens a stale grant (``stale_unit_acl_allows``). None: no bound (a kind whose capture
+    does not re-read an unchanged item's permissions)."""
 
     name: str
     scheme: str
@@ -159,6 +168,7 @@ class SourceKind:
     unit_acl_for: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None
     item_resources: Callable[[tuple[str, ...], Mapping[str, Any]], tuple[str, ...]] | None = None
     current_acl: bool = False
+    acl_max_age: timedelta | None = None
 
 
 _KINDS: dict[str, SourceKind] = {}
@@ -689,14 +699,27 @@ class CaptureStore:
                 if not callable(stale) or not stale(actor, applied, row["recorded_at"]):
                     return False
             acls.append(applied)
-        if kind.current_acl and superseded:
+        if kind.current_acl:
             current = self._db.execute(
-                "SELECT payload FROM versions WHERE kind = ? AND path = ? "
+                "SELECT payload, last_seen_at FROM versions WHERE kind = ? AND path = ? "
                 "AND superseded_at IS NULL", (kind.name, _path_text(path))).fetchone()
             if current is None:
                 return False
             acl = json.loads(current["payload"]).get("meta", {}).get("source_acl")
-            acls.append(acl if isinstance(acl, Mapping) else {})
+            acl = acl if isinstance(acl, Mapping) else {}
+            if superseded:
+                acls.append(acl)
+            # INT-008: the item's permissions decide only while a capture read them
+            # recently: a run that lists the item reads its permissions again and stamps
+            # its current version (``last_seen_at``; a changed or unreadable list is a new
+            # version). Past the bound a revoked grant would stay in force while capture
+            # is stalled: withheld, unless the audience opens a stale grant (an employee's
+            # declared full-read grant, journalled when served, as for a unit ACL).
+            if kind.acl_max_age is not None and not capture_decides(
+                    current["last_seen_at"], self._clock(), kind.acl_max_age):
+                stale = getattr(self.audience, "stale_unit_acl_allows", None)
+                if not callable(stale) or not stale(actor, acl, current["last_seen_at"]):
+                    return False
         return all(item_visible(actor, r, acl) for r in resources for acl in acls)
 
     def _item_resources(self, kind: SourceKind, path: tuple[str, ...],

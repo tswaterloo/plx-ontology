@@ -8,7 +8,7 @@ import { ErrorNotice, LoadProblem } from "@/components/ui/notice";
 import { Sheet } from "@/components/ui/sheet";
 import { Pending } from "@/components/ui/skeleton";
 import { getAutopilotWorkflow, setAutopilotMode } from "@/lib/api";
-import { MODES, type Filters, type Mode, countdownText, filterWorkflows, modesFor, rowMode, rowPassed, rowRole, rowStateShown, workflowLabel } from "@/lib/autopilot";
+import { MODES, type Filters, type Mode, countdownParts, countdownText, filterWorkflows, modesFor, rowMode, rowPassed, rowRole, rowStateShown, workflowLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { ago, formatDateTime, plural } from "@/lib/format";
@@ -101,11 +101,11 @@ function Gate({ row }: { row: AutopilotWorkflowRow }) {
   );
 }
 
-/** The countdown toward the write gate: a bar of judged fresh items against what the gate
+/** The countdown toward the write gate: a bar of judged held-out items against what the gate
  * needs and the precision so far against its bar. */
 function Countdown({ row }: { row: AutopilotWorkflowRow }) {
   const c = row.countdown;
-  if (!c) return <p className="text-[12px] text-muted">No fresh items judged yet: the count starts once the data refresh covers a whole new day.</p>;
+  if (!c) return <p className="text-[12px] text-muted">No held-out items judged yet: the count starts once a replay scores a whole new day or a past day no tuning used.</p>;
   const share = Math.min(1, c.judged / Math.max(1, c.need_judged));
   const under = c.percent != null && c.percent < c.need_percent;
   return (
@@ -117,11 +117,11 @@ function Countdown({ row }: { row: AutopilotWorkflowRow }) {
       <div className="h-1.5 w-full rounded-[2px] bg-hover" aria-hidden>
         <div className={cn("h-1.5 rounded-[2px]", c.passes ? "bg-ok" : under ? "bg-risk" : "bg-accent")} style={{ width: `${Math.round(share * 100)}%` }} />
       </div>
-      {c.window?.length === 2 && (
-        <p className="num text-[11px] text-faint">
-          Judged on fresh days {formatDateTime(c.window[0])} to {formatDateTime(c.window[1])}
+      {countdownParts(c, formatDateTime).map((line) => (
+        <p key={line} className="num text-[11px] text-faint" data-testid="countdown-part">
+          {line}
         </p>
-      )}
+      ))}
     </div>
   );
 }
@@ -221,6 +221,7 @@ function WorkflowSheet({ workflow, area, builder, onClose, onChanged }: { workfl
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!workflow) return;
     const ctl = new AbortController();
@@ -228,7 +229,7 @@ function WorkflowSheet({ workflow, area, builder, onClose, onChanged }: { workfl
     setError(null);
     getAutopilotWorkflow(workflow, ctl.signal).then(setDetail, (e) => !ctl.signal.aborted && setError(e));
     return () => ctl.abort();
-  }, [workflow]);
+  }, [workflow, attempt]);
   const set = async (row: AutopilotWorkflowRow, mode: Mode) => {
     if (!workflow) return;
     setBusy(true);
@@ -247,7 +248,7 @@ function WorkflowSheet({ workflow, area, builder, onClose, onChanged }: { workfl
     <Sheet open={!!workflow} onOpenChange={(o) => !o && onClose()} title={workflow ? workflowLabel(workflow) : "Workflow"}>
       <div className="space-y-6 px-5 py-4 text-[13px]" data-testid="workflow-sheet">
         {error ? (
-          <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={() => setDetail(null)} />
+          <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={() => setAttempt((n) => n + 1)} />
         ) : !d ? (
           <Pending label="Reading the workflow" />
         ) : (

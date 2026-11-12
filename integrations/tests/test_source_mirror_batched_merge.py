@@ -19,6 +19,7 @@ import hashlib
 import json
 import sqlite3
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 from integrations.source_mirror import (PERSISTED_FALLBACK_META, POINTER_TABLE, MirrorError,
@@ -229,6 +230,52 @@ class BatchedMergeTests(SyncTestCase):
         self.assertIsNone(reader._state(BIG))
         self.assertEqual(self.db().execute(
             "SELECT COUNT(*) FROM row_current WHERE relation = ?", (BIG,)).fetchone()[0], 16)
+
+    def test_a_copy_filled_into_a_new_file_binds_it_and_moves_its_successor_citations(self):
+        """CAPTURE-003/005: the outage fill of a file never synced pins its tenant and
+        upstream in the same transaction, and a removal's successor citations name this
+        file's captures (one naming a capture the copy does not bring loses its label)."""
+        from integrations.tests.test_source_mirror_sync import generated_relation
+        source = ScriptedFake()
+        generated_relation(source, "public.gen_first", 2)   # the copy's ids start later
+        big_relation(source, 5)
+        copy_path = self.path.with_name("copy.sqlite")
+        copy = SourceMirror(copy_path, WorkbenchReadApiClient(BASE, KEY, fetch=source), ALL,
+                            clock=self.clock, retry_delay_seconds=0)
+        copy.sync(OPS, relations=["public.gen_first"])
+        copy.sync(OPS, relations=[BIG])
+        copy.close()
+        with sqlite3.connect(str(copy_path)) as conn:
+            (old,) = conn.execute("SELECT MAX(capture_id) FROM capture WHERE relation = ?",
+                                  (BIG,)).fetchone()
+            for key, capture in (('{"id":998}', old), ('{"id":999}', 4242)):
+                conn.execute("INSERT INTO row_removal (relation, key_json, basis, since, "
+                             "replaced_basis, replaced_by) VALUES (?, ?, 'missing_from_source', "
+                             "'2026-09-29T11:00:00Z', 'source_replacement', ?)",
+                             (BIG, key, json.dumps([[{"id": 1}, capture]])))
+
+        class Store:
+            def load(self, relations, **_):
+                return {"path": str(copy_path), "captures_as_of": "2026-09-29T12:00:00Z"}
+        reader = self.mirror(persisted_store=Store())
+        outage = MirrorError("source_unavailable", "down", status=503)
+        # this synthetic relation has no replacement model, so the labels it carries are
+        # cleared after the import as stale (``_drop_stale_replacements``): kept here to
+        # read the import's own remapping
+        with mock.patch.object(SourceMirror, "_drop_stale_replacements",
+                               lambda self, relation=None: None):
+            self.assertTrue(reader._fill_from_persisted(BIG, "plx", outage))
+        db = self.db()
+        self.assertEqual(db.execute("SELECT value FROM mirror_meta WHERE name = 'tenant'")
+                         .fetchone(), ("plx",))
+        (new,) = db.execute("SELECT MAX(capture_id) FROM capture WHERE relation = ?",
+                            (BIG,)).fetchone()
+        self.assertNotEqual(new, old)
+        labels = {k: (b, json.loads(r) if r else None) for k, b, r in db.execute(
+            "SELECT key_json, replaced_basis, replaced_by FROM row_removal WHERE relation = ?",
+            (BIG,))}
+        self.assertEqual(labels, {'{"id":998}': ("source_replacement", [[{"id": 1}, new]]),
+                                  '{"id":999}': (None, None)})
 
     def test_budget_stops_a_merge_between_batches_and_the_next_run_completes_it(self):
         big_relation(self.fake, 60)

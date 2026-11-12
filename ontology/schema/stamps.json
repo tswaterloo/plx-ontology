@@ -1,0 +1,381 @@
+{
+ "format": "plx-ontology-stamps/v1",
+ "rule": "A column is a write stamp of a relation when it is write metadata (a write or sync time, an entity tag, a regenerated id, or a label computed from such a time; never an amount, quantity, status, flag or business date) and, in the capture store's own history, at least 90% of the version pairs in which it changes (at least 50 measured) change nothing else but write metadata. Consecutive versions of a record differing only in these are one projected version (ontology/stamps.py).",
+ "measured": "2026-11-12 ET, read-only samples of the live capture stores: up to 240 Portal records per relation (source-mirror.sqlite), up to 400 records per relation of the BC, Mission Control, Teams and meetings stores; consecutive versions compared column by column (nested objects flattened, list items by position).",
+ "not_declared": {
+  "portal_api:public.app_purchase_order_line": "updated_at moves with quantity_received in every sampled pair (sighting share 0.0): a real change each time",
+  "portal_api:FileMaker (public.*), sage.*, silver.*": "audit stamps (audittimestampmodified, modificationtimestamp, audtdate/audttime, updated_at) move with business columns in most pairs (sighting share 0.0-0.83)",
+  "bc:items/customers/vendors/contacts": "lastModifiedDateTime moves with real edits (sighting share 0.0-0.6)",
+  "mission_control:tasks/projects": "sync.ts sighting share 0.01-0.02: tasks really change",
+  "meetings:calendar_event": "change_key/last_modified sighting share 0.83 (attendee responses change): below 0.9",
+  "meetings:planner_task": "etag sighting share 0.07",
+  "teams:channels team.*": "the parent team's fields flap between filled and empty (read with or without permission): not write metadata",
+  "sharepoint_list": "the changing columns are the item's ACL (meta.source_acl): permissions, never a stamp"
+ },
+ "relations": [
+  {
+   "source": "bc",
+   "relation": "itemLedgerEntries",
+   "stamps": [
+    "lastModifiedDateTime"
+   ],
+   "evidence": {
+    "version_pairs": 168,
+    "records": 148,
+    "stamp_only_pairs": 164,
+    "columns": {
+     "lastModifiedDateTime": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 0.976,
+      "changes": 168
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_assembly_order_damage",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 1650,
+    "records": 150,
+    "stamp_only_pairs": 1650,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 1650
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_assembly_order_status",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 1650,
+    "records": 150,
+    "stamp_only_pairs": 1650,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 1650
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_batch_record",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 2520,
+    "records": 180,
+    "stamp_only_pairs": 2520,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 2520
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_batch_schedule",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 1980,
+    "records": 180,
+    "stamp_only_pairs": 1980,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 1980
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_customer",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 12597,
+    "records": 180,
+    "stamp_only_pairs": 12597,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 12597
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_manufacturer",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 444,
+    "records": 37,
+    "stamp_only_pairs": 444,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 444
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_manufacturing_order",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 13650,
+    "records": 210,
+    "stamp_only_pairs": 13650,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 13650
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_manufacturing_order_line",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 1950,
+    "records": 150,
+    "stamp_only_pairs": 1950,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 1950
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_product",
+   "stamps": [
+    "custom_fields.sageIclocSyncedAt",
+    "custom_fields.sageOyBinSyncedAt",
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 13839,
+    "records": 210,
+    "stamp_only_pairs": 13806,
+    "columns": {
+     "custom_fields.sageIclocSyncedAt": {
+      "changed_in_pairs": 0.116,
+      "sighting_share": 0.981,
+      "changes": 1608
+     },
+     "custom_fields.sageOyBinSyncedAt": {
+      "changed_in_pairs": 0.169,
+      "sighting_share": 0.987,
+      "changes": 2340
+     },
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 0.998,
+      "changes": 13839
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_production_task",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 1980,
+    "records": 180,
+    "stamp_only_pairs": 1980,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 1980
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_purchase_order",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 2814,
+    "records": 202,
+    "stamp_only_pairs": 2799,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 0.995,
+      "changes": 2814
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_sales_order",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 4437,
+    "records": 111,
+    "stamp_only_pairs": 4408,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 0.993,
+      "changes": 4437
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_shipment",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 1680,
+    "records": 120,
+    "stamp_only_pairs": 1680,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 1680
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "public.app_supplier",
+   "stamps": [
+    "updated_at"
+   ],
+   "evidence": {
+    "version_pairs": 12060,
+    "records": 180,
+    "stamp_only_pairs": 12060,
+    "columns": {
+     "updated_at": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 12060
+     }
+    }
+   }
+  },
+  {
+   "source": "portal_api",
+   "relation": "sage.oe_invoice_detail",
+   "stamps": [
+    "audtdate",
+    "audttime"
+   ],
+   "evidence": {
+    "version_pairs": 63,
+    "records": 63,
+    "stamp_only_pairs": 63,
+    "columns": {
+     "audtdate": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 63
+     },
+     "audttime": {
+      "changed_in_pairs": 1.0,
+      "sighting_share": 1.0,
+      "changes": 63
+     }
+    }
+   }
+  },
+  {
+   "source": "teams",
+   "relation": "chatMessages",
+   "stamps": [
+    "attachments.*.id",
+    {
+     "path": "body_content",
+     "mask": "(?<=<attachment id=\")[^\"]*(?=\">)"
+    }
+   ],
+   "evidence": {
+    "version_pairs": 1311,
+    "records": 400,
+    "stamp_only_pairs": 1303,
+    "columns": {
+     "attachments.*.id": {
+      "changed_in_pairs": 0.992,
+      "sighting_share": 0.996,
+      "changes": 1300
+     }
+    }
+   }
+  },
+  {
+   "source": "teams",
+   "relation": "chats",
+   "stamps": [
+    "last_activity_at"
+   ],
+   "evidence": {
+    "version_pairs": 481,
+    "records": 163,
+    "stamp_only_pairs": 412,
+    "columns": {
+     "last_activity_at": {
+      "changed_in_pairs": 0.892,
+      "sighting_share": 0.951,
+      "changes": 429
+     }
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,26 @@
+# Nightly Team view snapshot (operating.team_activity): per person and day, mail sent and
+# received, Teams messages, reply times, busiest hours and who they work with, plus the
+# per-system days of plx-system-activity; names from Teams and calendars, roles from the
+# work graph. Counts and names only, no content. The API reads it (PLX_TEAM_ACTIVITY_FILE,
+# else its data directory; ignored after 3 days). The exclusion fails closed (unavailable:
+# nothing built, exit 1). Read only: every store opens mode=ro.
+[Unit]
+Description=PLX nightly Team view snapshot (activity per person, day and system)
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+UnsetEnvironment=PLX_WORKBENCH_API_KEY AZURE_CLIENT_SECRET
+ExecStart=/data/venv/bin/python3 -m operating.team_activity \
+  --state-dir /data/plx-state \
+  --out /data/plx-state/team-activity.json \
+  --system-activity /data/plx-state/system-activity.json
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryHigh=3G
+MemoryMax=4G
+TimeoutStartSec=1h
+UMask=0077

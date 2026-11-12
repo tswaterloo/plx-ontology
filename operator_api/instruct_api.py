@@ -32,6 +32,7 @@ Nothing here sends, writes or uploads. Evidence: ``isolated-fixture`` / injected
 from __future__ import annotations
 
 import functools
+import json
 import re
 import secrets
 import time
@@ -547,7 +548,7 @@ class InstructMixin:
             drafts.append(draft)
         writes = [] if asking else [self._prepare_write(reader, w, targets, text, answers)
                                     for w in outcome.writes]
-        documents = [] if asking else [self._prepare_document(reader, doc, folders)
+        documents = [] if asking else [self._prepare_document(reader, doc, folders, guard)
                                        for doc in outcome.documents]
         facts = [m.Fact(text=mt.label, sources=[m.Source(
             system=mt.system, handle=mt.handle, label=mt.label[:300],
@@ -656,14 +657,21 @@ class InstructMixin:
         return self.instruct_uploads
 
     def _prepare_document(self, reader: Reader, doc: Mapping[str, str],
-                          folders: list[ins.Folder]) -> m.InstructDocument:
+                          folders: list[ins.Folder], guard: Any) -> m.InstructDocument:
+        from .feedback import clean
         kind = doc["kind"]
+        raw = str(doc.get("content") or "")
+        # the file's words as drafts' are: no excluded person's address or object id and
+        # no secret-looking string in the bytes anyone downloads or uploads (ACT-008)
+        content = clean(raw, guard, max(len(raw), 1)) or ""
+        if not content:
+            raise _refuse("no_draft")
         try:
-            data = files.make(kind, doc["content"])
+            data = files.make(kind, content)
         except files.FileRefused as refused:
             if refused.code != "pdf_unavailable":
                 raise _refuse("no_draft") from None
-            kind, data = "docx", files.make("docx", doc["content"])
+            kind, data = "docx", files.make("docx", content)
         folder = next((f for f in folders if f.key == doc.get("folder")), None)
         target = None
         if folder is not None:
@@ -672,9 +680,11 @@ class InstructMixin:
                 target = files.target_of(folder.anchor, opened.fields or {}, opened.label)
             except (KeyError, LookupError, ValueError, PermissionError):
                 target = None
-        name = files.file_name(doc.get("name"), kind)
-        # the people the document names: cleared by the people exclusion before an upload
-        people = sorted({a.lower() for a in _ADDRESS.findall(str(doc.get("content") or ""))})
+        name = files.file_name(clean(doc.get("name"), guard, 300), kind)
+        # the people the file names (an excluded one is already withheld from it, so
+        # nothing of them is kept here): cleared by the people exclusion again before an
+        # upload and before a download, for a person excluded since the draft
+        people = sorted({a.lower() for a in _ADDRESS.findall(content)})
         row = self._uploads().prepare(reader.key, name=name, kind=kind, data=data,
                                       target=target, people=people)
         return m.InstructDocument(name=name, kind=kind, size=row["size"],
@@ -688,8 +698,9 @@ class InstructMixin:
         """Whether the reader holds a write or owner role on an upload's target folder now
         (``files.folder_writable`` over the SharePoint grants recorded for the folder and
         its anchor file); None when not known. ``folder_acls`` (drive, item id) -> the
-        recorded permission list, or None; else the SharePoint capture under
-        ``sharepoint_capture_dir``; neither: not known."""
+        recorded permission list with its ``read_at``, or None; else the SharePoint capture
+        under ``sharepoint_capture_dir``; neither: not known. A list read more than
+        ``files.ACL_MAX_AGE`` ago is not known either."""
         acls = getattr(self, "folder_acls", None) or self._captured_acls()
         identities = frozenset(getattr(reader.session, "identities", ()) or ()) \
             | {i for i in (getattr(reader.session, "subject_oid", None),) if i}
@@ -726,7 +737,18 @@ class InstructMixin:
                 row = store.current(drive, item)
             finally:
                 store.close()
-            return (row or {}).get("source_acl")
+            if not row or not row.get("source_acl"):
+                return None
+            try:
+                found = json.loads(row["source_acl"]) if isinstance(row["source_acl"], str) \
+                    else dict(row["source_acl"])
+            except (TypeError, ValueError):
+                return None
+            if not isinstance(found, dict):
+                return None
+            # when the capture last read this list (it is stored again each time it is
+            # seen): an old one does not decide a write (ACT-009)
+            return {**found, "read_at": row.get("last_seen_at") or row.get("recorded_at")}
         return acl
 
     def _acknowledge(self, reader: Reader, upload: Mapping[str, Any]) -> tuple[str, ...]:
@@ -878,6 +900,13 @@ class InstructMixin:
             raise UserFacing("not_found", "That file is not one of yours.", 404)
         rows = [r for r in self._uploads()._rows() if r.get("file_id") == file_id
                 and r["reader"] == reader.key]
+        # a person the document named, excluded since it was drafted (or no list to
+        # decide with): the file is not served
+        from .feedback import _excluded_address
+        guard = self._instruct_guard()
+        named = next((r["people"] for r in rows if r.get("people")), ())
+        if named and (guard is None or any(_excluded_address(guard, str(a)) for a in named)):
+            raise UserFacing("not_found", "That file can't be opened now.", 404)
         return data, rows[-1]["kind"] if rows else "docx"
 
 

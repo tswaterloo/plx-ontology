@@ -135,6 +135,14 @@ STAMP_PROPERTIES = frozenset({"bc_last_modified_at", "fm_modified_at", "portal_u
 STAMP_COLUMNS = {"portal_api": frozenset({"updated_at"})}
 
 
+def _declared_stamps(source: Any, relation: Any) -> list[str]:
+    """The write stamps ``ontology/schema/stamps.json`` declares for a source relation
+    (``ontology.stamps``): a property reading only those is a stamp too."""
+    from ontology.stamps import load
+    held = load().get((source, relation))
+    return held.names() if held is not None else []
+
+
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -619,8 +627,10 @@ def portal_changes(mirror: Path, base: Base, state: State, plan: "Plan") -> int:
                 key = (row[0], row[1])
                 keys.add(key)
                 captured[key] = max(captured.get(key, row[2]), row[2])
-        # removal stretches opened or closed after the generation was built
-        since = base.built_at or ""
+        # removal stretches opened or closed since the generation may have read the mirror
+        # (``read_since``: its build time is later than its reads; a stretch found again
+        # under the same mark reopens nothing)
+        since = read_since(base, "portal_api")
         stretches: dict[tuple[str, str], list[list[Any]]] = {}
         for row in conn.execute("SELECT relation, key_json, basis, since, until FROM "
                                 "row_removal WHERE since > ? OR until > ?", (since, since)):
@@ -826,7 +836,7 @@ def sharepoint_changes(drive: Path, lists: Path, base: Base, state: State) -> in
     files were marked ``missing_from_source_since`` serves them unmarked, and its delta
     marks them), and list-item versions past its mark."""
     keys: set[tuple[str, ...]] = set()
-    since = base.built_at or ""
+    since = read_since(base, "sharepoint")
     item_mark = state.get("sharepoint_item") or base.mark("sharepoint", "driveItems") or 0
     list_mark = state.get("sharepoint_list") or base.mark("sharepoint", "listItems") or 0
     last_item, last_list = item_mark, list_mark
@@ -886,8 +896,10 @@ def _store_relation(family: str, kind: str, path: str) -> str | None:
 
 
 def store_changes(family: str, db: Path, base: Base, state: State) -> int:
-    """Versions of a capture-store source past the generation's marks, and removal
-    stretches opened or closed since it was built."""
+    """Versions of a capture-store source past the generation's marks, removal stretches
+    opened or closed, and records a complete run found missing from the source (an open
+    absence is a mark on the version, no new version and no removal row) since the
+    generation may have read the store (``read_since``)."""
     conn = _ro(db)
     try:
         marks = {name: entry.get("last_capture_id") for name, entry in
@@ -912,7 +924,7 @@ def store_changes(family: str, db: Path, base: Base, state: State) -> int:
                 keys.add((row[1], row[2]))
                 captured[(row[1], row[2])] = max(captured.get((row[1], row[2]), row[0]),
                                                  row[0])
-        stretches = _store_removals(conn, family, base.built_at or "")
+        stretches = _store_removals(conn, family, read_since(base, family))
         keys.update(stretches)
         _newest_versions(conn, stretches, captured)
         with state.transaction():
@@ -924,8 +936,8 @@ def store_changes(family: str, db: Path, base: Base, state: State) -> int:
 
 def _store_removals(conn: sqlite3.Connection, family: str | None, since: str
                     ) -> dict[tuple[str, str], list[list[Any]]]:
-    """The removal stretches of a capture store opened or closed after ``since``, by
-    record (``family``: only that family's kinds)."""
+    """The removal stretches of a capture store opened or closed after ``since``, and its
+    records marked missing after it, by record (``family``: only that family's kinds)."""
     out: dict[tuple[str, str], list[list[Any]]] = {}
     columns = [r[1] for r in conn.execute("PRAGMA table_info(removals)")]
     rest = [c for c in columns if c not in ("kind", "path")]
@@ -933,6 +945,14 @@ def _store_removals(conn: sqlite3.Connection, family: str | None, since: str
                             "removals WHERE since > ? OR until > ?", (since, since)):
         if family is None or KIND_FAMILY.get(row[0]) == family:
             out.setdefault((row[0], row[1]), []).append(list(row[2:]))
+    # An open absence (a complete run did not find the record) is a mark on its current
+    # version, no removal row until it returns: part of the record's mark, so found again
+    # under the same mark it reopens nothing, and returned it is a new stretch.
+    for kind, path, missing in conn.execute(
+            "SELECT kind, path, missing_from_source_since FROM versions WHERE "
+            "missing_from_source_since > ? AND superseded_at IS NULL", (since,)):
+        if family is None or KIND_FAMILY.get(kind) == family:
+            out.setdefault((kind, path), []).append(["missing", missing])
     return out
 
 
@@ -1002,7 +1022,8 @@ class Plan:
         if cached is not None:
             return cached
         tid, b = self.bindings[bid]
-        stamps = STAMP_COLUMNS.get(b.get("source"), frozenset())
+        stamps = STAMP_COLUMNS.get(b.get("source"), frozenset()) | frozenset(
+            _declared_stamps(b.get("source"), b.get("relation")))
         paths = set(b.get("key") or ()) | set(_strings(b.get("lineage")))
         # a binding's own filter decides whether a row becomes this object at all: a
         # change to a filtered column (e.g. which category a row is) is never a restamp
@@ -1885,7 +1906,12 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 elif compact:         # a cycle folding inline holds the newest changes too
                     layers = [layer] + newer
                 elif base.postgres:   # layers Postgres holds leave the pointer (kept: a few)
-                    layers = [layer] + _not_in_postgres(now, base.conn, keep=PG_KEPT_LAYERS)
+                    released: dict[str, Any] = {}
+                    layers = [layer] + _not_in_postgres(
+                        now, base.conn, keep=PG_KEPT_LAYERS,
+                        release=_release_rule(state_dir, environ, released))
+                    if released:
+                        report["released"] = released
                 else:
                     layers = [layer] + now
                 # whether the layers still hold every change since the generation: a fold
@@ -1910,7 +1936,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     state.add(source, keys)
                 state.timed_out(timed)
             (delta_dir / CHECKPOINT).unlink(missing_ok=True)   # its records are closed
-            prune(delta_dir, keep={Path(item["store"]) for item in layers})
+            report["pruned"] = prune(delta_dir, keep={Path(item["store"]) for item in layers})
             if environ.get("PLX_DELTA_PG") == "1" or base.postgres:
                 # the same layer into the Postgres ontology, over the generation it holds
                 # (``operating.pg.ontology_delta``), with any listed layer an earlier cycle
@@ -1953,6 +1979,17 @@ KEPT = ("readings.sqlite", "member-readings.sqlite", "fields.sqlite")
 # fold presents every change again, over Postgres a layer dropped is never presented
 # again, so a reader gets this many cycles (with something new: about 8 h) to take it in.
 PG_KEPT_LAYERS = MAX_LAYERS - 1
+# A layer Postgres has applied leaves the pointer before ``PG_KEPT_LAYERS`` newer ones
+# exist when it is big (``RELEASE_BYTES`` or more, ``PLX_DELTA_RELEASE_BYTES``) or old
+# (``RELEASE_DAYS``, ``PLX_DELTA_RELEASE_DAYS``) and every reader following the layers
+# by name has taken it in (``layer_holders``): 11-12 the 37.9 GB catch-up layer, folded
+# into Postgres hours before, was kept on disk until 47 newer layers came. 0 or less (or
+# a value that is no number): that kind of release is off, layers kept by count alone.
+RELEASE_BYTES = 1 << 30
+RELEASE_DAYS = 2.0
+# A reader whose last run is older than this is not following the layers: it holds none
+# (the count rule never waited for a stopped reader either: ``PG_KEPT_LAYERS`` cycles).
+READER_IDLE_HOURS = 24.0
 
 
 def postgres_behind(state: "State", base: Base, environ: Mapping[str, str],
@@ -1982,16 +2019,185 @@ def postgres_behind(state: "State", base: Base, environ: Mapping[str, str],
     return missing()
 
 
-def _not_in_postgres(layers: Sequence[Mapping[str, Any]], conn: Any, *, keep: int
-                     ) -> list[dict[str, Any]]:
+def _not_in_postgres(layers: Sequence[Mapping[str, Any]], conn: Any, *, keep: int,
+                     release: Any = None) -> list[dict[str, Any]]:
     """``layers`` (newest first) without those Postgres has applied, past the newest
-    ``keep``."""
+    ``keep``, and without the applied ones ``release`` (applied names -> names to let
+    go, :func:`_release_rule`) lets go of within them."""
     names = [Path(item["store"]).name for item in layers]
     applied = {row[0] for row in conn.execute(
         "SELECT substr(name, 7) FROM load_state WHERE name IN (SELECT 'delta:' || value "
         "FROM json_each(?))", (json.dumps(names),))}
+    # only those the count keeps (past it they go, as before)
+    let_go = set(release([n for n in names[:keep] if n in applied], layers)) \
+        if release is not None else set()
     return [dict(item) for n, item in enumerate(layers)
-            if n < keep or Path(item["store"]).name not in applied]
+            if Path(item["store"]).name not in applied
+            or (n < keep and Path(item["store"]).name not in let_go)]
+
+
+def _env_number(environ: Mapping[str, str], name: str, default: float) -> float:
+    """``environ[name]`` as a number (``default`` when unset); no number: 0 (off)."""
+    raw = environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.0
+    return value   # NaN, negative, infinite: never reached (off)
+
+
+def _release_rule(state_dir: Path, environ: Mapping[str, str], out: dict[str, Any]) -> Any:
+    """The rule letting go of applied layers early (``RELEASE_BYTES``/``RELEASE_DAYS``):
+    a function of (applied names, the layers) returning the names to let go; what it
+    decided goes into ``out`` (released, and held with the readers holding them)."""
+    big = _env_number(environ, "PLX_DELTA_RELEASE_BYTES", RELEASE_BYTES)
+    days = _env_number(environ, "PLX_DELTA_RELEASE_DAYS", RELEASE_DAYS)
+
+    def rule(applied: Sequence[str], layers: Sequence[Mapping[str, Any]]) -> set[str]:
+        now = time.time()
+        due = []
+        for item in layers:
+            path = Path(item["store"])
+            if path.name not in applied:
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue   # gone already: the count rule decides, as before
+            if (big > 0 and st.st_size >= big) or \
+                    (days > 0 and now - st.st_mtime >= days * 86400):
+                due.append(path.name)
+        if not due:
+            return set()
+        holders = layer_holders(state_dir, due, now=now)
+        held = {name: sorted(who) for name, who in holders.items() if who}
+        free = {name for name in due if name not in held}
+        if free:
+            out["layers"] = sorted(free)
+        if held:
+            out["held"] = held
+        return free
+
+    return rule
+
+
+# The readers taking each layer in by name (beside the Postgres follower, whose applied
+# layers are ``load_state``'s): what each has taken in is read from its own state, where
+# it keeps it. Paths as the readers name them (``operating.embed.follow``: cursor
+# ``<state>/search/follow.json``; ``operating.proactive_incremental``: ``<inbox>``
+# ``.changes.sqlite`` beside the served store's inbox; ``operating.ai_watcher``:
+# ``<state>/ai-watcher/``); read here without importing them (this module is the cycle's).
+SEARCH_CURSOR = ("search", "follow.json")
+PROACTIVE_CHANGES_SUFFIX = ".gap-inbox.sqlite.changes.sqlite"
+WATCHER_DIR = "ai-watcher"
+
+
+def _when(text: Any) -> float | None:
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        moment = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.timezone.utc)
+    return moment.timestamp()
+
+
+def _reader_state(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+
+
+def _search_taken(state_dir: Path) -> tuple[float | None, set[str]] | str | None:
+    """(last run, layers taken in) of the search follower (a cursor of another
+    generation names none of these layers: it holds them); None: no cursor or an
+    unreadable one (it holds every layer); "absent" (the others): not set up."""
+    path = state_dir.joinpath(*SEARCH_CURSOR)
+    if not path.exists():
+        return None   # the follower serves search wherever layers are: no cursor holds all
+    try:
+        cursor = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cursor, dict) or not isinstance(cursor.get("layers") or [], list):
+        return None
+    partial = cursor.get("partial") if isinstance(cursor.get("partial"), dict) else {}
+    taken = {Path(str(p)).name for p in cursor.get("layers") or []}
+    taken.discard(Path(str(partial.get("layer") or "")).name)   # stopped inside it
+    return _when(cursor.get("updated_at")), taken
+
+
+def _proactive_taken(state_dir: Path) -> tuple[float | None, set[str]] | str | None:
+    store = served_store(state_dir)
+    inbox = store.with_name(store.name + ".gap-inbox.sqlite")
+    changes = store.with_name(store.name + PROACTIVE_CHANGES_SUFFIX)
+    if not changes.exists():
+        # no inbox: the incremental pass returns at once (the full pass makes one)
+        return "absent" if not inbox.exists() else None
+    try:
+        with contextlib.closing(_reader_state(changes)) as conn:
+            reader = dict(conn.execute("SELECT key, value FROM meta").fetchall()).get("reader")
+            if reader is not None and json.loads(reader) == "generation_only":
+                return "absent"   # it reads the generation alone: no layer is its
+            last = conn.execute("SELECT max(at) FROM passes").fetchone()[0]
+            taken = {Path(str(r[0])).name for r in conn.execute("SELECT layer FROM layers")}
+    except (sqlite3.Error, ValueError, TypeError):
+        return None
+    return _when(last), taken
+
+
+def _watcher_taken(state_dir: Path) -> tuple[float | None, set[str]] | str | None:
+    folder = state_dir / WATCHER_DIR
+    try:   # the watcher's own reading: unset or unreadable is off (its service exits)
+        switch = json.loads((folder / "switch.json").read_text(encoding="utf-8")).get("state")
+    except (OSError, ValueError, AttributeError):
+        switch = "off"
+    if switch not in ("on", "dry"):
+        return "absent"
+    store = folder / "watcher.sqlite"
+    if not store.exists():
+        return None   # on, not run yet: its first run takes in every layer listed
+    try:
+        with contextlib.closing(_reader_state(store)) as conn:
+            last = conn.execute("SELECT max(run_at) FROM runs").fetchone()[0]
+            taken = {Path(str(r[0])).name for r in conn.execute("SELECT store FROM layers")}
+    except sqlite3.Error:
+        return None
+    return _when(last), taken
+
+
+LAYER_READERS = (("search_follow", _search_taken), ("proactive_incremental", _proactive_taken),
+                 ("ai_watcher", _watcher_taken))
+
+
+def layer_holders(state_dir: Path, names: Iterable[str], *, now: float | None = None
+                  ) -> dict[str, set[str]]:
+    """For each layer name, the readers still holding it: a reader set up and following
+    (a run within ``READER_IDLE_HOURS``, or no run yet) that has not taken it in, or whose
+    state is unreadable (it holds every layer: fail closed)."""
+    now = time.time() if now is None else now
+    names = list(names)
+    out: dict[str, set[str]] = {name: set() for name in names}
+    for reader, taken_of in LAYER_READERS:
+        try:
+            found = taken_of(state_dir)
+        except Exception:  # noqa: BLE001 - unreadable: it holds every layer
+            found = None
+        if found == "absent":
+            continue
+        if found is None:
+            for name in names:
+                out[name].add(reader)
+            continue
+        last, taken = found
+        if last is not None and now - last > READER_IDLE_HOURS * 3600:
+            continue   # stopped: not following the layers
+        for name in names:
+            if name not in taken:
+                out[name].add(reader)
+    return out
 
 
 def seed_readings(state_dir: Path, delta_dir: Path, digests: Iterable[str]) -> int:
@@ -2500,23 +2706,60 @@ def preflight(records: int, delta_dir: Path, environ: Mapping[str, str]
     return ({"records": records, "short": short} if short else None)
 
 
-def prune(delta_dir: Path, keep: set[Path], *, grace: float = 900.0) -> None:
+def open_files() -> set[Path] | None:
+    """The files any process of this user holds open (``/proc/<pid>/fd``); None where
+    there is no ``/proc``. A process of another user, or one gone mid-read, is skipped:
+    the layer files are this user's and only its services read them."""
+    proc = Path("/proc")
+    if not (proc / "self" / "fd").is_dir():
+        return None
+    out: set[Path] = set()
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fds = list((entry / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("/"):
+                out.add(Path(target.removesuffix(" (deleted)")))
+    return out
+
+
+def prune(delta_dir: Path, keep: set[Path], *, grace: float = 900.0) -> dict[str, Any]:
     """Remove earlier delta stores (after ``grace`` seconds, so a reader holding one open
-    finishes) and abandoned work directories (:func:`sweep`)."""
+    finishes; one a process still holds open stays to the next prune: its disk is freed
+    only once it is closed, and a reader that read the pointer before it changed still
+    opens it) and abandoned work directories (:func:`sweep`). Returns the stores removed
+    and those left open."""
     now = time.time()
-    for path in delta_dir.iterdir():
+    out: dict[str, Any] = {"removed": [], "held_open": []}
+    held: set[Path] | None = None
+    for path in sorted(delta_dir.iterdir()):
         if path.resolve() in keep or path.name in (POINTER, "state.sqlite", "state.sqlite-wal",
                                          "state.sqlite-shm", "cycles.jsonl"):
             continue
         if path.name.startswith("delta-") and path.is_file() and \
                 now - path.stat().st_mtime > grace:
+            if held is None:
+                held = open_files() or set()
+            if path.resolve() in held:
+                out["held_open"].append(path.name)
+                continue
             path.unlink(missing_ok=True)
+            out["removed"].append(path.name)
     try:   # the kept facts and lock files of layers that no longer exist go with them
         from operating.ontology_tools_traverse import _prune_facts
         _prune_facts(delta_dir)
     except Exception:  # noqa: BLE001 - housekeeping; the next prune retries
         pass
     sweep(delta_dir)
+    return out
 
 
 # A build file a cycle writes beside its store (``.delta-<stamp>.sqlite.build-*`` and the

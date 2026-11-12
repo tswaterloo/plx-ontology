@@ -32,6 +32,19 @@ class LabourOwner(unittest.TestCase):
                 self.assertEqual(page["state"], "not_granted")
                 self.assertEqual((page["weeks"], page["trend"], page["alerts"]), ([], [], []))
 
+    def test_one_owner_test_decides_every_owner_route(self):
+        """S-16: the backend's owner test (view-as, autopilot, ops, the owner workload) is the
+        same rule as the Labour and feedback pages', so they can never disagree."""
+        from operator_api.feedback import owner_open
+        for access in (OWNER, None, "", "full_read:bc:mail_all", OWNER[:-1], OWNER + "x",
+                       OWNER.replace("mail_all", "mail_shared_only"), ["x"]):
+            with self.subTest(access=access):
+                who = reader(access)
+                self.assertEqual(briefs.BriefsMixin._is_owner(object(), who),
+                                 owner_open(who.session))
+                self.assertEqual(owner_open(who.session), access == OWNER)
+        self.assertFalse(briefs.BriefsMixin._is_owner(object(), SimpleNamespace()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,7 +33,7 @@ The units are **not enabled** by the build. Nothing here writes to a PLX system.
 
 ## One-time setup (owner, with sudo)
 
-1. Node 20+ (this server: `/data/tools/node`, Node 22 LTS) and Caddy 2.7+
+1. Node 22.22.2+ (this server: `/data/tools/node`, Node 22 LTS) and Caddy 2.7+
    (`apt install caddy` from the Caddy repository, or the release binary in
    `/usr/bin/caddy`). The API's Python needs `fastapi` and `uvicorn`.
 2. A dedicated unprivileged user for the app and the API (no shell, no home
@@ -230,7 +230,9 @@ files and drop-ins.
 
 `deploy/ops/install_keep_fresh.sh` (idempotent; `--dry-run` renders and verifies only) installs
 and enables, after a build: user timers `plx-sheet-readings` (daily 02:40 ET),
-`plx-system-activity` (Sunday 03:00 ET, 13 weekly aggregates) and `plx-work-graph` (Sunday
+`plx-system-activity` (daily 02:50 ET, 13 weekly aggregates and the last 35 days),
+`plx-team-activity` (daily 03:30 ET, the Team view's snapshot: `PLX_TEAM_ACTIVITY_FILE`; who
+sees everyone, `PLX_TEAM_VIEW_READERS`; who is in no people view, `PLX_TEAM_HIDDEN_PEOPLE`, object ids or e-mail addresses; with it unset the server hides the owner by the object ids their own sessions showed it, and names no one in a drill-down until it knows them) and `plx-work-graph` (Sunday
 03:30 ET, role owners from the last 13 weeks, written to a candidate roles file the autopilot
 reads only if `PLX_AUTOPILOT_ROLES_FILE` names it); system timers `plx-proactive-whole` (every 4
 h), `plx-backup` (03:15 ET), `plx-restore-test` (04:30 ET) and `plx-ops-health` (every 15

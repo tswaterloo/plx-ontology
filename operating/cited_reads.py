@@ -230,6 +230,11 @@ class CitedReads:
         held = (out.get("withheld") or {}).get("properties")
         values = {v["property"]: dict(v) for v in out.get("values") or ()
                   if isinstance(v, Mapping) and "property" in v}
+        for d in out.get("derived") or ():
+            # a value derived where the source states none (a sales order's
+            # ``order_value``), cited by its first input; never in place of a source value
+            if isinstance(d, Mapping) and d.get("inputs") and d.get("property") not in values:
+                values[d["property"]] = {**d, "citation": d["inputs"][0]}
         obj = out.get("object") or {}
         record = Record(obj.get("object_id", object_id), obj.get("object_type", ""), values,
                         held if isinstance(held, int) else 0)

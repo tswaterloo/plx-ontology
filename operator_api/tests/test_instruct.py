@@ -6,6 +6,7 @@ the person's approval. Evidence: isolated-fixture with an injected model."""
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timedelta, timezone
 import json
 import tempfile
 import unittest
@@ -112,9 +113,12 @@ class World(MockBackend):
         return m.SuggestResponse(query=q, suggestions=hits, took_ms=0, source="fixture")
 
 
-def acl(roles, who, *, inherited, status="read"):
-    """A recorded SharePoint permission list (``graph_read.permission_acl``): one grant."""
+def acl(roles, who, *, inherited, status="read", read_at=None):
+    """A recorded SharePoint permission list (``graph_read.permission_acl``): one grant,
+    read now unless ``read_at`` says when."""
+    from datetime import datetime, timezone
     return {"status": status, "identities": [who],
+            "read_at": read_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "grants": [{"roles": list(roles), "identities": [who], "inherited": inherited}]}
 
 
@@ -510,9 +514,24 @@ class InstructApi(unittest.TestCase):
                                             acl(("write",), ANA[0], inherited=False)},
                                            files.WRITE_UNKNOWN),
             "grant without roles": ({("drive-purch", "item-quote"): {
-                "status": "read", "grants": [{"identities": [ANA[0]], "inherited": True}]}},
+                "status": "read", "read_at": acl((), ANA[0], inherited=True)["read_at"],
+                "grants": [{"identities": [ANA[0]], "inherited": True}]}},
                 files.WRITE_UNKNOWN),
             "nothing recorded": ({}, files.WRITE_UNKNOWN),
+            # ACT-009: a write grant read by a capture that has since stalled decides
+            # nothing (a removed grant would stay in force); nor one with no read time
+            "write grant read in 2000": ({("drive-purch", "item-quote"): acl(
+                ("write",), ANA[0], inherited=True, read_at="2000-01-01T00:00:00Z")},
+                files.WRITE_UNKNOWN),
+            "write grant read 25 hours ago": ({("drive-purch", "item-quote"): acl(
+                ("write",), ANA[0], inherited=True, read_at=(datetime.now(timezone.utc)
+                - timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ"))}, files.WRITE_UNKNOWN),
+            "write grant with no read time": ({("drive-purch", "item-quote"): {
+                k: v for k, v in acl(("write",), ANA[0], inherited=True).items()
+                if k != "read_at"}}, files.WRITE_UNKNOWN),
+            "write grant read in the future": ({("drive-purch", "item-quote"): acl(
+                ("write",), ANA[0], inherited=True, read_at="2100-01-01T00:00:00Z")},
+                files.WRITE_UNKNOWN),
         }
         writable = dict(self.acls)
         for name, (acls, words) in cases.items():
@@ -536,6 +555,37 @@ class InstructApi(unittest.TestCase):
         self.assertEqual(approve(shown).status_code, 409)
         self.assertEqual((self.ana.get(up).json()["status"], fake.calls), ("prepared", []))
 
+    def test_the_captured_permission_list_carries_when_it_was_last_read(self):
+        """ACT-009: the SharePoint capture's list is handed on with its ``last_seen_at``
+        (stored again each time the capture reads it), so an old one decides nothing."""
+        from unittest import mock
+        from integrations import capture_sharepoint as cs
+        from operating import instruct_files as files
+        kept = acl(("write",), ANA[0], inherited=True)
+        del kept["read_at"]
+        rows = {}
+
+        class Store:
+            def current(self, drive, item):
+                return rows.get((drive, item))
+
+            def close(self):
+                pass
+        self.backend.sharepoint_capture_dir = str(self.tmp)
+        with mock.patch.object(cs, "store_exists", lambda p: True), \
+                mock.patch.object(cs.SharePointCaptureStore, "open_read_only",
+                                  staticmethod(lambda p: Store())):
+            read = self.backend._captured_acls()
+            for seen, writable in ((datetime.now(timezone.utc), True),
+                                   (datetime(2000, 1, 1, tzinfo=timezone.utc), None)):
+                rows[("d", "i")] = {"source_acl": json.dumps(kept), "recorded_at": "x",
+                                    "last_seen_at": seen.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
+                got = read("d", "i")
+                with self.subTest(seen=seen.year):
+                    self.assertEqual(got["read_at"], rows[("d", "i")]["last_seen_at"])
+                    self.assertEqual(files.folder_writable(None, got, [ANA[0]]), writable)
+            self.assertIsNone(read("d", "missing"))
+
     def test_an_upload_naming_an_excluded_person_is_not_made(self):
         """The document's text travels as file bytes: the addresses it names are cleared by
         the people exclusion before an upload, as any write's people are."""
@@ -549,6 +599,51 @@ class InstructApi(unittest.TestCase):
         self.assertEqual(fake.calls, [])
         self.assertNotEqual(done["status"], "uploaded")
         self.assertIn("person_excluded", done["missing"])
+
+    def test_a_document_never_carries_an_excluded_person_and_is_not_served_once_one_is(self):
+        """ACT-008: the drafted file's words are cleaned as drafts are (an excluded
+        person's object id withheld, a secret removed) before the bytes are made; a person
+        it named who is excluded later (or no list) stops the download."""
+        import io
+        import zipfile
+
+        class ZedExcluded(Guard):
+            def is_excluded(self, value):
+                return super().is_excluded(value) or str(value).lower() == "zed@plx.example"
+        self.guard = ZedExcluded()
+        self.backend.instruct_call = Model(
+            "[[DOCUMENT docx]]\nName: Note for " + EXCLUDED + "\nFolder: F1\n"
+            f"Ask {EXCLUDED}, zed@plx.example and pat@plx.example about PO 90412; "
+            "password=hunter2\n[[END]]")
+        got = self.instruct(self.ana, "file a note on PO 90412 for the team: ask "
+                            f"{EXCLUDED}, zed@plx.example and pat@plx.example",
+                            {"kind": "record", "object_type": "PurchaseOrder",
+                             "object_id": "PurchaseOrder:90412"}).json()
+        doc = got["documents"][0]
+        self.assertNotIn(EXCLUDED, doc["name"])
+        data = self.ana.get(doc["download_url"])
+        self.assertEqual(data.status_code, 200)
+        words = "".join(zipfile.ZipFile(io.BytesIO(data.content)).read(n).decode("utf-8")
+                        for n in zipfile.ZipFile(io.BytesIO(data.content)).namelist())
+        self.assertNotIn(EXCLUDED, words)
+        self.assertNotIn("zed@plx.example", words)
+        self.assertNotIn("hunter2", words)
+        self.assertIn("pat@plx.example about PO 90412", words)
+        # nothing of the excluded person is kept with the upload either
+        rows = self.backend.instruct_uploads._rows()
+        self.assertNotIn(EXCLUDED, json.dumps(rows))
+        self.assertNotIn("zed@plx.example", json.dumps(rows))
+        self.assertEqual(rows[-1]["people"], ["pat@plx.example"])
+        # Pat excluded since the draft: the file is no longer served
+        class PatExcluded(Guard):
+            def is_excluded(self, value):
+                return super().is_excluded(value) or str(value).lower() == "pat@plx.example"
+        self.guard = PatExcluded()
+        self.assertEqual(self.ana.get(doc["download_url"]).status_code, 404)
+        self.guard = type("Unloaded", (Guard,), {"unavailable": "no list"})()
+        self.assertEqual(self.ana.get(doc["download_url"]).status_code, 404)
+        self.guard = Guard()
+        self.assertEqual(self.ana.get(doc["download_url"]).status_code, 200)
 
     def test_one_clarifying_question_then_the_draft_from_the_answer(self):
         model = self.backend.instruct_call = Model(

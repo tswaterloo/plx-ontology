@@ -27,6 +27,10 @@ _SCHEMA = (
     "WHERE superseded_at IS NULL",
     "CREATE INDEX IF NOT EXISTS versions_by_path ON versions(kind, path, capture_id)",
     "CREATE INDEX IF NOT EXISTS versions_by_unit ON versions(kind, unit, path)",
+    # The records a complete run found missing (``finish_run``): the delta's discovery
+    # reads those marked since a time without a scan of every version.
+    "CREATE INDEX IF NOT EXISTS versions_missing ON versions(missing_from_source_since) "
+    "WHERE missing_from_source_since IS NOT NULL",
     # Steps a run finished that are not pages (e.g. the header versions whose lines a
     # document-lines run read), committed with that step's records.
     """CREATE TABLE IF NOT EXISTS run_marks (

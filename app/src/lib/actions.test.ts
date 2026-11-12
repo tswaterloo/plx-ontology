@@ -63,6 +63,9 @@ describe("card actions", () => {
     expect(actionChip(state("unknown"), true)?.label).toBe("Outcome unknown");
     expect(outcomeUnknown(state("unknown"))).toBe(true);
     expect(outcomeUnknown(state("failed"))).toBe(false);
+    // a send still going out offers no "I checked Sent Items" resend
+    expect(outcomeUnknown(state("pending"))).toBe(false);
+    expect(actionChip(state("pending"), true)?.label).toBe("Sending");
     expect(isPutAway(state("snoozed"))).toBe(true);
     expect(isPutAway(state("dry_run"))).toBe(false);
   });

@@ -1067,6 +1067,16 @@ class ScanAndProactiveTests(unittest.TestCase):
              "l5": frozenset({"staff"}), "quality_controlled": frozenset({"staff"})}))
         self.assertEqual(kinds(hidden), ["po_impact"])
         # a later run that did not finish (its sum may be a part) keeps the money wording
+        # and the time the last finished run found it (AUTOMATION-014: never a fresh
+        # last-seen, so over newer data it is marked as not rechecked, never current)
+        import sqlite3 as _sqlite3
+        from contextlib import closing as _closing
+
+        def money_seen() -> str:
+            with _closing(_sqlite3.connect(inbox)) as conn:
+                return conn.execute("SELECT last_seen FROM gaps WHERE kind = "
+                                    "'po_impact_margin'").fetchone()[0]
+        seen = money_seen()
         real = pe._orders_at_risk
 
         def partial(*args, **kwargs):
@@ -1080,6 +1090,7 @@ class ScanAndProactiveTests(unittest.TestCase):
         again = next(g for g in read(STAFF, tp.POLICY)["gaps"]
                      if g["kind"] == "po_impact_margin")
         self.assertEqual(again["summary"], money["summary"])
+        self.assertEqual(money_seen(), seen)
 
     def landed_caller(self, s, actor, landed, policy=None):
         """The reader's tool caller, with ``plx.investigate`` of the landed-cost family
@@ -1363,7 +1374,7 @@ def planned_on(s, ao, day, event_type="AssemblyOrder.scheduled"):
 
 
 def demand_fixture(s, *, key="dm", orders=1, required="2099-01-25", ordered=None,
-                   so_status="Open", aos=(("Allocated", ("2099-01-20",)),)):
+                   so_status="Open", aos=(("Allocated", ("2099-01-20",)),), stagger=True):
     """late PO -> line -> item = FM packaging <- component -> FM AO(s) with no allocation,
     each making one finished product (AssemblyOrder.makes) whose Portal twin ``orders``
     open Portal orders' lines sell: the chain to each order exists only as an item-demand
@@ -1391,7 +1402,7 @@ def demand_fixture(s, *, key="dm", orders=1, required="2099-01-25", ordered=None
     for n in range(orders):
         so = s.obj(f"SalesOrder:portal.app_sales_order:so-{key}-{n:03d}")
         if required is not None:
-            s.val(so, "required_date", "date", staggered(required, n))
+            s.val(so, "required_date", "date", staggered(required, n) if stagger else required)
         if ordered is not None:
             s.val(so, "order_date", "date", ordered)
         if so_status is not None:
@@ -1436,6 +1447,18 @@ class DemandLeadTests(unittest.TestCase):
         # the firm link is still reported missing, as a lead only
         self.assertIn("link_lead_only", found["broken_by_reason"])
         self.assertNotIn("assembly_order_not_linked_to_order_line", found["broken_by_reason"])
+
+    def test_orders_sharing_a_real_deadline_keep_it_and_a_proven_load_day_does_not(self):
+        # BIZ-007: twelve orders due the same day are a common deadline, all at risk;
+        # the same twelve whose date is also the day they were entered are a load's
+        # default (provenance), so none is dated
+        for ordered, at_risk in ((None, 12), ("2099-01-25", 0)):
+            with self.subTest(ordered=ordered):
+                s = tp.Store()
+                demand_fixture(s, orders=12, required="2099-01-25", ordered=ordered,
+                               stagger=False)
+                found = self.scan(s)
+                self.assertEqual(found["orders_at_risk_by_tier"]["lead"], at_risk)
 
     def test_a_firm_allocation_wins_and_the_allocated_order_gets_no_lead(self):
         s = tp.Store()

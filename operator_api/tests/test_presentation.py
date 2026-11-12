@@ -258,6 +258,15 @@ class FloatNoise(unittest.TestCase):
                          ("Unit cost: 116.25", "116.25000000000001", "bc://x/1"))
 
 
+    def test_a_real_figure_with_many_places_is_never_rounded(self):
+        # WEB-003/API-014: a magnitude tolerance turned 100000000.1234567 into 100000000.1,
+        # and a 29-digit figure raised InvalidOperation out of the cleanup
+        for kept in ("total 100000000.1234567 CAD", "rate 1234.5678901",
+                     "qty 12345678901234567890.123456789 kg", "0.12345678901234",
+                     "x 99999999999999999999999999999.12345678"):
+            self.assertEqual(p.shown_words(kept), kept)
+        self.assertEqual(p.shown_words("-2.0000000000000004 and 1e5"), "-2 and 1e5")
+
 class PeriodNoticeTest(unittest.TestCase):
     """An answer to a question about a period the data does not reach says so in one short
     note (after the answer, once per conversation: ``WorkspaceBackend._first_notice``),

@@ -1377,6 +1377,22 @@ def _seen(record: sqlite3.Row, part: str) -> Any:
 
 
 # The replacement label of a key's open absence, for a ``row_current`` row ``{r}``.
+def _successors_remapped(row: dict[str, Any], mapping: Mapping[int, int]) -> dict[str, Any]:
+    """A removal row copied from a persisted capture with its successors' content captures
+    (``replaced_by``: [[key, capture id], ...]) under this file's capture ids. A successor
+    whose capture the copy does not bring, or a list that does not read, drops the label
+    (never a citation of another capture)."""
+    raw = row.get("replaced_by")
+    if raw is None:
+        return row
+    try:
+        pairs = json.loads(raw)
+        moved = [[key, mapping[capture]] for key, capture in pairs]
+    except (TypeError, ValueError, KeyError):
+        return dict(row, replaced_by=None, replaced_basis=None)
+    return dict(row, replaced_by=_canonical(moved))
+
+
 _REPLACED_SQL = ("(SELECT json_array(rm.replaced_basis, rm.replaced_by) FROM row_removal rm "
                  "WHERE rm.relation = {r}.relation AND rm.key_json = {r}.key_json AND "
                  "rm.basis = 'missing_from_source' AND rm.until IS NULL AND "
@@ -2497,6 +2513,9 @@ class SourceMirror:
                 if self._db.execute("SELECT 1 FROM row_current WHERE relation = ? LIMIT 1",
                                     (relation,)).fetchone() is not None:
                     return False  # a first fill merging in batches: never mixed with a copy
+                # the copy is this tenant's and upstream's: a new file is bound to them in
+                # the same transaction, as a live first fill binds it
+                self._pin_binding(tenant)
                 self._import_relation(relation, Path(manifest["path"]))
                 self._mark_persisted(relation, manifest["captures_as_of"], exc)
         except (MirrorError, CaptureError, OSError, sqlite3.DatabaseError, KeyError):
@@ -2550,6 +2569,10 @@ class SourceMirror:
                 rows = src.execute(f"SELECT {', '.join(names)} FROM {table} WHERE {where}",
                                    (relation,))
                 self._db.executemany(insert, (
+                    list(_successors_remapped(dict(zip(names, (
+                        mapping[row[c]] if c in remapped and row[c] is not None else row[c]
+                        for c in names))), mapping).values())
+                    if table == "row_removal" else
                     [mapping[row[c]] if c in remapped and row[c] is not None else row[c]
                      for c in names] for row in rows))
             # A copy labelled under an earlier rule brings no label this one drops.
@@ -3369,12 +3392,42 @@ class SourceMirror:
 
     # -- absence scans -------------------------------------------------------
 
+    @contextmanager
+    def _scan_owner(self, relation: str) -> Iterator[None]:
+        """The one owner of ``relation``'s absence scan (CAPTURE-004): an exclusive
+        ``flock`` on a per-relation file beside the mirror, taken without waiting and
+        released with the process. A second scan of the relation (a manual CLI run beside
+        the ingest cycle, which would resume the same ``in_progress`` row and interleave
+        its pages and cursor) fails as ``absence_scan_busy``; the owner's scan stands."""
+        import fcntl
+        locks = self._path.parent / f"{self._path.name}.scan-locks"
+        locks.mkdir(parents=True, exist_ok=True)
+        name = sha256(relation.encode("utf-8")).hexdigest()[:24]
+        with open(locks / f"{name}.lock", "a+b") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                raise MirrorError("absence_scan_busy",
+                                  f"another run is scanning {relation} for absences") from None
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def _scan_absence(self, relation: str, tenant: str, *,
                       catalog: Mapping[str, Any] | None = None,
                       deadline: float | None = None) -> dict[str, Any]:
-        """Key-only traversal marking mirrored rows the source no longer returns."""
+        """Key-only traversal marking mirrored rows the source no longer returns, by the
+        scan's one owner (``_scan_owner``)."""
         if self._client is None:
             raise MirrorError("source_unavailable", "no Workbench API client is configured")
+        with self._scan_owner(relation):
+            return self._scan_absence_owned(relation, tenant, catalog=catalog,
+                                            deadline=deadline)
+
+    def _scan_absence_owned(self, relation: str, tenant: str, *,
+                            catalog: Mapping[str, Any] | None,
+                            deadline: float | None) -> dict[str, Any]:
         state = self._state(relation)
         if state is None:
             raise MirrorError("not_mirrored", f"{relation} has no completed capture to compare")

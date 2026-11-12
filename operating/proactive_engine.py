@@ -190,6 +190,7 @@ from . import test_records as test_records_rule
 from . import proactive_gaps as pg
 from . import sales_order_status as so_status
 from . import suspect_money
+from . import order_value
 from operating import declared_schema as _schemas
 from operating.declared_schema import proactive_inbox as _PROACTIVE_INBOX
 from operating.declared_schema.proactive_inbox import _VISITS_DDL
@@ -366,7 +367,10 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     "duplicate_payables": 300.0, "returns_and_credits": 300.0,
                     # operations: index reads of their record types and the links at those
                     # records only (``_Store.touching``), each well under a minute
-                    "slow_moving_stock": 60.0, "expiring_lot_stock": 60.0,
+                    # (but slow-moving stock: every stocked item's sales, assembly use and
+                    # ledger entries by their posting events, 122 s alone and 199 s beside
+                    # three other rules at host load 70-97, 2026-11-12)
+                    "slow_moving_stock": 300.0, "expiring_lot_stock": 60.0,
                     "assembly_component_shortfall": 60.0, "certificate_expiry": 60.0,
                     "freight_cost_anomaly": 60.0,
                     # every posted invoice line of the last 360 days (two windows; 253 s live
@@ -374,9 +378,18 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # (the cost-jump rule's reads)
                     "price_consistency": 600.0, "stale_quote": 60.0, "priority_fill_unmet": 60.0,
                     # data quality: the party, order and item records by type and their
-                    # identity links by index; the capture times and one record per audience
-                    # (one pass over the record table: 108 s on the whole store)
-                    "duplicate_parties": 120.0, "key_fields_missing": 120.0,
+                    # identity links by type index (``_Store.of_type``); the capture times
+                    # and one record per audience (one pass over the record table: 108 s
+                    # on the whole store). Measured alone on the live store (2026-11-12, a
+                    # loaded host): the duplicates 179 s before their links were read by
+                    # type (155 s of it by end index); the missing fields 254 s, 147 s of
+                    # it the run's one customer-order read (``_customer_orders``, shared
+                    # with the late rules: the first rule to ask reads it, the others wait).
+                    # At 120 s both were cut short on every served pass from 2026-11-10.
+                    # Beside the label rules on 3 threads at host load 70-97 (2026-11-12,
+                    # removals read per type): duplicates 165 s, missing fields 474 s (cut
+                    # short at 420 s): 720 s leaves a third spare.
+                    "duplicate_parties": 300.0, "key_fields_missing": 720.0,
                     "twin_disagreement": 300.0, "stale_captures": 240.0,
                     # every invoice line of 3 years read once (shared with nothing else)
                     "reorder_soon": 300.0,
@@ -401,10 +414,19 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # 51 s, a loaded host)
                     # (label_changes also waits on label_revisions' read, its source: 93 s
                     # on its own on the gen 12 store, 2026-11-09)
-                    "inbox_triage": 60.0, "label_changes": 180.0,
+                    # (Postgres has no word index: the 2.25M attachment and file names
+                    # are scanned, ``label_revisions._scan_named``; one chunk after another
+                    # that took 336 s of the change rule's 465 s alone, 2026-11-12, and the
+                    # change rule was cut short at 180 s on every served pass from
+                    # 2026-11-10; now side by side, the server dropping unworded names)
+                    # beside each other and the missing-fields rule on 3 threads at host
+                    # load 70-97 (2026-11-12): the revisions 459 s, the changes 260 s after
+                    # it (cut short at 420 s on the first such pass): 720 s each
+                    "inbox_triage": 60.0, "label_changes": 720.0,
                     # the label words of attachment and file names, then their threads
-                    # (measured on the gen 12 store, 2026-11-09: 48 to 61 s)
-                    "label_revisions": 240.0,
+                    # (measured on the gen 12 store, 2026-11-09: 48 to 61 s; the change
+                    # rule waits on this read, so the two windows are one)
+                    "label_revisions": 720.0,
                     "rd_projects": 120.0}
 # Store-only detectors that run side by side on threads (each on its own store connection):
 # every set-based rule but the customer-PO scan (it reads the runtime's mirror, on the
@@ -503,7 +525,8 @@ def _connect(path: Path) -> sqlite3.Connection:
         # PLX_ONTOLOGY_PG: the Postgres ontology (current to the last delta layer), the
         # detectors' SQL run as written (operating/pg/sqlite_compat.py)
         from operating.pg.sqlite_compat import PgCompatConnection
-        return PgCompatConnection(ontology_reader.dsn())   # type: ignore[return-value]
+        return PgCompatConnection(                        # type: ignore[return-value]
+            ontology_reader.dsn(), statement_timeout_ms=statement_timeout_ms())
     # read only, one thread at a time (``_Store.conn`` is per thread); the run's own thread
     # may still set its progress handler and close it
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None,
@@ -575,8 +598,16 @@ class _Store:
         self.population_readers: dict[str, set[str]] = defaultdict(set)
         self._local = threading.local()
         self._conns: list[sqlite3.Connection] = []
+        self._conn_thread: dict[int, threading.Thread] = {}   # id(conn) -> the thread it reads on
+        self._helpers: list[threading.Thread] = []
         self._conns_lock = threading.Lock()
+        # idle connections the ranged scans' parts read on (``_part_conn``): kept for the
+        # run, never one opened and closed per range
+        self._parts: list[Any] = []
         self.interrupt: Callable[[], int] | None = None
+        self.left: Callable[[], float] | None = None
+        # the file the recent-mail read keeps what it judged in (set by a run over an inbox)
+        self.cursor_path: Path | None = None
         self.pin: Callable[[], Callable[[], int]] | None = None
         problem = ostore.format_problem(self.conn)
         if problem is not None:
@@ -591,6 +622,7 @@ class _Store:
         self._memo: dict[str, Any] = {}
         self._making: dict[str, threading.Lock] = {}
         self._removed: frozenset[str] | None = None
+        self._removed_of: dict[str, frozenset[str]] = {}
         self._removed_lock = threading.Lock()
 
     @property
@@ -643,23 +675,54 @@ class _Store:
                 conn.set_progress_handler(self.interrupt, 10000)
             with self._conns_lock:
                 self._conns.append(conn)
+                self._conn_thread[id(conn)] = threading.current_thread()
             self._local.conn = holder = _ThreadConn(conn, self._release)
             return holder.conn
         return conn.conn
+
+    def _part_conn(self) -> Any:
+        """An idle connection of the ranged scans' parts, else a new one (opened once per
+        part thread at most and kept for the run, closed with the store; each is one of
+        the store's connections, so ``interrupt_all`` reaches it)."""
+        with self._conns_lock:
+            if self._parts:
+                return self._parts.pop()
+        conn = _connect(self.path)
+        with self._conns_lock:
+            self._conns.append(conn)
+        return conn
+
+    def _part_done(self, conn: Any, ok: bool) -> None:
+        """A part's connection back to the idle ones; after a failed read (an interrupt,
+        a lost server, a replaced generation) it is closed instead."""
+        with contextlib.suppress(Exception):
+            conn.set_progress_handler(None, 0)
+        with self._conns_lock:
+            if ok and conn in self._conns:
+                self._parts.append(conn)
+                return
+            self._conns = [c for c in self._conns if c is not conn]
+        with contextlib.suppress(Exception):
+            conn.close()
 
     def _release(self, conn: Any) -> None:
         """A thread ended: its connection is closed and no longer kept (a Postgres server
         has a fixed number of connections; threads of the lanes and pools come and go)."""
         with self._conns_lock:
             self._conns = [c for c in self._conns if c is not conn]
+            self._conn_thread.pop(id(conn), None)
         with contextlib.suppress(Exception):
             conn.close()
 
     def watch(self, interrupt: Callable[[], int] | None,
-              pin: Callable[[], Callable[[], int]] | None = None) -> None:
+              pin: Callable[[], Callable[[], int]] | None = None,
+              left: Callable[[], float] | None = None) -> None:
         """Every connection's progress handler (None: none); ``pin()``: the handler for
-        another thread reading for this one (``Budget.pinned``)."""
+        another thread reading for this one (``Budget.pinned``); ``left()``: the seconds
+        left of the asking thread's detector window (a read that can stop early bounds
+        itself by it; Postgres has no progress handler to cut a read short)."""
         self.interrupt = interrupt
+        self.left = left
         self.pin = pin if interrupt is not None else None
         with self._conns_lock:
             conns = list(self._conns)
@@ -692,10 +755,35 @@ class _Store:
             with contextlib.suppress(Exception):
                 conn.interrupt()
 
+    def spawn(self, name: str, work: Callable[[], None]) -> None:
+        """Run ``work`` on a thread of its own that reads this store (a read a rule starts
+        early and collects later); ``close`` stops and waits for it before it closes the
+        connections it reads on (a connection closed under a running statement can crash
+        the process)."""
+        thread = threading.Thread(target=work, name=name, daemon=True)
+        with self._conns_lock:
+            self._helpers.append(thread)
+        thread.start()
+
     def close(self) -> None:
         with self._conns_lock:
+            helpers, self._helpers = self._helpers, []
+        if any(t.is_alive() for t in helpers):
+            self.interrupt_all()
+            for thread in helpers:
+                thread.join(HELPER_JOIN_SECONDS)
+        running = {t for t in helpers if t.is_alive()}
+        with self._conns_lock:
             conns, self._conns = self._conns, []
+            self._parts = []
+            owners = {id(c): self._conn_thread.pop(id(c), None) for c in conns}
         for conn in conns:
+            if owners.get(id(conn)) in running:
+                # a helper still reading past its join: its connection is never closed
+                # under the running statement; it closes when that thread ends (_release)
+                print(f"proactive_engine: helper {owners[id(conn)].name} still running at "
+                      "close; its connection is left to close with it", file=sys.stderr)
+                continue
             conn.close()
 
     def meta(self, key: str) -> str | None:
@@ -807,33 +895,73 @@ class _Store:
             if not rest:
                 return out
             types = rest
-        # a whole scan: the records removed now are read once and each row's ends looked
-        # up in them, never a removal probe per end of every link row (two index probes
-        # per row, a correlated subquery per row on Postgres)
-        removed = self.removed()
+        # a whole scan: the records removed now are read once per end type and each row's
+        # ends looked up in them (``_gone``), never a removal probe per end of every link
+        # row (two index probes per row, a correlated subquery per row on Postgres)
+        self._prefetch_gone(types)
+        gone = self._gone
         plain = ("SELECT l.rowid, l.link_id, l.link_type, l.from_object, l.to_object, l.tier, "
                  "l.markings FROM link_rows l "
                  "WHERE l.link_type IN (SELECT value FROM json_each(:types)) "
                  "AND l.superseded_at IS NULL AND l.tier <> 'contradicted'")
 
         def shape(r: Sequence[Any]) -> tuple:
-            return _link_row((*r[:7], r[3] in removed or r[4] in removed))
+            return _link_row((*r[:7], gone(r[3]) or gone(r[4])))
         for rows in self._ranged("link_rows", "l", plain, " ORDER BY l.rowid",
                                  {"types": json.dumps(list(types))}, shape):
-            for row in rows:   # the ranges in rowid order, each in rowid order
+            # the ranges in rowid order, each in rowid order
+            for row in self._settle_gone(rows):
                 out[row[2]].append(row)
         return out
 
-    def removed(self) -> frozenset[str]:
-        """Every record not held by its source now (``ostore.removed_at_sql`` at the
-        store's latest knowledge), read once per run."""
+    def removed(self, types: Iterable[str] | None = None) -> frozenset[str]:
+        """The records of ``types`` not held by its source now (``ostore.removed_at_sql``
+        at the store's latest knowledge), one indexed read per type, each read once per
+        run. None: every record in the store (one scan of every record: 55-77 s on the
+        served store, 2026-11-12), only for a read whose record types are unknown."""
         # its own lock: a link scan asks for it while holding the link cache's lock,
         # which ``memo`` takes too
         with self._removed_lock:
-            if self._removed is None:
-                self._removed = frozenset(
-                    r[0] for r in self.conn.execute(ostore.removed_ids_sql()))
-            return self._removed
+            if types is None:
+                if self._removed is None:
+                    self._removed = frozenset(
+                        r[0] for r in self.conn.execute(ostore.removed_ids_sql()))
+                return self._removed
+            out: set[str] = set()
+            for object_type in sorted(set(types)):
+                if object_type not in self._removed_of:
+                    self._removed_of[object_type] = frozenset(
+                        r[0] for r in self.conn.execute(
+                            ostore.removed_ids_sql(object_type_sql="?"),
+                            (object_type, object_type)))
+                out |= self._removed_of[object_type]
+            return frozenset(out)
+
+    def _gone(self, object_id: str) -> bool:
+        """Whether a record is not held by its source now, among the types ``removed``
+        read so far (a record id opens with its type: ``project.object_id_of``); a type not
+        read yet: False here, settled by ``_settle_gone`` after the read (the link scan's
+        threads never read the store for it)."""
+        known = self._removed_of.get(object_id.split(":", 1)[0])
+        return known is not None and object_id in known
+
+    def _prefetch_gone(self, link_types: Iterable[str]) -> None:
+        """``removed`` of the declared end types of ``link_types`` (``_link_ends``), read
+        before a link scan on this thread."""
+        self.removed({e for ends in _link_ends(list(link_types)).values() for e in ends})
+
+    def _settle_gone(self, rows: list[tuple]) -> list[tuple]:
+        """``rows`` with ``gone`` read again for each row with an end whose type was not
+        read before the scan (an end type the schema does not declare): that type read
+        now, on this thread."""
+        def kind(oid: str) -> str:
+            return oid.split(":", 1)[0]
+        missing = {kind(o) for r in rows for o in (r[3], r[4])} - set(self._removed_of)
+        if not missing:
+            return rows
+        self.removed(missing)
+        return [(*r[:7], self._gone(r[3]) or self._gone(r[4]))
+                if kind(r[3]) in missing or kind(r[4]) in missing else r for r in rows]
 
     def _type_count(self, object_type: str) -> int:
         return self.memo("count:" + object_type, lambda: self.conn.execute(
@@ -864,6 +992,27 @@ class _Store:
                     found.setdefault(r[1], _link_row(r))
         return sorted(found.values(), key=lambda r: r[0])
 
+    def of_type(self, link_type: str) -> list[tuple]:
+        """Every current link of one type, contradicted ones too (``_LinkRows`` rows, in
+        rowid order), read once per run by the link table's type index; each row's ends
+        looked up in the records removed now (``_gone``), never a removal probe per row.
+        A type of tens of thousands of rows reads in seconds this way, where a read by the
+        end indexes at every record of its end type took 40 s a type (2026-11-12 live
+        store: ``Customer.same_record_as`` 30k rows 1.5 s by type, 40 s by end)."""
+        def read() -> list[tuple]:
+            self._prefetch_gone([link_type])
+            gone = self._gone
+            sql = ("SELECT l.rowid, l.link_id, l.link_type, l.from_object, l.to_object, "
+                   "l.tier, l.markings FROM link_rows l WHERE l.link_type = ? "
+                   "AND l.superseded_at IS NULL")
+            if self.scoped:
+                # an incremental pass: its scope's ends only, as ``touching`` reads them
+                return self.touching(self._scope_ids, [link_type], every=True)
+            return sorted(self._settle_gone(
+                [_link_row((*r[:7], gone(r[3]) or gone(r[4])))
+                 for r in self.conn.execute(sql, (link_type,))]), key=lambda r: r[0])
+        return self.memo("of_type:" + link_type, read)
+
     def _ranged(self, table: str, alias: str, sql: str, tail: str,
                 params: Mapping[str, Any], shape: Callable[[Any], Any]) -> list[list[Any]]:
         """``sql`` (over ``table`` as ``alias``, then ``tail``) read by rowid ranges of the
@@ -880,10 +1029,10 @@ class _Store:
             handler = self.pin() if self.pin is not None else self.interrupt
 
             def part(lo: int) -> list[Any]:
-                conn = _connect(self.path)
+                conn, ok = self._part_conn(), False
                 try:
-                    if handler is not None:
-                        conn.set_progress_handler(handler, 10000)
+                    conn.set_progress_handler(handler, 10000) if handler is not None \
+                        else conn.set_progress_handler(None, 0)
                     # a generation replaced under the run (Postgres is never replaced: a
                     # delta layer changes it in place, as the run's own reads see)
                     held = conn.execute("SELECT value FROM store_meta WHERE key = "
@@ -891,10 +1040,12 @@ class _Store:
                     if isinstance(conn, sqlite3.Connection) and \
                             (held[0] if held else None) != self.digest:
                         raise ostore.StoreError("store_replaced")
-                    return [shape(r) for r in conn.execute(ranged, {**params, "lo": lo,
-                                                                    "hi": lo + step})]
+                    got = [shape(r) for r in conn.execute(ranged, {**params, "lo": lo,
+                                                                   "hi": lo + step})]
+                    ok = True
+                    return got
                 finally:
-                    conn.close()
+                    self._part_done(conn, ok)
             try:
                 with ThreadPoolExecutor(self.threads) as pool:
                     return list(pool.map(part, range(0, top + 1, step)))
@@ -1721,10 +1872,15 @@ def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdic
     scoped = st.scoped
 
     def every_default() -> dict[Any, frozenset]:
-        # the default required dates of each binding: a population (all its orders)
-        held = st.values((so_status.TYPE,), (so_status.DATE_PROP,)) if scoped else found
+        # the default required dates of each binding: a population (all its orders), a
+        # bulk day erased only with provenance (the holders' own creation/import day)
+        held = st.values((so_status.TYPE,), (so_status.DATE_PROP, *so_status.OWN_DAYS)) \
+            if scoped else found
         return so_status.date_defaults(_grouped(
-            (po_status.binding_of(oid), _day(r.get("value"))) for oid, entry in held.items()
+            (po_status.binding_of(oid),
+             (_day(r.get("value")), [o.get("value") for n in so_status.OWN_DAYS
+                                     for o in entry["props"].get(n, ())]))
+            for oid, entry in held.items()
             for r in entry["props"].get(so_status.DATE_PROP, ())))
     defaults = st.population("so_default_dates", every_default)
 
@@ -1764,7 +1920,7 @@ def _read_customer_orders(st: _Store) -> tuple[dict[str, Any], list[_OrderVerdic
             # its promise too: the promise-date rule judges a shipped order against it
             verdict.wanted = wanted()
             continue
-        if any(m in fulfilled for m in group):   # a lead shipment or invoice only
+        if any(fulfilled.get(m) is False for m in group):   # a lead shipment or invoice only
             verdict.reason = "fulfilment_unsettled"
             continue
         leads = sorted(lead_twins.get(top, ()))
@@ -1937,17 +2093,28 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
             by_system[so_status.SYSTEM_OF[row["property"]]].add(str(row["value"]).strip())
         said = "; ".join(f"{system}: {', '.join(sorted(words))}"
                          for system, words in sorted(by_system.items()))
+        # BIZ-007: a required date on the day the order was entered is kept and judged,
+        # and said with its doubt (a same-day order, or a form that filled in the day)
+        doubt = wanted.reason == so_status.OWN_DAY
+        if doubt:
+            counts["own_day_doubt"] += 1
         made = _gap(
             LATE_SO, name, min(r["object_id"] for r in wanted.governing), so_status.TYPE,
             "overdue",
             summary=f"A customer order is open {late} day{'' if late == 1 else 's'} past its "
-                    f"required date {required.isoformat()} (open in {said})",
+                    f"required date {required.isoformat()} (open in {said})" +
+                    ("; that date is the day the order was entered, so it may be a default "
+                     "rather than the customer's date" if doubt else ""),
             missing=f"Has the customer order required by {required.isoformat()} shipped, and "
-                    "if not, what date can the customer now expect?",
+                    "if not, what date can the customer now expect?" +
+                    (" Was that date the customer's, or filled in when the order was "
+                     "entered?" if doubt else ""),
             why="Every record of the order that states a status says it is open, none is "
                 "closed, shipped or invoiced, and no shipment or invoice is linked to it, "
-                "while its required date has passed.",
-            priority="medium", about=(so_status.TYPE, so_status.DATE_PROP),
+                "while its required date has passed." +
+                (" Its required date equals the day the order was entered: a same-day order "
+                 "or a form default, unconfirmed." if doubt else ""),
+            priority="low" if doubt else "medium", about=(so_status.TYPE, so_status.DATE_PROP),
             groups=[_cites(wanted.governing, *link_marks),
                     *[[cite] for cite in _cites(order.open_by, *link_marks)]],
             extra=_cites(rows(*SO_NUMBERS), *link_marks),
@@ -1963,7 +2130,8 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
                         "classes": {c: classes.get(c, 0)
                                     for c in ("open", "closed", "draft", "unknown")},
                         **{k: counts.get(k, 0) for k in ("evaluated", "late", "undated",
-                                                         "stale", "probably_fulfilled")}}
+                                                         "stale", "probably_fulfilled",
+                                                         "own_day_doubt")}}
     return result
 
 
@@ -3380,6 +3548,12 @@ AMOUNT_OF = {"PurchaseOrder": ("total_cost", "currency"),
              "PurchaseInvoice": ("total_amount", "currency")}
 
 
+# A sales order's value derived where its header states none (``operating.order_value``):
+# the amount's basis, as the briefing words it.
+DERIVED_BASIS = {order_value.INVOICES: "order_value_invoices",
+                 order_value.ORDER_LINES: "order_value_lines"}
+
+
 def _business_steps(st: _Store, as_of: date,
                     on_hand: Sequence[tuple[str, str, str | None]] | None,
                     people: Callable[[], Any] = lambda: None,
@@ -3765,7 +3939,26 @@ def _with_amounts(st: _Store, results: Mapping[str, Mapping[str, Any]]) -> None:
                               objects=sorted({g["object_id"] for g in gaps}))
         except sqlite3.OperationalError:
             continue   # interrupted at the deadline: no amount stated, none ranked
+        derived: dict[str, Any] = {}
+        if object_type == order_value.TYPE:
+            try:   # a header stating no value: what its invoices or lines derive
+                derived = {oid: got for oid, got in order_value.for_store(
+                    st, sorted({g["object_id"] for g in gaps})).items() if got.derived}
+            except sqlite3.OperationalError:
+                derived = {}
         for gap in gaps:
+            got = derived.get(gap["object_id"])
+            if got is not None:
+                rows = list(got.rows)
+                marks = _markings(*(r.get("markings") for r in rows))
+                gap["extra"] = list(dict.fromkeys([*gap["extra"], *_cites(rows)]))
+                gap["follow_up"]["event"] = {
+                    **(gap["follow_up"].get("event") or {}),
+                    "amount": {"value": str(got.amount), "currency": got.currency,
+                               "basis": DERIVED_BASIS[got.basis],
+                               "handle": rows[0]["l1_handle"],
+                               "currency_handle": rows[0]["l1_handle"], "markings": marks}}
+                continue
             props = (found.get(gap["object_id"]) or {}).get("props") or {}
             total, code = ev._one(props.get(amount)), ev._one(props.get(currency))
             value = ev._decimal(total["value"]) if total else None
@@ -4147,6 +4340,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         return _run(store_path, inbox, as_of, **options)
 
 
+HELPER_JOIN_SECONDS = 30.0   # a closing store waits this long for each helper read to stop
 LOCK_POLL_SECONDS = 2.0   # how often a pass waiting for the inbox's lock tries it
 
 
@@ -4181,6 +4375,21 @@ def pass_lock(inbox: Any, *, wait: bool | float = True,
         yield True
     finally:
         os.close(fd)
+
+
+PROACTIVE_STATEMENT_SECONDS = 600
+
+
+def statement_timeout_ms() -> int:
+    """The longest one detector statement may run on Postgres: ``PLX_PROACTIVE_STATEMENT_SECONDS``
+    (default 600). The shared connection default (120 s) cut vendor_no_reply,
+    teams_unanswered_ask, price_consistency and others at every busy pass, so those rules
+    produced no alerts at all (CC-P-03); a bad or non-positive value falls back."""
+    try:
+        seconds = float(os.environ.get("PLX_PROACTIVE_STATEMENT_SECONDS", ""))
+    except ValueError:
+        seconds = 0.0
+    return int((seconds if seconds > 0 else PROACTIVE_STATEMENT_SECONDS) * 1000)
 
 
 def _failure_cause(error: BaseException) -> list[str]:
@@ -4269,7 +4478,8 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     # every detector runs in its own window, with or without a run budget: an unbounded
     # run is one whose deadline never comes (its tool calls are not guarded)
     window = budget if budget is not None else Budget(math.inf)
-    st.watch(window.interrupt, window.pinned)
+    st.watch(window.interrupt, window.pinned, window.left)
+    st.cursor_path = Path(str(inbox) + ".commitments-recent.json")
     try:
         results: dict[str, dict[str, Any]] = {}
         seconds: dict[str, float] = {}
@@ -4535,9 +4745,42 @@ TEST_TWIN_LINKS = (*po_status.TWIN_LINKS, "SalesOrder.same_record_as")
 # A carried-over draft: an order whose Portal copy is a draft ordering nothing, last changed
 # more than this many days before the run's day (an old draft carried into BC at go-live).
 OLD_DRAFT_DAYS = 365
-# Number series: the letters (or leading digits) of a document number before its running
-# number, and the run's width (a BC series ``106001``: series ``106``, first ``001``).
-_SERIES = re.compile(r"^(.*?)(\d{3})$")
+# Number series: a document number's prefix up to its last non-digit and its trailing
+# digits, read as one running number of a fixed width (BC ``106001``: series ("", 6),
+# number 106001; ``PO100409``: series ("PO", 6)). A number ending in 001 is a series' first
+# only when nothing of its series is numbered below it but its own predecessor (the 000 a
+# series may start at): past a thousand, ``PO101001`` follows ``PO100999`` and is an
+# ordinary order. A first is a go-live first only on the BC go-live day the deployment
+# states (``test_records.go_live_day``): a new series begun later (``PO1001``, ``PO1002``
+# with lines on an ordinary day) is ordinary business (AUTOMATION-015).
+_SERIES = re.compile(r"^(.*?)(\d+)$")
+
+
+def _iso(day: Any) -> str | None:
+    return day.isoformat() if isinstance(day, date) else (str(day)[:10] if day else None)
+
+
+def series_firsts(members: Iterable[tuple[Any, str, Any]], go_live: date | None
+                  ) -> set[Any]:
+    """The go-live first documents of BC number series: from (id, number, day) members,
+    each series' first number (running number ...001, nothing of the series numbered below
+    it but its predecessor) dated the go-live day ``go_live``, and the series' documents
+    dated that same day. No go-live day marks nothing; a series whose first has no one day,
+    or with two firsts, marks nothing."""
+    if go_live is None:
+        return set()
+    series: dict[tuple[str, int], list[tuple[Any, int, Any]]] = defaultdict(list)
+    for rid, number, day in members:
+        m = _SERIES.match(str(number or "").strip())
+        if m:
+            series[(m.group(1), len(m.group(2)))].append((rid, int(m.group(2)), _iso(day)))
+    marked: set[Any] = set()
+    for rows in series.values():
+        first = [r for r in rows if r[1] % 1000 == 1
+                 and not any(o[1] < r[1] - 1 for o in rows)]
+        if len(first) == 1 and first[0][2] == go_live.isoformat():
+            marked |= {rid for rid, _n, day in rows if day == first[0][2]}
+    return marked
 
 
 def test_records(st: _Store, as_of: date) -> dict[str, str]:
@@ -4570,27 +4813,22 @@ def _find_test_records(st: _Store, as_of: date) -> dict[str, str]:
         for r in (ordered.get(l["from_object"]) or {"props": {}})["props"].get(
             "ordered_quantity", []))}
     # go-live first documents: in each BC number series, the first number the series
-    # issued (its running number 001) and the documents of the series dated that same day
+    # issued (its running number 001) on the stated go-live day and the documents of the
+    # series dated that same day
     twins = st.links(TEST_TWIN_LINKS, (*SETTLED, "corroborated"))
     twinned = {end for link in twins for end in (link["from_object"], link["to_object"])}
-    series: dict[str, list[tuple[str, int, date | None]]] = defaultdict(list)
+    members: list[tuple[str, str, date | None]] = []
     for oid, entry in pos.items():
         # a BC-native document (no other system holds a copy): a copy's number is the
         # other system's series, whose first document is a real order
         if not oid.startswith("PurchaseOrder:bc.") or oid in twinned:
             continue
+        days = {_day(r["value"]) for r in entry["props"].get("order_date", [])}
         for row in entry["props"].get("po_number", []):
-            m = _SERIES.match(str(row["value"] or "").strip())
-            if m:
-                days = {_day(r["value"]) for r in entry["props"].get("order_date", [])}
-                series[m.group(1)].append((oid, int(m.group(2)),
-                                           next(iter(days)) if len(days) == 1 else None))
-    for members in series.values():
-        first = [m for m in members if m[1] == 1]
-        if len(first) == 1 and first[0][2] is not None:
-            for oid, _n, day in members:
-                if day == first[0][2]:
-                    found.setdefault(oid, "go_live_first")
+            members.append((oid, str(row["value"] or ""),
+                            next(iter(days)) if len(days) == 1 else None))
+    for oid in sorted(series_firsts(members, test_records_rule.go_live_day())):
+        found.setdefault(oid, "go_live_first")
     # old empty drafts: a Portal draft ordering nothing, untouched for a year
     for oid, entry in pos.items():
         props = entry["props"]
@@ -4895,14 +5133,16 @@ def _fold_scoped(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, An
     open gap about one of them that it no longer finds is resolved. The run records,
     counts, coverage and generation stay the last full run's."""
     _upsert_gaps(conn, results, gaps, run_at)
+    _note_unchecked(conn, results, scope.subjects)
     for name, result in results.items():
         if result["status"] != "complete":
             continue
+        unchecked = {o for o in result.get("unchecked") or () if isinstance(o, str)}
         conn.execute(
             "UPDATE gaps SET state = 'resolved', resolved_at = ? WHERE state = 'open' "
             "AND detector = ? AND object_id IN (SELECT value FROM json_each(?)) "
             "AND gap_id NOT IN (SELECT value FROM json_each(?))",
-            (run_at, name, json.dumps(sorted(scope.subjects.get(name, ()))),
+            (run_at, name, json.dumps(sorted(set(scope.subjects.get(name, ())) - unchecked)),
              json.dumps(sorted(gaps))))
 
 
@@ -4972,11 +5212,61 @@ def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
             _note_generation(conn, name, digest, run_at)
     _upsert_gaps(conn, results, gaps, run_at)
     complete = [name for name, result in results.items() if result["status"] == "complete"]
+    _note_unchecked(conn, results)
     conn.execute(
         "UPDATE gaps SET state = 'resolved', resolved_at = ? WHERE state = 'open' "
         "AND detector IN (SELECT value FROM json_each(?)) "
-        "AND gap_id NOT IN (SELECT value FROM json_each(?))",
-        (run_at, json.dumps(complete), json.dumps(sorted(gaps))))
+        "AND gap_id NOT IN (SELECT value FROM json_each(?)) "
+        "AND (detector || '|' || object_id) NOT IN (SELECT value FROM json_each(?))",
+        (run_at, json.dumps(complete), json.dumps(sorted(gaps)),
+         json.dumps(_unchecked_keys(results))))
+
+
+# Inbox meta key per detector: the subjects its last run read but could not judge (a failed
+# read, an undecided figure; the rule's result ``unchecked``). Their open gaps are neither
+# found again nor resolved by that run: they stay listed, marked as not rechecked
+# (``read_inbox``), until a run judges them.
+_UNCHECKED_KEY = "unchecked:"
+
+
+def _unchecked_keys(results: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    return sorted(f"{name}|{oid}" for name, result in results.items()
+                  for oid in result.get("unchecked") or () if isinstance(oid, str))
+
+
+def _note_unchecked(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
+                    scoped: Mapping[str, Iterable[str]] | None = None) -> None:
+    """Record each rule's unchecked subjects (a whole run replaces its list; an incremental
+    pass replaces only its own subjects' entries, ``scoped``)."""
+    for name, result in results.items():
+        key = _UNCHECKED_KEY + name
+        now = {o for o in result.get("unchecked") or () if isinstance(o, str)}
+        if scoped is not None:
+            row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+            try:
+                held = set(json.loads(row[0])) if row is not None else set()
+            except ValueError:
+                held = set()
+            now |= held - set(scoped.get(name, ()))
+        if now:
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                         (key, json.dumps(sorted(now))))
+        else:
+            conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+
+
+def _held_unchecked(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    """(rule, subject) of every subject a rule's last run could not judge; an unreadable
+    record holds none (its gaps then follow the rule's status alone)."""
+    out: set[tuple[str, str]] = set()
+    for key, value in conn.execute("SELECT key, value FROM main.meta WHERE key LIKE ?",
+                                   (_UNCHECKED_KEY + "%",)):
+        try:
+            ids = json.loads(value)
+        except ValueError:
+            continue
+        out |= {(key[len(_UNCHECKED_KEY):], o) for o in ids if isinstance(o, str)}
+    return out
 
 
 def _upsert_gaps(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
@@ -4989,8 +5279,9 @@ def _upsert_gaps(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, An
         elif before is not None and gap["kind"] in WHOLE_ONLY \
                 and results[gap["detector"]]["status"] != "complete":
             # a money claim summed over a run that did not finish may be a part: the open
-            # gap keeps the wording and citations of the last run that did
-            conn.execute("UPDATE gaps SET last_seen = ? WHERE gap_id = ?", (run_at, gap["id"]))
+            # gap keeps the wording, citations and time of the last run that did (never a
+            # fresh last-seen: over newer data it is then listed marked as not rechecked,
+            # ``_carried``, never as current)
             continue
         conn.execute(
             "INSERT INTO gaps VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL) "
@@ -5522,8 +5813,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     ``since``: only gaps first seen at or after this ISO moment, newest first (an alert
     rule's new findings: an older backlog never uses up ``limit``).
     ``all_owners``: a person's own-mail kinds are listed whoever owns them (everything else
-    about the trim is unchanged); only the owner-only workload drill-down sets it, after its
-    route has refused every other reader."""
+    about the trim is unchanged); only the Team drill-down sets it: for the owner and the named Team
+    readers, after the route has refused every other reader."""
 
     # an alert type the registry keeps off (``alert_kinds``) yields nothing to a reader
     # unless they switched it on; only a page that lists it on purpose reads it
@@ -5572,6 +5863,13 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
         # the rules whose last good findings are carried, marked, until a run of the
         # deployed code over the served data replaces them
         carried_rules = (set(behind) | older) & set(detectors)
+        # the rules whose last run was cut short (its window or the run's budget spent):
+        # what they found stands; what they did not reach again is their last good
+        # finding over older data, carried and marked, never shown as current nor
+        # dropped unseen (a rule slower than its window would otherwise show nothing)
+        cut_short = {name for name, status in detectors.items() if status == "truncated"}
+        # likewise a subject a rule's last run read but could not judge (``unchecked``)
+        unchecked = _held_unchecked(conn)
         # each rule's last run (a full, 4-hourly, calling or incremental pass): its time
         run_at = {row["detector"]: row["run_at"] for row in runs
                   if isinstance(row["run_at"], str)}
@@ -5633,7 +5931,9 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             # a gap found over older data than the store served now is never shown: the
             # record page reads the served data, so the two would disagree
             rows = [row for row in rows if _of_served(row, current) or (
-                row["detector"] in carried_rules and row["state"] == "open")]
+                (row["detector"] in carried_rules | cut_short
+                 or (row["detector"], row["object_id"]) in unchecked)
+                and row["state"] == "open")]
             for row, citations in _visible(conn, rows, params, decide):
                 state = ("resolved" if row["state"] == "resolved"
                          else "acknowledged" if row["acked"] else "open")
@@ -5650,14 +5950,16 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                     if order["rank"] < held[0]:
                         index = next(i for i, g in enumerate(shown) if g is held[1])
                         shown[index] = entry = _shown(row, citations, state, follow_up, allowed, readable, today=today,
-                                   carried=_carried(row, carried_rules, older, failed_at))
+                                   carried=_carried(row, carried_rules, older, failed_at,
+                                                    cut_short, current, unchecked))
                         orders[order["key"]] = (order["rank"], entry)
                     continue
                 if len(shown) >= limit:
                     more = True
                     break
                 entry = _shown(row, citations, state, follow_up, allowed, readable, today=today,
-                                   carried=_carried(row, carried_rules, older, failed_at))
+                                   carried=_carried(row, carried_rules, older, failed_at,
+                                                    cut_short, current, unchecked))
                 shown.append(entry)
                 if isinstance(order, dict):
                     orders[order["key"]] = (order["rank"], entry)
@@ -5711,20 +6013,28 @@ def _today() -> date:
 
 
 def _carried(row: Mapping[str, Any], carried_rules: set[str], older: set[str],
-             failed_at: Mapping[str, Any]) -> dict[str, Any] | None:
+             failed_at: Mapping[str, Any], cut_short: set[str] = frozenset(),
+             current: Mapping[str, datetime | None] | None = None,
+             unchecked: set[tuple[str, str]] = frozenset()) -> dict[str, Any] | None:
     """Why a shown finding is not current (None: it is): its rule's last run failed
     (``check_failed``, with the failure time), its rule ran older code (``older_code``) or
-    over older data (``older_data``); with the time it was last found."""
+    over older data (``older_data``), or its rule's last run was cut short before finding
+    it again (``check_incomplete``: ``cut_short``, a finding not of the data ``current``
+    names; or its subject was ``unchecked`` by the rule's last run); with the time it was
+    last found."""
     name = row["detector"]
-    if name not in carried_rules and name not in failed_at:
+    unfinished = (name in cut_short or (name, row["object_id"]) in unchecked) \
+        and current is not None and not _of_served(row, current)
+    if name not in carried_rules and name not in failed_at and not unfinished:
         return None
     reason = ("check_failed" if name in failed_at else "older_code" if name in older
-              else "older_data")
+              else "older_data" if name in carried_rules else "check_incomplete")
     return {"reason": reason, "last_checked": row["last_seen"],
             **({"check_failed_at": failed_at[name]} if name in failed_at else {})}
 
 
 CARRIED_WORDS = {"check_failed": "check failed at {failed}; last checked {checked}",
+                 "check_incomplete": "the latest check did not finish; last checked {checked}",
                  "older_code": "not rechecked since the rules changed; last checked {checked}",
                  "older_data": "not rechecked on the newest data; last checked {checked}"}
 # A count of days in a finding's words, and which way it moves as days pass: "in 3 days"

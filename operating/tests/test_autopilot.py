@@ -52,14 +52,24 @@ class Fixture(unittest.TestCase):
         order = w.obj("SalesOrder", {"order_number": "SO-7001", "customer_po": po,
                                      "status": "Open", "required_date": "2026-10-30"})
         w.link("SalesOrder.ordered_by", order, self.customer)
-        item = w.obj("Product", {"code": "SYN-1", "quantity_on_hand": on_hand})
+        item = w.obj("Product", {"code": "SYN-1", "quantity_on_hand": (on_hand, "EA")})
         line = w.obj("SalesOrderLine", {"outstanding_quantity": need, "uom": "EA"})
         w.link(ap.SO_LINE_OF, line, order)
         w.link(ap.SO_LINE_ITEM, line, item)
-        pol = w.obj("PurchaseOrderLine", {"ordered_quantity": "100", "received_quantity": "0",
+        pol = w.obj("PurchaseOrderLine", {"ordered_quantity": ("100", "EA"),
+                                          "received_quantity": "0",
                                           "bc_expected_receipt_date": "2026-10-25"})
         w.link(ap.PO_LINE_ITEM, pol, item)
         return order
+
+    def availability(self, order: str) -> dict:
+        """``ap.availability`` of ``order`` over the built store, as a handler reads it."""
+        path = self.dir / "atp.sqlite"
+        self.w.build(path)
+        st = pe._Store(path, threads=1)
+        self.addCleanup(st.close)
+        ctx = ap.Ctx(st, NOW.date(), time.monotonic() + 60, ())
+        return ap.availability(ctx, order)
 
     def message(self, i: int, body: str, *, subject: str = "PO", box: str = OURS_OID,
                 to=(OURS,), cc=(), sender: str = OUTSIDE, customer: bool = True) -> str:
@@ -390,6 +400,64 @@ class Readers(Fixture):
 
 
 class Kinds(Fixture):
+    def test_a_meeting_read_before_its_end_is_followed_up_once_after_it(self):
+        # AUTOMATION-002: whether a meeting ended is judged at the cycle's time, and the
+        # event read before its end never swallows the follow-up after it
+        w = self.w
+        meeting = w.obj("Meeting", {"mailbox": OURS_OID, "subject": "Review",
+                                    "organizer": json.dumps({"address": OURS}),
+                                    "attendees": json.dumps([{"address": OUTSIDE}]),
+                                    "end": ap._iso(NOW + timedelta(hours=1))})
+        w.link("Meeting.with_customer", meeting, self.customer)
+        before = self.cycle([meeting], now=NOW)
+        self.assertNotIn("meeting_followup", before["prepared"])
+        after = self.cycle([meeting], now=NOW + timedelta(hours=2))
+        self.assertEqual(after["prepared"].get("meeting_followup"), 1, after)
+        again = self.cycle([meeting], now=NOW + timedelta(hours=3))
+        self.assertNotIn("meeting_followup", again["prepared"])
+        self.assertEqual(sum(1 for i in self.queue().items()
+                             if i["autopilot"] == "meeting_followup"), 1)
+
+    def test_a_handler_failure_is_tried_again_and_then_left_failed(self):
+        # AUTOMATION-001: a handler that fails (a locked store) defers its event: the next
+        # cycle prepares it once; one that keeps failing is left failed after
+        # HANDLER_TRIES, never processed silently
+        import sqlite3
+        w = self.w
+        meetings = [w.obj("Meeting", {"mailbox": OURS_OID, "subject": f"Review {n}",
+                                      "organizer": json.dumps({"address": OURS}),
+                                      "attendees": json.dumps([{"address": OUTSIDE}]),
+                                      "end": "2026-10-18T15:00:00Z"}) for n in (1, 2)]
+        for meeting in meetings:
+            w.link("Meeting.with_customer", meeting, self.customer)
+        real = ap.HANDLERS["meeting_followup"]
+        broken = {meetings[1]}
+        calls = []
+
+        def flaky(ctx, event):
+            calls.append(event["object_id"])
+            if event["object_id"] in broken or calls.count(event["object_id"]) == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real(ctx, event)
+
+        def states():
+            q = self.queue()
+            return {r[0]: r[1] for r in q.conn.execute(
+                "SELECT object_id, state FROM events WHERE event_type = 'meeting.ended'")}
+        with mock.patch.dict(ap.HANDLERS, {"meeting_followup": flaky}):
+            first = self.cycle(meetings)
+            self.assertNotIn("meeting_followup", first["prepared"])
+            self.assertEqual(states(), dict.fromkeys(meetings, "deferred"))
+            second = self.cycle(meetings, now=NOW + timedelta(minutes=10))
+            self.assertEqual(second["prepared"].get("meeting_followup"), 1, second)
+            self.assertEqual(states(), {meetings[0]: "processed", meetings[1]: "deferred"})
+            self.cycle(meetings, now=NOW + timedelta(minutes=20))
+            self.assertEqual(states()[meetings[1]], "failed")
+            self.cycle(meetings, now=NOW + timedelta(minutes=30))
+        self.assertEqual(calls.count(meetings[1]), ap.HANDLER_TRIES)
+        self.assertEqual(sum(1 for i in self.queue().items()
+                             if i["autopilot"] == "meeting_followup"), 1)
+
     def test_task_qc_meeting_and_supplier_eta_events(self):
         w = self.w
         task = w.obj("PlannerTask", {"title": "Check order SO-7001 for the customer",
@@ -530,6 +598,210 @@ class OwnersDesk(Fixture):
         day = ap.digest(list(items.values()), NOW)
         self.assertEqual(day["brief"]["counts"]["decisions"], 1)
         self.assertEqual(day["brief"]["counts"]["drafts"], 1)
+
+
+class Availability(Fixture):
+    """The promise date: one running allocation per item, one stated unit, supply only
+    from open purchase orders, every line read (AUTOMATION-003..006)."""
+
+    def lines(self, order: str, item: str, *needs: tuple) -> None:
+        for need in needs:
+            line = self.w.obj("SalesOrderLine", {"outstanding_quantity": need[0],
+                                                 "uom": need[1] if len(need) > 1 else "EA"})
+            self.w.link(ap.SO_LINE_OF, line, order)
+            self.w.link(ap.SO_LINE_ITEM, line, item)
+
+    def bare_order(self, on_hand: tuple) -> tuple[str, str]:
+        order = self.w.obj("SalesOrder", {"order_number": "SO-8001", "status": "Open"})
+        item = self.w.obj("Product", {"code": "SYN-2", "quantity_on_hand": on_hand})
+        return order, item
+
+    def test_splitting_one_demand_into_lines_never_creates_supply(self):
+        order, item = self.bare_order(("10", "EA"))
+        self.lines(order, item, ("6",), ("6",))
+        got = self.availability(order)
+        self.assertIsNone(got["date"])                      # 12 under 10 on hand
+        self.assertEqual([ln["available"] for ln in got["lines"]],
+                         [NOW.date().isoformat(), None])
+        single, item2 = self.bare_order(("10", "EA"))
+        self.lines(single, item2, ("12",))
+        self.assertEqual(self.availability(single)["date"], self.availability(order)["date"])
+        # a PO line covers the rest once, for both lines together
+        pol = self.w.obj("PurchaseOrderLine", {"ordered_quantity": ("2", "EA"),
+                                               "bc_expected_receipt_date": "2026-10-28"})
+        self.w.link(ap.PO_LINE_ITEM, pol, item)
+        self.assertEqual(self.availability(order)["date"], "2026-10-28")
+
+    def test_no_split_of_a_demand_creates_supply_at_any_cardinality(self):
+        # invariant: 60 needed against 50 on hand and 6 on order, split into 1, 2, 10 or 60
+        # lines (even and uneven), always waits for the order and is never covered sooner
+        # than the one line holding the same need
+        whole, item = self.bare_order(("50", "EA"))
+        self.lines(whole, item, ("60",))
+        for n in (1, 2, 10, 60):
+            for uneven in (False, True):
+                with self.subTest(lines=n, uneven=uneven):
+                    order, split_item = self.bare_order(("50", "EA"))
+                    if uneven and n > 1:
+                        needs = [str(60 - (n - 1))] + ["1"] * (n - 1)
+                    else:
+                        needs = [str(60 // n)] * n
+                    self.lines(order, split_item, *[(q,) for q in needs])
+                    self.assertIsNone(self.availability(order)["date"])
+                    pol = self.w.obj("PurchaseOrderLine", {
+                        "ordered_quantity": ("6", "EA"),
+                        "bc_expected_receipt_date": "2026-10-28"})
+                    self.w.link(ap.PO_LINE_ITEM, pol, split_item)
+                    self.assertIsNone(self.availability(order)["date"])   # 56 < 60
+                    pol2 = self.w.obj("PurchaseOrderLine", {
+                        "ordered_quantity": ("4", "EA"),
+                        "bc_expected_receipt_date": "2026-10-30"})
+                    self.w.link(ap.PO_LINE_ITEM, pol2, split_item)
+                    got = self.availability(order)
+                    if n > ap.MAX_LINES:   # lines one check cannot read: no promise at all
+                        self.assertIsNone(got["date"])
+                        self.assertIn("lines_not_read", got["unknown_reasons"])
+                    else:
+                        self.assertEqual(got["date"], "2026-10-30")
+
+    def test_quantities_in_two_units_are_never_compared(self):
+        for stock, line in ((("50", "KG"), "EA"), (("50", "EA"), "CASE"), (("50", None), "EA")):
+            with self.subTest(stock=stock, line=line):
+                order, item = self.bare_order(stock if stock[1] else stock[0])
+                self.lines(order, item, ("10", line))
+                got = self.availability(order)
+                self.assertIsNone(got["date"])
+                self.assertEqual(set(got["unknown_reasons"]),
+                                 {"unit_unknown" if stock[1] is None else "unit_mismatch"})
+        order, item = self.bare_order(("50", "each"))       # a spelling, not a unit
+        self.lines(order, item, ("10", "EA"))
+        self.assertEqual(self.availability(order)["date"], NOW.date().isoformat())
+
+    def test_a_cancelled_purchase_order_supplies_nothing_whatever_its_line_says(self):
+        for line_date, head_date in (("2026-10-25", None), (None, "2026-10-25"),
+                                     ("2026-10-25", "2026-10-26"), (None, None)):
+            with self.subTest(line=line_date, head=head_date):
+                order, item = self.bare_order(("0", "EA"))
+                self.lines(order, item, ("10",))
+                po = self.w.obj("PurchaseOrder", {"status": "Cancelled", **(
+                    {"expected_date": head_date} if head_date else {})})
+                pol = self.w.obj("PurchaseOrderLine", {"ordered_quantity": ("100", "EA"), **(
+                    {"bc_expected_receipt_date": line_date} if line_date else {})})
+                self.w.link(ap.PO_LINE_ITEM, pol, item)
+                self.w.link(ap.PO_LINE_OF, pol, po)
+                self.assertIsNone(self.availability(order)["date"])
+
+    def test_an_order_with_more_lines_than_one_check_reads_is_never_promised(self):
+        order, item = self.bare_order(("1000", "EA"))
+        self.lines(order, item, *[("1",)] * ap.MAX_LINES)
+        other = self.w.obj("Product", {"code": "SYN-3", "quantity_on_hand": ("0", "EA")})
+        self.lines(order, other, ("5",))                    # the 51st line: unfulfillable
+        got = self.availability(order)
+        self.assertIsNone(got["date"])
+        self.assertEqual((got["lines_read"], got["lines_total"]),
+                         (ap.MAX_LINES, ap.MAX_LINES + 1))
+        self.assertEqual(got["unknown_reasons"]["lines_not_read"], 1)
+
+
+class PreparedClaims(Fixture):
+    """What a prepared reply or recommendation says holds for what is sent or decided
+    (AUTOMATION-007/010/011)."""
+
+    def test_a_document_reply_never_says_attached_when_the_send_carries_none(self):
+        order = self.order("PO-77")
+        msg = self.message(80, "Could you send the COA for our order SO-7001?",
+                           subject="COA please")
+        self.w.link("Email.mentions_order", msg, order)
+        self.cycle([msg])
+        (item,) = self.queue().items()
+        work = item["body"]["prepared"]
+        self.assertNotIn("attached", work["draft"]["body"].lower())
+        self.assertIn("docs_not_attached", work["gaps"])
+        self.assertTrue(work["links"])                     # the pack the reviewer attaches
+
+    def test_a_last_price_is_reused_only_in_the_lines_unit_and_the_customers_currency(self):
+        from operating.tests.test_proactive_business import money
+        for currency, per, ordered, reused in (("USD", "CASE", "6 kg", False),
+                                               ("USD", "CASE", "6 cases", False),
+                                               ("CAD", "KG", "6 cases", False),
+                                               ("CAD", "CASE", "6 cases", True)):
+            with self.subTest(currency=currency, per=per, ordered=ordered):
+                self.setUp()
+                self.w.rows["object_values"].append({
+                    **[v for v in self.w.rows["object_values"]
+                       if v["object_id"] == self.customer][0],
+                    "property": "currency", "value": "CAD", "value_type": "text"})
+                self.items_known("SYN-10")
+                inv = self.w.obj("SalesInvoice", {"invoice_number": "INV-9",
+                                                  "invoice_date": "2026-09-01",
+                                                  "currency": currency})
+                self.w.link("SalesInvoice.billed_to", inv, self.customer)
+                line = self.w.obj("SalesInvoiceLine", {"unit_price": "4.00",
+                                                       "invoiced_quantity": ("10", per)})
+                money(self.w, line, "unit_price", currency, per=per)
+                self.w.link("SalesInvoiceLine.line_of", line, inv)
+                self.w.link("SalesInvoiceLine.for_item", line, self.items["SYN-10"])
+                msg = self.message(95, f"Please ship:\n1. SYN-10 Gallon soap: {ordered}",
+                                   subject="New PO 88130")
+                self.build()
+                self.cycle([msg])
+                (item,) = [i for i in self.queue().items()
+                           if i["body"]["prepared"].get("po_numbers") == ["88130"]]
+                work = item["body"]["prepared"]
+                (ln,) = work["lines"]
+                self.assertEqual(ln["last_price"]["price"], "4.00")
+                if reused:
+                    self.assertEqual(ln["unit_price"], "4.00")
+                    self.assertEqual(ap.write_spec(item)["payload"]["salesOrderLines"][0]
+                                     ["unitPrice"], "4.00")
+                else:
+                    self.assertIsNone(ln["unit_price"])
+                    self.assertIn("price_unresolved", work["gaps"])
+                    self.assertIsNone(ap.write_spec(item))   # never a BC write with it
+
+    def approval(self, totals: dict[str, tuple[str, str]], prior: list[tuple[str, str]]):
+        # the owner's desk prepares decision cards (``h_desk``)
+        self.env[ap.ROLES_ENV] = str(self.dir / "roles.json")
+        (self.dir / "roles.json").write_text(json.dumps({"roles": {"owner": [OURS_OID]}}))
+        sup = self.w.obj("Supplier", {"name": "Synth supplier"})
+        for i, (amount, currency) in enumerate(prior):
+            old = self.w.obj("PurchaseOrder", {"po_number": f"OLD{i}", "total_cost": amount,
+                                               "currency": currency})
+            self.w.link("PurchaseOrder.ordered_from", old, sup)
+        for number, (amount, currency) in totals.items():
+            po = self.w.obj("PurchaseOrder", {"po_number": number, "total_cost": amount,
+                                              "currency": currency, "status": "Open"})
+            self.w.link("PurchaseOrder.ordered_from", po, sup)
+        names = " and ".join(f"PO {n}" for n in totals)
+        msg = self.message(90, f"Please approve {names} for $4,200.", subject="Approval")
+        path = self.dir / "s.sqlite"
+        self.w.build(path)
+        import sqlite3
+        with sqlite3.connect(path) as c:      # the identifier table rows of the PO numbers
+            for r in self.w.rows["object_values"]:
+                if r["property"] == "po_number" and r["value"] in totals:
+                    c.execute("INSERT INTO identifiers (identifier_kind, normalized, raw, "
+                              "role, object_id, property, l1_handle, field_path, lineage, "
+                              "recorded_at) VALUES ('po_number', ?, ?, 'primary', ?, "
+                              "'po_number', 'h', 'row.po_number', 'workbench', "
+                              "'2026-01-01T00:00:00Z')", (r["value"], r["value"],
+                                                          r["object_id"]))
+        got = self.cycle([msg])
+        items = [i for i in self.queue().items() if i["body"]["prepared"].get("kind") ==
+                 "decision"]
+        self.assertTrue(items, (got, [i["body"]["prepared"] for i in self.queue().items()]))
+        return items[0]["body"]["prepared"]
+
+    def test_one_po_within_its_suppliers_range_never_approves_the_others(self):
+        prior = [("1000", "CAD")] * 5
+        for second in (("9000", "CAD"), ("1000", None), ("1000", "USD")):
+            with self.subTest(second=second):
+                self.setUp()
+                card = self.approval({"106501": ("1000", "CAD"), "106502": second}, prior)
+                self.assertEqual(card["recommendation"], "review", card["reasons"])
+        self.setUp()
+        card = self.approval({"106501": ("1000", "CAD"), "106502": ("1100", "CAD")}, prior)
+        self.assertEqual(card["recommendation"], "approve", card["reasons"])
 
 
 class DocumentLines(unittest.TestCase):

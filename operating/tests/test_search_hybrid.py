@@ -401,6 +401,33 @@ class HybridSearchTests(unittest.TestCase):
             ranked = rt.bm25(conn, scope, ["box for PO 5394 not showing on the scanner"], 5)
         self.assertEqual(ranked[0][0], "scanT#0")
 
+    def test_bm25_finds_a_word_common_overall_but_rare_in_the_readers_scope(self):
+        """SEARCH-001: a lexeme the column statistics hold as common is not scanned, and
+        its estimated count over a small scope can fall under the rare cap; it is then
+        read by the bounded fallback, so the same visible rows are found whatever the
+        statistics of the whole table say."""
+        unit = "mail:0e0e0e0e-0000-4000-8000-0000000000c6"
+        rows = [{"chunk_id": f"zep{n}#0", "source_handle": f"graph-mail://b/zep{n}@1",
+                 "kind": "mail", "header": "Source: mail", "audience_key": unit,
+                 "authority": 2, "body": f"Routine note {n} about the dock."}
+                for n in range(6)]
+        rows.append({"chunk_id": "zepT#0", "source_handle": "graph-mail://b/zepT@1",
+                     "kind": "mail", "header": "Source: mail", "audience_key": unit,
+                     "authority": 2, "body": "The zeppelin gasket arrived damaged."})
+        db = FixtureDb().__enter__()
+        self.addCleanup(db.__exit__, None, None, None)
+        db.add(rows)
+        scope = {"allowed": [unit], "held": [], "kinds": None}
+        with psycopg.connect(db.dsn, autocommit=True) as conn:
+            lexemes = rt._lexemes(conn, rt.words(["zeppelin"]))
+            plain = rt.bm25(conn, scope, ["zeppelin"], 5)
+            for share in (0.013, 0.5, 1.0):   # common overall, at any share
+                with self.subTest(share=share), mock.patch.object(
+                        rt.COMMON, "get", return_value=({l: share for l in lexemes}, 0.01)):
+                    got = rt.bm25(conn, scope, ["zeppelin"], 5)
+                    self.assertEqual([c for c, _ in got], ["zepT#0"])
+        self.assertEqual([c for c, _ in plain], ["zepT#0"])
+
     def test_permission_filter_is_inside_every_retrievers_sql(self):
         """Rows the reader may not read (finance mailbox; a purchasing_prices marking
         the reader lacks) never reach Python from any retriever."""

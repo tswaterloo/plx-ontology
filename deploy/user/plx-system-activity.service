@@ -1,11 +1,11 @@
-# Weekly per-person, per-system activity (operating.system_activity): counts by ISO week,
-# system and workflow, resolved to people through the directory only; no row content. The
-# owner workload view reads the snapshot (PLX_SYSTEM_ACTIVITY_FILE, else the API's data
-# directory; ignored after 8 days, hence weekly). Retention: 13 weekly aggregates. A person
+# Daily per-person, per-system activity (operating.system_activity): counts by ISO week (and
+# by day for the last 35), system and workflow, resolved to people through the directory
+# only; no row content. The Team view's snapshot (plx-team-activity) reads it; it is ignored
+# after 8 days. Retention: 13 weekly aggregates. A person
 # the exclusion does not clear is counted only as "withheld" (PLX_EXCLUDED_PEOPLE_OIDS from
 # the env file; unavailable guard clears nobody). Read only: every store opens mode=ro.
 [Unit]
-Description=PLX weekly system activity snapshot (counts per person, system and workflow)
+Description=PLX daily system activity snapshot (counts per person, system and workflow)
 
 [Service]
 Type=oneshot

@@ -25,6 +25,10 @@ overriding any of them):
   cursor (``search/follow.json``).
 * ``ingest_start``: the host's ``serve`` refused to start (bad config, state dir) at least
   ``ingest_start_failures`` times in a row with no start after: a unit in a restart loop.
+* ``ingest_service``: the capture service ended (``host/serve-health.json`` ``stop``,
+  written as the continuous ingest exits: low disk, the stop file, a stop), or is off on
+  purpose (``host/capture-off.json``: since, who, why, until; the ingest keeper writes and
+  clears it). Either is a breach, with the reason: no source refreshes meanwhile.
 * ``pg_follow``: delta layers Postgres has not applied; more than the bound behind, any
   layer pending with no apply for ``pg_follow_stall_minutes`` (stalled), or a different
   generation, is a breach.
@@ -74,7 +78,10 @@ DEFAULT_TARGETS: dict[str, float] = {
     "memory_warn_gb": 8,          # early warning: any one sample, top consumers named
     "memory_low_minutes": 5,
     "unit_activating_hours": 6,
+    "delta_activating_hours": 2,   # a delta cycle normally takes minutes
     "backup_age_hours": 30,
+    "credential_expiry_days": 30,   # a credential that expires sooner, and nothing renews itself
+    "credential_list_age_days": 3,  # the expiry list (plx-expiry) older than this: unknown
 }
 
 Check = dict[str, Any]
@@ -318,6 +325,53 @@ def start_check(state: Path, t: Mapping[str, float]) -> Optional[Check]:
                   detail)
 
 
+CAPTURE_OFF_FILE = "capture-off.json"   # under <state>/host; the ingest keeper's record
+
+
+def capture_off(state: Path) -> Optional[dict[str, Any]]:
+    """``host/capture-off.json`` (capture switched off on purpose: ``since``, ``by``,
+    ``reason``, ``until``); None when absent or unreadable."""
+    try:
+        held = json.loads((state / "host" / CAPTURE_OFF_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    return held if isinstance(held, dict) and held.get("since") else None
+
+
+def service_check(state: Path, now: datetime) -> Optional[Check]:
+    """The capture service itself: running since its last start, ended (the ``stop``
+    record the host writes as it exits, newer than its last start) or off on purpose
+    (``capture_off``). Ended or off is a breach whatever the reason: no capture source
+    refreshes meanwhile. The value is minutes since the stop. None where no ingest host
+    ever started."""
+    held = serve_health(state)
+    off = capture_off(state)
+    if not held and off is None:
+        return None
+    started = _parse(held.get("started_at"))
+    stop = held.get("stop") if isinstance(held.get("stop"), dict) else None
+    stopped = _parse(stop.get("at")) if stop else None
+    if stopped is not None and started is not None and stopped < started:
+        stopped = None   # an older stop record: the service started after it
+    if off is not None:
+        since = stopped or _parse(off.get("since"))
+        detail = (f"off on purpose since {off.get('since')}"
+                  + (f" ({off['by']})" if off.get("by") else "")
+                  + f": {off.get('reason') or 'no reason given'}"
+                  + (f"; until {off['until']}" if off.get("until") else ""))
+        return _check("ingest_service", _minutes(now, since), 0, True, "min", detail)
+    if stopped is None:
+        return _check("ingest_service", _minutes(now, started), 0, False, "min", "running")
+    reason = str(stop.get("reason") or "unknown")
+    free = stop.get("free_bytes")
+    gb = (f", {round(free / 1024 ** 3, 1):g} GB free"
+          if isinstance(free, int) and not isinstance(free, bool) else "")
+    detail = (f"stopped on low disk at {stop.get('at')}{gb}; the ingest keeper restarts it "
+              "once the disk has room again" if reason == "low_disk" else
+              f"stopped at {stop.get('at')} ({reason}){gb}; nothing restarts it")
+    return _check("ingest_service", _minutes(now, stopped), 0, True, "min", detail)
+
+
 def config_keys_check(state: Path) -> Optional[Check]:
     """Config keys the running host ignored (unknown to its code: a typo such as
     ``ingest.build`` for ``ingest.builds``, or a newer checkout's setting): a breach, so
@@ -339,11 +393,17 @@ def capture_alarm(report: Mapping[str, Any]) -> Optional[dict[str, Any]]:
                  and c.get("state") == "breach"), None)
     ignored = next((c for c in report.get("checks") or [] if c.get("name") ==
                     "config_keys_ignored" and c.get("state") == "breach"), None)
-    if not stalled and loop is None and ignored is None:
+    service = next((c for c in report.get("checks") or [] if c.get("name") ==
+                    "ingest_service" and c.get("state") == "breach"), None)
+    if not stalled and loop is None and ignored is None and service is None:
         return None
     names = [c["name"].split(":", 1)[1] for c in stalled]
     ages = [c["value"] for c in stalled if isinstance(c.get("value"), (int, float))]
     parts = []
+    if service is not None:
+        # every reader sees this line: the reason, who and until when stay on /ops (the
+        # ops readers' ``ingest_service`` incident), as a build's disk wait does
+        parts.append("capture service not running")
     if names:
         hours = round(max(ages) / 60) if ages else None
         parts.append("captures not refreshed: " + ", ".join(names)
@@ -427,7 +487,8 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
     checks += delta_checks(state, now, t)
     checks += capture_checks(state, now, t)
     checks += source_checks(state, now, t)
-    for extra in (start_check(state, t), config_keys_check(state)):
+    for extra in (start_check(state, t), service_check(state, now),
+                  config_keys_check(state)):
         if extra is not None:
             checks.append(extra)
     checks.append(pg_check(state, now, t, pg_dsn))

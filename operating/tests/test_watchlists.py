@@ -17,7 +17,7 @@ import unittest.mock
 
 import shutil
 import sqlite3
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from types import SimpleNamespace
 
 from operating import proactive_engine as pe
@@ -677,3 +677,91 @@ class SignalRules(unittest.TestCase):
             st.close()
         watch.delete_rule(ctx, kept.rule_id)
         self.assertEqual(watch.state(ctx).alerts, [])
+
+
+class AuditFixes1112(unittest.TestCase):
+    """STATE-001..004 (watchlists audit): rule delete scope, follow baseline, ungrouped
+    count, Boolean becomes."""
+
+    def setUp(self):
+        self.fx = Fixture(Path(tempfile.mkdtemp()))
+        self.store = wl.WatchStore(self.fx.watch)
+
+    def _rule(self, spec, reader=OWNER):
+        got = wl.validate(spec, vocab(), ("finance",))
+        return self.store.add_rule(reader, "synthetic", got, "synthetic")
+
+    def test_state_001_a_foreign_delete_leaves_the_owners_event_history(self):
+        rule = self._rule({"schema": wl.RULE_SCHEMA, "subject": "PurchaseOrder",
+                           "when": [{"property": "expected_date", "op": "later"}],
+                           "count": {"at_least": 2, "within_days": 30}})
+        rid = rule["rule_id"]
+        with closing(wl._connect(self.fx.watch)) as conn:
+            conn.execute("INSERT INTO events VALUES (?, 'g', 's', ?)", (rid, "2026-10-19T00:00:00"))
+        self.assertFalse(self.store.delete_rule(OTHER, rid))
+        with closing(wl._connect(self.fx.watch)) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM events").fetchone()[0], 1)
+        self.assertTrue(self.store.delete_rule(OWNER, rid))
+        with closing(wl._connect(self.fx.watch)) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM events").fetchone()[0], 0)
+
+    def test_state_004_a_boolean_becomes_rule_does_not_stop_the_pass(self):
+        product = self.fx.w.obj("Product", {"name": "SYNTH P", "is_active": "true"})
+        po = self.fx.w.obj("PurchaseOrder", {"expected_date": "2026-11-01"})
+        for flag in (True, False):
+            self._rule({"schema": wl.RULE_SCHEMA, "subject": "Product",
+                        "when": [{"property": "is_active", "op": "becomes", "value": flag}]})
+        self._rule({"schema": wl.RULE_SCHEMA, "subject": "PurchaseOrder",
+                    "when": [{"property": "expected_date", "op": "later"}]})
+        self.fx.run()
+        set_value(self.fx.w, product, "is_active", "false")
+        set_value(self.fx.w, po, "expected_date", "2026-11-20")
+        done = self.fx.run([product, po])
+        self.assertEqual(done["state"], "ran")
+        got = self.fx.alerts()
+        kinds = sorted((a["record"]["object_id"] == product, a["changes"][0]["after"])
+                       for a in got)
+        self.assertEqual(kinds, [(False, "2026-11-20"), (True, "false")])
+
+    def test_state_003_an_ungrouped_slips_twice_rule_fires_on_two_events(self):
+        po = self.fx.w.obj("PurchaseOrder", {"expected_date": "2026-11-01"})
+        self._rule({"schema": wl.RULE_SCHEMA, "subject": "PurchaseOrder",
+                    "when": [{"property": "expected_date", "op": "later"}],
+                    "count": {"at_least": 2, "within_days": 30}})
+        self.fx.run()
+        set_value(self.fx.w, po, "expected_date", "2026-11-05")
+        self.fx.run([po])
+        self.assertEqual(self.fx.alerts(), [])           # one slip: not yet
+        self.fx.run([po])                               # same revision again: still one
+        self.assertEqual(self.fx.alerts(), [])
+        self.fx.clock = T + timedelta(days=2)
+        set_value(self.fx.w, po, "expected_date", "2026-11-09")
+        self.fx.run([po])
+        self.assertEqual(len(self.fx.alerts()), 1)
+
+    def test_state_003_an_event_outside_the_window_does_not_count(self):
+        po = self.fx.w.obj("PurchaseOrder", {"expected_date": "2026-11-01"})
+        self._rule({"schema": wl.RULE_SCHEMA, "subject": "PurchaseOrder",
+                    "when": [{"property": "expected_date", "op": "later"}],
+                    "count": {"at_least": 2, "within_days": 30}})
+        self.fx.run()
+        set_value(self.fx.w, po, "expected_date", "2026-11-05")
+        self.fx.run([po])
+        self.fx.clock = T + timedelta(days=45)
+        set_value(self.fx.w, po, "expected_date", "2026-12-20")
+        self.fx.run([po])
+        self.assertEqual(self.fx.alerts(), [])
+
+    def test_state_002_a_new_follower_does_not_erase_an_existing_followers_change(self):
+        po = self.fx.w.obj("PurchaseOrder", {"po_number": "SYNTH-1", "status": "Open",
+                                             "expected_date": "2026-11-01"})
+        self.store.follow(OWNER, po, "PurchaseOrder", None)
+        self.fx.run()
+        set_value(self.fx.w, po, "expected_date", "2026-11-20")
+        self.store.follow(OTHER, po, "PurchaseOrder", None)   # joins in the changing pass
+        self.fx.run([po])
+        self.assertEqual(len(self.fx.alerts(OWNER)), 1)       # the old follower is told
+        self.assertEqual(self.fx.alerts(OTHER), [])           # the new one starts from now
+        set_value(self.fx.w, po, "expected_date", "2026-12-01")
+        self.fx.run([po])
+        self.assertEqual(len(self.fx.alerts(OTHER)), 1)

@@ -9,9 +9,13 @@ shows in the app (the shell's banner and /ops) until it recovers.
   ingest start loop, the Postgres copy, the search follower's and the proactive engine's
   last good pass;
 * units: every system and user ``plx-*`` unit that failed (an OOM kill named), restarts
-  again and again or has been starting past ``unit_activating_hours``, and every enabled
-  timer with no next run while its service is not running (``PLX_OPS_IGNORE_UNITS``, comma
-  separated unit names, are left out);
+  again and again or has been starting past ``unit_activating_hours`` (the delta's cycle:
+  ``delta_activating_hours``, read from systemd, so a cycle that never wrote its work
+  directory still counts), every enabled long-running service that is not running (it
+  exited cleanly, so ``Restart=on-failure`` never brought it back; the capture service is
+  ``ingest_service`` instead, which says why), and every enabled timer with no next run
+  while its service is not running (``PLX_OPS_IGNORE_UNITS``, comma separated unit names
+  stopped on purpose, set in ``/etc/plx/ops-page.env``, are left out);
 * Postgres: client connections over ``pg_connections_share`` of ``max_connections``,
   sessions idle in a transaction past ``pg_idle_in_transaction_minutes``, a server that
   refuses the check's connection;
@@ -61,7 +65,12 @@ IGNORE_ENV, DISK_ENV = "PLX_OPS_IGNORE_UNITS", "PLX_OPS_DISK_PATH"
 # on the sidebar line only.
 MEMORY_CHECKS = ("memory_pressure", "memory_available")
 PAGED_HEALTH = ("delta_last_cycle", "delta_cycle_runtime", "capture:", "ingest_start",
-                "pg_follow", "proactive_last_pass", "search_follow_last_pass")
+                "ingest_service", "pg_follow", "proactive_last_pass",
+                "search_follow_last_pass")
+# Long-running service types: one enabled but not running has stopped (a oneshot has not).
+LONG_RUNNING_TYPES = ("simple", "exec", "notify", "notify-reload", "forking", "dbus")
+DELTA_UNIT = "plx-delta.service"
+INGEST_UNIT = "plx-ingest.service"   # reported by ``ingest_service`` with its reason
 BACKUP_UNITS = {"plx-backup.service": "backup", "plx-restore-test.service": "restore_test"}
 UNIT_PROPS = ("Id", "Type", "LoadState", "ActiveState", "SubState", "Result",
               "UnitFileState", "NextElapseUSecRealtime", "NextElapseUSecMonotonic", "Unit",
@@ -69,9 +78,11 @@ UNIT_PROPS = ("Id", "Type", "LoadState", "ActiveState", "SubState", "Result",
 RUNNING = ("active", "activating", "deactivating", "reloading")
 LABELS = {"disk_free": "Disk", "memory_available": "Memory",
           "memory_pressure": "Memory pressure (early warning)", "pg_connections": "Postgres",
-          "pg_idle_in_transaction": "Postgres", "pg_follow": "Postgres copy",
+          "pg_idle_in_transaction": "Postgres", "credential_expiry": "Credential expiry",
+          "pg_follow": "Postgres copy",
           "backup": "Nightly backup", "restore_test": "Backup restore test",
-          "ingest_start": "Capture service", "units:system": "System plx units checked",
+          "ingest_start": "Capture service start loop",
+          "ingest_service": "Capture service", "units:system": "System plx units checked",
           "units:user": "User plx units checked"}
 
 
@@ -253,8 +264,10 @@ def _has_next(unit: Mapping[str, str]) -> bool:
 
 
 def unit_checks(scope: str, units: Sequence[Mapping[str, str]], now: datetime,
-                t: Mapping[str, float], ignore: frozenset[str]) -> list[Check]:
-    """One breach per unit of ``scope`` that stopped; nothing for a healthy one."""
+                t: Mapping[str, float], ignore: frozenset[str],
+                reported: frozenset[str] = frozenset()) -> list[Check]:
+    """One breach per unit of ``scope`` that stopped; nothing for a healthy one.
+    ``reported``: units another check already names with its reason (left out here)."""
     by_id = {u["Id"]: u for u in units}
     prefix = "unit:user:" if scope == "user" else "unit:"
     out = []
@@ -272,8 +285,17 @@ def unit_checks(scope: str, units: Sequence[Mapping[str, str]], now: datetime,
         elif sub == "auto-restart":
             detail = f"restarting again and again ({u.get('NRestarts', '?')} restarts)"
         elif state == "activating" and uid.endswith(".service") and since is not None \
-                and since > t["unit_activating_hours"]:
+                and since > (t["delta_activating_hours"] if uid == DELTA_UNIT
+                             and scope == "system" else t["unit_activating_hours"]):
             detail = f"still starting after {since:g} h"
+        elif state == "inactive" and uid.endswith(".service") \
+                and u.get("UnitFileState", "").startswith("enabled") \
+                and u.get("Type", "") in LONG_RUNNING_TYPES and uid not in reported:
+            detail = ("enabled but not running"
+                      + (f" for {since:g} h" if since is not None else "")
+                      + " (it exited cleanly, so nothing restarts it)"
+                      if result in ("", "success") else
+                      f"enabled but not running ({result})")
         elif uid.endswith(".timer") and (u.get("UnitFileState", "").startswith("enabled")
                                          or state == "active"):
             served = by_id.get(u.get("Unit", ""), {})
@@ -314,16 +336,20 @@ def backup_checks(units: Sequence[Mapping[str, str]], now: datetime,
 def pg_checks(dsn: Optional[str], t: Mapping[str, float], probes: Probes) -> list[Check]:
     share_bound = t["pg_connections_share"]
     idle_bound = t["pg_idle_in_transaction_minutes"]
+    def unread(breach: Optional[bool], detail: str) -> list[Check]:
+        # neither check was measured: the idle-in-transaction one is unknown too, so a
+        # failed probe never closes an open incident of either
+        return [_check("pg_connections", None, share_bound, breach, "share", detail),
+                _check("pg_idle_in_transaction", None, 0, None, "sessions", detail)]
+
     if not dsn:
-        return [_check("pg_connections", None, share_bound, None, "share", "no DSN")]
+        return unread(None, "no DSN")
     try:
         held = probes.pg(dsn, idle_bound)
     except ImportError:
-        return [_check("pg_connections", None, share_bound, None, "share",
-                       "psycopg not installed")]
+        return unread(None, "psycopg not installed")
     except Exception as exc:  # noqa: BLE001 - a refused connection is the finding
-        return [_check("pg_connections", None, share_bound, True, "share",
-                       f"Postgres refused the check's connection ({type(exc).__name__})")]
+        return unread(True, f"Postgres refused the check's connection ({type(exc).__name__})")
     share = round(held["clients"] / held["max"], 3) if held["max"] else 0.0
     idle = held["idle_in_transaction"]
     longest = held.get("longest_idle_in_transaction_minutes")
@@ -333,6 +359,41 @@ def pg_checks(dsn: Optional[str], t: Mapping[str, float], probes: Probes) -> lis
                    f"{idle} idle in a transaction over {idle_bound:g} min"
                    + (f", longest {longest:g} min" if longest is not None else "")
                    if idle else "")]
+
+
+EXPIRY_FILE = "expiry.json"
+
+
+def expiry_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[Check]:
+    """One breach per credential the host's expiry list (``deploy/ops/host/expiry.py`` writes
+    ``<STATE>/ops-alarms/expiry.json``, daily) shows expiring within ``credential_expiry_days``
+    that no one renews by itself (the Claude access token, which rotates, is not one); names
+    and days only. No list, or one older than ``credential_list_age_days``: unknown."""
+    bound = t["credential_expiry_days"]
+    name = "credential_expiry"
+    try:
+        held = json.loads((state / ALARM_DIR / EXPIRY_FILE).read_text())
+        items = held["items"]
+        made = ops_health._parse(held.get("checked_at"))
+        if not isinstance(items, list):
+            raise TypeError("items")
+    except (OSError, ValueError, KeyError, TypeError):
+        return [_check(name, None, bound, None, "days", "no credential expiry list yet")]
+    age = _minutes(now, made)
+    if age is None or age > t["credential_list_age_days"] * 1440:
+        return [_check(name, None, bound, None, "days", "the credential expiry list is stale")]
+    soon = sorted(((i.get("days_left"), str(i.get("name"))) for i in items
+                   if isinstance(i, dict) and not i.get("renews_itself")
+                   and isinstance(i.get("days_left"), (int, float))
+                   and not isinstance(i.get("days_left"), bool) and i["days_left"] <= bound),
+                  key=lambda x: (x[0], x[1]))
+    if not soon:
+        return [_check(name, None, bound, False, "days", "")]
+    days, first = soon[0]
+    more = f" and {len(soon) - 1} more" if len(soon) > 1 else ""
+    return [_check(name, days, bound, True, "days",
+                   f"{first} " + (f"expired {abs(days):g} days ago" if days < 0
+                                   else f"expires in {days:g} days") + more)]
 
 
 def _available_gb(text: str) -> Optional[float]:
@@ -433,10 +494,14 @@ def collect(state: Path, now: datetime, environ: Mapping[str, str], probes: Prob
                            for n in BACKUP_UNITS.values()]
             continue
         checks.append(_check(f"units:{scope}", len(units), 0, False, "units", ""))
-        checks += unit_checks(scope, units, now, t, ignore)
+        reported = frozenset({INGEST_UNIT} if scope == "system" and any(
+            c["name"] == "ingest_service" and c["state"] == "breach" for c in checks)
+            else ())
+        checks += unit_checks(scope, units, now, t, ignore, reported)
         if scope == "system":
             checks += backup_checks(units, now, t)
     checks += pg_checks(dsn, t, probes)
+    checks += expiry_checks(state, now, t)
     found, samples = memory_checks(now, t, probes, samples)
     return checks + disk_checks(state, t, probes, environ) + found, samples
 
@@ -457,6 +522,10 @@ def line(check: Mapping[str, Any]) -> str:
     if name.startswith("unit:"):
         unit = name.split(":")[-1]
         return f"{unit} ({'user' if name.startswith('unit:user:') else 'system'}): {detail}"
+    if name == "ingest_service":
+        return (f"Capture service: {detail}"
+                + (f" ({_span(value)} ago)" if check.get("state") == "breach"
+                   and isinstance(value, (int, float)) else ""))
     if check.get("unit") == "min" and isinstance(value, (int, float)):
         what = {"delta_last_cycle": "Data refresh (delta) last finished",
                 "proactive_last_pass": "Proactive alerts last good pass",
@@ -483,6 +552,8 @@ def _covered(key: str, by_name: Mapping[str, Check]) -> bool:
     if key.startswith("capture:"):
         return any(n.startswith("capture:") and c["state"] != "unknown"
                    for n, c in by_name.items())
+    if key.startswith("pg_"):
+        return by_name.get("pg_connections", {}).get("state") in ("ok", "breach")
     return True
 
 

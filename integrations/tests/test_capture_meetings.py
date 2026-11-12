@@ -531,6 +531,67 @@ class MeetingsCaptureTest(unittest.TestCase):
         self.assertEqual(report["counts"]["transcripts_withheld_unknown_speaker"], 1)
         self.assertEqual(self.rows(cm.TRANSCRIPT_KIND), {})
 
+    def test_an_event_unread_before_a_pause_is_never_marked_missing_by_the_resume(
+            self) -> None:
+        # CAPTURE-002: the count of events whose content read failed is kept with the
+        # run's cursor; the segment that resumes after a page cap finishes partial, so the
+        # unread event keeps its held version instead of going missing
+        class Failing(FakeGraph):
+            fail = False
+
+            def __call__(self, method, url, headers, body, timeout, max_bytes):
+                if self.fail and unquote(urlsplit(url).path).endswith("/events/EvA1"):
+                    self.calls.append((method, url))
+                    return j(404, {"error": {"code": "itemNotFound"}})
+                return super().__call__(method, url, headers, body, timeout, max_bytes)
+        self.graph = Failing()
+
+        def held():
+            return {p[1] for p in self.rows(cm.EVENT_KIND)}
+        self.capture(parts=["calendar"])
+        self.assertIn("EvA1", held())
+        self.graph.events[A_ID]["EvA1"]["changeKey"] = "ck2"
+        self.graph.fail = True
+        report, _ = self.capture(parts=["calendar"], max_pages_per_mailbox=1)
+        self.assertIn("cap:page_cap", report["reasons"])
+        report, _ = self.capture(parts=["calendar"])          # resumes after page one
+        self.assertIn("event_content_unread", report["reasons"])
+        self.assertIn("EvA1", held())                        # never marked missing
+        self.graph.fail = False
+        report, _ = self.capture(parts=["calendar"])          # a fresh run reads it
+        self.assertEqual(report["status"], "complete", report["reasons"])
+        self.assertIn("EvA1", held())
+        self.assertEqual({r.path[1]: r.source_version for r in self.store.current_records(
+            cm.EVENT_KIND.name, cm.EVENT_KIND.unit((A_ID, "x")))}["EvA1"], "ck2")
+
+    def test_a_transcript_whose_read_fails_leaves_its_meeting_due(self) -> None:
+        # CAPTURE-001: a meeting is marked checked only when its reads answered; a failed
+        # transcript read is asked again by the next run, which then holds it
+        class Failing(FakeGraph):
+            fail = True
+
+            def __call__(self, method, url, headers, body, timeout, max_bytes):
+                if self.fail and re.search(r"/transcripts/[^/]+/content$",
+                                           unquote(urlsplit(url).path)):
+                    self.calls.append((method, url))
+                    return j(404, {"error": {"code": "itemNotFound"}})
+                return super().__call__(method, url, headers, body, timeout, max_bytes)
+        self.graph = Failing()
+        report, _ = self.capture()
+        self.assertEqual(report["transcripts"]["status"], "incomplete")
+        self.assertEqual(self.rows(cm.TRANSCRIPT_KIND), {})
+        looked = len(self.graph.gets(r"/onlineMeetings$|/onlineMeetings\?"))
+        self.graph.fail = False
+        report, _ = self.capture()
+        self.assertEqual(report["transcripts"]["status"], "complete",
+                         report["transcripts"]["reasons"])
+        self.assertGreater(len(self.graph.gets(r"/onlineMeetings$|/onlineMeetings\?")), looked)
+        self.assertEqual(len(self.rows(cm.TRANSCRIPT_KIND)), 1)
+        # now checked: the third run asks nothing again
+        looked = len(self.graph.gets(r"/onlineMeetings$|/onlineMeetings\?"))
+        self.capture()
+        self.assertEqual(len(self.graph.gets(r"/onlineMeetings$|/onlineMeetings\?")), looked)
+
     def test_series_transcripts_match_their_own_occurrence_and_later_ones_are_read(
             self) -> None:
         # A weekly series: one join URL, two occurrences 9 and 2 days ago, each with its

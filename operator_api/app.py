@@ -20,7 +20,7 @@ import logging
 import os
 import secrets
 import time
-from typing import Any, Callable, Iterator, Literal, Optional
+from typing import Any, Callable, Iterator, Literal, Mapping, Optional
 from urllib.parse import urlsplit
 
 from fastapi import Body, Depends, FastAPI, Path as PathParam, Query, Request, Response
@@ -117,22 +117,29 @@ WRITE_SCREENS: dict[str, frozenset[str]] = {
 OPS_READERS_ENV = "PLX_TEAM_VIEW_READERS"
 
 
-class AskBodyLimit:
-    """An /api/ask body over ``limit`` bytes is refused (413) before any of it is parsed:
-    a stated length over it at once, a streamed one once it passes it. The body is read
-    in full only up to the limit, then handed on."""
+# Every request body but a question's (``/api/ask``: its attachments, ``ASK_BODY_MAX``):
+# notes, decisions and sign-in bodies are a few kilobytes (SEC-007).
+BODY_MAX = 1024 * 1024
 
-    def __init__(self, app: Any, limit: int) -> None:
-        self.app, self.limit = app, limit
+
+class BodyLimit:
+    """A request body over its route's limit is refused (413) before any of it is parsed
+    (every route, signed in or not: ``limits`` by path, else ``limit``): a stated length
+    over it at once, a streamed one once it passes it. The body is read in full only up
+    to the limit, then handed on. GET and HEAD carry no body and pass through."""
+
+    def __init__(self, app: Any, limit: int, limits: Optional[Mapping[str, int]] = None
+                 ) -> None:
+        self.app, self.limit, self.limits = app, limit, dict(limits or {})
 
     async def __call__(self, scope: Any, receive: Callable, send: Callable) -> None:
-        if scope.get("type") != "http" or scope.get("path") != "/api/ask" \
-                or scope.get("method") != "POST":
+        if scope.get("type") != "http" or scope.get("method") in ("GET", "HEAD"):
             await self.app(scope, receive, send)
             return
+        limit = self.limits.get(scope.get("path"), self.limit)
         stated = dict(scope.get("headers") or ()).get(b"content-length")
         try:
-            too_big = stated is not None and int(stated) > self.limit
+            too_big = stated is not None and int(stated) > limit
         except ValueError:
             too_big = True
         chunks: list[bytes] = []
@@ -143,7 +150,7 @@ class AskBodyLimit:
                 return
             chunk = message.get("body", b"")
             size += len(chunk)
-            too_big = size > self.limit
+            too_big = size > limit
             chunks.append(chunk)
             more = message.get("more_body", False)
         if too_big:
@@ -171,7 +178,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                               "signed-in reader. Errors are {error:{code,message}}.",
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.backend, app.state.auth = backend, auth
-    app.add_middleware(AskBodyLimit, limit=m.ASK_BODY_MAX)
+    app.add_middleware(BodyLimit, limit=BODY_MAX, limits={"/api/ask": m.ASK_BODY_MAX})
     # Operator freshness targets (operating.ops_health): the page latency window this
     # process measures, and the checks over the served state dir (none for a fixture).
     from operating.ops_health import CachedHealth, LatencyWindow
@@ -316,16 +323,27 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
 
     @app.get("/api/health", include_in_schema=False)
     def health() -> dict[str, Any]:
-        """Public liveness ("status" stays "ok" while the process serves) and the operator
+        """Public liveness ("status" stays "ok" while the process serves), the operator
         freshness targets (``ops``: each check's value, target and breach; ages and
-        counts only, never a record)."""
+        counts only, never a record) and, with an employee resolver, the employee policy's
+        digest in force and why its file's latest edit was not applied, if it was not."""
+        out: dict[str, Any] = {"status": "ok"}
+        # the employee policy in force (its digest) and why a file edit was not applied
+        # (reload_error), so an operator sees an edit take or not (SEC-005)
+        policy_of = getattr(getattr(auth, "resolver", None), "policy_status", None)
+        if callable(policy_of):
+            try:
+                out["employee_policy"] = policy_of()
+            except Exception as error:  # noqa: BLE001 - liveness never fails on a check
+                log.warning("employee policy status failed: %s", type(error).__name__)
+                out["employee_policy"] = None
         if ops is None:
-            return {"status": "ok"}
+            return out
         try:
-            return {"status": "ok", "ops": ops.get()}
+            return {**out, "ops": ops.get()}
         except Exception as error:  # noqa: BLE001 - liveness never fails on a check
             log.warning("ops health failed: %s", type(error).__name__)
-            return {"status": "ok", "ops": None}
+            return {**out, "ops": None}
 
     @app.get("/api/ops/status", include_in_schema=False,
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
@@ -769,24 +787,21 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         your own and the teams the owner granted you. Counts only."""
         return backend.workload(who)
 
-    @app.get("/api/owner/workload", response_model=m.OwnerWorkload, tags=["actions"],
-             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
-    def owner_workload(who: Reader = Depends(reader)) -> m.OwnerWorkload:
-        """Per person: open threads awaiting reply, open tasks, alerts and closed alerts.
-        Owner only (403 for every other reader); counts only, never message content."""
-        return backend.owner_workload(who)
+    @app.get("/api/team", response_model=m.TeamView, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def team_view(who: Reader = Depends(reader)) -> m.TeamView:
+        """Per person: activity in every captured system over 7 and 28 days, open work,
+        median reply time, a daily trend and busiest hours. The owner and the named Team
+        readers see everyone; every other reader only their own row."""
+        return backend.team_view(who)
 
-    @app.get("/api/owner/workload/{person}/{bucket}", response_model=m.OwnerWorkloadItems,
-             tags=["actions"],
-             responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
-                        404: {"model": m.ErrorResponse}})
-    def owner_workload_items(person: str, bucket: str, who: Reader = Depends(reader)
-                             ) -> m.OwnerWorkloadItems:
-        """The items behind one count of one person (bucket awaiting_reply, tasks or alerts):
-        subject, counterpart, age, who it waits on, a snippet and the record to open. Owner
-        only (403 for every other reader); excluded people never appear; marked items you
-        cannot open stay withheld."""
-        return backend.owner_workload_items(who, person, bucket)
+    @app.get("/api/team/{key}", response_model=m.TeamPersonDetail, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def team_person(key: str, who: Reader = Depends(reader)) -> m.TeamPersonDetail:
+        """One person's drill-down: each day of the last 28 across systems, who they work
+        with most and their open items (marked items you cannot open stay withheld). 404 for
+        a person you may not open."""
+        return backend.team_person(who, key)
 
     @app.get("/api/rd-projects", response_model=m.RdBoard, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})

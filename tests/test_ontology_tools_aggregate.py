@@ -349,7 +349,40 @@ class AggregateTests(_Base):
         out = self.agg(STAFF, [L1, L2, L3], {"property": "line_total", "op": "sum"},
                        group_by=["ordered_quantity"], having={"op": "gte", "value": 0})
         self.assertNotIn("total", out["summary"])
-        self.assertEqual(out["summary"]["partial_total"], "262.5")
+        # QUERY-004: what the groups read add to, never called a lower bound (a sum may
+        # hold a credit memo's negative amount)
+        self.assertEqual(out["summary"]["partial_subtotal"], "262.5")
+        self.assertNotIn("at_least", out["summary"])
+        self.assertNotIn("partial_total", out["summary"])
+
+    def test_a_summary_never_compares_or_adds_two_currencies(self):
+        """QUERY-002: spend by vendor in CAD and USD has no lowest, highest, value counts
+        or total across the two; each currency is summarised on its own."""
+        self.store.val(L1, "line_total", "money", "250", currency="CAD")
+        self.store.val(L2, "line_total", "money", "12.50", currency="USD")
+        self.store.val(L3, "line_total", "money", "-40", currency="CAD")
+        out = self.agg(STAFF, [L1, L2, L3], {"property": "line_total", "op": "sum"},
+                       group_by=["description"], having={"op": "gte", "value": -1000})
+        summary = out["summary"]
+        for word in ("lowest", "highest", "total", "partial_subtotal", "value_counts"):
+            self.assertNotIn(word, summary)
+        by = {d["currency"]: d for d in summary["by_dimension"]}
+        self.assertEqual(set(by), {"CAD", "USD"})
+        self.assertEqual((by["USD"]["lowest"], by["USD"]["highest"]), ("12.5", "12.5"))
+        self.assertEqual(by["CAD"]["with_value"] + by["USD"]["with_value"],
+                         summary["with_value"])
+        for d in by.values():   # another currency's groups exist: no total of the whole
+            self.assertNotIn("total", d)
+
+    def test_grouping_by_an_amount_keeps_its_currency(self):
+        """QUERY-001: 250 CAD and 250 USD are two groups, each saying its currency."""
+        self.store.val(L1, "line_total", "money", "250", currency="CAD")
+        self.store.val(L2, "line_total", "money", "250.00", currency="USD")
+        self.store.val(L3, "line_total", "money", "250", currency="CAD")
+        out = self.agg(STAFF, [L1, L2, L3], {"op": "count"}, group_by=["line_total"])
+        got = sorted((g["key_dimensions"]["line_total"]["currency"], g["value"])
+                     for g in out["groups"])
+        self.assertEqual(got, [("CAD", "2"), ("USD", "1")])
 
     def test_unit_prices_are_rates_never_summed(self):
         self.store.val(L2, "unit_price", "money", "0.25", unit="EA", currency="CAD",
@@ -1455,6 +1488,20 @@ class TaxBasisTests(_Base):
             self.assertEqual((Decimal(group["value"]), group["currency"]),
                              (Decimal(want), "CAD"))
 
+    def test_a_zeroed_order_header_total_is_never_summed_as_0(self):
+        # C-01 (live 11-11): Sage zeroes a header total once invoiced; a sum over such
+        # orders is incomplete and says so, never a smaller total
+        self.store.conn.execute("UPDATE object_values SET value = '0' WHERE object_id = ? "
+                                "AND property = 'total_amount'", (BC_SO2,))
+        out = self.total(BC_SO, BC_SO2)
+        [group] = out["groups"]
+        self.assertIsNone(group["value"])
+        self.assertTrue(out["partial"])
+        [gap] = [g for g in out["gaps"] if g["reason"] == "order_total_zeroed"]
+        self.assertIn("derived order_value", gap["detail"])
+        self.assertEqual(self.agg(STAFF, [BC_SO, BC_SO2], {"op": "count"})["groups"][0]
+                         ["value"], "2")
+
     def test_a_sum_of_unknown_basis_says_so_and_a_known_one_does_not(self):
         out = self.total(NATIVE_SO, NATIVE_SO2)
         [gap] = [g for g in out["gaps"] if g["reason"] == "tax_basis_unknown"]
@@ -1505,6 +1552,164 @@ class UnitFoldAgreementTests(unittest.TestCase):
                     {"value": "10", "unit": u, "currency": None})
                 self.assertEqual(key(a) == key(b), same)
                 self.assertEqual(op._units_compatible(a, b), same)
+
+
+class ExactDecimalTests(_Base):
+    """QUERY-003: a value with more significant digits than the ambient 28 is kept
+    exactly by min/max (one row), by a sum needing one more digit, and by the value
+    counts that group equal values."""
+
+    def quantities(self, **values):
+        for oid, value in values.items():
+            self.store.conn.execute("UPDATE object_values SET value = ? WHERE object_id = ? "
+                                    "AND property = 'ordered_quantity'", (value, oid))
+            self.store.conn.execute("UPDATE object_values SET unit = 'each' WHERE "
+                                    "object_id = ? AND property = 'ordered_quantity'", (oid,))
+        self.store.conn.commit()
+
+    def test_long_values_keep_every_digit(self):
+        long = "12345678901234567890123456789"
+        self.quantities(**{L1: long})
+        for op in ("min", "max", "sum"):
+            out = self.agg(STAFF, [L1], {"property": "ordered_quantity", "op": op})
+            self.assertEqual(out["groups"][0]["value"], long, op)
+        nines = "9999999999999999999999999999.5"
+        self.quantities(**{L1: nines, L2: "0.5"})
+        total = self.agg(STAFF, [L1, L2], {"property": "ordered_quantity", "op": "sum"})
+        self.assertEqual(total["groups"][0]["value"], "10000000000000000000000000000")
+        # two values equal to 28 digits but not to 30 are two values, never one
+        self.quantities(**{L1: "1.00000000000000000000000000001",
+                           L2: "1.00000000000000000000000000002"})
+        low = self.agg(STAFF, [L1, L2], {"property": "ordered_quantity", "op": "min"})
+        self.assertEqual(low["groups"][0]["value"], "1.00000000000000000000000000001")
+        distinct = self.agg(STAFF, [L1, L2], {"property": "ordered_quantity",
+                                               "op": "count_distinct"})
+        self.assertEqual(distinct["groups"][0]["value"], "2")
+
+
+class FilterEvidenceTests(unittest.TestCase):
+    """QUERY-005/007/008: a link or range filter never answers more exactly than its
+    evidence. Evidence label ``isolated-fixture`` (real DDL, schema, tools and output
+    contract)."""
+
+    def call(self, s, t, name, arguments):
+        s.conn.commit()
+        target = t if name == "plx.aggregate" else t.walk if name == "plx.around" else t.base
+        result = target.call(name, arguments, STAFF)
+        self.assertEqual(validate(result, CONTRACTS["tools"][name]["output"],
+                                  root=CONTRACTS), [])
+        return result
+
+    def count(self, s, t, value):
+        return self.call(s, t, "plx.aggregate", {
+            "object_type": "PurchaseOrder", "measure": {"op": "count"},
+            "filters": [{"property": "ordered_from", "op": "eq", "value": value}],
+            "as_known_at": NOW.isoformat()})
+
+    @staticmethod
+    def reasons(result):
+        return [g["reason"] for g in result.get("gaps", ())]
+
+    def test_a_link_filter_keeps_its_target_set_s_provenance(self):
+        s = world()
+        t = tools(s)
+        whole = t.base.sets.new(STAFF, [S1, S2], complete=True)
+        part = t.base.sets.new(STAFF, [S1], complete=False, total=2)
+        lead = t.base.sets.new(STAFF, [S1], complete=True, lead=True)
+        complete = self.count(s, t, whole)
+        self.assertEqual((complete["groups"][0]["value"], complete["partial"]), ("3", False))
+        partial = self.count(s, t, part)
+        self.assertTrue(partial["partial"])
+        self.assertIn("set_incomplete", self.reasons(partial))
+        self.assertIn("lead_basis", self.reasons(self.count(s, t, lead)))
+        unknown = self.count(s, t, "set:abcdefghijklmnopqrstuvwx")
+        self.assertEqual(unknown["error"]["code"], "handle_expired")   # never an exact 0
+        s.conn.close()
+
+    def test_a_link_filter_and_a_walk_read_one_tier(self):
+        s = world()
+        t = tools(s)
+        s.conn.execute("UPDATE object_versions SET lineage=? WHERE object_id=?",
+                       ("gold_native_staging", S1))
+        s.conn.execute("UPDATE links SET binding_kind=?, tier=? WHERE link_type=? AND "
+                       "to_object=?", ("text_match", "stored_by_text_join",
+                                       "PurchaseOrder.ordered_from", S1))
+        filtered = self.count(s, t, S1)
+        around = self.call(s, t, "plx.around", {"from": S1, "path": [
+            {"link_type": "PurchaseOrder.ordered_from", "direction": "reverse"}]})
+        self.assertEqual(around["completeness"]["returned"], 0)
+        self.assertIn("below_tier_floor", self.reasons(around))
+        self.assertIsNone(filtered["groups"][0]["value"])   # never an exact count of leads
+        self.assertTrue(filtered["partial"])
+        self.assertIn("below_tier_floor", self.reasons(filtered))
+        s.conn.close()
+
+    def test_a_link_filters_item_decision_is_not_kept_past_its_call(self):
+        """QUERY-006: one retained tools instance, a fixed as_known_at, the same filter:
+        the links' mail evidence readable at the first call and not at the second. The
+        second call decides the item gate again (withheld), never the first call's
+        exact count; inside one plan run (``run_memo``) one decision holds for its calls."""
+        s = world()
+        allowed = [True]
+        base = ot.OntologyTools(ot.StoreReader(s.conn), POLICY, schema=SCHEMA,
+                                contracts=CONTRACTS, clock=lambda: NOW,
+                                item_gate=lambda actor, handle: allowed[0])
+        t = oa.AggregateTools(base)
+        rows = s.conn.execute("SELECT link_id, evidence_handles FROM links WHERE "
+                              "link_type = 'PurchaseOrder.ordered_from'").fetchall()
+        for link_id, handles in rows:
+            s.conn.execute("UPDATE links SET evidence_handles = ? WHERE link_id = ?",
+                           (json.dumps(json.loads(handles) + ["graph-mail://box/ev1@x"]),
+                            link_id))
+        first = self.count(s, t, S1)
+        self.assertEqual((first["groups"][0]["value"], first["partial"]), ("2", False))
+        allowed[0] = False
+        second = self.count(s, t, S1)
+        self.assertIsNone(second["groups"][0]["value"])
+        self.assertTrue(second["partial"])
+        # one plan run: its calls share the run's first decision
+        allowed[0] = True
+        with ot.run_memo():
+            self.assertEqual(self.count(s, t, S1)["groups"][0]["value"], "2")
+            allowed[0] = False
+            self.assertEqual(self.count(s, t, S1)["groups"][0]["value"], "2")
+        self.assertIsNone(self.count(s, t, S1)["groups"][0]["value"])
+        s.conn.close()
+
+    def test_bounds_on_one_property_are_one_interval(self):
+        s = world()
+        t = tools(s)
+        s.conn.execute("UPDATE object_values SET value=? WHERE object_id=? AND property=?",
+                       ("10", L1, "ordered_quantity"))
+        s.val(L1, "ordered_quantity", "quantity", "100", unit="each", role="ordered",
+              path="row.other_quantity")
+        bounds = [{"property": "ordered_quantity", "op": "gte", "value": 50},
+                  {"property": "ordered_quantity", "op": "lte", "value": 70}]
+        one = self.call(s, t, "plx.aggregate", {
+            "set": t.base.sets.new(STAFF, [L1], complete=True), "filters": bounds,
+            "measure": {"op": "count"}})
+        self.assertEqual(one["groups"][0]["value"], "0")
+        wide = [{**bounds[0], "value": 5}, bounds[1]]   # 10 lies in [5, 70]: a match
+        self.assertEqual(self.call(s, t, "plx.aggregate", {
+            "set": t.base.sets.new(STAFF, [L1], complete=True), "filters": wide,
+            "measure": {"op": "count"}})["groups"][0]["value"], "1")
+        s.conn.close()
+        s = world()
+        t = tools(s)
+        for n, day in enumerate(("2099-01-01", "2099-03-01")):
+            s.conn.execute(
+                "INSERT INTO events (event_id, event_type, time_basis, time, l1_handle, "
+                "field_path, digest, lineage, markings, recorded_at) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?)", (f"e{n}", "PurchaseOrder.expected", "planned", day,
+                                          s.handles[PO1][0], "row.expected_date", "a" * 64,
+                                          "gold_etl_from_fm", "[]", T0))
+            s.conn.execute("INSERT INTO event_objects VALUES (?,?,?)", (f"e{n}", PO1, "order"))
+        february = [{"property": "expected", "op": "gte", "value": "2099-02-01"},
+                    {"property": "expected", "op": "lt", "value": "2099-03-01"}]
+        self.assertEqual(self.call(s, t, "plx.aggregate", {
+            "object_type": "PurchaseOrder", "filters": february,
+            "measure": {"op": "count"}})["groups"][0]["value"], "0")
+        s.conn.close()
 
 
 if __name__ == "__main__":

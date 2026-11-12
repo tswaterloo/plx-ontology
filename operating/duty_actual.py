@@ -153,8 +153,23 @@ def build_charges(rows: Mapping[str, Sequence[Mapping[str, Any]]],
     ``rows``: ``sage.gl_account``, ``sage.ap_vendor``, ``sage.ap_pjd`` (lines), ``sage.ap_pjh``
     and ``sage.ap_ibh`` / ``sage.ap_obs`` (header text and PO references) and
     ``public.bc_purchase_invoice_snapshot``. Returns ``{charges, excluded, coverage}``. A line
-    whose amount is not a number is excluded with a count, never read as zero. A BC vendor
-    named like both a broker and a forwarder is neither kind (``vendor_named_both``)."""
+    whose amount is not a number is excluded with a count, never read as zero, and its
+    invoice's charge is incomplete (``problems`` ``AMOUNT_UNREADABLE``: no rate rests on its
+    readable remainder, BIZ-012). A BC vendor named like both a broker and a forwarder is
+    neither kind (``vendor_named_both``).
+
+    A BC snapshot row is one invoice document (its ``bc_system_id`` when served): rows of
+    one vendor and number are one charge only when they are one document in one currency.
+    Two documents sharing a vendor and number (the snapshot has no company column), or
+    one number in two currencies, are never summed into one currency: each such charge is
+    ``DOCUMENT_IDENTITY_AMBIGUOUS`` (BIZ-013). Only a posted invoice records a charge
+    (``open`` or ``paid``, as ``bc_purchase_case.invoice_class`` reads its status): a draft
+    or one in review is excluded with a count, a canceled one too, and an unknown or blank
+    status marks the charge ``STATUS_NOT_POSTED`` (BIZ-014). A snapshot served without a
+    status column (the reader's columns, ``scripts/duty_actual_report.read_all``) says
+    nothing about any document's posting: its charges keep their amounts and say so
+    (``posting`` ``unknown``, carried to the PO's rate and the landed cost's note), never
+    dropped as unposted and never stated as posted."""
     kr = kind_rules(kind, rules)
     accounts = charge_accounts(rows.get("sage.gl_account", ()), kind, rules)
     sage_vendors = charge_vendors(rows.get("sage.ap_vendor", ()), "vendorid", "vendname",
@@ -184,15 +199,13 @@ def build_charges(rows: Mapping[str, Sequence[Mapping[str, Any]]],
         heads[k] += [_s(r.get(c)) for c in _HEAD_TEXT if _s(r.get(c))]
     pattern = re.compile(rules["po_reference_pattern"], re.IGNORECASE)
     charges: dict[tuple[str, str, str], dict[str, Any]] = {}
-    excluded = {"amount_not_numeric": 0, "vendor_named_both": 0}
+    excluded = {"amount_not_numeric": 0, "vendor_named_both": 0, "not_posted": 0,
+                "canceled": 0}
     for r in rows.get("sage.ap_pjd", ()):
         acct = acct_key(r.get("idacct"))
         if acct not in accounts:
             continue
         amount = _dec(r.get("amtextndhc"))
-        if amount is None:
-            excluded["amount_not_numeric"] += 1
-            continue
         k = (_s(r.get("idvend")), _s(r.get("idinvc")))
         c = charges.setdefault(("sage", *k), {
             "kind": kind, "source": "sage.ap_pjd", "vendor": k[0], "invoice": k[1],
@@ -201,7 +214,11 @@ def build_charges(rows: Mapping[str, Sequence[Mapping[str, Any]]],
             "broker_by_name": k[0] in sage_vendors, "party_by_name": k[0] in sage_vendors,
             "date": _when(r.get("dateinvc")) or (next(iter(head_dates[k]))
                                                  if len(head_dates.get(k, ())) == 1 else None),
-            "includes_brokerage": kr["includes_brokerage"]})
+            "includes_brokerage": kr["includes_brokerage"], "problems": set()})
+        if amount is None:
+            excluded["amount_not_numeric"] += 1
+            c["problems"].add("AMOUNT_UNREADABLE")
+            continue
         c["amount"] += amount
         c["lines"] += 1
         c["accounts"].add(acct)
@@ -210,32 +227,55 @@ def build_charges(rows: Mapping[str, Sequence[Mapping[str, Any]]],
     bc_vendors = charge_vendors(bc_rows, "vendor_number", "vendor_name", kind, rules)
     other = charge_vendors(bc_rows, "vendor_number", "vendor_name",
                            "freight" if kind == "duty" else "duty", rules)
+    from .bc_purchase_case import invoice_class
+    status_served = any("status" in r for r in bc_rows)
+    documents: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
     for r in bc_rows:
         if _s(r.get("vendor_number")) not in bc_vendors:
             continue
         if _s(r.get("vendor_number")) in other:
             excluded["vendor_named_both"] += 1
             continue
-        amount = _dec(r.get("amount_excluding_tax"))
-        if amount is None:
-            excluded["amount_not_numeric"] += 1
+        state = invoice_class({"header": r}) if status_served else "unknown"
+        if state == "draft":
+            excluded["not_posted"] += 1
             continue
+        if state == "canceled":
+            excluded["canceled"] += 1
+            continue
+        amount = _dec(r.get("amount_excluding_tax"))
+        currency = _s(r.get("currency_code")) or rules["home_currency"]
         k = (_s(r.get("vendor_number")), _s(r.get("number")))
-        c = charges.setdefault(("bc", *k), {
+        # one document: its stable id when served, else the row itself (never assumed one)
+        doc = _s(r.get("bc_system_id")) or f"row:{id(r)}"
+        if doc in {d for d, _cur in documents[k]}:
+            continue        # the same document served twice is one document
+        documents[k].add((doc, currency.upper()))
+        c = charges.setdefault(("bc", *k, currency.upper()), {
             "kind": kind, "source": "public.bc_purchase_invoice_snapshot", "vendor": k[0],
-            "invoice": k[1], "amount": Decimal(0),
-            "currency": _s(r.get("currency_code")) or rules["home_currency"],
+            "invoice": k[1], "amount": Decimal(0), "currency": currency,
             "accounts": set(), "lines": 0, "refs": [], "texts": [], "broker_by_name": True,
             "party_by_name": True, "date": _when(r.get("invoice_date")),
-            "includes_brokerage": kr["includes_brokerage"]})
+            "includes_brokerage": kr["includes_brokerage"], "problems": set(),
+            "posting": "posted" if status_served else "unknown"})
+        if state == "unknown" and status_served:
+            c["problems"].add("STATUS_NOT_POSTED")
+        if amount is None:
+            excluded["amount_not_numeric"] += 1
+            c["problems"].add("AMOUNT_UNREADABLE")
+            continue
         c["amount"] += amount
         c["lines"] += 1
         if _s(r.get("order_number")):
             c["refs"].append(("po_number", _s(r["order_number"])))
         if _s(r.get("vendor_invoice_number")):
             c.setdefault("own_numbers", []).append(_s(r["vendor_invoice_number"]))
+    for key, c in charges.items():
+        if key[0] == "bc" and len(documents.get(key[1:3], ())) > 1:
+            c["problems"].add("DOCUMENT_IDENTITY_AMBIGUOUS")
     out = []
     for c in charges.values():
+        c["problems"] = sorted(c["problems"])
         for text in c["texts"]:
             for token in pattern.findall(text):
                 c["refs"].append(("po_text", token))
@@ -282,7 +322,10 @@ def link_charges(charges: Sequence[Mapping[str, Any]], pos: Mapping[str, Any],
             found[key].add("supplier_invoice")
         base = {"kind": c.get("kind", "duty"), "source": c["source"], "vendor": c["vendor"],
                 "invoice": c["invoice"], "amount": c["amount"], "currency": c["currency"],
-                "includes_brokerage": c.get("includes_brokerage", True)}
+                "includes_brokerage": c.get("includes_brokerage", True),
+                "problems": list(c.get("problems") or ())}
+        if c.get("posting"):
+            base["posting"] = c["posting"]
         if len(found) == 1:
             key, kinds = next(iter(found.items()))
             out.append({**base, "linked": True, "po": key, "linked_by": sorted(kinds)})
@@ -322,9 +365,20 @@ def po_effective_rates(links: Sequence[Mapping[str, Any]], goods: Mapping[str, M
                 "includes_brokerage": any(i["includes_brokerage"] for i in items),
                 "rate": None, "basis": BASIS_ACTUAL,
                 "linked_by": sorted({k for i in items for k in i["linked_by"]})}
+        unstated = sum(1 for i in items if i.get("posting") == "unknown")
+        if unstated:
+            # the snapshot did not say whether these invoices are posted: the rate stands,
+            # said as resting on charges whose posting is unknown
+            base["posting_unknown"] = unstated
         g = goods.get(po)
         value, cur = (_dec(g.get("value")), _s(g.get("currency")).upper()) if g else (None, "")
-        if any(i["currency"].upper() != home for i in items):
+        problems = sorted({p for i in items for p in i.get("problems") or ()})
+        if problems:
+            # a charge read only in part, from a document whose identity or posting is not
+            # proven, is no actual: never a rate on what remains (BIZ-012/013/014)
+            out[po] = {**base, "gap": "CHARGE_INCOMPLETE_" + problems[0],
+                       "problems": problems}
+        elif any(i["currency"].upper() != home for i in items):
             out[po] = {**base, "gap": "CHARGE_CURRENCY_NOT_HOME"}
         elif value is None or value <= 0 or not cur:
             out[po] = {**base, "gap": "GOODS_VALUE_NOT_RECORDED"}
@@ -615,12 +669,15 @@ def aggregate_ratio(charges: Sequence[Mapping[str, Any]],
     goods: dict[str, Decimal] = defaultdict(Decimal)
     counts = {"charges": 0, "charges_undated_or_not_home": 0, "receipts": 0,
               "receipts_unreadable": 0}
+    incomplete: set[str] = set()
     for c in charges:
         quarter = _quarter(_when(c.get("date")))
         if c.get("source") != "sage.ap_pjd" or _s(c.get("currency")).upper() != home \
                 or quarter is None:
             counts["charges_undated_or_not_home"] += 1
             continue
+        if c.get("problems"):
+            incomplete.add(quarter)     # a charge read in part: the quarter's sum is no total
         paid[quarter] += Decimal(c["amount"])
         counts["charges"] += 1
     for r in receipts:
@@ -633,9 +690,9 @@ def aggregate_ratio(charges: Sequence[Mapping[str, Any]],
         goods[quarter] += amount * fx
         counts["receipts"] += 1
     kept = sorted(q for q in paid if goods.get(q, Decimal(0)) > 0 and paid[q] > 0
-                  and paid[q] / goods[q] <= ceiling)
+                  and paid[q] / goods[q] <= ceiling and q not in incomplete)
     counts.update(quarters_with_both=sum(1 for q in paid if goods.get(q, Decimal(0)) > 0),
-                  quarters_kept=len(kept))
+                  quarters_incomplete=len(incomplete), quarters_kept=len(kept))
     if len(kept) < max(int(hist["min_periods"]), HISTORY_MIN_SAMPLE["quarters"]):
         return {"all": None, "counts": counts}
     stats = rate_stats([paid[q] / goods[q] for q in kept])
@@ -705,7 +762,9 @@ def incoterms_by_po(rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str
 def _rate_record(r: Mapping[str, Any]) -> dict[str, Any]:
     return {"rate": None if r.get("rate") is None else str(r["rate"]), "gap": r.get("gap"),
             "charges": r["charges"], "linked_by": list(r["linked_by"]),
-            "includes_brokerage": bool(r.get("includes_brokerage"))}
+            "includes_brokerage": bool(r.get("includes_brokerage")),
+            **({"posting_unknown": int(r["posting_unknown"])} if r.get("posting_unknown")
+               else {})}
 
 
 def build_artifact(rates: Mapping[str, Mapping[str, Mapping[str, Any]]],

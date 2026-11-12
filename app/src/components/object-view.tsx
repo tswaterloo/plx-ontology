@@ -5,12 +5,13 @@ import { DocumentsSection } from "@/components/record/documents";
 import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { BRIEF_TYPES, PACK_TYPES, getActionStates, getObject, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { useStaleRefresh } from "@/lib/stale-refresh";
 import { custodyOf } from "@/lib/custody";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
-import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
+import { formatDate, groupDigits, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import { activityTitle, factMap, groupLinked, groupRelated, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import { RecordWorkLog } from "@/components/work-log";
@@ -861,8 +862,15 @@ function salesFigures(obj: ObjectPage) {
   const get = (...keys: string[]) => keys.map((k) => f.get(k)?.value).find((v) => v && v.trim());
   const currency = get("currency", "currency_code");
   const total = moneyText(get("total_amount_including_tax", "total_amount_excluding_tax", "total_amount", "amount_including_vat", "amount", "total"), currency);
+  // a header holding no total (Sage zeroes it once invoiced): the value the API derived
+  // from the order's invoices or lines, labelled as derived and cited by them
+  const derived = f.get("order_value");
+  const amount = derived ? /^(-?[\d,]+(?:\.\d+)?\s*[A-Z]{3})\b/.exec(derived.value)?.[1] : undefined;
+  const from = derived && /from its invoices/.test(derived.value) ? "Value from invoices" : "Value from lines";
   return {
-    total,
+    total: total ?? moneyText(amount, currency),
+    totalLabel: total || !amount ? "Total" : from,
+    totalSource: total ? undefined : derived?.source,
     ordered: dayOf(get("order_date", "document_date")),
     needed: dayOf(get("requested_delivery_date", "promised_delivery_date", "shipment_date", "requested_date")),
   };
@@ -921,34 +929,55 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const [card, setCard] = useState<ProactiveSuggestion | null>(null);
   const [cardState, setCardState] = useState<ActionResult | null>(null);
   const saved = useSaved();
-  const load = useCallback(() => {
+  /**
+   * Read the record. `quiet` is the follow-up read of a page served stale: the page stays on
+   * screen and is replaced when the fresh read lands, and a failed quiet read leaves it be.
+   */
+  const load = useCallback((quiet = false) => {
     // The quick first read (the record, its timeline and links) shows at once; each slow
     // section (lateness, people, landed cost, how we know, margin) is its own call after it, a
     // skeleton in its place until it lands.
     const c = new AbortController();
-    setError(null);
-    setNotFound(false);
-    setObj(null);
-    setPending(new Set());
-    setFailed(new Set());
-    setSectionStale(null);
+    if (!quiet) {
+      setError(null);
+      setNotFound(false);
+      setObj(null);
+      setPending(new Set());
+      setFailed(new Set());
+      setSectionStale(null);
+    }
     getObject(type, id, c.signal, true)
       .then((first) => {
         if (c.signal.aborted) return;
         setObj(first);
+        if (quiet) {
+          setError(null);
+          setNotFound(false);
+        }
         // a page read whole (kept with every section) asks for nothing more; else each
         // section is asked for once the quick read names the record (the server started
         // them beside the quick read)
-        if (first.complete !== false) return;
+        if (first.complete !== false) {
+          if (quiet) setSectionStale(null);
+          return;
+        }
         // the margin is a customer's or a sales order's only
         // what a person corresponds about is a person's only
         const names = PAGE_SECTIONS.filter((n) => (n !== "margin" || first.type === "Customer" || first.type === "SalesOrder") && (n !== "knows" || first.type === "Person"));
-        setPending(new Set(names));
+        if (!quiet) setPending(new Set(names));
+        else setFailed(new Set());
+        // a quiet read states the sections' age once they have all landed, so the "refreshing"
+        // note does not blink off between reads (that would restart the retry budget)
+        let waiting = names.length;
+        let oldest: string | null = null;
         for (const name of names) {
           getObjectSection(name, first.type, first.object_id, c.signal)
             .then((sec) => {
-if (c.signal.aborted) return;
-              if (sec.stale_since) setSectionStale((t) => (!t || sec.stale_since! < t ? sec.stale_since! : t));
+              if (c.signal.aborted) return;
+              if (sec.stale_since) {
+                oldest = !oldest || sec.stale_since < oldest ? sec.stale_since : oldest;
+                if (!quiet) setSectionStale((t) => (!t || sec.stale_since! < t ? sec.stale_since! : t));
+              }
               setObj((o) => (o ? mergeSection(o, sec) : o));
             })
             .catch(() => {
@@ -956,16 +985,18 @@ if (c.signal.aborted) return;
             })
             .finally(() => {
               if (c.signal.aborted) return;
-              setPending((p) => {
-                const n = new Set(p);
-                n.delete(name);
-                return n;
-              });
+              if (!quiet)
+                setPending((p) => {
+                  const n = new Set(p);
+                  n.delete(name);
+                  return n;
+                });
+              else if (--waiting === 0) setSectionStale(oldest);
             });
         }
       })
       .catch((e) => {
-        if (c.signal.aborted) return;
+        if (c.signal.aborted || quiet) return;
         if (e instanceof ApiError && e.status === 404) setNotFound(true);
         setBusy(noticeKind(e) === "busy");
         const msg = plainError(e);
@@ -973,7 +1004,23 @@ if (c.signal.aborted) return;
       });
     return () => c.abort();
   }, [type, id]);
-  useEffect(() => load(), [load]);
+  // Every read, the first, a Retry and the stale follow-up, goes through this one effect, so
+  // leaving the record (or asking again) aborts the read it replaces: an old record's answer
+  // can never land on the new record's page.
+  const [attempt, setAttempt] = useState(0);
+  const quietNext = useRef(false);
+  useEffect(() => {
+    const quiet = quietNext.current;
+    quietNext.current = false;
+    return load(quiet);
+  }, [load, attempt]);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  const refreshStale = useCallback(() => {
+    quietNext.current = true;
+    setAttempt((n) => n + 1);
+  }, []);
+  const staleSince = [obj?.stale_since, sectionStale].filter((t): t is string => !!t).sort()[0];
+  useStaleRefresh(staleSince, refreshStale);
 
   // the card for this record (an order or a customer), read beside the record
   const objectId = obj?.object_id;
@@ -1021,7 +1068,7 @@ if (c.signal.aborted) return;
       <div className="flex min-h-0 flex-1 flex-col">
         <Toolbar heading title={<Crumb type={type} title={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} />} />
         <div className="max-w-2xl px-5 pt-6 pb-12 sm:px-8 sm:pt-7">
-          <LoadProblem message={error} busy={busy} onRetry={load} />
+          <LoadProblem message={error} busy={busy} onRetry={retry} />
         </div>
       </div>
     );
@@ -1125,7 +1172,7 @@ if (c.signal.aborted) return;
 
   const header = (
     <>
-    <StaleNote since={[obj.stale_since, sectionStale].filter((t): t is string => !!t).sort()[0]} className="mb-3" />
+    <StaleNote since={staleSince} className="mb-3" />
     <header className="flex gap-4 sm:gap-5">
       <div className="min-w-0 flex-1">
         <h1 className="flex flex-wrap items-baseline gap-x-2.5 break-words" data-testid="object-title">
@@ -1187,7 +1234,7 @@ if (c.signal.aborted) return;
         {pending.size === 0 && failed.size > 0 && (
           <p className="mt-2 text-[12px] leading-4 text-muted" role="status" data-testid="checks-failed">
             Couldn&apos;t load {sectionWords(failed)}.{" "}
-            <button type="button" onClick={load} className="font-medium text-fg underline decoration-border-strong underline-offset-2 cursor-pointer">
+            <button type="button" onClick={retry} className="font-medium text-fg underline decoration-border-strong underline-offset-2 cursor-pointer">
               Try again
             </button>
           </p>
@@ -1202,7 +1249,7 @@ if (c.signal.aborted) return;
     <section className="space-y-6" data-testid="detail-stats">
       <div className="flex flex-wrap gap-x-12 gap-y-5 empty:hidden">
         {(isPo ? total : null) && <Figure label="Total" value={total!.value} unit={total!.caption} />}
-        {so?.total && <Figure label="Total" value={so.total.replace(/\s+[A-Z]{3}$/, "")} unit={/[A-Z]{3}$/.exec(so.total)?.[0]} />}
+        {so?.total && <Figure label={so.totalLabel} value={so.total.replace(/\s+[A-Z]{3}$/, "")} unit={/[A-Z]{3}$/.exec(so.total)?.[0]} source={so.totalSource} />}
         {so && so.needed == null && so.ordered != null && <Figure label="Ordered" value={formatDate(new Date(so.ordered).toISOString().slice(0, 10))} />}
         {got && (
           <Figure label="Received" value={got.lines ? got.got : `${got.got} of ${got.of}`} unit={got.lines ? `${got.lines} lines short` : got.uom}>
@@ -1403,9 +1450,8 @@ function hiddenSome(obj: ObjectPage): boolean {
 }
 
 function grouped(v: string): string {
-  const t = v.trim();
-  if (!/^-?\d+(?:\.\d+)?$/.test(t)) return v;
-  return Number(t).toLocaleString("en-CA", { maximumFractionDigits: 4 });
+  // exact from the text: a value's real decimals are never rounded away (WEB-003)
+  return groupDigits(v);
 }
 
 /** The needed-by date as the trail states it (its due-date step's, else its verdict's). */

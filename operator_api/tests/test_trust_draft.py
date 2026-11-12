@@ -208,7 +208,7 @@ class TrustAndDraft(unittest.TestCase):
             page = self.client(TEAM).get("/api/trust").json()
         self.assertEqual(page["autopilot_gate"], {"need_judged": 20, "need_percent": 95.0})
         words = next(x["words"] for x in page["lines"] if x["words"].startswith(line))
-        self.assertIn("after 20 judged fresh items at 95% or better", words)
+        self.assertIn("after 20 judged held-out items at 95% or better", words)
         with mock.patch.object(aw, "load_rules", side_effect=aw.RulesInvalid("schema")):
             page = self.client(TEAM).get("/api/trust").json()
         self.assertIsNone(page["autopilot_gate"])
@@ -300,7 +300,7 @@ class TrustAndDraft(unittest.TestCase):
         scorer_run(self.root / "fresh", "owner", start="2026-10-26T07:00:00Z")
         out = aw.record_scores(run, self.state / aw.WRITE_GATE_FILE, rules)
         self.assertEqual(out, {"admitted": [ROLE], "refused": {
-            "owner": "not_fresh", "receivables": "status:partial"}})
+            "owner": "not_held_out", "receivables": "status:partial"}})
         team = self.client(TEAM).get("/api/autopilot").json()["workflows"]
         row = next(w for w in team if w["role"] == ROLE and w["workflow"] == FLOW)
         self.assertEqual((row["draft"], row["state"], row["dev"]["percent"]),

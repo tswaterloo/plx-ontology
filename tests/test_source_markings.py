@@ -10,6 +10,7 @@ amount here is synthetic. Evidence label: isolated-fixture.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 import unittest
 from unittest import mock
 
@@ -230,6 +231,26 @@ class RelationMarkingTests(unittest.TestCase):
         # The key is never a twin; a zero is never a figure; a holder sees everything.
         self.assertEqual(rm.withheld_columns(rm.PORTAL, "public.app_purchase_order", row,
                                              {"purchasing_prices"}), set())
+
+    def test_a_twin_past_the_read_bound_is_withheld_not_shown(self):
+        """DOC-005: an unmarked column read only in part (its withheld figure after 400
+        zero entries, or a JSON text too long to read) is withheld while a figure is
+        withheld; one read whole that repeats nothing stays."""
+        late = json.dumps({"total": 1234.5, "zeros": [0] * 500})
+        self.assertEqual(rm.numbers_read(late)[1], False)
+        self.assertNotIn(Decimal("1234.5"), rm.numbers(late))   # the bound hid it
+        for name, cell in (("after 400 zeros", late),
+                           ("too long to read", "[" + "0," * 120_000 + "1234.5]")):
+            with self.subTest(name):
+                row = {"id": "1", "total_cost": "1234.50", "po_number": "P1",
+                       "custom_fields": cell, "line_count": 3}
+                self.assertEqual(
+                    rm.withheld_columns(rm.PORTAL, "public.app_purchase_order", row, ()),
+                    {"total_cost", "custom_fields"})
+        # nothing withheld: a long column is no twin of anything
+        row = {"id": "1", "po_number": "P1", "custom_fields": late, "line_count": 3}
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "public.app_purchase_order", row,
+                                             ()), set())
 
     def test_a_number_past_the_decimal_range_is_withheld_not_an_error(self):
         row = {"id": "p", "total_cost": "1E+999999999", "notes": "1e999999999",

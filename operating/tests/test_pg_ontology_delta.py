@@ -896,6 +896,65 @@ class DeltaToPostgresTests(unittest.TestCase):
         self.assertEqual((published()["base"], published()["partial"]), ("sqlite", False))
 
 
+    def test_a_big_layer_postgres_applied_and_search_took_in_is_released_from_disk(self):
+        """F5: over the Postgres base a big layer Postgres applied leaves the pointer and
+        the disk at the next published cycle once the readers following the layers took
+        it in, not 47 cycles later; one the search follower has not taken in stays."""
+        from datetime import timedelta
+        from ontology import delta
+        from ontology.tests.test_delta import DeltaEquivalenceTests, normalizer
+        from ontology.tests.test_projection import T1, T2
+        from operating.pg import ontology_load
+
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        base = fixture.full("gen1.sqlite")
+        ontology_load.load(base, self.dsn, workers=1, replace=True, log=io.StringIO())
+        environ = {"PLX_DELTA_BASE_PG": "1", "PLX_PG_DSN": self.dsn,
+                   "PLX_DELTA_RELEASE_BYTES": "1"}   # every layer counts as big
+        pointer = fixture.root / "delta" / delta.POINTER
+        cursor = fixture.state / "search" / "follow.json"
+        cursor.parent.mkdir(parents=True, exist_ok=True)
+
+        def cycle():
+            return delta.build_delta(fixture.state, fixture.mirror_path, fixture.root / "delta",
+                                     base_path=base, schema=fixture.schema,
+                                     normalizer=normalizer, environ=environ)
+
+        def took(*stores):
+            cursor.write_text(json.dumps({"digest": "d", "layers": list(stores),
+                                          "updated_at": "2099-01-01T00:00:00+00:00"}))
+
+        def served():
+            return [Path(item["store"]).name for item in
+                    json.loads(pointer.read_text(encoding="utf-8"))["layers"]]
+
+        fixture.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        fixture.capture(T2)
+        first = cycle()
+        self.assertEqual((first["layer"], first["postgres"]["applied_now"]), ("added", 1), first)
+        old = Path(first["store"])
+        os.utime(old, (old.stat().st_mtime - 3600,) * 2)   # past prune's grace
+        took()   # the search follower has not taken the first layer in: it stays
+        fixture.fake.set("public.app_purchase_order_line", "l1", purchase_order_id="po-b")
+        fixture.capture(T2 + timedelta(hours=1))
+        second = cycle()
+        self.assertEqual(served(), [Path(second["store"]).name, old.name])
+        self.assertEqual(second["released"], {"held": {old.name: ["search_follow"]}})
+        self.assertTrue(old.is_file())
+        took(first["store"])   # now it has: the next cycle lets it go, off the disk too
+        fixture.fake.set("public.app_purchase_order", "po-a", status="CLOSED")
+        fixture.capture(T2 + timedelta(hours=2))
+        third = cycle()
+        self.assertEqual(served(), [Path(third["store"]).name, Path(second["store"]).name])
+        self.assertEqual(third["released"]["layers"], [old.name])
+        self.assertIn(old.name, third["pruned"]["removed"])
+        self.assertFalse(old.exists())
+        self.assertTrue(json.loads(pointer.read_text(encoding="utf-8"))["partial"])
+
     def test_link_degree_decides_the_backlink_cap_alike_on_both_bases_in_one_read(self):
         """``Base.degree``: whether an object gaining a link holds more than the cap is
         decided as an exact count would, on the SQLite generation and on Postgres, counted

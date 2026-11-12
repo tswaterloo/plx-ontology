@@ -35,6 +35,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from ontology.measure import money_text
+
 from . import autopilot as ap
 from . import document_lines as dl
 
@@ -425,36 +427,45 @@ def last_prices(ctx: Any, customer_records: Sequence[str]) -> dict[str, dict[str
                 out[code] = {"price": str(price), "date": day, "basis": f"last {label}",
                              "document": ap._v(rows[head], "invoice_number") or
                              ap._v(rows[head], "order_number"),
-                             "currency": ap._v(rows[head], "currency") or None,
-                             "uom": ap._v(r, "uom") or None, "object_id": head}
+                             # the price's own currency and the unit it is per (its
+                             # cell), else its document's currency and the line's unit
+                             "currency": (r.get("unit_price") or {}).get("currency") or
+                             ap._v(rows[head], "currency") or None,
+                             "uom": ap._qty_unit(r, "unit_price", qty_prop) or None,
+                             "object_id": head}
         if out:
             break
     return out
 
 
-def item_available(ctx: Any, items: Sequence[str], need: Decimal) -> dict[str, Any]:
-    """The day ``need`` is available: on hand when a record states it, else open PO lines
-    by expected date; ``None`` with the reason when the data does not say."""
+def item_available(ctx: Any, items: Sequence[str], need: Decimal,
+                   unit: str | None = None) -> dict[str, Any]:
+    """The day ``need`` (in ``unit``: the whole order's need of the item, its lines summed
+    first) is available: on hand when a record states it, else open PO lines by expected
+    date, each line read with its order's header (a closed or cancelled PO supplies
+    nothing: ``ap.supply_flows``); ``None`` with the reason when the data does not say,
+    or when the stock, the PO lines and the need are not in one stated unit."""
+    from ontology.units import unit_token
     rows = ctx.read(items, ("quantity_on_hand",))
-    stated = [ap._decimal(ap._v(r, "quantity_on_hand")) for r in rows.values()]
-    stated = [s for s in stated if s is not None]
+    stated = [(d, ap._qty_unit(r, "quantity_on_hand")) for r in rows.values()
+              if (d := ap._decimal(ap._v(r, "quantity_on_hand"))) is not None]
     if not stated:
         return {"date": None, "basis": "not checked: no on-hand figure in the records"}
-    on_hand = max(stated)
+    on_hand, stock_unit = max(stated, key=lambda s: s[0])
+    unit = unit_token(unit) if unit else None
+    if unit is None or stock_unit != unit:
+        return {"date": None, "basis": "not checked: the order's unit "
+                f"({unit or 'not stated'}) and the stock's ({stock_unit or 'not stated'}) "
+                "are not one stated unit; units are never converted"}
     if on_hand >= need:
         return {"date": ctx.as_of.isoformat(), "basis": f"on hand {on_hand}"}
     supply = on_hand
     po_lines = ctx.touching(items, ("PurchaseOrderLine.for_item",))
-    prow = ctx.read([a for _t, a, _b in po_lines][:200],
-                    ("ordered_quantity", "received_quantity", "bc_expected_receipt_date"))
-    flows = []
-    for pl, p in prow.items():
-        due = (ap._decimal(ap._v(p, "ordered_quantity")) or Decimal(0)) - \
-            (ap._decimal(ap._v(p, "received_quantity")) or Decimal(0))
-        at = ap._instant(ap._v(p, "bc_expected_receipt_date"))
-        if due > 0 and at is not None and at.date() >= ctx.as_of - timedelta(days=30):
-            flows.append((max(at.date(), ctx.as_of), due))
-    for at, due in sorted(flows):
+    flows, why = ap.supply_flows(ctx, [a for _t, a, _b in po_lines][:200], unit)
+    if why is not None:
+        return {"date": None, "basis": f"not checked: an open PO line's unit is "
+                f"{'not stated' if why == 'unit_unknown' else 'another unit'}"}
+    for at, due, _pl in flows:
         supply += due
         if supply >= need:
             return {"date": at.isoformat(), "basis": "on hand, then open PO lines"}
@@ -559,24 +570,50 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                 if hits:
                     found[t.upper()] = hits
     prices = last_prices(ctx, customer["records"]) if customer.get("number") else {}
-    out_lines, unresolved = [], []
+    from ontology.units import currency_code, unit_token
+    want_currency = currency_code(customer.get("currency") or "")[0]
+    out_lines, unresolved, priced_out = [], [], 0
+    resolved = []
     for ln in lines:
         hit = line_item(found, ln["tokens"])
         if hit is None:
             unresolved.append({"text": ln["text"], "cite": ln["cite"],
                                "reason": "no item number, or several, match the line"})
             continue
-        code, records = hit
-        need = ap._decimal(ln["quantity"]) or Decimal(0)
+        resolved.append((ln, hit))
+    # the order's whole need of each item (its lines summed first, in one unit): two lines
+    # of one item never each count the same stock (AUTOMATION-003)
+    need_of: dict[str, tuple[Decimal, set]] = {}
+    for ln, (code, _records) in resolved:
+        total, units = need_of.get(code, (Decimal(0), set()))
+        need_of[code] = (total + (ap._decimal(ln["quantity"]) or Decimal(0)),
+                         units | {unit_token(ln.get("unit") or "")})
+    checked: dict[str, dict[str, Any]] = {}
+    for ln, (code, records) in resolved:
         last = prices.get(code)
         stated = ln.get("unit_price")
-        price = stated or (last or {}).get("price")
-        avail = item_available(ctx, records, need)
+        # a last price is reused only in the line's unit and the customer's currency
+        # (AUTOMATION-007): a USD price per case is no CAD price per kg
+        reusable = bool(last and want_currency and
+                        currency_code(last.get("currency") or "")[0] == want_currency and
+                        unit_token(last.get("uom") or "") is not None and
+                        unit_token(last.get("uom") or "") == unit_token(ln.get("unit") or ""))
+        price = stated or ((last or {}).get("price") if reusable else None)
+        if not stated and last and not reusable:
+            # a last price we hold but may not reuse: never left for BC to fill silently
+            priced_out += 1
+        if code not in checked:
+            total, units = need_of[code]
+            checked[code] = item_available(ctx, records, total,
+                                           next(iter(units)) if len(units) == 1 else None)
+        avail = checked[code]
         out_lines.append({"item": code, "quantity": ln["quantity"], "unit": ln.get("unit"),
                           "po_unit_price": stated, "last_price": last,
                           "unit_price": price,
                           "price_basis": "the PO's price" if stated else
-                          ((last or {}).get("basis") or "not found"),
+                          ((last or {}).get("basis") if reusable else
+                           "not found" if not last else
+                           "the last price is in another unit or currency"),
                           "price_differs": bool(stated and last and ap._decimal(stated) !=
                                                 ap._decimal(last["price"])),
                           "available": avail, "cite": ln["cite"], "items": records[:4]})
@@ -591,11 +628,14 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         out["gaps"].append("customer_not_resolved:" + customer.get("reason", ""))
     if not pos:
         out["gaps"].append("po_number_not_found")
+    if priced_out:
+        out["gaps"].append("price_unresolved")
     if not out_lines and not customer.get("number"):
         return {"skip": "nothing_resolved"}     # no customer, no line: nothing to prepare
     dates = [ln["available"]["date"] for ln in out_lines]
     ship = max(dates) if out_lines and all(dates) else None
-    ready = bool(customer.get("number") and pos and out_lines and not unresolved)
+    ready = bool(customer.get("number") and pos and out_lines and not unresolved
+                 and not priced_out)
     if ready:
         out["write"] = {
             "system": "bc", "operation": "sales_order_create",
@@ -942,6 +982,14 @@ def _current(ctx: Any, orders: Sequence[str], days: int = 120) -> list[str]:
     return out
 
 
+def _po_currency(row: Mapping[str, Any] | None) -> str | None:
+    """A PO header's currency: its total's own currency, else its currency cell."""
+    from ontology.units import currency_code
+    cell = (row or {}).get("total_cost")
+    raw = (cell or {}).get("currency") if isinstance(cell, Mapping) else None
+    return currency_code(raw or ap._v(row, "currency") or "")[0]
+
+
 def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     from . import proactive_threads as pt
     subject = event.get("subject") or ""
@@ -958,31 +1006,45 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {"gaps": [], "evidence": [], "links": []}
     if "approval_request" in intents or pt.approval_ask(own):
         family = pt.approval_family(own)
-        evidence, reasons, rec = [], [], "review"
+        evidence, reasons, verdicts = [], [], []
         for po in pos:
             head = ctx.read([po], PO_HEAD).get(po) or {}
             ctx.cite(head, "po_number", "total_cost")
             sup = ctx.linked(po, ("PurchaseOrder.ordered_from",))
             prior = [o for o in ctx.linked_many(sup, ("PurchaseOrder.ordered_from",))
                      if o.startswith("PurchaseOrder:") and o != po]
-            prow = ctx.read(prior[:200], ("total_cost", "order_date", "status"))
-            totals = sorted(t for t in (ap._decimal(ap._v(r, "total_cost"))
-                                        for r in prow.values()) if t and t > 0)
+            prow = ctx.read(prior[:200], ("total_cost", "order_date", "status", "currency"))
             this = ap._decimal(ap._v(head, "total_cost"))
+            money = _po_currency(head)
+            # the supplier's earlier POs in this PO's own currency only: a USD median is no
+            # yardstick for a CAD total (amounts are never converted)
+            totals = sorted(t for r in prow.values()
+                            if (t := ap._decimal(ap._v(r, "total_cost"))) and t > 0
+                            and money is not None and _po_currency(r) == money)
             evidence.append({"object_id": po, "po": ap._v(head, "po_number"),
                              "total": str(this) if this is not None else None,
+                             "currency": money,
                              "supplier": ap._v(head, "vendor_name"),
                              "prior_pos": len(totals),
                              "median_prior": str(totals[len(totals) // 2]) if totals else None})
+            number = ap._v(head, "po_number")
             if this is not None and totals:
                 med = totals[len(totals) // 2]
                 if this <= med * Decimal("1.25"):
-                    rec = "approve"
-                    reasons.append(f"PO {ap._v(head, 'po_number')} total {this} is within 25% "
-                                   f"of this supplier's median PO ({med}, {len(totals)} POs)")
+                    verdicts.append(True)
+                    reasons.append(f"PO {number} total {this} {money} is within 25% of this "
+                                   f"supplier's median PO ({med} {money}, {len(totals)} POs)")
                 else:
-                    reasons.append(f"PO {ap._v(head, 'po_number')} total {this} is above "
-                                   f"this supplier's median PO ({med})")
+                    verdicts.append(False)
+                    reasons.append(f"PO {number} total {this} {money} is above this "
+                                   f"supplier's median PO ({med} {money})")
+            else:
+                verdicts.append(None)
+                reasons.append(f"PO {number or po}: its total, currency or earlier POs in "
+                               "that currency are not recorded, so it is not compared")
+        # one recommendation for the whole ask: approve only when every PO named was
+        # compared and each is within (AUTOMATION-011); any other mix is a review
+        rec = "approve" if verdicts and all(v is True for v in verdicts) else "review"
         if not evidence:
             reasons.append("no PO or order named: decide from the message")
         out.update(kind="decision", family=family, recommendation=rec, reasons=reasons,
@@ -1203,7 +1265,9 @@ def h_invoice_send(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     currency = ap._v(head, "currency").strip()
     order = ap._v(head, "order_number").strip()
     po = ap._v(head, "customer_po").strip()
-    amount = f"{total:,.2f} {currency}".strip() if total is not None else None
+    # the total only with its currency (``ontology.measure.money_text``): a bare figure in a
+    # customer's email is never written; without one the draft says the total is not stated
+    amount = money_text(total, currency) if total is not None else None
     facts = {"invoice": number, "invoice_date": day, "order": order or None,
              "customer_po": po or None, "total": amount}
     ref = f" for your PO {po}" if po else (f" for order {order}" if order else "")

@@ -612,3 +612,265 @@ class CycleTempTests(unittest.TestCase):
             named = {"SQLITE_TMPDIR": "/data/x", "TMPDIR": "/data/x"}
             self.assertEqual(delta._temp_beside(Path(tmp), named), Path("/data/x"))
             self.assertEqual(named, {"SQLITE_TMPDIR": "/data/x", "TMPDIR": "/data/x"})
+
+
+class DeltaCaptureStoreAbsenceTests(DeltaCase):
+    """A capture-store record a complete run no longer finds (DELTA-001: the absence is a
+    mark on its version, no new version, no removal row) is projected again as missing,
+    as a full build of the same captures holds it; one marked after the generation read
+    the store but before its build time is found too (DELTA-002)."""
+
+    def setUp(self):
+        super().setUp()
+        from integrations import mc_sources
+        from integrations.tests import test_mc_sources as tms
+        self.tms, self.mc = tms, tms.FakeMc()
+        self.mc_path = mc_sources.store_path(self.state)
+        self.mc_path.parent.mkdir(parents=True)
+        self.at = T1
+
+    def mc_clock(self):
+        self.at += timedelta(microseconds=1)
+        return self.at
+
+    def capture(self, at):
+        from integrations.capture_store import CaptureStore
+        from integrations.mc_sources import CaptureSpec, McSourcesCapture
+        super().capture(at)
+        self.at = at
+        with CaptureStore(self.mc_path, self.tms.audience(), clock=self.mc_clock) as store:
+            McSourcesCapture(store, self.tms.mc_client(self.mc)).capture(
+                CaptureSpec("ops", ()))
+
+    def full(self, name):
+        from ontology.project import capture_source
+        with MirrorCaptures(self.mirror_path) as captures, \
+                capture_source("mission_control", self.mc_path) as mc:
+            build_store(self.root / name, self.schema,
+                        {"portal_api": captures, "mission_control": mc},
+                        normalizer=normalizer, clock=lambda: T2,
+                        post_project=build_steps.post_project(
+                            self.state, "plx", scratch=self.root / "steps"))
+        return self.root / name
+
+    def task(self, store, task_id):
+        with sqlite3.connect(store) as conn:
+            return conn.execute(
+                "SELECT object_id, missing_from_source_since FROM objects WHERE object_type "
+                "= 'MCTask' AND json_extract(native_key, '$.id') = ?", (task_id,)).fetchone()
+
+    def test_a_record_gone_from_the_source_is_projected_missing_by_the_next_layer(self):
+        from ontology.schema import load_schema
+        self.schema = load_schema()
+        self.capture(T1)
+        base = self.full("gen1.sqlite")          # built at T2, read the store at T1
+        oid, missing = self.task(base, "TASK-3")
+        self.assertIsNone(missing)
+        # gone after the generation read the store, before its build time (DELTA-002)
+        del self.mc.tasks["TASK-3"]
+        self.capture(T2 - timedelta(minutes=30))
+        first = self.cycle(base)
+        self.assertIn(oid, self.owned(first["store"]), first)
+        full = self.full("gen2.sqlite")
+        self.assertIsNotNone(self.task(full, "TASK-3")[1])
+        self.assertEqual(self.task(first["store"], "TASK-3"), self.task(full, "TASK-3"))
+        self.assertEqual(delta.compare(Path(first["store"]), full, [oid])["differ"], 0)
+        # nothing new: the same absence opens nothing again
+        self.assertEqual(self.cycle(base)["layer"], "none: nothing new")
+        # gone after the build time (DELTA-001): the next layer serves it missing
+        oid2 = self.task(base, "TASK-1")[0]
+        del self.mc.tasks["TASK-1"]
+        self.capture(T2 + timedelta(hours=2))
+        second = self.cycle(base)
+        self.assertEqual(second["layer"], "added", second)
+        self.assertIn(oid2, self.owned(second["store"]))
+        newer = self.full("gen3.sqlite")
+        self.assertIsNotNone(self.task(newer, "TASK-1")[1])
+        self.assertEqual(self.task(second["store"], "TASK-1"), self.task(newer, "TASK-1"))
+        self.assertEqual(delta.compare(Path(second["store"]), newer, [oid2])["differ"], 0)
+
+
+
+class LayerReleaseTests(unittest.TestCase):
+    """Over a Postgres base a big (or old) layer Postgres applied leaves the pointer before
+    ``PG_KEPT_LAYERS`` newer ones exist, once every reader following the layers by name
+    has taken it in; an unreadable reader state holds it, and a file a process still holds
+    open is not removed (11-12: the 37.9 GB catch-up layer was kept for 47 cycles)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name) / "state"
+        self.dir = self.state / "projection" / "delta"
+        self.dir.mkdir(parents=True)
+        self.now = time.time()
+        # newest first, as the pointer lists them: one small and one big layer, applied
+        self.small = self.layer("delta-20261112T050000000000.sqlite", 10)
+        self.big = self.layer("delta-20261111T234712486965.sqlite", 5000)
+        self.unapplied = self.layer("delta-20261111T200000000000.sqlite", 5000)
+        self.pg = sqlite3.connect(":memory:")
+        self.addCleanup(self.pg.close)
+        self.pg.execute("CREATE TABLE load_state (name TEXT)")
+        self.pg.executemany("INSERT INTO load_state VALUES (?)",
+                            [("delta:" + p.name,) for p in (self.small, self.big)])
+        self.env = {"PLX_DELTA_RELEASE_BYTES": "1000"}
+
+    def layer(self, name, size):
+        path = self.dir / name
+        path.write_bytes(b"x" * size)
+        return path
+
+    def kept(self, env=None, keep=47):
+        out = {}
+        layers = [{"store": str(p)} for p in (self.small, self.big, self.unapplied)]
+        rule = delta._release_rule(self.state, self.env if env is None else env, out)
+        left = delta._not_in_postgres(layers, self.pg, keep=keep, release=rule)
+        return [Path(item["store"]).name for item in left], out
+
+    def search(self, layers, partial=None, hours_ago=0.1, raw=None):
+        path = self.state / "search" / "follow.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S+00:00",
+                              time.gmtime(self.now - hours_ago * 3600))
+        body = {"digest": "sha256:a", "layers": [str(p) for p in layers], "updated_at": stamp}
+        if partial is not None:
+            body["partial"] = {"layer": str(partial), "done": 1}
+        path.write_text(raw if raw is not None else json.dumps(body))
+
+    def proactive(self, layers, hours_ago=0.1, reader="postgres"):
+        from operating import proactive_engine, proactive_incremental as pi
+        inbox = proactive_engine.inbox_path(delta.served_store(self.state))
+        inbox.write_text("")
+        with __import__("contextlib").closing(pi._open(pi.changes_path(inbox))) as ch:
+            ch.execute("DELETE FROM layers")
+            ch.execute("DELETE FROM passes")
+            pi._set_meta(ch, "reader", reader)
+            ch.executemany("INSERT INTO layers VALUES (?, ?, ?)",
+                           [(str(p), "sha256:a", "t") for p in layers])
+            ch.execute("INSERT INTO passes (at, summary) VALUES (?, '{}')", (time.strftime(
+                "%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(self.now - hours_ago * 3600)),))
+
+    def watcher(self, layers, switch="on", hours_ago=0.1):
+        from operating import ai_watcher
+        ai_watcher.set_switch(self.state, switch)
+        with __import__("contextlib").closing(
+                ai_watcher.open_store(ai_watcher.watch_dir(self.state))) as ws:
+            ws.executemany("INSERT OR REPLACE INTO layers VALUES (?, ?, ?)",
+                           [(str(p), "sha256:a", "t") for p in layers])
+            ws.execute("INSERT INTO runs (run_at, status, model_run, summary) VALUES "
+                       "(?, 'ok', 0, '{}')", (time.strftime(
+                           "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now - hours_ago * 3600)),))
+
+    def every_reader_took(self, layers):
+        self.search(layers)
+        self.proactive(layers)
+        self.watcher(layers)
+
+    def test_the_readers_state_is_read_where_each_reader_keeps_it(self):
+        from operating import ai_watcher, proactive_engine, proactive_incremental as pi
+        from operating.embed import follow
+        store = delta.served_store(self.state)
+        self.assertEqual(pi.changes_path(proactive_engine.inbox_path(store)),
+                         store.with_name(store.name + delta.PROACTIVE_CHANGES_SUFFIX))
+        self.assertEqual(Path(*delta.SEARCH_CURSOR), follow.CURSOR_NAME)
+        self.assertEqual(ai_watcher.watch_dir(self.state), self.state / delta.WATCHER_DIR)
+
+    def test_a_big_applied_layer_every_reader_took_in_leaves_the_pointer(self):
+        self.every_reader_took([self.small, self.big, self.unapplied])
+        names, out = self.kept()
+        # the small applied one stays (count rule), the unapplied big one stays (Postgres
+        # does not hold it yet)
+        self.assertEqual(names, [self.small.name, self.unapplied.name])
+        self.assertEqual(out, {"layers": [self.big.name]})
+
+    def test_a_reader_that_has_not_taken_it_in_holds_it(self):
+        self.every_reader_took([self.small, self.big])
+        # stopped inside the big layer (named in its list too: the slice not done holds)
+        self.search([self.small, self.big], partial=self.big)
+        names, out = self.kept()
+        self.assertIn(self.big.name, names)
+        self.assertEqual(out, {"held": {self.big.name: ["search_follow"]}})
+        self.search([self.small, self.big])
+        self.proactive([self.small])
+        self.assertEqual(self.kept()[1], {"held": {self.big.name: ["proactive_incremental"]}})
+        self.proactive([self.small, self.big])
+        self.watcher([])   # its runs and layers kept; this one never saw the big layer
+        with sqlite3.connect(self.state / "ai-watcher" / "watcher.sqlite") as ws:
+            ws.execute("DELETE FROM layers WHERE store = ?", (str(self.big),))
+        self.assertEqual(self.kept()[1], {"held": {self.big.name: ["ai_watcher"]}})
+
+    def test_a_stopped_or_switched_off_reader_holds_nothing(self):
+        self.every_reader_took([self.small])
+        self.search([self.small, self.big])
+        self.proactive([self.small], hours_ago=delta.READER_IDLE_HOURS + 1)   # stopped
+        self.watcher([], switch="off")
+        names, out = self.kept()
+        self.assertNotIn(self.big.name, names)
+        self.assertEqual(out, {"layers": [self.big.name]})
+        # the incremental pass reading the generation alone takes no layer in
+        self.proactive([self.small], reader="generation_only")
+        self.assertNotIn(self.big.name, self.kept()[0])
+
+    def test_unreadable_or_missing_reader_state_holds_the_layer(self):
+        self.every_reader_took([self.small, self.big])
+        for raw in ("{not json", "[]", json.dumps({"layers": "x"})):
+            self.search([], raw=raw)
+            names, out = self.kept()
+            self.assertIn(self.big.name, names, raw)
+            self.assertEqual(out["held"][self.big.name], ["search_follow"], raw)
+        (self.state / "search" / "follow.json").unlink()   # no cursor: search holds all
+        self.assertIn(self.big.name, self.kept()[0])
+        self.search([self.small, self.big])
+        changes = delta.served_store(self.state).with_name(
+            "ontology.sqlite" + delta.PROACTIVE_CHANGES_SUFFIX)
+        changes.write_bytes(b"not a database at all, longer than a header" * 4)
+        for side in ("-wal", "-shm"):
+            Path(str(changes) + side).unlink(missing_ok=True)
+        self.assertEqual(self.kept()[1]["held"][self.big.name], ["proactive_incremental"])
+        changes.unlink()   # an inbox, no change file yet: its first pass takes all in
+        self.assertEqual(self.kept()[1]["held"][self.big.name], ["proactive_incremental"])
+        self.proactive([self.small, self.big])
+        (self.state / "ai-watcher" / "watcher.sqlite").unlink()   # on, not run yet
+        for side in ("-wal", "-shm"):
+            (self.state / "ai-watcher" / f"watcher.sqlite{side}").unlink(missing_ok=True)
+        self.assertEqual(self.kept()[1]["held"][self.big.name], ["ai_watcher"])
+        self.watcher([self.small, self.big])
+        self.assertNotIn(self.big.name, self.kept()[0])
+        broken = (("search_follow", mock.Mock(side_effect=RuntimeError("x"))),
+                  *delta.LAYER_READERS[1:])
+        with mock.patch.object(delta, "LAYER_READERS", broken):   # a reader failing
+            self.assertEqual(self.kept()[1]["held"][self.big.name], ["search_follow"])
+
+    def test_release_off_or_not_a_number_keeps_layers_by_count(self):
+        self.every_reader_took([self.small, self.big, self.unapplied])
+        for env in ({"PLX_DELTA_RELEASE_BYTES": "0", "PLX_DELTA_RELEASE_DAYS": "0"},
+                    {"PLX_DELTA_RELEASE_BYTES": "big", "PLX_DELTA_RELEASE_DAYS": "nan"}):
+            names, out = self.kept(env)
+            self.assertEqual(names, [self.small.name, self.big.name, self.unapplied.name])
+            self.assertEqual(out, {})
+        # past the count every applied layer goes, held or not (as before)
+        self.search([])
+        self.assertEqual(self.kept(keep=0)[0], [self.unapplied.name])
+
+    def test_an_old_small_layer_leaves_by_age(self):
+        self.every_reader_took([self.small, self.big])
+        old = self.now - (delta.RELEASE_DAYS + 0.5) * 86400
+        os.utime(self.small, (old, old))
+        names, out = self.kept({"PLX_DELTA_RELEASE_BYTES": "0"})
+        self.assertEqual(names, [self.big.name, self.unapplied.name])
+        self.assertEqual(out, {"layers": [self.small.name]})
+
+    def test_prune_leaves_a_layer_a_process_holds_open_to_the_next_prune(self):
+        old = self.now - 3600
+        for path in (self.small, self.big, self.unapplied):
+            os.utime(path, (old, old))
+        if delta.open_files() is None:
+            self.skipTest("no /proc: prune removes by age alone")
+        with open(self.big, "rb"):
+            out = delta.prune(self.dir, keep={self.small.resolve()})
+            self.assertTrue(self.big.exists())
+        self.assertEqual(out["held_open"], [self.big.name])
+        self.assertEqual(out["removed"], [self.unapplied.name])
+        again = delta.prune(self.dir, keep={self.small.resolve()})
+        self.assertEqual((again["removed"], again["held_open"]), ([self.big.name], []))
+        self.assertTrue(self.small.exists())

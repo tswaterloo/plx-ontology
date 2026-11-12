@@ -224,6 +224,8 @@ class McGuardTests(unittest.TestCase):
             ({**good, "decidedBy": "agent:cos"}, False, "decider_not_human"),
             ({**good, "decidedBy": ""}, False, "decider_missing"),
             ({**good, "decidedBy": "COS@petrasoap.com"}, False, "self_decided"),
+            # INT-011: a plus alias of the operator or requester is the same person
+            ({**good, "decidedBy": "Cos+gate@petrasoap.com"}, False, "self_decided"),
             ({**good, "decidedAt": None}, False, "decided_at_missing"),
             ({**good, "decidedAt": "2026-10-01T10:00:00Z"}, False, "decided_before_request"),
         ]

@@ -27,7 +27,7 @@ directory). Evidence label of tests: ``isolated-fixture``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
@@ -221,18 +221,43 @@ def target_of(handle: str, fields: Mapping[str, str], label: str) -> Optional[Ta
     return Target(handle, drive, folder or "(the folder of " + label + ")", label, parent)
 
 
-def _grants_held(acl: Any, identities: frozenset[str], *, inherited_only: bool
-                 ) -> Optional[tuple[bool, int]]:
+# A recorded permission list older than this (its ``read_at``) no longer says who may
+# write: a capture that stalled leaves a removed grant in force (ACT-009). The SharePoint
+# capture re-reads item permissions hourly when it runs.
+ACL_MAX_AGE = timedelta(hours=24)
+# A read_at this far ahead of the clock is a wrong clock: not trusted either.
+ACL_FUTURE_SKEW = timedelta(minutes=5)
+
+
+def acl_current(acl: Mapping[str, Any], now: Optional[datetime] = None) -> bool:
+    """Whether a recorded permission list was read recently enough to act on: its
+    ``read_at`` (ISO instant with offset) within ``ACL_MAX_AGE`` of ``now``; no read_at,
+    an unreadable one or one in the future: not current."""
+    text = acl.get("read_at")
+    if not isinstance(text, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})", text.strip()):
+        return False
+    try:
+        read = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return now - ACL_MAX_AGE <= read <= now + ACL_FUTURE_SKEW
+
+
+def _grants_held(acl: Any, identities: frozenset[str], *, inherited_only: bool,
+                 now: Optional[datetime] = None) -> Optional[tuple[bool, int]]:
     """(whether a grant naming one of ``identities`` holds a write role, how many grants
     counted) from a recorded permission list (``graph_read.permission_acl``); None when
-    it cannot say: not read in full, or a grant without its roles (or, for
-    ``inherited_only``, without whether it is inherited)."""
+    it cannot say: not read in full, read too long ago (``acl_current``), or a grant
+    without its roles (or, for ``inherited_only``, without whether it is inherited)."""
     if isinstance(acl, str):
         try:
             acl = json.loads(acl)
         except ValueError:
             return None
-    if not isinstance(acl, Mapping) or acl.get("status") != "read":
+    if not isinstance(acl, Mapping) or acl.get("status") != "read" \
+            or not acl_current(acl, now):
         return None
     grants = acl.get("grants")
     if not isinstance(grants, list):
@@ -253,20 +278,21 @@ def _grants_held(acl: Any, identities: frozenset[str], *, inherited_only: bool
     return held, counted
 
 
-def folder_writable(folder_acl: Any, anchor_acl: Any, identities: Any) -> Optional[bool]:
+def folder_writable(folder_acl: Any, anchor_acl: Any, identities: Any, *,
+                    now: Optional[datetime] = None) -> Optional[bool]:
     """Whether a person holds a write or owner role on a SharePoint folder: from the
     folder's own recorded grants, else from the grants its file (the anchor) inherits from
-    it. None: not known (no list read in full, a grant without its roles, a file with no
-    inherited grants to read). Only grants naming the person's own identities count
+    it. None: not known (no list read in full or read within ``ACL_MAX_AGE``, a grant
+    without its roles, a file with no inherited grants to read). Only grants naming the person's own identities count
     (their object id and addresses; a group or a sharing link never does)."""
     ids = frozenset(str(i).strip().lower() for i in identities or () if isinstance(i, str)
                     and i.strip() and not str(i).startswith(("group:", "link-scope:")))
     if not ids:
         return None
-    folder = _grants_held(folder_acl, ids, inherited_only=False)
+    folder = _grants_held(folder_acl, ids, inherited_only=False, now=now)
     if folder is not None:
         return folder[0]
-    anchor = _grants_held(anchor_acl, ids, inherited_only=True)
+    anchor = _grants_held(anchor_acl, ids, inherited_only=True, now=now)
     if anchor is None or (not anchor[0] and anchor[1] == 0):
         return None     # the file's permissions are its own: the folder's are not shown
     return anchor[0]

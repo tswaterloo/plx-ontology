@@ -212,7 +212,7 @@ PORTAL_RECEIVED = frozenset({"COMPLETE", "RECEIVED"})
 TEST_MARK = re.compile(r"(?:\binvoice ?test|\btest ?invoice|(?:\b|-)uat(?:-[a-z0-9-]*\d|\s*$)|\bdemo-|[- ]demo\b|"
                        r"pipeline[- ]proof|\bo2c[- ]proof|\bbanktest|\bproof line\b|"
                        r"\bplx-val-|\btest ?po\b)", re.I)
-_SERIES = re.compile(r"^(.*?)(\d{3})$")
+_SERIES = re.compile(r"^(.*?)(\d+)$")
 
 
 def _bulk(values: Sequence[Any]) -> frozenset:
@@ -262,8 +262,11 @@ def _open_quantity(ordered: Any, received: Any) -> bool:
 
 
 def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
-                bc: Sequence[Mapping[str, Any]], as_of: date) -> dict[str, Any]:
-    """The order groups and the late ones (module doc)."""
+                bc: Sequence[Mapping[str, Any]], as_of: date,
+                go_live_day: str | None = None) -> dict[str, Any]:
+    """The order groups and the late ones (module doc). ``go_live_day`` is the BC go-live
+    day the deployment states (an ISO day, read from the environment by the caller; the
+    oracle reads none): none or malformed, no go-live marks."""
     pos = list(portal.get(PO) or ())
     fm_by_id: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in portal.get(FM_PO) or ():
@@ -354,16 +357,23 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
     # go-live first documents: a BC-native number series' first number (running number
     # 001) and the series' documents dated that same day
     joined_ids = {id(r) for g in groups for r in g["bc"] if g["portal"]}
-    series: dict[str, list[tuple[Any, int, date | None]]] = defaultdict(list)
+    # (number prefix, digit width); a ...001 is a first only when nothing of its series is
+    # numbered below it but its predecessor: past a thousand it is an ordinary order
+    series: dict[tuple[str, int], list[tuple[Any, int, date | None]]] = defaultdict(list)
     for record in bc_orders:
         found = _SERIES.match(str(record["fields"].get("number") or "").strip())
         if found and id(record) not in joined_ids:
-            series[found.group(1)].append((id(record), int(found.group(2)),
-                                           _day(record["fields"].get("orderDate"))))
+            series[(found.group(1), len(found.group(2)))].append(
+                (id(record), int(found.group(2)), _day(record["fields"].get("orderDate"))))
+    # ... and only on the BC go-live day the deployment states (``go_live_day``, an
+    # ISO day): a series begun on another day is ordinary business; no day, no marks
+    stated = str(go_live_day or "").strip()
+    live_day = _day(stated) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", stated) else None
     go_live: set[int] = set()
     for members in series.values():
-        first = [m for m in members if m[1] == 1]
-        if len(first) == 1 and first[0][2] is not None:
+        first = [m for m in members if m[1] % 1000 == 1
+                 and not any(o[1] < m[1] - 1 for o in members)]
+        if len(first) == 1 and live_day is not None and first[0][2] == live_day:
             go_live |= {rid for rid, _n, day in members if day == first[0][2]}
 
     def is_test(group: Mapping[str, Any]) -> bool:

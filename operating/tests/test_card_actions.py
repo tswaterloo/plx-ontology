@@ -6,10 +6,11 @@ No network: every send goes to an injected fake. Evidence: ``injected-transport`
 from __future__ import annotations
 
 import base64
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -119,7 +120,8 @@ class SendShape(unittest.TestCase):
             "saveToSentItems": True})
         row = d.journal.rows()[-1]
         self.assertEqual((row["actor"], row["card_id"], row["status"], row["at"]),
-                         ({"name": "Vince", "email": VINCE}, "pe-90388", "sent",
+                         ({"name": "Vince", "email": VINCE, "oid": VINCE_OID},
+                          "pe-90388", "sent",
                           "2026-11-04T15:00:00+00:00"))
         self.assertEqual(len(row["payload_hash"]), 64)
         self.assertIn({"fact": "need_date", "value": "2026-10-24", "handle": BC},
@@ -308,12 +310,49 @@ class OnceOnly(unittest.TestCase):
             confirm(d)
         d.sender.dispatch = ActionSender(LIVE, bearer=lambda: token(roles=["Mail.Send"]),
                                          post=graph).dispatch
-        self.assertEqual(confirm(d)["status"], "pending")      # same key: outcome unknown
+        self.assertEqual(confirm(d)["status"], "pending")      # same key: still going out
         with self.assertRaises(ca.ActionRefused):
             confirm(d, key="m" * 20)
+        # its pending row is young: maybe still going out, so no check sends it again
+        with self.assertRaises(ca.ActionRefused) as refused:
+            confirm(d, key="c" * 20, checked_sent_items=True)
+        self.assertIn("still going out", refused.exception.problems[0])
         self.assertEqual(graph.calls, [])
+        # past the send timeouts its outcome is unknown: Sent Items checked, it is sent
+        later = d.clock() + timedelta(seconds=ca.IN_FLIGHT_SECONDS)
+        d.clock = lambda: later
+        self.assertEqual(confirm(d)["status"], "unknown")
         self.assertEqual(confirm(d, key="c" * 20, checked_sent_items=True)["status"], "sent")
         self.assertTrue(d.journal.rows()[-1]["checked_sent_items"])
+
+    def test_an_active_send_cannot_be_dispatched_again_through_recovery(self):
+        # ACT-001 invariant: while the first dispatch is out, a second confirm (new key,
+        # "I checked Sent Items" ticked) is refused and nothing else is dispatched.
+        d, graph = desk()
+        started, release = threading.Event(), threading.Event()
+        send = d.sender.dispatch
+
+        def slow(*a):
+            started.set()
+            release.wait(5)
+            return send(*a)
+        d.sender.dispatch = slow
+        first: list = []
+        worker = threading.Thread(target=lambda: first.append(confirm(d)))
+        worker.start()
+        self.assertTrue(started.wait(5))
+        shown = d.states(VINCE, "Vince", date(2026, 11, 4), oid=VINCE_OID)["pe-90388"]
+        self.assertEqual(shown["status"], "pending")   # shown as sending, no check offered
+        for late in (0, ca.IN_FLIGHT_SECONDS):   # in this process: whatever the row's age
+            moved = d.clock() + timedelta(seconds=late)
+            d.clock = lambda moved=moved: moved
+            with self.assertRaises(ca.ActionRefused) as refused:
+                confirm(d, key="r" * 20, checked_sent_items=True)
+            self.assertEqual(refused.exception.status, 409)
+        release.set()
+        worker.join(5)
+        self.assertEqual(first[0]["status"], "sent")
+        self.assertEqual(len(graph.calls), 1)
 
     def test_a_5xx_is_an_unknown_outcome_that_blocks_a_resend_until_sent_items_is_checked(self):
         d, graph = desk(graph=FakeGraph(503))
@@ -462,13 +501,27 @@ class JournalAndState(unittest.TestCase):
             with self.assertRaises(ca.ActionRefused):
                 confirm(d, "dismiss", key="d" * 20)               # a reason is required
             confirm(d, "snooze", {"until": "2026-11-06"}, key="s" * 20)
-            self.assertEqual(d.states(VINCE, "Vince", date(2026, 11, 5))["pe-90388"]["status"],
-                             "snoozed")
-            self.assertEqual(d.states(VINCE, "Vince", date(2026, 11, 7)), {})
+            self.assertEqual(d.states(VINCE, "Vince", date(2026, 11, 5), oid=VINCE_OID)
+                             ["pe-90388"]["status"], "snoozed")
+            self.assertEqual(d.states(VINCE, "Vince", date(2026, 11, 7), oid=VINCE_OID), {})
             self.assertEqual(d.states("ana@plx.example", "Ana", date(2026, 11, 5)), {})
             confirm(d)
-            self.assertEqual([r["status"] for r in d.log(VINCE, "Vince")], ["sent", "snoozed"])
+            self.assertEqual([r["status"] for r in d.log(VINCE, "Vince", oid=VINCE_OID)],
+                             ["sent", "snoozed"])
             self.assertEqual(d.log("ana@plx.example", "Ana"), [])
+            # ACT-006: rows that recorded the actor's object id are theirs by that id only:
+            # the next holder of the same mailbox (another id, or none) sees none of them;
+            # the same person under a renamed mailbox sees them all
+            self.assertEqual(d.log(VINCE, "Vince", oid=COLLEAGUE_OID), [])
+            self.assertEqual(d.log(VINCE, "Vince"), [])
+            self.assertEqual(d.states(VINCE, "Vince", date(2026, 11, 5), oid=COLLEAGUE_OID), {})
+            self.assertEqual(len(d.log("renamed@plx.example", "V", oid=VINCE_OID.upper())), 2)
+            # a row journalled before ids were kept stays its mailbox's
+            legacy = {"actor": {"name": "Old", "email": "old@plx.example"}}
+            journal.rows = lambda: [legacy]
+            self.assertEqual(d._own("old@plx.example", "Old", oid=COLLEAGUE_OID), [legacy])
+            self.assertEqual(d._own("x@plx.example", "Old", oid=COLLEAGUE_OID), [])
+            del journal.rows
             lines = journal.path.read_text().splitlines()
             journal.path.write_text("\n".join([lines[0].replace("2026-11-06", "2026-12-06"),
                                                *lines[1:]]) + "\n")

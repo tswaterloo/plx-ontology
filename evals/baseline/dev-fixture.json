@@ -166,8 +166,8 @@
    "answered": 30,
    "blocked": 0,
    "first_cited_evidence_ms": {
-    "measured": 29,
-    "unmeasured": 1
+    "measured": 30,
+    "unmeasured": 0
    },
    "identity_reviews": 0,
    "justified_abstention": 0,

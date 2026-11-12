@@ -240,6 +240,13 @@ class PeopleExclusion:
         state = self._unavailable or ("bound" if self._bound else "ids_only")
         return f"PeopleExclusion({state}, {len(self._ids)} ids)"
 
+    def fingerprint(self) -> str:
+        """A digest of what this guard excludes (its IDs) and whether it loaded: a cache of
+        verdicts keyed by it is dropped when anyone is added or removed. Never the IDs."""
+        import hashlib
+        return hashlib.sha256(json.dumps([self._unavailable, sorted(self._ids)])
+                              .encode("utf-8")).hexdigest()
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str], *, config: Path = CONFIG) -> "PeopleExclusion":
         """IDs from ``PLX_EXCLUDED_PEOPLE_OIDS``, ``PLX_EXCLUDED_PEOPLE_FILE`` (outside

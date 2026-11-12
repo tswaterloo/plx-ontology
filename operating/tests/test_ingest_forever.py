@@ -825,6 +825,21 @@ class ConcurrentIngestTest(unittest.TestCase):
             done = host.ingest_continuous(stop_file=stop_file)
             self.assertEqual((done["reason"], done["refreshes"]), ("low_disk", 0))
             self.assertFalse(self.ran("fast"))
+        # serve (what the unit runs) exits 0 on low disk, so systemd never restarts it: it
+        # records why it ended, for the alarm and the ingest keeper; a start clears that.
+        health = self.state / host_module.HOST_DIR / host_module.SERVE_HEALTH_FILE
+        host_module.record_serve_start(self.state, now=host_module._utc())
+        host = self.host(config, table)
+        host.disk_free = lambda path: host_module.MIN_FREE_BYTES - 1
+        host.serve(interval_seconds=1, stop_file=stop_file)
+        stop = json.loads(health.read_text())["stop"]
+        self.assertEqual((stop["reason"], stop["free_bytes"]),
+                         ("low_disk", host_module.MIN_FREE_BYTES - 1))
+        self.assertIn("started_at", json.loads(health.read_text()))
+        host_module.record_serve_start(self.state, now=host_module._utc(), error="x")
+        self.assertIn("stop", json.loads(health.read_text()))   # a refused start: still off
+        host_module.record_serve_start(self.state, now=host_module._utc())
+        self.assertNotIn("stop", json.loads(health.read_text()))
         # An unloaded people exclusion blocks each source before its child starts.
         done = self.host(config, table, env={"PATH": self.env["PATH"]}).ingest_continuous(
             stop_file=stop_file, max_refreshes=1)

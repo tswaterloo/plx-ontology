@@ -262,7 +262,7 @@ class SharePointRemovedDeltaTests(unittest.TestCase):
         with sqlite3.connect(drive) as conn:
             newest = conn.execute("SELECT MAX(version_id) FROM items").fetchone()[0]
         # the generation read every version and was built after the removal
-        base = SimpleNamespace(built_at="9999-01-01T00:00:00Z",
+        base = SimpleNamespace(built_at="9999-01-01T00:00:00Z", freshness={},
                                mark=lambda source, relation: newest)
         state = delta.State(Path(case.tmp.name) / "delta" / "state.sqlite")
         self.addCleanup(state.conn.close)

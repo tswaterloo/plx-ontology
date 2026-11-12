@@ -122,6 +122,9 @@ RETRY_BUDGET_SECONDS = 180   # a refused item's own pass: research budget
 RETRY_TIMEOUT_SECONDS = 360  # and its process's own limit
 BULK_MIN = 12            # same type, same changed properties, more than this: one bulk line
 ITEM_DAYS = 7            # an open item expires this long after it was last seen
+# a last run older than this is no current check (the timer runs every 15 minutes): the
+# briefing says ``stale``, never ``complete`` over a stopped watcher
+STALE_AFTER = dt.timedelta(hours=1)
 BUDGET_SECONDS = 420     # the session's research budget (the gate is always answered)
 TIMEOUT_SECONDS = 720    # the session process's own limit
 MAX_STEPS = 45           # tool calls besides the gate's
@@ -1709,11 +1712,14 @@ def set_aside(state: Mapping[str, Any] | None, today: dt.date) -> bool:
 def read_items(directory: Path, store: Path, *, may_read: Callable[[str], bool],
                held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
                limit: int = 200, reader: str | None = None,
-               today: dt.date | None = None) -> list[dict[str, Any]]:
+               today: dt.date | None = None,
+               now: dt.datetime | None = None) -> list[dict[str, Any]]:
     """The open items one reader may see (module doc, permissions), as the briefing reads a
     gap: kind ``watcher_attention``, ``detected_by`` ``watcher``. With ``reader`` (the
     briefing's reader key), an item that reader dismissed, or snoozed through a day not
-    past ``today``, is left out (``set_item_state``). Read only."""
+    past ``today``, is left out (``set_item_state``). An open item not seen for
+    ``ITEM_DAYS`` before ``now`` is left out as expired even when no run expired it (a
+    stopped watcher's items never stay listed). Read only."""
     from ontology import store as ostore
     path = store_path(directory)
     if not path.is_file():
@@ -1732,8 +1738,10 @@ def read_items(directory: Path, store: Path, *, may_read: Callable[[str], bool],
     places = Places(store)
     try:
         with closing(_ro(path)) as conn:
-            rows = conn.execute("SELECT * FROM items WHERE state = 'open' ORDER BY "
-                                "last_seen DESC, item_id LIMIT ?", (limit,)).fetchall()
+            fresh = _iso((now or _now()) - dt.timedelta(days=ITEM_DAYS))
+            rows = conn.execute("SELECT * FROM items WHERE state = 'open' AND last_seen >= ? "
+                                "ORDER BY last_seen DESC, item_id LIMIT ?",
+                                (fresh, limit)).fetchall()
             cites = defaultdict(list)
             for row in conn.execute(
                     "SELECT c.* FROM item_cites c JOIN items i ON i.item_id = c.item_id "
@@ -1895,13 +1903,15 @@ def merge_briefing(found: Mapping[str, Any], store: Path, *, may_read: Callable[
     try:
         items = read_items(directory, store, may_read=may_read, held=held, decide=decide,
                            reader=reader)
-        status = last_status(directory)
+        status, run_at = last_run(directory)
     except Exception:  # noqa: BLE001 - the watcher never breaks the briefing
         return {**found, "detectors": {**(found.get("detectors") or {}),
                                        DETECTOR: "failed"}}
     out = dict(found)
     out["gaps"] = list(found.get("gaps") or ()) + items
     out["detectors"] = {**(found.get("detectors") or {}), DETECTOR: status}
+    if run_at:
+        out["detector_run_at"] = {**(found.get("detector_run_at") or {}), DETECTOR: run_at}
     if items:
         out["kind_history"] = {**(found.get("kind_history") or {}),
                                KIND: min(i["first_seen"] for i in items)}
@@ -1918,25 +1928,40 @@ def _state_of(store: Path) -> Path | None:
     return None
 
 
-def last_status(directory: Path) -> str:
-    """The briefing's word for the watcher's last run: ``complete`` (a run within the hour
-    reviewed its batch or found nothing new), ``truncated`` (changes still wait), else
-    ``not_run``."""
+def last_status(directory: Path, now: dt.datetime | None = None) -> str:
+    """The briefing's word for the watcher's last run (``last_run``)."""
+    return last_run(directory, now)[0]
+
+
+def last_run(directory: Path, now: dt.datetime | None = None) -> tuple[str, str | None]:
+    """The watcher's last run as the briefing words it, with its time: ``complete`` (a run
+    within ``STALE_AFTER`` of ``now`` reviewed its batch or found nothing new),
+    ``truncated`` (changes still wait), ``failed``, ``stale`` (the last run is older: the
+    watcher stopped), ``unknown`` (its time does not read), else ``not_run``."""
     path = store_path(directory)
     if not path.is_file():
-        return "not_run"
+        return "not_run", None
     with closing(_ro(path)) as conn:
         row = conn.execute("SELECT run_at, status, summary FROM runs ORDER BY run_id DESC "
                            "LIMIT 1").fetchone()
     if row is None:
-        return "not_run"
+        return "not_run", None
+    try:
+        at = dt.datetime.fromisoformat(str(row["run_at"]).replace("Z", "+00:00"))
+        if at.tzinfo is None:
+            raise ValueError("no time zone")
+    except (TypeError, ValueError):
+        return "unknown", None
+    if row["status"] == "failed":
+        return "failed", row["run_at"]
+    if at < (now or _now()) - STALE_AFTER:
+        return "stale", row["run_at"]
     try:
         summary = json.loads(row["summary"])
-    except ValueError:
+    except (TypeError, ValueError):
         summary = {}
-    if row["status"] == "failed":
-        return "failed"
-    return "truncated" if summary.get("waiting") else "complete"
+    waiting = isinstance(summary, dict) and summary.get("waiting")
+    return ("truncated" if waiting else "complete"), row["run_at"]
 
 
 # --------------------------------------------------------------------------- the run

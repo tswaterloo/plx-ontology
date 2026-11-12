@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { headline, staleLine, yourMorning } from "./home";
+import { headline, keyOwner, staleLine, yourMorning } from "./home";
 import type { Briefing, BriefingItem, HomeResponse } from "./types";
 
 const home = (late_total: number | null, status: "read" | "unavailable" = "read") =>
@@ -60,5 +60,22 @@ describe("Your morning", () => {
     expect(yourMorning(brief([it_(null)], { yours: 0, today: "2 new late POs." }), new Date(2026, 10, 7, 8))?.line).toBe("2 new late POs.");
     expect(yourMorning(brief([], { status: "unavailable" } as Partial<Briefing>), new Date(2026, 10, 7, 8))).toBeNull();
     expect(yourMorning(null, new Date(2026, 10, 7, 8))).toBeNull();
+  });
+});
+
+describe("keyOwner (WEB-015: Enter on an unrelated link is that link's)", () => {
+  const el = (html: string, sel: string) => {
+    document.body.innerHTML = html;
+    return document.querySelector(sel);
+  };
+  it("leaves links, buttons, fields and dialogs their own keys; rows and the page are Today's", () => {
+    expect(keyOwner(el('<nav><a href="/team" id="x">Team</a></nav>', "#x"))).toBe("own");
+    expect(keyOwner(el('<button id="x">Go</button>', "#x"))).toBe("own");
+    expect(keyOwner(el('<input id="x">', "#x"))).toBe("own");
+    expect(keyOwner(el('<div role="dialog"><span id="x">in a dialog</span></div>', "#x"))).toBe("own");
+    expect(keyOwner(el('<a data-row-link href="/po/1" id="x"><span id="y">row</span></a>', "#y"))).toBe("row");
+    expect(keyOwner(el('<div id="x">page</div>', "#x"))).toBe("free");
+    expect(keyOwner(document.body)).toBe("free");
+    expect(keyOwner(null)).toBe("free");
   });
 });

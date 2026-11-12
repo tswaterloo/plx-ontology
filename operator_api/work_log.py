@@ -70,7 +70,7 @@ VERBS: dict[str, frozenset[str]] = {
     "autopilot": frozenset({"prepared", "edited", "accepted", "rejected", "snoozed",
                             "sent"}),
     "action": frozenset({"sent", "replied", "forwarded", "messaged", "follow_up", "done",
-                         "snoozed", "dismissed", "assigned"}),
+                         "snoozed", "dismissed", "assigned", "prepared"}),
     "write": frozenset({"prepared", "approved", "executed"}),
     "watch": frozenset({"followed", "unfollowed", "rule_added", "rule_removed"}),
     "note": frozenset({"noted", "rated"}),
@@ -399,6 +399,10 @@ class WorkLog:
         out["thread_name"], out["pinned"] = row["t_name"], bool(row["t_pinned"])
         out["case_id"] = row["t_case"]
         out["detail"] = row["detail"]
+        if out["kind"] == "action" and out["verb"] != "prepared" and \
+                _outcome(row) == "dry_run":
+            # Logged before dry runs had their own verb: it was never sent, never say so.
+            out["verb"] = "prepared"
         out["loop"] = self.loop(row, closed_at=row["t_closed"]) if row["awaiting"] else None
         return out
 
@@ -592,8 +596,14 @@ _SAY = {"asked": "Asked", "seen": "Read", "dismissed": "Dismissed", "snoozed": "
         "unsaved": "Unsaved"}
 
 
+# A dry run (``status: dry_run``) of an action: nothing went out or changed.
+_SAY_KIND = {("action", "prepared"): "Prepared (not sent)"}
+
+
 def say(event: Mapping[str, Any]) -> str:
-    line = f"{_SAY.get(event['verb'], event['verb'])}: {event['title']}"
+    verb = _SAY_KIND.get((event.get("kind"), event["verb"])) or \
+        _SAY.get(event["verb"], event["verb"])
+    line = f"{verb}: {event['title']}"
     loop = event.get("loop") or {}
     if loop.get("state") == "overdue":
         line += f" ({loop['nudge']})"
@@ -787,7 +797,8 @@ class Notes:
         outbound = data["kind"] in ("send_email", "reply_in_thread", "forward")
         title = row.get("subject") or row.get("card_label") or data.get("text") or \
             data["kind"].replace("_", " ")
-        self._put(reader, kind="action", verb=_ACTION_VERB[data["kind"]], title=title,
+        verb = "prepared" if data["status"] == "dry_run" else _ACTION_VERB[data["kind"]]
+        self._put(reader, kind="action", verb=verb, title=title,
                   thread=f"card:{data['card_id']}" if valid_thread(f"card:{data['card_id']}")
                   else "card:unknown", source="actions_journal",
                   source_id=f"{data['card_id']}#{data.get('seq')}",

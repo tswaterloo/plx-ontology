@@ -94,10 +94,20 @@ def _failed(event: Mapping[str, Any]) -> bool:
 
 
 def cited_handles(answer: Mapping[str, Any] | None) -> list[str]:
-    return list(dict.fromkeys(
-        str(cite.get("l1_handle")) for value in (answer or {}).get("values") or []
-        if isinstance(value, Mapping) for cite in value.get("citations") or []
-        if isinstance(cite, Mapping) and cite.get("l1_handle")))
+    """Every handle the answer cites, in order: a value's citations and the inputs of its
+    calculation (the runner's evidence collection shares this walker)."""
+    found: list[str] = []
+    for value in (answer or {}).get("values") or []:
+        if not isinstance(value, Mapping):
+            continue
+        calc = value.get("calculation")
+        for cite in [*(value.get("citations") or []),
+                     *((calc.get("inputs") or []) if isinstance(calc, Mapping) else [])]:
+            if isinstance(cite, Mapping) and cite.get("l1_handle"):
+                handle = str(cite["l1_handle"])
+                if handle not in found:
+                    found.append(handle)
+    return found
 
 
 def _cites(result: Any) -> bool:

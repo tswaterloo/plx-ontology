@@ -148,6 +148,7 @@ from ontology.store import withhold_currency
 from ontology.types import Actor
 from ontology.units import is_unit_price, same_denominator, unit_token, value_basis
 from operating.absence_claims import ABSENT, traversal_problem
+from ontology.measure import exact_sum
 from operating.claim_checks import _plain, to_decimal
 from operating.ontology_tools import (  # noqa: F401 (origin_rank: re-exported)
     origin_rank,
@@ -541,6 +542,10 @@ class AggregateTools:
                                                    [f for f in filters if f not in links])
             if links:
                 linked, hidden = base._linked_ids(found, object_type, links)
+                from operating.ontology_tools import _target_marks
+                marked = _target_marks(hidden)   # the targets' set provenance (QUERY-005)
+                hidden = set(hidden) - marked
+                unsure = set(unsure) | marked
                 if "*" in hidden or hidden & set(ids):
                     # a member only a withheld link joins is never read as unlinked
                     unsure = set(unsure) | {f["property"] for f in links}
@@ -1182,12 +1187,12 @@ class AggregateTools:
             unit = unit_token(choice.row["unit"])
             if total is None or None in parts or unit is None or any(
                     unit_token(offered[demand]["unit"]) != unit for demand in demands
-            ) or sum(parts, Decimal(0)) > total:
+            ) or exact_sum(parts) > total:
                 gaps.add("unknown", "allocation_conflict", subject,
                          "reviewed allocations do not fit the member's value (another or no "
                          "unit, or more than the value together); it was not grouped")
                 return None
-            if sum(parts, Decimal(0)) < total:
+            if exact_sum(parts) < total:
                 gaps.add("unknown", "allocation_remainder_unallocated", subject,
                          "reviewed allocations give out less than a member's value; the "
                          "remainder is in no group")
@@ -1539,6 +1544,11 @@ class AggregateTools:
                          "a member's value is a person's correction in force (plx.review "
                          "correct_value); the group uses it, citing the correction "
                          "(plx.object shows it beside the source value)")
+            if (choice is not None and choice.row is not None and correction is None
+                    and op != "count" and _zeroed_order_total(oid, prop, choice.row)):
+                # a sales order header total of 0 is no order value (Sage zeroes it once
+                # invoiced; an unpriced copy holds 0): the group misses it, never adds 0
+                choice = _Pick(None, "zeroed")
             # A member reaching several records over the N:M hop of a sum, or one a person
             # allocated: one share each, as reviewed allocations state them, or not
             # grouped at all.
@@ -1559,6 +1569,7 @@ class AggregateTools:
                 shown: dict[str, Any] = {}
                 key_rows: list[Mapping[str, Any]] = []
                 key_fixes: list[Mapping[str, Any]] = []
+                key_dims: dict[str, dict[str, str]] = {}
                 skip = False
                 for name in group_by:
                     if target is None:
@@ -1600,8 +1611,18 @@ class AggregateTools:
                                  "correction (plx.object shows it beside the source value)")
                     number = to_decimal(row["value"]) if row["value_type"] in NUMERIC else None
                     label = _bucketed(row, bucket)
-                    key.append((name, (row["value_type"], label if label is not None else
-                                       row["value"] if number is None else _plain(number))))
+                    part: tuple = (row["value_type"], label if label is not None else
+                                   row["value"] if number is None else _plain(number))
+                    if number is not None and label is None and (
+                            row["unit"] is not None or row["currency"] is not None):
+                        # an amount or a quantity groups with its currency and unit: 10 CAD
+                        # and 10 USD, 5 kg and 5 lb are four groups (QUERY-001)
+                        said = {k: v for k, v in (("currency", row["currency"]),
+                                                  ("unit", unit_token(row["unit"])))
+                                if v is not None}
+                        part += (said.get("unit"), said.get("currency"))
+                        key_dims[name] = said
+                    key.append((name, part))
                     shown[name] = _group_display(row, limit) if label is None else \
                         _envelope(label, row["l1_handle"], row["field_path"], limit)
                     if fix is not None and isinstance(shown[name], dict) and fix["citations"]:
@@ -1624,9 +1645,11 @@ class AggregateTools:
                     gaps.add("unknown", "no_group_link", path_subject,
                              "a member reaches no visible object along the path; it is grouped "
                              "under null")
-                group = groups.setdefault(tuple(key), {"key": shown, "members": [], "rows": [],
+                group = groups.setdefault(tuple(key), {"key": shown, "key_dims": key_dims,
+                                                       "members": [], "rows": [],
                                                        "key_rows": [], "marks": set(),
                                                        "missing": 0, "source_null": 0,
+                                                       "zeroed": 0,
                                                        "withheld": 0, "conflict": 0,
                                                        "link_withheld": 0, "twins": 0,
                                                        "cites": []})
@@ -1665,6 +1688,8 @@ class AggregateTools:
                     group["source_null"] += 1
                 elif choice.status == "no_value":
                     group["missing"] += 1
+                elif choice.status == "zeroed":
+                    group["zeroed"] += 1
 
         # Roles, units and currencies over the values each group would combine (every
         # group carries its own unit, currency and role).
@@ -1791,8 +1816,14 @@ class AggregateTools:
         or not groupable), so it shows no value."""
         rows = group["rows"]
         lacking = (group["missing"] + group["source_null"] + group["withheld"]
-                   + group["conflict"] + group["link_withheld"])
+                   + group["conflict"] + group["link_withheld"] + group.get("zeroed", 0))
         subject = prop or "members"
+        if group.get("zeroed"):
+            gaps.add("unknown", "order_total_zeroed", subject,
+                     "members' order headers hold a total of 0, which is no order value "
+                     "(Sage zeroes it once the order is invoiced, an unpriced order holds "
+                     "0); plx.object shows each one's value derived from its invoices or "
+                     "lines (derived order_value)", group["zeroed"])
         if group["source_null"]:
             gaps.add("absent_in_source", "measure_value_null", subject,
                      "members' source records hold no value for the measure",
@@ -1844,7 +1875,7 @@ class AggregateTools:
             elif not rows:
                 value = None
             elif op == "sum":
-                value = _plain(sum((n for n in numbers), Decimal(0)))
+                value = _plain(exact_sum(numbers))
             elif op == "min":
                 value = _plain(min(numbers))
             else:
@@ -1853,6 +1884,8 @@ class AggregateTools:
                                          for m in _markings(r["markings"])})
         out: dict[str, Any] = {"key": group["key"], "value": value, "inputs": len(rows),
                                "markings": marks}
+        if group.get("key_dims"):
+            out["key_dimensions"] = group["key_dims"]
         if rows and op in ("sum", "min", "max"):
             first = rows[0]
             if first["value_type"] in ("quantity", "decimal") or self._rate(first):
@@ -2152,6 +2185,14 @@ _CURSOR = re.compile(r"g([0-9]{1,7})")
 BUCKETS = ("year", "quarter", "month", "week", "day")
 
 
+def _zeroed_order_total(object_id: str, prop: str | None, row: Mapping[str, Any]) -> bool:
+    """A sales order's header total of 0 (``operating.order_value``: never its value)."""
+    from operating import order_value
+
+    return (prop == order_value.TOTAL and object_id.split(":", 1)[0] == order_value.TYPE
+            and order_value.decimal(row["value"]) == 0)
+
+
 def _group_cursor(offset: int) -> str:
     return f"g{offset}"
 
@@ -2224,34 +2265,78 @@ def _holds(value: Any, having: Mapping[str, Any]) -> bool:
             "lt": number < wanted, "lte": number <= wanted}.get(having.get("op"), False)
 
 
+def _group_measure(group: Mapping[str, Any]) -> Any:
+    """A group's value as one ``ontology.measure.Measure``: its currency (an amount, or a
+    unit price when it is per a unit), its unit (a quantity) and quantity role kept."""
+    from ontology import measure as ms
+    unit, currency = group.get("unit"), group.get("currency")
+    kind = ("unit_price" if currency and unit else "amount" if currency else
+            "quantity" if unit or group.get("quantity_role") else "number")
+    return ms.Measure(to_decimal(group.get("value")),
+                      ms.Dimension(kind, currency, unit_token(unit) if unit else None, None,
+                                   group.get("quantity_role")))
+
+
+def _dimension_out(dim: Any) -> dict[str, Any]:
+    return {k: v for k, v in (("currency", dim.currency), ("unit", dim.unit),
+                              ("quantity_role", dim.role)) if v is not None}
+
+
 def _groups_summary(groups: Sequence[Mapping[str, Any]], op: str, partial: bool = False
                     ) -> dict[str, Any]:
     """What every group computed says together, returned or not: how many groups, how
-    many hold a value, the lowest and highest value, their total (a count, or a sum in
-    one unit and currency) and how many groups hold each value (the most frequent first,
-    ``MAX_VALUE_COUNTS``): computed from the groups, never a figure of a source. It
-    carries the markings of every group it summarises (a finance or PII value's total is
-    as marked as the value), and a total over groups one of which holds no value, or of
-    a ``partial`` answer, is ``partial_total``: a lower bound, never named the total."""
-    values = [(g, n) for g in groups if (n := to_decimal(g.get("value"))) is not None]
-    out: dict[str, Any] = {"groups": len(groups), "with_value": len(values)}
+    many hold a value, and per dimension (currency, unit, quantity role: never two
+    compared or added, ``ontology.measure``) the lowest and highest value, their total and
+    how many groups hold each value (the most frequent first, ``MAX_VALUE_COUNTS``):
+    computed from the groups, never a figure of a source. One dimension is stated at the
+    top (with its ``currency``/``unit``); several are ``by_dimension``, one entry each, and
+    nothing is stated across them. It carries the markings of every group it summarises
+    (a finance or PII value's total is as marked as the value). A total over groups one of
+    which holds no value, or of a ``partial`` answer, is ``partial_subtotal``: what the
+    groups read add to, never the total, and a lower bound (``at_least``) only for a count
+    (a sum may hold negative values: a credit memo)."""
+    from ontology import measure as ms
+    measures = [_group_measure(g) for g in groups]
+    read = [m for m in measures if m.amount is not None]
+    out: dict[str, Any] = {"groups": len(groups), "with_value": len(read)}
     markings = sorted({m for g in groups for m in g.get("markings") or ()})
     if markings:
         out["markings"] = markings
-    if not values:
+    if not read:
         return out
-    numbers = [n for _g, n in values]
-    out["lowest"], out["highest"] = _plain(min(numbers)), _plain(max(numbers))
-    kinds = {(g.get("unit"), g.get("currency")) for g, _n in values}
-    if op in ("count", "count_distinct") or (op == "sum" and len(kinds) == 1):
-        whole = not partial and len(values) == len(groups)
-        out["total" if whole else "partial_total"] = _plain(sum(numbers, Decimal(0)))
-    counted: dict[Decimal, int] = {}
-    for number in numbers:
-        counted[number] = counted.get(number, 0) + 1
-    ranked = sorted(counted.items(), key=lambda item: (-item[1], -item[0]))
-    out["value_counts"] = [{"value": _plain(number), "groups": count}
-                           for number, count in ranked[:MAX_VALUE_COUNTS]]
+    counting = op in ("count", "count_distinct")
+    dims = sorted({m.dim for m in read}, key=lambda d: tuple(str(x) for x in (
+        d.kind, d.currency, d.unit, d.role)))
+
+    def figures(dim: Any) -> dict[str, Any]:
+        mine = [m for m in read if m.dim == dim]
+        numbers = [m.amount for m in mine]
+        got: dict[str, Any] = {**_dimension_out(dim), "with_value": len(mine),
+                               "lowest": _plain(min(numbers)), "highest": _plain(max(numbers))}
+        if counting or (op == "sum" and dim.kind != "unit_price"):
+            missing = len(measures) - len(read) + (1 if partial else 0)
+            whole = ms.total(mine, expected=len(mine) + missing, nonnegative=counting)
+            if whole.exact and len(dims) == 1:
+                got["total"] = _plain(whole.amount)
+            else:
+                # another dimension's groups, an unread group or a partial answer: what
+                # these groups add to, never the total
+                got["partial_subtotal"] = _plain(exact_sum(numbers))
+                if counting:
+                    got["at_least"] = True
+        counted: dict[Decimal, int] = {}
+        for number in numbers:
+            counted[number] = counted.get(number, 0) + 1
+        ranked = sorted(counted.items(), key=lambda item: (-item[1], -item[0]))
+        got["value_counts"] = [{"value": _plain(number), "groups": count}
+                               for number, count in ranked[:MAX_VALUE_COUNTS]]
+        return got
+    if len(dims) == 1:
+        one = figures(dims[0])
+        one.pop("with_value")
+        out.update(one)
+    else:
+        out["by_dimension"] = [figures(d) for d in dims[:MAX_VALUE_COUNTS]]
     return out
 
 
@@ -2262,7 +2347,7 @@ def _sort_key(key: tuple) -> tuple:
         if value is None:
             out.append((2, Decimal(0), ""))
             continue
-        value_type, raw = value
+        value_type, raw = value[:2]
         number = to_decimal(raw) if value_type in NUMERIC else None
         out.append((0, number, str(raw)) if number is not None else (1, Decimal(0), str(raw)))
     return tuple(out)

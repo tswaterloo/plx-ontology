@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 
 /** How long after a page served stale it is asked for again, and how often at most. */
 export const STALE_REFRESH_MS = 6000;
@@ -10,13 +10,19 @@ export const STALE_REFRESH_TRIES = 4;
  * the fresh page replaces it without a reload; a few tries at most per visit.
  */
 export function useStaleRefresh(staleSince: string | null | undefined, refresh: () => void) {
-  const tries = useRef(0);
+  // counted in state, so each try schedules the next even when the server keeps sending the
+  // same stale_since; a fresh answer (no stale_since) ends the episode and resets the budget
+  const [tries, setTries] = useState(0);
   useEffect(() => {
-    if (!staleSince || tries.current >= STALE_REFRESH_TRIES) return;
+    if (!staleSince) {
+      if (tries) setTries(0);
+      return;
+    }
+    if (tries >= STALE_REFRESH_TRIES) return;
     const t = setTimeout(() => {
-      tries.current += 1;
+      setTries((n) => n + 1);
       refresh();
     }, STALE_REFRESH_MS);
     return () => clearTimeout(t);
-  }, [staleSince, refresh]);
+  }, [staleSince, refresh, tries]);
 }

@@ -71,3 +71,14 @@ export function yourMorning(
     : briefing.today || "Nothing of yours needs action this morning.";
   return { line, items, yours };
 }
+
+/**
+ * Who owns a key press on Today: "own" when the focus is a link, button, field, menu or open
+ * dialog (it keeps its own Enter and arrows), "row" when it is a queue row's link (j/k and the
+ * arrows still move the selection; Enter opens that row), "free" otherwise.
+ */
+export function keyOwner(t: EventTarget | null): "own" | "row" | "free" {
+  if (!(t instanceof Element)) return "free";
+  if (t.closest("[data-row-link]")) return "row";
+  return t.closest("a,button,input,textarea,select,[contenteditable=''],[contenteditable='true'],[role='dialog'],[role='menu'],[role='listbox']") ? "own" : "free";
+}

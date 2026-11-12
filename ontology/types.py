@@ -62,7 +62,7 @@ class Actor:
 
     def __post_init__(self) -> None:
         _required(self.tenant, "tenant")
-        _acl(self.principals)
+        object.__setattr__(self, "principals", frozenset(_acl(self.principals)))
         if self.clearance not in LEVELS:
             raise ValidationError("unknown clearance")
 

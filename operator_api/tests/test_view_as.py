@@ -233,6 +233,14 @@ class ViewAsApi(unittest.TestCase):
         owner = self.client("staff:owner", "owner@plx.example", OWNER)
         self.assertEqual(len(owner.get("/api/view-as/people").json()["people"]), 1)  # cached
         gone.add(VINCE)
+        # SEC-011: the kept list is re-asked of the exclusion: no longer named
+        self.assertEqual(owner.get("/api/view-as/people").json()["people"], [])
+        gone.discard(VINCE)
+        self.assertEqual(len(owner.get("/api/view-as/people").json()["people"]), 1)
+        self.backend.view_as.excluded = lambda: None          # no exclusion now: nobody
+        self.assertEqual(owner.get("/api/view-as/people").json()["people"], [])
+        self.backend.view_as.excluded = lambda: (lambda oid: oid in gone)
+        gone.add(VINCE)
         self.assertEqual(owner.get("/api/home", headers={va.HEADER: va.key_of(VINCE)})
                          .status_code, 404)
         self.assertEqual(owner.post("/api/view-as/start", json={"key": va.key_of(VINCE)})

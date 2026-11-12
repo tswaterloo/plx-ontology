@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
@@ -146,7 +147,13 @@ def directory_read(full_read: bool, department_member: bool) -> bool:
 def build(claims: Mapping[str, str], *, full_read: bool = False,
           granted_at: str = "2026-10-30",
           granted_by: str = "workbench owner", role: str | None = None,
-          department_member: bool = False) -> dict[str, dict[str, Any]]:
+          department_member: bool = False,
+          read_at: str | None = None) -> dict[str, dict[str, Any]]:
+    """``read_at``: when the reader's claims were read (default: now, UTC); the snapshot
+    states it as an ISO instant, the form ``PortalAccessSnapshot`` accepts."""
+    if read_at is None:
+        read_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat() \
+            .replace("+00:00", "Z")
     if role is not None and (role not in ROLES or full_read):
         raise ValueError("role_unknown" if role not in ROLES else "role_with_full_read")
     if department_member and role is None:
@@ -180,7 +187,7 @@ def build(claims: Mapping[str, str], *, full_read: bool = False,
     access = {
         "schema": "plx-portal-access-snapshot/v1",
         "source": "scripts/eval_owner_host.py (the named reader's own claims)",
-        "read_at": "generated at run time",
+        "read_at": read_at,
         "users": [{"id": claims["uid"], "email": claims["email"],
                    "role": MEMBER_ROLE if department_member else ROLE,
                    "accessLevel": MEMBER_LEVEL if department_member else "L5", "isActive": True,

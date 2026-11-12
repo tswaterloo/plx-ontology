@@ -265,6 +265,12 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
                        or str(max(1, cores // workers)))
             pool = ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn"),
                                        initializer=md.worker_init, initargs=(per,))
+        else:
+            # one model in this process: it encodes a batch on a thread (torch leaves the
+            # GIL) while the next batch's texts are read and the last one's vectors stored
+            from concurrent.futures import ThreadPoolExecutor
+            pool = ThreadPoolExecutor(1)
+            local = embedder
         batches = [todo[i:i + EMBED_BATCH] for i in range(0, len(todo), EMBED_BATCH)]
         inflight: list[tuple[list[tuple[str, str]], Any]] = []
 
@@ -272,7 +278,7 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
             nonlocal rows, texts_done, chars
             while len(inflight) > n:
                 found, future = inflight.pop(0)
-                vectors = future.result() if pool is not None else future
+                vectors = future.result()
                 rows += st.store_embeddings(conn, name, dim, [s for s, _ in found], vectors)
                 texts_done += len(found)
                 chars += sum(len(t) for _, t in found)
@@ -283,9 +289,9 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
             found = st.texts_for(conn, shas)
             conn.commit()     # never hold a read transaction while the batch encodes
             texts = [t for _, t in found]
-            inflight.append((found, pool.submit(md.worker_encode, texts) if pool is not None
-                             else embedder.encode(texts)))
-            drain(2 * workers if pool is not None else 0)
+            inflight.append((found, pool.submit(md.worker_encode, texts) if embedder is None
+                             else pool.submit(local.encode, texts)))
+            drain(2 * workers if embedder is None else 1)
         drain(0)
     finally:
         if pool is not None:

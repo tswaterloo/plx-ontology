@@ -1,6 +1,6 @@
 // The autopilot area's words and views: labels for roles, systems, workflows and states,
 // and the filter/split over prepared items (pure, so the views are tested without a page).
-import type { AutopilotArea, AutopilotCountdown, AutopilotItem, AutopilotWorkflowRow } from "./types";
+import type { AutopilotActionResult, AutopilotArea, AutopilotCountdown, AutopilotItem, AutopilotWorkflowRow } from "./types";
 import type { Status } from "./status";
 
 const ROLE: Record<string, string> = {
@@ -63,7 +63,7 @@ export function rowStateShown(row: Pick<AutopilotWorkflowRow, "state" | "draft">
   return stateShown(row.state, owner);
 }
 
-/** The gate countdown in one line, in judged fresh items: "12 of 15 items at ≥90% · 91.7% right
+/** The gate countdown in one line, in judged held-out items (fresh days, or past days never tuned on): "12 of 15 items at ≥90% · 91.7% right
  * so far", and when the role's newest scorer run was not admitted, that it was not and why.
  * Null before the gate admitted any counts for the role. */
 export function countdownText(c: AutopilotCountdown | null | undefined): string | null {
@@ -73,6 +73,19 @@ export function countdownText(c: AutopilotCountdown | null | undefined): string 
   const pct = c.percent == null ? "none judged yet" : `${c.percent.toFixed(1)}% right so far`;
   const refused = c.refused ? ` · newest scorer run not counted (${c.refused.replace(/_/g, " ")}): these counts are from an earlier run` : "";
   return `${items} · ${pct}${c.passes ? ": meets the gate" : ""}${refused}`;
+}
+
+/** Each scored window the gate counts, in words: "Fresh days 6 Nov to 10 Nov: 14 of 15 right"
+ * or "Past days never tuned on, 8 Jun to 15 Jun: ...". */
+export function countdownParts(c: AutopilotCountdown | null | undefined, date: (iso: string) => string): string[] {
+  const out: string[] = [];
+  for (const p of c?.parts ?? []) {
+    const w = p.window ?? [];
+    if (w.length !== 2) continue;
+    const span = `${p.kind === "fresh" ? "Fresh days" : "Past days never tuned on,"} ${date(w[0])} to ${date(w[1])}`;
+    out.push(`${span}: ${p.judged ? `${p.matched} of ${p.judged} right` : "none judged"}`);
+  }
+  return out;
 }
 
 export const ITEM_STATE: Record<AutopilotItem["state"], string> = {
@@ -201,4 +214,59 @@ export function dueWords(iso: string, now: Date = new Date()): string {
   const span = (m: number) => (m < 60 ? `${m} min` : m < 48 * 60 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`);
   if (mins >= 0) return `in ${span(Math.max(1, mins))}`;
   return `${span(-mins)} overdue`;
+}
+
+export type OutcomeStep = AutopilotActionResult;
+
+const NOT_RUN = new Set(["dry_run", "needs_confirm", "killed", "refused", "excluded", "not_routine", "unavailable", "rate_limited", "duplicate", "not_performed"]);
+const words = (rest: string[]) => rest.slice(0, 2).join(", ").replace(/_/g, " ");
+const sends = (kind: string) => kind === "send_mail" || kind === "send_teams";
+const stepName = (s: OutcomeStep) =>
+  s.kind === "send_mail" ? "the email" : s.kind === "send_teams" ? "the Teams message" : `the ${systemLabel(s.system)} write`;
+
+/** One step in words: went through, not confirmed, failed, or never ran and why. */
+function stepWords(s: OutcomeStep): string {
+  const name = stepName(s);
+  const why = s.reasons?.length ? ` (${words(s.reasons)})` : "";
+  if (s.status === "done") return `${name} went through`;
+  if (s.status === "failed") return `${name} failed${why}`;
+  if (NOT_RUN.has(s.status)) return `${name} never ran (${words([s.status, ...(s.reasons ?? [])])}), so it was not ${sends(s.kind) ? "sent" : "made"}`;
+  return `could not confirm whether ${name} went through`;
+}
+
+const sentence = (parts: string[]) => {
+  const text = parts.join("; ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+
+/**
+ * What an accept did, over all of the item's actions. Only a refusal before anything ran
+ * says nothing was sent or written. With the decision's steps it names each one: which went
+ * through, which failed and which never ran; it says to check a system only for a step that
+ * could not be confirmed there, never for one that was confirmed or never ran.
+ */
+export function outcomeWords(outcome: string, reasons: string[], system: string, steps: OutcomeStep[] = []): string {
+  const unsure = steps.filter((s) => s.status !== "done" && s.status !== "failed" && !NOT_RUN.has(s.status));
+  const check = unsure.length ? ` Check ${[...new Set(unsure.map((s) => systemLabel(s.system)))].join(" and ")} before trying again.` : "";
+  switch (outcome) {
+    case "dry_run":
+      return ". Dry run: your decision is recorded, nothing was sent or written.";
+    case "done":
+      return ". Done live through the write path.";
+    case "killed":
+      return ". Recorded; switched off, so nothing was performed.";
+    case "unknown":
+    case "pending":
+      if (steps.length) return `. ${sentence(steps.map(stepWords))}.${check}`;
+      return `. Could not confirm whether it went through in ${system}. Check there before trying again.`;
+    case "partly_done":
+      if (steps.length) return `. Partly done: ${steps.map(stepWords).join("; ")}.${check}`;
+      return `. Partly done: a step went through, another did not${reasons.length ? ` (${words(reasons)})` : ""}.`;
+    case "failed":
+      if (steps.length) return `. ${sentence(steps.map(stepWords))}.${check}`;
+      return `. The write failed${reasons.length ? ` (${words(reasons)})` : ""}; nothing after it was done.`;
+    default:
+      if (!NOT_RUN.has(outcome)) return `. Could not confirm what happened (${words([outcome])}). Check ${system} before trying again.`;
+      return `. Recorded; the write path would not perform it (${words([outcome, ...reasons])}), so nothing was sent or written.`;
+  }
 }

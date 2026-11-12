@@ -79,8 +79,12 @@ import calendar
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 import json
+import math
 import re
+import sys
+import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .copy_gate import count as _count, say_date as _say
@@ -110,8 +114,10 @@ MAX_NAMED_ORDERS = 4       # a message naming more orders is a report, not about
 # events' (type, time) index, read newest first within this many seconds; the rest is
 # counted unread (``recent_mail_over_budget``), never judged.
 RECENT_EVENT = "Email.received"
-RECENT_SECONDS = 30.0
+RECENT_SECONDS = 300.0   # at most (the detector's window is what bounds it, ``RECENT_SHARE``)
+RECENT_SHARE = 0.6       # of what is left of the asking detector's window
 RECENT_CHUNK = 2000
+RECENT_THREADS = 4       # chunks read side by side, each on its own store connection
 
 SOURCE_TYPES = ("Email", "TeamsChatMessage", "TeamsChannelMessage", "CalendarEvent",
                 "MeetingTranscript")
@@ -417,6 +423,9 @@ class _Population:
     def __init__(self, st: Any, people: Any, as_of: date, orders: Callable,
                  settled: Sequence[str]) -> None:
         self.st, self.people, self.as_of, self.settled = st, people, as_of, settled
+        self._book_ready = threading.Event()
+        self._book_error: str | None = None   # the address book's read failed (its type)
+        self._book_started = False
         self.skipped: Counter = Counter()
         self.domains = tuple(getattr(people, "internal", ()) or ())
         directory = getattr(people, "directory", None) or {}
@@ -425,6 +434,7 @@ class _Population:
         for address, oid in directory.items():
             self.addresses_of[str(oid).lower()].add(str(address).lower())
         self.found, verdicts = orders()
+        self._start_book()   # beside the message reads below, not beside the order join
         self.open = [v for v in verdicts if v.cls == "open"]
         self.root_of = {m: v.top for v in self.open for m in v.group}
         self.by_top = {v.top: v for v in self.open}
@@ -442,6 +452,54 @@ class _Population:
         self.audience_of: dict[str, str] = {}   # customer cluster -> its record's audience
         self._read()
         self._read_recent()
+
+    def _start_book(self) -> None:
+        """The recent mail listed and the customer address book read, each on a thread of its
+        own while the message reads run (neither needs them: the list 6 to 35 s and
+        the book 17 to 29 s on the served store, against the promise rule's 60 s window), for
+        ``_read_recent``, which waits for them no longer than its own time allows. Not read
+        where recent mail is not (no time index)."""
+        self._book_started = False
+        self._listing: list[str] | None = None
+        self._days: dict[str, str] = {}
+        self._listing_ready = threading.Event()
+        if not _events_time_index(self.st.conn):
+            return
+        self._book_started = True
+        since = (self.as_of - timedelta(days=PROMISE_DAYS)).isoformat()
+
+        def book() -> None:
+            try:
+                self._book()
+            except Exception as exc:  # noqa: BLE001 - counted at its turn, never waited out
+                self._book_error = type(exc).__name__
+            finally:
+                self._book_ready.set()
+
+        def listing() -> None:
+            try:
+                found: list[str] = []
+                days: dict[str, str] = {}
+                seen: set[str] = set()
+                for row in self.st.conn.execute(
+                        "SELECT eo.object_id, e.time FROM events e JOIN event_objects eo ON "
+                        "eo.event_id = e.event_id WHERE e.event_type = ? AND e.time >= ? AND "
+                        "e.superseded_at IS NULL ORDER BY e.time DESC", (RECENT_EVENT, since)):
+                    if row[0] not in seen:   # newest first
+                        seen.add(row[0])
+                        if str(row[0]).startswith("Email:"):
+                            found.append(row[0])
+                            days[row[0]] = str(row[1])[:10]
+                self._listing, self._days = found, days
+            except Exception:  # noqa: BLE001 - no events table in this store: not read
+                self._listing = None
+            self._listing_ready.set()
+        spawn = getattr(self.st, "spawn", None)
+        for work in (book, listing):
+            if spawn is not None:
+                spawn("commitments-" + work.__name__, work)
+            else:
+                threading.Thread(target=work, daemon=True).start()
 
     def internal(self, address: str) -> bool:
         domain = address.rsplit("@", 1)[1] if "@" in address else ""
@@ -511,51 +569,64 @@ class _Population:
         counted, never judged. No events table, or no (event_type, time) index (a SQLite
         generation): nothing read, counted (``recent_mail_not_read_no_index``)."""
         st, started = self.st, time.monotonic()
-        since = (self.as_of - timedelta(days=PROMISE_DAYS)).isoformat()
         if not _events_time_index(st.conn):
             # no (event_type, time) index (a SQLite generation): listing recent mail would
             # read every event, so the wide scope is not read, and says so
             self.skipped["recent_mail_not_read_no_index"] += 1
             return
-        ids: list[str] = []
-        listed: set[str] = set()
-        try:
-            cursor = st.conn.execute(
-                "SELECT eo.object_id FROM events e JOIN event_objects eo ON eo.event_id = "
-                "e.event_id WHERE e.event_type = ? AND e.time >= ? AND e.superseded_at IS "
-                "NULL ORDER BY e.time DESC", (RECENT_EVENT, since))
-            for n, row in enumerate(cursor):   # streamed newest first, the budget checked
-                if n % 1000 == 0 and time.monotonic() - started > RECENT_SECONDS:
-                    self.skipped["recent_mail_over_budget"] += 1   # listing cut short
-                    break
-                oid = row[0]
-                if oid not in listed:
-                    listed.add(oid)
-                    if str(oid).startswith("Email:") and oid not in self.named:
-                        ids.append(oid)
-        except Exception:  # noqa: BLE001 - no events table in this store: not read
+        # the read ends within RECENT_SECONDS and within RECENT_SHARE of what is left of the
+        # asking detector's window (the rest is for the messages kept and the judging, and
+        # the reply rule reads this same population from the run's memo): what is left
+        # unread is counted, never judged
+        left = getattr(st, "left", None)
+        room = left() if left is not None else math.inf
+        limit = min(RECENT_SECONDS, room * RECENT_SHARE) if room != math.inf \
+            else RECENT_SECONDS
+        if not self._listing_ready.wait(max(0.0, started + limit - time.monotonic())):
+            self.skipped["recent_mail_over_budget"] += 1   # the list not read in time
+            return
+        if self._listing is None:
             self.skipped["recent_mail_unlisted"] += 1
             return
+        ids = [o for o in self._listing if o not in self.named]
         if not ids:
             return
-        book, clusters = _customer_book(st, self.settled)
+        if self._book_started and not self._book_ready.wait(
+                max(0.0, started + limit - time.monotonic())):
+            self.skipped["recent_mail_over_budget"] += 1   # the address book not read yet
+            return
+        if self._book_error is not None:
+            # the book's read failed: no recent mail is judged without it, and that is
+            # an error, never slowness (it is not read again, nor waited for)
+            print(f"proactive_commitments: customer book read failed: {self._book_error}",
+                  file=sys.stderr)
+            self.skipped["recent_mail_unread_error"] += 1
+            return
+        book, clusters = self._book()
+        cursor = _Cursor(getattr(st, "cursor_path", None), self._digest(book, clusters),
+                         (self.as_of - timedelta(days=PROMISE_DAYS)).isoformat())
         names = (*[t for t in MENTIONS if t.startswith("Email.")],
                  *[t for t in MENTIONS_PO if t.startswith("Email.")])
         kept: dict[str, set[str]] = {}
         audience: dict[str, str] = {}
-        for start in range(0, len(ids), RECENT_CHUNK):
-            if time.monotonic() - started > RECENT_SECONDS:
-                self.skipped["recent_mail_over_budget"] += len(ids) - start
-                break
-            part = ids[start:start + RECENT_CHUNK]
-            _tick(st)
+        verdicts: dict[str, bool] = {}
+        gate = threading.Lock()
+
+        def clear(key: str) -> bool:   # the exclusion is asked one thread at a time
+            with gate:
+                if key not in verdicts:
+                    verdicts[key] = bool(self.people.unit_clear(key))
+                return verdicts[key]
+
+        def chunk(part: list[str]) -> tuple[int, dict[str, set[str]], set[str], dict[str, str],
+                                           list[str]]:
+            """One chunk read on this thread's connection: (messages not cleared, ours ->
+            customers, those naming a customer order, audiences)."""
             heard = dict(self._audiences(part))
-            cleared = {key: bool(self.people.unit_clear(key)) for key in set(heard.values())}
-            mine = [o for o in part if cleared.get(heard.get(o))]
-            self.skipped["recent_message_not_cleared"] += len(part) - len(mine)
-            part = mine
+            # a message of no known audience is not cleared (never read on a guess)
+            mine = [o for o in part if o in heard and clear(heard[o])]
             values = st.values(["Email"], ("sender", "to_addresses", "cc_addresses"),
-                               objects=part)
+                               objects=mine)
             ours = {}
             for oid, entry in values.items():
                 sender = _addr(_words(entry, "sender"))
@@ -571,12 +642,76 @@ class _Population:
                                      for c in book.get(a.rsplit("@", 1)[1], ())})
             named = {link["from_object"] for link in _touch(st, ours, names,
                                                             end="from_object")}
-            for oid, customers in ours.items():
-                if customers or oid in named:
-                    kept[oid] = customers
-                    if oid in named:
+            return len(part) - len(mine), ours, named, {o: heard[o] for o in ours}, mine
+
+        # what an earlier pass judged is not read again: a message that is none of ours to a
+        # customer is skipped, one that was kept is taken from the cursor (its audience asked
+        # again: a mailbox no longer cleared drops it)
+        for oid in ids:
+            if oid in cursor.kept:
+                customers, key, names_order = cursor.kept[oid]
+                if clear(key):
+                    kept[oid], audience[oid] = set(customers), key
+                    if names_order:
                         self.names_order.add(oid)
-                    audience[oid] = heard[oid]
+                else:
+                    self.skipped["recent_message_not_cleared"] += 1
+                    del cursor.kept[oid]
+        # a message judged not ours to a customer is judged again once a mention link names
+        # an order from it (a link applied in place after the verdict: ids only)
+        if cursor.unnamed:
+            again = [o for o in ids if o in cursor.unnamed]
+            for start in range(0, len(again), RECENT_CHUNK):
+                part = {o: None for o in again[start:start + RECENT_CHUNK]}
+                for link in _touch(st, part, names, end="from_object"):
+                    cursor.rejected.discard(link["from_object"])
+                    cursor.unnamed.discard(link["from_object"])
+        ids = [o for o in ids if o not in cursor.kept and o not in cursor.rejected
+               and o not in kept]
+        parts = [ids[i:i + RECENT_CHUNK] for i in range(0, len(ids), RECENT_CHUNK)]
+        deadline = started + limit
+        stop = threading.Event()
+
+        def guarded(part: list[str]) -> Any:
+            if stop.is_set() or time.monotonic() > deadline:
+                return None
+            return chunk(part)
+
+        workers = max(1, min(RECENT_THREADS, len(parts), getattr(st, "threads", 1) or 1))
+        if workers == 1:
+            results = (guarded(p) for p in parts)
+            pool = None
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            pool = ThreadPoolExecutor(max_workers=workers)
+            results = pool.map(guarded, parts)   # in order: newest first
+        try:
+            for start, done in zip(range(0, len(ids), RECENT_CHUNK), results):
+                _tick(st)
+                if done is None:
+                    # the rest of the list is unread (a later chunk may have finished: it is
+                    # kept, the count is of what was not)
+                    self.skipped["recent_mail_over_budget"] += len(parts[start // RECENT_CHUNK])
+                    continue
+                not_cleared, ours, named, heard, cleared = done
+                self.skipped["recent_message_not_cleared"] += not_cleared
+                for oid in cleared:
+                    customers = ours.get(oid)
+                    if customers or oid in named:
+                        kept[oid] = customers or set()
+                        if oid in named:
+                            self.names_order.add(oid)
+                        audience[oid] = heard[oid]
+                        cursor.kept[oid] = (sorted(kept[oid]), heard[oid], oid in named)
+                    else:
+                        cursor.rejected.add(oid)   # judged: not ours to a customer
+                        if oid in ours:   # ours to outside, to no customer: rests on links
+                            cursor.unnamed.add(oid)
+        finally:
+            stop.set()
+            if pool is not None:
+                pool.shutdown(wait=True, cancel_futures=True)
+            cursor.save(self._days)   # what was judged stays judged, if the rest fails
         if not kept:
             return
         seen = {m["dedupe"] for m in self.messages.values()}
@@ -600,6 +735,32 @@ class _Population:
                            names_order=oid in self.names_order)
             self.messages[oid] = message
             self.recent += 1
+
+    def _digest(self, book: Mapping[str, set[str]], clusters: Mapping[str, str]) -> str:
+        """What a judged message's verdict depends on besides the message and its links (a
+        rejected one's links are asked again each pass): our domains and people, the
+        people exclusion (who it excludes and whether it loaded: a newly excluded person's
+        mail is then never kept in the cursor, even by id) and the customers' addresses.
+        Any change: the cursor starts over. An exclusion that cannot say what it excludes
+        gives a new digest every pass (no verdict is reused)."""
+        import hashlib
+        import secrets
+        h = hashlib.sha256()
+        fingerprint = getattr(self.people, "fingerprint", None)
+        try:
+            people = fingerprint() if callable(fingerprint) else None
+        except Exception:  # noqa: BLE001 - undecidable: never reuse a verdict
+            people = None
+        h.update(json.dumps([sorted(self.domains), sorted(self.staff), AUTOMATED.pattern,
+                             people or secrets.token_hex(16),
+                             sorted((a, sorted(clusters[c] for c in v))
+                                    for a, v in book.items())]).encode())
+        return h.hexdigest()
+
+    def _book(self) -> tuple[dict[str, set[str]], dict[str, str]]:
+        """The customer address book, read once per run (the memo)."""
+        return self.st.memo("commitments_customer_book",
+                            lambda: _customer_book(self.st, self.settled))
 
     def _name(self, link: Mapping[str, Any], orders: Iterable[str]) -> None:
         for order in orders:
@@ -678,6 +839,52 @@ class _Population:
                 "to": [], "cc": [], "automated": False, "dedupe": oid,
                 "text": text if text is not None else (_words(entry, "body_preview") or ""),
                 "subject_text": subject}
+
+
+class _Cursor:
+    """The recent mail judged by earlier passes (``<inbox>.commitments-recent.json``): ids
+    only, never a subject or text. ``rejected``: not ours to a customer; ``kept``: id ->
+    (customer clusters, audience, names a customer order); ``unnamed``: the rejected ones
+    that are ours to outside addresses of no customer, a verdict that rests on their order
+    links too (asked again each pass). Valid for one digest of what the
+    verdict rests on (``_Population._digest``); a message older than the window's start
+    (``since``) is dropped, so the cursor starts over as the window moves."""
+
+    def __init__(self, path: Any, digest: str, since: str) -> None:
+        self.path, self.digest, self.since = path, digest, since
+        self.rejected: set[str] = set()
+        self.unnamed: set[str] = set()
+        self.kept: dict[str, tuple[list[str], str, bool]] = {}
+        self.days: dict[str, str] = {}
+        if path is None:
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            if data.get("digest") == digest and data.get("version") == 2:
+                self.days = {str(k): str(v) for k, v in data["days"].items()}
+                self.rejected = {o for o in data["rejected"] if self.days.get(o, "") >= since}
+                self.unnamed = {o for o in data["unnamed"] if o in self.rejected}
+                self.kept = {o: (list(v[0]), str(v[1]), bool(v[2]))
+                             for o, v in data["kept"].items() if self.days.get(o, "") >= since}
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            self.rejected, self.unnamed, self.kept = set(), set(), {}   # unreadable: start over
+
+    def save(self, days: Mapping[str, str]) -> None:
+        if self.path is None:
+            return
+        known = {**self.days, **{o: days[o] for o in (*self.rejected, *self.kept) if o in days}}
+        live = {o for o in (*self.rejected, *self.kept) if known.get(o, "") >= self.since}
+        body = {"version": 2, "digest": self.digest,
+                "days": {o: known[o] for o in live},
+                "rejected": sorted(self.rejected & live),
+                "unnamed": sorted(self.unnamed & self.rejected & live),
+                "kept": {o: v for o, v in self.kept.items() if o in live}}
+        try:
+            tmp = Path(str(self.path) + ".tmp")
+            tmp.write_text(json.dumps(body, separators=(",", ":")), encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError:
+            pass   # no cursor saved: the next pass reads what this one did
 
 
 def _events_time_index(conn: Any) -> bool:

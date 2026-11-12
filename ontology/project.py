@@ -108,7 +108,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Mapping as _MappingBase
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
@@ -131,7 +131,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, Sequenc
 from urllib.parse import unquote
 
 from integrations.capture_store import bc_blank_date
-from ontology import identifiers, store_ddl
+from ontology import identifiers, stamps as source_stamps, store_ddl
 from ontology.schema import (BC_COMPANY_NOT_KNOWN, SAME_BC_COMPANY, bc_company_not_known,
                              link_company_scope)
 from ontology.store import (_TABLE_ORDER, StoreBuilder, StoreError, canonical, instant,
@@ -326,6 +326,11 @@ class CapturedRecord:
     # store records passes; None: the version's own recorded_at). A record read later in
     # one pass is still known from the pass's start (``Projector._local_currency``).
     pass_started_at: str | None = None
+    # A version folding captures that differ only in declared write stamps
+    # (``ontology.stamps``) is the last of them; the first one, which first held its
+    # content (a change event cites it), is kept here. None: the version is one capture.
+    first_handle: str | None = None
+    first_digest: str | None = None
 
 
 class CaptureSource(Protocol):
@@ -2462,6 +2467,10 @@ _TYPE_CHECKS: dict[str, Callable[[str], bool]] = {
 }
 
 
+# The separator of a list-valued key (a ``split_from`` pair): a line break.
+_LINES = re.compile(r"[\r\n]+")
+
+
 def _compare_norm(value: Any, compare: str, kind: str | None,
                   normalizer: Normalizer | None) -> tuple[str | None, str | None]:
     """(normalized key, problem) under a declared compare mode, never coerced across
@@ -2637,10 +2646,13 @@ _SCRATCH_DDL = (
         handle TEXT NOT NULL,
         prefix TEXT NOT NULL, digest TEXT NOT NULL, start TEXT NOT NULL, end_ TEXT,
         audience TEXT NOT NULL, missing TEXT, merge TEXT, rec BLOB NOT NULL,
-        removals TEXT, natural TEXT, rank TEXT)""",
+        removals TEXT, natural TEXT, rank TEXT, sighting TEXT)""",
     "CREATE INDEX stage_by_object ON stage(binding, object_id, start, handle, seq)",
     "CREATE INDEX stage_by_merge ON stage(binding, merge)",
     "CREATE TABLE accepted (seq INTEGER PRIMARY KEY)",
+    # Runs of one record's versions differing only in their write stamps: each folds into
+    # its last version (seq), which starts at its first one's (first).
+    "CREATE TABLE sighted (seq INTEGER PRIMARY KEY, first INTEGER NOT NULL)",
     # The objects of one binding dropped as ETL re-inserted copies (``ETL_REINSERTED``).
     "CREATE TABLE collapsed (object_id TEXT PRIMARY KEY, handle TEXT NOT NULL)",
     # Projected versions; vid is the projection order (object id, then time). sid is
@@ -2664,7 +2676,7 @@ _SCRATCH_DDL = (
         binding_kind TEXT, from_object TEXT NOT NULL, to_object TEXT NOT NULL,
         from_vid INTEGER NOT NULL, to_vid INTEGER NOT NULL, from_type TEXT NOT NULL,
         to_type TEXT NOT NULL, tier TEXT NOT NULL, recorded_at TEXT NOT NULL,
-        superseded_at TEXT, row BLOB NOT NULL)""",
+        superseded_at TEXT, row BLOB NOT NULL, ident TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX links_by_from_vid ON links(link_type, from_vid, seq)",
     "CREATE INDEX links_by_from ON links(link_type, from_object)",
     "CREATE INDEX links_by_to ON links(link_type, to_object)",
@@ -2819,6 +2831,25 @@ def _rec_pickle(rec: CapturedRecord) -> bytes:
                         protocol=pickle.HIGHEST_PROTOCOL)
 
 
+# Feature keys naming the end versions compared, not what was compared (``_link_ident``).
+_VERSION_KEYS = frozenset({"from_handle", "to_handle", "_cite", "citations"})
+
+
+def _link_ident(row: Mapping[str, Any]) -> str:
+    """What one link is, whichever end versions show it: its type, binding, ends and join
+    record, tier, kind, contract, markings and the features it was decided on without the
+    versions they cite. Consecutive pairs of end versions with the same ident are one link
+    over a longer stretch (``Projector._write_links``)."""
+    def bare(features: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [{k: v for k, v in f.items() if k not in _VERSION_KEYS} for f in features]
+    return _sha(json.dumps([row["link_type"], row.get("_index"), row["from_object"],
+                           row["to_object"], row.get("_join"), row["tier"],
+                           row.get("binding_kind"), row.get("link_contract"),
+                           sorted(row.get("markings") or ()), bare(row.get("reason") or ()),
+                           bare(row.get("why_not") or ())],
+                           sort_keys=True, separators=(",", ":"), default=str))
+
+
 def _portable(features: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Link features with their ``_cite`` versions replaced by working-file vids."""
     out = []
@@ -2855,7 +2886,8 @@ class Projector:
                  scope: Iterable[str] | None = None,
                  emit: Iterable[str] | None = None,
                  shards: Mapping[str, int] | None = None,
-                 objects: Mapping[str, Any] | None = None) -> None:
+                 objects: Mapping[str, Any] | None = None,
+                 stamps: Mapping[tuple[str, str], Any] | None = None) -> None:
         self.schema = schema
         self.types: dict[str, Mapping[str, Any]] = dict(_get(schema, "object_types") or {})
         self.links: dict[str, Mapping[str, Any]] = dict(_get(schema, "link_types") or {})
@@ -2884,6 +2916,14 @@ class Projector:
                     self._merge[b["id"]] = (stands["pairs"], "from")
                     self._merge.setdefault(stands["binding"], (stands["pairs"], "to"))
         self._check_schema()
+        # binding -> its relation's declared write stamps (``ontology.stamps``; None: the
+        # schema's ``stamps.json``); refused when one is a path records are read by.
+        declared = source_stamps.load() if stamps is None else stamps
+        try:
+            self._stamps = source_stamps.check(declared, self.bindings, self.links,
+                                               self.events, self.types)
+        except source_stamps.StampError as exc:
+            raise ProjectionError("stamp_declaration_invalid", str(exc)) from exc
         if batch_size < 1:
             raise ProjectionError("batch_size_invalid", str(batch_size))
         self.batch = int(batch_size)
@@ -3241,6 +3281,7 @@ class Projector:
         sharded = self.shards.get(rid)
         per_object = rid in self.objects
         stage_all = rid in self._stage_whole
+        stamps = self._stamps.get(rid)
 
         def flush() -> None:
             nonlocal held
@@ -3254,7 +3295,7 @@ class Projector:
             self._db.executemany(
                 "INSERT INTO stage (binding, type_id, object_id, record_key, handle, prefix, "
                 "digest, start, end_, audience, missing, merge, rec, removals, natural, "
-                "rank) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "rank, sighting) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 staged)
             staged.clear()
 
@@ -3308,7 +3349,9 @@ class Projector:
                            raw if hold else self._recs.pack(rid, raw),
                            json.dumps(rec.removals) if rec.removals else None,
                            *(_natural_key(rec.row, minted, rec.record_key)
-                             if minted is not None else (None, None))))
+                             if minted is not None else (None, None)),
+                           stamps.sighting_key(rec.row) if stamps is not None else
+                           rec.digest))
             if held >= _ZDICT_RECORDS or (len(staged) >= self.batch and not held):
                 self._tick()
                 flush()
@@ -3324,7 +3367,8 @@ class Projector:
         write = bool(sharded) or per_object or self._emits(binding_unit(b["id"]))
         cursor = self._db.execute(
             "SELECT object_id, seq, record_key, handle, start, end_, audience, missing, "
-            "removals FROM stage WHERE binding = ? ORDER BY object_id, start, handle, seq",
+            "removals, sighting FROM stage WHERE binding = ? "
+            "ORDER BY object_id, start, handle, seq",
             (b["id"],))
         for object_id, group in groupby(cursor, key=lambda row: row[0]):
             versions = list(group)
@@ -3344,6 +3388,7 @@ class Projector:
                     for prev, nxt in zip(versions, versions[1:])):
                 self.report.gap("capture_versions_overlap", b["id"], versions[0][3])
                 continue
+            versions = self._sightings(versions)
             accepted += [(row[1],) for row in versions]
             if len(accepted) >= self.batch:
                 self._tick()
@@ -3378,7 +3423,57 @@ class Projector:
             builder.add("objects", objects)
             builder.add("object_removals", removals)
         self._db.executemany("INSERT INTO accepted (seq) VALUES (?)", accepted)
+        self._fold_sightings(rid)
         self.report.unit = binding_unit(rid)
+
+    def _sightings(self, versions: list[Any]) -> list[Any]:
+        """One object's staged versions (in time order) with each run of consecutive
+        versions differing only in their write stamps (same ``sighting`` key and audience,
+        each ending where the next starts) kept as its last version, starting at the
+        run's first (written by ``_fold_sightings``)."""
+        kept: list[Any] = []
+        first = None
+        for row in versions:
+            last = kept[-1] if kept else None
+            if last is not None and last[9] == row[9] and last[6] == row[6] and \
+                    last[5] == row[4]:
+                first = last[1] if first is None else first
+                kept[-1] = (*row[:4], kept[-1][4], *row[5:])
+                self.report.add("versions.stamp_sightings")
+                continue
+            if first is not None:
+                self._db.execute("INSERT INTO sighted (seq, first) VALUES (?, ?)",
+                                 (kept[-1][1], first))
+            first = None
+            kept.append(row)
+        if first is not None:
+            self._db.execute("INSERT INTO sighted (seq, first) VALUES (?, ?)",
+                             (kept[-1][1], first))
+        return kept
+
+    def _fold_sightings(self, binding: str) -> None:
+        """Each folded run's last version starts at its first: the stage row takes the
+        first one's start, and its record the first one's capture times and handle."""
+        while True:
+            self._tick()
+            rows = self._db.execute(
+                "SELECT s.seq, f.start, f.rec, s.rec FROM sighted x JOIN stage s ON "
+                "s.seq = x.seq JOIN stage f ON f.seq = x.first LIMIT ?",
+                (self.batch,)).fetchall()
+            if not rows:
+                return
+            updates = []
+            for seq, start, first_blob, last_blob in rows:
+                first = self._recs.unpack(binding, first_blob)
+                last = self._recs.unpack(binding, last_blob)
+                folded = replace(last, recorded_at=first.recorded_at,
+                                 pass_started_at=first.pass_started_at,
+                                 first_handle=first.first_handle or first.l1_handle,
+                                 first_digest=first.first_digest or first.digest)
+                updates.append((start, self._recs.pack(binding, _rec_pickle(folded)), seq))
+            self._db.executemany("UPDATE stage SET start = ?, rec = ? WHERE seq = ?", updates)
+            self._db.executemany("DELETE FROM sighted WHERE seq = ?",
+                                 [(row[0],) for row in rows])
 
     def _removals(self, object_id: str, missing: str | None,
                   stretches: Iterable[Sequence[Any]],
@@ -3564,22 +3659,49 @@ class Projector:
                                       self.normalizer)
         return norm, problem, value
 
-    def _sig(self, binding: str, path: str, pair: Mapping[str, Any], other: str) -> int:
+    def _elements(self, version: _Version, path: str, pair: Mapping[str, Any]
+                  ) -> tuple[list[str], str | None]:
+        """(normalized keys, problem) of a ``split`` pair's from-side value: its lines
+        (``\\r``/``\\n``-separated, each trimmed, empty ones dropped, a repeated one once),
+        each normalized as the pair says. An element that is no key is skipped; with no
+        key at all the problem is the whole value's."""
+        present, value = _cell(version.rec.row, path)
+        if not present or _blank(value) or not isinstance(value, str):
+            return [], "value_absent" if not present or _blank(value) else "value_not_text"
+        keys: list[str] = []
+        problem = None
+        for line in _LINES.split(value):
+            if not line.strip():
+                continue
+            norm, problem_ = _compare_norm(line, pair["compare"], pair.get("identifier_kind"),
+                                           self.normalizer)
+            if norm is None:
+                problem = problem or problem_
+            elif norm not in keys:
+                keys.append(norm)
+        return keys, (None if keys else problem or "value_absent")
+
+    def _sig(self, binding: str, path: str, pair: Mapping[str, Any], other: str,
+             split: bool = False) -> int:
         """The compare-key set of ``binding`` at ``path`` under ``pair``'s compare mode,
         as compared with ``other`` (``_toward``), written to the working file once per
-        (binding, path, mode, kind, receiving source)."""
+        (binding, path, mode, kind, receiving source). ``split``: the value is a list of
+        lines (a ``split_from`` pair's from side), one key per distinct line."""
         toward = self._toward(binding, path, pair, other)
-        key = (binding, path, pair["compare"], pair.get("identifier_kind"), toward)
+        key = (binding, path, pair["compare"], pair.get("identifier_kind"), toward, split)
         sig = self._sigs.get(key)
         if sig is None:
             sig = self._sigs[key] = len(self._sigs) + 1
             unread = self._unread_keys[sig] = _Report()
             rows: list[tuple[int, str, int]] = []
             for version in self._versions(binding):
-                norm, problem, _ = self._side(version, path, pair, toward)
-                if norm is not None:
-                    rows.append((sig, norm, version.vid))
-                elif problem not in _NO_KEY:
+                if split:
+                    norms, problem = self._elements(version, path, pair)
+                else:
+                    norm, problem, _ = self._side(version, path, pair, toward)
+                    norms = [] if norm is None else [norm]
+                rows.extend((sig, norm, version.vid) for norm in norms)
+                if not norms and problem not in _NO_KEY:
                     unread._gap(f"link_key_{problem}", "", version.rec.l1_handle)
                 if len(rows) >= self.batch:
                     self._tick()
@@ -3636,6 +3758,10 @@ class Projector:
                                          self._toward(here, pair["from"], pair, there))
             rnorm, rprob, _ = self._side(right, pair["to"], pair,
                                          self._toward(there, pair["to"], pair, here))
+            if pair.get("split_from"):
+                # the right key is one of the left value's lines: that line is what agrees
+                lines, lprob = self._elements(left, pair["from"], pair)
+                lnorm = rnorm if rnorm in lines else (lines[0] if lines else None)
             feature = {"feature": "pair", "hop": hop, "compare": pair["compare"],
                        "from_path": pair["from"], "to_path": pair["to"],
                        "from_handle": left.rec.l1_handle, "from_field": left.field(pair["from"]),
@@ -3683,7 +3809,8 @@ class Projector:
     def _link_pairs(self, lid: str, link: Mapping[str, Any], index: int,
                     lb: Mapping[str, Any]) -> None:
         pairs = lb["pairs"]
-        joins = [(self._sig(lb["from_binding"], pair["from"], pair, lb["to_binding"]),
+        joins = [(self._sig(lb["from_binding"], pair["from"], pair, lb["to_binding"],
+                            bool(pair.get("split_from"))),
                   self._sig(lb["to_binding"], pair["to"], pair, lb["from_binding"]))
                  for pair in pairs]
         scoped = self._scoped(lb["from_binding"], lb["to_binding"])
@@ -3723,7 +3850,22 @@ class Projector:
                 agree, differ, unknown = self._features(fv, tv, pairs, "from->to")
                 if agree:
                     found.append((tv, span, agree, differ, unknown))
+            if any(pair.get("split_from") for pair in pairs) and lb.get("unique_target"):
+                found = self._unambiguous_lines(found)
             self._emit(lid, link, index, lb, fv, found)
+
+    @staticmethod
+    def _unambiguous_lines(found: list[tuple]) -> list[tuple]:
+        """``unique_target`` for a list-valued key: a line naming several clean targets (of
+        one BC company) is left unresolved, as a single-valued key is; the other lines
+        of the list link."""
+        targets: dict[tuple, set[str]] = {}
+        for item in found:
+            if not item[3]:
+                targets.setdefault((item[2][0].get("value"), _bc_company(item[0])),
+                                   set()).add(item[0].object_id)
+        return [item for item in found
+                if len(targets.get((item[2][0].get("value"), _bc_company(item[0])), ())) < 2]
 
     def _link_via(self, lid: str, link: Mapping[str, Any], index: int,
                   lb: Mapping[str, Any]) -> None:
@@ -3876,14 +4018,13 @@ class Projector:
                     "binding"), "via->to": lb["to_binding"]}[f["hop"]]
                 path_marks |= self._marks_for_path(left, f["from_path"])
                 path_marks |= self._marks_for_path(right, f["to_path"])
-            link_id = "L:" + _sha("|".join([lid, str(index), *handles, fv.object_id,
-                                            tv.object_id]))[:40]
-            row = {"link_id": link_id, "link_type": lid, "from_object": fv.object_id,
+            row = {"link_id": None, "link_type": lid, "from_object": fv.object_id,
                    "to_object": tv.object_id, "tier": tier, "binding_kind": lb["kind"],
                    "link_contract": lb.get("link_contract"), "reason": agree,
                    "why_not": why_not, "evidence_handles": list(dict.fromkeys(handles)),
                    "markings": frozenset(path_marks), "recorded_at": span[0],
-                   "superseded_at": span[1], "_from": fv, "_to": tv}
+                   "superseded_at": span[1], "_from": fv, "_to": tv, "_index": index,
+                   "_join": join.object_id if join is not None else None}
             self._store_link(row)
             self.report.add(f"links.{tier}")
 
@@ -3896,11 +4037,11 @@ class Projector:
         data["why_not"] = _portable(row.get("why_not", []))
         self._db.execute(
             """INSERT INTO links (link_type, binding_kind, from_object, to_object, from_vid,
-               to_vid, from_type, to_type, tier, recorded_at, superseded_at, row)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               to_vid, from_type, to_type, tier, recorded_at, superseded_at, row, ident)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (row["link_type"], row.get("binding_kind"), row["from_object"], row["to_object"],
              fv.vid, tv.vid, fv.type_id, tv.type_id, row["tier"], row["recorded_at"],
-             row["superseded_at"], _pack(data)))
+             row["superseded_at"], _pack(data), _link_ident(row)))
 
     # -- phase 3: lineage ------------------------------------------------------
 
@@ -4609,12 +4750,14 @@ class Projector:
             return []
         cited = new[0]
         marks = marks | cited["markings"]
-        event = {"event_id": event_id_of(eid, version.rec.l1_handle, version.object_id,
-                                         name),
+        # the capture that first held the new value (a version folding stamp-only
+        # captures cites its last one; the change was seen at its first)
+        handle = version.rec.first_handle or version.rec.l1_handle
+        event = {"event_id": event_id_of(eid, handle, version.object_id, name),
                  "event_type": eid, "time_basis": "capture_observed", "time": None,
                  "window_start": start, "window_end": version.start,
-                 "l1_handle": version.rec.l1_handle, "field_path": cited["field_path"],
-                 "digest": version.rec.digest, "lineage": version.lineage, "markings": marks,
+                 "l1_handle": handle, "field_path": cited["field_path"],
+                 "digest": version.rec.first_digest or version.rec.digest, "lineage": version.lineage, "markings": marks,
                  "recorded_at": version.start, "superseded_at": None}
         return [(event, (version.start, None))]
 
@@ -4786,27 +4929,56 @@ class Projector:
             last = rows[-1][0]
 
     def _write_links(self, builder: StoreBuilder) -> None:
-        last = 0
-        while True:
-            self._tick()
-            chunk = self._db.execute(
-                """SELECT l.seq, l.row, f.binding, t.binding FROM links l
-                   JOIN v f ON f.vid = l.from_vid JOIN v t ON t.vid = l.to_vid
-                   WHERE l.seq > ? ORDER BY l.seq LIMIT ?""", (last, self.batch)).fetchall()
-            if not chunk:
+        """One link row per stretch of one link (type, binding, ends, join record and
+        compared values, ``_link_ident``) over consecutive pairs of end versions: the
+        stretch's last pair's row (its citations are the newest versions'), spanning from
+        its first pair's start. A stretch ends where the link's values change or a pair
+        does not continue the one before (a gap). Its id names the link and the stretch's
+        start, never an end version, so a later capture of an end extends it."""
+        self._db.execute("CREATE INDEX IF NOT EXISTS links_by_ident "
+                         "ON links(ident, recorded_at, seq)")
+        cursor = self._db.execute(
+            """SELECT l.ident, l.recorded_at, l.superseded_at, l.row, f.binding, t.binding
+               FROM links l JOIN v f ON f.vid = l.from_vid JOIN v t ON t.vid = l.to_vid
+               ORDER BY l.ident, l.recorded_at, l.seq""")
+        rows: list[dict[str, Any]] = []
+        # [ident, start, end, blob, from binding, to binding, pairs folded into it]
+        held: list[Any] | None = None
+
+        def flush_one() -> None:
+            ident, start, end, blob, from_binding, to_binding, folded = held
+            row = _unpack(blob)
+            unit = self._unit_of_link(row["link_type"], row["binding_kind"], from_binding,
+                                      to_binding)
+            if not self._emits(unit):
                 return
-            rows = []
-            for _, blob, from_binding, to_binding in chunk:
-                row = _unpack(blob)
-                if not self._emits(self._unit_of_link(row["link_type"], row["binding_kind"],
-                                                      from_binding, to_binding)):
-                    continue
-                rows.append({**row, "reason": canonical(self._cited(row["reason"])),
-                             "why_not": canonical(self._cited(row["why_not"])),
-                             "evidence_handles": canonical(row["evidence_handles"]),
-                             "markings": _markings_text(row["markings"])})
-            builder.add("links", rows)
-            last = chunk[-1][0]
+            if folded:
+                self.report.unit = unit
+                self.report.add("links.stretched", folded)
+            rows.append({**row, "link_id": "L:" + _sha(f"{ident}|{start}")[:40],
+                         "recorded_at": start, "superseded_at": end,
+                         "reason": canonical(self._cited(row["reason"])),
+                         "why_not": canonical(self._cited(row["why_not"])),
+                         "evidence_handles": canonical(row["evidence_handles"]),
+                         "markings": _markings_text(row["markings"])})
+            if len(rows) >= self.batch:
+                self._tick()
+                builder.add("links", rows)
+                rows.clear()
+
+        for ident, start, end, blob, from_binding, to_binding in cursor:
+            if held is not None and held[0] == ident and held[2] is not None \
+                    and held[2] == start:
+                held[2:4] = [end, blob]   # the same link, continued: the newer pair's row
+                held[6] += 1
+                continue
+            if held is not None:
+                flush_one()
+            held = [ident, start, end, blob, from_binding, to_binding, 0]
+        if held is not None:
+            flush_one()
+        self.report.unit = None
+        builder.add("links", rows)
 
     def _cited(self, features: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         """Link features in the tool contract's ``$defs/feature`` shape (``feature``,

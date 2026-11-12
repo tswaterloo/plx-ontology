@@ -220,6 +220,12 @@ class OpsAlerts(Engine):
         # then, and a task created after it did not exist
         reopened = planner(w, 6, pct="100", done=-2)
         planner(w, 4, created=-1)
+        # Planner's empty due date (a null cell) is undated; an unparseable one is unreadable
+        for raw in (None, "next week"):
+            task = planner(w, 4)
+            for row in w.rows["object_values"]:
+                if row["object_id"] == task and row["property"] == "due_at":
+                    row["value"] = raw
         summary = self.run_rules(w)
         self.assertEqual(sorted(g["object_id"] for g in self.kinds(po.PLANNER)),
                          sorted([late, reopened]))
@@ -229,7 +235,8 @@ class OpsAlerts(Engine):
         # the title is clipped (never the whole text)
         self.assertLessEqual(len(gap["summary"]), 200)
         self.assertNotIn("x" * 70, gap["summary"])
-        self.assertEqual(summary["not_evaluated"][po.PLANNER], {"not_judged": 1})
+        self.assertEqual(summary["not_evaluated"][po.PLANNER],
+                         {"not_judged": 1, "due_date_unreadable": 1})
 
     # ------------------------------------------------------------------ aged balances
 

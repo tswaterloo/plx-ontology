@@ -663,105 +663,13 @@ class BriefsMixin:
         return None
 
     def _is_owner(self, reader: Reader) -> bool:
-        """The owner-open reader (``ReadPolicy.unrestricted``), decided from the signed-in
-        session by the access layer; nothing in a request can claim it."""
-        def owner(view: Any) -> bool:
-            try:
-                with view._request():
-                    _gated, policy = view.access.reader_policy()
-                return bool(getattr(policy, "unrestricted", False))
-            except Exception:  # noqa: BLE001 - an undecidable reader is not the owner
-                return False
-        try:
-            return bool(self._brief_run(reader, owner))
-        except UserFacing:
-            return False
-
-    def owner_workload(self, reader: Reader) -> m.OwnerWorkload:
-        """Per person counts, for the owner-open reader only (403 for anyone else, a manager
-        grant included); the people exclusion fails closed."""
-        from operating import inbox_triage as it
-        from operating import proactive_engine as pe
-        from operating import system_activity as sa
-        from operating.proactive_commitments import OWNER_KINDS
-        if not self._is_owner(reader):
-            raise UserFacing("forbidden", "Only the owner sees the workload of each person.",
-                             403)
-        grants = self._workload_grants()
-        store = getattr(self, "store_path", None)
-        inbox = pe.inbox_path(store) if store else None
-        since = (date.today() - timedelta(days=it.OWNER_WINDOW_DAYS)).isoformat()
-        excluded = it.excluded_by(br.env_people())
-        loaded = grants.load() if grants else {"teams": {}, "managers": {}}
-        raw = it.owner_workload(
-            it.open_rows(inbox) if inbox else [], it.closed_rows(inbox, since) if inbox else [],
-            grants=loaded, owner_kinds=OWNER_KINDS, excluded=excluded)
-        systems, coverage, raw["note"] = sa.owner_columns(
-            sa.load_snapshot(self._system_activity_path()), excluded, today=date.today(),
-            days=it.OWNER_WINDOW_DAYS)
-        listed = {p["person"] for p in raw["people"]}
-        for row in raw["people"]:
-            row["systems"] = systems.get(row["person"], {})
-        raw["people"] += [{"person": oid, "team": (loaded.get("teams") or {}).get(
-            oid, it.NOT_ASSIGNED), "awaiting_reply": 0, "tasks": 0, "alerts": 0,
-            "alerts_closed": 0, "systems": n} for oid, n in sorted(systems.items())
-            if oid not in listed]
-        raw["coverage"] = coverage
-        return m.OwnerWorkload(**raw)
-
-    def _system_activity_path(self) -> Optional[Path]:
-        """The per-system activity snapshot (``operating.system_activity``): the
-        ``PLX_SYSTEM_ACTIVITY_FILE`` path, else the data directory's."""
-        from operating import system_activity as sa
-        named = os.environ.get("PLX_SYSTEM_ACTIVITY_FILE")
-        data_dir = getattr(self, "data_dir", None)
-        return Path(named) if named else Path(data_dir) / sa.SNAPSHOT_FILE if data_dir else None
-
-    def owner_workload_items(self, reader: Reader, person: str, bucket: str
-                             ) -> m.OwnerWorkloadItems:
-        """One person's items behind a count, owner-open reader only (403 otherwise, checked
-        first); the people exclusion fails closed. Items come from the owner's own trimmed
-        alert list, so a marked item the owner cannot open is counted, never shown."""
-        from operating import inbox_triage as it
-        from operating import proactive_engine as pe
-        from operating.proactive_commitments import OWNER_KINDS
-        if not self._is_owner(reader):
-            raise UserFacing("forbidden", "Only the owner sees the workload of each person.",
-                             403)
-        person = str(person).lower()
-        if bucket not in it.BUCKETS or not it._OID.match(person):
-            raise UserFacing("not_found", "No such person or count.", 404)
-        people = br.env_people()
-        excluded = it.excluded_by(people)
-        if excluded(person):
-            raise UserFacing("not_found", "No such person or count.", 404)
-
-        def address_excluded(address: str) -> bool:
-            try:
-                return bool(people.is_excluded(address))
-            except Exception:  # noqa: BLE001 - an undecidable counterpart is never shown
-                return True
-
-        def job(view: Any) -> Any:
-            found = view.gap_inbox(limit=bf_max(), all_owners=True)
-            if not isinstance(found, Mapping) or found.get("status") != "read":
-                return None
-            return found.get("gaps") or ()
-        gaps = self._brief_run(reader, job)
-        if gaps is None:
-            raise UserFacing("not_found", "The alert list could not be read.", 404)
-        shown = it.owner_items(gaps, person=person, bucket=bucket, owner_kinds=OWNER_KINDS,
-                               excluded=excluded, address_excluded=address_excluded,
-                               today=date.today())
-        store = getattr(self, "store_path", None)
-        counted = sum(1 for r in (it.open_rows(pe.inbox_path(store)) if store else ())
-                      if r.get("owner") == person
-                      and it.bucket_of(r.get("kind"), OWNER_KINDS) == bucket)
-        return m.OwnerWorkloadItems(
-            person=person, bucket=bucket, total=len(shown),
-            withheld=max(counted - len(shown), 0), truncated=len(shown) > it.DRILL_MAX,
-            items=[m.OwnerWorkloadItem(**x) for x in shown[:it.DRILL_MAX]],
-            note="Open an item to read the full message on its own page. " + it.OWNER_NOTE)
+        """The owner-open reader: ``feedback.owner_open``, the one owner test (S-16). The
+        session carries the full-read code the access layer set when it resolved the signed-in
+        reader, only for a grant over every source and every mailbox that is usable now
+        (``EmployeeEntitlement.full_read_code``; the same rule as ``unrestricted``); nothing
+        in a request can claim it."""
+        from operator_api.feedback import owner_open
+        return owner_open(getattr(reader, "session", None))
 
     def _workload_grants(self) -> Any:
         from operating import inbox_triage as it
@@ -778,7 +686,20 @@ class BriefsMixin:
         grants = self._workload_grants()
         store = getattr(self, "store_path", None)
         rows = it.open_rows(pe.inbox_path(store)) if store else []
-        excluded = it.excluded_by(br.env_people())
+        from .team_view import (HIDDEN_ENV, OWNER_IDS_FILE, _learn_owner, _learned_owners,
+                                _listed, hidden_people, snapshot)
+        guard = it.excluded_by(br.env_people())
+        data_dir = getattr(self, "data_dir", None)
+        owners_file = Path(data_dir) / OWNER_IDS_FILE if data_dir else None
+        if self._is_owner(reader):
+            _learn_owner(owners_file, owner_ids(",".join(sorted(
+                getattr(reader.session, "principals", ()) or ()))))
+        snap = snapshot(self._team_file()) if hasattr(self, "_team_file") else None
+        hidden = hidden_people(_listed(HIDDEN_ENV), _learned_owners(owners_file),
+                               (snap or {}).get("people"))
+
+        def excluded(oid: str) -> bool:   # the owner is counted in no people view
+            return oid in hidden or guard(oid)
         principals = ",".join(sorted(getattr(reader.session, "principals", ()) or ()))
         raw = it.workload(rows, reader=owner_ids(principals),
                           grants=grants.load() if grants else {"teams": {}, "managers": {}},

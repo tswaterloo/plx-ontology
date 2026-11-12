@@ -11,6 +11,12 @@ contract cannot silently rely on a keyword this validator ignores. Annotation
 keywords (``description``, ``title``, ``$comment``, ``$schema``, ``$id``,
 ``$defs``, ``examples``, ``default``, ``format``) are accepted and not enforced.
 
+Dialect notes: equality (``const``, ``enum``, ``uniqueItems``) treats a boolean as
+different from a number at every depth and 1 as equal to 1.0; ``integer`` accepts only
+a JSON integer (1.0 is a number, not an integer); a ``$ref`` pointer keeps empty
+reference tokens (``#/$defs/`` names the empty key) and only ``#`` or ``#/...`` forms
+resolve; after ``maxItems`` fails, ``uniqueItems``, ``items`` and ``contains`` are not run.
+
 Usage: ``errors = validate(instance, schema, root=document)``; an empty list
 means valid. Errors are ``"<json path>: <message>"`` strings, at most ``limit``.
 This module imports nothing from the rest of the repository.
@@ -18,6 +24,8 @@ This module imports nothing from the rest of the repository.
 
 from __future__ import annotations
 
+import json
+import math
 import re
 from typing import Any
 
@@ -50,7 +58,12 @@ def _pointer(root: Any, ref: str) -> Any:
     if not ref.startswith("#"):
         raise SchemaError(f"only local $ref is supported: {ref}")
     node = root
-    for raw in [p for p in ref[1:].split("/") if p]:
+    if ref == "#":
+        return node
+    if not ref.startswith("#/"):
+        raise SchemaError(f"unresolvable $ref {ref}")
+    # RFC 6901: an empty reference token is a real (empty-string) key, not dropped.
+    for raw in ref[2:].split("/"):
         part = raw.replace("~1", "/").replace("~0", "~")
         if isinstance(node, dict) and part in node:
             node = node[part]
@@ -88,9 +101,29 @@ def check_schema(schema: Any, root: Any | None = None, _path: str = "#") -> None
 
 
 def _equal(a: Any, b: Any) -> bool:
+    """JSON equality: bool never equals a number at any depth; 1 equals 1.0."""
     if isinstance(a, bool) or isinstance(b, bool):
         return type(a) is type(b) and a == b
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_equal(a[k], b[k]) for k in a)
+    if isinstance(a, (list, dict)) or isinstance(b, (list, dict)):
+        return False
     return a == b
+
+
+def _canon(value: Any) -> str:
+    """Canonical key such that _canon(a) == _canon(b) exactly when _equal(a, b)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and math.isfinite(value) and value == int(value):
+        value = int(value)
+    if isinstance(value, list):
+        return "[" + ",".join(_canon(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(k) + ":" + _canon(value[k]) for k in sorted(value)) + "}"
+    return json.dumps(value, sort_keys=True)
 
 
 def _errors(value: Any, schema: Any, root: Any, path: str, out: list[str], limit: int) -> None:
@@ -157,17 +190,19 @@ def _errors(value: Any, schema: Any, root: Any, path: str, out: list[str], limit
             out.append(f"{path}: fewer than {schema['minItems']} items")
         if "maxItems" in schema and len(value) > schema["maxItems"]:
             out.append(f"{path}: more than {schema['maxItems']} items")
-        if schema.get("uniqueItems"):
-            seen: list[Any] = []
+        too_long = "maxItems" in schema and len(value) > schema["maxItems"]
+        if schema.get("uniqueItems") and not too_long:
+            seen: set[str] = set()
             for item in value:
-                if any(_equal(item, other) for other in seen):
+                key = _canon(item)
+                if key in seen:
                     out.append(f"{path}: items are not unique")
                     break
-                seen.append(item)
-        if "items" in schema:
+                seen.add(key)
+        if "items" in schema and not too_long:
             for index, item in enumerate(value):
                 _errors(item, schema["items"], root, f"{path}[{index}]", out, limit)
-        if "contains" in schema and not any(
+        if "contains" in schema and not too_long and not any(
                 not validate(item, schema["contains"], root=root, limit=1) for item in value):
             out.append(f"{path}: no item matches contains")
     for sub in schema.get("allOf", []):

@@ -379,7 +379,8 @@ def _read(st: Any, ids: Sequence[str], props: Sequence[str]) -> dict[str, dict[s
     the store's threads; each thread reads on its own connection)."""
     wanted = sorted(set(ids))
     chunks = [wanted[i:i + CHUNK] for i in range(0, len(wanted), CHUNK)]
-    sql = ("SELECT object_id, property, value, l1_handle, markings FROM object_values WHERE "
+    sql = ("SELECT object_id, property, value, l1_handle, markings, unit, currency "
+           "FROM object_values WHERE "
            "superseded_at IS NULL AND object_id IN (SELECT value FROM json_each(?)) AND "
            "property IN (SELECT value FROM json_each(?))")
     out: dict[str, dict[str, Any]] = defaultdict(dict)
@@ -388,10 +389,12 @@ def _read(st: Any, ids: Sequence[str], props: Sequence[str]) -> dict[str, dict[s
     def one(chunk: list[str]) -> None:
         rows = list(st.conn.execute(sql, (json.dumps(chunk), json.dumps(list(props)))))
         with lock:
-            for oid, prop, value, handle, markings in rows:
+            for oid, prop, value, handle, markings, unit, currency in rows:
                 if value not in (None, "") and prop not in out[oid]:
+                    # a quantity's unit and an amount's currency travel with the value
                     out[oid][prop] = {"object_id": oid, "property": prop, "value": str(value),
-                                      "l1_handle": handle, "markings": markings}
+                                      "l1_handle": handle, "markings": markings,
+                                      "unit": unit, "currency": currency}
     workers = max(1, min(int(getattr(st, "threads", 1) or 1), 8, len(chunks) or 1))
     if workers == 1:
         for chunk in chunks:

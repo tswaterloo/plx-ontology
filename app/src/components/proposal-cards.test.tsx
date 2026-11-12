@@ -86,4 +86,23 @@ describe("mailtoHref", () => {
     expect(href.length).toBeLessThanOrEqual(MAILTO_MAX);
     expect(decodeURIComponent(href)).toMatch(/shortened: copy the full text/);
   });
+
+  it("never throws on long emoji or mixed text and holds the whole link to the bound (WEB-034)", () => {
+    const cases: [string, string][] = [
+      ["subject", "\u{1F600}".repeat(200)],
+      ["subject", "a".repeat(500) + "\u{1F600}".repeat(200)],
+      ["subject", "e\u0301".repeat(900) + "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}".repeat(120)],
+      ["a".repeat(2000), "short body"],
+      ["a".repeat(2000), "\u{1F600}".repeat(400)],
+      ["\ud83d lone half", "\ude00 and another"],
+      ["PO 100", "ordinary short message"],
+    ];
+    for (const [subject, body] of cases) {
+      const href = mailtoHref("a@b.example", subject, body);
+      expect(href.length).toBeLessThanOrEqual(MAILTO_MAX);
+      expect(() => decodeURIComponent(href)).not.toThrow(); // valid UTF-8 throughout: nothing cut mid-character
+    }
+    // an ordinary draft is untouched
+    expect(decodeURIComponent(mailtoHref("a@b.example", "PO 100", "ordinary short message"))).toBe("mailto:a@b.example?subject=PO 100&body=ordinary short message");
+  });
 });

@@ -131,13 +131,17 @@ def make_auth(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: s
             identity = configured_employee(resolver, args.dev_employee_oid)
         except session_identity.SessionIdentityRefused as error:
             parser.error("--dev-employee-oid refused: " + error.reason)
-        return DevAuth(identity, mode="dev"), {"sign_in_available": True}
+        auth = DevAuth(identity, mode="dev")
+        auth.resolver = resolver          # /api/health: the employee policy in force
+        return auth, {"sign_in_available": True}
     secret = session_identity.session_secret(os.environ)
-    return (DevAuth(ticket_identity=ticket_identity(resolver, secret, ctx["replay_guard"]),
-                    sign_in_identity=ticket_identity(resolver, secret, ctx["replay_guard"],
-                                                     single_use=True),
-                    mode="dev"), {"sign_in_available": True,
-                      "message": "Demo sign-in: paste the access link you were given."})
+    auth = DevAuth(ticket_identity=ticket_identity(resolver, secret, ctx["replay_guard"]),
+                   sign_in_identity=ticket_identity(resolver, secret, ctx["replay_guard"],
+                                                    single_use=True),
+                   mode="dev")
+    auth.resolver = resolver              # /api/health: the employee policy in force
+    return auth, {"sign_in_available": True,
+                  "message": "Demo sign-in: paste the access link you were given."}
 
 
 def optional_understanding() -> Optional[Callable]:

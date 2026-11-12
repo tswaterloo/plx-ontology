@@ -30,6 +30,7 @@ hand. Output on stdout: counts only.
 
 from __future__ import annotations
 
+import os
 import argparse
 import hashlib
 import json
@@ -178,7 +179,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     portal, generation = mirror_rows(args.mirror, LATE_PO_RELATIONS)
     bc = [json.loads(line) for line in args.bc_records.read_text("utf-8").splitlines()
           if line.strip()] if args.bc_records else []
-    result = po_lateness.late_orders(portal, bc, args.as_of)
+    result = po_lateness.late_orders(portal, bc, args.as_of,
+                                     go_live_day=os.environ.get("PLX_BC_GO_LIVE_DATE"))
     items = late_po_items(result, as_of=args.as_of, generation=generation, now=now,
                           limit=args.limit)
     args.out.mkdir(parents=True, exist_ok=True)

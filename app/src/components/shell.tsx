@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { getHome, getLateList, getOpsAlarms, getOpsHealth, type OpsAlarms, type OpsCheck, type OpsHealth } from "@/lib/api";
+import { DesktopBridge } from "./desktop-bridge";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
 import { plainServerNote, SYSTEM_LABEL } from "@/lib/format";
@@ -13,6 +14,8 @@ import { cn } from "@/lib/cn";
 import { stashPending } from "@/lib/pending";
 import { useShortcut } from "@/lib/platform";
 import { useSaved } from "@/lib/saved";
+import { readAllLate } from "@/lib/late";
+import { onSessionReset } from "@/lib/session-cache";
 import type { HomeResponse, LatePo } from "@/lib/types";
 import { PlaceIcon, SystemCode } from "./ui/glyphs";
 import { RequireAuth, useAuth } from "./auth";
@@ -20,6 +23,7 @@ import { ThemeToggle } from "./theme";
 import { Pending } from "./ui/skeleton";
 import { ViewAsBar, ViewAsPicker } from "./view-as";
 import { ErrorNotice } from "./ui/notice";
+import { ApiError } from "@/lib/errors";
 
 const TZ = "America/Toronto";
 
@@ -106,40 +110,59 @@ export function AccessBanner({ className }: { className?: string }) {
   );
 }
 
-/** Today, the sidebar and the tab bar read /api/home once per page load; Today's retry reads it again. */
-let lateOnce: Promise<LatePo[]> | null = null;
-/** Every late PO you may see (a page or three), read once per page load: Today's list and the sidebar's suppliers. */
-export function loadLate(fresh = false): Promise<LatePo[]> {
+/** Home reads at most this many late orders; the rest are on the Late orders page. */
+export const HOME_LATE_MOST = 300;
+export interface LateRead {
+  items: LatePo[];
+  /** The server's count of every late order this reader may see (can exceed items). */
+  total: number;
+}
+let lateOnce: Promise<LateRead> | null = null;
+/** The late POs you may see (up to HOME_LATE_MOST, a page or three), read once per page load: Today's list and the sidebar's suppliers. `total` says when that is only part. */
+export function loadLateRead(fresh = false): Promise<LateRead> {
   if (fresh || !lateOnce) {
-    lateOnce = (async () => {
-      const first = await getLateList(0, undefined, 100);
-      const all: LatePo[] = [...(first.items ?? [])];
-      if (!first.more || first.next_offset == null) return all;
-      // the next pages at once: a page ends where the next starts (offset + 100)
-      const step = first.next_offset;
-      const offsets = [step, 2 * step].filter((o) => o < (first.total ?? 0));
-      const pages = await Promise.all(offsets.map((o) => getLateList(o, undefined, 100)));
-      for (const page of pages) {
-        all.push(...(page.items ?? []));
-        if (!page.more) break;
-      }
-      return all;
-    })();
+    lateOnce = readAllLate((offset, size) => getLateList(offset, undefined, size), 100, HOME_LATE_MOST).then((r) => ({
+      items: r.items,
+      total: Math.max(r.total, r.items.length),
+    }));
     lateOnce.catch(() => (lateOnce = null));
   }
   return lateOnce;
 }
+export function loadLate(fresh = false): Promise<LatePo[]> {
+  return loadLateRead(fresh).then((r) => r.items);
+}
 
 let homeOnce: Promise<HomeResponse> | null = null;
+const homeListeners = new Set<(h: HomeResponse) => void>();
+// read for the person signed in: dropped when they sign out or someone else signs in
+onSessionReset(() => {
+  lateOnce = null;
+  homeOnce = null;
+});
 /** /api/home read once per page load, shared by Today, the sidebar and Ask: never tied to one
  * caller's abort (a caller that leaves ignores the answer), so leaving Today early, or React
- * mounting it twice, never fails the read for the others. */
+ * mounting it twice, never fails the read for the others. A fresh read (Today asking again
+ * while the server refreshes) is handed to every consumer that subscribed. */
 export function loadHome(fresh = false): Promise<HomeResponse> {
   if (fresh || !homeOnce) {
-    homeOnce = getHome();
-    homeOnce.catch(() => (homeOnce = null));
+    const read = getHome();
+    homeOnce = read;
+    read.then(
+      (h) => {
+        if (homeOnce === read) for (const f of homeListeners) f(h);
+      },
+      () => {
+        if (homeOnce === read) homeOnce = null;
+      },
+    );
   }
   return homeOnce;
+}
+/** Calls `f` with each later fresh home read; returns the unsubscribe. */
+export function onHomeRead(f: (h: HomeResponse) => void): () => void {
+  homeListeners.add(f);
+  return () => void homeListeners.delete(f);
 }
 
 function useHome(): HomeResponse | null {
@@ -147,8 +170,10 @@ function useHome(): HomeResponse | null {
   useEffect(() => {
     let live = true;
     loadHome().then((h) => live && setHome(h), () => undefined);
+    const off = onHomeRead((h) => live && setHome(h));
     return () => {
       live = false;
+      off();
     };
   }, []);
   return home;
@@ -172,15 +197,14 @@ function lateOf(home: HomeResponse | null): number | null {
   return na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
 }
 
-/** The places. Team shows only to a reader with a team grant, Reliability only to an ops
- * reader (the owner and the Team readers), Trust likewise; Feedback triage is in the
- * account menu. */
+/** The places. Team shows to every reader (their own row at least), Reliability and Trust
+ * only to an ops reader (the owner and the Team readers); Feedback triage is in the account menu. */
 export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean; grant?: boolean; ops?: boolean }[] = [
   { href: "/", label: "My work", icon: Inbox },
   { href: "/late", label: "Late POs", icon: Clock3, late: true },
   { href: "/autopilot", label: "Autopilot", icon: Bot },
   { href: "/meetings", label: "Meetings", icon: CalendarClock },
-  { href: "/team", label: "Team", icon: Users, grant: true },
+  { href: "/team", label: "Team", icon: Users },
   { href: "/ask", label: "Ask", icon: MessageCircle },
   { href: "/watching", label: "Watching", icon: BellRing },
   { href: "/work-log", label: "Work log", icon: History },
@@ -188,7 +212,7 @@ export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolea
   { href: "/trust", label: "Trust", icon: Gauge, ops: true },
 ];
 
-/** Whether this reader sees Team: a declared full-read grant or the owner. */
+/** Whether this reader holds a team grant (a declared full-read grant or the owner): Team approvals. */
 export function hasTeamGrant(me: { access_label?: string | null; feedback_admin?: boolean } | null | undefined): boolean {
   return !!(me && (me.access_label || me.feedback_admin));
 }
@@ -385,25 +409,51 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
   const { state } = useAuth();
   const owner = state.status === "signed-in" && isOpsReader(state.me);
   const [alarms, setAlarms] = useState<OpsAlarms | null>(null);
+  // the last poll failed: the alarms shown (if any) are the last ones read, not current
+  const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
     if (!owner) return;
     let live = true;
     const ctl = new AbortController();
-    const load = () => getOpsAlarms(ctl.signal).then((a) => live && setAlarms(a), () => live && setAlarms(null));
+    const load = () =>
+      getOpsAlarms(ctl.signal).then(
+        (a) => {
+          if (!live) return;
+          setAlarms(a);
+          setUnavailable(false);
+        },
+        (e) => {
+          if (!live) return;
+          // a refusal means "not an ops reader": say nothing and stop asking; only a failed
+          // read (network, 5xx) is "Monitoring unavailable"
+          if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+            clearInterval(id);
+            return;
+          }
+          setUnavailable(true);
+        },
+      );
     load();
-    const id = setInterval(load, every);
+    const id: ReturnType<typeof setInterval> = setInterval(load, every);
     return () => {
       live = false;
       ctl.abort();
       clearInterval(id);
     };
   }, [owner, every]);
-  if (!owner || !alarms || !alarms.configured) return null;
-  const open = alarms.open ?? [];
-  if (open.length === 0 && alarms.running) return null;
-  const text = open.length > 0
+  // no poll has succeeded yet: say the monitoring cannot be read rather than show nothing
+  const seen = alarms ?? (unavailable ? ({ configured: true, open: [], running: true } as unknown as OpsAlarms) : null);
+  if (!owner || !seen || !seen.configured) return null;
+  const open = seen.open ?? [];
+  if (open.length === 0 && seen.running && !unavailable) return null;
+  const base = open.length > 0
     ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.slice(0, 3).map((i) => i.line).join(" · ")}${open.length > 3 ? ` · ${open.length - 3} more` : ""}`
-    : `Reliability checks are not running${alarms.checked_at ? ` (last ${eastern(alarms.checked_at)})` : ""}; a new problem would not show here.`;
+    : seen.running
+      ? ""
+      : `Reliability checks are not running${seen.checked_at ? ` (last ${eastern(seen.checked_at)})` : ""}; a new problem would not show here.`;
+  // a failed poll keeps the last alarms on screen and says they may be out of date
+  const lost = `Monitoring unavailable: the last check could not be read${seen.checked_at ? ` (alarms shown are from ${eastern(seen.checked_at)})` : ""}.`;
+  const text = unavailable ? (base ? `${base} · ${lost}` : lost) : base;
   return (
     <Link
       href="/ops"
@@ -444,13 +494,15 @@ function NavItem({ href, label, count, onNavigate }: { href: string; label: stri
 }
 
 /** The suppliers with late POs, most first: each opens Today showing only that supplier's. */
-function LateBySupplier() {
-  const [late, setLate] = useState<LatePo[] | null>(null);
+export function LateBySupplier() {
+  const [read, setRead] = useState<LateRead | null>(null);
+  const late = read?.items ?? null;
+  const partial = !!read && read.total > read.items.length;
   const path = usePathname();
   const params = useSearchParams();
   useEffect(() => {
     let live = true;
-    loadLate().then((l) => live && setLate(l), () => undefined);
+    loadLateRead().then((l) => live && setRead(l), () => undefined);
     return () => {
       live = false;
     };
@@ -463,6 +515,11 @@ function LateBySupplier() {
   return (
     <SidebarSection title="Late by supplier">
       <div className="space-y-px" data-testid="late-by-supplier">
+        {partial && read && (
+          <Link href="/late" className="block px-2 pb-1 text-[12px] leading-4 text-muted hover:text-fg" data-testid="late-by-supplier-partial">
+            Counts from the first {read.items.length} of {read.total} late orders; all are on Late orders
+          </Link>
+        )}
         {rows.slice(0, 7).map(([name, n]) => {
           const on = current === name;
           return (
@@ -639,8 +696,7 @@ function AccountMenuContent({ name, email, onViewAs }: { name: string; email?: s
         )}
         <Menu.Item
           onSelect={async () => {
-            await signOut();
-            router.replace("/signin");
+            if (await signOut()) router.replace("/signin");
           }}
           className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover"
         >
@@ -788,10 +844,12 @@ function ShellSkeleton() {
  * each page scrolls inside its own panes (Today) or inside the content area.
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { state, refresh } = useAuth();
+  const { state, refresh, signOut, signOutError } = useAuth();
+  const router = useRouter();
   return (
     <CommandPaletteProvider>
       <FeedbackProvider>
+      <DesktopBridge />
       <div className="flex h-dvh overflow-hidden bg-bg">
         <a
           href="#main"
@@ -804,6 +862,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <MobileTitleBar />
           <ViewAsBar />
           <OpsAlarmBanner />
+          {signOutError && (
+            <div role="alert" className="border-b border-late-line bg-late-soft px-5 py-1.5 text-[13px] leading-5 text-late" data-testid="sign-out-failed">
+              {signOutError}{" "}
+              <button type="button" className="font-medium underline cursor-pointer" onClick={() => void signOut().then((ok) => ok && router.replace("/signin"))}>
+                Try again
+              </button>
+            </div>
+          )}
           {state.status === "error" ? (
             <div className="mx-auto w-full max-w-xl p-6">
               <ErrorNotice message={state.message} onRetry={refresh} />

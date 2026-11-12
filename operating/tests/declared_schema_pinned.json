@@ -605,6 +605,12 @@
     "CREATE UNIQUE INDEX versions_current ON versions(kind, path) WHERE superseded_at IS NULL"
    ],
    [
+    "index",
+    "versions_missing",
+    "versions",
+    "CREATE INDEX versions_missing ON versions(missing_from_source_since) WHERE missing_from_source_since IS NOT NULL"
+   ],
+   [
     "table",
     "meta",
     "meta",

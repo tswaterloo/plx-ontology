@@ -87,6 +87,13 @@ ROWS_CODE_DIGESTS: dict[int, frozenset[str]] = {
         "7fbff16572c05486c099935abee16b7fa16eca3376f27d1d9817d76d180633da",
         # the build steps' code recorded in store_meta (steps_digest, the rows are the same)
         "da822466bbd7d1424228c89eba51e938dc7048ac00d3f944b9d4690e44ba5c5a",
+        # stamp sightings and one link row per stretch (GROWTH-AUDIT F1/F2, decision note
+        # 2026-11-11-stamp-sightings-and-link-identity): a record's current rows, values,
+        # citations and links are the same; only the history of restamps is folded. A unit
+        # of either code mixes with the other's exactly (current state and delta apply
+        # proven equal on captures), so a v1 generation stays current and the next build
+        # is not cold; not a new version, by that proof and not as a refactor
+        "55eddc877f4e54d2e0b0f50088bf6f7fe5a561d5c188ef121d221060d6c7c40f",
     }),
 }
 

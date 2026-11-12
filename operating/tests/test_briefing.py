@@ -21,6 +21,7 @@ from unittest import mock
 from operating import briefing as bf
 from operating import customer_profit as cp
 from operating import proactive_engine as pe
+from operating import stock_state
 from operating.tests.test_proactive_engine import (ALL_MARKINGS, AS_OF, EXCLUDED_OID, T0,
                                                   World, admit, people, po,
                                                   everyone, handle)
@@ -70,9 +71,12 @@ class Case(unittest.TestCase):
         return pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: at,
                       people=options.pop("people", people()), **options)
 
-    def read(self, *, may_read=everyone, held=ALL, decide=admit) -> dict:
+    def read(self, *, may_read=everyone, held=ALL, decide=admit, include_off=False) -> dict:
+        # ``include_off``: what the rules found, whether or not the alert registry shows the
+        # kind to a reader yet (a kind not measured at the bar never reaches Home)
         return pe.read_inbox(self.inbox, self.store, reader="r", may_read=may_read,
-                             held=held, decide=decide, states=("open",), limit=500)
+                             held=held, decide=decide, states=("open",), limit=500,
+                             include_off=include_off)
 
     def events(self, **grant) -> dict[str, list[dict]]:
         out: dict[str, list[dict]] = {}
@@ -254,6 +258,25 @@ class DetectorTest(Case):
         self.assertEqual(found["lot_near_expiry"][0]["summary"], "Expires on 2026-10-29, in 10 days")
         self.assertEqual([g["object_id"] for g in found["lot_on_hold"]], [held])
         self.assertEqual(summary["not_evaluated"]["lot_attention"], {"status_unmapped": 1})
+
+    def test_a_hold_many_made_batches_share_is_still_a_hold(self):
+        """A quality incident holding every made batch is twelve holds, never a default
+        (BIZ-006); the hold every unmade batch carries before release stays a default. The
+        live-ops answer key restates the rule independently and agrees."""
+        from evals.oracle import keys as oracle_keys
+        w = World()
+        made = [w.obj("Batch", {"quality_status": "On-Hold", "status": "Realized"})
+                for _ in range(12)]
+        for _ in range(12):
+            w.obj("Batch", {"quality_status": "On-Hold", "status": "Allocated"})
+        self.run_engine(w)
+        self.assertEqual(sorted(g["object_id"] for g in self.events()["lot_on_hold"]),
+                         sorted(made))
+        for status in ("Realized", "Allocated"):
+            pairs = [(status, "On-Hold")] * 12
+            self.assertEqual(
+                oracle_keys.batch_hold_verdict(status, "On-Hold", pairs),
+                stock_state.batch_hold(status, "On-Hold", stock_state.hold_profile(pairs)))
 
     def test_a_lot_near_expiry_is_claimed_only_while_its_status_holds_stock(self):
         """A used-up, rejected or expired lot has nothing left to expire; a lot whose QC
@@ -748,6 +771,58 @@ class DetectorTest(Case):
         # a reader without finance may not open the figure: never sees the loss
         self.assertNotIn("negative_margin", self.events(held=frozenset()))
 
+    def test_a_loss_whose_next_read_fails_stays_open_and_one_that_cleared_resolves(self):
+        # AUTOMATION-013: a failed or undecided order read is no "no loss": its open alert
+        # is neither found again nor resolved; an order read again at a profit resolves
+        from decimal import Decimal
+        w = World()
+        a, b = w.obj("SalesOrder", {}), w.obj("SalesOrder", {})
+        figures = {}
+        for order in (a, b):
+            invoice = w.obj("SalesInvoice", {"posting_date": "2026-08-10"},
+                            markings='["finance"]')
+            figures[order] = handle(w.n)
+            w.link("SalesInvoice.bills", invoice, order)
+        margins = {a: Decimal("-10"), b: Decimal("-20")}
+
+        def read_order(_call, order):
+            margin = margins[order.object_id]
+            if margin == "fail":
+                raise RuntimeError("SYNTH read failed")
+            if margin is None:
+                return order   # undecided
+            order.margin, order.currency = margin, "CAD"
+            order.revenue, order.cost = Decimal("100"), Decimal("100") - margin
+            order.lines = [cp.Line(1, "l", None, invoice_handles=[figures[order.object_id]])]
+            return order
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {})
+        self.assertEqual({g["object_id"] for g in self.events()["negative_margin"]}, {a, b})
+        for failure in ("fail", None):
+            with self.subTest(failure=failure):
+                margins.update({a: failure, b: Decimal("5")})
+                with mock.patch.object(cp, "read_order", read_order):
+                    summary = self.run_engine(w, call=lambda *_: {})
+                self.assertEqual(summary["detectors"]["negative_margin"], "complete")
+                # the unread loss stays listed (same data: as found); the cleared one is gone
+                self.assertEqual([g["object_id"] for g in self.events()["negative_margin"]],
+                                 [a])
+        # over newer data an unread loss is listed marked as not rechecked, never current
+        w.obj("Customer", {"name": "SYNTH new data"})
+        margins[a] = "fail"
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {}, at=MOMENT + timedelta(hours=1))
+        found = pe.read_inbox(self.inbox, self.store, reader="plx:ops", may_read=everyone,
+                              held=ALL, decide=admit, include_off=True,
+                              kinds=["negative_margin"])["gaps"]
+        self.assertEqual([(g["object_id"], g["carried"]["reason"]) for g in found],
+                         [(a, "check_incomplete")])
+        # read again and cleared: resolved
+        margins[a] = Decimal("5")
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {}, at=MOMENT + timedelta(hours=2))
+        self.assertNotIn("negative_margin", self.events())
+
     def test_one_event_is_one_item_and_a_suspect_impact_stays_unranked(self):
         """A late PO's impact and the order it holds up are one item; an impact resting on
         a suspect total stays, marked suspect and never ranked by its figure; an order whose
@@ -827,7 +902,7 @@ class DetectorTest(Case):
 
         with mock.patch.object(cp, "read_order", read_order):
             self.run_engine(w, call=lambda *_: {})
-        found = self.events()
+        found = self.events(include_off=True)
         self.assertEqual([g["object_id"] for g in found.get("negative_margin", [])], [])
         (charge,) = found["no_charge_order"]
         self.assertEqual((charge["object_id"], charge["summary"]),
@@ -859,7 +934,7 @@ class DetectorTest(Case):
             if oid == orders["free_only"]:
                 order.lines = [line(1, oid, "100", "60"), line(2, oid, "0", "80")]
             else:
-                order.lines = [line(1, oid, "100", "150"), line(2, oid, "5", "20",
+                order.lines = [line(1, oid, "100", "150"), line(2, oid, "0", "20",
                                                                  item="Product:SAMPLE-KIT")]
             order.revenue = sum((ln.revenue for ln in order.lines), Decimal(0))
             order.cost = sum((ln.cost for ln in order.lines), Decimal(0))
@@ -868,7 +943,7 @@ class DetectorTest(Case):
 
         with mock.patch.object(cp, "read_order", read_order):
             self.run_engine(w, call=lambda *_: {})
-        found = self.events()
+        found = self.events(include_off=True)
         (free,) = found["free_goods_lines"]
         self.assertEqual(free["object_id"], orders["free_only"])
         self.assertIn("cost 80 CAD; its priced lines made 40 CAD", free["summary"])
@@ -879,8 +954,63 @@ class DetectorTest(Case):
                                                    "basis": "loss"})
         self.assertNotIn(orders["free_only"], json.dumps(self.brief(EVERYTHING)["items"]))
         # a reader without finance may not open the figures: sees neither
-        self.assertEqual({k for k in self.events(held=frozenset())}
+        self.assertEqual({k for k in self.events(held=frozenset(), include_off=True)}
                          & {"free_goods_lines", "negative_margin"}, set())
+
+    def test_a_billed_line_named_sample_is_sold_and_its_loss_counts(self):
+        """A name never overrides a bill (AUTOMATION-018): "Sample bottles" billed 10 at a
+        cost of 100 is a sold line, so the order's loss of 80 is a margin loss, said with
+        the billed sample; the same line billed nothing is free goods."""
+        from decimal import Decimal
+        w = World()
+        orders = {k: w.obj("SalesOrder", {}) for k in ("billed", "unbilled", "unknown",
+                                                         "id_worded")}
+        figures = {}
+        for order in orders.values():
+            invoice = w.obj("SalesInvoice", {"posting_date": "2026-08-10"},
+                            markings='["finance"]')
+            figures[order] = handle(w.n)
+            w.link("SalesInvoice.bills", invoice, order)
+
+        def line(n, oid, revenue, cost, item=None):
+            rev = None if revenue is None else Decimal(revenue)
+            return cp.Line(n, f"l{n}", item, revenue=rev, cost=Decimal(cost),
+                           margin=None if rev is None else rev - Decimal(cost),
+                           currency="CAD", invoice_handles=[figures[oid]])
+
+        bill = {"billed": "10", "unbilled": "0", "unknown": None, "id_worded": "10"}
+
+        # the name is the item's own (its id names nothing): an id holding the word is no
+        # named sample, so the same billed line under it is no billed sample
+        sample = w.obj("Product", {"name": "Sample bottles"})
+        plain = w.obj("Product", {"name": "Bottles"})
+        worded = w.obj("Product", {"name": "Glass jars"}, binding="sample-no-charge")
+
+        def read_order(_call, order):
+            oid = order.object_id
+            kind = next(k for k, v in orders.items() if v == oid)
+            order.lines = [line(1, oid, bill[kind], "100",
+                                item=worded if kind == "id_worded" else sample),
+                           line(2, oid, "20", "10", item=plain)]
+            order.revenue = Decimal(bill[kind] or 0) + Decimal(20)
+            order.cost = Decimal(110)
+            order.margin, order.currency = order.revenue - order.cost, "CAD"
+            return order
+
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {})
+        found = self.events(include_off=True)
+        losses = {g["object_id"]: g for g in found.get("negative_margin", [])}
+        self.assertEqual(set(losses), {orders["billed"], orders["unknown"],
+                                       orders["id_worded"]})
+        loss = losses[orders["billed"]]
+        self.assertEqual(loss["event"]["amount"], {"value": "80", "currency": "CAD",
+                                                   "basis": "loss"})
+        self.assertIn("1 line named sample or no charge was billed 10 CAD", json.dumps(loss))
+        self.assertNotIn("named sample", json.dumps(losses[orders["id_worded"]]))
+        (free,) = found["free_goods_lines"]
+        self.assertEqual(free["object_id"], orders["unbilled"])
+        self.assertIn("its priced lines made 10 CAD", free["summary"])
 
     def test_unjudged_records_and_a_failed_check_are_said_never_silent(self):
         inbox = {"status": "read", "gaps": [], "complete": False,
@@ -927,7 +1057,7 @@ class DetectorTest(Case):
 
         with mock.patch.object(cp, "read_order", read_order):
             self.run_engine(w, call=lambda *_: {})
-        found = self.events()
+        found = self.events(include_off=True)
         self.assertEqual([g["object_id"] for g in found["no_charge_order"]],
                          [orders["returned"]])
         self.assertEqual([g["object_id"] for g in found["negative_margin"]],

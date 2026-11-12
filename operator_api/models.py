@@ -725,6 +725,10 @@ class Suggestion(_Model):
     match: Literal["exact", "prefix", "fuzzy"]
     score: float
     open_url: str
+    same_as: list[str] = Field(default_factory=list, description="The other records this "
+                               "reader's projection reads as this same record in another "
+                               "system (a shared code or a verified same_record_as link). "
+                               "A picker merges rows only on this or an identical id.")
 
 
 class SuggestResponse(_Model):
@@ -2445,17 +2449,31 @@ class RdBoard(_Model):
     read_at: Optional[str] = _read_at()
 
 
-class OwnerWorkloadPerson(_Model):
-    person: str = Field(description="An Entra object id, never a name or an address.")
-    team: str
-    awaiting_reply: int
-    tasks: int
-    alerts: int
-    alerts_closed: int = Field(description="Alerts owned by the person that closed in the "
-                               "window (a count: nothing says who closed them).")
-    systems: dict[str, int] = Field(default_factory=dict, description=(
-        "Records the person created or changed per captured system in the window (bc, "
-        "portal, sage, sharepoint, mission_control, planner, calendar); counts only."))
+class TeamPerson(_Model):
+    """One person's row of the Team view. ``key`` is an opaque handle for the drill-down
+    (never an object id, a name or an address)."""
+    key: str
+    name: str = Field(description="Their Teams display name, else a calendar's name for them, "
+                      "else their address's local part; never an id.")
+    team: Optional[str] = None
+    roles: list[str] = Field(default_factory=list)
+    self: bool = False
+    d7: dict[str, int] = Field(default_factory=dict, description="Counts per channel, last 7 "
+                               "days (mail_sent, mail_received, teams, meetings, mc_approvals, "
+                               "mc_questions, mc_tasks, planner, sharepoint, bc, portal, sage).")
+    d28: dict[str, int] = Field(default_factory=dict, description="The same, last 28 days.")
+    awaiting_reply: int = 0
+    tasks: int = 0
+    alerts: int = 0
+    alerts_closed: int = Field(0, description="Their alerts closed in the last 28 days.")
+    reply_minutes_7: Optional[int] = Field(None, description="Median minutes to reply to a "
+                                           "message addressed to them, last 7 days.")
+    reply_minutes_28: Optional[int] = None
+    replies_28: int = 0
+    trend: list[int] = Field(default_factory=list, description="Everything they did per day, "
+                             "the last 28 days, oldest first.")
+    hours: list[int] = Field(default_factory=list, description="Messages sent per hour of the "
+                             "day (US Eastern), last 28 days.")
 
 
 class SystemCoverage(_Model):
@@ -2465,47 +2483,59 @@ class SystemCoverage(_Model):
     actions: int
 
 
-class OwnerWorkload(_Model):
-    """Per person, for the owner only: open threads awaiting reply, open tasks, alerts,
-    closed alerts and the records they created or changed in each captured system. Counts
-    only, never message content; people the exclusion does not clear never appear. The
-    note names exactly the systems covered; floor and lab work is not seen, so these
-    figures undercount it."""
-    window_days: int
-    people: list[OwnerWorkloadPerson] = Field(default_factory=list)
+class TeamView(_Model):
+    """The Team view: per person, activity in every captured system over 7 and 28 days,
+    open work, reply time, a daily trend and busiest hours. The owner and the named Team
+    readers see everyone; every other reader only their own row. The owner and the people
+    the exclusion does not clear are in no row and no count, for every reader."""
+    scope: Literal["everyone", "self"]
+    as_of: Optional[str] = Field(None, description="When the activity was counted (ISO).")
+    window_to: Optional[str] = None
+    state: Literal["ready", "not_built", "blocked"]
+    people: list[TeamPerson] = Field(default_factory=list)
     coverage: list[SystemCoverage] = Field(default_factory=list)
     note: str
     stale_since: Optional[str] = _stale_since()
     read_at: Optional[str] = _read_at()
 
 
-class OwnerWorkloadItem(_Model):
+class TeamItem(_Model):
     id: str
+    bucket: Literal["awaiting_reply", "tasks", "alerts"]
     kind: str
     title: str
     counterpart: Optional[str] = None
     age_days: Optional[int] = None
     channel: Optional[str] = None
-    waiting_on: str = Field(description="The person (an Entra object id) for a thread awaiting "
-                            "their reply; else the departments that answer it.")
+    waiting_on: str = Field(description="The person's name for a thread awaiting their reply; "
+                            "else the departments that answer it.")
     snippet: Optional[str] = None
     record_id: Optional[str] = None
     record_type: Optional[str] = None
 
 
-class OwnerWorkloadItems(_Model):
-    """One person's items behind one count of the owner workload, for the owner only: what
-    the owner may open through the normal path (marked HR, payroll and pay items stay
-    withheld and are counted in ``withheld``, never shown). The full message opens through
-    its record page."""
-    person: str
-    bucket: str
-    total: int
-    withheld: int = Field(description="Counted for the person but not shown to you (marked, "
-                          "or not readable by you); never named.")
-    truncated: bool
-    items: list[OwnerWorkloadItem] = Field(default_factory=list)
-    note: str
+class TeamDay(_Model):
+    day: str
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+class TeamPartner(_Model):
+    key: Optional[str] = Field(None, description="Their drill-down handle, when you may open "
+                               "their row.")
+    name: str
+    n: int
+
+
+class TeamPersonDetail(_Model):
+    """One person's drill-down: their row, every day of the last 28 across systems, who they
+    work with most, and their open items (what you may open through the normal path; marked
+    items stay counted in ``withheld``, never shown)."""
+    person: TeamPerson
+    timeline: list[TeamDay] = Field(default_factory=list)
+    partners: list[TeamPartner] = Field(default_factory=list)
+    items: list[TeamItem] = Field(default_factory=list)
+    withheld: int = 0
+    truncated: bool = False
 
 
 class LabelChange(_Model):
@@ -2879,9 +2909,20 @@ class AutopilotScore(_Model):
                                      "absent when nothing was judged.")
 
 
+class AutopilotGatePart(_Model):
+    """One scored window the write gate counts for a workflow: fresh days (from the rules'
+    ``fresh_from``) or a historical window never used for tuning (the rules'
+    ``clean_windows``)."""
+    window: list[str] = Field(default_factory=list)
+    kind: Literal["fresh", "historical"]
+    judged: int
+    matched: int
+
+
 class AutopilotCountdown(_Model):
     """The workflow's way to its write gate: the counts the gate admitted
-    (``autopilot_write.gate_counts``), items judged on fresh days against the
+    (``autopilot_write.gate_counts``), items judged on held-out days (fresh days, or past
+    days never tuned on) against the
     ``need_judged`` the gate asks for, and the precision so far against ``need_percent``.
     Recomputed from the counts at every read."""
     judged: int
@@ -2895,9 +2936,11 @@ class AutopilotCountdown(_Model):
     data_end: Optional[str] = None
     run: Optional[str] = Field(None, description="The scorer run these counts came from.")
     refused: Optional[str] = Field(None, description="Why the role's newest scorer run was "
-                                   "not admitted (status:partial, not_fresh, counts...): the "
+                                   "not admitted (status:partial, not_held_out, counts...): the "
                                    "counts are then an earlier run's. Absent when it was.")
     refused_run: Optional[str] = None
+    parts: list[AutopilotGatePart] = Field(default_factory=list, description="The scored "
+                                           "windows summed into these counts, oldest first.")
 
 
 class AutopilotWorkflowRow(_Model):
@@ -2930,6 +2973,16 @@ class AutopilotWorkflowRow(_Model):
                     "published a result for this role.")
 
 
+class AutopilotActionResult(_Model):
+    """One action of an accepted item, in order: what it was and how it ended."""
+    kind: str = Field(description="The action kind: bc_write, send_mail, mc_task...")
+    system: str = Field(description="The system it writes to: bc, mail, mc... or other.")
+    status: str = Field(description="done (went through), unknown or pending (could not be "
+                        "confirmed: check before retrying), failed, or why it never ran: "
+                        "unavailable, refused, killed, rate_limited, dry_run...")
+    reasons: list[str] = Field(default_factory=list)
+
+
 class AutopilotDecision(_Model):
     decision: AutopilotDecisionKind
     at: str
@@ -2938,8 +2991,14 @@ class AutopilotDecision(_Model):
     text: Optional[str] = Field(None, description="The edited draft.")
     note: Optional[str] = None
     outcome: Optional[str] = Field(None, description="The write path's outcome of an "
-                                   "accept: dry_run (recorded only), done, killed, refused...")
+                                   "accept over all its actions: done (all), partly_done "
+                                   "(some, then one was not), unknown (one could not be "
+                                   "confirmed: check before retrying), failed, dry_run "
+                                   "(recorded only), killed, refused...")
     reasons: list[str] = Field(default_factory=list)
+    steps: list[AutopilotActionResult] = Field(
+        default_factory=list,
+        description="Each action of an accept in order (empty before steps were kept).")
     sent: bool = Field(False, description="The item's email went out: its own send "
                        "action's result is done (an entry before it may have succeeded "
                        "while the send did not).")
@@ -3247,6 +3306,9 @@ class WriteExecute(_Model):
     idempotency_key: str = Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     checked_bc: bool = Field(False, description="The person checked BC after an unknown "
                                                 "outcome and the entry is not there.")
+    live: bool = Field(False, description="The page showed this run as a live write (the "
+                       "preview's live_missing was empty). A run that would write live is "
+                       "refused (409) unless this is true.")
 
 
 class LabourSource(_Model):
@@ -3419,7 +3481,8 @@ class TrustSwitch(_Model):
 
 class TrustGate(_Model):
     """The autopilot's write gate as the write rules set it (``rules.gate``)."""
-    need_judged: int = Field(description="Judged items from fresh days a workflow needs.")
+    need_judged: int = Field(description="Judged held-out items (fresh days or past days "
+                             "never tuned on) a workflow needs.")
     need_percent: float = Field(description="Precision it needs on them, in percent.")
 
 

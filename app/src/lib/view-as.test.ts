@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getHome, getMe, getViewAsPeople, logout, markBriefingSeen } from "./api";
-import { setViewingAs, viewingAs } from "./view-as";
+import { ownPath, setViewingAs, viewingAs } from "./view-as";
 
 const sent: { path: string; method: string; headers: Record<string, string> }[] = [];
 vi.stubGlobal("fetch", (path: string, init: RequestInit) => {
@@ -33,6 +33,11 @@ describe("view as, in the browser", () => {
       ["POST", "/api/view-as/stop", undefined],
       ["POST", "/api/auth/logout", undefined],
     ]);
+  });
+
+  it("only the owner's own paths go without the view-as header (meetings is not one)", () => {
+    for (const own of ["/api/me", "/api/me?x=1", "/api/health", "/api/auth/logout", "/api/view-as/people", "/api/ops/status"]) expect(ownPath(own)).toBe(true);
+    for (const viewed of ["/api/meetings", "/api/meetings/action-items", "/api/metrics", "/api/healthy", "/api/home", "/api/opsx", "/api/authx"]) expect(ownPath(viewed)).toBe(false);
   });
 
   it("stays off once stopped, whatever the tab storage holds", async () => {

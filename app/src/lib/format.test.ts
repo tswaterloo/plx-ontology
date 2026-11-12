@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ago, fieldValue, formatMoney, money, objectHref, plainServerNote, readable, safeHref, safeNext, typeLabel, withoutFloatNoise } from "./format";
+import { ago, fieldValue, formatMoney, money, objectHref, plainServerNote, readable, safeHref, safeNext, typeLabel, withoutFloatNoise, groupDigits } from "./format";
 import { recordLabel } from "./format";
 
 describe("safeHref", () => {
   it("allows same-origin paths and https links only", () => {
     expect(safeHref("/o/po/5280")).toBe("/o/po/5280");
     expect(safeHref("https://outlook.office.com/mail/")).toBe("https://outlook.office.com/mail/");
-    for (const bad of ["http://outlook.office.com/mail/", "https://user:pw@evil.example/", "javascript:alert(1)", " JavaScript:alert(1)", "data:text/html,x", "//evil.example", "/\\evil.example", "vbscript:x", "file:///etc/passwd", "", null, undefined]) {
+    for (const bad of ["http://outlook.office.com/mail/", "https://user:pw@evil.example/", "javascript:alert(1)", " JavaScript:alert(1)", "data:text/html,x", "//evil.example", "/\\evil.example", "/\n/evil.example", "/\t/evil.example", "/\r/evil.example", "/x\\..\\\\evil.example", "https://outlook.office.com/\tmail/", "vbscript:x", "file:///etc/passwd", "", null, undefined]) {
       expect(safeHref(bad as string)).toBeNull();
     }
   });
@@ -15,7 +15,9 @@ describe("safeHref", () => {
 describe("safeNext", () => {
   it("only returns same-origin paths", () => {
     expect(safeNext("/ask?q=hi")).toBe("/ask?q=hi");
-    for (const bad of ["https://evil.example", "//evil.example", "/\\evil", "javascript:x", "/signin?next=/", null]) {
+    expect(safeNext("/po/../ask#top")).toBe("/ask#top");
+    // browsers drop tab/newline and read "\\" as "/": each of these would leave the site
+    for (const bad of ["https://evil.example", "//evil.example", "/\\evil", "javascript:x", "/signin?next=/", "/signin", "/./signin", "/\n/evil.example", "/\t/evil.example", "/\r\n/evil.example", "/\u0000/evil.example", "/\u007f/evil.example", "/x/\\evil", " //evil.example", 42 as unknown as string, null]) {
       expect(safeNext(bad)).toBe("/");
     }
   });
@@ -126,6 +128,24 @@ describe("a float's noise", () => {
     expect(formatMoney("116.25000000000001", "CAD")).toBe("$116.25 CAD");
     expect(fieldValue("directUnitCost", "116.25000000000001")).toBe("116.25");
     for (const kept of ["3.14159265358", "1.2345678.9", "SKU-116.25000000000001x", "116.25"]) expect(withoutFloatNoise(kept)).toBe(kept);
+  });
+
+  it("is a double's shortest form only: a real figure with many places is never rounded (WEB-003)", () => {
+    expect(withoutFloatNoise("0.30000000000000004 and -2.0000000000000004")).toBe("0.3 and -2");
+    // magnitude never decides: these are real decimals, not a float's residue
+    for (const kept of ["100000000.1234567", "1234.5678901", "12345678901234567890.123456789", "0.12345678901234", "1.0000001"]) {
+      expect(withoutFloatNoise(kept)).toBe(kept);
+    }
+    expect(formatMoney("100000000.1234567", "CAD")).toBe("$100,000,000.1234567 CAD");
+  });
+
+  it("groups a record's figure from its text, keeping every decimal", () => {
+    expect(groupDigits("100000000.1234567")).toBe("100,000,000.1234567");
+    expect(groupDigits("1234.56789")).toBe("1,234.56789");
+    expect(groupDigits("-2505")).toBe("-2,505");
+    expect(groupDigits("116.25000000000001")).toBe("116.25");
+    expect(groupDigits("12345678901234567890.5")).toBe("12,345,678,901,234,567,890.5");
+    expect(groupDigits("10 kg")).toBe("10 kg");
   });
 });
 

@@ -99,8 +99,11 @@ MAIL_SCHEME = "graph-mail"
 DRIVE_SCHEME = "sharepoint"
 _IMMUTABLE = {"Prefer": 'IdType="ImmutableId"'}
 _MAIL_SELECT = ("id,changeKey,lastModifiedDateTime,receivedDateTime,sentDateTime,subject,"
-                "from,sender,toRecipients,ccRecipients,conversationId,internetMessageId,"
-                "hasAttachments,webLink,bodyPreview,parentFolderId,internetMessageHeaders")
+                "from,sender,toRecipients,ccRecipients,bccRecipients,conversationId,"
+                "internetMessageId,hasAttachments,webLink,bodyPreview,parentFolderId,"
+                "internetMessageHeaders")
+# What the people exclusion reads of a message (``GraphMailReader.refused_messages``).
+EXCLUSION_SELECT = "id,parentFolderId,from,sender,toRecipients,ccRecipients,bccRecipients"
 _DRIVE_SELECT = ("id,name,eTag,cTag,size,webUrl,createdDateTime,lastModifiedDateTime,"
                  "file,folder,parentReference,lastModifiedBy")
 _DELTA_SELECT = "id,name,eTag,parentReference,file,folder,root,deleted"
@@ -192,6 +195,18 @@ def _smtp_addresses(raw: Mapping[str, Any]) -> set[str]:
         if isinstance(proxy, str) and proxy.lower().startswith("smtp:"):
             found.add(proxy[5:].lower())
     return found
+
+
+# The mark of a listed message whose Bcc was not read (``GraphMailReader._record``).
+BCC_UNREAD = "_bcc_unread"
+
+
+def withheld_message_key(value: Any) -> str | None:
+    """The key a message an excluded person sent or received is remembered by (every
+    mailbox's copy shares its ``internetMessageId``): the SHA-256 of that id, never the id,
+    so nothing of the message is kept; None without one."""
+    text = value.strip() if isinstance(value, str) else ""
+    return sha256(text.encode("utf-8")).hexdigest() if text else None
 
 
 def _undecided_id(raw: Mapping[str, Any]) -> str:
@@ -447,6 +462,7 @@ class GraphMailReader:
             if following is None:
                 raise nextlink_refused("graph nextLink escaped the collection")
             items, removed, dropped, people_dropped, undecided = [], [], 0, 0, []
+            withheld_keys: list[str | None] = []
             for raw in page["value"]:
                 if not isinstance(raw, Mapping):
                     raise SourceUnavailable("graph listing item invalid")
@@ -468,12 +484,14 @@ class GraphMailReader:
                     continue
                 if party:
                     people_dropped += 1   # never recorded, stored or indexed
+                    withheld_keys.append(withheld_message_key(raw.get("internetMessageId")))
                     continue
                 items.append(self._record(box, raw))
             last = links[0] == "@odata.deltaLink"
             yield {"source": "graph-mail", "mailbox": box.object_id, "folder_id": folder_id,
                    "items": items, "removed": removed, "provenance_dropped": dropped,
                    "people_dropped": people_dropped, "people_undecided": undecided,
+                   "people_withheld_keys": [k for k in withheld_keys if k],
                    "next_url": None if last else following,
                    "delta_url": following if last else None}
             if last:
@@ -574,6 +592,7 @@ class GraphMailReader:
                 if following is None:
                     raise nextlink_refused("graph nextLink escaped the collection")
             items, dropped, people_dropped, undecided = [], 0, 0, []
+            withheld_keys: list[str | None] = []
             for raw in page["value"]:
                 if not isinstance(raw, Mapping):
                     raise SourceUnavailable("graph listing item invalid")
@@ -586,11 +605,13 @@ class GraphMailReader:
                     continue
                 if party:
                     people_dropped += 1   # never recorded, stored or indexed
+                    withheld_keys.append(withheld_message_key(raw.get("internetMessageId")))
                     continue
                 items.append(self._record(box, raw))
             yield {"source": "graph-mail", "mailbox": box.object_id, "folder_id": folder_id,
                    "items": items, "removed": [], "provenance_dropped": dropped,
                    "people_dropped": people_dropped, "people_undecided": undecided,
+                   "people_withheld_keys": [k for k in withheld_keys if k],
                    "next_url": following}
             if following is None:
                 return
@@ -647,10 +668,21 @@ class GraphMailReader:
             "body_preview": raw.get("bodyPreview"), "source_acl": self._owner_acl(box),
             "authentication_results": _authentication_results(raw.get("internetMessageHeaders")),
         }
+        # Bcc is on the sender's own copy only; recorded when it names anyone, so the
+        # stored copy's exclusion check (``MailCaptureStore.purge_withheld``) sees it and
+        # every message without one keeps its content hash.
+        bcc = _addresses(raw.get("bccRecipients"))
+        if bcc:
+            record["bcc"] = bcc
         if body is not None:
             record["body_text"] = body
             record["body_truncated"] = body_truncated
         record["content_sha256"] = canonical_sha256(record)
+        if "bccRecipients" not in raw:
+            # a listing whose cursor predates the Bcc select (Graph keeps a delta round's
+            # $select in its token): its Bcc was never checked. Marked after the hash, never
+            # stored: the capture stores such an item only from a full read that checked it
+            record[BCC_UNREAD] = True
         record["citation"] = mail_citation(box.object_id, message_id, change_key)
         return jsonable(record)
 
@@ -757,7 +789,10 @@ class GraphMailReader:
         if party == "withheld":
             raise people_exclusion.ExclusionUnavailable("excluded_people_unresolved")
         if party:
-            raise people_exclusion.PeopleExcluded(party)
+            refused = people_exclusion.PeopleExcluded(party)
+            # every mailbox's copy of it is kept out too (the capture's tombstone)
+            refused.message_key = withheld_message_key(raw.get("internetMessageId"))
+            raise refused
         body, truncated = None, False
         if include_body:
             content = (raw.get("body") or {}).get("content") if isinstance(raw.get("body"), Mapping) else ""
@@ -765,6 +800,85 @@ class GraphMailReader:
             truncated = len(content) > max_body_chars
             body = content[:max_body_chars]
         return self._record(box, raw, body=body, body_truncated=truncated)
+
+    def refused_messages(self, actor: Actor, mailbox: str, *, folder_id: str | None = None,
+                         message_ids: Sequence[str] = (), page_size: int = 1000
+                         ) -> dict[str, Any]:
+        """Which messages of one mailbox the people exclusion refuses now: ids only, never
+        an address or any other field (``operating.mail_exclusion_purge`` re-checks
+        stored copies captured before Bcc was read). ``folder_id``: every message of that
+        folder, its pages followed to the end (``$top`` ``page_size``, at most 1000);
+        else each of ``message_ids`` by one GET. Each read selects only the fields the
+        check needs (:data:`EXCLUSION_SELECT`). Returns ``refused`` (sender or a To/Cc/Bcc
+        recipient is excluded), ``undecided`` (the ready guard cannot decide it),
+        ``absent`` (a listed id Graph no longer holds here) and ``read`` (messages read).
+        Same mailbox gate as every read; a guard that is not ready raises
+        ``ExclusionUnavailable``."""
+        if isinstance(page_size, bool) or not isinstance(page_size, int) \
+                or not 1 <= page_size <= 1000:
+            raise ValueError("page_size must be 1..1000")
+        if isinstance(message_ids, (str, bytes)) or (folder_id is not None) == bool(message_ids):
+            raise ValueError("one folder_id or a list of message_ids")
+        if folder_id is not None and not grammar.TYPES["mail_id"].valid(folder_id):
+            raise NotVisible()
+        box = self._gate(actor, mailbox)
+        found: dict[str, Any] = {"refused": [], "undecided": [], "absent": [], "read": 0}
+
+        def decide(raw: Mapping[str, Any]) -> None:
+            party = self._excluded_party(raw)
+            found["read"] += 1
+            if party == "withheld":
+                found["undecided"].append(raw["id"])
+            elif party:
+                found["refused"].append(raw["id"])
+
+        cache: dict[str, str | None] = {}
+        if folder_id is not None:
+            first = grammar.url("graph.folder_messages",
+                                {"$select": EXCLUSION_SELECT, "$top": str(page_size)},
+                                user=box.object_id, folder=folder_id)
+            url: str | None = first
+            seen: set[str] = set()
+            while url is not None:
+                if url in seen:
+                    raise SourceUnavailable("graph pagination loop")
+                seen.add(url)
+                page = self._api.get_json(url, headers=_IMMUTABLE)
+                if not isinstance(page, Mapping) or not isinstance(page.get("value"), list):
+                    raise SourceUnavailable("graph listing lacks value list")
+                for raw in page["value"]:
+                    if not isinstance(raw, Mapping) or not grammar.TYPES["mail_id"].valid(
+                            raw.get("id")):
+                        raise SourceUnavailable("graph listing item invalid")
+                    if self._belongs(box, raw, cache, folder_id):
+                        decide(raw)
+                following = page.get("@odata.nextLink")
+                url = None
+                if following is not None:
+                    url = self._api.continuation_url(first, following)
+                    if url is None:
+                        raise nextlink_refused("graph nextLink escaped the collection")
+            return found
+        for message_id in message_ids:
+            if not grammar.TYPES["mail_id"].valid(message_id):
+                raise NotVisible()
+            try:
+                raw = self._api.get_json(grammar.url("graph.message",
+                                                     {"$select": EXCLUSION_SELECT},
+                                                     user=box.object_id, message=message_id),
+                                         headers=_IMMUTABLE)
+            except SourceNotFound as exc:
+                if isinstance(hidden(exc), MailboxAbsent):
+                    raise hidden(exc) from None
+                found["absent"].append(message_id)
+                continue
+            if not isinstance(raw, Mapping) or raw.get("id") != message_id:
+                raise SourceUnavailable("Graph message read returned another identity")
+            if self._belongs(box, raw, cache):
+                decide(raw)
+            else:
+                found["absent"].append(message_id)
+        return found
 
     def list_attachments(self, actor: Actor, mailbox: str, message_id: str, *,
                          max_items: int = 50) -> dict[str, Any]:

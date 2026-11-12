@@ -25,6 +25,24 @@ describe("cross-system history", () => {
     expect(rows[rows.length - 1].at).toBeNull();
   });
 
+  it("two distinct events on the same source and day are two rows; a linked item that is one of them collapses once (WEB-013)", () => {
+    const po = src("BC", "bc://po/1");
+    const evs: TimelineEvent[] = [
+      { at: "2026-10-01T10:00:00Z", system: "BC", title: "Order released", source: po },
+      { at: "2026-10-01T11:00:00Z", system: "BC", title: "Fully received", source: po },
+    ];
+    const link: LinkedItem[] = [{ kind: "record", label: "PO 1", at: "2026-10-01T10:00:00Z", source: po }];
+    expect(buildHistory(evs, []).map((r) => r.title)).toEqual(["Fully received", "Order released"]);
+    expect(buildHistory(evs, link).map((r) => r.title)).toEqual(["Fully received", "Order released"]);
+    // two linked items from one source collapse only at the same moment
+    const two: LinkedItem[] = [
+      { kind: "email", label: "Mail A", at: "2026-10-02T08:00:00Z", source: src("Email", "m://1") },
+      { kind: "email", label: "Mail A", at: "2026-10-02T08:00:00Z", source: src("Email", "m://1") },
+      { kind: "email", label: "Mail A again", at: "2026-10-02T09:00:00Z", source: src("Email", "m://1") },
+    ];
+    expect(buildHistory([], two)).toHaveLength(2);
+  });
+
   it("kinds: orders, shipments, invoices, payments, mail, Teams, meetings, tasks", () => {
     expect(kindOf("BC", "Order released")).toBe("Orders");
     expect(kindOf("BC", "Shipment posted")).toBe("Shipments");

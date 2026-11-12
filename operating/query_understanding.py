@@ -761,7 +761,31 @@ def _frame(text: str, start: dt.date | None, end: dt.date | None, basis: str) ->
 
 
 def parse_time_frame(question: str, today: dt.date) -> dict[str, Any] | None:
-    """The question's time frame as [start, end) dates relative to ``today``, or None."""
+    """The question's time frame as [start, end) dates relative to ``today``, or None: a
+    rolling ``last N days`` is the N dates ending with today (today counted; weeks 7N,
+    months 30N, years 365N), as ``time_window`` counts them; a frame a calendar cannot
+    hold (past year 9999, before year 1, a 29 February no recent year has) is None,
+    never an arithmetic error or another day."""
+    try:
+        return _parse_time_frame(question, today)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _last(day: dt.date, month: int, day_of_month: int) -> dt.date | None:
+    """The latest ``month``/``day_of_month`` on or before ``day`` (a 29 February: the
+    latest leap year's), None when none of the eight years before has it."""
+    for year in range(day.year, max(day.year - 8, 0), -1):
+        try:
+            found = dt.date(year, month, day_of_month)
+        except ValueError:
+            continue
+        if found <= day:
+            return found
+    return None
+
+
+def _parse_time_frame(question: str, today: dt.date) -> dict[str, Any] | None:
     text = fold(question)
     week_start = today - dt.timedelta(days=today.weekday())
     month_start = today.replace(day=1)
@@ -778,7 +802,9 @@ def parse_time_frame(question: str, today: dt.date) -> dict[str, Any] | None:
     match = re.search(r"\b(?:last|past|previous)\s+(\d{1,3})\s+(day|week|month|year)s?\b", text)
     if match:
         days = int(match.group(1)) * _UNIT_DAYS[match.group(2)]
-        return _frame(match.group(0), today - dt.timedelta(days=days),
+        if days < 1:
+            return None   # "last 0 days": no day to count
+        return _frame(match.group(0), today - dt.timedelta(days=days - 1),
                       today + dt.timedelta(days=1), "relative")
     match = re.search(r"\b(\d{1,3})\s+(day|week|month|year)s?\s+ago\b", text)
     if match:
@@ -802,18 +828,17 @@ def parse_time_frame(question: str, today: dt.date) -> dict[str, Any] | None:
     try:
         if iso:
             point, point_text = dt.date(*map(int, iso.groups())), iso.group(0)
-        elif day_month and day_month.group(1):
-            point = dt.date(int(day_month.group(3) or today.year), _MONTHS[day_month.group(2)],
-                            int(day_month.group(1)))
+        elif day_month and (day_month.group(1) or day_month.group(4)):
+            year, month, day = (day_month.group(3), day_month.group(2), day_month.group(1)) \
+                if day_month.group(1) else \
+                (day_month.group(6), day_month.group(4), day_month.group(5))
             point_text = day_month.group(0)
-        elif day_month and day_month.group(4):
-            point = dt.date(int(day_month.group(6) or today.year), _MONTHS[day_month.group(4)],
-                            int(day_month.group(5)))
-            point_text = day_month.group(0)
+            if year:
+                point = dt.date(int(year), _MONTHS[month], int(day))
+            else:   # no year: the latest such day up to today (None: no such day)
+                point = _last(today, _MONTHS[month], int(day))
     except ValueError:
         point = None
-    if point and not (iso or day_month.group(3) or day_month.group(6)) and point > today:
-        point = point.replace(year=point.year - 1)
     since = re.search(rf"\b(since|after|from|before|until|till|in|during)\s+({_MONTH_RE})\b"
                       rf"(?:\s+(\d{{4}}))?", text)
     if point is not None:
@@ -1199,10 +1224,31 @@ class ClaudeUnderstander:
                 "--tools", "", "--no-session-persistence"]
         if self.model:
             argv += ["--model", self.model]
-        out = self.spawn(argv, agent_environment(os.environ), timeout, prompt)
+        from operating import model_ledger
+        asked = " ".join(argv) + "\n" + prompt   # the same text to the same model
+        hit, out = model_ledger.reused("query_understanding", asked)
+        if not hit:
+            started = time.monotonic()
+            try:
+                out = self.spawn(argv, agent_environment(os.environ), timeout, prompt)
+            except Exception as exc:
+                model_ledger.record("query_understanding", prompt=asked, ok=False,
+                                    seconds=time.monotonic() - started,
+                                    reason=type(exc).__name__)
+                raise
         try:
             reply = json.loads(out)
         except (TypeError, ValueError):
+            reply = None
+        if not hit:
+            turns, tokens = model_ledger.usage_of(reply)
+            good = isinstance(reply, Mapping) and not reply.get("is_error")
+            model_ledger.record("query_understanding", prompt=asked, ok=good,
+                                seconds=time.monotonic() - started, turns=turns,
+                                tokens=tokens)
+            if good:
+                model_ledger.keep("query_understanding", asked, out)
+        if reply is None:
             return None
         text = reply.get("result") if isinstance(reply, Mapping) else None
         match = re.search(r"\{.*\}", text or "", re.S)
@@ -1736,8 +1782,23 @@ def _past_pool(past: list[dict[str, Any]], types: tuple[str, ...] | None
             items = [(entity["resolved"], kinds.get(entity["resolved"]))]
         else:
             items = [(c, kinds.get(c)) for c in entity["choices"]]
-        pool += [p for p in items if isinstance(p[0], str) and (types is None or p[1] in types)]
+        wanted = None if types is None else {_entity_type(kind) for kind in types}
+        pool += [p for p in items if isinstance(p[0], str)
+                 and (wanted is None or _entity_type(p[1]) in wanted)]
     return list(dict.fromkeys(pool))
+
+
+def _entity_type(kind: Any) -> str | None:
+    """One spelling of a record type, the entity index's (``chunking.entities``'s
+    ``ENTITY_TYPES``: ``PurchaseOrder`` and ``purchase_order`` are ``purchase_order``,
+    ``Product`` is ``item``), so a typed follow-up ("the second PO") finds the records an
+    earlier turn resolved whichever spelling carried them (UNDERSTAND-002)."""
+    if not isinstance(kind, str) or not kind:
+        return None
+    from operating.chunking.entities import ENTITY_TYPES
+    if kind in ENTITY_TYPES:
+        return ENTITY_TYPES[kind][0]
+    return _snake(kind)
 
 
 def _other_one(past: list[dict[str, Any]]) -> tuple[list[str], bool]:

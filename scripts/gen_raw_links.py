@@ -77,9 +77,13 @@ KEY_RULES: tuple[dict[str, Any], ...] = (
      "to_binding": "portal.sage_oe_order_header", "to_path": "ordnumber",
      "compare": "identifier", "kind": "so_number", "tier": "verified",
      "why": "the OE order number the AR document carries"},
+    # text_id, not the shipment_number grammar: that kind is the Portal series (SH + 6-9
+    # digits) and rejects every Sage shipment number (two letters + 10 digits), so the
+    # identifier compare linked none (live 2026-11-11: 0 links). Both columns are Sage's
+    # own CHAR(22), padded alike, so the exact text is the key.
     {"relations": ("sage.ar_*",), "columns": ("idshipnbr",), "name": "shipment",
      "to_type": "Shipment", "to_binding": "portal.sage_oe_shipment_header",
-     "to_path": "shinumber", "compare": "identifier", "kind": "shipment_number",
+     "to_path": "shinumber", "compare": "text_id", "kind": None,
      "tier": "verified", "why": "the OE shipment number the AR document carries"},
     {"relations": ("sage.ap_*",), "columns": ("idvend", "vendorid"), "name": "vendor",
      "to_type": "RelSageApVendor", "to_binding": "gen.sage.ap_vendor", "to_path": "vendorid",

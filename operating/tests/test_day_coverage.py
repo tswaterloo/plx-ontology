@@ -248,3 +248,10 @@ class InvoiceSend(World):
         self.assertEqual(work["object"]["object_id"], due)
         self.assertEqual(aw.h_invoice_send(ctx, {**got[due], "customer_to": None}),
                          {"skip": "customer_contact_unknown"})
+        # a total without its currency is never written to the customer as a bare figure
+        bare = self.w.obj("SalesInvoice", {"invoice_number": "IN-5", "invoice_date":
+                                           "2026-10-21", "total_amount": "120.50"})
+        work = aw.h_invoice_send(ap.Ctx(self.store(), date(2026, 10, 21), float("inf"),
+                                        domains), {**got[due], "object_id": bare})
+        self.assertNotIn("120.5", work["draft"]["body"])
+        self.assertEqual(work["gaps"], ["total not stated"])

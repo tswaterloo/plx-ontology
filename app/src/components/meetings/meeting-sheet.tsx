@@ -3,6 +3,7 @@
 import { Check, CircleHelp, ListChecks, Lock, MapPin, MessageCircle, Minus, Video, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { deltaText, figureText } from "@/components/brief-view";
 import { SourceChips } from "@/components/source-chip";
 import { Sheet } from "@/components/ui/sheet";
 import { getMeetingBrief } from "@/lib/api";
@@ -245,10 +246,30 @@ function PrepPack({ meeting }: { meeting: UpcomingMeeting }) {
   );
 }
 
-function PrepSection({ s }: { s: BriefSection }) {
+export function PrepSection({ s }: { s: BriefSection }) {
   return (
     <div>
       <H count={(s.rows ?? []).length + (s.more ?? 0)}>{s.title}</H>
+      {(s.figures ?? []).length > 0 && (
+        <dl className="divide-y divide-border" data-testid="prep-figures">
+          {(s.figures ?? []).map((f, i) => {
+            const delta = deltaText(f);
+            const missing = f.value == null;
+            return (
+              <div key={`${f.label}-${i}`} className="flex items-baseline justify-between gap-3 py-1.5">
+                <dt className="min-w-0 text-[13px]">
+                  {f.label}
+                  {f.note && <span className="block text-[12px] text-muted">{f.note}</span>}
+                </dt>
+                <dd className={missing ? "text-[12px] text-muted" : "num text-[13px] font-medium"}>
+                  {figureText(f)}
+                  {delta && <span className="block text-right text-[12px] font-normal text-muted">{delta}</span>}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      )}
       <ul className="divide-y divide-border">
         {(s.rows ?? []).map((r, i) => {
           const href = r.object ? safeHref(r.object.open_url) ?? objectHref(r.object.type, r.object.object_id) : null;

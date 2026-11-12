@@ -88,6 +88,10 @@ DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_release
               "owner_mailed_attendees", "question_answered")
 MAX_RECORDS = 12          # business records one handler reads around its event
 MAX_LINES = 50            # order lines one availability check reads
+# a handler that failed or ran out of time on an event: the event is deferred and tried
+# again by the next cycles, at most this many tries, then left ``failed`` (shown, never
+# silently processed)
+HANDLER_TRIES = 3
 SUMMARY_CHARS = 160
 WORK_LOG_ENV = "PLX_WORK_LOG_DIR"  # where the Workbench keeps its work log
 REPLY_HOURS = 72          # an answer counts within this many hours (the replay's horizon)
@@ -309,6 +313,20 @@ class Queue:
     def mark(self, event_id: str, state: str, reason: str | None, now: str) -> None:
         self.conn.execute("UPDATE events SET state = ?, reason = ?, processed_at = ? "
                           "WHERE event_id = ?", (state, reason, now, event_id))
+        if state != "deferred":
+            self.conn.execute("DELETE FROM meta WHERE key = ?", ("tries:" + event_id,))
+
+    def tried(self, event_id: str) -> int:
+        """Count one more failed handler try of an event; how many it has had."""
+        key = "tries:" + event_id
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        try:
+            tries = int(row[0]) + 1 if row is not None else 1
+        except (TypeError, ValueError):
+            tries = HANDLER_TRIES   # an unreadable count: no further tries
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                          (key, str(tries)))
+        return tries
 
     def note_sent(self, notes: Iterable[Mapping[str, Any]]) -> int:
         """The owners' own sent messages (``discover``'s ``outbound``), as digests of the
@@ -1161,7 +1179,9 @@ def _record_events(st: Any, otype: str, kind: str, oids: Sequence[str],
                                      "invoice_number", "shipment_number", "receipt_number"))
     rows = _read(st, oids, [p for p in props if p])
     cycle_at = now
-    now = datetime.now(timezone.utc)
+    # whether a meeting has ended is judged at the cycle's time (a replay's day), never
+    # the wall clock
+    now = cycle_at or datetime.now(timezone.utc)
     out = []
     for oid in oids:
         row = rows.get(oid) or {}
@@ -1223,6 +1243,11 @@ def _record_events(st: Any, otype: str, kind: str, oids: Sequence[str],
             event["seen_at"] = _iso(seen)
             event["seen_from"] = "capture" if held is not None else "feed_lag"
         event["event_id"] = _digest(kind, oid, _version_digest(st, oid))
+        if otype == "Meeting" and not event["ended"]:
+            # a meeting read before its end is another event than the one after it: the
+            # earlier one, consumed unmatched, never swallows the follow-up (an ended
+            # meeting keeps the id it always had)
+            event["event_id"] = _digest(kind, oid, _version_digest(st, oid), "not_ended")
         out.append(event)
     return out
 
@@ -1586,16 +1611,74 @@ def _order_facts(ctx: Ctx, order: str) -> dict[str, Any]:
     return facts
 
 
+def _qty_unit(row: Mapping[str, Any] | None, *props: str) -> str | None:
+    """The folded unit the first stated of ``props`` is in (its cell's unit, else the
+    row's ``uom`` text); None when no unit is stated."""
+    from ontology.units import unit_token
+    for prop in props:
+        cell = (row or {}).get(prop)
+        if isinstance(cell, Mapping) and cell.get("value") not in (None, ""):
+            unit = unit_token(cell.get("unit")) if cell.get("unit") else None
+            if unit:
+                return unit
+    return unit_token(_v(row, "uom")) if _v(row, "uom") else None
+
+
+def supply_flows(ctx: Ctx, po_lines: Sequence[str], unit: str | None
+                 ) -> tuple[list[tuple[date, Decimal, str]], str | None]:
+    """The open purchase order supply of these PO lines: (day, quantity due, line), every
+    line read with its order's header (a closed or cancelled order supplies nothing,
+    whatever date the line holds), in ``unit`` only. A line in another unit or none
+    makes the whole supply unknown (reason ``unit_mismatch``/``unit_unknown``): units are
+    never converted."""
+    prow = ctx.read(po_lines, ("ordered_quantity", "received_quantity",
+                               "bc_expected_receipt_date", "uom"))
+    # every line's order header, read once for all lines
+    order_of: dict[str, str] = {}
+    for _t, a, b in ctx.touching(sorted(prow), (PO_LINE_OF,)) if prow else ():
+        order_of.setdefault(a, b)
+    heads = ctx.read(sorted(set(order_of.values())), ("expected_date", "status"))
+    flows = []
+    for pl in sorted(prow):
+        p = prow[pl]
+        due = (_decimal(_v(p, "ordered_quantity")) or Decimal(0)) - \
+            (_decimal(_v(p, "received_quantity")) or Decimal(0))
+        head = heads.get(order_of.get(pl, ""))
+        if head and CLOSED.search(_v(head, "status")):
+            continue                       # a closed or cancelled order supplies nothing
+        if due <= 0:
+            continue
+        at = _instant(_v(p, "bc_expected_receipt_date")) or \
+            _instant(_v(head, "expected_date"))
+        if at is None or at.date() < ctx.as_of - timedelta(days=30):
+            continue
+        line_unit = _qty_unit(p, "ordered_quantity", "received_quantity")
+        if line_unit is None or unit is None:
+            return [], "unit_unknown"
+        if line_unit != unit:
+            return [], "unit_mismatch"
+        flows.append((max(at.date(), ctx.as_of), due, pl))
+        ctx.cite(p, "bc_expected_receipt_date", "ordered_quantity")
+    return sorted(flows), None
+
+
 def availability(ctx: Ctx, order: str) -> dict[str, Any]:
     """Available-to-promise date for an order's open lines: on hand first, then open
-    purchase order lines by their expected date (Decimal, per the line's own unit; another
-    order's demand is not netted: stated in ``basis``). Unknown when any line's item,
-    quantity or supply date is unstated."""
-    lines = ctx.linked(order, (SO_LINE_OF,))[:MAX_LINES]
+    purchase order lines by their expected date, each consumed once across the order's
+    lines (two lines of one item draw on one running allocation: 6 + 6 under 10 on hand is
+    not both today). Quantities compare only in one stated unit (the order line's, the
+    stock's, each PO line's; never converted). Another order's demand is not netted (stated
+    in ``basis``). Unknown (``date`` None) when any line's item, quantity, unit or supply
+    date is unstated, or the order has more lines than one check reads
+    (``lines_not_read``)."""
+    found = ctx.linked(order, (SO_LINE_OF,))
+    lines = found[:MAX_LINES]
     rows = ctx.read(lines, ("ordered_quantity", "shipped_quantity", "outstanding_quantity",
                             "uom", "description"))
     dates: list[date] = []
     out_lines, unknown = [], []
+    reasons: dict[str, int] = {}
+    demand: dict[str, list[tuple[str, Decimal, str | None, Mapping[str, Any]]]] = {}
     for line in sorted(rows):
         r = rows[line]
         need = _decimal(_v(r, "outstanding_quantity"))
@@ -1605,53 +1688,76 @@ def availability(ctx: Ctx, order: str) -> dict[str, Any]:
             need = None if ordered is None else ordered - shipped
         if need is None:
             unknown.append(line)
+            reasons["quantity_unknown"] = reasons.get("quantity_unknown", 0) + 1
             continue
         if need <= 0:
             continue
         items = ctx.linked(line, (SO_LINE_ITEM,))
         if len(items) != 1:
             unknown.append(line)
+            reasons["item_unknown"] = reasons.get("item_unknown", 0) + 1
             continue
-        item = items[0]
+        demand.setdefault(items[0], []).append(
+            (line, need, _qty_unit(r, "outstanding_quantity", "ordered_quantity",
+                                   "shipped_quantity"), r))
+    for item in sorted(demand):
         irow = ctx.read([item], ("quantity_on_hand", "code", "name")).get(item) or {}
         on_hand = _decimal(_v(irow, "quantity_on_hand")) or Decimal(0)
+        stock_unit = _qty_unit(irow, "quantity_on_hand") if _v(irow, "quantity_on_hand") \
+            else None
         ctx.cite(irow, "quantity_on_hand")
-        when: date | None = ctx.as_of if on_hand >= need else None
-        supply = on_hand
-        if when is None:
-            po_lines = ctx.linked(item, (PO_LINE_ITEM,))[:MAX_LINES]
-            prow = ctx.read(po_lines, ("ordered_quantity", "received_quantity",
-                                       "bc_expected_receipt_date"))
-            flows = []
-            for pl, p in prow.items():
-                due = (_decimal(_v(p, "ordered_quantity")) or Decimal(0)) - \
-                    (_decimal(_v(p, "received_quantity")) or Decimal(0))
-                at = _instant(_v(p, "bc_expected_receipt_date"))
-                if at is None:
-                    po = ctx.linked(pl, (PO_LINE_OF,))
-                    head = ctx.read(po[:1], ("expected_date", "status")).get(po[0]) if po else {}
-                    if head and CLOSED.search(_v(head, "status")):
-                        continue
-                    at = _instant(_v(head, "expected_date"))
-                if due > 0 and at is not None and at.date() >= ctx.as_of - timedelta(days=30):
-                    flows.append((max(at.date(), ctx.as_of), due, pl))
-            for at, due, pl in sorted(flows):
-                supply += due
-                ctx.cite(prow[pl], "bc_expected_receipt_date", "ordered_quantity")
-                if supply >= need:
-                    when = at
-                    break
-        out_lines.append({"line": line, "item": _v(irow, "code") or _v(irow, "name"),
-                          "need": str(need), "uom": _v(r, "uom"), "on_hand": str(on_hand),
-                          "available": when.isoformat() if when else None})
-        if when is None:
-            unknown.append(line)
-        else:
-            dates.append(when)
-    atp = max(dates).isoformat() if dates and not unknown else None
-    return {"date": atp, "lines": out_lines, "unknown_lines": len(unknown),
-            "basis": "on hand, then open purchase order lines by expected date; other "
-                     "orders' demand is not netted"}
+        units = {u for _l, _n, u, _r in demand[item]}
+        unit = next(iter(units)) if len(units) == 1 else None
+        why = None
+        if unit is None:
+            why = "unit_unknown" if None in units or not units else "unit_mismatch"
+        elif on_hand and stock_unit != unit:
+            why = "unit_unknown" if stock_unit is None else "unit_mismatch"
+        # the item's supply, one running ledger: on hand today, then each open PO line by
+        # its date; each line of the order draws on what the lines before it left
+        ledger: list[tuple[date, Decimal]] = [(ctx.as_of, on_hand)] if on_hand > 0 else []
+        drawn = Decimal(0)
+        flows_read = False
+        for line, need, _u, r in demand[item]:
+            when: date | None = None
+            if why is None:
+                drawn += need
+                covered = sum((q for _d, q in ledger), Decimal(0))
+                if covered < drawn and not flows_read:
+                    flows_read = True
+                    po_lines = ctx.linked(item, (PO_LINE_ITEM,))[:MAX_LINES]
+                    flows, why = supply_flows(ctx, po_lines, unit)
+                    ledger += [(at, due) for at, due, _pl in flows]
+                if why is None:
+                    running = Decimal(0)
+                    for at, qty in ledger:
+                        running += qty
+                        if running >= drawn:
+                            when = at
+                            break
+            out_lines.append({"line": line, "item": _v(irow, "code") or _v(irow, "name"),
+                              "need": str(need), "uom": _v(r, "uom"), "on_hand": str(on_hand),
+                              "available": when.isoformat() if when else None,
+                              **({"unknown": why} if why else {})})
+            if when is None:
+                unknown.append(line)
+                key = why or "supply_short"
+                reasons[key] = reasons.get(key, 0) + 1
+            else:
+                dates.append(when)
+    if len(found) > MAX_LINES:
+        reasons["lines_not_read"] = len(found) - MAX_LINES
+    atp = max(dates).isoformat() if dates and not unknown and len(found) <= MAX_LINES \
+        else None
+    out = {"date": atp, "lines": out_lines, "unknown_lines": len(unknown),
+           "basis": "on hand, then open purchase order lines by expected date, each "
+                    "consumed once across this order's lines; other orders' demand is not "
+                    "netted"}
+    if reasons:
+        out["unknown_reasons"] = reasons
+    if len(found) > MAX_LINES:
+        out["lines_read"], out["lines_total"] = MAX_LINES, len(found)
+    return out
 
 
 def _pack_link(oid: str) -> dict[str, str]:
@@ -1775,7 +1881,10 @@ def h_answer_request(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     else:
         out["summary"] = f"Asks about {len(orders)} order(s): " + " ".join(lines)[:SUMMARY_CHARS]
         if wants_docs:
-            lines.append("The requested documents are attached.")
+            # the send carries no attachments (autopilot_write builds the message from the
+            # body alone): the reply never says they are attached. The reviewer attaches
+            # the pack (``links``) before sending; the gap says so (AUTOMATION-010)
+            out["gaps"].append("docs_not_attached")
     out["draft"] = _reply(event, lines)
     return out
 
@@ -2226,6 +2335,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
         return "skipped", "pay_or_hr"
     deferred = False
     reasons = []
+    failed: list[str] = []     # handler failures and timeouts: the event is tried again
     for ap in registry["autopilots"]:
         if ap["on"] != event["event_type"] or not matches(ap.get("when") or {}, event):
             continue
@@ -2303,6 +2413,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
             if prepared.get("error"):
                 summary["skipped"][f"{ap['id']}:{prepared['error']}"] += 1
                 reasons.append(prepared["error"])
+                failed.append(prepared["error"])
                 break
             due = now + timedelta(minutes=int(ap["due_minutes"]))
             landed = _instant(event.get("seen_at") or event.get("landed_at") or event.get("at"))
@@ -2319,6 +2430,16 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                     "created_at": _iso(now), "prepare_ms": prepared["ms"],
                     "latency_s": round((now - landed).total_seconds(), 1) if landed else None})
             summary["prepared"][ap["id"]] += 1
+    if failed:
+        # what was prepared stands (an item is made once per event and owner); the event
+        # is tried again, up to HANDLER_TRIES, then left failed
+        why = ",".join(sorted(set(failed)))
+        with queue.conn:
+            tries = queue.tried(event["event_id"])
+        if tries >= HANDLER_TRIES:
+            summary["skipped"]["handler_failed_for_good"] += 1
+            return "failed", why
+        return "deferred", why
     if deferred:
         return "deferred", "rate_limited"
     return "processed", ",".join(sorted(set(reasons))) or None

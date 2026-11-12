@@ -19,6 +19,8 @@ WorkingDirectory=@PLX_CURRENT@
 EnvironmentFile=/etc/plx/workbench-api.env
 # the measured system-of-record precedence (plx-precedence-measure.service writes it)
 Environment=PLX_PRECEDENCE_TABLE=/data/plx-state/precedence/measured.json
+# every model call counted (operating/model_ledger.py: no prompt or answer text)
+Environment=PLX_MODEL_LEDGER=/var/lib/plx-workbench/model-calls.jsonl
 ExecStart=/usr/bin/env python3 -m operator_api serve --bind 127.0.0.1 --port 8780 $PLX_API_ARGS
 Restart=on-failure
 RestartSec=3

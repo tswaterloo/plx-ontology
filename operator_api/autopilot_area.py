@@ -46,6 +46,32 @@ WRITE_SYSTEM = {"bc_write": "bc", "sage_write": "sage", "portal_write": "portal"
                 "filemaker_write": "filemaker", "send_mail": "mail", "send_teams": "teams",
                 "mc_approval": "mc", "mc_task": "mc", "planner_write": "planner",
                 "calendar_write": "calendar", "sharepoint_write": "sharepoint"}
+
+
+# statuses of an action the write path never performed (nothing was sent or written)
+NOT_RUN = frozenset({"dry_run", "needs_confirm", "killed", "refused", "excluded",
+                     "not_routine", "unavailable", "rate_limited", "duplicate",
+                     "not_performed"})
+
+
+def item_outcome(statuses: list[str]) -> str | None:
+    """One word for an accepted item's actions (in order): ``unknown`` when any did not
+    say how it ended (pending, unknown: check before retrying), ``done`` when all were
+    done, ``partly_done`` when some were done and another was not (it failed or never ran:
+    unavailable, refused...), ``failed`` when one failed and none was done; else the first
+    one's (dry_run, killed, refused...). The decision's ``steps`` say which was which."""
+    if not statuses:
+        return None
+    # a status the write path does not name is never read as done or as not run
+    if any(s not in NOT_RUN and s not in ("done", "failed") for s in statuses):
+        return "unknown"
+    if all(s == "done" for s in statuses):
+        return "done"
+    if "done" in statuses:
+        return "partly_done"
+    return "failed" if "failed" in statuses else statuses[0]
+
+
 AUDIT_EVENTS = ("decision", "attempt", "outcome", "reconciled", "gate_passed", "gate_lost",
                 "owner_notified", "switch")
 NOT_OWNER = "Only the owner changes the autopilot's switches."
@@ -245,7 +271,13 @@ class AutopilotAreaMixin:
         role_members = self._apa_roles()
         dev = _gate_doc(Path(env.get(ap.GATE_ENV) or (queue_path.parent / ap.GATE_FILE))
                         if queue_path else Path("/nonexistent"), ap.GATE_SCHEMA)
-        fresh = _gate_doc(state / aw.WRITE_GATE_FILE, aw.WRITE_GATE_SCHEMA) if state else {}
+        # held-out scores: what the write gate counts (``aw.gate_counts``: fresh days and
+        # clean past windows, re-checked against the rules at this read)
+        try:
+            rules = aw.load_rules()
+        except aw.RulesInvalid:
+            rules = None
+        fresh = aw.gate_counts(state, rules) if state and rules else {}
         member_of: dict[str, set[str]] = {}
         for source in (role_members, {r: v.get("members") or () for r, v in dev.items()},
                        {r: v.get("members") or () for r, v in fresh.items()}):
@@ -276,6 +308,12 @@ class AutopilotAreaMixin:
                         decision=dec["decision"], at=dec["at"], by_you=dec.get("by") in me,
                         until=dec.get("until"), text=dec.get("text"), note=dec.get("note"),
                         outcome=dec.get("outcome"), reasons=list(dec.get("reasons") or ()),
+                        steps=[m.AutopilotActionResult(
+                            kind=str(step.get("kind") or ""),
+                            system=str(step.get("system") or "other"),
+                            status=str(step.get("status") or "unknown"),
+                            reasons=[str(x) for x in step.get("reasons") or ()][:2])
+                            for step in dec.get("steps") or () if isinstance(step, dict)],
                         sent=dec.get("sent") is True)
             created = _instant(item["created_at"])
             due = _instant(item["due_at"])
@@ -314,11 +352,8 @@ class AutopilotAreaMixin:
         live = aw.live_flags(env, state) if state else set()
         mine_roles = set().union(*(member_of.get(o, set()) for o in me)) if me else set()
         workflows: list[m.AutopilotWorkflowRow] = []
-        try:
-            rules = aw.load_rules()
-            gate = aw.WriteGate(state / aw.WRITE_GATE_FILE, rules) if state else None
-        except aw.RulesInvalid:
-            rules = gate = None
+        gate = aw.WriteGate(state / aw.WRITE_GATE_FILE, rules) if state and rules else None
+        if rules is None:
             notes.append("The write rules are unreadable: nothing is performed.")
         passing = set(gate.passing()) if gate else set()
         master = env.get(aw.MASTER_ENV) == "1"
@@ -462,8 +497,15 @@ class AutopilotAreaMixin:
                 if body.bulk:
                     raise UserFacing("action_refused", BULK_LIVE, 409)
                 offer = self._apa_offer(state, item_id, row["by"], text, now)
-            row["outcome"] = results[0]["status"] if results else None
             row["outcomes"] = [r["status"] for r in results]
+            row["outcome"] = item_outcome(row["outcomes"])
+            # each action in order, so the item says which step went through and which
+            # did not (WEB-036): kind, its system, how it ended and why (two reasons)
+            row["steps"] = [{"kind": str(r.get("kind") or ""),
+                             "system": WRITE_SYSTEM.get(str(r.get("kind") or ""), "other"),
+                             "status": str(r.get("status") or ""),
+                             "reasons": [str(x) for x in r.get("reasons") or ()][:2]}
+                            for r in results]
             # only the email's own result says it went out (an entry before it can be done
             # while the confirmation failed, was refused or ran dry)
             row["sent"] = any(r.get("kind") == "send_mail" and r.get("status") == "done"

@@ -20,6 +20,12 @@ What counts as one, and nothing else:
 * **the Portal's environment prefix**: a number issued by a prefix-setting Portal database
   (``UAT-SO100004``, ``UAT-AO-...``; ``ontology/schema/identifiers.json``,
   ``environment_prefixes``) is a staging record, not the business's;
+* **a go-live first**: in a BC number series, the first number the series issued and the
+  series' documents dated that same day, when that day is the BC go-live day the
+  deployment states (``PLX_BC_GO_LIVE_DATE``, an ISO date; the proactive engine's
+  ``series_firsts``). A series begun on any other day is ordinary business, lines or not:
+  numbers alone never prove a test. Without a stated (or with an unreadable) day nothing is
+  marked go-live (nothing is hidden on a guess);
 * **the deployment's own list**: record numbers an owner names as tests in
   ``test-records.json`` in the app's data directory (``--app-data-dir``), or the file
   ``PLX_APP_TEST_RECORDS`` names: ``{"records": ["<number>", ...], "note": "..."}``. It
@@ -37,6 +43,7 @@ records they left out ("2 test records hidden").
 
 from __future__ import annotations
 
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -55,6 +62,20 @@ NAME_RULE = re.compile(r"\(\s*DO\s+NOT\s+USE\s*\)", re.I)
 TEST_NAME = re.compile(r"(?:^|\s)TEST\s*$")
 ENVIRONMENT_PREFIX = re.compile(r"^\s*UAT-", re.I)
 LIST_FILE = "test-records.json"
+GO_LIVE_ENV = "PLX_BC_GO_LIVE_DATE"
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def go_live_day(environ: Any = os.environ) -> Optional[date]:
+    """The BC go-live day the deployment states (``PLX_BC_GO_LIVE_DATE``, ``YYYY-MM-DD``);
+    None without one or with anything else (nothing is marked go-live on a guess)."""
+    said = str((environ.get(GO_LIVE_ENV) if environ is not None else None) or "").strip()
+    if not _ISO_DAY.match(said):
+        return None
+    try:
+        return date.fromisoformat(said)
+    except ValueError:
+        return None
 
 
 def listed(data_dir: Optional[Path], environ: Any = os.environ) -> frozenset[str]:

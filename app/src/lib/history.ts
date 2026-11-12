@@ -41,18 +41,27 @@ const LINK_SYSTEM: Record<LinkedItem["kind"], SourceSystem> = { email: "Email", 
 
 export function buildHistory(events: TimelineEvent[], linked: LinkedItem[]): HistoryRow[] {
   const rows: HistoryRow[] = [];
-  const seen = new Set<string>();
-  const add = (r: Omit<HistoryRow, "count">) => {
-    // an event and the linked item that is the same source on the same day are one row
-    const key = r.source ? `${r.source.handle}|${(r.at ?? "").slice(0, 10)}` : null;
-    if (key) {
-      if (seen.has(key)) return;
-      seen.add(key);
+  const day = (at: string | null) => (at ?? "").slice(0, 10);
+  // timeline events are each their own row, however many share a source and day (an order
+  // released at 10:00 and received at 11:00 are two things that happened)
+  const eventDays = new Set<string>();
+  for (const e of events) {
+    if (e.source) eventDays.add(`${e.source.handle}|${day(e.at ?? null)}`);
+    rows.push({ at: e.at ?? null, system: e.system, kind: kindOf(e.system, e.title), title: e.title, summary: e.summary ?? null, source: e.source ?? null, count: 1 });
+  }
+  // a linked item that is the same source on the same day as a timeline event is that event;
+  // two linked items collapse only when they are the same source at the same moment
+  const linkedSeen = new Set<string>();
+  for (const l of linked) {
+    const at = l.at ?? null;
+    if (l.source) {
+      if (eventDays.has(`${l.source.handle}|${day(at)}`)) continue;
+      const k = `${l.source.handle}|${at ?? ""}`;
+      if (linkedSeen.has(k)) continue;
+      linkedSeen.add(k);
     }
-    rows.push({ ...r, count: 1 });
-  };
-  for (const e of events) add({ at: e.at ?? null, system: e.system, kind: kindOf(e.system, e.title), title: e.title, summary: e.summary ?? null, source: e.source ?? null });
-  for (const l of linked) add({ at: l.at ?? null, system: l.source?.system ?? LINK_SYSTEM[l.kind], kind: LINK_KIND[l.kind] ?? kindOf(l.source?.system ?? LINK_SYSTEM[l.kind], l.label), title: l.label, summary: null, source: l.source ?? null });
+    rows.push({ at, system: l.source?.system ?? LINK_SYSTEM[l.kind], kind: LINK_KIND[l.kind] ?? kindOf(l.source?.system ?? LINK_SYSTEM[l.kind], l.label), title: l.label, summary: null, source: l.source ?? null, count: 1 });
+  }
   // dated newest first, then the undated; stable within a day
   rows.sort((a, b) => (a.at && b.at ? b.at.localeCompare(a.at) : a.at ? -1 : b.at ? 1 : 0));
   const out: HistoryRow[] = [];

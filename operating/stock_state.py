@@ -14,7 +14,9 @@ product code; it restates these rules independently and must agree with them.
   status (``source_defaults.bulk_values``; a state too small there is read over every
   system's batches in it). The QC value every unmade batch carries before release says
   nothing about any one of them; a made batch (realized) still on hold is one Quality
-  has not released. An unmade batch in a state too small to profile is not judged.
+  has not released, a hold whatever share of made batches carries it: frequency is never
+  proof that a made batch was released (a quality incident may hold many at once,
+  BIZ-006). An unmade batch in a state too small to profile is not judged.
 * **A batch and its copy are one batch**: ``Batch.same_record_as`` links a source batch
   (from) to the migrated record it was copied into (to); the origin decides and the batch
   is counted once, on it.
@@ -89,8 +91,8 @@ def batch_hold(status: Any, qc: Any, profile: Mapping[str, Counter],
                wider: Mapping[str, Counter] | None = None) -> str:
     """``HOLD`` when the batch is really on quality hold, else why not: ``NOT_HELD`` (no
     hold word), ``CLOSED`` (cancelled), ``UNMAPPED`` (a status neither list knows),
-    ``STATE_DEFAULT`` (the QC value a bulk share of the batches in that state carry,
-    ``source_defaults.bulk_values``) or ``UNPROFILED``. A state is profiled over its own
+    ``STATE_DEFAULT`` (the QC value a bulk share of the batches in that unmade state carry,
+    ``source_defaults.bulk_values``; never for a made batch) or ``UNPROFILED``. A state is profiled over its own
     system's batches (``profile``), or over ``wider`` (every system's, ``pooled``) when
     its own holds fewer than ``source_defaults.MINIMUM``; a state too small in both is
     not profiled: a made batch still on hold is a hold all the same, an unmade one is
@@ -102,10 +104,12 @@ def batch_hold(status: Any, qc: Any, profile: Mapping[str, Counter],
         return CLOSED
     if said not in ACTIVE_BATCH | MADE_BATCH:
         return UNMAPPED
+    if said in MADE_BATCH:
+        return HOLD     # a made batch on hold is a hold, never a default (BIZ-006)
     counts = next((c for c in ((profile or {}).get(said), (wider or {}).get(said))
                    if c and sum(c.values()) >= source_defaults.MINIMUM), None)
     if counts is None:
-        return HOLD if said in MADE_BATCH else UNPROFILED
+        return UNPROFILED
     if qc_word in source_defaults.bulk_values(counts.elements(),
                                               share=source_defaults.STATE_SHARE):
         return STATE_DEFAULT

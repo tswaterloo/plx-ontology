@@ -1085,6 +1085,54 @@ class BareIdentifierTests(unittest.TestCase):
         self.assertEqual(len(capped(cut)), 1)
 
 
+class OriginalsScanCapTests(unittest.TestCase):
+    """SEMANTIC-007: an originals scan stopped at its cap leaves the listing incomplete in
+    its structured completeness, not only in a gap, even on its last page; a count that
+    merely reaches the cap is no cut (one past it is asked for)."""
+
+    def documents(self, held, *, captured_cut=False, limit=50, cursor=None):
+        class Many(StubReader):
+            def originals(self, actor, limit):
+                return [{"citation": f"original://orig-{n:03d}",
+                         "filename": f"AO packet {n}.pdf", "sha256": f"{n:064x}"}
+                        for n in range(held)][:limit]
+
+            def captured_originals(self, actor, words, limit):
+                return {"found": [], "cut": captured_cut, "withheld": None,
+                        "refused": False}
+        arguments = {"query": "purchase order line", "sources": ["original"], "limit": limit}
+        if cursor:
+            arguments["cursor"] = cursor
+        return ok(self, "plx.documents", tools(Many()).call("plx.documents", arguments, FULL))
+
+    def test_completeness_follows_the_originals_scan(self):
+        cap = ev.ORIGINAL_SCAN
+        for held in (cap - 1, cap):
+            with self.subTest(held=held):
+                out = self.documents(held)
+                self.assertEqual(len(out["documents"]), held)
+                self.assertTrue(out["completeness"]["complete"])
+                self.assertNotIn("scan_cap", [g["reason"] for g in out["gaps"]])
+        cut = self.documents(cap + 1)
+        self.assertEqual(len(cut["documents"]), cap)
+        self.assertIsNone(cut["completeness"].get("next_cursor"))
+        self.assertIn("scan_cap", [g["reason"] for g in cut["gaps"]])
+        self.assertEqual((cut["completeness"]["complete"], cut["completeness"]["truncated"],
+                          cut["completeness"]["reason"]), (False, True, "scan_cap"))
+        # a cut scan read in pages: its last page is still not complete
+        first = self.documents(cap + 1, limit=cap - 10)
+        cursor = first["completeness"]["next_cursor"]
+        self.assertIsNotNone(cursor)
+        last = self.documents(cap + 1, limit=cap - 10, cursor=cursor)
+        self.assertEqual(len(last["documents"]), 10)
+        self.assertEqual((last["completeness"]["complete"], last["completeness"]["reason"]),
+                         (False, "scan_cap"))
+        # captured originals cut short: the same
+        captured = self.documents(3, captured_cut=True)
+        self.assertFalse(captured["completeness"]["complete"])
+        self.assertEqual(captured["completeness"]["reason"], "scan_cap")
+
+
 # --------------------------------------------------------------------------- read
 
 class ReadTests(unittest.TestCase):

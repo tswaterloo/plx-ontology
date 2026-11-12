@@ -72,6 +72,7 @@ import json
 import sqlite3
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from . import order_value
 from ontology.units import unit_token
 
 STOCK_OUT = "stock_out_risk"
@@ -810,6 +811,19 @@ STANDING_PO_ORDERS = 6          # a PO number on more orders than this is a stan
 UNBILLED_ABSENCE_TYPES = (INVOICE, "SalesInvoiceLine")
 
 
+def _union_markings(texts: Iterable[str | None]) -> str:
+    """The canonical union of these markings texts; anything unreadable never shows."""
+    from ontology.store import markings_text
+
+    held: set[str] = set()
+    try:
+        for text in texts:
+            held.update(json.loads(text or "[]"))
+        return markings_text(held)
+    except Exception:  # noqa: BLE001 - unreadable markings: no reader holds them
+        return '["unreadable"]'
+
+
 def _clusters_of(st: Any, types: Sequence[str], settled: Sequence[str],
                  members: Iterable[str]) -> tuple[dict[str, str], dict[str, set[str]]]:
     """member -> its settled cluster's least id; and member -> the records it is tied to
@@ -863,10 +877,8 @@ def shipped_not_invoiced(st: Any, as_of: date, *, gap: Callable, cites: Callable
     for link in ship_links:
         by_order[order_root.get(link["to_object"], link["to_object"])].append(link)
     order_values = st.values([SO], (SO_NUMBER, ORDER_TOTAL, "status"), objects=orders)
-    money = [r for e in order_values.values() for r in e["props"].get(ORDER_TOTAL, ())]
-    codes = _currencies(st, money)
     requires = absence(UNBILLED_ABSENCE_TYPES)
-    gaps = []
+    gaps, pending = [], []
     for top, group in sorted(members.items()):
         _tick(st)
         counts["shipped_orders"] += 1
@@ -930,20 +942,28 @@ def shipped_not_invoiced(st: Any, as_of: date, *, gap: Callable, cites: Callable
             counts["older"] += 1
             continue
         counts["unbilled"] += 1
-        props = (order_values.get(record) or {}).get("props") or {}
+        pending.append((record, group, day, age, dated, shipment, ship_row, link))
+    # the unbilled orders' values in one read (``order_value.for_store``), not one per order
+    values = order_value.for_store(st, [p[0] for p in pending]) if pending else {}
+    for record, group, day, age, dated, shipment, ship_row, link in pending:
         number_rows = [r for m in group
                        for r in ((order_values.get(m) or {}).get("props") or {}).get(SO_NUMBER, ())]
         numbers = sorted({str(r["value"]).strip() for r in number_rows if r.get("value")})
-        total = _one(props.get(ORDER_TOTAL))
-        amount = _dec(total["value"]) if total else None
-        currency = _currency(codes, total) if total else None
+        # the order's value (``order_value``): its own total, else what its lines derive; a
+        # header of 0 with nothing pricing it states no amount (never "0")
+        got = values.get(record)
         event: dict[str, Any] = {"days": age, "shipped": day.isoformat(),
                                  "shipments": len(dated)}
-        if amount is not None and currency is not None:
+        if got is not None and got.amount is not None and got.amount > 0:
+            first = got.rows[0]
             event["amount"] = {
-                "value": _text(amount), "currency": currency, "basis": ORDER_TOTAL,
-                "handle": total["l1_handle"], "currency_handle": total["l1_handle"],
-                "markings": (cites([total], FINANCE) or [(None, None, '["unreadable"]')])[0][2]}
+                "value": _text(got.amount), "currency": got.currency,
+                "basis": ORDER_TOTAL if not got.derived else
+                ("order_value_invoices" if got.basis == order_value.INVOICES
+                 else "order_value_lines"),
+                "handle": first["l1_handle"], "currency_handle": first["l1_handle"],
+                "markings": _union_markings([*(r.get("markings") for r in got.rows),
+                                             FINANCE])}
         made = gap(
             SHIPPED_UNBILLED, SHIPPED_UNBILLED, record, SO, "unbilled",
             summary=(f"Customer order {', '.join(numbers[:3])} " if numbers else

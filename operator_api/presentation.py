@@ -385,29 +385,21 @@ KEEP_KEYS = frozenset({"handle", "open_url", "object_id", "answer_id", "conversa
                        "plan", "contact_source", "margin_pct", "sources"})
 
 
-# A binary float's noise in a figure (``116.25000000000001``, ``18.599999999999998``): 7 or
-# more decimals that sit within a billionth of a figure of at most 4.
+# A figure that may carry a binary float's noise (``116.25000000000001``): 7 or more
+# decimals; ``ontology.measure.float_residue`` decides whether it is noise.
 FLOAT_NOISE = re.compile(r"(?<![\w.])(-?\d+\.\d{7,})(?![\w.])")
 
 
 def without_float_noise(text: str) -> str:
-    """Each figure carrying a float's noise written as the figure it is (``116.25``),
-    the fewest decimals (at most 4) within a billionth of it; a figure that really has
-    more places stays as written. The answer gate backs the rounded figure
-    (``claim_checks.rounded_from``)."""
-    from decimal import Decimal, InvalidOperation
+    """Each figure carrying a float's noise written as the figure it is (``116.25``):
+    only text that is exactly a double's shortest repr within a few units in the last
+    place of a shorter figure (``ontology.measure.float_residue``); a figure that really
+    has more places (``100000000.1234567``, a 29-digit decimal) stays as written. The
+    answer gate backs the rounded figure (``claim_checks.rounded_from``)."""
+    from ontology.measure import float_residue
 
     def tidy(found: re.Match) -> str:
-        try:
-            value = Decimal(found.group(1))
-        except InvalidOperation:
-            return found.group(0)
-        slack = Decimal("1e-9") * max(Decimal(1), abs(value))
-        for places in range(0, 5):
-            near = value.quantize(Decimal(1).scaleb(-places))
-            if abs(near - value) <= slack:
-                return format(near, "f")
-        return found.group(0)
+        return float_residue(found.group(1)) or found.group(0)
     return FLOAT_NOISE.sub(tidy, text)
 
 

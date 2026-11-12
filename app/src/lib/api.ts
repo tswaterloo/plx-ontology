@@ -47,10 +47,8 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   AutopilotSchedules,
   AutopilotWorkflowDetail,
   AutopilotWorkflowDraft,
-  Workload,
-  OwnerWorkload,
-  OwnerWorkloadBucket,
-  OwnerWorkloadItems,
+  TeamView,
+  TeamPersonDetail,
   RdBoard,
   UpcomingMeetings,
   WatcherItemState,
@@ -162,7 +160,12 @@ export async function logout(): Promise<void> {
   const was = viewingAs();
   setViewingAs(null);
   if (was) await markViewAs("stop", was.key);
-  await call("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+  // Throws when the server could not end the session (the cookie may still be valid); a
+  // session that is already gone (401) is signed out all the same.
+  await call("/api/auth/logout", { method: "POST" }).catch((e) => {
+    if (e instanceof ApiError && e.status === 401) return;
+    throw e;
+  });
 }
 
 /** One operator freshness target from the public health route (operating/ops_health.py). */
@@ -464,19 +467,14 @@ export async function undoAutopilotAction(key: string): Promise<AutopilotAudit> 
   return (await (await call(`/api/autopilot/audit/${encodeURIComponent(key)}/undo`, { method: "POST" })).json()) as AutopilotAudit;
 }
 
-// Counts per team; per person only you and the teams the owner granted you.
-export function getWorkload(signal?: AbortSignal): Promise<Workload> {
-  return getJson<Workload>("/api/workload", signal);
+// The Team view: everyone for the owner and the named Team readers, else only your own row.
+export function getTeam(signal?: AbortSignal): Promise<TeamView> {
+  return getJson<TeamView>("/api/team", signal);
 }
 
-// Per-person counts: the owner only (any other reader gets a 403).
-export function getOwnerWorkload(signal?: AbortSignal): Promise<OwnerWorkload> {
-  return getJson<OwnerWorkload>("/api/owner/workload", signal);
-}
-
-// One person's items behind one count: the owner only (any other reader gets a 403).
-export function getOwnerWorkloadItems(person: string, bucket: OwnerWorkloadBucket, signal?: AbortSignal): Promise<OwnerWorkloadItems> {
-  return getJson<OwnerWorkloadItems>(`/api/owner/workload/${encodeURIComponent(person)}/${bucket}`, signal);
+// One person's drill-down (404 for a person you may not open).
+export function getTeamPerson(key: string, signal?: AbortSignal): Promise<TeamPersonDetail> {
+  return getJson<TeamPersonDetail>(`/api/team/${encodeURIComponent(key)}`, signal);
 }
 
 // R&D and sample projects per customer, from the threads and records you may open.

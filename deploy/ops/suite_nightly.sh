@@ -23,6 +23,12 @@ PATH="$PLX_VENV/bin:$PATH" nice -n 5 python3 "$wt/tools/main_ci.py" --repo "$wt"
   --workers "${PLX_SUITE_WORKERS:-$(nproc)}" --slots --min-free-gb "${PLX_SUITE_MIN_FREE_GB:-10}" \
   --typecheck --timings "$out/timings.json" --report "$out/suite-$stamp.json" > "$out/suite-$stamp.txt" 2>&1
 code=$?
+# the tool suites with every fixture store read from Postgres (CT-T-03): appended to the
+# report, red when a module fails more than docs/pg-cutover.md allows
+PATH="$PLX_VENV/bin:$PATH" nice -n 5 python3 "$wt/tools/pg_store_nightly.py" --repo "$wt" \
+  --report "$out/pg-store-$stamp.txt" >> "$out/suite-$stamp.txt" 2>&1
+pgcode=$?
+[ "$code" -ne 0 ] || code=$pgcode
 set -e
 ln -sfn "suite-$stamp.txt" "$out/latest.txt"; ln -sfn "suite-$stamp.json" "$out/latest.json"
 echo "$(plx_now) suite on $(git -C "$wt" rev-parse --short HEAD): $(grep -E '^[0-9]+ modules:' "$out/suite-$stamp.txt" | tail -1) (exit $code)"

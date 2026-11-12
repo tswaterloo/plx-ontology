@@ -36,6 +36,22 @@ export function applyEvent(turn: Turn, ev: AskEvent): Turn {
   }
 }
 
+/** The longest question the server takes (AskRequest.question). Longer is refused in the box and here, never cut. */
+export const MAX_QUESTION = 1000;
+
+/** What the Ask URL asks for, as one key: the same question with another scope, source, meeting, item or page is another request. */
+export function askUrlKey(p: { q: string | null; object: string | null; source?: string; meeting: string | null; item: string | null; page: string | null }): string {
+  return [p.q, p.object, p.source, p.meeting, p.item, p.page].join("\u0000");
+}
+
+/** The request a turn was sent with, kept whole so Retry sends exactly it again. */
+export interface TurnRequest {
+  objectId?: string;
+  source?: string;
+  files: Attachment[];
+  extra: Pick<AskRequest, "context" | "mode" | "instruction">;
+}
+
 /** API limits (operator_api AskRequest): at most 12 history turns of 4,000 characters. */
 export const MAX_HISTORY = 12;
 const MAX_TEXT = 4000;
@@ -103,14 +119,20 @@ export function useThread() {
       ctrl.current = c;
       const id = newId();
       const prior = turnsRef.current;
-      const turn: Turn = { id, question, phase: "thinking", streamed: "" };
+      const request: TurnRequest = { ...(objectId ? { objectId } : {}), ...(source ? { source } : {}), files, extra };
+      const turn: Turn = { id, question, phase: "thinking", streamed: "", request };
       turnsRef.current = [...prior, turn];
       setTurns((ts) => [...ts, turn]);
       try {
+        if (question.length > MAX_QUESTION) {
+          // never cut an instruction short: the part past the limit may hold its qualifiers
+          update(id, (t) => ({ ...t, phase: "error", error: `That question is ${question.length} characters; the limit is ${MAX_QUESTION}. Shorten it and ask again.` }));
+          return;
+        }
         const conversation_id = conversationOf(prior);
         for await (const ev of ask(
           {
-            question: question.slice(0, 1000),
+            question,
             history: historyOf(prior),
             ...(conversation_id ? { conversation_id } : {}),
             ...(objectId ? { object_id: objectId } : {}),
@@ -131,6 +153,18 @@ export function useThread() {
       }
     },
     [update],
+  );
+
+  /** Send a turn's request again exactly as it was (its scope, page context and attachments). */
+  const retry = useCallback(
+    (t: Turn) => run(t.question, t.request?.objectId, t.request?.source, t.request?.files ?? [], t.request?.extra ?? {}),
+    [run],
+  );
+
+  /** A suggested follow-up: asked in the same scope as the turn it follows (not its files). */
+  const followUp = useCallback(
+    (next: string, from: Turn) => run(next, from.request?.objectId, from.request?.source, [], from.request?.extra ?? {}),
+    [run],
   );
 
   const stop = useCallback(() => ctrl.current?.abort(), []);
@@ -154,5 +188,5 @@ export function useThread() {
     setTurns(restored);
   }, []);
 
-  return { turns, run, stop, reset, busy, seed };
+  return { turns, run, retry, followUp, stop, reset, busy, seed };
 }

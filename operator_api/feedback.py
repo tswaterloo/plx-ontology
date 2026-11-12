@@ -158,7 +158,11 @@ def clean_handle(handle: Any, guard: Any) -> Optional[str]:
 # ---- who may see all ------------------------------------------------------------------------
 
 def owner_open(session: Any) -> bool:
-    """The owner-open grant: full read over every source and every mailbox."""
+    """The one owner test (S-16; ``Backend._is_owner`` and the app's ``is_owner`` use it): the
+    session holds the owner-open grant, full read over every source and every mailbox, usable
+    now. ``SessionIdentity.access`` is ``EmployeeEntitlement.full_read_code()``, set by the
+    access layer at sign-in and on every request; None when the grant is missing, refused or
+    the people exclusion cannot be decided, so it is exactly ``unrestricted()``."""
     try:
         from operating.employee_permissions import FULL_READ_SCOPES
         code = "full_read:" + "+".join(sorted(FULL_READ_SCOPES)) + ":mail_all"
@@ -371,7 +375,7 @@ class FeedbackStore:
         rows = [r for r in self.between(_iso(start), _iso(end))
                 if eastern_day(datetime.fromisoformat(r["at"].replace("Z", "+00:00"))) == day]
 
-        def shown(r: Mapping[str, Any]) -> dict[str, Any]:
+        def raw(r: Mapping[str, Any]) -> dict[str, Any]:
             ctx = r["context"]
             return {k: v for k, v in {
                 "id": r["id"], "at": r["at"], "kind": r["kind"], "reader": reader_ref(r["reader"]),
@@ -384,6 +388,15 @@ class FeedbackStore:
                 "data_as_of": ctx.get("data_as_of"), "app_version": ctx.get("app_version"),
                 "api_version": ctx.get("api_version"), "session_ref": ctx.get("session_ref"),
             }.items() if v not in (None, [], {})}
+
+        guard = exclusion()
+
+        def shown(r: Mapping[str, Any]) -> dict[str, Any]:
+            """The entry through today's exclusion (it may have changed since it was
+            written)."""
+            out = raw(r)
+            reclean(out, guard)
+            return {k: v for k, v in out.items() if v not in (None, [], {})}
 
         down = [shown(r) for r in rows if r["kind"] == "answer" and r["rating"] == -1]
         alerts = [shown(r) for r in rows if r["kind"] == "alert"
@@ -488,12 +501,41 @@ def _personal(text: Any) -> bool:
         return True
 
 
+def reclean(out: dict[str, Any], guard: Any) -> None:
+    """An entry's text, people and claim citations (``out["claims"]``) through the
+    exclusion as it is now (``clean``/``clean_handle``; fail closed with no list)."""
+    for name in ("note", "question", "label", "expected", "answer", "page", "object_id"):
+        value = out.get(name)
+        if isinstance(value, str):
+            out[name] = clean(value, guard, max(len(value), 1))
+    claims = []
+    for c in out.get("claims") or ():
+        text = c.get("text")
+        cites = []
+        for cite in c.get("citations") or ():
+            handle = clean_handle(cite.get("handle"), guard)
+            if handle is not None:
+                label = cite.get("label")
+                cites.append({**cite, "handle": handle,
+                              "label": clean(label, guard, max(len(label), 1))
+                              if isinstance(label, str) else label})
+        claims.append({**c, "text": clean(text, guard, max(len(text), 1))
+                       if isinstance(text, str) else text, "citations": cites})
+    if "claims" in out:
+        out["claims"] = claims
+
+
 class Viewer:
     """What one reader may read of the entries they list: the owner and an entry's own
     reader read it whole; another admin reads it as their own markings and grants allow."""
 
-    def __init__(self, backend: Any, reader: Any, rows: Sequence[Mapping[str, Any]]) -> None:
+    def __init__(self, backend: Any, reader: Any, rows: Sequence[Mapping[str, Any]],
+                 guard: Any = None) -> None:
         self.reader = reader
+        # the people exclusion as it is now: text cleaned when an entry was written is
+        # cleaned again on every read, so a person excluded since is withheld (SEC-013);
+        # no list (unavailable): every address and object id is withheld (fail closed)
+        self.guard = exclusion() if guard is None else guard
         self.whole = owner_open(reader.session)
         self.held: Optional[frozenset[str]] = None
         self.decided: dict[str, Any] = {}
@@ -504,12 +546,30 @@ class Viewer:
                               for c in f.get("citations") or () if c.get("handle")})
             self.held, self.decided = _grant(backend, reader, handles)
 
+    def _now_clean(self, out: dict[str, Any]) -> None:
+        reclean(out, self.guard)
+
+    def _writer_excluded(self, key: Any) -> bool:
+        """Whether the entry's writer (their principals key) is excluded now (or the list
+        cannot decide: fail closed)."""
+        guard = self.guard
+        if guard is None or getattr(guard, "unavailable", None):
+            return True
+        for value in str(key or "").lower().split(","):
+            tail = value.rsplit(":", 1)[-1]
+            if (_UUID.fullmatch(tail) and _excluded_id(guard, tail)) or (
+                    _ADDRESS.fullmatch(tail) and _excluded_address(guard, tail)):
+                return True
+        return False
+
     def entry(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """``row`` with ``claims``, ``flagged`` and ``withheld`` (markings not shown)."""
         ctx = row.get("context") or {}
         out = dict(row, claims=list(ctx.get("claims") or []), flagged=ctx.get("flagged") or [],
                    withheld=[])
-        if ctx.get("reader_hidden") and row.get("reader") != self.reader.key:
+        self._now_clean(out)
+        if row.get("reader") != self.reader.key and (
+                ctx.get("reader_hidden") or self._writer_excluded(row.get("reader"))):
             out["reader_name"] = COLLEAGUE
         if self.whole or row.get("reader") == self.reader.key:
             return out
@@ -531,6 +591,10 @@ class Viewer:
                 else:
                     claims.append(c)
             out["claims"] = claims
+            if "source" in lacking:
+                # the answer and the expected text carry what the withheld claim said:
+                # one disclosure decision for the whole entry (SEC-001)
+                out.update(answer=None, expected=None)
         if {"finance", "pii"} - held:
             for field in ("note", "question", "label", "expected", "answer"):
                 if _personal(out.get(field)):

@@ -168,6 +168,58 @@ class SharedVersionsTest(unittest.TestCase):
         self.assertEqual(doc["versions"], {"truth-check": "v-truth-check"})
 
 
+class ReadyTest(unittest.TestCase):
+    """SP-05: a cold first record page was refused busy while ``deployed`` computed the
+    versions of every artifact inside the page read. ``_ready`` took any cache file of the
+    tree as complete, and ``proactive_engine.after_build`` writes one for a single artifact."""
+
+    def setUp(self) -> None:
+        self.state = Path(tempfile.mkdtemp(prefix="ready-"))
+        (self.state / ds.CODE_DIR).mkdir()
+        self.key = "tree-under-test"
+        patches = [mock.patch.object(ds, "_tree", lambda root: self.key),
+                   mock.patch.dict(ds._VERSIONS, clear=True),
+                   mock.patch.dict(ds._WARMING, clear=True),
+                   mock.patch.dict(ds.OVERRIDES, clear=True),
+                   mock.patch.object(ds, "_cache_dirs", lambda state: [Path(state) / ds.CODE_DIR])]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.started = []
+
+        class Thread:   # the background computation is only noted here
+            def __init__(me, target, kwargs, name, daemon):
+                self.started.append(name)
+
+            def start(me):
+                pass
+        patch = mock.patch.object(ds.threading, "Thread", Thread)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def write(self, names) -> None:
+        (self.state / ds.CODE_DIR / f"deployed-{self.key}.json").write_text(json.dumps(
+            {"scheme": ds.SCHEME, "tree": self.key, "versions": {n: "v" for n in names}}))
+
+    def test_a_cache_file_for_one_artifact_is_not_ready_and_starts_the_background_read(self) -> None:
+        self.write(["proactive-inbox"])
+        self.assertFalse(ds._ready(self.state))
+        self.assertEqual(self.started, ["derived-versions"])
+        self.assertEqual(ds.served(self.state)["unknown"], ["versions_computing"])
+
+    def test_a_complete_cache_file_is_ready(self) -> None:
+        self.write([a.name for a in ds.ARTIFACTS if a.roots])
+        self.assertTrue(ds._ready(self.state))
+        self.assertEqual(self.started, [])
+
+    def test_a_file_of_another_scheme_or_none_is_not_ready(self) -> None:
+        self.assertFalse(ds._ready(self.state))
+        (self.state / ds.CODE_DIR / f"deployed-{self.key}.json").write_text(json.dumps(
+            {"scheme": "old", "versions": {a.name: "v" for a in ds.ARTIFACTS if a.roots}}))
+        ds._WARMING.clear()
+        self.assertFalse(ds._ready(self.state))
+
+
 if __name__ == "__main__":
     unittest.main()
 

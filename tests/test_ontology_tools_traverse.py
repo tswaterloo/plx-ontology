@@ -801,6 +801,30 @@ class AroundTests(unittest.TestCase):
                 self.assertEqual(answer, serial[name])
 
 
+class OneVersionPerCallTests(unittest.TestCase):
+    """CC-P-06: one tool call polls the store's data version once (a timeline call
+    polled it ten times, each a Postgres round trip on the served store), and the next
+    call polls it again, so a change between calls is still seen."""
+
+    def test_one_poll_a_call_and_a_change_between_calls_is_seen(self):
+        s = build()
+        t, _ = tools(s)
+        polls = []
+        s.conn.set_trace_callback(lambda q: polls.append(q) if "data_version" in q else None)
+        for name, args in (("plx.timeline", {"from": O1}), ("plx.around", PARTY_ORDERS)):
+            polls.clear()
+            ok(self, name, t.call(name, args, FULL))
+            self.assertEqual(len(polls), 1, name)
+        before = len(ok(self, "plx.timeline", t.call("plx.timeline", {"from": O1},
+                                                     FULL))["events"])
+        s.event("E:o1-added", "Order.ordered", "source_business_date", [(O1, "order")],
+                time="2099-01-12")
+        s.conn.commit()
+        after = ok(self, "plx.timeline", t.call("plx.timeline", {"from": O1}, FULL))
+        self.assertEqual(len(after["events"]), before + 1)
+        self.assertIn("E:o1-added", [e["event_id"] for e in after["events"]])
+
+
 class TwinRouteTests(unittest.TestCase):
     """A walk that reaches nothing names the next route when the type it ends on declares
     an identity link (``twin_route``: read from the schema alone, nothing about any
@@ -1647,6 +1671,48 @@ class TimelineTests(unittest.TestCase):
         self.assertNotIn("E:o1-bare", ids(since="2099-01-21T00:30:00-05:00"))
         self.assertIn("E:o1-bare", ids(until="2099-01-20T00:30:00+05:00"))
         self.assertNotIn("E:o1-bare", ids(until="2099-01-19T23:00:00-05:00"))
+
+    def test_a_narrow_window_is_read_past_a_history_longer_than_the_scan_cap(self):
+        """SEMANTIC-006: the window is applied before the event scan cap, so a root with
+        more than ``EVENT_SCAN_CAP`` events still answers a narrow since/until; only a
+        window holding more than the cap is too large. The prefilter is conservative: an
+        instant whose UTC day is the window's, a capture window spanning it and a time
+        that does not read (said in a gap) are all still judged."""
+        def extra(s):
+            for n in range(tt.EVENT_SCAN_CAP + 1):   # the old history, all of 2098
+                day = dt.date(2098, 1, 1) + dt.timedelta(days=n % 365)
+                s.event(f"E:old-{n:05d}", "Order.ordered", "source_business_date",
+                        [(O1, "order")], time=day.isoformat())
+            s.event("E:in", "Order.ordered", "source_business_date", [(O1, "order")],
+                    time="2099-02-05")
+            # written on the 4th, the 5th in UTC
+            s.event("E:late-evening", "Order.ordered", "source_business_date",
+                    [(O1, "order")], time="2099-02-04T22:00:00-05:00")
+            s.event("E:window", "Order.ordered", "capture_observed", [(O1, "order")],
+                    window=("2099-02-01T00:00:00Z", "2099-02-10T00:00:00Z"))
+            s.event("E:unread", "Order.ordered", "source_business_date", [(O1, "order")],
+                    time="not a time")
+            s.event("E:after", "Order.ordered", "source_business_date", [(O1, "order")],
+                    time="2099-02-07")
+        t, _ = tools(build(extra=extra))
+
+        def call(**bounds):
+            return t.call("plx.timeline", dict(
+                {"from": O1, "event_types": ["Order.ordered"]}, **bounds), FULL)
+        whole = call()
+        self.assertEqual(whole["error"]["code"], "result_too_large")
+        out = ok(self, "plx.timeline", call(since="2099-02-05T00:00:00Z",
+                                             until="2099-02-05T23:59:59Z"))
+        self.assertEqual(sorted(e["event_id"] for e in out["events"]),
+                         ["E:in", "E:late-evening", "E:window"])
+        self.assertIn("unreadable_event", [g["reason"] for g in out["gaps"]])
+        dated = ok(self, "plx.timeline", call(since="2099-02-05", until="2099-02-05"))
+        self.assertIn("E:in", [e["event_id"] for e in dated["events"]])
+        self.assertNotIn("E:after", [e["event_id"] for e in dated["events"]])
+        # a window over the old history is still too large, and says so
+        old = call(since="2098-01-01", until="2098-12-31")
+        self.assertEqual(old["error"]["code"], "result_too_large")
+        self.assertIn("in this window", old["error"]["message"])
 
     def test_missing_declared_event_is_absent_only_for_its_own_binding(self):
         """M1: O2 is a Portal order. Its own binding's events are absent; the BC-only

@@ -1727,6 +1727,58 @@ class FreshnessBoundTests(HostCase):
             with self.assertRaises(host_module.HostError, msg=repr(bad)):
                 host_module.HostConfig.from_file(refused)
 
+    def test_the_portal_access_age_bound_reaches_every_child_and_shows_in_status(self):
+        """SEC-004: ``portal_access_max_age_hours`` is passed to the MCP host and the
+        console that load the snapshot; ``status --config`` shows its read time, age and
+        bound; a bad bound (or one without a snapshot) is refused."""
+        from operating.employee_permissions import parse_read_at
+        plain = host_module.HostConfig.from_file(self.write_config())
+        self.assertIsNone(plain.portal_access_max_age_hours)
+        host = host_module.Host(self.state, plain, environ=ENV, sender=self.router,
+                                clock=self.clock)
+        self.assertNotIn("--portal-access-max-age-hours",
+                         host_module.mcp_arguments(host, session_ticket_env="T"))
+        bounded = self.write_config(portal_access_max_age_hours=48)
+        host = host_module.Host(self.state, host_module.HostConfig.from_file(bounded),
+                                environ=ENV, sender=self.router, clock=self.clock)
+        for argv in (host_module.mcp_arguments(host, session_ticket_env="T"),
+                     host_module.console_arguments(host, 0)):
+            self.assertEqual(argv[argv.index("--portal-access-max-age-hours") + 1], "48.0")
+        snapshot_path = Path(json.loads(bounded.read_text("utf-8"))["portal_access"])
+        read_at = parse_read_at(json.loads(snapshot_path.read_text("utf-8"))["read_at"])
+
+        def status_at(when):
+            self.clock.now = when
+            code, out, err = self.main("status", "--state-dir", str(self.state),
+                                       "--config", str(bounded))
+            self.assertEqual(code, 0, err)
+            return json.loads(out)["portal_access"]
+
+        # 10 h after the snapshot was read: fresh, with its read time, age and bound
+        shown = status_at(read_at + timedelta(hours=10))
+        self.assertEqual(shown["read_at"], read_at.isoformat())
+        self.assertEqual(shown["max_age_hours"], 48.0)
+        self.assertAlmostEqual(shown["age_hours"], 10.0, places=3)
+        self.assertEqual(shown["state"], "fresh")
+        # past the bound: stale (the children refuse it per call)
+        shown = status_at(read_at + timedelta(hours=49))
+        self.assertAlmostEqual(shown["age_hours"], 49.0, places=3)
+        self.assertEqual(shown["state"], "stale")
+        # a read time more than 5 min in the clock's future is refused, never fresh
+        shown = status_at(read_at - timedelta(hours=1))
+        self.assertEqual(shown["state"], "invalid")
+        self.assertIn("read_at_future", shown["reason"])
+        code, out, err = self.main("status", "--state-dir", str(self.state))
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(json.loads(out)["portal_access"])
+        for bad in (0, -1, float("nan"), float("inf"), True, "48", 721):
+            with self.assertRaises(host_module.HostError, msg=repr(bad)):
+                host_module.HostConfig.from_file(self.write_config(
+                    portal_access_max_age_hours=bad))
+        with self.assertRaises(host_module.HostError):
+            host_module.HostConfig.from_file(self.write_config(
+                portal_access=None, portal_access_max_age_hours=48))
+
     def test_bounds_follow_the_configured_cadence_in_both_modes(self):
         from operating import ingest_forever as forever
         from operating import mcp_server

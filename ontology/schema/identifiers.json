@@ -2079,11 +2079,7 @@
      "served": true,
      "upstream": "ontology/schema/generated/meta/portal_catalog.json"
     }
-   ],
-   "no_fixed_format": {
-    "why": "Sage GL account numbers follow the company's account structure (segments and separators), not one fixed format.",
-    "upstream": "ontology/schema/generated/meta/portal_catalog.json (sage.gl_account, sage.gl_asv segments)"
-   }
+   ]
   }
  },
  "label_kind_map": {

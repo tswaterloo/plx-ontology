@@ -257,9 +257,12 @@ def _newer(cur: Any, scope: Sequence[str], mark: int) -> list[str]:
     """The objects in ``scope`` a delta layer replaced since the snapshot ``mark``."""
     if not scope:
         return []
+    # a whole-store step's run records its changed links' ends as a layer
+    # (``whole_steps.LAYER_PREFIX``): it replaced no object's rows
     cur.execute("SELECT DISTINCT object_id FROM ontology.applied_owned WHERE "
-                "seq > %s AND EXISTS (SELECT 1 FROM unnest(%s::text[]) p "
-                "WHERE starts_with(object_id, p))", (int(mark or 0), list(scope)))
+                "seq > %s AND NOT starts_with(layer, 'whole-steps-') AND EXISTS "
+                "(SELECT 1 FROM unnest(%s::text[]) p WHERE starts_with(object_id, p))",
+                (int(mark or 0), list(scope)))
     return [r[0] for r in cur.fetchall()]
 
 

@@ -194,11 +194,13 @@ class ActionsMixin:
         return playbook_model(built, ca.offers(ap.card(built)))
 
     def action_states(self, reader: Reader) -> m.ActionStates:
-        states = self._desk().states(self._mailbox(reader), reader.display_name, self._today())
+        states = self._desk().states(self._mailbox(reader), reader.display_name, self._today(),
+                                     oid=reader.session.subject_oid)
         return m.ActionStates(cards={k: m.ActionResult(**v) for k, v in states.items()})
 
     def actions_log(self, reader: Reader, limit: int = 200) -> m.ActionsLog:
-        rows = self._desk().log(self._mailbox(reader), reader.display_name, limit)
+        rows = self._desk().log(self._mailbox(reader), reader.display_name, limit,
+                                oid=reader.session.subject_oid)
         return m.ActionsLog(rows=[m.ActionLogRow(**r) for r in rows])
 
 

@@ -28,6 +28,7 @@ vi.mock("@/lib/api", async (orig) => ({
   replayAutopilotWorkflow: api.replay,
 }));
 
+import { outcomeWords } from "@/lib/autopilot";
 import { AutopilotView } from "./area";
 
 const ME = "33333333-3333-4333-8333-333333333333";
@@ -236,6 +237,26 @@ describe("autopilot studio: workflows, modes and the owner's controls", () => {
     expect(within(sheet).getByTestId("workflow-figures")).toHaveTextContent("Not measured on this server yet.");
   });
 
+  it("Try again in a workflow's page asks the server again and shows the page (WEB-017)", async () => {
+    api.catalog.mockResolvedValue({ ...NO_BUILDER, builder: true });
+    const doc: AutopilotWorkflowDetail = {
+      workflow: "customer_order_intake", label: "Customer PO received", trigger: { kind: "message.received", words: "A new email arrives", params: {} },
+      conditions: [], actions: [], autopilots: ["customer_po"], mode: "draft", modes: ["off", "suggest", "draft", "auto", "watch"],
+      gate: { percent: 93.8, judged: 16, matched: 15, fresh: true, passed: true, rule: "90% right on at least 15 held-out items" },
+      rows: [area().workflows![0]], caught: 15, missed: 1, false_alarms: null, hours_saved: null, hours_basis: "x", open_items: 1, history: [], notes: [],
+    };
+    api.detail.mockRejectedValueOnce(new Error("down"));
+    api.detail.mockResolvedValue(doc);
+    render(<AutopilotView area={area()} onReload={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Workflows" }));
+    const [passed] = screen.getAllByTestId("autopilot-workflow");
+    fireEvent.click(within(passed).getByRole("button", { name: "Customer order intake" }));
+    const sheet = await screen.findByTestId("workflow-sheet");
+    fireEvent.click(await within(sheet).findByRole("button", { name: "Try again" }));
+    await within(sheet).findByText("Customer PO received");
+    expect(api.detail).toHaveBeenCalledTimes(2);
+  });
+
   it("the builder keeps a draft and replays it on past days; it never offers to go live", async () => {
     api.catalog.mockResolvedValue({
       triggers: [{ kind: "record.due", words: "A record comes due", params: {} }],
@@ -269,7 +290,9 @@ describe("Draft mode and the fresh-day countdown", () => {
   const draftRow = {
     role: "person:ana@plx.example", person: ME, workflow: "internal_approval", dev: { judged: 33, matched: 29, percent: 87.9 }, fresh: null, n: 33,
     state: "dry_run" as const, on: true, live_flag: false, missing: ["gate_not_passed"], last_run: null, scored_at: null, open_items: 2, draft: true,
-    countdown: { judged: 12, matched: 11, need_judged: 15, need_percent: 90, percent: 91.7, passes: false, window: ["2026-11-06T07:00:00Z", "2026-11-12T07:00:00Z"], data_end: null },
+    countdown: { judged: 12, matched: 11, need_judged: 15, need_percent: 90, percent: 91.7, passes: false, window: ["2026-06-08T07:00:00Z", "2026-11-12T07:00:00Z"], data_end: null,
+      parts: [{ window: ["2026-06-08T07:00:00Z", "2026-06-15T07:00:00Z"], kind: "historical" as const, judged: 8, matched: 8 },
+              { window: ["2026-11-06T07:00:00Z", "2026-11-12T07:00:00Z"], kind: "fresh" as const, judged: 4, matched: 3 }] },
   };
 
   it("a draft row says Draft with its countdown; the workflow page shows the countdown toward the gate", async () => {
@@ -288,7 +311,37 @@ describe("Draft mode and the fresh-day countdown", () => {
     expect(counts).toHaveLength(1);
     expect(counts[0]).toHaveTextContent("12 of 15 items at ≥90% · 91.7% right so far");
     expect(counts[0]).toHaveTextContent("not yet");
-    expect(screen.getByTestId("workflow-sheet")).toHaveTextContent("No fresh items judged yet");
+    // the past days never tuned on and the fresh days, each with its own count
+    expect(within(counts[0]).getAllByTestId("countdown-part").map((e) => e.textContent?.replace(/ to .*:/, ":"))).toEqual([
+      expect.stringMatching(/^Past days never tuned on, .*: 8 of 8 right$/), expect.stringMatching(/^Fresh days .*: 3 of 4 right$/)]);
+    expect(screen.getByTestId("workflow-sheet")).toHaveTextContent("No held-out items judged yet");
     expect(screen.getByTestId("workflow-sheet")).toHaveTextContent("nothing goes out without accept and confirm");
+  });
+});
+
+describe("what an accept did (WEB-036)", () => {
+  it("never says nothing was sent or written unless nothing ran", () => {
+    const said = (o: string, r: string[] = []) => outcomeWords(o, r, "Business Central");
+    for (const unsure of ["unknown", "pending"]) {
+      expect(said(unsure)).toContain("Could not confirm whether it went through in Business Central");
+      expect(said(unsure)).not.toMatch(/nothing was sent|nothing was performed/);
+    }
+    // without steps (never stored by this version) it names no system to check
+    expect(said("partly_done", ["http_500"])).toBe(". Partly done: a step went through, another did not (http 500).");
+    // with steps: exactly which step ran and which did not; check only an unconfirmed one
+    const bc = { kind: "bc_write", system: "bc", status: "done" };
+    expect(outcomeWords("partly_done", [], "Business Central", [bc, { kind: "send_mail", system: "mail", status: "unavailable", reasons: ["no_adapter"] }]))
+      .toBe(". Partly done: the Business Central write went through; the email never ran (unavailable, no adapter), so it was not sent.");
+    expect(outcomeWords("partly_done", [], "Business Central", [bc, { kind: "send_mail", system: "mail", status: "failed", reasons: ["http_500"] }]))
+      .toBe(". Partly done: the Business Central write went through; the email failed (http 500).");
+    expect(outcomeWords("unknown", [], "Business Central", [bc, { kind: "send_mail", system: "mail", status: "unknown" }]))
+      .toBe(". The Business Central write went through; could not confirm whether the email went through. Check Mail before trying again.");
+    // an outcome or step this page does not know is never "nothing was sent"
+    expect(said("weird")).not.toMatch(/nothing was sent/);
+    expect(outcomeWords("unknown", [], "Business Central", [{ kind: "bc_write", system: "bc", status: "weird" }])).toContain("Check Business Central");
+    expect(said("failed", ["http_400"])).not.toMatch(/nothing was sent/);
+    expect(said("done")).toBe(". Done live through the write path.");
+    expect(said("dry_run")).toContain("nothing was sent or written");
+    expect(said("refused", ["approver_not_owner"])).toBe(". Recorded; the write path would not perform it (refused, approver not owner), so nothing was sent or written.");
   });
 });

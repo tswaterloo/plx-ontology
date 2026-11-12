@@ -553,6 +553,49 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual(len(slides), 2)
         self.assertTrue(any("Slide 2" in c.header and "capacity" in c.body for c in slides))
 
+    def test_a_layer_slice_reads_only_its_own_objects_and_chunks_them_as_a_whole_read(self):
+        # CC-P-02: a delta layer is indexed a slice at a time; each slice read every text
+        # field and every record of the layer (35 full reads of a 700k-object layer for
+        # 0 chunks). A slice reads its own objects only, and chunks them as a whole read.
+        for n in range(300):
+            h = f"mc://live/tasks/T-{n}@1"
+            self.fx.obj(f"MCTask:T-{n}", "MCTask", "mc:live/tasks/PRJ-X", kind="mc_task",
+                        handle=h, text={"row.description": (
+                            h, f"Task {n} waits on the carton supplier for the label.")})
+            self.fx.obj(f"RelSageArCmm:{n}", "RelSageArCmm", "api:sage.ar_cmm",
+                        values={"textcmnt1": (f"Customer {n} asked to hold shipments until "
+                                              "the credit note is issued.", "[]")})
+        self.fx.done()
+        conn = open_ro(self.path)
+        self.addCleanup(conn.close)
+        mine = frozenset({"MCTask:T-7", "MCTask:T-250", "RelSageArCmm:7", "RelSageArCmm:299"})
+
+        class Counting:
+            """The connection, counting the rows its reads hand to Python."""
+            rows = 0
+
+            def execute(self, *args):
+                got = conn.execute(*args).fetchall()
+                Counting.rows += len(got)
+                return Rows(got)
+
+        class Rows(list):
+            def fetchall(self):
+                return list(self)
+
+        def chunks(source, objects):
+            return sorted((c.object_id, c.chunk_id, c.body) for c in [
+                *ProjectionChunker(source, exclusion(), Counts()).chunks(
+                    ["mc_task"], objects=objects),
+                *RecordChunker(source, exclusion(), Counts()).record_chunks(objects=objects)])
+
+        whole = [c for c in chunks(conn, None) if c[0] in mine]
+        sliced = chunks(Counting(), mine)
+        self.assertEqual(sliced, whole)
+        self.assertEqual({c[0] for c in sliced}, mine)
+        # O(slice), not O(layer): 600 objects and 600 values are never handed to Python
+        self.assertLess(Counting.rows, 60, Counting.rows)
+
     def test_record_free_text_is_keyed_by_value_and_version_markings(self):
         self.fx.obj("RelSageArCmm:1", "RelSageArCmm", "api:sage.ar_cmm", marks='["finance"]',
                     values={"textcmnt1": ("Customer asked to hold shipments until the credit "
@@ -840,6 +883,32 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual([c.object_id for c in chunks], ["Email:t"])
         self.assertEqual(chunks[0].markings, ("finance",))
         self.assertEqual(counts.skipped["people_exclusion:sender_undecided"], 1)
+
+
+class DeltaRunningTests(unittest.TestCase):
+    """PERF-16: the follower's embedding waits while a delta cycle holds its run lock,
+    told from the kernel's lock table (never by taking the lock: a delta starting then
+    would skip its cycle)."""
+
+    def test_the_delta_run_lock_is_read_without_taking_it(self):
+        import fcntl
+        from operating.embed import follow as fl
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            self.assertFalse(fl.delta_running(state))          # no lock file: not running
+            lock = state / "projection" / "delta" / ".run.lock"
+            lock.parent.mkdir(parents=True)
+            lock.touch()
+            self.assertFalse(fl.delta_running(state))
+            with open(lock, "a") as held:
+                fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertTrue(fl.delta_running(state))
+                fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+            self.assertFalse(fl.delta_running(state))
+            # reading it never took it: a delta can still take it at once
+            with open(lock, "a") as again:
+                fcntl.flock(again.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertFalse(fl.delta_running(state, locks=state / "no-such-table"))
 
 
 class TextUnitTests(unittest.TestCase):
@@ -1295,6 +1364,42 @@ class PostgresTests(unittest.TestCase):
             self.assertEqual(retired["generation_pass"], {"skipped": "generation_retired"})
             self.assertEqual((len(passes), "layers" in retired), (1, True))
 
+    def test_follow_embeds_with_one_model_in_its_own_process(self):
+        # GA-F15: the follower's embedding loaded bge-m3 once per child process (1.9 GB
+        # each); it now runs one model in its own process, all its threads, no children
+        import concurrent.futures
+        from operating.embed import follow as fl, models as md
+        self.st.ChunkWriter(self.conn).write(
+            [self.chunk(n, f"Body {n} about the carton supplier.") for n in range(5)])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        (state / "projection").mkdir()
+        (state / "projection" / "CURRENT").write_text(json.dumps(
+            {"generation": "g1", "content_digest": "sha256:aaa"}))
+        dim = self.st.column_dim(self.conn)
+        loads = []
+
+        def load(settings, **_):
+            loads.append(settings.get("PLX_EMBED_THREADS"))
+            return md.Embedder("fake", dim, lambda texts: np.ones((len(texts), dim)))
+
+        def no_children(*_, **__):
+            raise AssertionError("a model process per child")
+        args = fl.parser().parse_args(["--state", str(state), "--mode", "layers",
+                                       "--embed-seconds", "60", "--workers", "3"])
+        with mock.patch.object(fl, "_exclusion", return_value=exclusion()), \
+                mock.patch.object(fl.config, "settings",
+                                  return_value={"PLX_PG_DSN": f"postgresql:///{self.db}"}), \
+                mock.patch.object(md, "load", load), \
+                mock.patch.object(concurrent.futures, "ProcessPoolExecutor", no_children), \
+                mock.patch("os.cpu_count", return_value=16):
+            report = fl.follow(args)
+        self.assertEqual(loads, ["8"])                  # one model, half the cores' threads
+        self.assertEqual((report["embed"]["texts_embedded"], report["embed"]["workers"]),
+                         (5, 1))
+        self.assertEqual(self.st.pending(self.conn, "fake"), [])
+
     def test_backfill_embeds_the_recent_and_the_undated_first_and_takes_turns(self):
         from operating.embed import backfill as bf
         now = dt.datetime.now(dt.timezone.utc)
@@ -1385,6 +1490,70 @@ class PostgresTests(unittest.TestCase):
         return sorted(r[0] for r in self.conn.execute(
             "SELECT source_handle FROM search.chunks WHERE object_id = 'MCTask:T-1'"))
 
+    def test_a_layer_that_fails_to_read_stays_behind_and_is_read_again(self):
+        # SEARCH-005: a locked or unreadable layer is no "not a delta layer": it never
+        # enters the cursor, no later layer is indexed past it, the run says so (exit 1)
+        import contextlib
+        import io
+        from operating.embed import follow as fl
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        projection = state / "projection"
+        (projection / "generations" / "g1").mkdir(parents=True)
+        (projection / "generations" / "g1" / "store.sqlite").write_bytes(b"")
+        (projection / "CURRENT").write_text(json.dumps(
+            {"generation": "g1", "content_digest": "sha256:aaa"}))
+        (projection / "delta").mkdir()
+        stores = []
+        for n in (1, 2):
+            layer = projection / "delta" / f"delta-{n}.sqlite"
+            fx = Fixture(layer)
+            h = f"mc://live/tasks/T-{n}@2"
+            fx.obj(f"MCTask:T-{n}", "MCTask", "mc:live/tasks/PRJ-X", kind="mc_task", handle=h,
+                   text={"row.description": (h, f"Task {n} waits on the carton supplier.")})
+            fx.conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+            fx.conn.execute("INSERT INTO delta_owned VALUES (?)", (f"MCTask:T-{n}",))
+            fx.done()
+            stores.append(str(layer))
+        not_layer = projection / "delta" / "delta-0.sqlite"
+        sqlite3.connect(not_layer).close()       # no layer tables: skipped for good
+        (projection / "delta" / "CURRENT.json").write_text(json.dumps(
+            {"format": "plx-delta/v1", "base_digest": "sha256:aaa", "store": stores[-1],
+             "layers": [{"store": s, "owned": 1} for s in reversed([str(not_layer)] + stores)]}))
+        args = fl.parser().parse_args(["--state", str(state), "--embed-seconds", "0",
+                                       "--mode", "layers"])
+        real = fl.open_ro
+
+        def locked(path):
+            if Path(path).name == "delta-1.sqlite":
+                raise sqlite3.OperationalError("database is locked")
+            return real(path)
+        cursor_path = state / "search" / "follow.json"
+        with mock.patch.object(fl, "_exclusion", return_value=exclusion()), \
+                mock.patch.object(fl.config, "settings",
+                                  return_value={"PLX_PG_DSN": f"postgresql:///{self.db}"}):
+            with mock.patch.object(fl, "open_ro", locked):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(fl.main(["--state", str(state), "--embed-seconds", "0",
+                                              "--mode", "layers"]), 1)
+                report = json.loads(out.getvalue())
+            self.assertEqual(report["layers"]["delta-0.sqlite"], {"skipped": "not_a_delta_layer"})
+            self.assertEqual(report["layers"]["delta-1.sqlite"]["failed"], "layer_unreadable")
+            self.assertEqual(report["layer_failed"], "delta-1.sqlite")
+            self.assertNotIn("delta-2.sqlite", report["layers"])
+            self.assertEqual(report["layers_behind"], 2)
+            self.assertEqual(json.loads(cursor_path.read_text())["layers"], [str(not_layer)])
+            self.assertEqual(self.conn.execute("SELECT count(*) FROM search.chunks")
+                             .fetchone()[0], 0)
+            # readable again: both layers indexed in order, nothing behind
+            again = fl.follow(args)
+            self.assertEqual(sorted(again["layers"]), ["delta-1.sqlite", "delta-2.sqlite"])
+            self.assertEqual((again["layers_behind"], "layer_failed" in again), (0, False))
+            self.assertEqual(sorted(r[0] for r in self.conn.execute(
+                "SELECT DISTINCT object_id FROM search.chunks")), ["MCTask:T-1", "MCTask:T-2"])
+
     def test_a_layer_during_a_generation_pass_leaves_one_version_the_newest(self):
         import time as _time
         self.st.ChunkWriter(self.conn).write([self.mc_version(1, 1, "Task 1 is open.")])
@@ -1438,7 +1607,7 @@ class PostgresTests(unittest.TestCase):
             fx.conn.execute("INSERT INTO delta_owned VALUES (?)", (f"MCTask:T-{n}",))
         fx.done()
         saved = []
-        ticks = iter([0.0, 5.0])        # slice 1 starts in time, slice 2 after the deadline
+        ticks = iter([0.0, 0.5, 5.0])   # slice 1 starts in time, slice 2 after the deadline
         with mock.patch.object(fl, "SLICE", 2), \
                 mock.patch.object(fl, "_clock", lambda: next(ticks)):
             first = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion(), deadline=1.0,
@@ -1461,6 +1630,18 @@ class PostgresTests(unittest.TestCase):
             third = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion(),
                                   progress={"done": 1, "started": 1})
         self.assertEqual((third["chunks"], third["already_indexed"]), (1, 0))
+        # CC-P-02: a slice is not started when the last one's time would carry it past
+        # the deadline (a run killed in a slice redoes it): slice 1 took 6 of 10 s
+        for path in ("T-1", "T-2", "T-3"):
+            self.conn.execute("DELETE FROM search.chunks WHERE object_id = %s",
+                              (f"MCTask:{path}",))
+        self.conn.commit()
+        ticks = iter([0.0, 6.0, 6.0])
+        with mock.patch.object(fl, "SLICE", 2), \
+                mock.patch.object(fl, "_clock", lambda: next(ticks)):
+            fitted = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion(),
+                                   deadline=10.0)
+        self.assertEqual(fitted["partial"], {"slices_done": 1, "slices": 2})
 
     def test_sender_purge_removes_an_excluded_senders_rows_in_any_unit(self):
         writer = self.st.ChunkWriter(self.conn)

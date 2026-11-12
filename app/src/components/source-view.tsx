@@ -53,14 +53,48 @@ export function readableBody(text: string): string {
     .trim();
 }
 
-/** The body before the signature, and the signature (from a sign-off line, or a run of 3+ short contact lines). */
+const squash = (t: string) => t.normalize("NFKC").replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
+
+/** Does the quote a link carries occur in the source it points at (case and spacing aside)? */
+export function quoteOccurs(quote: string, text: string, fields?: Record<string, unknown> | null): boolean {
+  const q = squash(quote);
+  if (!q) return false;
+  const haystack = [text, ...Object.values(fields ?? {}).filter((v) => typeof v === "string" || typeof v === "number").map(String)];
+  return haystack.some((h) => squash(h).includes(q));
+}
+
+/** Most lines a signature may run to; anything longer is message, not signature. */
+const SIGNATURE_MAX_LINES = 12;
+/** A line of running prose (many words), which a signature block does not hold. */
+const proseLine = (l: string) => l.trim().split(/\s+/).length >= 9;
+
+/** Is `tail` (the lines from a cut to the end) plausibly all signature? Short, a few lines, no prose. */
+function signatureLike(tail: string[]): boolean {
+  const filled = tail.filter((l) => l.trim());
+  return filled.length > 0 && filled.length <= SIGNATURE_MAX_LINES && !filled.some(proseLine);
+}
+
+/**
+ * The body before the signature, and the signature. A signature starts at a sign-off line
+ * ("Thanks,", "Best regards") or at a contact block that follows a blank line, and it is
+ * only what runs from there to the end: a few short lines with no sentences. Business
+ * instructions that merely sit near an email address or phone number stay in the message.
+ */
 export function splitSignature(body: string): { main: string; signature: string } {
   const lines = body.split("\n");
-  let cut = lines.findIndex((l, i) => i > 0 && SIGN_OFF.test(l));
+  let cut = -1;
+  // the last sign-off whose remainder is a signature (a "Thanks" mid-message does not count)
+  for (let i = lines.length - 1; i > 0; i--) {
+    if (SIGN_OFF.test(lines[i]) && signatureLike(lines.slice(i + 1))) {
+      cut = i;
+      break;
+    }
+  }
   if (cut < 0) {
     for (let i = 1; i + 2 < lines.length; i++) {
-      const run = lines.slice(i, i + 3);
-      if (run.every((l) => l.trim().length > 0 && l.trim().length < 60) && run.some((l) => CONTACTISH.test(l))) {
+      if (lines[i - 1].trim() !== "" || lines[i].trim() === "") continue; // a block starts after a blank line
+      const tail = lines.slice(i);
+      if (tail.filter((l) => CONTACTISH.test(l)).length >= 2 && signatureLike(tail) && tail.filter((l) => l.trim()).every((l) => l.trim().length < 60)) {
         cut = i;
         break;
       }
@@ -322,7 +356,9 @@ export function SourceDocument({
       {quote && (
         <figure className="relative rounded-lg bg-[color-mix(in_srgb,var(--accent)_6%,transparent)] py-2.5 pr-3.5 pl-4" data-testid="cited-passage">
           <span className="absolute inset-y-2.5 left-0 w-[3px] rounded-r-full bg-accent" aria-hidden />
-          <figcaption className="mb-0.5 text-[12px] leading-4 text-muted">Cited passage</figcaption>
+          <figcaption className="mb-0.5 text-[12px] leading-4 text-muted">
+            {quoteOccurs(quote, text, view.fields) ? "Cited passage" : "Quoted in the link (not found in this source)"}
+          </figcaption>
           <blockquote className="text-[13px] leading-5">“{quote}”</blockquote>
         </figure>
       )}
@@ -339,7 +375,7 @@ export function SourceDocument({
           {signature && (
             <div>
               <button type="button" onClick={() => setSig((v) => !v)} aria-expanded={sig} className="inline-flex h-7 items-center rounded-md px-2 -ml-2 text-[12px] text-muted hover:bg-hover hover:text-fg cursor-pointer">
-                {sig ? "Hide signature" : "Show signature"}
+                {sig ? "Hide signature" : `Show signature (${signature.split("\n").filter((l) => l.trim()).length} lines)`}
               </button>
               {sig && <div className="mt-1 max-w-[68ch] whitespace-pre-wrap break-words text-[12px] leading-[18px] text-muted">{signature}</div>}
             </div>

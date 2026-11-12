@@ -819,11 +819,26 @@ class MeetingsCapture:
                            "$top": str(scope.page_size)}, user=oid)
         if run["resumed"] and run["cursor"]:
             url, resumed_from = run["cursor"], "cursor"
-        pages, reasons, unread = 0, set(), [0]
+        # events whose content read failed on any segment of this run (kept with the run's
+        # cursor): a run resumed after a pause never finishes complete over them
+        unread_key = f"calendar_unread:{unit}"
+        try:
+            held_unread = int(self.store.state(unread_key) or 0) if run["resumed"] else 0
+        except ValueError:
+            held_unread = 1   # unreadable: assume one, never complete over it
+        pages, reasons, unread = 0, set(), [held_unread]
+
+        def pause(reason: str) -> None:
+            self.store.set_state(unread_key, str(unread[0]))
+            self.store.pause_run(run_id, reason=reason)
+
+        def finish(state: str, reason: str | None = None) -> None:
+            self.store.finish_run(run_id, state, reason=reason)
+            self.store.set_state(unread_key, "0")
         while True:
             if pages >= scope.max_pages_per_mailbox or out_of_time():
                 cap = TIME_BUDGET if out_of_time() else "cap:page_cap"
-                self.store.pause_run(run_id, reason=cap)
+                pause(cap)
                 reasons.add(cap)
                 break
             try:
@@ -832,11 +847,11 @@ class MeetingsCapture:
                 if getattr(exc, "http_status", None) == 404:
                     # no Exchange calendar for this user: settled, nothing to read
                     counts["mailboxes_no_calendar"] += 1
-                    self.store.finish_run(run_id, "complete", reason="no_calendar")
+                    finish("complete", "no_calendar")
                     break
                 failed = _failure("meetings.calendar_view", "graph.user_calendar_view", exc,
                                   blocked)
-                self.store.pause_run(run_id, reason=failed[:200])
+                pause(failed[:200])
                 reasons.add(failed)
                 break
             records, stop = self._events(oid, acl, items, current, counts, budget, meetings,
@@ -846,7 +861,7 @@ class MeetingsCapture:
             counts["pages"] += 1
             pages += 1
             if stop:
-                self.store.pause_run(run_id, reason="cap:event_reads")
+                pause("cap:event_reads")
                 reasons.add("cap:event_reads")
                 break
             if next_url is None:
@@ -854,9 +869,9 @@ class MeetingsCapture:
                     # an event whose content read failed (or changed meanwhile) keeps its
                     # held version; a partial run marks nothing missing
                     reasons.add("event_content_unread")
-                    self.store.finish_run(run_id, "partial", reason="event_content_unread")
+                    finish("partial", "event_content_unread")
                 else:
-                    self.store.finish_run(run_id, "complete")
+                    finish("complete")
                 break
             url = next_url
         return {"status": _status(reasons), "reasons": sorted(reasons),
@@ -1195,6 +1210,7 @@ class MeetingsCapture:
         organizers: dict[str, str | None] = {}
         found: dict[str, list[CapturedRecord]] = {}
         held: dict[str, set[str]] = {}   # organizer -> transcript ids held
+        unresolved: set[str] = set()     # organizers whose lookup failed this run
         for join, meeting in sorted(meetings.items(),
                                     key=lambda m: m[1].last_end(now) or now):
             ended = meeting.last_end(now)
@@ -1220,10 +1236,17 @@ class MeetingsCapture:
             if self._decides(sorted(p for p in parties if p)) is not False:
                 counts["transcripts_withheld_excluded"] += 1
                 continue   # not marked checked: decided again each run, no request made
+            # what failed reading this meeting: a meeting is marked checked only when each
+            # of its reads answered (a failure, a cut listing or the read cap leaves it due)
+            failed: set[str] = set()
             organizer = self._organizer(meeting.organizer_address, organizers, counts,
-                                        blocked, reasons)
+                                        blocked, failed)
             if organizer is None:
-                checks[key] = now.isoformat()
+                if failed:
+                    unresolved.add(meeting.organizer_address)
+                reasons.update(failed)
+                if meeting.organizer_address not in unresolved:
+                    checks[key] = now.isoformat()   # no tenant organizer: none to ask
                 continue
             counts["meetings_checked"] += 1
             try:
@@ -1248,10 +1271,13 @@ class MeetingsCapture:
                 held[organizer] = {r.path[2] for r in self.store.current_records(
                     TRANSCRIPT_KIND.name, TRANSCRIPT_KIND.unit((organizer, "x", "x")))}
             for record in self._meeting_transcripts(organizer, online[0], meeting, scope,
-                                                    counts, blocked, budget, reasons,
+                                                    counts, blocked, budget, failed,
                                                     held[organizer]):
                 found.setdefault(organizer, []).append(record)
-            checks[key] = now.isoformat()
+            reasons.update(failed)
+            # a transcript over the byte cap is never read whole: no reason to ask again
+            if not failed - {"cap:transcript_bytes"}:
+                checks[key] = now.isoformat()
         for organizer, records in found.items():
             unit = TRANSCRIPT_KIND.unit((organizer, "x", "x"))
             # Every transcript held of this organizer is seen again (a run checks only the
@@ -1308,13 +1334,15 @@ class MeetingsCapture:
             counts["transcripts_unaddressable"] += 1
             return []
         try:
-            listed, _ = self.api.get_pages(grammar.url(
+            listed, listing = self.api.get_pages(grammar.url(
                 "graph.online_meeting_transcripts", None, user=organizer, meeting=meeting_id),
                 max_pages=5, max_items=100)
         except SourceUnavailable as exc:
             reasons.add(_failure("meetings.transcripts", "graph.online_meeting_transcripts",
                                  exc, blocked))
             return []
+        if not (isinstance(listing, Mapping) and listing.get("complete")):
+            reasons.add("cap:transcript_listing")   # a listing cut short: asked again
         records = []
         for raw in listed:
             counts["transcripts_listed"] += 1

@@ -18,6 +18,7 @@ def store(links=(), version_at="2026-11-01T00:00:00Z"):
     c.executescript("""
     CREATE TABLE object_versions(object_id, l1_handle, markings DEFAULT '[]', recorded_at, superseded_at);
     CREATE TABLE object_values(object_id, property, value, value_type, superseded_at);
+    CREATE TABLE object_removals(object_id, basis, since, until);
     CREATE TABLE link_rows(link_id, link_type, from_object, to_object, tier, recorded_at, superseded_at);""")
     c.execute("INSERT INTO object_versions VALUES ('Supplier:1', ?, '[]', ?, NULL)", (HANDLE, version_at))
     c.execute("INSERT INTO object_versions VALUES ('Email:9', 'graph-mail://x@g-2', '[]', ?, NULL)", (version_at,))
@@ -57,6 +58,32 @@ class KeyFreshness(unittest.TestCase):
         self.assertIn("record_version_newer", kf.verdict(store(version_at="2026-11-08T00:00:00Z"), None, none_key()))
         c = store(); c.execute("UPDATE object_versions SET superseded_at='x' WHERE object_id='Supplier:1'")
         self.assertIn("record_not_current", kf.verdict(c, None, none_key()))
+
+    def test_source_absence_after_the_key_is_flagged_though_the_version_is_unchanged(self):
+        c = store()
+        self.assertEqual(kf.verdict(c, None, none_key()), [])
+        c.execute("INSERT INTO object_removals VALUES ('Supplier:1', 'missing_from_source', "
+                  "'2026-11-08T00:00:00Z', NULL)")
+        self.assertEqual(kf.verdict(c, None, none_key()), ["record_removed_since"])
+        c.execute("UPDATE object_removals SET until = '2026-11-09T00:00:00Z'")
+        self.assertEqual(kf.verdict(c, None, none_key()),
+                         ["record_removed_since", "record_returned_since"])
+
+    def test_absence_that_ended_before_the_key_is_not_a_change(self):
+        c = store()
+        c.execute("INSERT INTO object_removals VALUES ('Supplier:1', 'missing_from_source', "
+                  "'2026-11-01T00:00:00Z', '2026-11-03T00:00:00Z')")
+        self.assertEqual(kf.verdict(c, None, none_key()), [])
+
+    def test_count_key_is_replayed_from_its_root_so_a_vanished_link_is_flagged(self):
+        c = store(["2026-11-07T00:00:00Z"])
+        counted = kf.revised_key(c, ITEM, none_key(), "data moved on")
+        self.assertEqual(counted["query"]["start"], "Supplier:1")
+        self.assertEqual(kf.verdict(c, ITEM, counted), [])
+        c.execute("UPDATE link_rows SET superseded_at = '2026-11-09T00:00:00Z'")
+        self.assertIn("count_changed", kf.verdict(c, ITEM, counted))
+        again = kf.revised_key(c, ITEM, counted, "link gone")
+        self.assertEqual(again["facts"][0]["kind"], "absent")
 
     def test_revised_key_is_valid_and_keeps_history(self):
         new = kf.revised_key(store(["2026-11-07T00:00:00Z"]), ITEM, none_key(), "data moved on")

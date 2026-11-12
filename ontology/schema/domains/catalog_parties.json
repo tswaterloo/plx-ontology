@@ -5288,15 +5288,15 @@
       "description": "The Sage national account a Portal customer was migrated under (legacy_sage_idnatacct = ar_nat.idnatacct).",
       "bindings": [
         {
-          "kind": "fk",
-          "tier_ceiling": "verified",
+          "kind": "text_match",
+          "tier_ceiling": "stored_by_text_join",
           "from_binding": "portal.app_customer",
           "to_binding": "gen.sage.ar_nat",
           "pairs": [
             {
               "from": "legacy_sage_idnatacct",
               "to": "idnatacct",
-              "compare": "text_id"
+              "compare": "text"
             }
           ],
           "evidence": [
@@ -5304,6 +5304,11 @@
               "kind": "workbench_code",
               "path": "ontology/schema/domains/catalog_parties.json",
               "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 4,339 of 4,339 non-blank values reach a national account; 15 of 15 sampled pairs agree with the Sage customer's own national account."
+            },
+            {
+              "kind": "workbench_code",
+              "path": "ontology/project.py",
+              "note": "Compared as text (spaces trimmed), not text_id: Sage pads idnatacct to CHAR(12) and the Portal stores it trimmed, so the exact compare matched 3 of 418 accounts (23 links served, live check 2026-11-11). Trimmed, all 418 match; the Portal value equals the Sage customer's own idnatacct on 4,307 of 4,318 customers. A stored key with no trimmed stored-key compare: a text_match capped at stored_by_text_join."
             }
           ]
         }

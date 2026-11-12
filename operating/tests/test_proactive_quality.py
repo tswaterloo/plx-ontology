@@ -149,6 +149,38 @@ class QualityAlerts(Engine):
                          {"Customer.same_record_as"})
         self.assertEqual(out["not_evaluated"], {"name_unknown": 1})
 
+    def test_a_pair_a_person_rejected_is_never_proposed_by_either_identity_read(self):
+        # the rejection is a contradicted link; a lead link alone never makes them one.
+        # Both reads of the identity links (end indexes at a few records, the type index
+        # at many) give the same verdict.
+        from operating import proactive_stock as stock
+        for by_type_from in (10_000, 0):
+            with self.subTest(by_type_from=by_type_from):
+                w = World()
+                a = party(w, "Customer", "bc.customer", "SYNTH Rejected Ltd",
+                          bc_email="a@rejected.example")
+                b = party(w, "Customer", "portal.app_customer", "SYNTH Rejected Ltd",
+                          email="b@rejected.example")
+                c = party(w, "Customer", "bc.customer", "SYNTH Leadonly Ltd",
+                          bc_email="a@leadonly.example")
+                d = party(w, "Customer", "portal.app_customer", "SYNTH Leadonly Ltd",
+                          email="b@leadonly.example")
+                e = party(w, "Customer", "bc.customer", "SYNTH Settled Ltd",
+                          bc_email="a@settled.example")
+                f = party(w, "Customer", "portal.app_customer", "SYNTH Settled Ltd",
+                          email="b@settled.example")
+                w.link("Customer.same_record_as", a, b, "contradicted")
+                w.link("Customer.same_record_as", c, d, "lead")
+                w.link("Customer.same_record_as", e, f)
+                old, stock.BY_TYPE_FROM = stock.BY_TYPE_FROM, by_type_from
+                try:
+                    self.run_rules(w, [q.DUP_RULE])
+                finally:
+                    stock.BY_TYPE_FROM = old
+                pairs = {frozenset((g["object_id"], g["follow_up"]["proposal"]["document"]))
+                         for g in self.kinds(q.DUPLICATE)}
+                self.assertEqual(pairs, {frozenset((c, d))})
+
     def test_two_bc_companies_are_two_entities_and_sibling_accounts_are_not_duplicates(self):
         from operating.proactive_engine import _Store, _cites, _gap, _result, _Skips
 

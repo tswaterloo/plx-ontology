@@ -214,7 +214,7 @@ export default function TrustRoute() {
               <p className="text-[12px] text-muted">
                 Practice score: replayed days the rules were tuned on.{" "}
                 {page.autopilot_gate
-                  ? `Gate: at least ${page.autopilot_gate.need_judged} items judged on fresh days, ${page.autopilot_gate.need_percent}% or more right, before a workflow may act on approval.`
+                  ? `Gate: at least ${page.autopilot_gate.need_judged} held-out items judged (fresh days, or past days never tuned on), ${page.autopilot_gate.need_percent}% or more right, before a workflow may act on approval.`
                   : "Gate: the rules cannot be read, so no workflow acts."}
               </p>
               {rows.length === 0 ? (
@@ -228,7 +228,7 @@ export default function TrustRoute() {
                       <th className="py-1 pr-3 font-normal">Mode</th>
                       <th className="py-1 pr-3 text-right font-normal">Practice</th>
                       <th className="py-1 font-normal">
-                        {page.autopilot_gate ? `Gate: fresh items at ≥${page.autopilot_gate.need_percent}%` : "Gate"}
+                        {page.autopilot_gate ? `Gate: held-out items at ≥${page.autopilot_gate.need_percent}%` : "Gate"}
                       </th>
                     </tr>
                   </thead>

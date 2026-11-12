@@ -110,6 +110,15 @@ class PainAlerts(Engine):
                          {"invoice_lead_only": 1, "ship_date_unknown": 1})
         # the order's total is a finance figure: in the event, never in the summary
         self.assertNotIn("950", gap["summary"])
+        self.assertEqual((gap["event"]["amount"]["value"], gap["event"]["amount"]["basis"]),
+                         ("950", "total_amount"))
+        # a header of 0 that nothing prices states no amount, never "0 CAD" (C-01: 900
+        # Portal headers read 0 over unpriced lines)
+        w = World()
+        shipped_order(w, day(20), total="0")
+        self.run_rules(w)
+        (gap,) = self.kinds(pb.SHIPPED_UNBILLED)
+        self.assertNotIn("amount", gap["event"])
 
     def test_shipped_not_invoiced_needs_a_grant_on_every_invoice_audience(self):
         w = World()

@@ -49,7 +49,7 @@ def _assumption(**over):
 
 def plan(lines, *, freight="100", freight_extra=None, duty=None, hs=(), currency="USD",
          assumptions=None, extra=None, complete=True, covers=True, rows_hidden=(),
-         withheld=None, receipts=0):
+         withheld=None, receipts=0, landed_actuals=None):
     """One engine run over a purchase order whose ``lines`` are ``(price, ordered, received)``
     in USD per ea; ``hs``: the line indexes whose item cites an HS code."""
     evidence: dict = {"currency": [_entry("currency", PO, {"untrusted_text": currency})]}
@@ -83,7 +83,8 @@ def plan(lines, *, freight="100", freight_extra=None, duty=None, hs=(), currency
     out = lc.plan_run(ARGS, evidence, edges, items={}, name="landed_cost", as_of="2099-01-02",
                       resolver=lambda h, actor: None if h in rows_hidden else rows[h],
                       actor=None, complete=complete, covers=lambda link: covers,
-                      assumptions=assumptions, withheld=withheld)
+                      assumptions=assumptions, withheld=withheld,
+                      **({"landed_actuals": landed_actuals} if landed_actuals else {}))
     out["by_name"] = {e["name"]: e for e in out["entries"]}
     return out
 
@@ -330,6 +331,30 @@ class EstimateEngineTests(unittest.TestCase):
                    rows_hidden={"fixture://PurchaseOrder:1"})
         self.assertEqual({e["value"] for e in out["entries"]}, {None})
 
+    def test_a_partial_line_set_never_states_a_purchase_order_total(self):
+        """Recorded duty and freight rates cost each line read on its own goods; the PO total
+        is stated only over a line set proven whole (BIZ-003)."""
+        rates = {"PO90000001": {"duty": {"rate": "0.05", "gap": None, "charges": 1,
+                                         "linked_by": ["po_number"]},
+                                "freight": {"rate": "0.1", "gap": None, "charges": 1,
+                                            "linked_by": ["po_number"]},
+                                "incoterm": {"po": "FOB", "vendor_default": None}}}
+        number = {"po_number": [_entry("po_number", PO, {"untrusted_text": "PO90000001"})]}
+        provider = lambda keys: {"records": rates, "known": sorted(rates)}  # noqa: E731
+        lines = [("1.00", "100", "100"), ("3.00", "100", "100")]
+        whole = plan(lines, extra=number, landed_actuals=provider, receipts=1)["by_name"]
+        self.assertEqual(whole["landed_cost_line_1"]["value"], "1.15")
+        self.assertEqual(whole["landed_cost"]["value"], "460")
+        for kwargs in ({"complete": False}, {"covers": False, "withheld": lambda link: 1}):
+            with self.subTest(kwargs=kwargs):
+                out = plan(lines, extra=number, landed_actuals=provider, receipts=1, **kwargs)
+                e = out["by_name"]
+                self.assertEqual(e["landed_cost_line_1"]["value"], "1.15")
+                self.assertIsNone(e["landed_cost"]["value"])
+                self.assertIn("not proven whole (PO_LINES_INCOMPLETE",
+                              e["landed_cost"]["steps"][0])
+                self.assertIn("po_lines_incomplete", out["reasons"])
+
     def test_a_usable_quote_total_is_the_freight_when_the_header_has_none(self):
         quote = {"quote_amount": [_entry("quote_amount", "ForwarderQuote:1", "200",
                                          currency="USD")],
@@ -346,6 +371,50 @@ class EstimateEngineTests(unittest.TestCase):
         self.assertEqual(quoted, "200")
         self.assertEqual(out["by_name"]["landed_cost_estimate_subtotal"]["value"], "600")
         self.assertIn("quote_amount_1", out["by_name"]["landed_cost_estimate_line_1"]["inputs"])
+
+    def test_a_quote_including_duty_is_never_charged_duty_again(self):
+        """A door-to-door quote of 200 USD including duties and taxes is one freight-and-duty
+        charge (BIZ-002): the estimate adds no second duty; with a duty also recorded beside
+        it the split is unknown and no estimate is stated."""
+        quote = {"quote_amount": [_entry("quote_amount", "ForwarderQuote:1", "200",
+                                         currency="USD")],
+                 "quote_basis": [_entry("quote_basis", "ForwarderQuote:1",
+                                        {"untrusted_text": "per shipment"})],
+                 "quote_scope": [_entry("quote_scope", "ForwarderQuote:1",
+                                        {"untrusted_text": "door to door"})],
+                 "quote_includes": [_entry("quote_includes", "ForwarderQuote:1",
+                                           {"untrusted_text": "duties and taxes"})],
+                 "quote_valid_until": [_entry("quote_valid_until", "ForwarderQuote:1",
+                                              {"untrusted_text": "2099-02-01"})]}
+        lines = [("1.00", "100", "0"), ("3.00", "100", "0")]
+        out = plan(lines, freight=None, extra=quote)
+        e = out["by_name"]
+        self.assertIn("duties and taxes: included in this quote (one freight-and-duty "
+                      "charge); no separate duty is added beside it",
+                      e["landed_cost_freight_quote_1"]["steps"])
+        self.assertEqual(e["landed_cost_estimate_subtotal"]["value"], "600")
+        self.assertEqual(e["landed_cost_estimate"]["value"], "600")     # no 6.5% default duty
+        self.assertTrue(any(s.startswith("duty: 0 USD") for s in
+                            e["landed_cost_estimate_line_1"]["steps"]),
+                        e["landed_cost_estimate_line_1"]["steps"])
+        self.assertEqual([g for g in out["gaps"] if g["subject"].startswith("estimate duty")],
+                         [])
+        # the duty part says where it is: in the quote, never "recorded"
+        steps = e["landed_cost_estimate"]["steps"]
+        self.assertIn("part duty: in_freight_quote (included in the freight quote used as "
+                      "freight; never added again)", steps)
+        self.assertNotIn("part duty: recorded", steps)
+        # the same quote beside a header duty estimate or a recorded duty-rate assumption
+        for kwargs in ({"duty": "30"}, {"assumptions": [_assumption()]}):
+            with self.subTest(kwargs=kwargs):
+                out = plan(lines, freight=None, extra=quote, **kwargs)
+                self.assertIsNone(out["by_name"]["landed_cost_estimate"]["value"])
+                self.assertIsNone(out["by_name"]["landed_cost_estimate_line_1"]["value"])
+                self.assertTrue(_gap(out, "duty_in_freight_quote_and_recorded"))
+        # the quote excluding duty: the default duty applies beside it, as before
+        quote.pop("quote_includes")
+        self.assertEqual(plan(lines, freight=None, extra=quote)["by_name"][
+            "landed_cost_estimate"]["value"], "626")
 
     def test_shares_sum_to_the_header_at_1_10_and_60_lines(self):
         for n in (1, 10, 60):

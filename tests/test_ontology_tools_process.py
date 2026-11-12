@@ -2360,5 +2360,78 @@ def _decided(item):
     return (item["state"], missing.get("state"), missing.get("reason"))
 
 
+class EvidenceNeverPromotedTests(Mixin, unittest.TestCase):
+    """SEMANTIC-003..005: plx.process never states more than its evidence: a partial or
+    lead set stays partial or a lead, a staging twin never joins two items' quantities,
+    and a hidden status value never makes a stage reached. Evidence label
+    ``isolated-fixture`` (real DDL, schema, graphs, grants and output contract)."""
+
+    def test_an_incomplete_or_lead_set_stays_so(self):
+        s = Store()
+        ids = sales_fixture(s)
+        s.conn.commit()
+        t = tools(s)
+        got = {}
+        for label, complete, lead in (("control", True, False), ("incomplete", False, False),
+                                      ("lead", True, True)):
+            handle = t.base.sets.new(STAFF, [ids["make"]], complete=complete,
+                                     total=1 if complete else 2, lead=lead)
+            got[label] = self.answer(t, {"from": handle,
+                                         "process": "sales_order_lifecycle"}).result
+        reasons = {label: {g["reason"] for g in result.get("gaps", ())}
+                   for label, result in got.items()}
+        self.assertTrue(got["control"]["completeness"]["complete"])
+        self.assertFalse(reasons["control"] & {"set_incomplete", "lead_basis"})
+        self.assertFalse(got["incomplete"]["completeness"]["complete"])
+        self.assertEqual(got["incomplete"]["completeness"]["total"], 2)
+        self.assertIn("set_incomplete", reasons["incomplete"])
+        self.assertIn("lead_basis", reasons["lead"])
+        s.conn.close()
+
+    def test_a_staging_twin_never_joins_two_items_quantities(self):
+        def ordered_received(result):
+            return [c for c in result["quantity_checks"] if c["roles"] == ["ordered", "received"]]
+        s = Store()
+        ids = purchase_fixture(s)
+        other = s.obj("Product:bc.items:other-item")
+        for line in (ids["rc_a_1"], ids["rc_a_2"], ids["pi_a_line"]):
+            link_type = line.split(":")[0] + ".for_item"
+            s.conn.execute("DELETE FROM links WHERE from_object=? AND link_type=?",
+                           (line, link_type))
+            s.link(link_type, line, other)
+        s.conn.commit()
+        apart = ordered_received(self.answer(tools(s), {"from": ids["po_a"]}).result)
+        self.assertTrue(any(c["agree"] is False for c in apart))
+        bridge = s.obj("Product:portal.app_product:bridge", "gold_native_staging")
+        s.link("Product.same_record_as", ids["item"], bridge, tier="verified", kind="same_record")
+        s.link("Product.same_record_as", other, bridge, tier="verified", kind="same_record")
+        s.conn.commit()
+        staged = ordered_received(self.answer(tools(s), {"from": ids["po_a"]}).result)
+        self.assertEqual(len(staged), len(apart))
+        self.assertTrue(any(c["agree"] is False for c in staged))
+        # an authoritative common twin is a real identity: the items reconcile
+        s.conn.execute("UPDATE object_versions SET lineage=? WHERE object_id=?",
+                       ("gold_etl_from_fm", bridge))
+        s.conn.commit()
+        joined = ordered_received(self.answer(tools(s), {"from": ids["po_a"]}).result)
+        self.assertLess(len(joined), len(apart))
+        s.conn.close()
+
+    def test_a_hidden_status_value_never_makes_a_stage_reached(self):
+        s = Store()
+        ids = sales_fixture(s)
+        s.val(ids["make"], "status", "text", "DRAFT", markings='["finance"]',
+              path="row.hidden_status")
+        s.conn.commit()
+        stage = {}
+        for label, actor in (("full", STAFF), ("restricted", SALES)):
+            result = self.answer(tools(s), {"from": ids["make"]}, actor).result
+            (stage[label],) = [x for x in result["stages"] if x["stage"] == "sales_order"]
+        self.assertEqual(stage["full"]["missing"]["state"], "unknown")
+        self.assertNotEqual(stage["restricted"]["state"], "present")
+        self.assertNotIn("DRAFT", json.dumps(stage["restricted"]))
+        s.conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

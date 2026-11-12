@@ -37,12 +37,13 @@ Evidence label of tests: ``isolated-fixture``.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+
+from ontology.measure import money_text
 
 from . import drafts
 from .copy_gate import count, say_date, sentences
@@ -636,16 +637,14 @@ class _Strict(dict):
 
 
 def _money(amount: Any) -> str | None:
+    """The event's amount as stated (``ontology.measure.money_text``): exact, never rounded
+    to cents, never NaN; a figure without its three-letter currency is never stated."""
     if not isinstance(amount, Mapping):
-        return None
-    try:
-        value = Decimal(str(amount.get("value")))
-    except (InvalidOperation, ValueError):
         return None
     currency = amount.get("currency")
     if not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency):
         return None   # a figure without its currency is never stated
-    return f"{value:,.2f} {currency}"
+    return money_text(amount.get("value"), currency)
 
 
 # --------------------------------------------------------------------------- build

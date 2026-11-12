@@ -50,13 +50,17 @@ class LateCustomerOrder(Engine):
         w = World()
         late, late_fm = order(w, fm="Open", fm_required="2026-10-01")
         order(w, fm="Closed", required="2026-10-01")                    # closed in FM
-        shipped, _ = order(w, required="2026-10-01")
+        shipped, _ = order(w, status=None, required="2026-10-01")
         w.link("Shipment.ships", w.obj("Shipment", {"ship_date": "2026-10-02"},
                                        audience=SHIP_AUDIENCE), shipped)   # fulfilled
+        partly, _ = order(w, required="2026-10-01")      # still Open beside its shipment
+        w.link("Shipment.ships", w.obj("Shipment", {"ship_date": "2026-10-02"},
+                                       audience=SHIP_AUDIENCE), partly)    # partly fulfilled
         posted, _ = order(w, required="2026-10-01")
         w.link("SalesOrder.same_record_as", posted, w.obj(
             "SalesOrder", {"order_number": "S1"}, binding="bc.sales_invoices.order"))
-        order(w, required="2026-10-01", order_date="2026-10-01")       # its own day
+        own, _ = order(w, required="2026-10-01", order_date="2026-10-01")   # its own day:
+        # judged with its doubt (BIZ-007), never erased
         order(w, status="Revised", required="2026-10-01")              # unknown word
         order(w, status=None, required="2026-10-01")                   # no status
         order(w, fm="Closed", required="2026-10-01", tier="lead")      # lead twin closed
@@ -67,16 +71,19 @@ class LateCustomerOrder(Engine):
         summary = self.run_rule(w)
         self.assertEqual(summary["detectors"][RULE], "complete")
         gaps = self.read()["gaps"]
-        self.assertEqual([(g["kind"], g["object_id"]) for g in gaps], [(RULE, late_fm)])
-        (gap,) = gaps
+        self.assertEqual(sorted((g["kind"], g["object_id"]) for g in gaps),
+                         sorted([(RULE, late_fm), (RULE, own)]))
+        doubted = next(g for g in gaps if g["object_id"] == own)
+        self.assertIn("the day the order was entered", doubted["summary"])
+        (gap,) = [g for g in gaps if g["object_id"] == late_fm]
         self.assertIn("open 18 days past its required date 2026-10-01", gap["summary"])
         self.assertIn("the Portal: Open", gap["summary"])
         self.assertIn("FileMaker: Open", gap["summary"])
         self.assertEqual(summary["not_evaluated"][RULE], {
             "closed_in_unsettled_twin": 1, "no_order_lines": 1, "no_required_date": 1,
-            "required_date_default": 1, "status_missing": 1, "status_unmapped": 1})
-        self.assertEqual(summary["coverage"][RULE]["total"], 13)
-        self.assertEqual(summary["coverage"][RULE]["evaluated"], 7)
+            "partly_fulfilled": 1, "status_missing": 1, "status_unmapped": 1})
+        self.assertEqual(summary["coverage"][RULE]["total"], 14)
+        self.assertEqual(summary["coverage"][RULE]["evaluated"], 8)
 
     def test_a_reader_who_may_not_read_a_copy_or_a_closure_source_sees_no_gap(self):
         w = World()
@@ -90,14 +97,45 @@ class LateCustomerOrder(Engine):
                                   held=ALL_MARKINGS, decide=admit)
                 self.assertEqual(shown["gaps"], [])
 
-    def test_a_date_a_bulk_share_of_a_source_holds_is_no_requested_date(self):
+    def test_a_bulk_date_written_on_the_day_a_load_wrote_the_records_is_no_requested_date(self):
         w = World()
         for _ in range(12):
-            order(w, required="2026-07-14")       # a migration's day on every record
-        real, _ = order(w, required="2026-09-01")
+            # a migration run at 02:10 UTC on Jul 14 (Jul 13 in Toronto) wrote its own day
+            # as every record's required date: provenance, so the date is erased
+            order(w, required="2026-07-14", portal_created_at="2026-07-14T02:10:00")
+        real, _ = order(w, required="2026-09-01", portal_created_at="2026-08-20T15:00:00")
         summary = self.run_rule(w)
         self.assertEqual([g["object_id"] for g in self.read()["gaps"]], [real])
         self.assertEqual(summary["not_evaluated"][RULE], {"required_date_default": 12})
+
+    def test_many_orders_sharing_a_real_deadline_keep_it(self):
+        # BIZ-007: 30 orders, 10 of them due on one campaign day, each entered on its own
+        # day: a shared deadline is no default, so all ten are judged late
+        w = World()
+        shared = [order(w, required="2026-09-15",
+                        portal_created_at=f"2026-08-{10 + i:02d}T14:00:00")[0]
+                  for i in range(10)]
+        others = [order(w, required=f"2026-10-{25 + i % 5:02d}",
+                        portal_created_at=f"2026-08-{1 + i:02d}T14:00:00")[0]
+                  for i in range(20)]
+        summary = self.run_rule(w)
+        late = sorted(g["object_id"] for g in self.read(limit=100)["gaps"])
+        self.assertEqual(late, sorted(shared))     # the others are not yet due
+        self.assertNotIn("required_date_default", summary["not_evaluated"].get(RULE, {}))
+        self.assertEqual(len(others), 20)
+
+    def test_a_same_day_order_is_judged_and_says_its_doubt(self):
+        w = World()
+        rush, _ = order(w, required="2026-10-01", portal_created_at="2026-10-01T13:30:00")
+        plain, _ = order(w, required="2026-10-02", portal_created_at="2026-09-20T13:30:00")
+        summary = self.run_rule(w)
+        gaps = {g["object_id"]: g for g in self.read()["gaps"]}
+        self.assertEqual(sorted(gaps), sorted([rush, plain]))
+        self.assertIn("the day the order was entered", gaps[rush]["summary"])
+        self.assertNotIn("the day the order was entered", gaps[plain]["summary"])
+        # the doubted one ranks after the plain one though it is a day later (low priority)
+        self.assertEqual(list(gaps), [plain, rush])
+        self.assertNotIn("required_date_default", summary["not_evaluated"].get(RULE, {}))
 
     def test_cardinality_every_order_once_within_the_budget(self):
         for n in (1, 10, 60):
@@ -260,8 +298,21 @@ class OneDefinition(unittest.TestCase):
         self.assertEqual(so.record_status({"sage_complete": ["2"]}).cls, so.OPEN)
         self.assertEqual(so.order_status([portal_open, so.record_status(
             {"sage_complete": ["9"]})]).reason, so.STATUS_UNMAPPED)
-        self.assertEqual(so.record_status({"sage_complete": ["2"]}, fulfilled=True).cls,
-                         so.CLOSED)
+        # a linked shipment or invoice closes a record only when nothing of its own says
+        # goods are still to ship (BIZ-005): a partly fulfilled one is unknown, never closed
+        for values in ({"sage_complete": ["2"]}, {"status": ["PARTIALLY_SHIPPED"]},
+                       {"status": ["Open"]},
+                       {"bc_status": ["Open"], "bc_fully_shipped": ["false"]},
+                       {"bc_fully_shipped": ["false"]}):
+            with self.subTest(values=values):
+                state = so.record_status(values, fulfilled=True)
+                self.assertEqual((state.cls, state.reason), (so.UNKNOWN, so.PARTLY_FULFILLED))
+                self.assertEqual(so.order_status([state]).cls, so.UNKNOWN)
+        for values in ({}, {"sage_complete": ["5"]}, {"sage_complete": ["2", "5"]},
+                       {"bc_status": ["Open"], "bc_fully_shipped": ["true"]},
+                       {"status": ["Revised"]}):
+            with self.subTest(values=values):
+                self.assertEqual(so.record_status(values, fulfilled=True).cls, so.CLOSED)
         self.assertEqual(so.record_status({"status": [{"untrusted_text": "Shipped"}]}).cls,
                          so.CLOSED)
 

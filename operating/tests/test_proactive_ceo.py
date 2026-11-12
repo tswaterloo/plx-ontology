@@ -33,7 +33,8 @@ def customer(w: World, name: str = "SYNTH Customer") -> str:
 
 def order(w: World, who: str | None, *, placed: str, total: str | None = "1000",
           currency: str | None = "CAD", required: str | None = None, status: str = "Open",
-          binding: str = "portal.app_sales_order", audience: str = "api:portal") -> str:
+          binding: str = "portal.app_sales_order", audience: str = "api:portal",
+          price: str | None = None) -> str:
     values = {"status": status, "order_date": placed}
     if total is not None:
         values["total_amount"] = total
@@ -42,8 +43,12 @@ def order(w: World, who: str | None, *, placed: str, total: str | None = "1000",
     oid = w.obj("SalesOrder", values, binding=binding, audience=audience)
     if total is not None:
         money(w, oid, "total_amount", currency)
-    w.link("SalesOrderLine.line_of", w.obj("SalesOrderLine", {
-        "ordered_quantity": ("5", "kg")}, audience=audience), oid)
+    line = w.obj("SalesOrderLine", {"ordered_quantity": ("5", "kg"),
+                                    **({"unit_price": price} if price else {})},
+                 audience=audience)
+    if price:
+        money(w, line, "unit_price", currency, per="kg")
+    w.link("SalesOrderLine.line_of", line, oid)
     if who:
         w.link("SalesOrder.ordered_by", oid, who)
     return oid
@@ -169,10 +174,43 @@ class CeoSignals(Engine):
         self.assertEqual(summary["not_evaluated"][ceo.DEMAND], {
             "order_value_unknown": 1, "customer_order_value_unknown": 1,
             "customer_twin_unsettled": 1})
-        # a header stating 0 beside a twin record of the same order stating its value: the
-        # stated value counts (the governing record is one that states a positive total)
-        self.assertTrue(ceo._valued({"props": {"total_amount": [{"value": "10"}]}}))
-        self.assertFalse(ceo._valued({"props": {"total_amount": [{"value": "0"}]}}))
+
+    def test_a_zeroed_header_counts_at_the_value_its_invoices_or_lines_derive(self):
+        # live 11-11 (C-01): 73,472 of 75,189 Sage headers read 0 once invoiced; a closed
+        # order is worth the invoices that bill it (cited), an open one its priced lines
+        w = World()
+        invoiced = customer(w, "SYNTH Invoiced")
+        for i in range(4):
+            order(w, invoiced, placed=day(100 + 60 * i))
+        closed = order(w, invoiced, placed=day(15), total="0", status="Closed",
+                       binding="portal.sage_oe_order_header")
+        bill = w.obj("SalesInvoice", {"subtotal": "60"}, audience="api:portal")
+        money(w, bill, "subtotal", "CAD")
+        w.link("SalesInvoice.bills", bill, closed)
+        lined = order(w, invoiced, placed=day(16), total="0", price="10",
+                      binding="portal.sage_oe_order_header")
+        summary = self.run_rules(w)
+        (gap,) = self.kinds(ceo.DEMAND)
+        self.assertEqual(gap["object_id"], invoiced)
+        self.assertIn("110 CAD on 2 orders in the last 90 days", gap["summary"])
+        self.assertNotIn(ceo.DEMAND, summary["not_evaluated"])
+        number = int(lined.rsplit(":", 1)[1])   # its line is the next record
+        self.assertTrue({handle(int(bill.rsplit(":", 1)[1])), handle(number + 1)}
+                        <= set(gap["citations"]))
+
+    def test_a_closed_order_no_invoice_bills_has_no_value_from_its_lines(self):
+        # review of C-01 (live 11-12): 133 Sage orders closed (complete 5) with no invoice
+        # and nothing shipped, up to 107,730 USD ordered; their lines' ordered quantity is
+        # no sale, so they count as no value, never as demand
+        w = World()
+        buyer = customer(w, "SYNTH Closed Unbilled")
+        for i in range(4):
+            order(w, buyer, placed=day(100 + 60 * i))
+        order(w, buyer, placed=day(15), total="0", status="Closed", price="10",
+              binding="portal.sage_oe_order_header")
+        summary = self.run_rules(w)
+        self.assertEqual([g["object_id"] for g in self.kinds(ceo.DEMAND)], [])
+        self.assertEqual(summary["not_evaluated"][ceo.DEMAND]["order_value_unknown"], 1)
 
     # ------------------------------------------------------------------ promise slips
 

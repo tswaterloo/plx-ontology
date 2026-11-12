@@ -197,7 +197,13 @@ class ProjectionChunker:
             "v.superseded_at, v.recorded_at FROM text_fields f "
             "JOIN objects o ON o.object_id = f.object_id "
             "LEFT JOIN object_versions v ON v.object_id = f.object_id "
-            "AND v.l1_handle = f.version_handle")
+            "AND v.l1_handle = f.version_handle"
+            # a layer's slice: only the versions holding one of its objects are read (a
+            # superset of the groups kept below), not every text field of the layer once
+            # per slice (a 700k-object layer was 35 full reads in Python for 0 chunks)
+            + ("" if objects is None else " WHERE f.version_handle IN (SELECT version_handle "
+               "FROM text_fields WHERE object_id IN (SELECT value FROM json_each(?)))"),
+            () if objects is None else (_json_ids(objects),))
         groups: dict[tuple[str, str], list[_Field]] = defaultdict(list)
         for row in rows:
             if wanted is not None and row["document_kind"] not in wanted:

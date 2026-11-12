@@ -166,26 +166,56 @@ def _named(st: Any) -> dict[str, str] | None:
 
 # object ids per name read when no word index serves the names (the whole scan)
 SCAN_CHUNK = 2000
+# At most this many chunks read side by side (each thread on its own store connection).
+SCAN_THREADS = 8
+# Postgres only: a name holding none of these is no label or artwork name (every word of
+# ``label_changes.ART`` holds one), so it is dropped by the server, never shipped and
+# tested here; ``ART`` still decides each name kept.
+ART_SUPERSET = "label|art|dieline|proof|packaging|carton"
 
 
 def _scan_named(st: Any) -> dict[str, str]:
     """The same as ``_named`` with no word index (Postgres until its value words are built):
-    the attachments and files listed by the type index, their names read a chunk of ids
-    at a time and only the label-worded kept. One statement over every name scanned the
-    store's value cells (statement timeout) and held them all (over 4 GB, 2026-11-11)."""
+    the attachments and files listed by the type index (the records removed now dropped by
+    the run's removal read of those two types, ``_Store.removed``), their names read a chunk of ids at a
+    time, side by side, and only the label-worded kept (on Postgres the server drops every
+    name holding no word of ``ART_SUPERSET`` first). One statement over every name scanned
+    the store's value cells (statement timeout) and held them all (over 4 GB,
+    2026-11-11); one chunk after another took 336 s of the change rule's 465 s
+    (2.25M names, 2026-11-12)."""
     from ontology import store as ostore
+    removed = st.removed((ATTACHMENT, FILE)) if callable(getattr(st, "removed", None)) \
+        else None
+    if removed is None:
+        ids = [row[0] for row in st.conn.execute(
+            "SELECT o.object_id FROM objects o WHERE o.object_type IN (?, ?) AND NOT "
+            + ostore.removed_at_sql("o.object_id"), (ATTACHMENT, FILE))]
+    else:
+        ids = [row[0] for row in st.conn.execute(
+            "SELECT o.object_id FROM objects o WHERE o.object_type IN (?, ?)",
+            (ATTACHMENT, FILE)) if row[0] not in removed]
+    ids.sort()
+    server = bool(getattr(st.conn, "postgres", False))
+    sql = ("SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND "
+           "property = 'name' AND object_id IN (SELECT value FROM json_each(?))"
+           + (" AND value ~* ?" if server else ""))
+
+    def one(chunk: list[str]) -> list[tuple[str, Any]]:
+        args = (json.dumps(chunk), ART_SUPERSET) if server else (json.dumps(chunk),)
+        return [(oid, value) for oid, value in st.conn.execute(sql, args)
+                if isinstance(value, str) and lc.ART.search(value)]
+    chunks = [ids[i:i + SCAN_CHUNK] for i in range(0, len(ids), SCAN_CHUNK)]
+    workers = max(1, min(int(getattr(st, "threads", 1) or 1), SCAN_THREADS, len(chunks) or 1))
     out: dict[str, str] = {}
-    ids = [row[0] for row in st.conn.execute(
-        "SELECT o.object_id FROM objects o WHERE o.object_type IN (?, ?) AND NOT "
-        + ostore.removed_at_sql("o.object_id") + " ORDER BY o.object_id", (ATTACHMENT, FILE))]
-    for chunk in (ids[i:i + SCAN_CHUNK] for i in range(0, len(ids), SCAN_CHUNK)):
-        _tick(st)
-        for oid, value in st.conn.execute(
-                "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND "
-                "property = 'name' AND object_id IN (SELECT value FROM json_each(?))",
-                (json.dumps(chunk),)):
-            if isinstance(value, str) and lc.ART.search(value):
+    pool = ThreadPoolExecutor(workers)
+    try:
+        for found in pool.map(one, chunks):
+            _tick(st)   # the asking thread's window, as each chunk comes back
+            for oid, value in found:
                 out.setdefault(oid, value)
+    finally:
+        # a window spent: the chunks not started are never read
+        pool.shutdown(wait=True, cancel_futures=True)
     return out
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import json
+from pathlib import Path
 import sqlite3
 import time
 import unittest
@@ -252,6 +253,196 @@ class Commitments(Engine):
         self.assertEqual(self.kinds(pcm.MISSED, pcm.DUE), [])
         self.assertEqual(summary["not_evaluated"][pcm.COMMITMENTS]
                          .get("recent_mail_over_budget"), 1)
+
+    def test_a_recent_read_longer_than_the_window_stops_inside_it_and_needs_reply_refreshes(self):
+        """The shared read is bound by what is left of the promise rule's window: it keeps
+        the chunks it read, counts the rest unread, and finishes in time, so the reply rule
+        (reading the same population from the memo) is not cut off and still refreshes."""
+        import time
+        w = RecentWorld()
+        who = customer(w)
+        so = order(w, who, (AS_OF + timedelta(days=30)).isoformat(), number="SYNTH-ASK")
+        mail(w, so, day(6), sender=CUSTOMER_MAIL, to=(OURS,), conversation="conv-9",
+             body="Could you confirm the delivery date?")
+        recent = {sent(w, day(10), to=(CUSTOMER_MAIL,), conversation=f"r-{n}", n=100 + n)
+                  for n in range(20)}
+        slow, chunk = pcm._Population._audiences, pcm.RECENT_CHUNK
+
+        def audiences(self, ids):   # a store read slower than the window
+            if set(ids) & recent:
+                time.sleep(1.5)   # the recent mail's chunks
+            return slow(self, ids)
+        pcm._Population._audiences, pcm.RECENT_CHUNK = audiences, 1
+        started = time.monotonic()
+        try:
+            summary = self.run_rules(w, detector_seconds={r: 6.0 for r in RULES})
+        finally:
+            pcm._Population._audiences, pcm.RECENT_CHUNK = slow, chunk
+        self.assertLess(time.monotonic() - started, 6.0)
+        for rule in RULES:
+            self.assertEqual(summary["detectors"][rule], "complete")
+        self.assertGreater(summary["not_evaluated"][pcm.COMMITMENTS]
+                           .get("recent_mail_over_budget", 0), 0)
+        self.assertEqual(len(self.kinds(pcm.NEEDS_MY_REPLY, reader=OWNER)), 1)
+
+    def test_mail_left_unread_by_one_pass_is_continued_by_the_next_never_read_twice(self):
+        """A saved cursor: every pass reads the newest mail not yet judged, within its time;
+        a message judged is not read again; within a few passes all of it is judged, and the
+        promise is found; a pass over a window that moved on forgets what fell out of it."""
+        import time
+        w = RecentWorld()
+        customer(w)
+        ids = [sent(w, day(10 + n % 5), body="Thanks, noted.", conversation=f"r-{n}", n=n)
+               for n in range(2, 14)]
+        promised = sent(w, day(30), n=1)   # the oldest: read last
+        slow, chunk = pcm._Population._audiences, pcm.RECENT_CHUNK
+        seen: list[str] = []
+
+        def audiences(self, got):
+            seen.extend(o for o in got if o in ids or o == promised)
+            if set(got) & ({promised, *ids}):
+                time.sleep(2.0)
+            return slow(self, got)
+        pcm._Population._audiences, pcm.RECENT_CHUNK = audiences, 1
+        unread = []
+        try:
+            for _ in range(8):
+                summary = self.run_rules(w, detector_seconds={r: 6.0 for r in RULES})
+                left = summary["not_evaluated"][pcm.COMMITMENTS].get("recent_mail_over_budget", 0)
+                unread.append(left)
+                if not left:
+                    break
+        finally:
+            pcm._Population._audiences, pcm.RECENT_CHUNK = slow, chunk
+        self.assertGreater(unread[0], 0)
+        self.assertEqual(unread[-1], 0)
+        self.assertLess(len(unread), 8)
+        self.assertEqual(len(seen), len(set(seen)))   # none read twice
+        self.assertEqual([g["object_id"] for g in self.kinds(pcm.MISSED, pcm.DUE)], [promised])
+
+    def test_a_newly_excluded_mailbox_leaves_no_id_in_the_saved_cursor(self):
+        """The cursor rests on the people exclusion: once a person is excluded, no id of
+        their mailbox's mail stays saved (kept or rejected), and an exclusion that cannot
+        say whom it excludes reuses no verdict."""
+        from integrations.people_exclusion import PeopleExclusion
+        from operating.chunking.permissions import Exclusion
+        other = "00000000-0000-4000-8000-0000000000b1"
+        w = RecentWorld()
+        customer(w)
+        to_customer = sent(w, day(10), mailbox=other, n=1)
+        not_customer = sent(w, day(10), mailbox=other, to=("x@synth-unknown.example",),
+                            conversation="r-2", n=2)
+        mine = sent(w, day(10), to=("y@synth-unknown.example",), conversation="r-3", n=3)
+        path = Path(str(self.inbox) + ".commitments-recent.json")
+
+        def saved() -> set[str]:
+            body = json.loads(path.read_text())
+            return {*body["rejected"], *body["kept"], *body["days"]}
+
+        self.run_rules(w)
+        self.assertLessEqual({to_customer, not_customer, mine}, saved())
+        both = Exclusion(PeopleExclusion([EXCLUDED_OID, other]),
+                         directory=people().directory, internal_domains=["synth-tenant.example"])
+        summary = self.run_rules(w, people=both)
+        self.assertEqual(summary["detectors"][pcm.COMMITMENTS], "complete")
+        self.assertEqual(saved() & {to_customer, not_customer}, set())
+        self.assertIn(mine, saved())
+        self.assertNotIn(other, path.read_text())
+
+        class Opaque:   # an exclusion with no fingerprint: no verdict reused
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __getattr__(self, name):
+                if name == "fingerprint":
+                    raise AttributeError(name)
+                return getattr(self.inner, name)
+        digests = set()
+        for _ in range(2):
+            self.run_rules(w, people=Opaque(people()))
+            digests.add(json.loads(path.read_text())["digest"])
+        self.assertEqual(len(digests), 2)
+
+    def test_a_message_judged_unnamed_is_read_again_once_a_link_names_an_order(self):
+        """Ours to an outside address of no customer is rejected for now; an order link
+        applied after that verdict makes the next pass read it again."""
+        w = RecentWorld()
+        who = customer(w)
+        shipped = order(w, who, day(40).isoformat(), number="SYNTH-SHIPPED", status="Shipped")
+        note = sent(w, day(10), to=("z@synth-unknown.example",), body="It ships on Friday.",
+                    n=1)
+        self.run_rules(w)
+        body = json.loads(Path(str(self.inbox) + ".commitments-recent.json").read_text())
+        self.assertIn(note, body["unnamed"])
+        w.link("Email.mentions_sales_order", note, shipped)
+        self.run_rules(w)
+        body = json.loads(Path(str(self.inbox) + ".commitments-recent.json").read_text())
+        self.assertIn(note, body["kept"])
+        self.assertNotIn(note, body["rejected"])
+
+    def test_a_failed_address_book_read_is_an_error_not_a_wait(self):
+        w = RecentWorld()
+        customer(w)
+        sent(w, day(10), n=1)
+        book = pcm._Population._book
+
+        def broken(self):
+            raise RuntimeError("synthetic")
+        pcm._Population._book = broken
+        try:
+            started = time.monotonic()
+            summary = self.run_rules(w, detector_seconds={r: 30.0 for r in RULES})
+        finally:
+            pcm._Population._book = book
+        self.assertLess(time.monotonic() - started, 15.0)
+        counts = summary["not_evaluated"][pcm.COMMITMENTS]
+        self.assertEqual(counts.get("recent_mail_unread_error"), 1)
+        self.assertNotIn("recent_mail_over_budget", counts)
+
+    def test_a_cursor_forgets_a_changed_book_and_messages_past_the_window(self):
+        import tempfile
+        path = Path(tempfile.mkdtemp()) / "c.json"
+        cur = pcm._Cursor(path, "d1", "2026-10-01")
+        cur.rejected, cur.kept = {"Email:a", "Email:old"}, {"Email:k": (["c"], "mail:x", True)}
+        cur.save({"Email:a": "2026-11-01", "Email:old": "2026-09-01", "Email:k": "2026-11-02"})
+        again = pcm._Cursor(path, "d1", "2026-10-01")
+        self.assertEqual((again.rejected, set(again.kept)), ({"Email:a"}, {"Email:k"}))
+        self.assertEqual(pcm._Cursor(path, "d2", "2026-10-01").rejected, set())   # book changed
+        self.assertEqual(pcm._Cursor(path, "d1", "2026-11-02").rejected, set())   # window moved
+        path.write_text("not json")
+        self.assertEqual(pcm._Cursor(path, "d1", "2026-10-01").kept, {})
+
+    def test_a_cursor_of_the_whole_recent_mail_saves_and_loads_in_seconds(self):
+        import tempfile
+        path = Path(tempfile.mkdtemp()) / "c.json"
+        cur = pcm._Cursor(path, "d", "2026-10-01")
+        days = {f"Email:{n}": "2026-11-01" for n in range(100000)}
+        cur.rejected = {o for n, o in enumerate(days) if n % 4}
+        cur.kept = {o: (["c"], "mail:x", False) for n, o in enumerate(days) if not n % 4}
+        started = time.monotonic()
+        cur.save(days)
+        again = pcm._Cursor(path, "d", "2026-10-01")
+        self.assertLess(time.monotonic() - started, 10.0)
+        self.assertEqual(len(again.rejected) + len(again.kept), 100000)
+
+    def test_a_recent_read_in_many_chunks_judges_what_the_one_chunk_read_judges(self):
+        w = RecentWorld()
+        customer(w)
+        promised = sent(w, day(10), n=1)
+        for n in range(2, 9):
+            sent(w, day(10), body="Thanks, noted.", conversation=f"r-{n}", n=n)
+        sent(w, day(10), mailbox=EXCLUDED_OID, n=20)
+        chunk = pcm.RECENT_CHUNK
+        pcm.RECENT_CHUNK = 2
+        try:
+            summary = self.run_rules(w)
+        finally:
+            pcm.RECENT_CHUNK = chunk
+        self.assertEqual([g["object_id"] for g in self.kinds(pcm.MISSED, pcm.DUE)],
+                         [promised])
+        counts = summary["not_evaluated"][pcm.COMMITMENTS]
+        self.assertEqual(counts.get("recent_message_not_cleared"), 1)
+        self.assertNotIn("recent_mail_over_budget", counts)
 
     def test_a_store_without_the_events_time_index_does_not_read_recent_mail(self):
         w = RecentWorld(indexed=False)   # a SQLite generation: no (event_type, time) index

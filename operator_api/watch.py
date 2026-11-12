@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 import tempfile
 import threading
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
@@ -143,15 +144,30 @@ def _model() -> Optional[Callable[[str, Mapping[str, Any]], Any]]:
                   + json.dumps({"request": text}))
         argv = ["claude", "-p", "--output-format", "json", "--setting-sources", "",
                 "--tools", "", "--no-session-persistence"]
+        from operating import model_ledger
+        hit, kept = model_ledger.reused("watch_rule_compile", prompt)
+        if hit:
+            return json.loads(kept)
+        started = time.monotonic()
         try:
             done = subprocess.run(argv, env=agent_environment(os.environ), input=prompt,
                                   capture_output=True, text=True, timeout=MODEL_SECONDS,
                                   check=False)
-            reply = json.loads(done.stdout).get("result") or ""
+            whole = json.loads(done.stdout)
+            reply = whole.get("result") or ""
             start, end = reply.find("{"), reply.rfind("}")
-            return json.loads(reply[start:end + 1]) if start >= 0 else None
-        except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+            spec = json.loads(reply[start:end + 1]) if start >= 0 else None
+        except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired) as exc:
+            model_ledger.record("watch_rule_compile", prompt=prompt, ok=False,
+                                seconds=time.monotonic() - started,
+                                reason=type(exc).__name__)
             return None
+        turns, tokens = model_ledger.usage_of(whole)
+        model_ledger.record("watch_rule_compile", prompt=prompt, ok=spec is not None,
+                            seconds=time.monotonic() - started, turns=turns, tokens=tokens)
+        if spec is not None:
+            model_ledger.keep("watch_rule_compile", prompt, json.dumps(spec))
+        return spec
     return call
 
 

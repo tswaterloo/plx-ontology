@@ -511,6 +511,8 @@ class MirrorPinReaderTests(unittest.TestCase):
             CREATE TABLE row_version (relation TEXT, key_json TEXT, capture_id INTEGER,
                 run_index INTEGER, run_length INTEGER, row_json TEXT,
                 superseded_by_capture INTEGER);
+            CREATE TABLE row_removal (relation TEXT, key_json TEXT, basis TEXT, since TEXT,
+                until TEXT);
         """)
         key = json.dumps({"id": "1"}, sort_keys=True, separators=(",", ":"))
         db.execute("INSERT INTO mirror_meta VALUES ('generation', 'gen-test')")
@@ -521,9 +523,31 @@ class MirrorPinReaderTests(unittest.TestCase):
                    (key, json.dumps({"qty": "9"})))
         db.execute("INSERT INTO row_version VALUES ('public.t', ?, 1, 0, 1, ?, 2)",
                    (key, json.dumps({"qty": "5"})))
+        # key 3 was missing between the two captures and came back (EVAL-005)
+        k3 = json.dumps({"id": "3"}, sort_keys=True, separators=(",", ":"))
+        db.execute("INSERT INTO row_current VALUES ('public.t', ?, 0, 1, ?, 2, NULL)",
+                   (k3, json.dumps({"qty": "1"})))
+        db.execute("INSERT INTO row_removal VALUES ('public.t', ?, 'missing_from_source', "
+                   "'2099-01-01T06:00:00Z', '2099-01-01T18:00:00Z')", (k3,))
         db.commit()
         db.close()
         return path
+
+    def test_a_closed_absence_still_reads_absent_at_a_pin_inside_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.build(tmp)
+            import sqlite3
+            db = sqlite3.connect(path)
+            db.execute("INSERT INTO capture VALUES (3, 'public.t', '2099-01-01T12:00:00Z')")
+            db.execute("INSERT INTO capture_state VALUES (3, 'complete')")
+            db.commit()
+            db.close()
+            with runner.MirrorPinReader(path) as reader:
+                self.assertEqual(reader.row_at("public.t", {"id": "3"}, 3),
+                                 ("row_absent_at_pin", None))
+                self.assertEqual(reader.row_at("public.t", {"id": "3"}, 1)[0], "row_not_yet_captured_at_pin")
+                self.assertEqual(reader.row_at("public.t", {"id": "3"}, 2),
+                                 ("ok", {"qty": "1"}))
 
     def test_row_at_reads_the_version_current_at_each_pin(self):
         with tempfile.TemporaryDirectory() as tmp:

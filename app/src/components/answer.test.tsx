@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Answer, Fact, Hidden, Source } from "@/lib/types";
 import { AnswerCard, bulletFact, lateRows, type Turn } from "./answer-card";
-import { ConflictCard, HiddenNotice } from "./answer-parts";
+import { ConflictCard, FactList, HiddenNotice } from "./answer-parts";
 import { ObjectView } from "./object-view";
 import { SourceChip } from "./source-chip";
 
@@ -203,6 +203,32 @@ describe("AnswerCard", () => {
     expect(card).not.toHaveTextContent("(BC)");
     expect(card).toHaveTextContent("Email from ross@vendor.example: “next cheque run on October 25”");
     expect(card).toHaveTextContent("Total cost: $9,680.00 USD");
+  });
+
+  it("says each fact's amount in its own record's currency, never another fact's (WEB-028)", () => {
+    const cadPo: Source = { system: "BC", handle: "bc://po/1", label: "PO", fields: { currencyCode: "CAD" } };
+    const usdPo: Source = { system: "BC", handle: "bc://po/2", label: "PO", fields: { currencyCode: "usd" } };
+    const named: Source = { system: "BC", handle: "bc://po/3", label: "PO", fields: {} };
+    const bare: Source = { system: "BC", handle: "bc://po/4", label: "PO", fields: {} };
+    const both: Source = { system: "BC", handle: "bc://po/5", label: "PO", fields: { currency: "CAD", "row.currency_code": "USD" } };
+    const facts: Fact[] = [
+      { text: "Total cost: 100", sources: [usdPo], check: "read_from_record" },
+      { text: "Total cost: 250", sources: [cadPo], check: "read_from_record" },
+      { text: "Currency: EUR", sources: [named], check: "read_from_record" },
+      { text: "Total cost: 40", sources: [named], check: "read_from_record" },
+      { text: "Total cost: 75", sources: [bare], check: "read_from_record" },
+      { text: "Total cost: 9", sources: [both], check: "read_from_record" },
+    ];
+    render(<FactList facts={facts} />);
+    const items = within(screen.getByTestId("fact-list")).getAllByRole("listitem").map((li) => li.textContent ?? "");
+    expect(items[0]).toContain("Total cost: $100.00 USD");
+    expect(items[1]).toContain("Total cost: $250.00 CAD");
+    expect(items[3]).toContain("Total cost: €40.00 EUR");
+    // no currency of its own record: shown as written, never in a neighbour's currency
+    expect(items[4]).toContain("Total cost: 75");
+    expect(items[4]).not.toMatch(/CAD|USD|EUR/);
+    expect(items[5]).toContain("Total cost: 9");
+    expect(items[5]).not.toMatch(/CAD|USD/);
   });
 
   it("shows data age as one grey line: no capture states, no amber unless a used source is over a week old", () => {
@@ -735,6 +761,23 @@ describe("AnswerCard: the analyst's shape", () => {
     expect(bulletFact("Payment terms NET30.", facts, new Set())).toBe(2);
     // each fact lends its chips once
     expect(bulletFact("Payment terms NET30.", facts, new Set([2]))).toBeNull();
+  });
+
+  it("the same figures never lend another property's or record's evidence (WEB-027)", () => {
+    const src = (h: string): Source => ({ ...bc, handle: h, label: h });
+    const qty: Fact = { text: "PO123 quantity: 12", sources: [src("bc://po/123/qty")], check: "passed" };
+    const late: Fact = { text: "PO123: 12 days late", sources: [src("bc://po/123/late")], check: "passed" };
+    const price: Fact = { text: "PO123 unit price: 12", sources: [src("bc://po/123/price")], check: "passed" };
+    const other: Fact = { text: "PO124 quantity: 12", sources: [src("bc://po/124/qty")], check: "passed" };
+    const facts = [qty, price, late, other];
+    expect(bulletFact("PO123 is 12 days late.", facts, new Set())).toBe(2);
+    expect(bulletFact("PO123 ordered quantity is 12.", facts, new Set())).toBe(0);
+    expect(bulletFact("PO123 costs 12 per unit (price).", facts, new Set())).toBe(1);
+    expect(bulletFact("PO124 has 12 in quantity.", facts, new Set())).toBe(3);
+    // a figure alone, every property's: no fact is guessed
+    expect(bulletFact("PO123: 12.", facts, new Set())).toBeNull();
+    // two facts stated equally well: neither lends its chips
+    expect(bulletFact("PO123 quantity 12.", [qty, { ...qty, sources: [src("bc://po/123/dup")] }], new Set())).toBeNull();
   });
 
   it("shows the general part in its own labelled section: no chip, no fact line, and the cited fact keeps its line", () => {

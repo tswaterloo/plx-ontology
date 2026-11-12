@@ -9,6 +9,8 @@ Workbench client, no live reader).
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import hashlib
 import inspect
 import json
@@ -21,6 +23,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from ontology.core import Actor
 from operating import employee_permissions_portal as portal
@@ -966,6 +969,61 @@ class ConsoleHttpTests(Fixture):
         self.assertEqual(json.loads(revoked.getvalue())["audit"], "audit_unwritable")
         self.assertEqual(json.loads(revoked.getvalue())["session"], second["session"])
         self.assertFalse(out.exists())
+
+    def test_live_sessions_are_listed_and_revoked_by_session_reference(self):
+        from operator_api.auth import SESSION_COOKIE, AuthRequired, DevAuth, ticket_identity
+        from operator_api.workspace import console_ticket
+
+        state = self.dir / "state"
+        si.bind_state_dir(state, fixture=False)
+        guard = si.replay_guard_for(state)
+        dev = DevAuth(ticket_identity=ticket_identity(self.resolver(), SECRET, guard),
+                      sign_in_identity=ticket_identity(self.resolver(), SECRET, guard,
+                                                       single_use=True), mode="dev")
+
+        def run(*argv):
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                code = console_ticket.main(list(argv), environ={si.SESSION_TICKET_SECRET_ENV:
+                                                                 SECRET})
+            return code, json.loads(printed.getvalue())
+
+        refs, tokens = [], []
+        for n in range(3):
+            out = self.dir / f"url-{n}"
+            code, printed = self.mint(out, extra=["--ttl-minutes", "30"])
+            self.assertEqual(code, 0, printed)
+            refs.append(json.loads(printed)["session"])
+            if n < 2:   # two of the three links are used to sign in
+                tokens.append(dev.login(out.read_text("ascii").strip().split("#access=")[1])[0])
+        code, listed = run("sessions", "--state-dir", str(state))
+        self.assertEqual((code, listed["count"]), (0, 3))
+        self.assertEqual({item["session"]: item["signed_in"] for item in listed["sessions"]},
+                         {refs[0]: True, refs[1]: True, refs[2]: False})
+        dumped = json.dumps(listed)
+        for secret_or_identity in (EMAIL_A, SECRET, "#access="):
+            self.assertNotIn(secret_or_identity, dumped)
+        # Revoking by reference ends that app session on its next request, and only that one.
+        code, revoked = run("revoke", "--state-dir", str(state), "--session", refs[0].upper())
+        self.assertEqual((code, revoked["status"], revoked["session"]), (0, "revoked", refs[0]))
+        with self.assertRaises(AuthRequired):
+            dev.authenticate({}, {SESSION_COOKIE: tokens[0]})
+        self.assertEqual(dev.authenticate({}, {SESSION_COOKIE: tokens[1]}).session.email,
+                         EMAIL_A)
+        self.assertEqual(self.audit_rows()[-1]["event"], "revoke")
+        code, listed = run("sessions", "--state-dir", str(state))
+        self.assertEqual({item["session"] for item in listed["sessions"]}, set(refs[1:]))
+        # Unknown and malformed references are refused; nothing else is revoked.
+        for ref, reason in (("0" * 64, "session_unknown"), ("not-a-ref", "session_ref_invalid"),
+                            ("", "session_ref_invalid")):
+            code, refused = run("revoke", "--state-dir", str(state), "--session", ref)
+            self.assertEqual((code, refused), (2, {"status": "refused", "reason": reason}), ref)
+        self.assertEqual(run("sessions", "--state-dir", str(state))[1]["count"], 2)
+        # An expired mint is not live and needs no revocation.
+        with mock.patch.object(console_ticket.time, "time", return_value=time.time() + 3600):
+            self.assertEqual(run("sessions", "--state-dir", str(state))[1]["count"], 0)
+            self.assertEqual(run("revoke", "--state-dir", str(state), "--session",
+                                 refs[1])[1]["status"], "expired")
 
     def test_mint_refuses_with_audit_unwritable_and_writes_no_url(self):
         si.bind_state_dir(self.dir / "state", fixture=False)

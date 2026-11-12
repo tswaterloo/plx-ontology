@@ -9,7 +9,10 @@ read by its own system's status word (the vocabularies differ):
 * a closed word of any system (``CLOSED_WORDS``), a BC ``fullyShipped`` true, or a record
   that stands only for an order BC deleted once it was posted (a binding with
   ``stands_for``) is **closed**; so is a record a settled shipment or invoice is linked to
-  (``FULFILLED_LINKS``: fulfilled at least in part, never claimed open past its date);
+  (``FULFILLED_LINKS``) unless its own status says it still has goods to ship (an open
+  word or code, BC ``fullyShipped`` false): a shipment or invoice proves fulfilment in part
+  only, so such a record is **unknown** (``partly_fulfilled``: its remaining balance is not
+  reconciled), never closed and never claimed open past its date (BIZ-005);
 * an open word of its own system (``OPEN_WORDS``) is **open**; the Portal's DRAFT is
   **draft** (an order not yet placed: neither open nor closed);
 * a Sage record is read by its COMPLETE code (``SAGE_CODE``, ``SAGE_WORDS``: ``1`` and
@@ -27,11 +30,13 @@ copied without its lines (a bulk load's second copy of an order another record c
 with its items) or an empty shell says nothing about what the customer waits for; the
 record that holds the items carries the order.
 
-A required date is a requested date only when it is no source default
-(``operating.source_defaults``): not a day a bulk share of its binding's records hold
-(``date_defaults``), and not one of the record's own days (its creation or order day,
-``OWN_DAYS``). An order whose every date is a default is undated, never late
-(``requested_date``). Among requested dates the declared precedence of
+A required date is a requested date unless it is a proven source default
+(``operating.source_defaults``, BIZ-007): a day a bulk share of its binding's records hold
+that is also a day those records were written (``date_defaults``). Many orders sharing a
+real deadline keep it. A date equal to one of the record's own days (its creation or order
+day, ``OWN_DAYS``) is kept and judged with the reason ``required_date_own_day`` (a
+same-day order or a form default). An order whose every date is a default is undated,
+never late (``requested_date``). Among requested dates the declared precedence of
 ``SalesOrder.required_date`` governs (the top lineage holding one); two dates in it are
 disputed.
 """
@@ -75,6 +80,7 @@ DATE_PROP = "required_date"
 OWN_DAYS = ("order_date", "portal_created_at", "fm_created_at")
 # Unknown reasons, as every reader counts them.
 STATUS_MISSING, STATUS_UNMAPPED = "status_missing", "status_unmapped"
+PARTLY_FULFILLED = "partly_fulfilled"
 # An order line of any system -> its order; an order no record of which has one is not
 # judged (``NO_LINES``).
 LINE_OF = "SalesOrderLine.line_of"
@@ -106,22 +112,47 @@ def record_status(values: Mapping[str, Sequence[Any]], *, binding: str | None = 
     value, a row with ``value`` or the tools' wrapper). ``binding``: the record's source
     binding (a posted-only BC order is closed); ``fulfilled``: a settled shipment or
     invoice is linked to it."""
-    if fulfilled or (binding is not None and binding in posted_bindings()):
+    if binding is not None and binding in posted_bindings():
         return Status(CLOSED)
     if any(word(v) == "true" for v in values.get(SHIPPED_FLAG, ()) or ()):
         return Status(CLOSED)
     items = [(prop, v) for prop in (*STATUS_PROPS, SAGE_CODE) for v in values.get(prop, ())
              or () if word(v)]
-    if not items:
-        return Status(UNKNOWN, STATUS_MISSING)
     classes = [_class(prop, value) for prop, value in items]
     if CLOSED in classes:
         return Status(CLOSED)
+    if fulfilled:
+        # a linked shipment or invoice closes a record only when nothing of its own says
+        # goods are still to ship; one that does is partly fulfilled, its balance unknown
+        still = OPEN in classes or any(word(v) == "false"
+                                       for v in values.get(SHIPPED_FLAG, ()) or ())
+        return Status(UNKNOWN, PARTLY_FULFILLED) if still else Status(CLOSED)
+    if not items:
+        return Status(UNKNOWN, STATUS_MISSING)
     if UNKNOWN in classes:
         return Status(UNKNOWN, STATUS_UNMAPPED)
     if OPEN in classes:
         return Status(OPEN, open_by=tuple(v for (p, v), c in zip(items, classes) if c == OPEN))
     return Status(DRAFT)
+
+
+def word_class(value: Any, prop: str | None = None) -> str:
+    """A status word's class. With ``prop`` (the property a page grouped orders by, such
+    as the Portal's ``status``), that system's own words: a Portal DRAFT is a draft, never
+    an open order, though BC's API calls an unreleased order Draft. Without one (the
+    system not known): closed by any system's closed word, open by any system's open word
+    (``partially shipped`` is open), draft by a draft word, else unknown (never guessed
+    open or closed)."""
+    if prop is not None:
+        return _class(prop, value) if prop in OPEN_WORDS or prop == SAGE_CODE else UNKNOWN
+    said = word(value)
+    if said in CLOSED_WORDS:
+        return CLOSED
+    if any(said in words for words in OPEN_WORDS.values()):
+        return OPEN
+    if any(said in words for words in DRAFT_WORDS.values()):
+        return DRAFT
+    return UNKNOWN
 
 
 def _class(prop: str, value: Any) -> str:
@@ -170,19 +201,26 @@ def day_of(value: Any) -> date | None:
         return None
 
 
-def date_defaults(days_by_binding: Mapping[Any, Iterable[date | None]]
+def date_defaults(records_by_binding: Mapping[Any, Iterable[tuple[date | None, Iterable[Any]]]]
                   ) -> dict[Any, frozenset]:
-    """Per binding (a source's own population), the days a bulk share of its records'
-    required dates hold (``source_defaults.default_days``)."""
-    return {b: source_defaults.default_days(days) for b, days in days_by_binding.items()}
+    """Per binding (a source's own population), from ``(required day, the record's own
+    stamps)`` per record: the bulk required days with provenance
+    (``source_defaults.proven_defaults``: also a day the holders were written). A day many
+    orders share without that is a real common deadline, kept (BIZ-007)."""
+    return {b: found for b, records in records_by_binding.items()
+            if (found := source_defaults.proven_defaults(records))}
 
 
-def is_requested(day: date | None, *, own: Iterable[Any] = (),
-                 defaults: Iterable[date] = ()) -> bool:
-    """Whether a required date is a requested one: a readable day that is neither a bulk
-    default of its binding nor one of the record's own (creation, order) days."""
-    return day is not None and day not in frozenset(defaults) and not source_defaults.own_day(
-        day, [day_of(d) if not isinstance(d, date) else d for d in own])
+def is_requested(day: date | None, *, defaults: Iterable[date] = ()) -> bool:
+    """Whether a required date is a requested one: a readable day that is not a proven
+    default of its binding. A record's own day is not erased (``own_doubt`` says it)."""
+    return day is not None and day not in frozenset(defaults)
+
+
+def own_doubt(day: date | None, own: Iterable[Any]) -> bool:
+    """Whether a required date equals one of the record's own (creation, order) days: a
+    same-day rush order or a form default; kept, judged, and said with that doubt."""
+    return day is not None and day in source_defaults.own_days(own)
 
 
 @dataclass(frozen=True)
@@ -190,15 +228,21 @@ class Requested:
     day: date | None
     governing: tuple = ()       # the rows that state it (the top precedence lineage)
     reason: str | None = None   # no_required_date, required_date_default,
-    #                             required_date_unreadable, required_date_disputed
+    #                             required_date_unreadable, required_date_disputed; with a
+    #                             day: required_date_own_day (the order's own day: a doubt)
+
+
+OWN_DAY = "required_date_own_day"
 
 
 def requested_date(records: Sequence[tuple[Sequence[Mapping[str, Any]], Iterable[Any],
                                            Iterable[date]]]) -> Requested:
     """An order's requested date over its records, each (its ``required_date`` rows with
-    ``value`` and ``lineage``, its own days, its binding's default days): the top
-    precedence lineage holding a requested date governs."""
+    ``value`` and ``lineage``, its own days, its binding's proven default days): the top
+    precedence lineage holding a requested date governs. A governing day equal to a
+    record's own day is kept with the reason ``required_date_own_day``."""
     real: list[Mapping[str, Any]] = []
+    owns: dict[int, list[Any]] = {}
     default = unreadable = False
     for rows, own, defaults in records:
         own, defaults = list(own), frozenset(defaults)
@@ -208,8 +252,9 @@ def requested_date(records: Sequence[tuple[Sequence[Mapping[str, Any]], Iterable
             day = day_of(row)
             if day is None:
                 unreadable = True
-            elif is_requested(day, own=own, defaults=defaults):
+            elif is_requested(day, defaults=defaults):
                 real.append(row)
+                owns[id(row)] = own
             else:
                 default = True
     if not real:
@@ -224,7 +269,9 @@ def requested_date(records: Sequence[tuple[Sequence[Mapping[str, Any]], Iterable
     days = {day_of(r) for r in governing}
     if len(days) != 1:
         return Requested(None, governing, "required_date_disputed")
-    return Requested(days.pop(), governing)
+    day = days.pop()
+    doubt = any(own_doubt(day, owns[id(r)]) for r in governing)
+    return Requested(day, governing, OWN_DAY if doubt else None)
 
 
 # --------------------------------------------------------------------------- schema

@@ -142,6 +142,82 @@ class CompatTests(unittest.TestCase):
         self.assertIn("IS NOT DISTINCT FROM %(x)s", translate("SELECT 1 WHERE a IS :x"))
         self.assertEqual(translate("PRAGMA data_version"), "SELECT ontology.sq_data_version()")
 
+    def test_scalar_max_and_min_are_null_when_any_argument_is_on_both_stores(self):
+        """SQLite's two-or-more-argument max/min is NULL when one argument is NULL;
+        Postgres greatest/least skip NULLs, so the translation must not use them bare."""
+        from operating.pg.sqlite_compat import PgCompatConnection
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        lite = self.sqlite()
+        cases = [
+            ("SELECT max(1, NULL), min(1, NULL), max(1, 3, 2), min(3, 1, 2)", ()),
+            ("SELECT max(2.5, 1), min('b', 'a'), max(NULL, NULL)", ()),
+            ("SELECT max(?, 2), min(?, 2), max(?, ?)", (5, None, 1, 7)),
+            ("SELECT min(4, max(1, ?)), max(1, min(?, 9))", (None, 3)),
+            # per row, a nullable column: NULL where it is NULL, as SQLite reads it
+            ("SELECT object_id, max(recorded_at, superseded_at), "
+             "min(recorded_at, superseded_at) FROM object_versions ORDER BY object_id", ()),
+            ("SELECT object_id FROM object_versions WHERE max(recorded_at, superseded_at) "
+             "IS NULL ORDER BY object_id", ()),
+        ]
+        for sql, args in cases:
+            with self.subTest(sql=sql):
+                self.assertEqual([tuple(r) for r in pg.execute(sql, args).fetchall()],
+                                 [tuple(r) for r in lite.execute(sql, args).fetchall()])
+        self.assertEqual(pg.execute("SELECT max(1, NULL)").fetchone()[0], None)
+
+    def test_a_streamed_read_takes_rows_a_batch_at_a_time_with_the_same_answer(self):
+        """``stream``: the rows ``execute`` gives, read from a server cursor as the caller
+        goes: the first batch is read without the rest, a long scan holds a batch in
+        memory (not the whole result and its copies), and a read the item gate decides
+        runs whole with the same rows."""
+        import gc
+        import tracemalloc
+        from operating.pg.sqlite_compat import PgCompatConnection
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        lite = self.sqlite()
+        for sql, args in (("SELECT object_id, l1_handle FROM object_versions WHERE "
+                           "l1_handle LIKE '%@x' AND recorded_at >= ? ORDER BY object_id",
+                           ("2026",)),
+                          ("SELECT object_id FROM object_versions WHERE object_id IN "
+                           "(SELECT value FROM json_each(:ids)) ORDER BY object_id",
+                           {"ids": '["A:b:1", "A:b:3"]'})):
+            with self.subTest(sql=sql):
+                got = pg.stream(sql, args, batch=1)
+                self.assertEqual([tuple(r) for r in got],
+                                 [tuple(r) for r in lite.execute(sql, args)])
+        row = pg.stream("SELECT object_id AS oid FROM object_versions ORDER BY 1").fetchone()
+        self.assertEqual(row["oid"], "A:b:1")
+        # a read the item gate decides: run whole, the gate's answer kept
+        pg.create_function("gate", 1, lambda h: 0 if h.endswith("/2@x") else 1)
+        gated = pg.stream("SELECT object_id FROM object_versions WHERE gate(l1_handle) "
+                          "ORDER BY object_id")
+        self.assertEqual([r[0] for r in gated], ["A:b:1", "A:b:3"])
+
+        many = "SELECT value FROM generate_series(1, 200000) AS g(value)"
+        early = pg.stream(many, batch=500)
+        self.assertEqual([r[0] for r in early.fetchmany(10)], list(range(1, 11)))
+        self.assertEqual(early.fetched, 500)   # the rest is left on the server
+        early.close()
+        # its connection is ended and reused, never more than the few kept
+        for _ in range(5):
+            self.assertEqual(pg.stream("SELECT 1").fetchall()[0][0], 1)
+        self.assertLessEqual(pg._streams_open, 2)
+
+        def peak(read):
+            gc.collect()
+            tracemalloc.start()
+            try:
+                total = sum(r[0] for r in read(many))
+            finally:
+                top = tracemalloc.get_traced_memory()[1]
+                tracemalloc.stop()
+            self.assertEqual(total, 200000 * 200001 // 2)
+            return top
+        whole, streamed = peak(pg.execute), peak(lambda q: pg.stream(q, batch=1000))
+        self.assertLess(streamed * 10, whole, (streamed, whole))
+
     def test_an_in_list_reads_the_same_rows_as_sqlite_for_every_json_shape(self):
         """A ``json_each(:name)`` IN list bound as an array keeps the function's answer:
         strings, nulls, an empty list, numbers, other JSON shapes and unreadable text."""

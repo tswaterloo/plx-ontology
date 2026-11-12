@@ -4989,8 +4989,8 @@
       "to": "SalesOrder",
       "name": "for_sales_order",
       "reverse_name": "batches",
-      "cardinality": "N:1",
-      "description": "The FileMaker order a batch is made for, when the batch's OE list names one order (batch.oelist_c = order_entry.erpcode). A list of several orders is not split here (a later step); such a batch stays unlinked.",
+      "cardinality": "N:M",
+      "description": "The FileMaker orders a batch is made for (batch.oelist_c = order_entry.erpcode). The OE list holds one order number per line (often the same one repeated, once per component), so each distinct line links; a line that equals no order's code (a month, a note, an order number with words appended) links nothing, and a number that names two orders is left unresolved.",
       "bindings": [
         {
           "kind": "fk",
@@ -5002,7 +5002,8 @@
               "from": "oelist_c",
               "to": "erpcode",
               "compare": "identifier",
-              "identifier_kind": "so_number"
+              "identifier_kind": "so_number",
+              "split_from": true
             }
           ],
           "unique_target": true,
@@ -5010,7 +5011,7 @@
             {
               "kind": "workbench_code",
               "path": "ontology/schema/domains/manufacturing.json",
-              "note": "Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 1,022 of 1,363 non-blank OE lists equal one order's ERP code (53 ambiguous, left unresolved); 15 of 15 sampled pairs agree on the customer (the batch's bulk product owner is the order's customer)."
+              "note": "M18 split (2026-11-12): oelist_c is a CR-separated list, 538 of 1,086 distinct values hold more than one line, mostly one order repeated; each distinct line is a key. Link-completeness audit round 2, 2026-11-08 (read-only source mirror, counts only): 1,022 of 1,363 non-blank OE lists equal one order's ERP code (53 ambiguous, left unresolved); 15 of 15 sampled pairs agree on the customer (the batch's bulk product owner is the order's customer)."
             }
           ]
         }

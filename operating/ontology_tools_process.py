@@ -324,6 +324,7 @@ from operating.ontology_tools import (  # L8: one reader, policy, visibility, se
 from operating import po_status
 from operating.attested_conflicts import conflicts as attested_conflicts
 from operating.ontology_tools_traverse import WITHHELD  # one name for a trimmed answer
+from operating.ontology_tools_traverse import LEAD_BASIS, SET_INCOMPLETE
 
 POLICY_CHANGED = "policy_changed_since_handle"
 
@@ -1239,6 +1240,7 @@ class ProcessTools:
         now_answer = "as_known_at" not in arguments or at >= _to_ms(self.base.clock())
         ctx = _Ctx(self, actor, at, now_answer)
         root_ids, from_set, withheld = self._roots(arguments["from"], actor)
+        set_whole, set_matched, set_lead = self._set_scope(arguments["from"], actor)
         visible = ctx.visible(root_ids)
         ordered = [r for r in root_ids if r in visible]
         revoked = from_set and self._revoked(ctx, [r for r in root_ids if r not in visible])
@@ -1360,7 +1362,20 @@ class ProcessTools:
             gaps.append(_gap("inaccessible", POLICY_CHANGED, arguments["from"][:700],
                              "some objects of this set are no longer readable for this "
                              "reader and were not evaluated"))
-        lost = WITHHELD if withheld else POLICY_CHANGED if revoked else None
+        if not set_whole:
+            gaps.append(_gap("unknown", SET_INCOMPLETE, arguments["from"][:700],
+                             "this set came from an answer that did not hold every match"
+                             + (f": {set_matched} matched, the set holds {len(root_ids)}"
+                                if set_matched is not None else "")
+                             + "; whatever is counted from it is at least that many, "
+                             "never all there is"))
+        if set_lead:
+            gaps.append(_gap("unknown", LEAD_BASIS, arguments["from"][:700],
+                             "this set holds records reached only through lead-tier links: "
+                             "every stage, count and check of it is a likely match, never a "
+                             "confirmed one; say it as a lead (claims with lead true)"))
+        lost = WITHHELD if withheld else POLICY_CHANGED if revoked else \
+            SET_INCOMPLETE if not set_whole else None
         if lost is None and (arguments.get("include_variants") or from_set):
             # a not-served stage is unknown for every reader alike, so it never makes
             # the sequences differ from a full-grant reader's; an optional stage is not
@@ -1407,8 +1422,11 @@ class ProcessTools:
             if unchecked and reason is None:  # decided past an uncaptured twin: partial
                 result["completeness"].update(complete=False, reason=UNCHECKED)
             if lost is not None:
-                result["completeness"].update(complete=False, total=None,
-                                              reason=reason or lost)
+                # a subset's own count is never the population's: the total is how many
+                # the set's answer matched when known (an incomplete set), else unknown
+                result["completeness"].update(
+                    complete=False, reason=reason or lost,
+                    total=set_matched if lost == SET_INCOMPLETE else None)
 
         fill()
         # Fit one response: drop per-item gaps, then check items, from the tail; the
@@ -1454,6 +1472,18 @@ class ProcessTools:
                                 "re-run the call that produced it")
             return list(ids), True, self.base.sets.is_withheld(root, actor)
         return [root], False, False
+
+    def _set_scope(self, root: str, actor: Actor) -> tuple[bool, int | None, bool]:
+        """(complete, how many matched when known, lead) of a set root, as the set
+        registry recorded them (SEMANTIC-003: a subset is never the population, a lead
+        cohort never a confirmed one); a single record is (True, None, False)."""
+        if not root.startswith("set:"):
+            return True, None, False
+        sets = self.base.sets
+        whole, matched = sets.completeness(root, actor) \
+            if getattr(sets, "completeness", None) else (False, None)
+        lead = bool(getattr(sets, "is_lead", None) and sets.is_lead(root, actor))
+        return bool(whole), matched, lead
 
     def _revoked(self, ctx: "_Ctx", unseen: Sequence[str]) -> bool:
         """Whether set members this reader cannot see at T are hidden by its grants
@@ -2484,12 +2514,17 @@ class ProcessTools:
     def _status(self, ctx: _Ctx, rid: str, prop: str, compare: str) -> tuple[Any, list[Any]]:
         """The record's normalized status text, ``_UNCARRIED`` when its binding does
         not carry the property, None when unreadable (no visible value, a null,
-        or disagreeing values)."""
+        disagreeing values, or a value of it this reader may not read)."""
         if self._carried(ctx, rid, prop) is None:
             return _UNCARRIED, []
         rows = ctx.values(rid).get(prop, [])
         texts = {_norm(r["value"], compare) for r in rows if r["value"] is not None}
         if len(texts) != 1 or any(r["value"] is None for r in rows):
+            return None, rows
+        if prop in ctx.withheld(rid):
+            # a status value this reader may not read may disagree with the one it can
+            # (SEMANTIC-005): the status is undecided for it, never the visible value's,
+            # so less evidence never makes a stronger conclusion (callers: held back)
             return None, rows
         return texts.pop(), rows
 
@@ -3917,9 +3952,12 @@ class ProcessTools:
             "SELECT * FROM links WHERE link_type = :link AND (from_object IN "
             "(SELECT value FROM json_each(:ids)) OR to_object IN (SELECT value FROM json_each(:ids)))",
             {"link": link_id, "ids": json.dumps(sorted(keys))}))
-        rows = [r for r in rows if r["tier"] in _IDENTITY_TIERS and ctx.row_visible(r)
-                and self._evidence_ok(ctx, r)]
         ends = ctx.visible({r["from_object"] for r in rows} | {r["to_object"] for r in rows})
+        # the tier as served (``_link_tier``: a link touching a never-authority row is a
+        # lead), never the stored one: a staging twin never joins two items' quantities
+        # (SEMANTIC-004)
+        rows = [r for r in rows if _link_tier(r, ends) in _IDENTITY_TIERS
+                and ctx.row_visible(r) and self._evidence_ok(ctx, r)]
         for row in rows:
             if row["from_object"] in ends and row["to_object"] in ends:
                 parent[find(row["from_object"])] = find(row["to_object"])

@@ -484,8 +484,16 @@ def _figure(number: Decimal) -> bool:
 
 def numbers(value: Any) -> set[Decimal]:
     """Every non-zero numeric value in ``value``: itself, a numeric string, and the
-    numbers inside a JSON object, array or JSON text (bounded)."""
+    numbers inside a JSON object, array or JSON text (bounded: ``numbers_read``)."""
+    return numbers_read(value)[0]
+
+
+def numbers_read(value: Any) -> tuple[set[Decimal], bool]:
+    """``numbers`` and whether every value in ``value`` was read: False once the bound
+    (``_MAX_LEAVES`` values, a JSON text over 200,000 characters) left some unread, so a
+    number past it is not known either way (DOC-005)."""
     out: set[Decimal] = set()
+    complete = True
     stack, seen = [value], 0
     while stack and seen < _MAX_LEAVES:
         item = stack.pop()
@@ -496,7 +504,10 @@ def numbers(value: Any) -> set[Decimal]:
         if isinstance(item, (list, tuple)):
             stack.extend(item)
             continue
-        if isinstance(item, str) and item[:1] in ("{", "[") and len(item) <= 200_000:
+        if isinstance(item, str) and item[:1] in ("{", "["):
+            if len(item) > 200_000:
+                complete = False   # too long to read: what it holds is unknown
+                continue
             try:
                 stack.append(json.loads(item))
                 continue
@@ -506,7 +517,7 @@ def numbers(value: Any) -> set[Decimal]:
         if number is not None and number.is_finite() and number != 0:
             out.add(number)   # equal values hash alike (5120.000 is 5120); never normalised:
             # a huge exponent overflows the context
-    return out
+    return out, complete and not stack
 
 
 def _positive(value: Any) -> bool:
@@ -583,9 +594,14 @@ def withheld_columns(source: str, relation: str, row: Mapping[str, Any],
     if not hidden:
         return frozenset()
     secret: set[Decimal] = set()
+    # whether every withheld value was read: past the bound a withheld figure is unknown,
+    # so any figure elsewhere may repeat it (DOC-005)
+    whole = True
     for column in hidden:
-        secret |= {n for n in numbers(row[column]) if _figure(n)}
-    if secret:
+        found_numbers, complete = numbers_read(row[column])
+        secret |= {n for n in found_numbers if _figure(n)}
+        whole = whole and complete
+    if secret or not whole:
         for column, value in row.items():
             # A column a marking covers that the reader holds is shown by right, even
             # when it repeats a figure another marking withholds (a purchasing reader's
@@ -594,7 +610,10 @@ def withheld_columns(source: str, relation: str, row: Mapping[str, Any],
             marks = _column_of(found, source, relation, str(column))
             if column in hidden or column in found.keys or (marks and marks <= held):
                 continue
-            if numbers(value) & secret:
+            shown, complete = numbers_read(value)
+            # a column read only in part may hold a withheld figure past the bound
+            if shown & secret or not complete or (
+                    not whole and any(_figure(n) for n in shown)):
                 hidden.add(column)
     return frozenset(hidden)
 

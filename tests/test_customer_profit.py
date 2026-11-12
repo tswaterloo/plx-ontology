@@ -407,6 +407,40 @@ class CustomerProfitTests(unittest.TestCase):
         self.assertIn("QUOTE_COST_CURRENCY_UNSTATED",
                       {g["code"] for g in self.answer["breakdown"]["gaps"]})
 
+    def test_a_quote_line_with_no_unit_is_never_compared(self):
+        """SEMANTIC-002: a missing unit was taken as compatible with the order's PCS."""
+        def call(name, arguments):
+            got = self.world.call(name, arguments)
+            if name == "plx.object" and "uom" in (arguments.get("properties") or ()):
+                got = dict(got, values=[v for v in got.get("values") or ()
+                                        if v.get("property") != "uom"])
+            return got
+        answer = cp.profitability(call, self.world.customer("C-50"), today=TODAY,
+                                  question="Is Northwind profitable and why not?")
+        (row,) = answer["breakdown"]["quote"]["lines"]
+        self.assertEqual((row["quoted_price"], row["actual_price"], row["price_change_pct"]),
+                         (Decimal("12.00"), None, None))
+        gap = next(g for g in answer["breakdown"]["gaps"] if g[0] == "QUOTE_NOT_COMPARABLE") \
+            if isinstance(answer["breakdown"]["gaps"][0], tuple) else next(
+                g for g in answer["breakdown"]["gaps"] if g["code"] == "QUOTE_NOT_COMPARABLE")
+        self.assertIn("an unstated unit", json.dumps(gap, default=str))
+
+    def test_an_order_whose_dates_cannot_be_read_is_never_outside_the_period(self):
+        """SEMANTIC-001: an order with no readable date was counted outside the period and
+        the total over the rest returned as complete."""
+        def call(name, arguments):
+            props = arguments.get("properties") or ()
+            if name == "plx.object" and ("posting_date" in props or "order_date" in props):
+                return {"error": {"code": "read_failed", "message": "synthetic failure"}}
+            return self.world.call(name, arguments)
+        got = cp.profitability(call, self.world.customer("C-50"), today=TODAY,
+                               question="Is Northwind profitable and why not?")
+        self.assertEqual((got["orders_undated"], got["orders_outside_period"]), (5, 0))
+        self.assertFalse(got["coverage"]["complete"])
+        self.assertFalse(got["coverage"]["count_exact"])
+        self.assertEqual((got["totals"]["revenue"], got["totals"]["margin"]), (None, None))
+        self.assertIn("ORDER_DATES_UNREAD", {g["code"] for g in got["gaps"]})
+
     def test_drivers_and_next_action_come_from_the_computed_facts(self):
         texts = [d["text"] for d in self.answer["drivers"]]
         self.assertTrue(texts[0].startswith("Item FG-9 (Synthetic tube) lost 45.00 CAD (on "
@@ -739,6 +773,26 @@ class QuestionTests(unittest.TestCase):
                          "0.1234 CAD per unit")
 
 
+class OrderCurrencyTest(unittest.TestCase):
+    """A line whose entry names no currency takes the order margin's, else the other lines'
+    one currency; beside lines in two currencies it gets none, never the first line's."""
+
+    def read(self, currencies):
+        answer = [{"name": f"order_margin_line_{n}_revenue", "kind": "computed",
+                   "value": "10", "basis": [f"Product:p{n}"], "inputs": [],
+                   **({"currency": cur} if cur else {})}
+                  for n, cur in enumerate(currencies, 1)]
+        run = {"answer": answer, "claim_checks": {"passed": True},
+               "completeness": {"next_cursor": None}}
+        call = lambda name, args: run if name == "plx.investigate" else {}  # noqa: E731
+        order = cp.read_order(call, cp.Order("SalesOrder:bc.so:1", "SO-1", []))
+        return [ln.currency for ln in order.lines]
+
+    def test_a_line_without_currency_never_takes_the_first_of_two(self):
+        self.assertEqual(self.read(["CAD", None]), ["CAD", "CAD"])
+        self.assertEqual(self.read(["USD", "CAD", None]), ["USD", "CAD", None])
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -868,3 +922,55 @@ class SideBySideTests(unittest.TestCase):
         self.assertTrue(got["coverage"]["timed_out"])
         self.assertIn("SO-102", [o["number"] for o in got["orders"]])
         self.assertIsNone(got["totals"]["revenue"])
+
+
+class RepeatLossActionTests(unittest.TestCase):
+    """``next_action``'s repeated-loss line: "the last N orders" only for a run of
+    losses from the newest order with the item (all dated); otherwise the count in the
+    period, and a profitable latest order said, never left out."""
+
+    OUT = {"customer": {"name": "Northwind Test Foods"},
+           "period": {"words": "the last 90 days"}, "breakdown": None}
+
+    def orders(self, margins, *, undated=()):
+        out = []
+        for n, margin in enumerate(margins, 1):
+            day = [] if n in undated else [date(2026, 10, n)]
+            out.append(cp.Order(f"o{n}", f"SO{n}", day, lines=[cp.Line(
+                1, f"l{n}", "FG-9", margin=None if margin is None else Decimal(margin))]))
+        return out
+
+    def text(self, margins, **kw):
+        action = cp.next_action(self.OUT, self.orders(margins, **kw), {})
+        if action is None or action["rule"] != "item_below_cost_on_repeat_orders":
+            return None, None
+        return action["text"], action["basis"]
+
+    def test_the_recency_claim_holds_only_for_a_run_of_losses_from_the_latest_order(self):
+        head = f"Review the price for Northwind Test Foods on {cp.item_label({})}: "
+        # loss, loss, then a later profit: no "last 2", and the profitable one is named
+        self.assertEqual(self.text(["-10", "-10", "10"]), (
+            head + "2 of the 3 orders with it in the last 90 days ran below item cost "
+            "(SO2, SO1); the latest, SO3, did not.", ["o2", "o1", "o3"]))
+        # profit, then loss, loss: the last two did lose
+        self.assertEqual(self.text(["10", "-10", "-10"]), (
+            head + "the last 2 orders with it ran below item cost (SO3, SO2).",
+            ["o3", "o2"]))
+        # interleaved: the latest lost, the one before did not
+        self.assertEqual(self.text(["-10", "10", "-10"])[0],
+                         head + "2 of the 3 orders with it in the last 90 days ran below "
+                         "item cost (SO3, SO1).")
+        # an undated order could be the latest: no recency claim
+        self.assertEqual(self.text(["-10", "-10", "-10"], undated=(1,))[0],
+                         head + "3 of the 3 orders with it in the last 90 days ran below "
+                         "item cost (SO3, SO2, SO1).")
+        # an order whose margin is not known breaks the run
+        self.assertEqual(self.text(["-10", "-10", None])[0],
+                         head + "2 of the 3 orders with it in the last 90 days ran below "
+                         "item cost (SO2, SO1).")
+        # more than five losses: the count and the five named agree, the rest counted
+        self.assertEqual(self.text(["-1"] * 7), (
+            head + "the last 7 orders with it ran below item cost (SO7, SO6, SO5, SO4, SO3, "
+            "and 2 more).", ["o7", "o6", "o5", "o4", "o3"]))
+        # one loss is no repeat
+        self.assertIsNone(self.text(["10", "-10"])[0])

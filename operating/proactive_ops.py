@@ -540,8 +540,8 @@ def planner_task_overdue(st: Any, as_of: date, *, gap: Callable, cites: Callable
         if pct is not None and pct >= 100:
             counts["completed"] += 1
             continue
-        if not props.get("due_at"):
-            counts["undated"] += 1
+        if not any(str(r.get("value") or "").strip() for r in props.get("due_at", ())):
+            counts["undated"] += 1      # no due date, or Planner's empty one (a null cell)
             continue
         due_row = _one(props.get("due_at"))
         if due_row is None:

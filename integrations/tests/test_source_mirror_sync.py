@@ -11,6 +11,7 @@ services/workbench-api/src/core/query.mjs).
 import contextlib
 import io
 import json
+from hashlib import sha256
 from pathlib import Path
 import sqlite3
 import time
@@ -623,6 +624,39 @@ class AbsenceTests(SyncTestCase):
         del self.fake.fail_after["public.big"]
         scan = mirror.scan_absence(OPS, "public.big")
         self.assertEqual((scan["resumed"], scan["pages"], scan["keys_missing"]), (1, 3, 1))
+
+    def test_a_second_scan_of_a_relation_fails_busy_and_leaves_the_owners_scan(self):
+        # CAPTURE-004: a manual run beside the ingest cycle must never resume (and
+        # interleave pages into) the scan another process owns.
+        import fcntl
+        mirror = self.mirror()
+        mirror.sync(OPS, relations=["public.assembly_order", "public.customer"])
+        self.fake.tables["public.assembly_order"].pop()
+        self.clock.advance(60)
+        locks = Path(f"{mirror._path}.scan-locks")
+        locks.mkdir()
+        lock_file = locks / f"{sha256(b'public.assembly_order').hexdigest()[:24]}.lock"
+        with open(lock_file, "a+b") as owner:
+            fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(MirrorError) as caught:
+                mirror.scan_absence(OPS, "public.assembly_order")
+            self.assertEqual(caught.exception.code, "absence_scan_busy")
+            self.assertEqual(self.db().execute(
+                "SELECT COUNT(*) FROM absence_scan WHERE relation = "
+                "'public.assembly_order'").fetchone()[0], 0)
+            # another relation's scan is not held up by it
+            self.assertEqual(mirror.scan_absence(OPS, "public.customer")["state"], "complete")
+            # in a sync the capture stands and the scan is reported failed, not done
+            self.clock.advance(60)
+            run = {r["relation"]: r for r in mirror.sync(
+                OPS, relations=["public.assembly_order"], absence_scan=True)["runs"]}
+            self.assertEqual(run["public.assembly_order"]["outcome"], "captured")
+            self.assertTrue(run["public.assembly_order"]["absence_scan"]["error"]
+                            .startswith("absence_scan_busy"))
+            self.assertEqual(mirror.coverage(OPS)["rows_missing_total"], 0)
+        # released (the owner ended): the scan runs and marks the deleted row
+        scan = mirror.scan_absence(OPS, "public.assembly_order")
+        self.assertEqual((scan["state"], scan["keys_missing"]), ("complete", 1))
 
     def test_scan_requires_a_completed_capture(self):
         mirror = self.mirror()

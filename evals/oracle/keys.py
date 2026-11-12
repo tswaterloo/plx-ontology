@@ -605,9 +605,12 @@ def batch_hold_verdict(status: object, qc: object,
         return "closed"
     if said not in BATCH_ACTIVE | BATCH_MADE:
         return "unmapped"
+    if said in BATCH_MADE:
+        # a made batch still held is never a default, however many share it
+        return "hold"
     peers = [_said(q) for s, q in pairs if _said(s) == said and _said(q)]
     if len(peers) < STATE_DEFAULT_MIN:
-        return "hold" if said in BATCH_MADE else "unprofiled"
+        return "unprofiled"
     if peers.count(qc_said) >= STATE_DEFAULT_MIN and \
             peers.count(qc_said) / len(peers) >= STATE_DEFAULT_SHARE:
         return "state_default"

@@ -3,11 +3,29 @@
 
 import type { SourceSystem } from "./types";
 
-/** Only same-origin paths and https links are clickable; anything else (http:, javascript:, data:, //host) is not. */
+// Any control character (C0, DEL) or backslash: browsers drop tabs and newlines from a URL
+// and read "\\" as "/", so "/\n/evil.example" or "/\\evil.example" would leave the site.
+const URL_UNSAFE = /[\u0000-\u001f\u007f\\]/;
+// A fixed origin to resolve a path against: what matters is that it stays on that origin.
+const SAME = "https://workbench.invalid";
+
+/** A same-origin path, resolved ("/a/../b" -> "/b"); null when it is anything else. */
+function samePath(u: string): string | null {
+  if (!u.startsWith("/") || u.startsWith("//") || URL_UNSAFE.test(u)) return null;
+  try {
+    const parsed = new URL(u, SAME);
+    return parsed.origin === SAME ? parsed.pathname + parsed.search + parsed.hash : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Only same-origin paths and https links are clickable; anything else (http:, javascript:, data:, //host, control characters, backslashes) is not. */
 export function safeHref(url: string | null | undefined): string | null {
   if (!url || typeof url !== "string") return null;
   const u = url.trim();
-  if (u.startsWith("/") && !u.startsWith("//") && !u.startsWith("/\\")) return u;
+  if (URL_UNSAFE.test(u)) return null;
+  if (u.startsWith("/")) return samePath(u);
   try {
     const parsed = new URL(u);
     return parsed.protocol === "https:" && !parsed.username && !parsed.password ? parsed.href : null;
@@ -16,11 +34,12 @@ export function safeHref(url: string | null | undefined): string | null {
   }
 }
 
-/** Only a same-origin path is a valid post-sign-in destination. */
+/** Only a same-origin path is a valid post-sign-in destination (never the sign-in page itself). */
 export function safeNext(next: string | null | undefined): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return "/";
-  if (next.startsWith("/signin")) return "/";
-  return next;
+  if (!next || typeof next !== "string") return "/";
+  const path = samePath(next);
+  if (!path || path === "/signin" || path.startsWith("/signin/") || path.startsWith("/signin?") || path.startsWith("/signin#")) return "/";
+  return path;
 }
 
 const DECIMAL = /^-?\d+(\.\d+)?$/;
@@ -39,20 +58,53 @@ export function currencyCode(raw: string | null | undefined): string {
  * Canadian and a US dollar never read alike. Non-decimal input is shown as given.
  */
 /**
- * A binary float's noise out of each figure ("116.25000000000001" -> "116.25"): 7 or more
- * decimals within a billionth of a figure of at most 4 decimals; a figure that really has
- * more places stays as written.
+ * The figure a binary float's noise stands for ("116.25000000000001" -> "116.25"), else null.
+ * Only text that is exactly the shortest form of a double (what String(number) writes), at
+ * least 15 significant digits long, within 4 units in the last place of a figure with fewer
+ * digits: a real figure with many places ("100000000.1234567", "1234.5678901", a 29-digit
+ * decimal) is never touched. The backend's ontology.measure.float_residue is the same rule.
  */
+export function floatResidue(text: string): string | null {
+  if (!/^-?\d+\.\d+$/.test(text)) return null;
+  const digits = text.replace(/^-/, "").replace(".", "").replace(/^0+/, "");
+  if (digits.length < 15) return null;
+  const x = Number(text);
+  if (!Number.isFinite(x) || String(x) !== text) return null;
+  const slack = 4 * ulp(x);
+  const places = text.length - text.indexOf(".") - 1;
+  for (let keep = 0; keep < places && keep <= 100; keep++) {
+    const near = x.toFixed(keep);
+    if (Math.abs(Number(near) - x) <= slack) return near.replace(/^-(0(?:\.0*)?)$/, "$1");
+  }
+  return null;
+}
+
+/** The distance from |x| to the next double above it (one unit in the last place). */
+function ulp(x: number): number {
+  const box = new Float64Array([Math.abs(x)]);
+  const bits = new BigInt64Array(box.buffer);
+  bits[0] += BigInt(1);
+  return box[0] - Math.abs(x);
+}
+
+/**
+ * A plain decimal with its whole part grouped ("1234567.125" -> "1,234,567.125"): exact, from
+ * its text, never through a float; a float's noise out first (floatResidue). Anything that is
+ * not a bare decimal as given.
+ */
+export function groupDigits(value: string): string {
+  const t = value.trim();
+  if (!/^-?\d+(?:\.\d+)?$/.test(t)) return value;
+  const v = floatResidue(t) ?? t;
+  const neg = v.startsWith("-");
+  const [int, frac] = (neg ? v.slice(1) : v).split(".");
+  const whole = int.replace(/^0+(?=\d)/, "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${neg ? "-" : ""}${whole}${frac !== undefined ? `.${frac}` : ""}`;
+}
+
+/** Each figure carrying a float's noise written as the figure it is (floatResidue). */
 export function withoutFloatNoise(text: string): string {
-  return text.replace(/(?<![\w.])(-?\d+\.\d{7,})(?![\w.])/g, (m) => {
-    const x = Number(m);
-    if (!Number.isFinite(x)) return m;
-    for (let p = 0; p <= 4; p++) {
-      const near = x.toFixed(p);
-      if (Math.abs(Number(near) - x) <= 1e-9 * Math.max(1, Math.abs(x))) return near;
-    }
-    return m;
-  });
+  return text.replace(/(?<![\w.])(-?\d+\.\d{7,})(?![\w.])/g, (m) => floatResidue(m) ?? m);
 }
 
 export function formatMoney(amount: string, currency: string, locale = "en-CA"): string {

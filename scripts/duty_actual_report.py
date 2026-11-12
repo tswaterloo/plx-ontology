@@ -38,10 +38,10 @@ COLUMNS = {
     "sage.po_receipt_header": ["ponumber", "invnumber", "currency", "extended", "rate",
                                "multipor", "date"],
     "sage.po_header": ["ponumber", "vdcode", "vdcountry", "date"],
-    "public.bc_purchase_invoice_snapshot": ["number", "order_number", "vendor_number",
-                                            "vendor_name", "vendor_invoice_number",
-                                            "amount_excluding_tax", "currency_code",
-                                            "invoice_date"],
+    "public.bc_purchase_invoice_snapshot": ["bc_system_id", "number", "order_number",
+                                            "vendor_number", "vendor_name",
+                                            "vendor_invoice_number", "amount_excluding_tax",
+                                            "currency_code", "invoice_date", "status"],
     "public.app_purchase_order": ["id", "po_number", "currency", "subtotal", "supplier_id",
                                   "incoterms", "date_generated", "created_at"],
     "public.app_supplier": ["id", "incoterms", "country"],
@@ -98,7 +98,8 @@ def duty_report(rows: Mapping[str, Any], kind: str = "duty") -> dict[str, Any]:
         f"pos_with_linked_{kind}": len(rates), "pos_with_actual_rate": len(usable),
         "po_rate_gaps": dict(Counter(v["gap"] for v in rates.values() if v.get("gap"))),
         "items_with_actual_rate": len(items),
-        "mixed_with_brokerage": sum(1 for v in usable.values() if v["includes_brokerage"])}}
+        "mixed_with_brokerage": sum(1 for v in usable.values() if v["includes_brokerage"]),
+        "rates_posting_unknown": sum(1 for v in usable.values() if v.get("posting_unknown"))}}
 
 
 def proposal_report(rows: Mapping[str, Any]) -> dict[str, Any]:

@@ -130,6 +130,19 @@ _FOLDER_LISTING_DDL = """CREATE TABLE IF NOT EXISTS mailbox_folders (
 # listing, or a list whose members cannot be read): their ids only, re-read by a later
 # round once the guard can decide them (``MailCapture._retry_undecided``). Nothing else
 # of such a message is kept. Applied when the first such message is held (not at open).
+# Messages an excluded person sent or received, by the SHA-256 of their internetMessageId
+# only (``graph_read.withheld_message_key``): no mailbox stores any copy of one (made with
+# the first one remembered).
+_WITHHELD_DDL = """CREATE TABLE IF NOT EXISTS people_withheld (
+    message_key TEXT PRIMARY KEY,
+    withheld_at TEXT NOT NULL)"""
+# The L1 handles (messages, attachments) a capture purge deleted whose derived copies (the
+# ontology stores, Postgres, search) are still to go: ``operating.mail_exclusion_purge``
+# removes those and forgets the handles. Handles only (opaque ids, never an address).
+# Made with the first purge that deletes anything.
+_PURGED_DDL = """CREATE TABLE IF NOT EXISTS purged_handles (
+    l1_handle TEXT PRIMARY KEY,
+    purged_at TEXT NOT NULL)"""
 _UNDECIDED_DDL = """CREATE TABLE IF NOT EXISTS people_undecided (
     mailbox_id TEXT NOT NULL,
     folder_id TEXT NOT NULL,

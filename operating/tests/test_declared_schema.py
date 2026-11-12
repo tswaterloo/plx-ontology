@@ -33,6 +33,9 @@ NOT_DECLARED = {
     "operating/ai_watcher.py", "operating/proactive_engine.py", "operating/pg/migrate.py",
     # build-side projection stores added by migration-next (scratch SQLite the build writes and drops)
     "ontology/step_layer_workers.py", "ontology/store.py", "ontology/unit_layer_fit.py",
+    # in-place step migration scratch: a run's local part stores (SQLite) and its per-run
+    # staging schema in Postgres, created for one run and dropped with it; never a served store
+    "ontology/pg_step_inplace.py", "operating/pg/mention_scope.py", "operating/pg/step_staging.py",
 }
 
 

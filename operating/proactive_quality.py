@@ -54,7 +54,7 @@ import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import proactive_business as pb
-from .proactive_stock import _clusters, _plural, declares, waiting
+from .proactive_stock import _clusters, _plural, declares, identity_rows, waiting
 
 DUP_RULE = "duplicate_parties"
 FIELDS_RULE = "key_fields_missing"
@@ -285,10 +285,9 @@ def duplicate_parties(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         binding = _bindings(st, types)
         link = f"{object_type}.same_record_as"
         root, _leads = _clusters(st, found, link, settled)
-        rejected: set[tuple[str, str]] = set()
-        for r in st.touching(sorted(found), [link]) if found else ():
-            if r[7]:
-                rejected.add(tuple(sorted((r[3], r[4]))))
+        # a pair a person rejected: its link contradicted (the same rows ``_clusters`` read)
+        rejected = {tuple(sorted((r[3], r[4]))) for r in identity_rows(st, found, link)
+                    if r[5] == "contradicted"}
         keys: dict[str, dict[str, dict[str, Mapping[str, Any]]]] = {}
         blocks: dict[tuple[str, str], list[str]] = defaultdict(list)
         for oid, entry in sorted(found.items()):

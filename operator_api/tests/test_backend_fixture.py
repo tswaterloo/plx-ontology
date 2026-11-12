@@ -768,6 +768,62 @@ class SuggestPermissionFilter(unittest.TestCase):
         self.assertEqual(self.backend._pg_suggest(reader, "maple leaf", 8), [])
 
 
+class UnderstandingReaderPolicyTests(unittest.TestCase):
+    """UNDERSTAND-001: the optional understanding (PLX_APP_UNDERSTANDING=1) runs under
+    the reader's own read policy and never erases a record the reader's ``plx.find``
+    already resolved; a record the reader cannot open never leaves it. Evidence label
+    ``isolated-fixture``."""
+
+    def view(self, policy, denied=()):
+        gated = SimpleNamespace(name="gated")
+        return SimpleNamespace(
+            actor=SimpleNamespace(name="reader"),
+            access=SimpleNamespace(reader_policy=lambda: (gated, policy)),
+            _call=lambda tool, arguments: {"error": "not_found"}
+            if arguments.get("object_id") in denied else {"object_id": arguments["object_id"]}
+        ), gated
+
+    def decide(self, understand, view, found):
+        from operator_api import models as m
+        backend = SimpleNamespace(understand=understand,
+                                  _found_understanding=be.WorkspaceBackend._found_understanding)
+        return be.WorkspaceBackend._understanding(
+            backend, view, m.AskRequest(question="Did PO12345 and PO99999 arrive?"), found)
+
+    def test_the_reader_s_policy_reaches_understanding_and_found_roots_stay(self):
+        from operating.query_understanding import understand
+        policy = object()
+        view, gated = self.view(policy, denied={"PurchaseOrder:99999"})
+        found = {"roots": [{"object_id": "PurchaseOrder:12345", "mention": "PO12345",
+                            "object_type": "PurchaseOrder"}]}
+        calls = []
+
+        def recording(question, **kwargs):
+            calls.append(kwargs)
+            return {"intent": "status", "entities": [
+                {"text": "PO12345", "resolved": None, "candidates": []},
+                {"text": "PO99999", "resolved": "PurchaseOrder:99999",
+                 "candidates": [{"object_id": "PurchaseOrder:99999",
+                                 "type": "PurchaseOrder", "label": "PO99999"}]}]}
+        got = self.decide(recording, view, found)
+        self.assertIs(calls[0]["policy"], policy)
+        self.assertIs(calls[0]["actor"], gated)
+        resolved = [e.resolved.object_id for e in got.entities if e.resolved is not None]
+        self.assertEqual(resolved, ["PurchaseOrder:12345"])   # found kept, denied dropped
+        self.assertNotIn("PurchaseOrder:99999", json.dumps(got.model_dump()))
+        self.assertEqual([e.text for e in got.entities if e.text == "PO12345"], ["PO12345"])
+        # the real interpreter given no policy resolves nothing: the found root still stands
+        view, _ = self.view(None)
+        got = self.decide(lambda question, **kw: understand(
+            question, **{**kw, "policy": None}, llm=False), view, found)
+        self.assertEqual([e.resolved.object_id for e in got.entities if e.resolved],
+                         ["PurchaseOrder:12345"])
+        # switched off: the grammar's roots alone
+        got = self.decide(None, view, found)
+        self.assertEqual([e.resolved.object_id for e in got.entities if e.resolved],
+                         ["PurchaseOrder:12345"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1389,6 +1445,10 @@ class SuggestionRankingTests(unittest.TestCase):
         self.assertEqual(diversified[0].object_id,
                          'Customer:portal.app_customer:{"id":"fm-cust-89"}')   # Portal first
         self.assertIn("DIVE11", diversified[0].sublabel)
+        # the merged row names the copy it absorbed; the other customer of that name has none
+        self.assertEqual(diversified[0].same_as, ['Customer:bc.customers:{"id":"d1"}',
+                                                  'Customer:portal.fm_customer:{"id":89}'])
+        self.assertEqual(diversified[1].same_as, [])
         self.assertIn("BC and Portal", diversified[0].sublabel)
         self.assertIn("C01100", diversified[1].sublabel)
         self.assertEqual(len([s for s in out if s.label == "SHIPPING - 1"]), 2)  # 2 places
@@ -1622,7 +1682,8 @@ class CustomerSummaryTests(unittest.TestCase):
     size, never the rows one capped read returned; a refused sum keeps the rows unpriced
     and says why."""
 
-    def view(self, *, total: Optional[int], sums_refused: bool = False):
+    def view(self, *, total: Optional[int], sums_refused: bool = False,
+             states: Optional[dict] = None):
         orders = [{"object_id": f"SalesOrder:portal.app_sales_order:{{\"id\":\"{i}\"}}",
                    "display": f"OR{i:04d}"} for i in range(50)]
         calls = []
@@ -1655,7 +1716,8 @@ class CustomerSummaryTests(unittest.TestCase):
                     if measure.get("op") == "sum" and sums_refused:
                         return {"error": {"code": "withheld_marking"}}
                     if groups == ["status"]:
-                        return {"groups": [{"key": {"status": "Open"}, "value": "3"}]}
+                        return {"groups": [{"key": {"status": k}, "value": str(v)}
+                                           for k, v in (states or {"Open": 3}).items()]}
                     return {"groups": [{"key": {"order_date": "2026-10-0%d" % (i + 1),
                                                 "order_number": f"OR{i:04d}",
                                                 "status": "Open"},
@@ -1675,6 +1737,24 @@ class CustomerSummaryTests(unittest.TestCase):
         self.assertEqual((whole.orders_total, whole.orders_at_least), (844, None))
         unknown = self.summary(self.view(total=None)[0])
         self.assertEqual((unknown.orders_total, unknown.orders_at_least), (None, 100))
+
+    def test_open_orders_are_counted_by_the_one_status_definition(self):
+        # API-013: "partially shipped" held "shipped" and was counted closed
+        out = self.summary(self.view(total=60, states={
+            "Partially Shipped": 4, "Open": 3, "Shipped": 9, "CANCELLED": 2,
+            "Confirmed": 1, "On hold (credit)": 5})[0])
+        self.assertEqual(out.open_orders, 8)
+        self.assertTrue(any("5 orders hold a status not read as open or closed" in n
+                            for n in out.not_established), out.not_established)
+
+    def test_a_portal_draft_is_no_open_order(self):
+        # BC's API calls an unreleased order Draft (open); the page groups the Portal's
+        # status, where DRAFT is a draft and never an open order
+        out = self.summary(self.view(total=60, states={"DRAFT": 7, "Open": 3,
+                                                       "In Review": 2})[0])
+        self.assertEqual(out.open_orders, 3)
+        self.assertTrue(any("2 orders hold a status not read as open or closed" in n
+                            for n in out.not_established), out.not_established)
 
     def test_a_reader_without_the_amounts_keeps_the_orders_unpriced(self):
         out = self.summary(self.view(total=60, sums_refused=True)[0])

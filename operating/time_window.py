@@ -7,18 +7,20 @@ business day (``BUSINESS_TZ``), never past today; ``said`` is the window as the 
 states it, with its exact days ("from Aug 5 through Nov 3", "this quarter (Oct 1 through
 Nov 3)"), so a reader always sees which days were counted.
 
-* ``last|past N days|weeks|months``: rolling, today and the N days, weeks or months
-  before it (``last 30 days`` on 2026-11-03 is 2026-10-04 to 2026-11-03).
+* ``last|past N days|weeks|months``: rolling, the N days (7N for weeks, the N months to
+  the same day) ending with today, today counted (``last 30 days`` on 2026-11-03 is the 30
+  days 2026-10-05 to 2026-11-03; ``last 3 months`` is 2026-08-04 to 2026-11-03), BIZ-009.
 * ``this week|month|quarter|year`` (and ``month|quarter|year to date``, ``mtd``, ``qtd``,
   ``ytd``): the calendar period's first day to today; a week starts on Monday.
 * ``last|previous week|month|quarter|year``: the whole calendar period before this one;
-  ``past week|month|year`` (or ``the last month``): rolling, as ``last 1 month``.
+  ``past week|month|year`` or ``the last week|month|year``: rolling, as ``last 1 month``.
 * ``today``, ``yesterday``; ``since <date>`` (ISO, ``March 3``, ``Mar 3 2026``,
   ``3/3/2026`` month first) to today; ``in <month> [<year>]`` that month (a month not yet
   reached this year is last year's), through today when it is this month.
 
 Fail closed: a frame this grammar does not read (two frames, ``between``, ``before``,
-a date that does not exist, a future window) is None, never a guess.
+a date that does not exist or a calendar cannot hold, such as year 0 or a month past
+9999, a future window) is None, never a guess (BIZ-008).
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ _PATTERNS = (
     ("to_date", re.compile(r"\b(month|quarter|year)[- ]to[- ]date\b|\b(mtd|qtd|ytd)\b")),
     ("this", re.compile(rf"\b(?:this|current|the current)\s+{_PERIOD}\b(?:\s+so far)?")),
     ("previous", re.compile(rf"\b(?:last|previous|prior)\s+{_PERIOD}\b")),
-    ("past", re.compile(rf"\b(?:the\s+)?past\s+{_PERIOD}\b")),
+    ("past", re.compile(rf"\b(?:(?:the\s+)?past|the\s+last)\s+{_PERIOD}\b")),
     ("day", re.compile(r"\b(today|yesterday)\b")),
     ("since", re.compile(rf"\bsince\s+(?:(\d{{4}})[- ](\d{{2}})[- ](\d{{2}})|({_MONTH})\s+(\d{{1,2}})"
                          rf"(?:st|nd|rd|th)?(?:,?\s+(\d{{4}}))?|(\d{{1,2}})[/ ](\d{{1,2}})[/ ](\d{{4}})"
@@ -66,6 +68,75 @@ class Window:
 
     def holds(self, day: date) -> bool:
         return self.start <= day <= self.end
+
+
+_STAMP = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?"
+                    r"(Z|[+-]\d{2}(?::?\d{2})?)?)?")
+_ZERO_OFFSET = re.compile(r"Z|[+-]00(?::?00)?")
+
+
+def business_day(value: object) -> Optional[date]:
+    """The business day (``BUSINESS_TZ``) a stored date or timestamp names (C-09), the
+    one rule every day-of helper reads a value by:
+
+    * a date (``2026-03-01``), or a timestamp at exactly midnight with no zone or a zero
+      offset (a day a source wrote as a timestamp: a Prisma date picker, Graph's due
+      dates, BC's dates): the written day, never the day before in Eastern time;
+    * a timestamp with a zone: the Eastern day of that instant (``02:00Z`` is the evening
+      before);
+    * a timestamp without a zone: a UTC instant (Prisma writes UTC zoneless; the
+      projection declares each source's zone, so a store value is zoned once migrated),
+      its Eastern day;
+    * a ``datetime``: its Eastern day when aware, its own date when naive; a ``date``:
+      itself. Anything else whose first ten characters are an ISO date keeps that date
+      (the old helpers' reading); otherwise None."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.date()
+        return value.astimezone(_business_zone()).date()
+    if isinstance(value, date):
+        return value
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    match = _STAMP.fullmatch(text)
+    if match is None:
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+    try:
+        written = date(int(match[1]), int(match[2]), int(match[3]))
+    except ValueError:
+        return None
+    if match[4] is None:
+        return written
+    zone = match[8]
+    midnight = (match[4], match[5], match[6] or "00") == ("00", "00", "00") and \
+        not (match[7] or "").strip("0")
+    if midnight and (zone is None or _ZERO_OFFSET.fullmatch(zone)):
+        return written
+    stamp = text.replace(" ", "T", 1)
+    if zone is None:
+        stamp += "+00:00"
+    elif zone == "Z":
+        stamp = stamp[:-1] + "+00:00"
+    elif len(zone) == 3:
+        stamp += ":00"
+    elif ":" not in zone:
+        stamp = stamp[:-2] + ":" + stamp[-2:]
+    if match[7] is not None and len(match[7]) > 6:
+        stamp = stamp.replace("." + match[7], "." + match[7][:6], 1)
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    return moment.astimezone(_business_zone()).date()
+
+
+def _business_zone():
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(BUSINESS_TZ)
 
 
 def business_today(now: Optional[datetime] = None) -> date:
@@ -152,7 +223,15 @@ def _range(start: date, end: date, today: date) -> str:
 
 
 def window(folded: str, now: Optional[datetime] = None) -> Optional[Window]:
-    """The one window ``folded`` (a folded question: lower case) names, or None."""
+    """The one window ``folded`` (a folded question: lower case) names, or None: a frame
+    whose days a calendar cannot hold (year 0, a month past 9999) is None (BIZ-008)."""
+    try:
+        return _window(folded, now)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _window(folded: str, now: Optional[datetime] = None) -> Optional[Window]:
     if not isinstance(folded, str) or _UNREAD.search(folded):
         return None
     found = [(kind, m) for kind, pattern in _PATTERNS for m in pattern.finditer(folded)]
@@ -174,11 +253,11 @@ def window(folded: str, now: Optional[datetime] = None) -> Optional[Window]:
         if n < 1:
             return None
         if unit.startswith("d"):
-            start = today - timedelta(days=n)
+            start = today - timedelta(days=n - 1)
         elif unit.startswith("w"):
-            start = today - timedelta(days=7 * n)
+            start = today - timedelta(days=7 * n - 1)
         else:
-            start = _months_back(today, n)
+            start = _months_back(today, n) + timedelta(days=1)
         end = today
         said_as = ""
     elif kind == "to_date":
@@ -196,8 +275,10 @@ def window(folded: str, now: Optional[datetime] = None) -> Optional[Window]:
         said_as = f"last {period}"
     elif kind == "past":
         period = _norm_period(m.group(1))
-        start = {"week": today - timedelta(days=7), "month": _months_back(today, 1),
-                 "quarter": _months_back(today, 3), "year": _months_back(today, 12)}[period]
+        start = {"week": today - timedelta(days=6),
+                 "month": _months_back(today, 1) + timedelta(days=1),
+                 "quarter": _months_back(today, 3) + timedelta(days=1),
+                 "year": _months_back(today, 12) + timedelta(days=1)}[period]
         end = today
         said_as = f"in the past {period}"
     elif kind == "day":
@@ -230,7 +311,9 @@ def window(folded: str, now: Optional[datetime] = None) -> Optional[Window]:
         year = int(m.group(2)) if m.group(2) else today.year
         if not m.group(2) and month > today.month:
             year -= 1
-        start = date(year, month, 1)
+        start = _day(year, month, 1)
+        if start is None:
+            return None
         end = min(_months_back(start, -1) - timedelta(days=1), today)
         said_as = f"in {start.strftime('%B')}"
     if start > end or end > today or (end - start).days > MAX_DAYS:

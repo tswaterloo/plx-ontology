@@ -357,7 +357,7 @@ class AskBodySize(unittest.TestCase):
         self.assertEqual(got.json()["error"]["code"], "request_too_large")
         # streamed with no stated length: refused once it passes the limit
         import asyncio
-        from operator_api.app import AskBodyLimit
+        from operator_api.app import BodyLimit
         reached, sent = [], []
 
         async def app(scope, receive, send):
@@ -368,11 +368,31 @@ class AskBodySize(unittest.TestCase):
 
         async def send(message):
             sent.append(message)
-        asyncio.run(AskBodyLimit(app, limit=5000)(
+        asyncio.run(BodyLimit(app, limit=1, limits={"/api/ask": 5000})(
             {"type": "http", "path": "/api/ask", "method": "POST", "headers": []},
             receive, send))
         self.assertEqual((reached, sent[0]["status"]), ([], 413))
         self.assertEqual(self.asked, [])
+
+    def test_every_other_body_is_held_to_a_megabyte_before_parsing_signed_in_or_not(self):
+        """SEC-007: the unauthenticated dev sign-in and every other route refuse a body
+        over ``BODY_MAX`` (413) before parsing it; a question keeps its larger limit."""
+        from fastapi.testclient import TestClient
+        from operator_api.app import BODY_MAX
+        anonymous = TestClient(self.client.app, base_url="http://testserver")
+        over = "x" * (BODY_MAX + 1)
+        for client, path in ((anonymous, "/api/auth/dev-login"),
+                             (self.client, "/api/feedback/note")):
+            with self.subTest(path=path):
+                got = client.post(path, content=over,
+                                  headers={"Content-Type": "application/json"})
+                self.assertEqual(got.status_code, 413, got.text)
+                self.assertEqual(got.json()["error"]["code"], "request_too_large")
+        # under the limit the route answers as before; a question above a megabyte passes
+        self.assertNotEqual(self.client.post("/api/feedback/note",
+                                             json={"note": "fine"}).status_code, 413)
+        files = [{"name": "f.pdf", "data": "A" * (BODY_MAX + 10)}]
+        self.assertNotEqual(self.post(files).status_code, 413)
 
     def test_more_than_five_files_or_ten_megabytes_is_refused(self):
         six = [{"name": f"f{i}.txt", "data": "aGVsbG8="} for i in range(6)]
@@ -618,3 +638,54 @@ class ReaderWrites(unittest.TestCase):
         wrote.clear()
         client.post("/api/feedback/note", json={"note": "x"})
         self.assertEqual({w[1] for w in wrote}, {None})   # any other write: every screen
+
+
+class HealthShowsThePolicyInForce(unittest.TestCase):
+    def test_health_names_the_policy_digest_and_an_edit_not_applied(self) -> None:
+        """SEC-005: with an employee resolver the public health check carries the policy
+        digest in force and why its file's latest edit was not applied (a code, never a
+        record); without one it says nothing of a policy; a failing status never fails
+        liveness."""
+        import argparse
+        import os
+        import tempfile
+        from unittest import mock
+        from operating.tests.test_employee_permissions import POLICY
+        from operator_api.cli import make_auth
+        from operator_api.workspace.case_console import employee_resolver
+        auth = DevAuth(fixture_identity("plx", ["staff:demo"]), mode="mock")
+        self.assertNotIn("employee_policy",
+                         TestClient(create_app(MockBackend(), auth, secure_cookie=False))
+                         .get("/api/health").json())
+        # the live shape: the ticket sign-in ``make_auth`` builds over the console resolver
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"PLX_OPS_DIR": tmp}):
+            path = Path(tmp) / "policy.json"
+            path.write_text(json.dumps(POLICY))
+            resolver = employee_resolver(path, None)
+            with mock.patch.dict(os.environ, {"PLX_WORKBENCH_SESSION_SECRET": "t" * 64}):
+                auth, _ = make_auth(argparse.ArgumentParser(), argparse.Namespace(
+                    dev_fixture_principal=[], dev_employee_oid=None), "dev",
+                    {"resolver": resolver, "replay_guard": None})
+            client = TestClient(create_app(MockBackend(), auth, secure_cookie=False))
+            got = client.get("/api/health")
+            self.assertEqual(got.status_code, 200)
+            self.assertEqual(got.json()["employee_policy"], {
+                "digest": resolver.policy.digest, "reload_error": None, "reloads": 0,
+                "state": "in_force", "refused_since": None, "alarm_error": None})
+            digest = resolver.policy.digest
+            path.write_text("{")              # an edit that does not load
+            with self.assertLogs("operating.employee_permissions.policy", "ERROR"):
+                shown = client.get("/api/health").json()["employee_policy"]
+            # the last good policy stays in force; health says so and why
+            self.assertEqual((shown["state"], shown["digest"], shown["alarm_error"]),
+                             ("kept_last_good", digest, None))
+            self.assertTrue(shown["reload_error"])
+            self.assertTrue(shown["refused_since"])
+
+        def broken(self):
+            raise RuntimeError("x")
+        auth.resolver = type("R", (), {"policy_status": broken})()
+        got = TestClient(create_app(MockBackend(), auth, secure_cookie=False)).get(
+            "/api/health").json()
+        self.assertEqual((got["status"], got["employee_policy"]), ("ok", None))

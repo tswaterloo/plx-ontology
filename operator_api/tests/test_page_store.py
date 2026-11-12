@@ -132,6 +132,7 @@ class WarmUpProcess(unittest.TestCase):
                 pass
         backend.warm_process = Process()
         reader = mock.Mock(key="r1")
+        reader.session.view_as = False   # a Mock attribute is truthy: not the owner viewing as someone
         backend._pages_seen["r1"] = [("PurchaseOrder", "PurchaseOrder:demo:1")]
         self.assertTrue(backend.warm(reader))
         self.assertFalse(backend.warm(reader))              # once per WARM_SECONDS

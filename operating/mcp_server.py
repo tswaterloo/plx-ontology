@@ -1866,6 +1866,13 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
     # passed claim, a document's stated gap included, is never a blocked answer.
     state = answer_gate.answerability(gated, answer.get("gaps") if isinstance(answer, dict)
                                       else ())
+    # GATE-003/004: a text the gate's text check fails (an uncovered figure, a lower-bound
+    # count written exact), or whose reply lost a business assertion nothing backs, is
+    # never an answerable answer: what it said is not all established.
+    if state == "answerable" and (
+            (text and not text["text_check"]["passed"])
+            or (reply is not None and reply.get("asserted"))):
+        state = "partial"
     final = {} if reply is None else {"answerability": {"state": state},
                                      "instruction": " ".join(
         [answer_gate.ANSWER_FINAL]
@@ -1892,35 +1899,81 @@ def _letters_digits(text: str) -> str:
     return re.sub(r"[^0-9A-Za-z]", "", text).upper()
 
 
-def _said_values(view: Any) -> list[str] | None:
+def _tokens(text: str) -> tuple[str, ...]:
+    """``text`` as its words and codes: each run of letters and digits, upper case.
+    "PO-1002/1" is (PO, 1002, 1); "PO10020" one token (GATE-002)."""
+    return tuple(word.upper() for word in re.findall(r"[0-9A-Za-z]+", text))
+
+
+# A cell of at least this many words is prose: a name in it is a mention, read the way
+# page text is read (``_names``).
+PROSE_WORDS = 6
+
+
+def _names(anchor: str, tokens: Sequence[str], *, cell: bool) -> bool:
+    """Whether ``tokens`` (one cell of a row, or page text: ``cell`` False) name
+    ``anchor`` (``_anchor_keys``), on whole words only, never inside a longer code or
+    name (GATE-002: PO1002 never names PO-10020; ACME never names ACMEFOODS):
+    - a number alone (the number of a code the question writes) only as the whole cell:
+      a code's number inside another code, or prose, may be another kind's (SO-1002);
+    - a code with digits as a run of whole words anywhere (PO-1002, "PO 1002", PO1002);
+    - a name (letters only) as the whole cell, or as a run of whole words in prose (page
+      text, or a cell of ``PROSE_WORDS`` words or more), so a short party name never
+      names a longer one's cell ("Acme Foods" never "Acme Foods International")."""
+    if not anchor or not tokens:
+        return False
+    whole = "".join(tokens)
+    if anchor not in whole:
+        return False
+    if cell and whole == anchor:
+        return True
+    if anchor.isdigit():
+        return False
+    if not any(ch.isdigit() for ch in anchor) and cell and len(tokens) < PROSE_WORDS:
+        return False
+    for start in range(len(tokens)):
+        if not anchor.startswith(tokens[start]):
+            continue
+        joined = ""
+        for token in tokens[start:]:
+            joined += token
+            if joined == anchor:
+                return True
+            if len(joined) >= len(anchor) or not anchor.startswith(joined):
+                break
+    return False
+
+
+def _said_values(view: Any) -> list[tuple[tuple[str, ...], bool]] | None:
     """What a cited record says, as the relevance check reads it: each value of its row
-    (never a column name) and its page text, as letters and digits. A record that moved
-    on since it was read (``changed_since``) is read as the revision cited
-    (``revision``), the row its claim was read from. None: nothing to read (unreadable,
-    or no row and no text)."""
+    (never a column name) and its page text, as words (``_tokens``), each with whether
+    it is a cell of the row (True) or page text (False). A record that moved on since it
+    was read (``changed_since``) is read as the revision cited (``revision``), the row
+    its claim was read from. None: nothing to read (unreadable, or no row and no
+    text)."""
     if isinstance(view, Mapping) and view.get("changed_since") \
             and isinstance(view.get("revision"), Mapping):
         view = view["revision"]
     if not isinstance(view, Mapping):
         return None
-    out: list[str] = []
+    out: list[tuple[tuple[str, ...], bool]] = []
 
-    def walk(value: Any) -> None:
+    def walk(value: Any, cell: bool) -> None:
         if isinstance(value, Mapping):
             for item in value.values():
-                walk(item)
+                walk(item, cell)
         elif isinstance(value, (list, tuple)):
             for item in value:
-                walk(item)
+                walk(item, cell)
         elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
-            said = _letters_digits(str(value))
+            said = _tokens(str(value))
             if said:
-                out.append(said)
+                out.append((said, cell))
     row, text = view.get("row"), view.get("text")
     if not isinstance(row, Mapping) and not isinstance(text, str):
         return None
-    walk(row if isinstance(row, Mapping) else {})
-    walk(text if isinstance(text, str) else "")
+    walk(row if isinstance(row, Mapping) else {}, True)
+    walk(text if isinstance(text, str) else "", False)
     return out
 
 
@@ -2077,7 +2130,8 @@ def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]
     A find of any other words adds nothing, so an agent's own search never widens what
     the question names."""
     from ontology.identifiers import find_identifiers
-    said = _letters_digits(asked)
+    words = _tokens(asked)
+    said = lambda text: _names(text, words, cell=False)  # noqa: E731 - on whole words
     codes = {_letters_digits(mention.text) for mention in find_identifiers(asked)}
     mentions: list[Any] = []
     ids: set[str] = set()
@@ -2086,10 +2140,10 @@ def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]
             continue
         if arguments.get("mode") == "entities":
             text = _letters_digits(str(arguments.get("text") or arguments.get("query") or ""))
-            if len(text) < MIN_ANCHOR_CHARS or text not in said:
+            if len(text) < MIN_ANCHOR_CHARS or not said(text):
                 continue
             named = [entity for entity in _named_entities(result.get("entities"))
-                     if _letters_digits(str(entity.get("mention") or "")) in said]
+                     if said(_letters_digits(str(entity.get("mention") or "")))]
             mentions += [entity.get("mention") for entity in named]
             ids |= _entity_records(named)
             continue
@@ -2102,7 +2156,7 @@ def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]
         else:
             # A name the question writes whole (a chat's topic, a task's title: things the
             # entity index does not hold), found as exactly one record of that very name.
-            if len(query) < MIN_ANCHOR_CHARS or query not in said \
+            if len(query) < MIN_ANCHOR_CHARS or not said(query) \
                     or result.get("status") not in ("found", "ambiguous"):
                 continue
             if len(query) < MIN_NAME_ANCHOR_CHARS and not _names_by_type(
@@ -2219,6 +2273,23 @@ def _linked_to(server: "MCPServer", records: set[str], handles: Sequence[str],
         return bool(joins - near["hubs"] - _hubs(conn, joins - set(records)))
     except Exception:  # noqa: BLE001 - undecided: the claim's own checks decide it
         return None
+
+
+def _via_joins(server: "MCPServer", via: str, handles: Sequence[str]) -> bool | None:
+    """Whether the record ``via`` cites is a record ``handles`` cite, or within
+    ``LINK_HOPS`` firm links of one, as this reader may read them (``_linked_to``, hubs
+    not walked through). None: unknown (no store, no record behind ``via``)."""
+    conn = _link_connection(server)
+    if conn is None:
+        return None
+    try:
+        records = {row[0] for row in conn.execute(
+            "SELECT DISTINCT object_id FROM object_versions WHERE l1_handle = ?", (via,))}
+    except Exception:  # noqa: BLE001 - unknown: connects nothing
+        return None
+    if not records:
+        return None
+    return _linked_to(server, records, handles, {})
 
 
 def _link_connection(server: "MCPServer") -> Any:
@@ -2965,14 +3036,29 @@ class MCPServer:
                 return None
             return lambda handles, read: False   # unresolved: nothing is on the question
 
-        def relevant(handles: Sequence[str], read: Callable[[str], Any]) -> bool | None:
+        def relevant(handles: Sequence[str], read: Callable[[str], Any], *,
+                     via: str | None = None) -> bool | None:
+            if via is not None:
+                # GATE-001: a via connects the claim only when it is on the question
+                # itself and firm links join it to the record the claim cites (or it is
+                # that record): a via on the question beside an unrelated record proves
+                # nothing about the record. Unknown (no store, a walk not finished in
+                # time): it connects nothing.
+                if relevant([via], read) is not True:
+                    return False
+                try:
+                    with call_limits.bounded(LINK_SECONDS):
+                        return _via_joins(self, via, list(handles)) is True
+                except call_limits.ToolTimedOut:
+                    return False
             undecided = False
             for handle in handles:
                 values = _said_values(read(handle))
                 if values is None:
                     undecided = True
                     continue
-                if any(anchor in value for value in values for anchor in anchors):
+                if any(_names(anchor, said, cell=cell) for said, cell in values
+                       for anchor in anchors):
                     return True
             if records:
                 try:
@@ -4785,6 +4871,9 @@ def session_server(argv: list[str] | None = None, *,
                         help="plx-portal-access-snapshot/v1 JSON: the cited Portal user rows "
                              "(re-read on every call); without it every employee is refused "
                              "(portal_access_unavailable)")
+    parser.add_argument("--portal-access-max-age-hours", type=float, default=None,
+                        help="refuse the Portal access snapshot (every employee denied) "
+                             "once its read_at is older than this many hours")
     parser.add_argument("--employee-oid",
                         help="DEV ONLY (with --dev-configured-employee): the session's "
                              "employee named on the command line, never authenticated: "
@@ -4906,12 +4995,13 @@ def _session_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace
     ``--state-dir`` (``session_identity.replay_guard_for``), so a replayed ticket is
     refused across restarts within its TTL.
     """
-    from .employee_permissions import (EmployeePermissionPolicy, EmployeePermissionResolver,
+    from .employee_permissions import (EmployeePermissionResolver, PolicyFile,
                                        PortalAccessSnapshot)
 
     employee_flags = [flag for flag, given in (
         ("--employee-policy", args.employee_policy is not None),
         ("--portal-access", args.portal_access is not None),
+        ("--portal-access-max-age-hours", args.portal_access_max_age_hours is not None),
         ("--employee-oid", args.employee_oid is not None),
         ("--session-ticket-env", args.session_ticket_env is not None)) if given]
     real = real_source_flags(args)
@@ -4948,7 +5038,11 @@ def _session_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace
                      "--session-ticket-env or --dev-configured-employee --employee-oid "
                      "(or --fixture for a demo)")
     try:
-        policy = EmployeePermissionPolicy.from_file(args.employee_policy)
+        # re-read when the file changes: an edit applies on the next call without a
+        # restart; an edit that does not load keeps the last good policy and raises the
+        # host alarm (SEC-005)
+        policy_file = PolicyFile(args.employee_policy)
+        policy = policy_file.policy
     except (ValueError, OSError, UnicodeDecodeError) as error:
         parser.error("employee policy is invalid: " +
                      (str(error) if isinstance(error, ValueError) else type(error).__name__))
@@ -4957,7 +5051,8 @@ def _session_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace
     portal_access: Callable[[Any], Any] = lambda principal: None  # noqa: E731
     if args.portal_access is not None:
         try:
-            portal_access = PortalAccessSnapshot(args.portal_access)
+            portal_access = PortalAccessSnapshot(
+                args.portal_access, max_age_hours=args.portal_access_max_age_hours)
         except (ValueError, OSError, UnicodeDecodeError) as error:
             parser.error("portal access snapshot is invalid: " +
                          (str(error) if isinstance(error, ValueError) else type(error).__name__))
@@ -4965,7 +5060,7 @@ def _session_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace
     # unset or invalid, no job title grants anything.
     # Re-read when the list file changes or every few minutes (``ReloadingExclusion``).
     from integrations.people_exclusion import ReloadingExclusion
-    resolver = EmployeePermissionResolver(policy, portal_access, directory=directory,
+    resolver = EmployeePermissionResolver(policy_file, portal_access, directory=directory,
                                           people_exclusion=ReloadingExclusion.from_env(
                                               os.environ, state_dir=args.state_dir))
     ticket, replay_guard = None, None

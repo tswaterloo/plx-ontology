@@ -24,7 +24,7 @@ function MicrosoftMark() {
 }
 
 function SignIn() {
-  const { state, refresh, signOut, redirectNext } = useAuth();
+  const { state, refresh, signOut, signOutError, redirectNext } = useAuth();
   const router = useRouter();
   const params = useSearchParams();
   const next = redirectNext ?? safeNext(params.get("next"));
@@ -103,6 +103,7 @@ function SignIn() {
             ) : accessNote ? (
               <div className="space-y-3">
                 <ErrorNotice message={accessNote} />
+                {signOutError && <ErrorNotice message={signOutError} />}
                 <button
                   type="button"
                   onClick={() => void signOut()}

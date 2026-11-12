@@ -4,7 +4,7 @@
   "private": true,
   "description": "PLX Workbench web app: ask questions across BC, Portal, mail, Teams and files, with sources.",
   "engines": {
-    "node": ">=20"
+    "node": "^22.22.2 || ^24.15.0 || >=26"
   },
   "scripts": {
     "dev": "next dev -p 3000",
@@ -13,7 +13,6 @@
     "mock": "cd .. && python3 -m operator_api serve --mock --port 8780",
     "gen:api": "node scripts/gen-api.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "next lint",
     "test": "vitest run",
     "e2e": "playwright test"
   },

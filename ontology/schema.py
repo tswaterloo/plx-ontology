@@ -1581,6 +1581,11 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                 else:
                     ends[end] = owner[1]
             for pair in lb.get("pairs", []):
+                if pair.get("split_from") and not (
+                        lb["kind"] == "fk" and len(lb["pairs"]) == 1 and
+                        pair.get("compare") == "identifier" and link["cardinality"] == "N:M"):
+                    errors.append(f"{where}: split_from is for the one identifier pair of an "
+                                  f"fk binding on an N:M link")
                 check_kind(where, pair.get("identifier_kind"))
                 if "from" in ends:
                     check_columns(where + " pair", ends["from"], [pair["from"]])

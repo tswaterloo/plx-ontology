@@ -134,6 +134,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from . import answer_gate, mcp_server, plan_answer, tool_results
@@ -865,16 +866,28 @@ class ClaudeCodePlanner:
                 "", "--tools", "", "--no-session-persistence"]
         if self.model:
             argv += ["--model", self.model]
+        from operating import model_ledger
+        started = time.monotonic()
         try:
             out = self.spawn(argv, agent_environment(os.environ), self.timeout, prompt)
         except OSError as error:
             name = errno.errorcode.get(error.errno or 0, type(error).__name__)
+            model_ledger.record("agent_planner", prompt=prompt, ok=False, reason=name,
+                                seconds=time.monotonic() - started)
             return {"action": "escalate", "reason": f"planner_process_failed:{name}"}, None
         except subprocess.TimeoutExpired:
+            model_ledger.record("agent_planner", prompt=prompt, ok=False, reason="timeout",
+                                seconds=time.monotonic() - started)
             return None, None
         try:
             reply = json.loads(out)
         except ValueError:
+            reply = None
+        turns, used = model_ledger.usage_of(reply)
+        model_ledger.record("agent_planner", prompt=prompt, turns=turns, tokens=used,
+                            ok=isinstance(reply, Mapping) and not reply.get("is_error"),
+                            seconds=time.monotonic() - started)
+        if reply is None:
             return None, None
         usage = reply.get("usage") if isinstance(reply, Mapping) else None
         tokens = sum(v for k, v in (usage or {}).items()

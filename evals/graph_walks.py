@@ -771,7 +771,8 @@ def item_and_key(tag: str, walk: Walk, *, now: str, as_of: date,
            "strata": {"hops": len(walk.hops), "systems": walk.systems,
                       "link_types": list(walk.hops), "answer": walk.kind,
                       "variant": walk.variant},
-           "query": {"reads": list(walk.reads), "rule": walk.rule}}
+           "query": {"reads": list(walk.reads), "rule": walk.rule,
+                     "start": walk.start}}
     return item, key
 
 

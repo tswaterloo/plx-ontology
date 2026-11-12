@@ -124,7 +124,7 @@ tools retired into which successor, so the host stays within the contract's
 from __future__ import annotations
 
 import base64
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from contextvars import ContextVar
 import dataclasses
 from dataclasses import dataclass, field
@@ -291,6 +291,12 @@ FILTER_SCAN_CAP = 5000  # readable objects a filter listing scans at most
 # (plx.around's default floor), the records it may name at most, and the segments a name
 # lookup of them scans.
 LINK_FILTER_TIER_FLOOR = "stored_by_text_join"
+# A link filter's target set that is not every match (or was trimmed by this reader's
+# grants), or that was reached through lead-tier links (QUERY-005): marks in the
+# filter's undecided entries, each followed by the filtered property's name.
+LINK_TARGETS_PARTIAL = "link_targets_partial:"
+LINK_TARGETS_LEAD = "link_targets_lead:"
+LINK_BELOW_FLOOR = "link_below_floor:"
 LINK_TARGET_CAP = 5000
 LINK_TARGET_SEGMENTS = 20
 FILTER_BATCH = 1000  # objects a filter scan reads per statement (its key-ordered range)
@@ -864,6 +870,12 @@ class _Scope:
                 _format_time(self.at))
 
     @functools.cached_property
+    def links_resolved(self) -> dict[Any, Any]:
+        """This call's resolved link filters (``_linked_ids``): kept with the scope, so
+        a later call decides its item permissions anew."""
+        return {}
+
+    @functools.cached_property
     def _documents(self) -> dict[str, str]:
         # once per scope: the documents search marks beyond this reader
         # (``operating.search.document_marks``), withheld as any unreadable object
@@ -948,8 +960,10 @@ class StoreReader:
         conn = self.chunk_conn if table == "chunk_text" else self.word_conn
         narrowed = "" if spans is None else " AND (" + " OR ".join(
             f"rowid BETWEEN {int(low)} AND {int(high)}" for low, high in spans) + ")"
-        cursor = conn.execute(f"SELECT rowid FROM {table} WHERE {table} MATCH :words"
-                              f"{narrowed} ORDER BY rowid", {"words": words})
+        # Postgres: a server-side cursor read a batch at a time (``stream``)
+        read = getattr(conn, "stream", conn.execute)
+        cursor = read(f"SELECT rowid FROM {table} WHERE {table} MATCH :words"
+                      f"{narrowed} ORDER BY rowid", {"words": words})
 
         def ids() -> Iterator[int]:
             while True:
@@ -981,12 +995,40 @@ class StoreReader:
         uri = Path(path).resolve().as_uri() + "?mode=ro"
         return cls(sqlite3.connect(uri, uri=True, check_same_thread=False))
 
-    def meta(self) -> dict[str, str]:
+    @contextmanager
+    def one_version(self) -> Iterator[None]:
+        """One tool call on this thread: the store's data version (``data_version``) is
+        polled once and that answer used for the call's every stamp (a call reads one
+        store state; a timeline call polled it ten times). A call inside one shares it."""
+        local = self.__dict__.setdefault("_version_pin", threading.local())
+        if getattr(local, "box", None) is not None:
+            yield
+            return
+        local.box = []
+        try:
+            yield
+        finally:
+            local.box = None
+
+    def data_version(self) -> Any:
+        """``PRAGMA data_version`` (Postgres: the data version loads and delta layers
+        move), polled once per tool call inside ``one_version``."""
+        local = self.__dict__.get("_version_pin")
+        box = getattr(local, "box", None) if local is not None else None
+        if box:
+            return box[0]
+        version = self.conn.execute("PRAGMA data_version").fetchone()[0]
+        if box is not None:
+            box.append(version)
+        return version
+
+    def meta(self, _version: Any = None) -> dict[str, str]:
         """The store's ``store_meta`` rows, kept until the store changes (the stamp of
-        ``audience_keys``): every tool call reads them, the build report among them."""
+        ``audience_keys``): every tool call reads them, the build report among them.
+        ``_version``: the data version the caller read just now (one poll, not two)."""
         with self.lock:
-            stamp = (self.conn.execute("PRAGMA data_version").fetchone()[0],
-                     self.conn.total_changes)
+            version = self.data_version() if _version is None else _version
+            stamp = (version, self.conn.total_changes)
             if self._meta is None or self._meta[0] != stamp:
                 self._meta = (stamp, {row["key"]: row["value"] for row in
                                       self.conn.execute("SELECT key, value FROM store_meta")})
@@ -998,8 +1040,9 @@ class StoreReader:
         or a delta layer moves), a write on this one, and the generation's content digest.
         A value read before under the same stamp is still the store's."""
         with self.lock:
-            return (id(self.conn), self.conn.execute("PRAGMA data_version").fetchone()[0],
-                    self.conn.total_changes, self.meta().get("content_digest"))
+            version = self.data_version()
+            return (id(self.conn), version, self.conn.total_changes,
+                    self.meta(version).get("content_digest"))
 
     def audience_keys(self) -> list[str]:
         """Every audience key of the store's objects (no reader's grants applied), kept
@@ -1007,8 +1050,7 @@ class StoreReader:
         or a write on this one (``total_changes``), the stamp of ``facts``. The read scans
         every object, so each tool call's scope paid for it as the store grew."""
         with self.lock:
-            stamp = (self.conn.execute("PRAGMA data_version").fetchone()[0],
-                     self.conn.total_changes)
+            stamp = (self.data_version(), self.conn.total_changes)
             if self._audiences is None or self._audiences[0] != stamp:
                 self._audiences = (stamp, tuple(row[0] for row in self.conn.execute(
                     "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")))
@@ -1018,8 +1060,7 @@ class StoreReader:
         """``audience_keys`` as read before from this unchanged store (the facts a host
         keeps beside the file, ``ontology_tools_traverse.prime``), kept as if read now."""
         with self.lock:
-            stamp = (self.conn.execute("PRAGMA data_version").fetchone()[0],
-                     self.conn.total_changes)
+            stamp = (self.data_version(), self.conn.total_changes)
             self._audiences = (stamp, tuple(keys))
 
     @staticmethod
@@ -1185,7 +1226,8 @@ class StoreReader:
         ``TEXT_LAYOUT_NARROW_ROWS`` doubling up to ``TEXT_LAYOUT_WINDOW_MAX``: one
         statement read as far as its consumer goes (a prefix word's matches are merged
         once: 3 s for a common one, which every new statement would pay again)."""
-        cursor = self.conn.execute(
+        read = getattr(self.conn, "stream", self.conn.execute)   # Postgres: batch-wise
+        cursor = read(
             "SELECT rowid FROM value_text WHERE value_text MATCH :words AND rowid > :after "
             "ORDER BY rowid", {"words": words, "after": after})
         try:
@@ -1301,8 +1343,7 @@ class StoreReader:
         pass then runs, as before)."""
         with self.lock:
             try:
-                stamp = (self.conn.execute("PRAGMA data_version").fetchone()[0],
-                         self.conn.total_changes)
+                stamp = (self.data_version(), self.conn.total_changes)
                 if self._text_schemes is None or self._text_schemes[0] != stamp:
                     self._text_schemes = (stamp, {})
                 held = self._text_schemes[1]
@@ -2566,7 +2607,8 @@ def _error(code: str, message: str, hint: str | None = None) -> dict[str, Any]:
 def _compare_key(value_type: str, value: Any) -> Any:
     if value_type in ("decimal", "money", "quantity"):
         try:
-            return ("d", Decimal(str(value)).normalize())
+            from ontology.measure import exact_normal
+            return ("d", exact_normal(Decimal(str(value))))
         except InvalidOperation:
             return ("s", str(value))
     if value_type in ("text", "json"):
@@ -2957,6 +2999,11 @@ class OntologyTools:
 
     def call(self, name: str, arguments: Any, actor: Actor) -> dict[str, Any]:
         """Run one tool for ``actor``; the result always satisfies the contract."""
+        pin = getattr(self.store, "one_version", None)
+        with pin() if pin is not None else nullcontext():
+            return self._call(name, arguments, actor)
+
+    def _call(self, name: str, arguments: Any, actor: Actor) -> dict[str, Any]:
         if name not in TOOL_NAMES:
             raise KeyError(name)
         contract = self.contracts["tools"][name]
@@ -3282,7 +3329,9 @@ class OntologyTools:
         conn = getattr(self.store, "conn", None)
         if not isinstance(conn, sqlite3.Connection) and not getattr(conn, "postgres", False):
             return None
-        return (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
+        version = getattr(self.store, "data_version", None)
+        return (version() if version is not None
+                else conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
 
     def _store_fact(self, key: str) -> Any:
         """A reader-independent fact the store's reader keeps for its current state
@@ -3807,24 +3856,29 @@ class OntologyTools:
         (``_link_targets``); undecided, those only a link this reader may not read (its
         markings, or evidence it may not see) joins to them: never read as not linked,
         the caller says the filter is withheld for them (``_withheld_filter_gap``).
-        Resolved once per call (a scope) and store state (``StoreReader.change_stamp``),
-        for every segment of the scan."""
+        Resolved once per call (its scope) or plan run (``run_memo``: one policy for its
+        calls) and store state (``StoreReader.change_stamp``), for every segment of the
+        scan; never kept past them, so a revoked item grant is read on the next call."""
         # bound to the store as it is (a rebuild or a delta layer makes other ids), never
         # only to the call's scope: a pinned as_known_at repeats the same scope
         key = (self.store.change_stamp(), scope.actor, scope.at, scope.audience_keys,
                scope.marking_sets, object_type,
                json.dumps(list(links), sort_keys=True, default=str))
-        memo = self.__dict__.setdefault("_link_memo", {})
+        memo = run_memo_for(("linked_ids", id(self)))
+        if memo is None:
+            memo = scope.links_resolved
         if key in memo:
             kept, unsure = memo[key]
             return set(kept), set(unsure)
         names = self.link_names(object_type)
         floor = _TIER_RANK[LINK_FILTER_TIER_FLOOR]
         per_filter: list[tuple[set[str], set[str], bool]] = []
+        marks: set[str] = set()
         for f in links:
             link_id, forward, target_type = names[f["property"]]
-            targets, targets_unsure = self._link_targets(scope, target_type, f)
-            wanted, found, hidden = set(targets), set(), set()
+            targets, targets_unsure, set_marks = self._link_targets(scope, target_type, f)
+            marks |= {mark + f["property"] for mark in set_marks}
+            wanted, found, hidden, below = set(targets), set(), set(), set()
 
             def near_of(row: Mapping[str, Any]) -> str | None:
                 near, far = ((row["from_object"], row["to_object"]) if forward
@@ -3833,10 +3887,26 @@ class OntologyTools:
                     else None
             for start in range(0, len(targets), 500):
                 chunk = targets[start:start + 500]
-                for row in self.store.links_touching(scope, chunk, [link_id]):
+                rows = [row for row in self.store.links_touching(scope, chunk, [link_id])
+                        if near_of(row) is not None]
+                # QUERY-007: the tier as plx.around serves it (``_effective_tier``, its
+                # ends' lineages read): a text join to a staging record is a lead here too
+                lineage = {oid: version["lineage"] for oid, version in self._visible_versions(
+                    scope, sorted({row["from_object"] for row in rows}
+                                  | {row["to_object"] for row in rows})).items()}
+                for row in rows:
                     near = near_of(row)
-                    if near is None or row["tier"] == "contradicted" \
-                            or _TIER_RANK.get(row["tier"], len(TIER_ORDER)) > floor:
+                    tier = _effective_tier({
+                        "tier": row["tier"], "binding_kind": row["binding_kind"],
+                        "evidence_handles": row["evidence_handles"],
+                        "from_lineage": lineage.get(row["from_object"]),
+                        "to_lineage": lineage.get(row["to_object"])})
+                    if tier == "contradicted":
+                        continue
+                    if _TIER_RANK.get(tier, len(TIER_ORDER)) > floor:
+                        # joined only by a lead: neither kept nor read as unlinked
+                        # (plx.around's below_tier_floor, the same relation asked there)
+                        below.add(near)
                         continue
                     if all(self._item_allowed(scope.actor, handle) for handle
                            in json.loads(row["evidence_handles"] or "[]")):
@@ -3847,6 +3917,10 @@ class OntologyTools:
                     near = near_of(row)
                     if near is not None and row["tier"] != "contradicted":
                         hidden.add(near)
+            if below - found - hidden and self._visible_versions(
+                    scope, sorted(below - found - hidden)):
+                # only records this reader may read: an unreadable one says nothing
+                marks.add(LINK_BELOW_FLOOR + f["property"])
             # a name this reader may not read: which records it names is undecided
             per_filter.append((found, hidden - found, targets_unsure))
         kept = set.intersection(*(found for found, _h, _u in per_filter)) \
@@ -3858,15 +3932,19 @@ class OntologyTools:
         unsure = set(self._visible_versions(scope, sorted(unsure)))
         if any(star for _f, _h, star in per_filter):
             unsure.add("*")
+        unsure |= marks   # the targets' set provenance, for the caller's gaps
         if len(memo) > 16:
             memo.clear()
         memo[key] = (frozenset(kept), frozenset(unsure))
         return set(kept), set(unsure)
 
     def _link_targets(self, scope: _Scope, target_type: str, f: Mapping[str, Any]
-                      ) -> tuple[list[str], bool]:
+                      ) -> tuple[list[str], bool, set[str]]:
         """(the records of ``target_type`` a link filter names, readable to this reader,
-        whether a name it gives matched a record whose name the reader may not read):
+        whether a name it gives matched a record whose name the reader may not read, the
+        provenance marks of the sets it names: ``LINK_TARGETS_PARTIAL`` for a set that is
+        not every match or that this reader's grants trimmed, ``LINK_TARGETS_LEAD`` for
+        one reached through lead-tier links; QUERY-005):
         its object ids, a set's members, and the records whose display name (the type's
         ``display`` properties) equals, or with ``prefix`` begins with, a name it gives.
         More than ``LINK_TARGET_CAP`` records, or a name lookup cut short (its segments or
@@ -3875,11 +3953,27 @@ class OntologyTools:
         values = f["value"] if isinstance(f["value"], list) else [f["value"]]
         ids: list[str] = []
         names: list[str] = []
+        marks: set[str] = set()
         for value in values:
             if not isinstance(value, str) or not value.strip():
                 continue
             if value.startswith("set:"):
-                ids += list(self.sets.resolve(value, scope.actor) or ())
+                members = self.sets.resolve(value, scope.actor)
+                if members is None:
+                    # QUERY-005: an unknown, expired or another reader's handle is no
+                    # empty set: never an exact zero
+                    raise ToolError("handle_expired",
+                                    f"the {f['property']} filter's set handle is unknown "
+                                    "or expired", "re-run the call that produced it")
+                ids += list(members)
+                whole, _matched = self.sets.completeness(value, scope.actor) \
+                    if getattr(self.sets, "completeness", None) else (False, None)
+                if not whole or (getattr(self.sets, "is_withheld", None)
+                                 and self.sets.is_withheld(value, scope.actor)):
+                    marks.add(LINK_TARGETS_PARTIAL)
+                if getattr(self.sets, "is_lead", None) and self.sets.is_lead(value,
+                                                                              scope.actor):
+                    marks.add(LINK_TARGETS_LEAD)
             elif value.split(":", 1)[0] == target_type and value.count(":") >= 2:
                 ids.append(value)
             else:
@@ -3915,7 +4009,7 @@ class OntologyTools:
                             f"the {f['property']} filter names {len(visible)} {target_type} "
                             f"records, more than the {LINK_TARGET_CAP} one call follows",
                             "name fewer records, or walk from them with plx.query")
-        return visible, unsure
+        return visible, unsure, marks
 
     def _require_co_sourced(self, object_type: str, filters: Sequence[Mapping[str, Any]]
                             ) -> None:
@@ -4445,6 +4539,9 @@ class OntologyTools:
                                                    [f for f in filters if f not in links])
             if links:
                 linked, hidden = self._linked_ids(scope, object_type, links)
+                marked = _target_marks(hidden)
+                hidden -= marked
+                undecided = set(undecided) | marked
                 if "*" in hidden or hidden & set(visible):
                     undecided = set(undecided) | {f["property"] for f in links}
                 keep &= linked
@@ -5406,7 +5503,9 @@ class OntologyTools:
             # a filter on a link: only the records it joins to the named ones are read; one
             # only a withheld link joins is never read as unlinked
             linked, hidden = self._linked_ids(scope, object_type, links)
-            if hidden:
+            marked = _target_marks(hidden)
+            undecided |= marked
+            if hidden - marked:
                 undecided |= {f["property"] for f in links}
             among = sorted(linked)
             filters = [f for f in filters if f not in links]
@@ -6158,6 +6257,9 @@ class OntologyTools:
                        "lineage": version["lineage"]},
             "values": values, "conflicts": conflicts[:50], "identity": identity[:MAX_IDENTITY],
             "linked_counts": linked_counts[:100], "gaps": gaps[:50]}
+        derived = self._derived(scope, object_id, object_type, wanted)
+        if derived:
+            result["derived"] = derived
         if beyond:
             result["linked_beyond"] = beyond[:MAX_BEYOND]
         twins = self._twins_named(scope, object_id, identity)
@@ -6172,6 +6274,33 @@ class OntologyTools:
         if len(values) > 400 or _envelope_bytes(result) > self.limits["max_result_bytes"]:
             result = self._fit_object(result, total)
         return self._with_leads(result, leads, object_id, total) if leads else result
+
+    def _derived(self, scope: _Scope, object_id: str, object_type: str,
+                 wanted: set[str] | None) -> list[dict[str, Any]]:
+        """A sales order's value derived from what prices it when its header states none
+        (``operating.order_value``), labelled with its basis and cited inputs, beside the
+        source copy (``total_amount`` as stored): only from what this reader may read."""
+        from operating import order_value as ov
+        if object_type != ov.TYPE or (wanted is not None and ov.TOTAL not in wanted):
+            return []
+        got = ov.for_reader(self, scope, object_id)
+        if not got.derived:
+            return []
+        inputs = [c for c in (_citation(r) for r in got.rows) if c is not None]
+        marks = ov.markings(got.rows)
+        if len(inputs) != len(got.rows) or not scope.holds(marks):
+            return []
+        source = [c for c in (_citation(r) for r in got.source_rows) if c is not None]
+        out: dict[str, Any] = {
+            "property": ov.DERIVED_PROPERTY, "value_type": "money",
+            "value": format(got.amount, "f"), "currency": got.currency,
+            "derived_from": got.basis, "description": ov.BASIS_WORDS[got.basis],
+            "inputs": list({json.dumps(c, sort_keys=True): c for c in inputs}.values())
+            [:ov.MAX_INPUTS], "markings": marks}
+        if source:
+            out["source_total"] = {"value": str(got.source_rows[0]["value"]),
+                                   "citation": source[0]}
+        return [out]
 
     def _with_leads(self, result: dict[str, Any], leads: list[dict], object_id: str,
                     total: int) -> dict[str, Any]:
@@ -6862,6 +6991,12 @@ def undated_marker(prop: str) -> str:
     return UNDATED_MARK + prop
 
 
+def _target_marks(hidden: Iterable[str]) -> set[str]:
+    """The link-target provenance marks among ``_linked_ids``' undecided entries."""
+    return {h for h in hidden
+            if h.startswith((LINK_TARGETS_PARTIAL, LINK_TARGETS_LEAD, LINK_BELOW_FLOOR))}
+
+
 def _filter_gaps(object_type: str | None, undecided: Iterable[str]) -> list[dict[str, Any]]:
     """The gaps of a filter undecided on some readable records: a withheld value
     (``_withheld_filter_gap``), or a date that is only its source's bulk default with no
@@ -6869,8 +7004,33 @@ def _filter_gaps(object_type: str | None, undecided: Iterable[str]) -> list[dict
     matched nor excluded and the answer is partial."""
     undecided = set(undecided)
     undated = sorted(p[len(UNDATED_MARK):] for p in undecided if p.startswith(UNDATED_MARK))
-    withheld = sorted(p for p in undecided if not p.startswith(UNDATED_MARK))
+    partial = sorted(p[len(LINK_TARGETS_PARTIAL):] for p in undecided
+                     if p.startswith(LINK_TARGETS_PARTIAL))
+    lead = sorted(p[len(LINK_TARGETS_LEAD):] for p in undecided
+                  if p.startswith(LINK_TARGETS_LEAD))
+    below = sorted(p[len(LINK_BELOW_FLOOR):] for p in undecided
+                   if p.startswith(LINK_BELOW_FLOOR))
+    withheld = sorted(p for p in undecided if not p.startswith(
+        (UNDATED_MARK, LINK_TARGETS_PARTIAL, LINK_TARGETS_LEAD, LINK_BELOW_FLOOR)))
     out = [_withheld_filter_gap(object_type, withheld)] if withheld else []
+
+    def named(props: Sequence[str]) -> str:
+        return ", ".join(f"{object_type}.{p}" if object_type else p for p in props)[:700]
+    if partial:
+        out.append(_gap("unknown", "set_incomplete", named(partial),
+                        "a link filter names a set that does not hold every match (or that "
+                        "this reader's grants trimmed): the records it keeps are at least "
+                        "these, never all there are (QUERY-005)"))
+    if lead:
+        out.append(_gap("unknown", "lead_basis", named(lead),
+                        "a link filter names a set reached only through lead-tier links: "
+                        "the records it keeps are likely matches, never confirmed ones; say "
+                        "them as a lead"))
+    if below:
+        out.append(_gap("unknown", "below_tier_floor", named(below),
+                        "some records are joined to the named ones only by lead-tier links "
+                        "(a text join, a staging record): they are neither counted nor "
+                        "excluded; plx.around with tier_floor lead lists them (QUERY-007)"))
     if undated:
         subject = ", ".join(f"{object_type}.{p}" if object_type else p for p in undated)
         out.append(_gap("unknown", "date_not_on_record", subject[:700],
@@ -6982,12 +7142,44 @@ def _filters_verdict(values: Mapping[str, list[tuple[str, Any]]], withheld: Iter
     """Every filter on one object: (True, False or None when no filter fails but one
     is undecided, the properties of the undecided filters)."""
     withheld = set(withheld)
+    # QUERY-008: bounds on one property (gte 50 and lte 70; an event after Feb 1 and
+    # before Mar 1) are one interval: one value, or one occurrence, must lie in all of
+    # them, never a low one meeting the lower bound and a high one the upper
+    bounded: dict[str, list[Mapping[str, Any]]] = {}
+    for f in filters:
+        if f.get("op") in _RANGE_OPS:
+            bounded.setdefault(f["property"], []).append(f)
+    grouped = {prop for prop, group in bounded.items() if len(group) > 1}
     verdicts = [(_filter_holds(values.get(f["property"], []), f, f["property"] in withheld),
-                 f["property"]) for f in filters]
+                 f["property"]) for f in filters if f["property"] not in grouped]
+    for prop in sorted(grouped):
+        verdicts.append((_interval_holds(values.get(prop, []), bounded[prop],
+                                         prop in withheld), prop))
     if any(v is False for v, _ in verdicts):
         return False, set()
     unsure = {p for v, p in verdicts if v is None}
     return (None if unsure else True), unsure
+
+
+_RANGE_OPS = frozenset({"gt", "gte", "lt", "lte"})
+
+
+def _interval_holds(values: list[tuple[str, Any]], bounds: Sequence[Mapping[str, Any]],
+                    withheld: bool = False) -> bool | None:
+    """Whether one readable value of a property meets every range filter ``bounds``
+    on it (``_filter_holds`` per value): True when one does; None when none does but
+    one could (a bound undecidable on it, or a value the reader may not read); else
+    False."""
+    undecided = withheld
+    for value in values:
+        if value[1] is None:
+            continue
+        held = [_filter_holds([value], bound) for bound in bounds]
+        if all(h is True for h in held):
+            return True
+        if not any(h is False for h in held):
+            undecided = True
+    return None if undecided else False
 
 
 def _filter_holds(values: list[tuple[str, Any]], spec: Mapping[str, Any],

@@ -2,6 +2,16 @@
   "schema": "plx-autopilot-write-rules/v1",
   "note": "What an autopilot may do by itself once its workflow's write gate is live (operating/autopilot_write.py). Conservative by construction: an action kind, operation or MC approval scope not listed here is never routine; every term class an action names refuses it when its text matches; every payload field whose name holds a deny_fields fragment refuses it. Nothing here names a record, a party or a person.",
   "fresh_from": "2026-11-06T07:00:00Z",
+  "tuned_windows": [
+    {"from": "2026-07-08T00:00:00Z", "until": "2026-10-05T00:00:00Z",
+     "why": "activity of the 90 days before 2026-10-06 was read to set the activity roles' thresholds (autopilot-6, 2026-11-10)"},
+    {"from": "2026-10-05T00:00:00Z", "until": "2026-11-06T07:00:00Z",
+     "why": "tuning and dev replays 10-06..11-05 (autopilot-4..9, ap-teams, ap-selfmail, ap-mc-tasks, ap-gaps2), receivables entry dev 10-05..10-25 (ap-sage-ar), Vince's day map 10-06..11-05; the held-out set 10-26..11-05 was looked at while tuning"}
+  ],
+  "clean_windows": [
+    {"id": "past-2026-05-06", "from": "2026-05-04T07:00:00Z", "until": "2026-07-08T00:00:00Z",
+     "evidence": "no replay, judging file, tuning run or role probe of any autopilot lane covers these days: every replay result window under /data/scratch is from 2026-10-06 on, the earliest days any lane read are the role probe's 2026-07-08 (wave-autopilot 2026-11-11); owner rule 2026-11-11 9:10 PM ET: past days never tuned on count like fresh days"}
+  ],
   "gate": {"precision": "0.9", "min_judged": 15},
   "rate_limits": {"per_hour": 5, "per_day": 20, "workflows": {},
                   "approved": {"per_hour": 30, "per_day": 200}},

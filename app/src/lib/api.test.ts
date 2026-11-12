@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, getObject, getObjectSection, getSource, mergeSection, setTokenProvider } from "./api";
+import { ask, getObject, logout, getObjectSection, getSource, mergeSection, setTokenProvider } from "./api";
 import { ApiError } from "./errors";
 import type { AskEvent, ObjectPage, ObjectSection } from "./types";
 
@@ -138,5 +138,19 @@ describe("identity on every call", () => {
     const init = (f.mock.calls[0] as unknown as [string, RequestInit])[1];
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
     expect(init.credentials).toBe("same-origin");
+  });
+});
+
+describe("logout (WEB-014)", () => {
+  const status = (n: number) => vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "x" } }), { status: n, headers: { "Content-Type": "application/json" } })));
+  it("fails when the server could not end the session, and counts an already-ended one as done", async () => {
+    status(500);
+    await expect(logout()).rejects.toBeInstanceOf(ApiError);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("network"); }));
+    await expect(logout()).rejects.toBeInstanceOf(TypeError);
+    status(401);
+    await expect(logout()).resolves.toBeUndefined();
+    status(200);
+    await expect(logout()).resolves.toBeUndefined();
   });
 });

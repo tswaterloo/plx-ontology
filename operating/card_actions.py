@@ -620,6 +620,26 @@ class _Held:
 
 # Outcomes that may have gone out: never resent until the person checked Sent Items.
 UNSURE = frozenset({"pending", "unknown"})
+# A send still going out (ACT-001): its ``pending`` row is the only sign of it until its
+# outcome is recorded, and a dispatch ends within its token and send timeouts (30 s
+# each). A pending row younger than this is in flight: no "I checked Sent Items" sends
+# again beside it (that send may not be in Sent Items yet). Older, its process ended
+# without recording the outcome: the outcome is unknown and the check may recover it.
+IN_FLIGHT_SECONDS = 180
+
+
+def in_flight(row: Mapping[str, Any], now: datetime) -> bool:
+    """Whether a ``pending`` journal row is still within :data:`IN_FLIGHT_SECONDS` (an
+    unreadable time counts as in flight: never a reason to send again)."""
+    if row.get("status") != "pending":
+        return False
+    try:
+        at = datetime.fromisoformat(str(row["at"]))
+    except (KeyError, ValueError):
+        return True
+    if at.tzinfo is None:
+        return True
+    return now - at < timedelta(seconds=IN_FLIGHT_SECONDS)
 
 
 def _outcomes(rows: Sequence[Mapping[str, Any]], card_id: str, digest: str) -> dict[str, str]:
@@ -630,6 +650,15 @@ def _outcomes(rows: Sequence[Mapping[str, Any]], card_id: str, digest: str) -> d
                 and row["kind"] in OUTBOUND:
             out[row["idempotency_key"]] = row["status"]
     return out
+
+
+def _latest(rows: Sequence[Mapping[str, Any]], keys: Iterable[str]) -> list[Mapping[str, Any]]:
+    """The latest row of each of these idempotency keys."""
+    wanted, out = set(keys), {}
+    for row in rows:
+        if row["idempotency_key"] in wanted:
+            out[row["idempotency_key"]] = row
+    return list(out.values())
 
 
 def _at(rows: Sequence[Mapping[str, Any]], outcomes: Mapping[str, str], status: str) -> str:
@@ -650,6 +679,8 @@ def _state_text(row: Mapping[str, Any]) -> str:
     if status == "failed":
         return "Send failed" + (f" (HTTP {row['http_status']})" if row.get("http_status")
                                 else "") + ": nothing is retried"
+    if status == "pending":
+        return "Still sending: wait for its outcome"
     if status in UNSURE:
         return "Outcome unknown: check Sent Items before sending it again"
     if status == "follow_up":
@@ -670,6 +701,9 @@ class ActionDesk:
     def __init__(self, journal: Journal, sender: Any, *,
                  clock: Callable[[], datetime] | None = None) -> None:
         self.journal, self.sender = journal, sender
+        # idempotency keys this process is dispatching now (a send never runs twice beside
+        # itself, whatever the age of its pending row)
+        self._dispatching: set[str] = set()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def preview(self, card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
@@ -716,7 +750,8 @@ class ActionDesk:
                "card_label": str((card.get("subject") or {}).get("label") or "")[:200],
                "kind": kind, "idempotency_key": idempotency_key,
                "payload_hash": found["payload_hash"],
-               "actor": {"name": ctx.actor_name[:120], "email": ctx.sender},
+               "actor": {"name": ctx.actor_name[:120], "email": ctx.sender,
+                         "oid": _oid(ctx.sender_oid)},
                "to": payload.get("to") or [], "cc": payload.get("cc") or [],
                "subject": payload.get("subject"), "chat_id": payload.get("chat_id"),
                "in_reply_to": payload.get("in_reply_to"), "due": payload.get("due"),
@@ -731,27 +766,37 @@ class ActionDesk:
                     if same[-1]["payload_hash"] != found["payload_hash"]:
                         raise ActionRefused(["This confirm was already used for a different "
                                              "action."], 409)
-                    return {**_result(same[-1]), "replayed": True}
+                    return {**_result(same[-1], self.clock()), "replayed": True}
                 if outbound:
                     before = _outcomes(held.rows, found["card_id"], found["payload_hash"])
                     if "sent" in before.values():
                         raise ActionRefused(["This exact message was already sent at "
                                              f"{_at(held.rows, before, 'sent')}."], 409)
+                    now = self.clock()
+                    if set(before) & self._dispatching or any(
+                            in_flight(r, now) for r in _latest(held.rows, before)):
+                        raise ActionRefused(["An earlier send of this message is still "
+                                             "going out: wait for its outcome before you "
+                                             "send it again."], 409)
                     if set(before.values()) & UNSURE and checked_sent_items is not True:
                         raise ActionRefused(["An earlier send of this message has an unknown "
                                              "outcome: check your Sent Items, then confirm "
                                              "that it is not there to send it again."], 409)
                     row["checked_sent_items"] = bool(before) and checked_sent_items is True
                     held.append({**row, "at": self._now(), "status": "pending"})
+                    self._dispatching.add(idempotency_key)
                 else:
                     return _result(held.append({**row, "at": self._now(),
                                                 "status": _LOCAL_STATUS[kind]}))
-            sent = self.sender.dispatch(kind, ctx.sender,
-                                        {**payload, "message_id": found["message_id"]})
-            with self.journal.locked() as held:
-                final = held.append({**row, "at": self._now(), "status": sent["status"],
-                                     "missing": list(sent.get("missing") or ()),
-                                     "http_status": sent.get("http_status")})
+            try:
+                sent = self.sender.dispatch(kind, ctx.sender,
+                                            {**payload, "message_id": found["message_id"]})
+                with self.journal.locked() as held:
+                    final = held.append({**row, "at": self._now(), "status": sent["status"],
+                                         "missing": list(sent.get("missing") or ()),
+                                         "http_status": sent.get("http_status")})
+            finally:
+                self._dispatching.discard(idempotency_key)
             return {**_result(final), "request": sent.get("request")}
         except JournalBroken:
             raise ActionRefused(["The actions journal failed its integrity check: nothing "
@@ -760,47 +805,70 @@ class ActionDesk:
     def _now(self) -> str:
         return self.clock().astimezone(timezone.utc).isoformat(timespec="seconds")
 
-    def _own(self, email: str | None, name: str, *, assigned: bool = False
-             ) -> list[dict[str, Any]]:
+    def _own(self, email: str | None, name: str, *, assigned: bool = False,
+             oid: str | None = None) -> list[dict[str, Any]]:
         """This person's rows; with ``assigned`` also the cards a colleague assigned to
-        them (their latest state is that assignment until they act on it)."""
+        them (their latest state is that assignment until they act on it). A row that
+        recorded its actor's Entra object id is this person's only by that id (ACT-006: a
+        reused or re-pointed mailbox never takes over another person's history); a row
+        recorded before ids were kept, by its mailbox (or name, without one)."""
         try:
             rows = self.journal.rows()
         except JournalBroken:
             return []
-        return [r for r in rows if ((r["actor"].get("email") or None) == email
-                                    and (email is not None or r["actor"]["name"] == name))
+        oid = _oid(oid)
+
+        def mine(actor: Mapping[str, Any]) -> bool:
+            recorded = _oid(actor.get("oid"))
+            if recorded is not None:
+                return recorded == oid
+            return (actor.get("email") or None) == email \
+                and (email is not None or actor["name"] == name)
+        return [r for r in rows if mine(r["actor"])
                 or (assigned and email is not None and r.get("status") == "assigned"
                     and r.get("assignee") == email.lower())]
 
-    def states(self, email: str | None, name: str, today: date) -> dict[str, dict[str, Any]]:
+    def states(self, email: str | None, name: str, today: date, *,
+               oid: str | None = None) -> dict[str, dict[str, Any]]:
         """Each card's latest action by this person, as a status chip (an ended snooze
         counts no more)."""
         out: dict[str, dict[str, Any]] = {}
-        for row in self._own(email, name, assigned=True):
+        for row in self._own(email, name, assigned=True, oid=oid):
             if row["status"] == "snoozed" and str(row.get("until")) < today.isoformat():
                 out.pop(row["card_id"], None)
                 continue
-            out[row["card_id"]] = _result(row)
+            out[row["card_id"]] = _result(row, self.clock())
         return out
 
-    def log(self, email: str | None, name: str, limit: int = 200) -> list[dict[str, Any]]:
+    def log(self, email: str | None, name: str, limit: int = 200, *,
+            oid: str | None = None) -> list[dict[str, Any]]:
         """This person's journal rows, newest first (a pending row its result follows is
         folded into that result)."""
-        rows = self._own(email, name)
+        rows = self._own(email, name, oid=oid)
         ended = {r["idempotency_key"] for r in rows if r["status"] != "pending"}
         rows = [r for r in rows if r["status"] != "pending" or r["idempotency_key"] not in ended]
-        return [_log_row(r) for r in reversed(rows)][:limit]
+        now = self.clock()
+        return [_log_row(r, now) for r in reversed(rows)][:limit]
 
 
-def _result(row: Mapping[str, Any]) -> dict[str, Any]:
+def _oid(value: Any) -> str | None:
+    """An Entra object id as compared (trimmed, lower case); None when absent."""
+    return value.strip().lower() if isinstance(value, str) and value.strip() else None
+
+
+def _result(row: Mapping[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    """A row as a card state. A ``pending`` send past :data:`IN_FLIGHT_SECONDS` at ``now``
+    is shown ``unknown`` (its outcome was never recorded: check Sent Items); one within it
+    stays ``pending`` (still going out: nothing to check yet)."""
+    if row["status"] == "pending" and now is not None and not in_flight(row, now):
+        row = {**row, "status": "unknown"}
     return {"status": row["status"], "text": _state_text(row), "at": row["at"],
             "kind": row["kind"], "card_id": row["card_id"], "seq": row["seq"],
             "missing": list(row.get("missing") or ()), "replayed": False}
 
 
-def _log_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {**_result(row), "card_label": row.get("card_label") or "",
+def _log_row(row: Mapping[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    return {**_result(row, now), "card_label": row.get("card_label") or "",
             "actor": row["actor"]["name"], "actor_email": row["actor"].get("email"),
             "to": list(row.get("to") or ()),
             "cc": list(row.get("cc") or ()), "subject": row.get("subject"),

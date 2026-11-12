@@ -319,6 +319,7 @@ def bm25(conn: Any, scope: dict[str, Any], texts: Sequence[str], limit: int
     scan = [l for l in lexemes if l not in common]
     df: dict[str, int] = dict(common)
     cand: dict[str, tuple[int, str, dict[str, int]]] = {}
+    rare_scan: list[str] = []
     if scan:
         # first a capped count (the index and row visibility only), then the rows and term
         # frequencies of the rare lexemes alone
@@ -342,7 +343,11 @@ def bm25(conn: Any, scope: dict[str, Any], texts: Sequence[str], limit: int
         heavy = [l for l in present if df[l] > COMMON_SHARE * n]
         if len(heavy) < len(present):
             present = [l for l in present if l not in heavy]
-    rare = {l for l in present if df[l] <= RARE_CAP}
+    # rare: the lexemes whose readable rows were all read above; every other one (common
+    # by the statistics, even when its estimate over a small scope is under the cap) is
+    # read by the bounded fallback below, never left out of both
+    enumerated = set(rare_scan)
+    rare = {l for l in present if l in enumerated}
     frequent = [l for l in present if l not in rare]
     if len(cand) < pool and frequent:
         both = " & ".join(f"'{l}'" for l in frequent)   # lexemes: no quote can occur

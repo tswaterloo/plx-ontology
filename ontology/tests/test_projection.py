@@ -968,7 +968,13 @@ class LinkTests(ProjectionCase):
         self.assertEqual([l["to_object"] for l in covers], [L1])
         stored = self.raw().execute("SELECT recorded_at, superseded_at FROM links WHERE "
                                     "link_type = 'Receipt.covers_lines' ORDER BY recorded_at")
-        self.assertEqual([tuple(r) for r in stored], [(T1_TEXT, T2_TEXT), (T2_TEXT, None)])
+        # l1 changed its quantity at T2, not the key the link joins on: one link over both
+        # of its versions (a stretch), citing the line's newest version
+        self.assertEqual([tuple(r) for r in stored], [(T1_TEXT, None)])
+        line_now = self.raw().execute(
+            "SELECT l1_handle FROM object_versions WHERE object_id = ? AND superseded_at IS "
+            "NULL", (L1,)).fetchone()[0]
+        self.assertIn(line_now, covers[0]["evidence_handles"])
         self.assertEqual(len(covers[0]["evidence_handles"]), 3)
         self.assertEqual({f["hop"] for f in covers[0]["reason"]}, {"from->via", "via->to"})
         supplier = self.links(object_id=PO_A, link_type="PurchaseOrder.ordered_from")
@@ -988,7 +994,9 @@ class LinkTests(ProjectionCase):
             for (_, end), (start, _) in zip(ranges, ranges[1:]):
                 self.assertIsNotNone(end, signature)
                 self.assertLessEqual(end, start, signature)
-        self.assertTrue(any(len(r) > 1 for r in spans.values()))
+        # pairs of end versions were folded into stretches (the check above is not vacuous:
+        # every row is one stretch of several pairs or one pair)
+        self.assertGreaterEqual(self.report["counts"].get("links.stretched", 0), 1)
 
 
 class TimeTests(ProjectionCase):

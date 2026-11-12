@@ -592,7 +592,7 @@ class OnQuestionTests(unittest.TestCase):
         def anchors(_server, _asked, found=None, **_kw):
             if found is not None:
                 found.update(records)
-            return frozenset({"0103510"})
+            return mcp_server._anchor_keys(["PO0103510"])
         with mock.patch.object(mcp_server, "_question_anchors", anchors):
             relevant = mcp_server.MCPServer._relevance(server, "Did PO0103510 arrive?")
         with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
@@ -613,8 +613,26 @@ class OnQuestionTests(unittest.TestCase):
                  "field": "row.po_number"}
         self.assertNotIn(answer_gate.OFF_QUESTION, self.reasons(self.gate(moved)))
         line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
-        self.assertEqual([c["id"] for c in self.gate({**line, "via": self.MOVED})["claims"]],
-                         ["q"])
+        self.assertEqual([c["id"] for c in self.gate(
+            {**line, "via": self.MOVED}, self.linked_world())["claims"]], ["q"])
+
+    def test_a_via_connects_only_a_record_links_join_it_to(self):
+        """GATE-001: a via on the question rescues a claim only on a record firm links
+        join to the via's record: never one joined to it through a hub alone, through a
+        record this reader may not read, or with no store to walk (unknown)."""
+        world = self.linked_world()
+        line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
+        self.assertEqual([c["id"] for c in self.gate({**line, "via": self.ORDER},
+                                                     world)["claims"]], ["q"])
+        for handle in (self.ALIEN, self.OTHER):   # joined only through a hub
+            claim = {"id": "n", "value": "40", "citation": handle, "field": "row.quantity"}
+            self.assertEqual(self.reasons(self.gate({**claim, "via": self.ORDER}, world)),
+                             [answer_gate.OFF_QUESTION], handle)
+        self.assertEqual(self.reasons(self.gate(
+            {**line, "via": self.ORDER}, self.linked_world(hidden={"Receipt:9"}))),
+            [answer_gate.OFF_QUESTION])
+        self.assertEqual(self.reasons(self.gate({**line, "via": self.ORDER})),
+                         [answer_gate.OFF_QUESTION])   # no store: unknown connects nothing
 
     def linked_world(self, hidden=()):
         """The question's order PO:1 and its links, as the relevance walk reads them: a
@@ -631,10 +649,10 @@ class OnQuestionTests(unittest.TestCase):
             "CREATE TABLE link_rows (from_object TEXT, to_object TEXT, superseded_at TEXT,"
             " binding_kind TEXT, tier TEXT);")
         conn.executemany("INSERT INTO object_versions VALUES (?, ?)",
-                         [("PO:1", self.ORDER), ("Line:2", self.LINE),
+                         [("PO:1", self.ORDER), ("Line:2", self.LINE), ("PO:3", self.MOVED),
                           ("Line:5", self.NAMED), ("PO:7", self.OTHER),
                           ("Line:8", self.ALIEN)])
-        links = [("Receipt:9", "PO:1", "fk", "verified"),
+        links = [("Receipt:9", "PO:1", "fk", "verified"), ("Receipt:9", "PO:3", "fk", "verified"),
                  ("Line:2", "Receipt:9", "fk", "verified"),
                  ("Line:5", "PO:1", "mention", "corroborated"),
                  ("PO:1", "Cust:1", "fk", "verified"), ("PO:7", "Cust:1", "fk", "verified"),
@@ -712,6 +730,36 @@ class OnQuestionTests(unittest.TestCase):
         hidden = self.linked_world(hidden={"Receipt:9"})
         self.assertEqual(self.reasons(self.gate(line, hidden, {"PO:1"})),
                          [answer_gate.OFF_QUESTION])
+
+    def test_a_record_names_the_question_s_code_on_whole_words_only(self):
+        """GATE-002: the question's PO0103510 names a row saying PO-0103510, "PO
+        0103510" or the number alone as the whole cell, or page text writing the code;
+        never a longer code (PO-01035100, PO01035101), the number inside another kind's
+        code (SO-0103510) or prose writing the bare number, or a short name inside a
+        longer party's cell."""
+        from operating import mcp_server
+        cells = {"PO-0103510": True, "PO 0103510": True, "0103510": True,
+                 "Freight for PO0103510/2": True,
+                 "PO-01035100": False, "PO01035101": False, "XPO0103510": False,
+                 "SO-0103510": False, "invoice 0103510 paid": False}
+        for said, on in cells.items():
+            self.ROWS = {**type(self).ROWS, self.OTHER: {
+                "relation": "public.app_purchase_order",
+                "row": {"ref": said, "quantity": "40"}}}
+            claim = {"id": "c", "value": "40", "citation": self.OTHER,
+                     "field": "row.quantity"}
+            reasons = self.reasons(self.gate(claim))
+            self.assertEqual(reasons, [] if on else [answer_gate.OFF_QUESTION], said)
+        text = {"handle": self.OTHER, "row": {}, "text": "Re: PO 0103510 arrived late"}
+        self.assertTrue(any(mcp_server._names("PO0103510", said, cell=cell)
+                            for said, cell in mcp_server._said_values(text)))
+        name = mcp_server._letters_digits("Acme Foods")
+        for said, on in (("Acme Foods", True), ("ACME-FOODS", True),
+                         ("Acme Foods International", False), ("AcmeFoodsCo", False)):
+            self.assertEqual(mcp_server._names(name, mcp_server._tokens(said), cell=True),
+                             on, said)
+        self.assertTrue(mcp_server._names(name, mcp_server._tokens(
+            "Spoke with Acme Foods about the late delivery"), cell=False))
 
     def test_a_via_that_cannot_be_read_connects_nothing(self):
         line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
@@ -972,7 +1020,7 @@ class OnQuestionTests(unittest.TestCase):
         self.assertEqual([u["reason"] for u in refused["unsupported"]],
                          [answer_gate.OFF_QUESTION])
         self.assertIn(answer_gate.OFF_QUESTION, refused["repair"]["instruction"])
-        passed = self.gate({**line, "via": self.ORDER})
+        passed = self.gate({**line, "via": self.ORDER}, self.linked_world())
         self.assertEqual([c["id"] for c in passed["claims"]], ["q"])
         # the record the question names stands on its own; a via must be evidence
         order = {"id": "o", "value": "PO-0103510", "citation": self.ORDER,
@@ -980,6 +1028,181 @@ class OnQuestionTests(unittest.TestCase):
         self.assertEqual([c["id"] for c in self.gate(order)["claims"]], ["o"])
         self.assertEqual(self.gate({**line, "via": "api://elsewhere/x@0-1"})["unsupported"][0][
             "reason"], "claim_invalid")
+
+
+class TextCheckEnforcedTests(unittest.TestCase):
+    """GATE-003/004: what the text check finds changes the answer, not only the
+    instruction to the model. Evidence label ``isolated-fixture``: two rows served to the
+    real gate (``mcp_server.answer_decision``) in place of a runtime's."""
+    A = "api://public.app_purchase_order/%7B%22id%22%3A%221%22%7D@0-1"
+    B = "api://public.app_purchase_order/%7B%22id%22%3A%222%22%7D@0-1"
+    ROWS = {A: {"relation": "public.app_purchase_order",
+                "row": {"po_number": "PO-1", "product_code": "R-0162",
+                        "quantity_received": "40", "status": "Shipped"}},
+            B: {"relation": "public.app_purchase_order",
+                "row": {"po_number": "PO-2", "product_code": "R-0163"}}}
+    CODE = {"id": "c", "value": "R-0162", "citation": A, "field": "row.product_code"}
+    COUNT = {"id": "n", "value": "2", "op": "count", "of": [{"citation": A}, {"citation": B}]}
+
+    def decide(self, claims, text):
+        from operating import mcp_server
+        view = lambda handle: {"handle": handle, "revision": "0-1",   # noqa: E731
+                               **self.ROWS[handle]} if handle in self.ROWS else None
+        server = mock.Mock(case_runtime=None, actor=None, returned_names=())
+        with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
+                mock.patch.object(answer_gate, "gate_rows", lambda runtime, actor, **_kw: view):
+            result, _gated, _repairing = mcp_server.answer_decision(
+                {"claims": claims, "text": text}, server, seen={self.A, self.B},
+                returned={}, may_repair=False, repairs_left=0, unread=None)
+        return result
+
+    def test_an_unsupported_business_assertion_is_removed_and_the_answer_partial(self):
+        for said in ("The supplier has approved the refund.", "The shipment was delivered.",
+                     "The invoice was paid.", "The order was cancelled.",
+                     "Acme owns the stock."):
+            with self.subTest(said=said):
+                result = self.decide([self.CODE], "The product is R-0162. " + said)
+                self.assertEqual(result["outcome"], "answered")
+                self.assertEqual(result["answerability"]["state"], "partial")
+                self.assertNotIn(said, result["reply"]["text"])
+                self.assertIn("R-0162", result["reply"]["text"])
+        # a state a passed claim is about stays, and the answer stays answerable
+        status = {"id": "s", "value": "Shipped", "citation": self.A, "field": "row.status"}
+        for said in ("The status is Shipped.", "The order was shipped."):
+            result = self.decide([status], said)
+            self.assertEqual(result["reply"]["text"], said)
+            self.assertEqual(result["answerability"]["state"], "answerable")
+
+    def test_a_lower_bound_count_is_never_an_exact_answerable_total(self):
+        result = self.decide([self.COUNT], "There are 2 orders.")
+        self.assertEqual(result["answerability"]["state"], "partial")
+        self.assertNotIn("There are 2 orders.", result["reply"]["text"])
+        self.assertIn("at least 2", result["reply"]["text"])
+        self.assertEqual([value["answer_value"].get("bound")
+                          for value in result["answer_values"]], ["at_least"])
+        # the bound survives a value restated without it (``kept_value``)
+        cell = answer_gate.passed_cells({"outcome": "answered", "claims": result["claims"]})
+        restated = {"value": "2", "calculation": {"op": "count", "inputs": [
+            {"l1_handle": self.A}, {"l1_handle": self.B}]}}
+        self.assertEqual(answer_gate.kept_value(restated, cell)["bound"], "at_least")
+        # written as the minimum it is, it stands
+        result = self.decide([self.COUNT], "There are at least 2 orders.")
+        self.assertIn("at least 2 orders", result["reply"]["text"])
+        self.assertTrue(result["text_check"]["passed"])
+
+    def test_removing_evidence_never_raises_the_answer_s_certainty(self):
+        """The same text over fewer passed claims is never more
+        certain (``CERTAINTY`` order), nor does it keep a sentence the fuller evidence
+        dropped."""
+        from operating.agent_session import CERTAINTY
+        status = {"id": "s", "value": "Shipped", "citation": self.A, "field": "row.status"}
+        text = "The product is R-0162. The order was shipped. There are 2 orders."
+        full = [self.CODE, status, self.COUNT]
+        rank = lambda result: CERTAINTY.index(  # noqa: E731
+            (result.get("answerability") or {}).get("state") or "blocked")
+        whole = self.decide(full, text)
+        for drop in range(len(full)):
+            fewer = self.decide(full[:drop] + full[drop + 1:], text)
+            with self.subTest(dropped=full[drop]["id"]):
+                self.assertGreaterEqual(rank(fewer), rank(whole))
+
+            with self.subTest(dropped=full[drop]["id"], reply="sentences"):
+                # nor keeps a sentence the fuller evidence dropped
+                for gone in whole["reply"].get("dropped") or ():
+                    self.assertNotIn(gone, fewer["reply"]["text"])
+
+    def final(self, claims, text, values):
+        """The agent Ask's last step (``agent_session.gate_final_reply``) over the gate's
+        decision for ``claims``, the agent's final JSON answer ``text`` with ``values``."""
+        from operating import agent_session
+        result = self.decide(claims, text)
+        answer = {"format": "plx-eval-answer/v1", "answerability": "answerable",
+                  "text": text, "values": values, "gaps": []}
+        events = [{"type": "tool_call", "name": "plx.case_get",
+                   "arguments": {"answer": {"claims": claims, "text": text}},
+                   "result": result}]
+        gated, _report = agent_session.gate_final_reply(
+            "```json\n" + json.dumps(answer) + "\n```", events)
+        out, _error = agent_session.parse_answer(gated)
+        return out
+
+    def test_the_final_reply_keeps_a_lower_bound_count_a_minimum(self):
+        """GATE-004 end to end: the Ask's final reply never says an exact count the gate
+        established only as a minimum; written as the minimum, it stands."""
+        value = {"name": "orders", "value": "2", "calculation": {"op": "count", "inputs": [
+            {"l1_handle": self.A}, {"l1_handle": self.B}]}}
+        out = self.final([self.COUNT], "There are 2 orders.", [value])
+        self.assertNotIn("There are 2 orders.", out["text"])
+        self.assertIn("at least 2", out["text"])
+        self.assertNotRegex(out["text"], r"(?<!least )\b2\b(?! *\+)")
+        self.assertEqual(out["answerability"], "partial")
+        self.assertEqual(out["values"][0].get("bound"), "at_least")
+        out = self.final([self.COUNT], "There are at least 2 orders.", [value])
+        self.assertIn("There are at least 2 orders.", out["text"])
+
+    def test_the_final_reply_never_more_certain_on_fewer_claims(self):
+        from operating.agent_session import CERTAINTY
+        status = {"id": "s", "value": "Shipped", "citation": self.A, "field": "row.status"}
+        text = "The product is R-0162. The order was shipped."
+        values = [{"name": "product", "value": "R-0162",
+                   "citations": [{"l1_handle": self.A, "field_path": "row.product_code"}]}]
+        whole = self.final([self.CODE, status], text, values)
+        fewer = self.final([self.CODE], text, values)
+        self.assertGreaterEqual(CERTAINTY.index(fewer["answerability"]),
+                                CERTAINTY.index(whole["answerability"]))
+        self.assertNotIn("The order was shipped.", fewer["text"])
+
+
+class HedgeKeptTests(unittest.TestCase):
+    """A sentence saying a state is not established keeps the reply's uncertainty: the
+    state-word check (GATE-003) never drops it. The sentences are from recorded Ask
+    sessions (2026-11 replays of 641 sessions, words as the agent wrote them, curly
+    apostrophes included) and the gap wording the agent is told to use
+    (``operator_api/agent_ask.py``). Evidence label ``recorded-sessions``."""
+
+    HEDGES = (
+        "The batch record shows the lot, but I couldn\u2019t confirm that the batch shipped.",
+        "I couldn't confirm the freight we paid on this order.",
+        "Not yet checked: which lots QC rejected.",
+        "I couldn't confirm a matching purchase order in Business Central that was approved.",
+        "I haven't found a record that the invoice was paid.",
+        "I didn't find any sign the order was cancelled.",
+        "There is no source you can open that says it was delivered.",
+        "The search returned nothing.",
+        "Whether the customer paid is unknown.",
+        "It may have shipped on Monday.",
+        "Nothing in the records says the shipment was received.",
+        "It wasn\u2019t possible to verify that the PO was closed.",
+        "I couldn't confirm a ship or delivery date, or that customs has released the "
+        "bottles, from a source you can open.",
+        "Two things are not yet checked: which certificates of analysis came in during "
+        "October, and which of those lots quality control rejected.",
+        "My search for October certificates ran out of time before it returned anything.",
+        "The November letter names no prices, so there are no figures in it to compare "
+        "with what we paid.",
+        "It prints no new prices, so I can't line it up figure by figure against what we "
+        "paid.",
+    )
+    ASSERTED = (
+        ("The order shipped, but whether it was paid is unknown.", ["shipped"]),
+        ("The invoice was not paid.", ["paid"]),
+        ("The order shipped in May.", ["shipped"]),
+        ("I couldn't confirm the tracking number; the order was rejected.", ["rejected"]),
+        ("I couldn't confirm the tracking number, but the order was rejected.", ["rejected"]),
+    )
+
+    def test_a_hedge_is_never_dropped_for_its_state_word(self):
+        for sentence in self.HEDGES:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(answer_gate.unbacked_assertions(sentence, frozenset()), [])
+                kept = answer_gate.final_reply("The product is R-0162. " + sentence, [])
+                self.assertNotIn(sentence.replace("\u2019", "'"),
+                                 [d.replace("\u2019", "'") for d in kept.get("dropped") or ()])
+
+    def test_the_hedge_governs_its_own_clause_and_a_negated_state_is_asserted(self):
+        for sentence, words in self.ASSERTED:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(answer_gate.unbacked_assertions(sentence, frozenset()), words)
 
 
 if __name__ == "__main__":

@@ -102,8 +102,8 @@ from ontology.types import Actor
 
 from . import live_source_grammar as grammar
 from .capture_mail import assert_outside_git, blocked_reason, graph_block
-from .capture_store import (CaptureError, CaptureStore, CapturedRecord, SourceKind,
-                            register_source_kind)
+from .capture_store import (ITEM_ACL_MAX_AGE, CaptureError, CaptureStore, CapturedRecord,
+                            SourceKind, register_source_kind)
 from .graph_read import permission_acl
 from .live_source_guard import (LiveSourceAudience, SourceUnavailable, jsonable,
                                 nextlink_refused, unavailable_detail)
@@ -204,7 +204,9 @@ LIST_KIND = register_source_kind(SourceKind(
     unit=lambda path: f"{UNIT_PREFIX}{path[0]}/{path[1]}",
     resources=lambda path: (_resource(path),),
     key=lambda path: {"site_id": path[0], "list_id": path[1], "id": path[2]},
-    current_acl=True))
+    # every run that lists an item reads its permissions again: past the bound without
+    # one, a revoked grant would stay in force (INT-008)
+    current_acl=True, acl_max_age=ITEM_ACL_MAX_AGE))
 
 
 # ------------------------------------------------------------------ scope

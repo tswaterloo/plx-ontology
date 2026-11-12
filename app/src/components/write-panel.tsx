@@ -3,25 +3,28 @@
 import { useCallback, useEffect, useState } from "react";
 import { approveWrite, executeWrite, getWrites, previewWrite } from "@/lib/api";
 import { newIdempotencyKey } from "@/lib/actions";
-import { plainError } from "@/lib/errors";
+import { ApiError, plainError } from "@/lib/errors";
 import type { WriteIntentView, WritePreview } from "@/lib/types";
 import { Button } from "./ui/button";
 
 /** The write entries that concern a card or record: their record id, a citation or the
  * reason names one of `match`. */
 export function concerns(view: WriteIntentView, match: string[]): boolean {
-  const intent = view.intent as { record_id?: string | null; citations?: string[]; precondition?: { party_id?: string } };
+  const intent = view.intent as { record_id?: string | null; citations?: string[]; precondition?: { party_id?: string }; intent_id?: string };
   const ids = match.filter(Boolean).map((m) => m.toLowerCase());
   if (ids.length === 0) return false;
+  // the entry's own id is matched whole (a short id is never inside another entry's id)
+  const own = (intent.intent_id ?? "").toLowerCase();
   const hay = [intent.record_id ?? "", intent.precondition?.party_id ?? "", ...(intent.citations ?? [])].map((h) => h.toLowerCase());
-  return ids.some((id) => hay.some((h) => h === id || h.includes(id)));
+  return ids.some((id) => own === id || hay.some((h) => h === id || h.includes(id)));
 }
 
 const show = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
 
-/** One entry: preview (field by field), approve with a second confirm click, then run as a
- * dry run. Live writing is off; the result says what a live write still lacks. */
-function WriteEntry({ view, onChange }: { view: WriteIntentView; onChange: (v: WriteIntentView) => void }) {
+/** One entry: preview (field by field), approve with a second confirm click, then run: a
+ * dry run (saying what a live write still lacks) unless the preview says it writes live,
+ * and the button says which. */
+function WriteEntry({ view, onChange, onStale }: { view: WriteIntentView; onChange: (v: WriteIntentView) => void; onStale: () => void }) {
   const [preview, setPreview] = useState<WritePreview | null>(null);
   const [armed, setArmed] = useState(false);
   const [ack, setAck] = useState(false);
@@ -36,12 +39,25 @@ function WriteEntry({ view, onChange }: { view: WriteIntentView; onChange: (v: W
     try {
       await fn();
     } catch (e) {
-      setError(plainError(e));
+      if (e instanceof ApiError && e.status === 409) {
+        // the entry or the record changed under the preview or approval: nothing stays
+        // approved on the page's say-so; preview again, acknowledge again, approve again
+        setPreview(null);
+        setArmed(false);
+        setAck(false);
+        onStale(); // the entry may now need approving again: read where it stands
+        setError(`${e.detail ?? "The entry or the record changed since your preview."} Preview it again before you go on.`);
+      } else {
+        setError(plainError(e));
+      }
     } finally {
       setBusy(false);
     }
   };
   const blocked = !preview || preview.problems.length > 0 || (preview.warnings.length > 0 && !ack);
+  // live only when the server's preview says nothing is missing; the server refuses a live
+  // run the page did not show as live
+  const live = !!preview && preview.live_missing.length === 0;
 
   return (
     <li className="rounded-xl bg-bg p-3 shadow-lift" data-testid="write-entry">
@@ -49,7 +65,7 @@ function WriteEntry({ view, onChange }: { view: WriteIntentView; onChange: (v: W
       <p className="text-[12px] text-muted" data-testid="write-status">{view.text}</p>
       {!preview && (
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => run(async () => setPreview(await previewWrite(id)))} data-testid="write-preview">
-          Preview
+          {error ? "Preview again" : "Preview"}
         </Button>
       )}
       {preview && (
@@ -88,9 +104,16 @@ function WriteEntry({ view, onChange }: { view: WriteIntentView; onChange: (v: W
             })} data-testid="write-confirm">Confirm approval</Button>
           )}
           {view.status === "approved" && (
-            <Button size="sm" disabled={busy} onClick={() => run(async () => onChange(await executeWrite(id, { idempotency_key: key, checked_bc: false })))} data-testid="write-execute">
-              Write (dry run)
-            </Button>
+            <>
+              {live ? (
+                <p className="text-late" data-testid="write-mode">This writes to Business Central now. It cannot be taken back except by the undo above.</p>
+              ) : (
+                <p className="text-muted" data-testid="write-mode">Dry run: nothing is written to Business Central{preview?.live_missing.length ? ` (${preview.live_missing.join("; ")})` : ""}.</p>
+              )}
+              <Button size="sm" disabled={busy} onClick={() => run(async () => onChange(await executeWrite(id, { idempotency_key: key, checked_bc: false, live })))} data-testid="write-execute">
+                {live ? "Write to Business Central" : "Write (dry run)"}
+              </Button>
+            </>
           )}
           {view.request && <p className="text-muted" data-testid="write-result">{view.text}</p>}
         </div>
@@ -104,13 +127,15 @@ function WriteEntry({ view, onChange }: { view: WriteIntentView; onChange: (v: W
 export function WritePanel({ match }: { match: string[] }) {
   const [items, setItems] = useState<WriteIntentView[] | null>(null);
   const key = match.join("|");
+  const [reads, setReads] = useState(0);
   useEffect(() => {
     const ctl = new AbortController();
     getWrites(ctl.signal)
       .then((list) => setItems(list.items.filter((v) => concerns(v, key.split("|")))))
-      .catch(() => setItems([]));
+      .catch(() => !ctl.signal.aborted && setItems((cur) => cur ?? []));
     return () => ctl.abort();
-  }, [key]);
+  }, [key, reads]);
+  const stale = useCallback(() => setReads((n) => n + 1), []);
   const replace = useCallback((next: WriteIntentView) => {
     const id = (next.intent as { intent_id: string }).intent_id;
     setItems((prev) => (prev ?? []).map((v) => ((v.intent as { intent_id: string }).intent_id === id ? next : v)));
@@ -120,7 +145,7 @@ export function WritePanel({ match }: { match: string[] }) {
     <section aria-label="Approve and write" data-testid="write-panel" className="space-y-2">
       <h3 className="text-[13px] font-medium">Approve &amp; write</h3>
       <ul className="space-y-2">
-        {items.map((v) => <WriteEntry key={(v.intent as { intent_id: string }).intent_id} view={v} onChange={replace} />)}
+        {items.map((v) => <WriteEntry key={(v.intent as { intent_id: string }).intent_id} view={v} onChange={replace} onStale={stale} />)}
       </ul>
     </section>
   );

@@ -904,6 +904,89 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
         return m.LabourPage(state="not_granted", note="Labour figures need the hr or "
                             "ops-management grant.", weeks=[], trend=[], alerts=[])
 
+    def _team_demo(self) -> tuple[Any, dict[str, Any]]:
+        """A synthetic team (made-up names and counts) for the Team view in the demo."""
+        import random
+        from datetime import date as _date
+        until = _date(2026, 1, 5)
+        rng = random.Random(7)
+        names = [("Avery Lindqvist", "Purchasing", ["purchasing"]),
+                 ("Bea Okafor", "Customer service", ["customer_service", "receivables"]),
+                 ("Cal Mendes", "Customer service", ["customer_service"]),
+                 ("Dana Whitfield", "Quality", ["quality"]),
+                 ("Eli Navarro", "Production planning", ["production_planning"]),
+                 ("Fern Castillo", "Receivables", ["receivables"]),
+                 ("Gus Hartley", "Purchasing", ["purchasing", "payables"]),
+                 ("Hana Sato", "R&D", ["rnd"]), ("Ivo Brandt", "Finance", ["finance"]),
+                 ("Jo Pemberton", None, [])]
+        people = {}
+        for i, (name, _team, roles) in enumerate(names):
+            scale = rng.uniform(0.3, 1.6)
+            days = {}
+            for k in range(35):
+                d = until - timedelta(days=k)
+                if d.weekday() >= 5:
+                    continue
+                days[d.isoformat()] = {c: int(rng.gauss(mu, mu / 2) * scale) for c, mu in (
+                    ("mail_sent", 9), ("mail_received", 30), ("teams", 14), ("meetings", 2),
+                    ("mc_approvals", 0.6 if "purchasing" in roles else 0),
+                    ("mc_questions", 0.4), ("planner", 0.8), ("sharepoint", 3))
+                    if int(rng.gauss(mu, mu / 2) * scale) > 0}
+            hours = [0] * 24
+            for h in range(7, 18):
+                hours[h] = max(int(rng.gauss(20, 8) * scale * (1.6 if h in (9, 10, 14) else 1)), 0)
+            people[f"demo-{i}"] = {"name": name, "roles": roles, "days": days, "hours": hours,
+                                   "reply": {"7": rng.randint(12, 240), "28": rng.randint(20, 200)},
+                                   "reply_n": {"7": rng.randint(4, 30), "28": rng.randint(20, 90)},
+                                   "with": {f"demo-{j}": rng.randint(5, 80)
+                                            for j in rng.sample(range(len(names)), 5) if j != i}}
+        return until, people
+
+    def team_view(self, reader: Reader) -> m.TeamView:
+        from .team_view import NOTE, person_row
+        until, people = self._team_demo()
+        rows = [m.TeamPerson(**person_row(o, r, until=until, team=None, is_self=o == "demo-0",
+                                          open_={"awaiting_reply": i % 4, "tasks": i % 3,
+                                                 "alerts": (i * 5) % 7}))
+                for i, (o, r) in enumerate(people.items())]
+        return m.TeamView(scope="everyone", state="ready", as_of="2026-01-05T08:30:00+00:00",
+                          window_to=until.isoformat(), people=rows, note=NOTE,
+                          coverage=[m.SystemCoverage(system="sharepoint", share=0.46,
+                                                     actions=8000),
+                                    m.SystemCoverage(system="planner", share=1.0, actions=140),
+                                    m.SystemCoverage(system="bc", share=0.0, actions=5800)])
+
+    def team_person(self, reader: Reader, key: str) -> m.TeamPersonDetail:
+        from .errors import UserFacing
+        from .team_view import key_of, person_row
+        until, people = self._team_demo()
+        oid = next((o for o in people if key_of(o) == key), None)
+        if oid is None:
+            raise UserFacing("not_found", "No such person.", 404)
+        row = people[oid]
+        person = person_row(oid, row, until=until, team=None, is_self=oid == "demo-0",
+                            open_={"awaiting_reply": 2, "tasks": 1, "alerts": 1})
+        days = row["days"]
+        return m.TeamPersonDetail(
+            person=m.TeamPerson(**person),
+            timeline=[m.TeamDay(day=d, counts=days.get(d) or {}) for d in (
+                (until - timedelta(days=i)).isoformat() for i in range(27, -1, -1))],
+            partners=sorted([m.TeamPartner(key=key_of(o), name=people[o]["name"], n=n)
+                             for o, n in row["with"].items()], key=lambda p: -p.n),
+            items=[m.TeamItem(id="d1", bucket="awaiting_reply", kind="reply_owed",
+                              title="Revised ship date for the March order",
+                              counterpart="buyer@example.com", age_days=4, channel="mail",
+                              waiting_on=person["name"]),
+                   m.TeamItem(id="d2", bucket="awaiting_reply", kind="reply_owed",
+                              title="Can you confirm the label artwork?", age_days=2,
+                              channel="teams", waiting_on=person["name"]),
+                   m.TeamItem(id="d3", bucket="tasks", kind="planner_task_overdue",
+                              title="Quarterly supplier review", age_days=9,
+                              waiting_on="OPS"),
+                   m.TeamItem(id="d4", bucket="alerts", kind="price_below_cost",
+                              title="Order line priced below cost", age_days=1,
+                              waiting_on="SALES")])
+
     def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
         """The demo calendar (``mock_meetings``) through the real reader."""
         from . import mock_meetings

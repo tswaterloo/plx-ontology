@@ -80,6 +80,30 @@ def delta_layers(state: Path, digest: str) -> list[str]:
     return list(reversed(pointer["layers"]))
 
 
+def delta_running(state: Path, locks: Path = Path("/proc/locks")) -> bool:
+    """Whether a delta cycle or fold holds its run lock now (``ontology.delta``'s
+    ``projection/delta/.run.lock``), read from the kernel's lock table: never by taking
+    the lock, which would make a delta starting at that moment skip its cycle. Unknown
+    (no lock file, no lock table): False."""
+    try:
+        info = os.stat(state / "projection" / "delta" / ".run.lock")
+        table = locks.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    wanted = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+    for line in table.splitlines():
+        fields = line.split()
+        if "->" in fields or len(fields) < 6 or fields[1] != "FLOCK":
+            continue
+        try:
+            major, minor, inode = fields[5].split(":")
+            if (int(major, 16), int(minor, 16), int(inode)) == wanted:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def load_cursor(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -171,6 +195,12 @@ def _slice_chunks(conn: Any, state: Path, layer: Path, exclusion: Any,
             "skipped": dict(counts.as_dict().get("skipped") or {})}
 
 
+def _schema_mismatch(error: sqlite3.Error) -> bool:
+    text = str(error)
+    return isinstance(error, sqlite3.OperationalError) and (
+        text.startswith("no such table") or text.startswith("no such column"))
+
+
 def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any, *,
                deadline: float | None = None, progress: dict[str, Any] | None = None,
                workers: int = 1, values: dict[str, str] | None = None,
@@ -189,8 +219,12 @@ def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any, *,
         current = dict(source.execute(
             "SELECT v.object_id, v.l1_handle FROM object_versions v JOIN delta_owned d ON "
             "d.object_id = v.object_id WHERE v.superseded_at IS NULL").fetchall())
-    except sqlite3.Error:
-        return {"skipped": "not_a_delta_layer"}
+    except sqlite3.Error as error:
+        # only a file without a layer's tables is no delta layer (skipped for good); any
+        # other failure (locked, unreadable, I/O) is retried: the layer stays behind
+        if _schema_mismatch(error):
+            return {"skipped": "not_a_delta_layer"}
+        return {"failed": "layer_unreadable", "error": type(error).__name__}
     progress = progress if progress is not None else {}
     done = int(progress.get("done") or 0)
     interrupted = progress.get("started")
@@ -203,8 +237,10 @@ def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any, *,
         "sender_rows_purged": st.purge_objects(conn, withheld_messages(source, exclusion))}
     skipped: dict[str, int] = {}
     slices = [owned_all[i:i + SLICE] for i in range(0, len(owned_all), SLICE)]
+    last = 0.0     # the last slice's seconds: no slice starts that would end past the deadline
     for number in range(done, len(slices)):
-        if deadline is not None and _clock() >= deadline:
+        begun = _clock()
+        if deadline is not None and begun + last >= deadline:
             report["partial"] = {"slices_done": number, "slices": len(slices)}
             break
         part = slices[number]
@@ -252,6 +288,7 @@ def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any, *,
             {u for p in parts for u in p["withheld"]})
         progress["done"] = number + 1
         progress.pop("started", None)
+        last = _clock() - begun
         interrupted = None
         if save:
             save(progress)
@@ -421,6 +458,12 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
                                 progress=progress, workers=args.chunk_workers, values=values,
                                 save=lambda p, layer=layer: save(p, layer))
             report["layers"][Path(layer).name] = result
+            if result.get("failed"):
+                # never recorded as indexed: the next run reads it again, and no later
+                # layer is indexed past it (a newer version would be overwritten by it)
+                report["layer_failed"] = Path(layer).name
+                report["layers_left"] = len([x for x in layers if x not in indexed])
+                break
             if result.get("partial"):
                 report["layers_left"] = len([x for x in layers if x not in indexed])
                 break
@@ -435,13 +478,21 @@ def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, A
         low = args.min_free_gb and _free_gb(state) < args.min_free_gb
         if low:
             report["embed"] = {"skipped": "disk_below_min_free"}
+        elif delta_running(state):
+            # the delta's projection takes every core for hours: the embedding (its CPU
+            # is most of this run's) waits for the next run after it (PERF-16)
+            report["embed"] = {"skipped": "delta_running"}
         elif running(state):
             report["embed"] = {"skipped": "backfill_running"}   # it embeds, in turn
         elif args.embed_seconds and (wrote or cursor.get("pending_after") != 0):
             from .__main__ import embed
-            report["embed"] = embed(conn, values, kinds=None, limit=None, order="recent",
-                                    workers=args.workers, bulk=False,
-                                    budget_seconds=args.embed_seconds)
+            # one model process (its threads all of --workers' share of the cores), never
+            # a bge-m3 copy per child: ~1.9 GB less for the same budgeted batches
+            threads = values.get("PLX_EMBED_THREADS") or str(
+                max(1, (os.cpu_count() or 8) // 2))
+            report["embed"] = embed(conn, dict(values, PLX_EMBED_THREADS=threads),
+                                    kinds=None, limit=None, order="recent", workers=1,
+                                    bulk=False, budget_seconds=args.embed_seconds)
             if "pending_after" in report["embed"]:
                 cursor["pending_after"] = report["embed"]["pending_after"]
                 save_cursor(cursor_path, cursor)
@@ -492,7 +543,8 @@ def parser() -> argparse.ArgumentParser:
                    help="start no new delta layer after this long (0: all of them)")
     p.add_argument("--chunk-workers", type=int, default=max(1, cores // 2))
     p.add_argument("--workers", type=int, default=max(1, cores // 4),
-                   help="embedding processes (each with PLX_EMBED_THREADS threads)")
+                   help="processes of a generation pass's embedding (the layers' embedding "
+                        "runs one model in the follower's own process)")
     p.add_argument("--embed-seconds", type=float, default=900.0,
                    help="embed for at most this long per run (0: do not embed)")
     p.add_argument("--wait-seconds", type=float, default=0.0,
@@ -510,7 +562,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"refused": str(missing)}))
         return 2
     print(json.dumps(report, indent=1, sort_keys=True, default=str))
-    return 2 if report.get("refused") else 0
+    return 2 if report.get("refused") else 1 if report.get("layer_failed") else 0
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ vi.mock("@/lib/api", async (orig) => ({
 }));
 
 import { readdirSync } from "node:fs";
+import { ApiError } from "@/lib/errors";
 import { join } from "node:path";
 import { AccessBanner, DevBanner, navFor, OpsAlarmBanner, OpsStatus, TOOLBAR_PAGES } from "./shell";
 
@@ -165,6 +166,38 @@ describe("reliability banner on every page", () => {
     expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("Reliability checks are not running");
   });
 
+  it("keeps the last alarms on screen and says monitoring is unavailable when the next poll fails", async () => {
+    auth.state = me({ ops_reader: true });
+    api.alarms = alarms;
+    render(<OpsAlarmBanner every={30} />);
+    const banner = await screen.findByTestId("ops-alarm-banner");
+    expect(banner).toHaveTextContent("2 reliability problems");
+    expect(banner).not.toHaveTextContent("Monitoring unavailable");
+    api.alarms = new Error("network");
+    await waitFor(() => expect(screen.getByTestId("ops-alarm-banner")).toHaveTextContent("Monitoring unavailable"));
+    expect(screen.getByTestId("ops-alarm-banner")).toHaveTextContent("killed: out of memory");
+    // a good poll clears the warning
+    api.alarms = alarms;
+    await waitFor(() => expect(screen.getByTestId("ops-alarm-banner")).not.toHaveTextContent("Monitoring unavailable"));
+  });
+
+  it("says monitoring is unavailable when the very first poll fails", async () => {
+    auth.state = me({ ops_reader: true });
+    api.alarms = new Error("network");
+    render(<OpsAlarmBanner />);
+    expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("Monitoring unavailable");
+  });
+
+  it("an all-clear banner that loses its poll no longer looks like normal operation", async () => {
+    auth.state = me({ ops_reader: true });
+    api.alarms = { ...alarms, open: [] };
+    render(<OpsAlarmBanner every={30} />);
+    await waitFor(() => expect(api.asked).toBeGreaterThan(0));
+    expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
+    api.alarms = new Error("network");
+    expect(await screen.findByTestId("ops-alarm-banner")).toHaveTextContent("Monitoring unavailable");
+  });
+
   it("is never asked for by other readers and says nothing when all is well or refused", async () => {
     auth.state = me({});
     api.alarms = alarms;
@@ -177,9 +210,17 @@ describe("reliability banner on every page", () => {
     auth.state = me({ ops_reader: true });
     api.alarms = { ...alarms, open: [] };
     render(<OpsAlarmBanner />);
-    api.alarms = new Error("403");
-    render(<OpsAlarmBanner />);
-    await waitFor(() => expect(api.asked).toBe(2));
+    await waitFor(() => expect(api.asked).toBe(1));
+    expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
+  });
+
+  it("a refused poll (403) says nothing and is not asked again; only a failed read says unavailable", async () => {
+    auth.state = me({ ops_reader: true });
+    api.alarms = new ApiError(403, "forbidden");
+    render(<OpsAlarmBanner every={20} />);
+    await waitFor(() => expect(api.asked).toBe(1));
+    await new Promise((r) => setTimeout(r, 120)); // several intervals would have passed
+    expect(api.asked).toBe(1);
     expect(screen.queryByTestId("ops-alarm-banner")).toBeNull();
   });
 });

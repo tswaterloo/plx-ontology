@@ -25,7 +25,7 @@ const sug = (object_id: string, type: string, label: string, sublabel: string): 
 const DIVERSIFIED = [
   sug('Customer:portal.app_customer:{"id":"fm-cust-89"}', "Customer", "Diversified", "Customer · DIVE11 · BC and Portal"),
   sug('Customer:bc.customers:{"id":"d2"}', "Customer", "Diversified", "Customer · C01100 · BC"),
-  sug('Customer:portal.fm_customer:{"id":89}', "Customer", "Diversified", "Customer · Portal"),
+  { ...sug('Customer:portal.fm_customer:{"id":89}', "Customer", "Diversified", "Customer · Portal"), same_as: ['Customer:portal.app_customer:{"id":"fm-cust-89"}'] },
   sug('CustomerLocation:portal.l:{"id":"x"}', "CustomerLocation", "Diversified", "Customer location · Portal"),
 ];
 
@@ -111,6 +111,16 @@ describe("customers who share a name", () => {
       [DIVERSIFIED[1].object_id, 0],
       [DIVERSIFIED[3].object_id, 0],
     ]);
+  });
+
+  it("two code-less rows of one name stay apart unless the server says they are one record", () => {
+    const a = sug("Customer:bc.customers:{\"id\":\"a\"}", "Customer", "Acme", "Customer");
+    const b = sug("Customer:portal.fm_customer:{\"id\":2}", "Customer", "Acme", "Customer · Portal");
+    expect(arrange([a, b], "acme")).toHaveLength(2);
+    const joined = arrange([a, { ...b, same_as: [a.object_id] }], "acme");
+    expect(joined).toHaveLength(1);
+    expect(joined[0].systems).toEqual(["Portal"]);
+    expect(arrange([a, { ...a }], "acme")).toHaveLength(1);
   });
 
   it("the record page says so and links to the other one", async () => {

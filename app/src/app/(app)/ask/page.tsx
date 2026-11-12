@@ -14,7 +14,7 @@ import { VERIFIED_EXAMPLES } from "@/lib/examples";
 import { ago, formatDateTime, recordLabel, SYSTEM_LABEL } from "@/lib/format";
 import { takePending } from "@/lib/pending";
 import { useSaved } from "@/lib/saved";
-import { useThread } from "@/lib/thread";
+import { askUrlKey, useThread } from "@/lib/thread";
 import { getWorkThread } from "@/lib/api";
 import type { Answer, Freshness, LatePo } from "@/lib/types";
 
@@ -171,7 +171,7 @@ function StartingPoints({ onAsk }: { onAsk: (q: string, objectId?: string) => vo
 function Ask() {
   const params = useSearchParams();
   const router = useRouter();
-  const { turns, run, stop, reset, busy, seed } = useThread();
+  const { turns, run, retry, followUp, stop, reset, busy, seed } = useThread();
   const started = useRef<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const lastTurn = useRef<HTMLElement>(null);
@@ -192,14 +192,15 @@ function Ask() {
         : {};
 
   useEffect(() => {
-    const key = `${q}\u0000${scope}\u0000${source}`;
+    // the whole of what the URL asks: the question and every scope or page it carries
+    const key = askUrlKey({ q, object: scope, source, meeting: meetingId, item: itemId, page: pagePath });
     if (q && started.current !== key) {
       started.current = key;
       if (turns.length > 0) reset();
       void run(q, scope ?? takePending(q)[0]?.object_id, source, [], page);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- page follows the same URL params
-  }, [q, scope, source, run, reset, turns.length]);
+  }, [q, scope, source, meetingId, itemId, pagePath, run, reset, turns.length]);
 
   // "Continue" from the work log: the session's turns as they were answered; a follow-up
   // carries their history and conversation id like any other.
@@ -278,9 +279,9 @@ function Ask() {
                 </h2>
                 <AnswerCard
                   turn={t}
-                  onRetry={() => run(t.question)}
+                  onRetry={() => retry(t)}
                   onPick={busy ? undefined : (c) => run(`I mean ${c.label}`, c.object_id)}
-                  onAsk={busy ? undefined : (next) => run(next)}
+                  onAsk={busy ? undefined : (next) => followUp(next, t)}
                   onInstruct={busy ? undefined : (next, extra) => run(next, extra.object_id ?? undefined, extra.source ?? undefined, [], { context: extra.context, mode: extra.mode, instruction: extra.instruction })}
                 />
               </section>

@@ -512,6 +512,8 @@ UNJUDGED_WORDS = {"no_order_lines": "lack order lines",
                   "no_need_date": "hold no due date",
                   "need_date_disputed": "hold two different due dates",
                   "fulfilment_unsettled": "have a shipment or invoice not yet confirmed as theirs",
+                  "partly_fulfilled": "are partly shipped or invoiced with the balance not "
+                                      "reconciled",
                   "closed_in_unsettled_twin": "closed only in an unconfirmed copy",
                   "date_unparseable": "hold a date that cannot be read",
                   "not_projected": "are not in the records yet"}
@@ -1453,7 +1455,10 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
 
 
 _AMOUNT_WORDS = {"loss": "lost", "margin_at_stake": "margin at stake",
-                 "total_cost": "order total", "total_amount": "order total"}
+                 "total_cost": "order total", "total_amount": "order total",
+                 # a sales order whose header states no value (``operating.order_value``)
+                 "order_value_invoices": "order value (from its invoices)",
+                 "order_value_lines": "order value (from its lines)"}
 PORTAL_TOTAL_WORDS = "Portal total (its lines' unit prices added, not quantity x price)"
 # A total checked against its own lines and not simply theirs (``suspect_money``): what it
 # is said to be, and never ranked by.

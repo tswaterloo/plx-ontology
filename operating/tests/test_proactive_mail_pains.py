@@ -109,6 +109,19 @@ class MailPains(Engine):
             ("If it is late we will need to expedite.", mp.EXPEDITE_FAMILIES, None),
             ("Ship it as soon as possible.", mp.EXPEDITE_FAMILIES, "urgent"),
             ("As soon as we get the PO we can rush it.", mp.EXPEDITE_FAMILIES, None),
+            ("Attached is your order confirmation; for any discrepancies or changes, please "
+             "email us as soon as possible.", mp.EXPEDITE_FAMILIES, None),
+            ("Should you need it sooner, please let us know ASAP.", mp.EXPEDITE_FAMILIES, None),
+            # a notice's clause is dropped only from its opener on: an ask before it stays
+            ("Your account is 60 days past due; for any questions call me.",
+             mp.PAYMENT_FAMILIES, "past_due"),
+            ("This invoice is past due, should you have questions please call.",
+             mp.PAYMENT_FAMILIES, "past_due"),
+            ("Please expedite PO 4512, we need it for any orders shipping next week.",
+             mp.EXPEDITE_FAMILIES, "expedite"),
+            ("For any discrepancies, please email us as soon as possible.",
+             mp.EXPEDITE_FAMILIES, None),
+            ("In the event of changes - please reply ASAP.", mp.EXPEDITE_FAMILIES, None),
             ("Due to a raw material shortage, delivery is delayed.", mp.SHORTAGE_FAMILIES,
              "shortage"),
             ("Is there a shortage on this item?", mp.SHORTAGE_FAMILIES, None),
@@ -181,6 +194,41 @@ class MailPains(Engine):
             with self.subTest(hidden=hidden):
                 seen = self.kinds(mp.EXPEDITE_KIND, may_read=lambda a, h=hidden: a != h)
                 self.assertNotIn(so, [g["object_id"] for g in seen])
+
+    def test_an_automatic_reply_or_a_note_to_colleagues_is_no_expedite_ask_or_answer(self):
+        w = World()
+        p = item(w)
+        # our own out-of-office reply, sent to a colleague, naming the order
+        away, _ = sales_order(w, p, number="SYNTH-SO-5")
+        mail(w, away, "Email.mentions_sales_order", day(9),
+             "Thank you for your email. I am out of office, please expedite with ops.",
+             sender=OURS, to="colleague@synth-tenant.example",
+             subject="Automatic reply: Order SYNTH-SO-5")
+        # an away note under an ordinary subject, from outside
+        note, _ = sales_order(w, p, number="SYNTH-SO-6")
+        mail(w, note, "Email.mentions_sales_order", day(9),
+             "I am currently out of the office. Please expedite urgent orders with sales.",
+             subject="Re: SYNTH-SO-6")
+        # ours asking a colleague to rush it: coordination, nobody outside could answer
+        inside, _ = sales_order(w, p, number="SYNTH-SO-7")
+        mail(w, inside, "Email.mentions_sales_order", day(9), "Please expedite this order.",
+             sender=OURS, to="colleague@synth-tenant.example")
+        # a real ask whose only later message is the other side's automatic reply
+        asked, _ = sales_order(w, p, number="SYNTH-SO-8")
+        mail(w, asked, "Email.mentions_sales_order", day(9), "Please expedite this order.",
+             sender=OURS, to=CUSTOMER, conversation="conv-synth-8")
+        mail(w, asked, "Email.mentions_sales_order", day(8), "I will be away until Monday.",
+             sender=CUSTOMER, to=OURS, conversation="conv-synth-8",
+             subject="Automatic reply: SYNTH-SO-8")
+        # ours whose recipients were not captured: unknown, so still read as an ask
+        unknown, _ = sales_order(w, p, number="SYNTH-SO-9")
+        mail(w, unknown, "Email.mentions_sales_order", day(9), "Please expedite this order.",
+             sender=OURS, to="")
+        summary = self.run_rules(w)
+        self.assertEqual(summary["detectors"][mp.EXPEDITE], "complete")
+        gaps = {g["object_id"]: g for g in self.kinds(mp.EXPEDITE_KIND)}
+        self.assertEqual(set(gaps), {asked, unknown})
+        self.assertIn("SYNTH-SO-8: we asked 1 time,", gaps[asked]["summary"])
 
     # ------------------------------------------------------------------ shortage
 

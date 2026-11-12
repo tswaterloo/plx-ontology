@@ -6439,6 +6439,83 @@
                 },
                 "maxItems": 400
               },
+              "derived": {
+                "type": "array",
+                "maxItems": 5,
+                "description": "Values derived from other records when the source states none (a sales order whose header total is zero: Sage zeroes it once invoiced): order_value from the invoices that bill it, else from its priced lines (operating/order_value.py). Never a source value: derived_from names the basis, inputs cite every value it sums, source_total quotes the header's own cell. Only from records, links and cells this reader may read; markings are the union of the inputs'.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "property",
+                    "value_type",
+                    "value",
+                    "currency",
+                    "derived_from",
+                    "description",
+                    "inputs",
+                    "markings"
+                  ],
+                  "properties": {
+                    "property": {
+                      "enum": [
+                        "order_value"
+                      ]
+                    },
+                    "value_type": {
+                      "enum": [
+                        "money"
+                      ]
+                    },
+                    "value": {
+                      "type": "string",
+                      "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                    },
+                    "currency": {
+                      "type": "string",
+                      "pattern": "^[A-Z]{3}$"
+                    },
+                    "derived_from": {
+                      "enum": [
+                        "invoices",
+                        "order_lines"
+                      ]
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "inputs": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 60,
+                      "items": {
+                        "$ref": "#/$defs/value_citation"
+                      }
+                    },
+                    "source_total": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "value",
+                        "citation"
+                      ],
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "maxLength": 40
+                        },
+                        "citation": {
+                          "$ref": "#/$defs/value_citation"
+                        }
+                      }
+                    },
+                    "markings": {
+                      "$ref": "#/$defs/markings"
+                    }
+                  }
+                }
+              },
               "conflicts": {
                 "type": "array",
                 "items": {
@@ -7326,6 +7403,7 @@
                       },
                       "description": "Group key per group_by property; a string key is source text and is enveloped."
                     },
+                    "key_dimensions": {"type": "object", "maxProperties": 2, "description": "Per group_by property holding an amount or a quantity: the currency and unit its key value is in (a key of 10 CAD and one of 10 USD are two groups).", "additionalProperties": {"type": "object", "additionalProperties": false, "properties": {"currency": {"type": "string", "pattern": "^[A-Z]{3}$"}, "unit": {"type": "string", "maxLength": 40}}}},
                     "value": {
                       "type": [
                         "string",
@@ -7444,7 +7522,7 @@
               "summary": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Computed over every group (returned or not): how many, how many hold a value, lowest, highest, total (partial_total when a group lacks its value or the answer is partial: a lower bound, never the whole), how many groups hold each value, and the markings of what it summarises.",
+                "description": "Computed over every group (returned or not): how many, how many hold a value; for values of one dimension its currency/unit/quantity_role, lowest, highest, total (partial_subtotal when a group lacks its value or the answer is partial: never the whole, a lower bound only with at_least) and how many groups hold each value; values of several dimensions are summarised per dimension (by_dimension), never across them. Carries the markings of what it summarises.",
                 "properties": {
                   "markings": {
                     "type": "array",
@@ -7454,9 +7532,32 @@
                     "maxItems": 20,
                     "uniqueItems": true
                   },
-                  "partial_total": {
-                    "type": "string",
-                    "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                  "partial_subtotal": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$", "description": "What the groups read add to when a group holds no value, another dimension's groups exist or the answer is partial: never the total, and a lower bound only with at_least."},
+                  "at_least": {"type": "boolean", "description": "true only for a count's partial_subtotal (counts are never negative); a sum may hold negative values (a credit memo), so its partial_subtotal is no bound."},
+                  "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+                  "unit": {"type": "string", "maxLength": 40},
+                  "quantity_role": {"type": "string", "enum": ["accepted", "actual", "committed", "damaged", "delivered", "filled", "inspected", "invoiced", "manufactured", "ordered", "planned", "produced", "received", "rejected", "retained", "returned", "shipped"]},
+                  "by_dimension": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "description": "Values in several dimensions (currencies, units, quantity roles): one entry each, and no lowest, highest, total or value_counts across them.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["with_value", "lowest", "highest"],
+                      "properties": {
+                        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+                        "unit": {"type": "string", "maxLength": 40},
+                        "quantity_role": {"type": "string", "enum": ["accepted", "actual", "committed", "damaged", "delivered", "filled", "inspected", "invoiced", "manufactured", "ordered", "planned", "produced", "received", "rejected", "retained", "returned", "shipped"]},
+                        "with_value": {"type": "integer", "minimum": 1},
+                        "lowest": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"},
+                        "highest": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"},
+                        "total": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"},
+                        "partial_subtotal": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"},
+                        "at_least": {"type": "boolean"},
+                        "value_counts": {"type": "array", "maxItems": 12, "items": {"type": "object", "additionalProperties": false, "properties": {"value": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"}, "groups": {"type": "integer", "minimum": 1}}}}
+                      }
+                    }
                   },
                   "groups": {
                     "type": "integer",

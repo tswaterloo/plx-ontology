@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import copy
+from collections import deque
 import functools
 import json
 import logging
@@ -455,6 +456,8 @@ def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
     if len(matched) != 1:
         return None
     intent = matched[0]
+    if _unserved_scope(intent, folded, system, named, token, labels):
+        return None   # a place, time, system or record the recipe would not read
     if intent.name == "task_status" and _TASK_OTHER_ACT.search(folded):
         return None   # who reported, requested or decided it: not its stage and owner
     if intent.name == "po_status" and _PO_OTHER_THING.search(folded):
@@ -525,6 +528,49 @@ def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
     return Ask(intent.name, token or "", system, item=item,
                asks_eta=bool(re.search(r"\b(confirm\w*|eta)\b", folded)),
                asks_next=bool(_ASKS_NEXT.search(folded)))
+
+
+# What a question may constrain beyond its intent and record (AGT-002): a place (a
+# warehouse, site or bin), a time it is asked as of or ahead of now, a system. A recipe
+# reads the current record of its own system, company-wide: a constraint it cannot read
+# hands the question to the agent rather than answering a different question.
+_PLACE = re.compile(r"\b(?:warehouses?|locations?|sites?|plants?|bins?|facilit(?:y|ies)|"
+                    r"dcs?|distribution cent(?:er|re)s?)\b")
+_AS_OF = re.compile(r"\bas (?:of|at)\b|\bon \d{4}-\d{2}-\d{2}\b|\bback (?:on|in|then)\b|"
+                    r"\bat the (?:start|end) of\b")
+_AHEAD = re.compile(r"\bnext (?:week|month|quarter|year)\b|\btomorrow\b|\bforecast\w*\b|"
+                    r"\bproject(?:ed|ion)\b|\bin \d+ (?:days?|weeks?|months?)\b")
+# The systems each recipe reads, where it reads one only (a recipe absent reads the
+# system the question names itself, or any).
+_RECIPE_SYSTEMS = {"on_hand": ("bc",), "task_status": ()}
+
+
+def _unserved_scope(intent: Any, folded: str, system: Optional[str], named: Optional[str],
+                    token: Optional[str], labels: Sequence[str]) -> bool:
+    """Whether the question constrains what ``intent``'s recipe reads in a way it cannot
+    honour: a place (``_PLACE``, beside a record or stock intent: no recipe reads one);
+    an as-of time (``_AS_OF``: every recipe reads now); a time ahead (``_AHEAD``) for an
+    intent that takes no window; a system the recipe does not read
+    (``_RECIPE_SYSTEMS``); a second record of the asked kind written in brackets
+    ("TASK-123 (and TASK-456)"), where a bracketed label of another kind stays a label."""
+    if intent.name not in _STORE_WIDE and _PLACE.search(folded):
+        return True
+    if _AS_OF.search(folded):
+        return True
+    timed = intent.name in WINDOW_INTENTS or intent.name == "lots_expiring"
+    if _AHEAD.search(folded) and not timed and not intent.takes_frame:
+        return True
+    systems = _RECIPE_SYSTEMS.get(intent.name)
+    if systems is not None and system is not None and system not in systems:
+        return True
+    if systems is not None and re.search(r"\b(?:in|from|per|on) (?:sage|portal|filemaker|fm|"
+                                         r"quickbooks|netsuite|excel)\b", folded) \
+            and not (system in systems):
+        return True
+    if named is not None and any(_kind(label) == named and _norm_id(label) != _norm_id(token)
+                                 for label in labels):
+        return True
+    return False
 
 
 # Anything late from a vendor ("anything late from Acme?", "Acme - any POs overdue?"):
@@ -784,6 +830,23 @@ class Unanswerable(Exception):
     """The fast path cannot answer this (a code, never shown): the agent answers."""
 
 
+def evidence_copy(returned: Mapping[str, Any]) -> dict[str, Any]:
+    """Everything ``claim_checks.returned_evidence`` kept (counts, currencies, the lead
+    cells and lead records a lead-tier walk returned, and whatever it keeps next), each
+    container copied: the gate a fast answer submits to sees the evidence the agent's
+    gate sees, so a lead stays a lead (AGT-001: only counts and currencies were copied,
+    and a lead-basis cell became an unmarked fact)."""
+    out: dict[str, Any] = {"counts": [], "currencies": {}, "currency_citations": {}}
+    for key, value in returned.items():
+        if isinstance(value, Mapping):
+            out[key] = dict(value)
+        elif isinstance(value, (list, tuple, deque)):
+            out[key] = list(value)
+        else:
+            out[key] = value
+    return out
+
+
 class Reads:
     """One reader's reads for one fast answer: the host's generic tools for ``actor``
     (``host``: its ``CaseHostTools``; ``runtime``: its ``CaseRuntime``), served as
@@ -867,6 +930,8 @@ class Reads:
         started = time.monotonic()
         key = self._cache_key(name, arguments) if cached else None
         kept = _CACHE.get(key) if key is not None else None
+        if kept is not None and kept[0] <= started:
+            kept = None   # expired: read anew, and the fresh result kept in its place
         # In-process host code, as ``MCPServer.handle(host_code=True)``: a result is bounded
         # by its own size, never by the size its envelopes would add for a client (a plan's
         # answer is fitted unwrapped, so measured wrapped it was refused whole); the result
@@ -879,7 +944,7 @@ class Reads:
         within = sql_deadline(self.deadline)
         within.__enter__()
         try:
-            if kept is not None and kept[0] > time.monotonic():
+            if kept is not None:
                 result = copy.deepcopy(kept[1])
             elif name == "plx.read":
                 from .case_tools_host import PagedRead
@@ -941,9 +1006,7 @@ class Reads:
         from . import mcp_server
         from .agent_session import ANSWER_GATE_TOOL
         started = time.monotonic()
-        returned = {"counts": list(self.returned.get("counts") or ()),
-                    "currencies": dict(self.returned.get("currencies") or {}),
-                    "currency_citations": dict(self.returned.get("currency_citations") or {})}
+        returned = evidence_copy(self.returned)
         result, _gated, _repairing = mcp_server.answer_decision(
             dict(submission), self.server, seen=set(self.seen), returned=returned,
             may_repair=False, repairs_left=0, unread=None)
@@ -2448,7 +2511,9 @@ def _price_cell(result: Mapping[str, Any], line: Any,
     page, and carry the line's own citation, unit and currency)."""
     def cited(entry: Mapping[str, Any]) -> bool:
         cite = entry.get("citation") or {}
-        return entry.get("check") == "passed" and isinstance(cite.get("l1_handle"), str) \
+        # a price reached through a lead-tier link is no fact of this item's (AGT-001)
+        return entry.get("check") == "passed" and not entry.get("lead_basis") \
+            and isinstance(cite.get("l1_handle"), str) \
             and isinstance(cite.get("field_path"), str)
     for entry in result.get("answer") or ():
         if entry.get("object_id") == line and entry.get("kind") == "property" \

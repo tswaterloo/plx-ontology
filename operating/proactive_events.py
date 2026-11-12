@@ -1465,22 +1465,61 @@ def read_margin(call: Callable, root: str) -> Any:
 
 # An order line's item named as a sample or a no-charge line (any system's wording).
 FREE_ITEM = re.compile(r"(?i)\b(?:samples?|no[ -]?charge|n/c|f\.?o\.?c\.?|free of charge)\b")
+ITEM_NAME_PROPS = ("name", "description")
 
 
-def free_lines(lines: Sequence[Any]) -> tuple[list[Any], Decimal | None]:
-    """An order's free lines (invoiced at zero with nothing credited, or an item named a
-    sample or no charge) and the margin of the others (None: a priced line's margin is
-    not known, so no loss is judged on the priced lines alone)."""
+def sample_items(st: Any, lines: Sequence[Any]) -> frozenset[str]:
+    """The items of ``lines`` named a sample or no charge: matched on each item's own
+    name or description as stored (``ITEM_NAME_PROPS``), never on its object id (an id
+    such as ``Product:...`` is a key, not a name). An item whose names cannot be read is
+    no named sample."""
+    items = sorted({line.item for line in lines if isinstance(line.item, str) and line.item})
+    if not items:
+        return frozenset()
+    named = st.values(tuple(sorted({i.split(":", 1)[0] for i in items})), ITEM_NAME_PROPS,
+                      objects=items)
+    return frozenset(oid for oid, entry in named.items() if any(
+        FREE_ITEM.search(str(row["value"] or ""))
+        for prop in ITEM_NAME_PROPS for row in entry["props"].get(prop, ())))
+
+
+def free_lines(lines: Sequence[Any], samples: frozenset[str] = frozenset()
+               ) -> tuple[list[Any], Decimal | None]:
+    """An order's free lines and the margin of the others (None: a priced line's margin is
+    not known, so no loss is judged on the priced lines alone). A free line is one its
+    invoices charge nothing for: invoiced at zero with nothing credited, or an item named a
+    sample or no charge (``samples``: ``sample_items``) invoiced at zero. A name never
+    overrides a bill: a "Sample bottles" line billed 10 is a sold line whose loss counts
+    (``billed_samples`` says it), and a sample whose revenue is not known is not proven free
+    (AUTOMATION-018)."""
     free = [line for line in lines
-            if (line.revenue is not None and line.revenue == 0
-                and not (line.credited or line.credit_amount))
-            or (isinstance(line.item, str) and FREE_ITEM.search(line.item))]
+            if line.revenue is not None and line.revenue == 0
+            and (not (line.credited or line.credit_amount) or line.item in samples)]
     if not free:
         return [], None
     priced = [line for line in lines if not any(line is f for f in free)]
     if not priced or any(line.margin is None for line in priced):
         return free, None
     return free, sum((line.margin for line in priced), Decimal(0))
+
+
+def billed_samples(lines: Sequence[Any], samples: frozenset[str] = frozenset()) -> list[Any]:
+    """The lines whose item is named a sample or no charge (``samples``) that their
+    invoices bill (revenue above zero): counted as sold, and said, since the name and the
+    bill disagree."""
+    return [line for line in lines if line.item in samples
+            and line.revenue is not None and line.revenue > 0]
+
+
+def _sample_caveat(lines: Sequence[Any], currency: str,
+                   samples: frozenset[str] = frozenset()) -> str:
+    billed = billed_samples(lines, samples)
+    if not billed:
+        return ""
+    total = sum((line.revenue for line in billed), Decimal(0))
+    return (f" {len(billed)} line{'' if len(billed) == 1 else 's'} named sample or no "
+            f"charge {'was' if len(billed) == 1 else 'were'} billed {total} {currency} and "
+            f"{'is' if len(billed) == 1 else 'are'} counted as sold.")
 
 
 def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
@@ -1499,6 +1538,9 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
 
     roots = _recent_invoiced_orders(st, as_of) if roots is None else list(roots)
     gaps, skipped = [], Counter()
+    # the orders read but not judged (a failed read, an undecided margin, figures not
+    # stored, no time left): their open alerts are neither found again nor resolved
+    unchecked: list[str] = []
     spent = False
     asked = roots if pmap is not None else roots[:bound]
     if pmap is not None:
@@ -1510,9 +1552,11 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
             if order is NOT_READ:
                 spent = True
                 skipped["time_budget"] += 1
+                unchecked.append(root)
                 continue
             if not isinstance(order, cp.Order):
                 skipped["run_failed"] += 1
+                unchecked.append(root)
                 continue
         else:
             try:
@@ -1521,15 +1565,19 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
             except Exception as error:  # noqa: BLE001 - one order fails alone
                 if type(error).__name__ == "TimeBudgetSpent":
                     spent = True    # what was found stands; the rest is not looked at
+                    unchecked.extend(asked[n:])
                     break
                 skipped["run_failed"] += 1
+                unchecked.append(root)
                 continue
         if order.margin is None or order.currency is None:
             skipped["margin_not_decided"] += 1
+            unchecked.append(root)
             continue
         if order.margin >= 0:
             continue
-        free, priced_margin = free_lines(order.lines)
+        samples = sample_items(st, order.lines)
+        free, priced_margin = free_lines(order.lines, samples)
         if free and priced_margin is not None:
             # zero-price, sample or no-charge lines cost their items but lose no sale: the
             # loss is judged on the priced lines alone, the free goods are said apart
@@ -1539,6 +1587,7 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
             rows = {r["l1_handle"]: r for r in st.versions(handles=handles)}
             if not handles or set(handles) - set(rows):
                 skipped["figures_not_stored"] += 1
+                unchecked.append(root)
                 continue
             subject = st.versions(objects=[root])
             marks = _value_markings(st, {rows[h]["object_id"] for h in handles})
@@ -1552,8 +1601,9 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
                             f"{order.currency}",
                     missing="Whether these lines were meant to ship at no charge",
                     why="The order's margin is negative only because of lines invoiced at "
-                        "zero (or marked sample or no charge); its priced lines are not "
-                        "a loss.",
+                        "zero (samples and no-charge lines billed nothing); its priced "
+                        "lines are not a loss."
+                        + _sample_caveat(order.lines, order.currency, samples),
                     priority="low", about=("SalesOrder", "margin"), groups=groups))
                 continue
             loss = -priced_margin
@@ -1565,7 +1615,7 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
                 missing="Why the priced lines' item cost exceeds their invoiced revenue",
                 why="Margin on item cost only, over the lines sold at a price: zero-price, "
                     "sample and no-charge lines are left out of the loss (each figure "
-                    "cited).",
+                    "cited)." + _sample_caveat(order.lines, order.currency, samples),
                 priority="high", about=("SalesOrder", "margin"), groups=groups,
                 event={"amount": {"value": str(loss), "currency": order.currency,
                                   "basis": "loss"}}))
@@ -1590,6 +1640,7 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
         rows = {r["l1_handle"]: r for r in st.versions(handles=handles)}
         if not handles or set(handles) - set(rows):
             skipped["figures_not_stored"] += 1
+            unchecked.append(root)
             continue
         subject = st.versions(objects=[root])
         marks = _value_markings(st, {rows[h]["object_id"] for h in handles})
@@ -1617,12 +1668,14 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
             missing="Why the order's item cost exceeds its invoiced revenue",
             why="Margin on item cost only: invoiced revenue net of credit memos less the "
                 "booked item-ledger cost (freight, duty and overhead are not in it), from "
-                "the order margin engine's checked figures (each figure cited).",
+                "the order margin engine's checked figures (each figure cited)."
+                + _sample_caveat(order.lines, order.currency, samples),
             priority="high", about=("SalesOrder", "margin"),
             groups=[cites(subject)] + [cites([rows[h]], *marks.get(h, ())) for h in handles],
             event={"amount": {"value": str(loss), "currency": order.currency,
                               "basis": "loss"}}))
     out = _bounded(result, gaps, skipped, more=len(roots) > len(asked), spent=spent)
+    out["unchecked"] = sorted(set(unchecked))
     judged = len(asked) - sum(skipped.values())
     out["coverage"] = {"unit": "orders_invoiced_recently", "total": len(roots),
                        "evaluated": judged, "not_evaluated": {k: v for k, v in sorted({

@@ -230,7 +230,7 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
                                "rules cannot be read, so no workflow acts."))
     else:
         out.append(m.TrustLine(state="gated", words="Autopilot sends and writes: a workflow "
-                               f"acts only after {g.need_judged} judged fresh items at "
+                               f"acts only after {g.need_judged} judged held-out items at "
                                f"{_pct_words(g.need_percent)} or better and the owner's switch."))
     off = [s.system for s in sw if s.state == "off"]
     if off:
@@ -244,9 +244,9 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
         out.append(m.TrustLine(state="pending", words="Held-out answer scores: not measured "
                                "yet."))
     if rows and not any(r.countdown for r in rows):
-        out.append(m.TrustLine(state="pending", words="Autopilot gate counts: no fresh item "
-                               "judged yet; the count starts once the data refresh covers a "
-                               "whole fresh day."))
+        out.append(m.TrustLine(state="pending", words="Autopilot gate counts: no held-out "
+                               "item judged yet; the count starts once a replay scores a "
+                               "whole new day or a past day no tuning used."))
     return out
 
 

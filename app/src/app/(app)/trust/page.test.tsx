@@ -35,7 +35,7 @@ const page = (over: Partial<TrustPage> = {}): TrustPage => ({
   autopilot_gate: { need_judged: 15, need_percent: 90 },
   lines: [
     { state: "live", words: "Reading BC, Email, read only." },
-    { state: "gated", words: "Autopilot sends and writes: a workflow acts only after 15 judged fresh items at 90% or better and the owner's switch." },
+    { state: "gated", words: "Autopilot sends and writes: a workflow acts only after 15 judged held-out items at 90% or better and the owner's switch." },
     { state: "pending", words: "Held-out answer scores: not measured yet." },
   ],
   switches: [
@@ -92,8 +92,8 @@ describe("Trust page", () => {
   it("words the gate from the server's rules, and says nothing acts when they are unreadable", async () => {
     api.trust.mockResolvedValue(page({ autopilot_gate: { need_judged: 20, need_percent: 95 } }));
     const { unmount } = render(<TrustRoute />);
-    expect(await screen.findByText(/at least 20 items judged on fresh days, 95% or more right/)).toBeInTheDocument();
-    expect(screen.getByText("Gate: fresh items at ≥95%")).toBeInTheDocument();
+    expect(await screen.findByText(/at least 20 held-out items judged \(fresh days, or past days never tuned on\), 95% or more right/)).toBeInTheDocument();
+    expect(screen.getByText("Gate: held-out items at ≥95%")).toBeInTheDocument();
     expect(screen.queryByText(/at least 15 items/)).toBeNull();
     unmount();
     api.trust.mockResolvedValue(page({ autopilot_gate: null }));

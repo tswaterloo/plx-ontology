@@ -598,7 +598,9 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     # A value in a percent unit the gate checked is written as the percent it is
     # (``100%``), as the gate and the scorer read a printed percent (the line of the
     # claim the reply falls back to).
-    claims = [{"text": f"{value['name']}: {value['value']}" + (
+    claims = [{"text": f"{value['name']}: "
+               + ("at least " if value.get("bound") == "at_least" else "")
+               + f"{value['value']}" + (
                    "%" if value.get("unit") and claim_checks._page_unit(str(value["unit"]))
                    == "percent" and not str(value["value"]).endswith("%") else ""),
                # One value claim per quote the gate checked it with (the reply screen
@@ -610,9 +612,13 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
                                     if value.get("currency") else {}),
                                  **({"quote": quote} if quote is not None else {})}
                                 for quote in _quotes(value)],
+               # GATE-004: a count the gate passed only as a lower bound stays one in
+               # the reply ("at least 2"; ``answer_gate.lower_bounds``)
                "check": {"status": "passed",
                          **({"unit_basis": "gate_verified"} if value.get("unit") else
-                            {"unit_basis": "unverified"} if at in unchecked else {})}}
+                            {"unit_basis": "unverified"} if at in unchecked else {}),
+                         **({"bound": "at_least"} if value.get("bound") == "at_least"
+                            else {})}}
               for at, value in enumerate(values)
               if value.get("value") is not None and not isinstance(value["value"], bool)]
     for note in notes:
@@ -642,6 +648,11 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
     # An unresolved source conflict among the answer's gaps leaves part of it open: an
     # answerable reply carrying one is partial (``answer_gate.unresolved_conflict``).
     if answerability == "answerable" and answer_gate.unresolved_conflict(gaps):
+        answerability = "partial"
+    # A business state the reply asserted that no passed claim is about was removed
+    # (``answer_gate.unbacked_assertions``, GATE-003): what remains is not the whole
+    # answer the agent gave.
+    if answerability == "answerable" and (text.get("asserted") or outside.get("asserted")):
         answerability = "partial"
     if not (text["modified"] or outside["modified"] or report["withheld"] or dropped
             or values != list(answer.get("values") or [])
@@ -2587,15 +2598,31 @@ class ClaudeCodeAgent:
         whose host ended before it answered is started again with a fresh host, at most
         ``ATTACH_ATTEMPTS`` times; one whose host is still starting after
         ``HOST_READY_SECONDS`` is not (a fresh host would start from nothing)."""
+        from operating import model_ledger
         for attempt in range(1, ATTACH_ATTEMPTS + 1):
+            started = time.monotonic()
             try:
-                return self._run_attached(prompt, host)
+                ran = self._run_attached(prompt, host)
             except ToolsUnattached as gone:
+                model_ledger.record("agent_session", prompt=prompt, ok=False,
+                                    reason=f"tools_unattached:{gone.code}",
+                                    seconds=time.monotonic() - started)
                 # counts and the reason only
                 logging.getLogger("operating.agent_session").warning(json.dumps(
                     {"tools_unattached": gone.code, "attempt": attempt}))
                 if not gone.retry or attempt == ATTACH_ATTEMPTS:
                     raise ToolsUnattached(gone.code) from None
+                continue
+            except Exception as exc:
+                model_ledger.record("agent_session", prompt=prompt, ok=False,
+                                    reason=type(exc).__name__,
+                                    seconds=time.monotonic() - started)
+                raise
+            turns, tokens = model_ledger.usage_of(ran.usage)
+            model_ledger.record("agent_session", prompt=prompt, ok=bool(ran.final_text),
+                                seconds=time.monotonic() - started, tokens=tokens,
+                                turns=turns)
+            return ran
         raise ToolsUnattached(HOST_NOT_READY)   # not reached: ATTACH_ATTEMPTS >= 1
 
     def _run_attached(self, prompt: str, host: Host) -> AgentRun:

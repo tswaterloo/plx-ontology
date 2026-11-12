@@ -1,10 +1,10 @@
 """Per-person system activity: actor resolution through the directory only, the people
-exclusion failing closed, coverage per system, hand-offs and the owner note. SYNTHETIC
+exclusion failing closed, coverage per system and hand-offs. SYNTHETIC
 stores and ids only; evidence label: isolated-fixture."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 import json
 from pathlib import Path
 import sqlite3
@@ -144,29 +144,6 @@ class Handoffs(unittest.TestCase):
         self.assertEqual(s["people"][oid(1)]["handoffs_out"], {"portal>bc": 1})
         self.assertEqual(s["people"][oid(2)]["handoffs_in"], {"portal>bc": 1})
         self.assertEqual(s["people"][oid(1)]["workflows"], {"procure_to_pay": 1})
-
-
-class OwnerNote(unittest.TestCase):
-    def test_note_names_exactly_the_covered_systems_and_stale_snapshots_say_mail_only(self):
-        s = snap([sa.Action("planner", "task", "created", TODAY - timedelta(days=3), oid(1)),
-                  sa.Action("planner", "task", "created", TODAY - timedelta(days=60), oid(1)),
-                  sa.Action("sage", "gl_je_header", "entered", TODAY, "nobody"),
-                  sa.Action("planner", "task", "created", TODAY, EXCL)],
-                 sa.Directory({"user1@synth.example": oid(1), "x@synth.example": EXCL}),
-                 excl=lambda _o: False)    # built before the person was excluded
-        per, coverage, note = sa.owner_columns(s, excluded, today=TODAY, days=28)
-        self.assertEqual(per, {oid(1): {"planner": 1}})          # re-checked here; 28 days
-        self.assertIn("records created or changed in Planner (100% tied to a person). "
-                      "Not tied to people: Sage (", note)
-        self.assertIn("Not captured: Business Central, the Portal, SharePoint, "
-                      "Mission Control, calendars.", note)
-        self.assertIn("undercount", note)
-        self.assertEqual({c["system"] for c in coverage if c["actions"]}, {"planner", "sage"})
-        old = dict(s, generated_at=(datetime.now(timezone.utc) - timedelta(days=30)).isoformat())
-        for bad in (old, None, {"schema": "other"}, dict(s, generated_at="nonsense")):
-            per, coverage, note = sa.owner_columns(bad, excluded, today=TODAY, days=28)
-            self.assertEqual((per, coverage), ({}, []))
-            self.assertTrue(note.startswith("Covers mail, Teams and tasks only."))
 
 
 class Extractors(unittest.TestCase):

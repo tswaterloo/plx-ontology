@@ -169,6 +169,9 @@ class DevAuth:
         # every later request re-verifies it with ``ticket_identity`` without using it up.
         self.sign_in_identity = sign_in_identity or ticket_identity
         self.clock = clock
+        # the employee resolver behind the identity (``make_auth`` sets it): read only by
+        # /api/health for the employee policy in force, never to decide a request
+        self.resolver: Any = None
         self._sessions: dict[str, tuple[float, Optional[str], float]] = {}
         self._lock = threading.Lock()
 

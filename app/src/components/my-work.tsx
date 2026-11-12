@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CardActions } from "@/components/card-actions";
 import { Button } from "@/components/ui/button";
 import { decideAutopilotItem, getAutopilot, prepareMyWorkWrite } from "@/lib/api";
-import { dueWords, itemLive, systemLabel } from "@/lib/autopilot";
+import { dueWords, itemLive, outcomeWords, systemLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatDateTime, objectHref, plural, typeLabel } from "@/lib/format";
@@ -64,7 +64,9 @@ function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: Auto
     try {
       // one click is never a live write: the server refuses a live item sent this way
       const out = await decideAutopilotItem(item.item_id, { decision: "accept", bulk: true });
-      setDecided(out.decision?.outcome === "dry_run" ? "Accepted. Dry run: your yes is recorded, nothing was sent or written." : "Accepted.");
+      const outcome = out.decision?.outcome;
+      setDecided(outcome === "dry_run" ? "Accepted. Dry run: your yes is recorded, nothing was sent or written."
+        : outcome ? `Accepted${outcomeWords(outcome, out.decision?.reasons ?? [], systemLabel(apItem?.system ?? ""), out.decision?.steps ?? [])}` : "Accepted.");
     } catch (e) {
       setDecided(plainError(e));
     } finally {

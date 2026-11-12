@@ -1,0 +1,23 @@
+# The credential expiry list (deploy/ops/host/expiry.py): every expiry the host can read
+# (the Claude login, JWT claims and dates written beside client secrets, the HTTPS certificate,
+# Postgres role passwords), names and days only, no value printed or kept. The reliability
+# alarms read the JSON and open an incident when one that nothing renews by itself is within
+# 30 days (operating.ops_alarms credential_expiry). Daily.
+[Unit]
+Description=PLX credential expiry list (names and days only)
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=-/etc/plx/ingest.env
+# PLX_PG_DSN for the role-password expiry (one read-only query)
+EnvironmentFile=-@PLX_HOME@/.config/plx/plx.env
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 deploy/ops/host/expiry.py --home @PLX_HOME@ --env-file @PLX_HOME@/.config/plx/plx.env --env-file /etc/plx/workbench-api.env --pg --json ${PLX_INGEST_STATE}/ops-alarms/expiry.json --markdown ${PLX_INGEST_STATE}/ops-alarms/expiry.md
+Nice=15
+CPUWeight=10
+MemoryMax=512M
+TimeoutStartSec=3min
+UMask=0077

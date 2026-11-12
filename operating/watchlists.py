@@ -789,9 +789,16 @@ class WatchStore:
         if not isinstance(rule_id, str) or not _RULE_ID.match(rule_id):
             return False
         with closing(_connect(self.path)) as conn:
-            gone = conn.execute("DELETE FROM rules WHERE reader = ? AND rule_id = ?",
-                                (reader, rule_id)).rowcount
-            conn.execute("DELETE FROM events WHERE rule_id = ?", (rule_id,))
+            conn.execute("BEGIN IMMEDIATE")   # the connection is autocommit
+            try:
+                gone = conn.execute("DELETE FROM rules WHERE reader = ? AND rule_id = ?",
+                                    (reader, rule_id)).rowcount
+                if gone:   # another reader's rule id deletes nothing, events included
+                    conn.execute("DELETE FROM events WHERE rule_id = ?", (rule_id,))
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
         return bool(gone)
 
     def rules(self, reader: str) -> list[dict[str, Any]]:
@@ -956,7 +963,10 @@ def judge(spec: Mapping[str, Any], vocab: Vocabulary, old: Mapping[str, Any] | N
             if op == "changed":
                 ok = new_raw != old_raw and (new_raw is not None or old_raw is not None)
             elif op == "becomes":
-                ok = new == _cmp_value(kind, c["value"]) and before != new
+                want = c["value"]
+                if isinstance(want, bool):   # a validated JSON bool is not text to strip
+                    want = "true" if want else "false"
+                ok = new == _cmp_value(kind, want) and before != new
             elif before is None or new is None:
                 ok = False
             elif op in ("later", "increased"):
@@ -1046,15 +1056,22 @@ def evaluate(st: Any, path: Any, moved: Iterable[str], *,
 
         # ---- baselines: what a new follow or rule finds is what later changes are told from
         fresh_follows = sorted({f["object_id"] for f in follows if f["baseline_at"] is None})
+        # what existing followers hold of the records that moved, taken before a new follow's
+        # baseline can replace it: their pending change is told from this, not from the
+        # new follower's first look
+        before: dict[str, dict[str, Any]] = {}
+        if fresh_follows and moved:
+            before = snaps.kept(moved | {f["object_id"] for f in follows
+                                         if f["baseline_at"] is not None})
         if fresh_follows:
             fnb = _neighbors(st, fresh_follows)
             recs = _read(st, set(fresh_follows) | {n for oid in fresh_follows
                                                    for n in _capped(fnb[oid])})
             for oid in fresh_follows:
-                if oid in recs:
+                if oid in recs and not (before.get(oid) or {}).get("full"):
                     snaps.put(recs[oid], True, neighbors=_capped(fnb[oid]))
                 for n in _capped(fnb[oid]):
-                    if n in recs:
+                    if n in recs and not (before.get(n) or {}).get("full"):
                         snaps.put(recs[n], True)
             conn.execute("UPDATE follows SET baseline_at = ? WHERE baseline_at IS NULL AND "
                          "object_id IN (SELECT value FROM json_each(?))",
@@ -1123,7 +1140,7 @@ def evaluate(st: Any, path: Any, moved: Iterable[str], *,
                     "seconds": round(time.monotonic() - started, 3)}
 
         # ---- what moved: its links now, the snapshots of it and of what is followed
-        previous = snaps.kept(moved)
+        previous = {**snaps.kept(moved), **{k: v for k, v in before.items() if k in moved}}
         followed: dict[str, list[dict[str, Any]]] = {}
         for f in follows:
             followed.setdefault(f["object_id"], []).append(f)
@@ -1134,7 +1151,7 @@ def evaluate(st: Any, path: Any, moved: Iterable[str], *,
         # by a new link moves the followed end too (the fingerprint holds its links)
         nbs = _neighbors(st, sorted(m for m in moved if m in followed or m in previous
                                     or types.get(m) in rule_types))
-        f_prior = snaps.kept(followed)
+        f_prior = {**snaps.kept(followed), **{k: v for k, v in before.items() if k in followed}}
         hits: dict[str, set[str]] = {}   # followed id -> moved records about it
         for m in moved:
             if m in followed:
@@ -1239,10 +1256,14 @@ def evaluate(st: Any, path: Any, moved: Iterable[str], *,
             since = (moment - timedelta(days=count["within_days"])).isoformat() \
                 if count else at
             for grp, found in sorted(matched.items()):
-                rows = list(dict.fromkeys(r[0] for r in conn.execute(
-                    "SELECT subject FROM events WHERE rule_id = ? AND grp = ? AND at > ? "
-                    "ORDER BY at", (rule["rule_id"], grp, since))))
-                if len(rows) < count["at_least"] or conn.execute(
+                found_rows = list(conn.execute(
+                    "SELECT subject, at FROM events WHERE rule_id = ? AND grp = ? AND at > ? "
+                    "ORDER BY at", (rule["rule_id"], grp, since)))
+                rows = list(dict.fromkeys(r[0] for r in found_rows))
+                # grouped (per): how many different records changed; ungrouped: how many
+                # times the one record changed (a record that slips twice is two events)
+                tally = len(rows) if count.get("per") else len({r[1] for r in found_rows})
+                if tally < count["at_least"] or conn.execute(
                         "SELECT 1 FROM alerts WHERE origin = 'rule' AND origin_id = ? AND "
                         "about = ? AND at > ?", (rule["rule_id"], grp, since)).fetchone():
                     continue   # not yet, or told already within this window

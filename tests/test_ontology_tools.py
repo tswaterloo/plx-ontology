@@ -947,6 +947,63 @@ class ObjectTests(ContractMixin, unittest.TestCase):
     def setUp(self):
         self.t = tools()
 
+    def test_a_zeroed_order_total_shows_its_derived_value_only_from_what_the_reader_reads(self):
+        """C-01 (live 11-11: 73,472 of 75,189 Sage headers read 0 once invoiced): a sales
+        order whose header total is 0 is shown the value its invoices (closed) or priced
+        lines (open) derive, labelled derived and cited, beside the source copy; a reader
+        who may not read an invoice gets no derived value, never a smaller one."""
+        def zeroed(closed: bool) -> Store:
+            store = build()
+            store.conn.execute("UPDATE object_values SET value = '0' WHERE object_id = ? "
+                               "AND property = 'total_amount'", (SO,))
+            if closed:
+                store.val(SO, "status", "text", "Closed", SO_V2, "row.status",
+                          "gold_etl_from_fm", recorded="2099-01-05T00:00:00Z")
+            return store
+        store = zeroed(True)
+        bill = "SalesInvoice:bc.sales_invoices:inv-9"
+        bill_h = "bc://company_a/salesInvoices/inv-9@cap-9"
+        store.obj(bill, "bc:company_a/salesInvoices", bill_h, "bc_company_a")
+        store.val(bill, "subtotal", "money", "1100.25", bill_h, "row.totalAmountExcludingTax",
+                  "bc_company_a", currency="CAD", markings='["finance"]')
+        store.link("lnk-bills-9", "SalesInvoice.bills", bill, SO, "verified", "fk",
+                   [bill_h, SO_V2])
+        store.conn.commit()
+        full = self.ok(tools(store), "plx.object", {"object_id": SO}, FULL)
+        (got,) = full["derived"]
+        self.assertEqual((got["property"], got["value"], got["currency"], got["derived_from"]),
+                         ("order_value", "1100.25", "CAD", "invoices"))
+        self.assertEqual([c["l1_handle"] for c in got["inputs"]], [bill_h])
+        self.assertEqual(got["source_total"]["value"], "0")
+        self.assertEqual(got["markings"], ["finance"])
+        # the source copy stays as stored
+        self.assertIn(("total_amount", "0"), [(v["property"], v["value"])
+                                              for v in full["values"]])
+        # finance held, the invoice's BC audience not: no derived value at all
+        split = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales", "finance_clerk"},
+                                                       "bc:*": {"bc_only"}},
+                              markings={"finance": {"finance_clerk"}})
+        hidden = self.ok(tools(store, policy=split), "plx.object", {"object_id": SO}, FULL)
+        self.assertNotIn("derived", hidden)
+        self.assertNotIn("derived", self.ok(tools(store), "plx.object", {"object_id": SO},
+                                            SALES))
+        # an open order: its lines, each ordered quantity x unit price in its unit
+        store = zeroed(False)
+        for n, (qty, price) in enumerate((("3", "199.95"), ("3", "23.68"))):
+            line = f"SalesOrderLine:portal.app_sales_order_line:z-{n}"
+            line_h = f"api://public.app_sales_order_line/z-{n}@0000000000000001-7"
+            store.obj(line, "api:public.app_sales_order_line", line_h, "gold_etl_from_fm")
+            store.val(line, "ordered_quantity", "quantity", qty, line_h, "row.quantity",
+                      "gold_etl_from_fm", unit="CSE", role="ordered")
+            store.val(line, "unit_price", "money", price, line_h, "row.unit_price",
+                      "gold_etl_from_fm", unit="CSE", currency="CAD", markings='["finance"]')
+            store.link(f"lnk-z{n}", "SalesOrderLine.line_of", line, SO, "verified", "fk",
+                       [line_h, SO_V2])
+        store.conn.commit()
+        (got,) = self.ok(tools(store), "plx.object", {"object_id": SO}, FULL)["derived"]
+        self.assertEqual((got["value"], got["derived_from"], len(got["inputs"])),
+                         ("670.89", "order_lines", 4))
+
     def test_what_the_linked_records_link_to_is_counted_one_link_further(self):
         """plx.object counts what the records linked to it link to in turn (an invoice of
         the order, and the purchase order that invoice names), firm links only and only

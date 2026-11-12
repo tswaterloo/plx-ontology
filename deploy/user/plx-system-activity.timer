@@ -1,8 +1,8 @@
 [Unit]
-Description=PLX system activity snapshot weekly (Sunday 03:00 ET)
+Description=PLX system activity snapshot daily (02:50 ET; the Team view reads its last 35 days)
 
 [Timer]
-OnCalendar=Sun *-*-* 03:00:00 America/New_York
+OnCalendar=*-*-* 02:50:00 America/New_York
 Persistent=true
 RandomizedDelaySec=300
 

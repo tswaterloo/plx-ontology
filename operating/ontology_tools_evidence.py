@@ -1719,6 +1719,10 @@ class EvidenceTools:
             seen = {d["citation"] for d in documents}
             documents.extend(d for d in originals if d["citation"] not in seen)
             gaps.extend(original_gaps)
+            if any(g["reason"] == "scan_cap" for g in original_gaps):
+                # an originals scan stopped at its cap: the list is cut on its last page
+                # too, as a stored-document scan cut is (``completeness`` below)
+                scope_info["scan_cut"] = True
         documents = self._search_marked(documents, actor)
         if scope_info["bare"] is not None and scope_info["bare"]["readings"]:
             gaps.insert(0, _reading_gap(arguments["query"], scope_info["bare"]["readings"],
@@ -2949,8 +2953,11 @@ class EvidenceTools:
     def _original_documents_in(self, arguments: Mapping[str, Any], actor: Actor,
                                info: Mapping[str, Any], gaps: list[dict[str, Any]]
                                ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        listed = self.reader.originals(actor, ORIGINAL_SCAN)
-        if len(listed) >= ORIGINAL_SCAN:
+        # one past the cap: a cut is proven by an original left unscanned, never assumed
+        # from a count that merely reaches it
+        listed = self.reader.originals(actor, ORIGINAL_SCAN + 1)
+        cut, listed = len(listed) > ORIGINAL_SCAN, listed[:ORIGINAL_SCAN]
+        if cut:
             gaps.append(_gap("unknown", "scan_cap", "source:original",
                              f"only the newest {ORIGINAL_SCAN} readable originals were "
                              "scanned", {"sources": ["original"]}))

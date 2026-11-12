@@ -230,7 +230,8 @@ def suggestions(rows: Sequence[tuple], limit: int, *,
                                 sublabel=" · ".join(detail)[:200], match=item[5],
                                 score=round(max(item[6], 1.0 if item[5] == "exact" else 0.0),
                                             3),
-                                open_url=object_url(object_type, lead[1])))
+                                open_url=object_url(object_type, lead[1]),
+                                same_as=[c[1] for c in cluster if c[1] != lead[1]]))
         if members is not None:
             members[lead[1]] = [c[1] for c in cluster]
         if len(out) >= limit:
