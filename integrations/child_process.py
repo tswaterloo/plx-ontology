@@ -68,9 +68,12 @@ def run(command: Sequence[str], *, timeout: float,
     env=env)`` with stdin closed, the child stopped and reaped on every path."""
     with _lock:
         owner = _owner()
+        # its own process group: ``stop`` then ends whatever the child started too
+        # (INT-003), never only the first process
         child = subprocess.Popen(list(command), stdin=subprocess.DEVNULL,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 env=None if env is None else dict(env))
+                                 env=None if env is None else dict(env),
+                                 start_new_session=True)
         _children[child] = owner
     with child:
         try:

@@ -373,6 +373,65 @@ class DeltaOverlayTests(unittest.TestCase):
                                             "measure": {"op": "count"}})
         self.assertNotIn(delta_overlay.NOT_AGGREGATED, reasons(plain))
 
+    def test_a_filtered_total_says_a_record_that_left_its_filter_changed(self):
+        """HOST-002: a record that matched the filter in the served generation and no
+        longer does in its layer leaves a filtered total undecided, never complete; a
+        type no layer changed keeps it complete."""
+        left = fx.Store()
+        left.conn.execute("INSERT INTO store_meta VALUES ('content_digest', ?)", (DIGEST,))
+        left.conn.execute("CREATE TABLE delta_owned(object_id TEXT PRIMARY KEY)")
+        left.obj(fx.PO, "api:public.app_purchase_order", PO_H3, "gold_etl_from_fm")
+        left.val(fx.PO, "po_number", "identifier", "PO200000", PO_H3, "row.po_number",
+                 "gold_etl_from_fm")
+        left.conn.execute("INSERT INTO delta_owned VALUES (?)", (fx.PO,))
+        left.conn.commit()
+        path = self.delta.parent / "delta-left.sqlite"
+        _save(left, path)
+        self.addCleanup(path.unlink)
+        self.point(DIGEST, store=path)
+        asked = {"object_type": "PurchaseOrder",
+                 "filters": [{"property": "po_number", "op": "eq", "value": "PO100012"}]}
+        self.assertNotIn(fx.PO, self.ids(self.call("plx.find", asked)))
+        total = self.call("plx.aggregate", dict(asked, measure={"op": "count"}))
+        gaps = [g for g in total["gaps"] if g["reason"] == delta_overlay.NOT_AGGREGATED]
+        self.assertEqual(len(gaps), 1, total)
+        self.assertIn("may not be in them", gaps[0]["detail"])
+        self.assertFalse(total["completeness"]["complete"])
+        other = self.call("plx.aggregate", {
+            "object_type": "SalesOrder", "measure": {"op": "count"},
+            "filters": [{"property": "customer_po", "op": "present"}]})
+        self.assertNotIn(delta_overlay.NOT_AGGREGATED,
+                         [g["reason"] for g in other["gaps"]])
+
+    def test_a_layer_that_failed_to_open_is_said_and_tried_again(self):
+        """HOST-001: a failed open (the pointer unchanged) is no decided pointer: each
+        answer says it reads the older generation, and the open is tried again after
+        OVERLAY_RETRY_SECONDS, then the layer serves."""
+        from operating import ontology_host
+        real, calls, clock = delta_overlay.open_overlay, [], [1000.0]
+
+        def flaky(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise sqlite3.OperationalError("disk I/O error")
+            return real(*args, **kwargs)
+        self.host.close()
+        self.host = Host(self.runtime, fx.FULL, store_path=self.store, schema=fx.SCHEMA,
+                         grammar=fx.FixtureGrammar())
+        self.host.tools.clock = lambda: fx.NOW
+        with mock.patch.object(delta_overlay, "open_overlay", flaky), \
+                mock.patch.object(ontology_host.time, "monotonic", lambda: clock[0]):
+            for _ in range(2):
+                found = self.call("plx.find", {"query": "PO5555"})
+                self.assertEqual(self.ids(found), [])
+                self.assertIn(delta_overlay.UNAVAILABLE, [g["reason"] for g in found["gaps"]])
+                self.assertFalse(found["completeness"]["complete"])
+            self.assertEqual(len(calls), 1)   # within the retry time: not opened again
+            clock[0] += ontology_host.OVERLAY_RETRY_SECONDS
+            found = self.call("plx.find", {"query": "PO5555"})
+            self.assertEqual((self.ids(found), len(calls)), ([NEW], 2))
+            self.assertNotIn(delta_overlay.UNAVAILABLE, [g["reason"] for g in found["gaps"]])
+
 
     def test_an_overlay_a_postgres_base_trimmed_says_so_on_every_answer_and_hides_nothing_more(self):
         """A pointer published over the Postgres base lists only the newest layers

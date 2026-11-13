@@ -26,7 +26,10 @@
 	auto_https disable_redirects
 
 	# No access log by default: request lines carry questions and record ids.
-	admin 127.0.0.1:2019
+	# The admin API rebinds every listener and carries no auth, so it is a unix socket
+	# only the caddy user can open (a TCP port on loopback is open to every local
+	# account). `caddy reload` (ExecReload) reads this address from the file.
+	admin unix//var/lib/caddy/admin.sock|0600
 	servers {
 		protocols h1 h2
 	}
@@ -55,6 +58,15 @@
 				response_header_timeout 120s
 			}
 		}
+	}
+
+	# The desktop app's update feed (desktop/README.md "Updates"): installers and the
+	# generated latest*.yml, copied by hand into PLX_DESKTOP_FEED (the caddy user needs read
+	# access). Files only, nothing proxied; before the catch-all so the web app never sees it.
+	handle_path /desktop/* {
+		root * {$PLX_DESKTOP_FEED:/data/plx-desktop-feed}
+		header Content-Security-Policy "default-src 'none'"
+		file_server
 	}
 
 	# Everything else is the web app.

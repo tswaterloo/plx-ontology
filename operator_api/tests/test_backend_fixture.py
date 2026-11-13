@@ -442,6 +442,19 @@ class FixtureBackend(unittest.TestCase):
             hidden = self.outsider.client.get("/api/briefing/items", params={
                 "event_type": group["event_type"]}).json()
             self.assertEqual((hidden["total"], hidden["items"]), (0, []))
+        # a data note lists the records it counts, for this reader only (CAP-L167)
+        for note in ops["data_note_items"]:
+            q = {"check": note["check"], "reason": note["reason"], "limit": 200}
+            got = self.ops.client.get("/api/briefing/unjudged", params=q).json()
+            m.BriefingUnjudged.model_validate(got)
+            self.assertEqual(got["total"], note["count"])
+            self.assertEqual(got["next_offset"], min(note["count"], 200))
+            # a record is named only with the label the reader's own read gives it
+            self.assertTrue(all(r["label"] and r["label"] != r["id"] for r in got["records"]))
+            other = self.outsider.client.get("/api/briefing/unjudged", params=q).json()
+            self.assertEqual((other["total"], other["records"]), (0, []))
+        self.assertEqual(self.ops.client.get("/api/briefing/unjudged", params={
+            "check": "no_such_check"}).status_code, 404)
         # the late count is Home's
         home = self.ops.client.get("/api/home").json()
         self.assertEqual(ops["late_total"], home["needs_attention"]["late_total"])

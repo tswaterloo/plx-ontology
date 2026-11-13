@@ -126,6 +126,37 @@ describe("BriefingCard", () => {
     expect(loadItems).toHaveBeenCalledWith("lot_near_expiry", 25, "all");
   });
 
+  it("lists a data note's records on opening it, only those the API gives, a page at a time", async () => {
+    const noted: Briefing = {
+      ...briefing,
+      data_note_items: [{ check: "late_customer_order", reason: "no_order_lines", count: 52, words: "late customer orders: cannot check 52 records that lack order lines" }],
+    };
+    const rec = (n: number) => ({ id: `SalesOrder:x:${n}`, type: "SalesOrder", label: `Sales order ${n}` });
+    const spy = vi.spyOn(api, "getBriefingUnjudged").mockImplementation(async (check, reason, offset = 0) => ({
+      check,
+      reason,
+      total: 52,
+      offset,
+      next_offset: offset === 0 ? 50 : 52,
+      complete: true,
+      more: offset === 0,
+      records: Array.from({ length: offset === 0 ? 50 : 2 }, (_, n) => rec(offset + n)),
+    }));
+    render(<BriefingCard briefing={noted} />);
+    const note = screen.getByTestId("briefing-data-notes");
+    expect(within(note).getByText("Late customer orders: cannot check 52 records that lack order lines.")).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();
+    const details = note.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await waitFor(() => expect(within(note).getAllByRole("link")).toHaveLength(50));
+    expect(within(note).getByRole("link", { name: "Sales order 3" }).getAttribute("href")).toBe("/object/SalesOrder/SalesOrder%3Ax%3A3");
+    fireEvent.click(within(note).getByRole("button", { name: "Show 2 more" }));
+    await waitFor(() => expect(within(note).getAllByRole("link")).toHaveLength(52));
+    expect(spy).toHaveBeenLastCalledWith("late_customer_order", "no_order_lines", 50);
+    spy.mockRestore();
+  });
+
   it("never states a suspect total as a figure", () => {
     const suspect = item({
       amount: { amount: "4410000.21", currency: "CAD" },

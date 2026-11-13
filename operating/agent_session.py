@@ -3577,7 +3577,10 @@ class ReaderHost:
                         si.SESSION_TICKET_SECRET_ENV: self._secret,
                         **{name: os.environ[name] for name in EXCLUSION_ENV + SEARCH_ENV
                            + STORE_ENV + (JOURNAL_DIR_ENV,) if os.environ.get(name)},
-                        **self._extra_env}}
+                        **self._extra_env,
+                        # The app asked its person before the session
+                        # (operating.clarify); no person reads an agent's session.
+                        "PLX_MCP_ASK_BACK": "off"}}
 
     def mcp_server(self) -> dict[str, Any]:
         return self.command("operating.host", "mcp")

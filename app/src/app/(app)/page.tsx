@@ -12,6 +12,7 @@ import { Pending, SlowNote } from "@/components/ui/skeleton";
 import { lateEdge, lateFigure, OpenRing } from "@/components/ui/glyphs";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { NeedsMe } from "@/components/needs-me";
+import { DataNotes } from "@/components/data-notes";
 import { isPutAway } from "@/lib/actions";
 import { useStaleRefresh } from "@/lib/stale-refresh";
 import { getActionStates, getReplies, getBriefing, getBriefingItems, getSuggestions, markBriefingSeen } from "@/lib/api";
@@ -23,12 +24,12 @@ import type { ReplyTriage, ActionResult, Briefing, BriefingItem, HomeResponse, L
 
 const TZ = "America/Toronto";
 
-/** "{thing} didn't load. Try again." with the incident kept for the Reference line. */
+/** "Couldn't load {thing}." with the incident kept for the Reference line (the notice carries the retry). */
 function didntLoad(thing: string, err: unknown): string {
   const msg = plainError(err);
   if (/^The Workbench server failed/.test(msg)) {
     const inc = /incident ([0-9a-f]+)/.exec(msg)?.[1];
-    return `Couldn't load ${thing}. Try again.${inc ? ` (incident ${inc})` : ""}`;
+    return `Couldn't load ${thing}.${inc ? ` (incident ${inc})` : ""}`;
   }
   return msg;
 }
@@ -531,6 +532,7 @@ function Today() {
           </p>
         )}
         {na?.status === "read" && <div className="px-4 pt-2"><HiddenNotice hidden={na?.hidden} /></div>}
+        {briefing?.status === "read" && <DataNotes notes={briefing.data_note_items} className="px-4 pt-3" />}
       </div>
     </section>
   );

@@ -15,6 +15,19 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.18 (2026-11-13)
+
+Added:
+- **Ask asks back** once, with two to four options taken from your own records, when an answer turns on a choice you have not made; otherwise it answers under a one-line assumption. Tools that connect to the Workbench get the same question back with the matching records.
+- **Form filling** from the records, and a **customer purchase order import file** for the Portal or Business Central, prepared for a person to review.
+- **Autopilot** can follow new mail, approvals and meeting ends as they arrive, preparing items only. Teams group chats have their own turn rule.
+- **Low-price alert** is on by default (14 of 15 right on fresh days). A new alert for customers asking to return goods or for a credit with no answer is built and off until it is measured.
+
+Changed:
+- The first question after a restart takes 8.5 s instead of 55 s; looking up one purchase order takes 14 s instead of 90 s.
+- Approvals stand only while their people may approve and lapse after 7 days; sign-in and sessions are stricter.
+- Mail that names an address the exclusion cannot decide is held back from every reader; mail capture stops cleanly on a provider outage.
+
 ## v0.17 (2026-11-11)
 
 Added:
@@ -24,7 +37,7 @@ Added:
 - **Meetings** as an agenda or a week, with a prep sheet per meeting.
 - **Source pages** list every record that cites the source.
 - **View as:** the owner can see a colleague's My work, alerts and drafts, read-only and audited.
-- A plain-language README with picture diagrams of each workflow, and a narrated demo video on made-up data.
+- A plain-language README with picture diagrams of each workflow, and a captioned demo video on made-up data.
 
 Changed:
 - The ontology is served from Postgres and kept current by row deltas; schema changes apply in place to the affected units only.

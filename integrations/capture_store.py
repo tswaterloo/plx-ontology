@@ -535,7 +535,7 @@ class CaptureStore:
         wal_journal(self._db)
         for statement in _SCHEMA:
             self._db.execute(statement)
-        with self._write():
+        with self._write(bound=False):
             if self._meta("format") is None:
                 self._db.execute("INSERT INTO meta VALUES ('format', ?)", (FORMAT,))
                 self._db.execute("INSERT INTO meta VALUES ('generation', ?)",
@@ -617,9 +617,14 @@ class CaptureStore:
     # -------------------------------------------------------------- internals
 
     @contextmanager
-    def _write(self) -> Iterator[None]:
+    def _write(self, *, bound: bool = True) -> Iterator[None]:
+        """One write transaction; every write checks the store's tenant binding first
+        (INT-005), so no mutator can change another tenant's store. ``bound=False``: the
+        store's own creation, which writes that binding."""
         self._db.execute("BEGIN IMMEDIATE")
         try:
+            if bound:
+                self._check_binding()
             yield
         except BaseException:
             self._db.execute("ROLLBACK")

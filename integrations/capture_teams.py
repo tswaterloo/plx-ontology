@@ -2125,6 +2125,17 @@ class TeamsCapture:
         chats: list[dict[str, Any]] = []
         enumerated: dict[str, int] = {}  # team -> channels the census enumerated in it
         baseline: dict[str, Any] = {"value": None}
+        # Conversations the guard did not clear (undecided or excluded), noted on the
+        # census threads (a list append) and their stored memberships cleared after on the
+        # store's own thread (``_clear_uncleared``), as the content path clears them.
+        uncleared: list[tuple[str, str]] = []
+        uncleared_teams: list[str] = []
+
+        def not_cleared(conversation: Conversation) -> None:
+            if conversation.kind == "channel" and not conversation.thread:
+                uncleared_teams.append(str(conversation.team))   # its standard channels
+            else:
+                uncleared.append((conversation.source_kind.name, conversation.unit))
         counts = {"source": config["message_counts"], "period_days": COUNT_DAYS,
                   "status": "not_requested", "reasons": [], "teams_counted": 0,
                   "teams_uncounted": 0, "channels_counted": 0,
@@ -2172,10 +2183,12 @@ class TeamsCapture:
                 reasons.add(_failure(part, op, exc, blocked))
                 return MEMBERS_UNREAD
             if self._undecided(acl["identities"]):
+                not_cleared(conversation)
                 return MEMBERS_UNREAD   # not cleared this run; decided again next run
             if self.people.excluded(_persons(acl["identities"])):
                 # Refused for the rest of the run: no later request names it.
                 self.refused.add((conversation.thread or str(conversation.team)).lower())
+                not_cleared(conversation)
                 return PEOPLE_EXCLUDED
             if capped:
                 reasons.add(capped)  # a cut list may hide an excluded person
@@ -2321,9 +2334,11 @@ class TeamsCapture:
             held = held_acls.get(chat)
             if held is not None:
                 if self._undecided(held.get("identities") or []):
+                    not_cleared(conversation)
                     return ("refused", MEMBERS_UNREAD)
                 if self.people.excluded(_persons(held.get("identities") or [])):
                     self.refused.add(chat.lower())
+                    not_cleared(conversation)
                     return ("refused", PEOPLE_EXCLUDED)
                 return ("carried", {**prior, "chat_type": types[chat]})
             why = withheld(conversation, "graph.chat_members", "teams.chat_members")
@@ -2366,6 +2381,7 @@ class TeamsCapture:
             self.store.set_state(CENSUS_CHAT_CURSOR,
                                  window[reached - 1] if reached < len(types) else "")
         n["chats_unlisted"] = n["chats"] - len(chats) - sum(refused["chats"].values())
+        self._clear_uncleared(uncleared, uncleared_teams)
 
         self._count(config, teams, counts, reasons, blocked)
         proposals: dict[str, list[dict[str, Any]]] = {area: [] for area in CENSUS_AREAS}
@@ -2382,6 +2398,27 @@ class TeamsCapture:
         return report({"schema": CENSUS_SCHEMA, "period_days": COUNT_DAYS,
                        "status": _status(reasons), "teams": teams, "chats": chats,
                        "proposals": proposals})
+
+    def _clear_uncleared(self, units: Iterable[tuple[str, str]], teams: Iterable[str]
+                         ) -> None:
+        """Forget the stored membership of each conversation the census's guard did not
+        clear (``units``: kind and unit), and of every stored standard channel of each
+        team whose own members it did not clear (``teams``: its audience is the team's,
+        ``team_members`` or ``group_fallback``), as the content path does: none of their
+        versions is visible or projected until a run clears them again. On the store's
+        own thread."""
+        for kind, unit in sorted(set(units)):
+            self.store.clear_unit_acl(kind, unit)
+        teams = {t.lower() for t in teams}
+        if not teams:
+            return
+        for unit in self.store.units(CHANNEL_KIND.name):
+            team = unit.removeprefix("teams:channel:").split("/", 1)[0].lower()
+            if team not in teams:
+                continue
+            acl = self.store.unit_acl(CHANNEL_KIND.name, unit)
+            if acl is not None and acl.get("basis") in ("team_members", GROUP_FALLBACK):
+                self.store.clear_unit_acl(CHANNEL_KIND.name, unit)
 
     def _member_joined(self, scope: TeamsScope, enumerated: Mapping[str, int],
                        attempt: Callable[[str, str, Callable[[], Any]], Any],

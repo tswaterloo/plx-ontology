@@ -107,7 +107,7 @@ listener, and the HTTP→HTTPS redirect is an explicit site block, so
 ```text
 srv0 (https) 127.0.0.1:443, <tailscale-ipv4>:443, [<tailscale-ipv6>]:443
 srv1 (redirect) 127.0.0.1:80, <tailscale-ipv4>:80, [<tailscale-ipv6>]:80
-admin 127.0.0.1:2019
+admin unix//var/lib/caddy/admin.sock|0600   (caddy user only; no TCP admin port)
 ```
 
 With `PLX_BIND_ADDRS` unset Caddy binds 127.0.0.1 only. Re-check after any
@@ -122,6 +122,26 @@ sudo ss -ltnp | grep caddy        # after start: the same addresses, nothing on 
 
 TLS for the `*.ts.net` name comes from tailscaled (Caddy's built-in Tailscale
 certificate support); nothing is requested from a public CA.
+
+## The API's Postgres role
+
+The API must not connect as a superuser: one SQL injection would be a shell through
+`COPY ... TO PROGRAM`. `deploy/pg/plx_api_role.sql` creates `plx_api` with what the API
+measurably uses (read ontology/search/plx_meta, write the two search logs, temporary tables)
+and nothing more; `operator_api.tests.test_pg_http_permissions` holds that set. Creating it
+changes nothing that runs. The switch, a deploy step:
+
+```sh
+psql -X -v ON_ERROR_STOP=1 -d plx -f deploy/pg/plx_api_role.sql     # as the schema owner
+# the API's OS user may log in as plx_api over the local socket (peer auth with a map):
+#   pg_ident.conf:  plxapi  <api-os-user>  plx_api
+#   pg_hba.conf:    local  plx  plx_api  peer map=plxapi     (above the generic local line)
+sudo systemctl reload postgresql
+# /etc/plx/workbench-api.env: PLX_PG_DSN=postgresql:///plx?user=plx_api ; restart plx-api,
+# confirm `psql -d plx -U plx_api -c 'RESET ROLE; select current_user'` stays plx_api;
+# then walk Home, a record page, search and Ask once; a "permission denied" in the Postgres
+# log names a grant to add to the file (and to the test).
+```
 
 ## Check it
 
@@ -236,6 +256,8 @@ sees everyone, `PLX_TEAM_VIEW_READERS`; who is in no people view, `PLX_TEAM_HIDD
 03:30 ET, role owners from the last 13 weeks, written to a candidate roles file the autopilot
 reads only if `PLX_AUTOPILOT_ROLES_FILE` names it); system timers `plx-proactive-whole` (every 4
 h), `plx-backup` (03:15 ET), `plx-restore-test` (04:30 ET) and `plx-ops-health` (every 15
-min, `/etc/plx/ingest.env`); and links `plx-release` into `~/.local/bin`. Each unit sets `Nice` and
+min, `/etc/plx/ingest.env`), `plx-autopilot-follow` (the autopilot's live feed, 5 min after the
+last cycle and on each delta publish via its `.path`; prepares My work items only, ordered event
+queue on); and links `plx-release` into `~/.local/bin`. Each unit sets `Nice` and
 `MemoryMax`; the ones that read people data load `proactive.env` (the people exclusion only);
 no unit embeds a secret.

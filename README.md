@@ -111,6 +111,13 @@ Full guide: [`context/HOW-TO-USE.md`](context/HOW-TO-USE.md).
 
 ![What changed this week](docs/media/whats-new.svg)
 
+- **v0.18:** Ask asks one question back when the answer depends on a choice you have not
+  made, and says what it assumed when it cannot ask; the first question after a restart
+  is answered in seconds; form filling from the records; customer purchase orders come as
+  an import file for the Portal or Business Central; the low-price alert is on, measured
+  at 14 of 15 right on fresh days; mail from people on the exclusion list is withheld
+  everywhere; sign-in, sessions and approvals are stricter (an approval lapses after 7
+  days or when its person loses access).
 - **v0.17:** one Workbench app; Ask can draft actions; the approvals desk; the Autopilot
   studio with its test on fresh days; meetings as a calendar with prep sheets; source
   pages that list every record citing them; view-as; data kept up to date through the

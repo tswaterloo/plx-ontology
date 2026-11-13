@@ -72,8 +72,10 @@ import tempfile
 from typing import Any
 
 STATE = Path(os.environ.get("PLX_STATE_DIR") or "/data/plx-state")
-APP_DATA = Path(os.path.expanduser(os.environ.get("XDG_STATE_HOME") or "~/.local/state")) \
-    / "plx-workbench-app"
+# the API's --app-data-dir: PLX_APP_DATA_DIR once the API runs as its own user (it moves into
+# the state directory, deploy/release/README-api-user.md), else the owner's XDG state dir
+APP_DATA = Path(os.environ.get("PLX_APP_DATA_DIR") or Path(os.path.expanduser(
+    os.environ.get("XDG_STATE_HOME") or "~/.local/state")) / "plx-workbench-app")
 # SQLite stores, in priority order (smallest and least replaceable first).
 DBS = (
     ("feedback", "feedback/feedback.sqlite"),

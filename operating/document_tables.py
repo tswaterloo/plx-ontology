@@ -33,13 +33,14 @@ Fixture runs are ``isolated-fixture``; the live store read is live-unverified.
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
 import re
 import sqlite3
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 DOC_TYPES = ("Attachment", "ContainerMember", "SharePointFile")
 NAME_PROPS = ("name", "path")
@@ -255,23 +256,43 @@ def _scan_documents(conn: sqlite3.Connection, query: str, types: Sequence[str],
     if not terms:
         return
     if getattr(conn, "postgres", False):
-        # every document name read whole and matched here took 100-170 s on the served
-        # store (2.8M names through the ``object_values`` view): Postgres reads its tables
-        # with the fields named first and keeps only the names holding a term (terms are
-        # [a-z0-9] only, so a LIKE pattern carries no wildcard of its own); the words are
-        # still matched below, so the rows are exactly the whole read's
-        fields = json.dumps(sorted(row[0] for row in conn.execute(
-            "SELECT field FROM value_fields WHERE property IN (SELECT value FROM "
-            "json_each(?))", (json.dumps(list(props)),))))
-        sql = ("SELECT v.object_id, o.object_type, v.l1_handle, f.property, c.value "
-               "FROM objects o JOIN object_versions v ON v.object_id = o.object_id "
-               "JOIN value_sources s ON s.ver = v.rowid AND s.superseded_at IS NULL "
-               "JOIN value_cells c ON c.src = s.src JOIN value_fields f ON f.field = c.field "
-               "WHERE o.object_type IN (SELECT value FROM json_each(?)) "
-               "AND c.field IN (SELECT value FROM json_each(?)) AND ("
-               + " OR ".join("lower(c.value) LIKE ?" for _ in terms) + ")")
-        rows = conn.execute(sql, (json.dumps(list(types)), fields,
-                                  *(f"%{t.rstrip('*')}%" for t in terms)))
+        # Postgres keeps only the names holding a term (terms are [a-z0-9] only, so a LIKE
+        # pattern carries no wildcard of its own; the words are still matched below, so the
+        # rows are exactly a whole read's). The cells of the fields the name index holds
+        # (``operating.pg.document_names``: a trigram index of the name and path cells) are
+        # found through it, the fields named as literals so the planner proves the partial
+        # index applies; a field added since it was built is read by its own btree. Without
+        # it every name cell was read: 25-95 s a call on the served store (2026-11-13).
+        # Each statement ends within the time the caller's SQL deadline left when the read
+        # began (``deadline_bounded``): a tool call past its limit is interrupted, never
+        # read on for minutes after nobody waits.
+        from operating.pg import document_names as dn
+        bounded = getattr(conn, "deadline_bounded", None)
+        with bounded() if callable(bounded) else _no_deadline():
+            fields = sorted(int(row[0]) for row in conn.execute(
+                "SELECT field FROM value_fields WHERE property IN (SELECT value FROM "
+                "json_each(?))", (json.dumps(list(props)),)))
+            try:
+                covered = dn.predicate_fields(next(iter(conn.execute(dn.COVERED_SQL)),
+                                                   (None,))[0]) or frozenset()
+            except sqlite3.OperationalError as exc:
+                if "interrupt" in str(exc):
+                    raise
+                covered = frozenset()   # the catalog unreadable: every field by its btree
+            parts = [part for part in ([f for f in fields if f in covered],
+                                       [f for f in fields if f not in covered]) if part]
+            rows = []
+            for part in parts:
+                sql = ("SELECT v.object_id, o.object_type, v.l1_handle, f.property, c.value "
+                       "FROM objects o JOIN object_versions v ON v.object_id = o.object_id "
+                       "JOIN value_sources s ON s.ver = v.rowid AND s.superseded_at IS NULL "
+                       "JOIN value_cells c ON c.src = s.src "
+                       "JOIN value_fields f ON f.field = c.field "
+                       "WHERE o.object_type IN (SELECT value FROM json_each(?)) "
+                       "AND c.field IN (" + ", ".join(str(f) for f in part) + ") AND ("
+                       + " OR ".join("lower(c.value) LIKE ?" for _ in terms) + ")")
+                rows.extend(conn.execute(sql, (json.dumps(list(types)),
+                                               *(f"%{t.rstrip('*')}%" for t in terms))))
     else:
         rows = conn.execute(
             "SELECT v.object_id, o.object_type, v.l1_handle, v.property, v.value "
@@ -284,6 +305,11 @@ def _scan_documents(conn: sqlite3.Connection, query: str, types: Sequence[str],
         found = re.findall(r"[a-z0-9]+", str(value or "").lower())
         if any(w in exact or (prefixes and w.startswith(prefixes)) for w in found):
             yield oid, otype, handle, prop, value
+
+
+@contextmanager
+def _no_deadline() -> Iterator[None]:
+    yield
 
 
 def _removed(conn: sqlite3.Connection, ids: Sequence[str]) -> set[str]:
@@ -395,6 +421,15 @@ def _date_docs(conn: sqlite3.Connection, docs: list[Doc]) -> None:
             d.day = day_of(first(files.get(d.object_id), "last_modified", "created_at"))
 
 
+def _page_of(citation: Any, handle: str) -> int | None:
+    """The page number of a page citation of the version ``handle``; None otherwise."""
+    prefix = handle + "#page="
+    if not isinstance(citation, str) or not citation.startswith(prefix):
+        return None
+    tail = citation[len(prefix):]
+    return int(tail) if tail.isdigit() else None
+
+
 def texts(conn: sqlite3.Connection, docs: Sequence[Doc], *, path: str | None = TEXT_PATH,
           max_chars: int = 400_000) -> None:
     """Each document's captured text (module doc), set on ``Doc.text`` (None: none);
@@ -402,16 +437,36 @@ def texts(conn: sqlite3.Connection, docs: Sequence[Doc], *, path: str | None = T
     from ontology.text_index import chunk_text
 
     for d in docs:
-        fields: dict[str, list[tuple[int, str]]] = defaultdict(list)
+        # a version's text is cited to the version (its handle) or, read by OCR page by
+        # page, to each page (``<handle>#page=<n>``, ``version_handle`` the version): the
+        # whole-version fields when there are any, else the pages in page order
+        found: dict[tuple[str, str], list[tuple[int, str]]] = defaultdict(list)
+        # two reads, each on the citation index: the version's own citation first, its
+        # page citations only when it has none (an OR would lose the index)
+        sql = ("SELECT f.field_path, f.citation, k.start, k.body FROM text_fields f "
+               "JOIN text_chunks k ON k.field_id = f.field_id WHERE {cite} "
+               "AND f.object_id = ? AND (? IS NULL OR f.field_path = ?) "
+               "ORDER BY f.field_path, k.start")
+        prefix = d.handle + "#page="
         try:
-            for fpath, start, body in conn.execute(
-                    "SELECT f.field_path, k.start, k.body FROM text_fields f JOIN text_chunks k "
-                    "ON k.field_id = f.field_id WHERE f.citation = ? AND f.object_id = ? "
-                    "AND (? IS NULL OR f.field_path = ?) ORDER BY f.field_path, k.start",
-                    (d.handle, d.object_id, path, path)):
-                fields[fpath].append((start, chunk_text(body)))
+            for cite, params in (("f.citation = ?", (d.handle,)),
+                                 ("f.citation >= ? AND f.citation < ?",
+                                  (prefix, prefix + "\uffff"))):
+                for fpath, citation, start, body in conn.execute(
+                        sql.format(cite=cite), (*params, d.object_id, path, path)):
+                    found[(fpath, citation)].append((start, chunk_text(body)))
+                if found:
+                    break
         except (sqlite3.Error, ValueError):
-            fields = defaultdict(list)
+            found = defaultdict(list)
+        whole = {k: v for k, v in found.items() if k[1] == d.handle}
+        if whole:
+            chosen = sorted(whole.items())
+        else:
+            paged = [(k, v) for k, v in found.items()
+                     if _page_of(k[1], d.handle) is not None]
+            chosen = sorted(paged, key=lambda kv: (kv[0][0], _page_of(kv[0][1], d.handle)))
+        fields = {key: parts for key, parts in chosen}
         if not fields:
             d.text = None
             continue

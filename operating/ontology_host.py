@@ -53,6 +53,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 import dataclasses
+import json
 import os
 from pathlib import Path
 import re
@@ -363,11 +364,21 @@ def store_bc_units(reader: StoreReader) -> dict[str, str]:
     """BC capture units a store holds (``bc:<company>/<entitySet>``) -> the BC
     environment their capture handles name (``bc://<environment>/...``)."""
     units: dict[str, str] = {}
+    # The BC audience keys from the kept key list (read by its index), named whole: a
+    # ``LIKE 'bc:%'`` on the key read every object (Postgres: ILIKE, no index; 15-48 s
+    # at every host start under load, 11-13).
+    keys = [key for key in reader.audience_keys() if key[:3].lower() == "bc:"]
+    if not keys:
+        return units
+    rows: list[Any] = []
     with reader.lock:
-        rows = reader.conn.execute(
-            "SELECT o.audience_key, MIN(v.l1_handle) FROM object_versions v JOIN objects o "
-            "ON o.object_id = v.object_id WHERE o.audience_key LIKE 'bc:%' "
-            f"AND ({_BC_HANDLE_RANGES}) GROUP BY o.audience_key").fetchall()
+        for start in range(0, len(keys), 500):   # within any SQLite variable limit
+            part = keys[start:start + 500]
+            rows += reader.conn.execute(
+                "SELECT o.audience_key, MIN(v.l1_handle) FROM object_versions v JOIN "
+                "objects o ON o.object_id = v.object_id WHERE o.audience_key IN ("
+                + ",".join("?" * len(part)) + f") AND ({_BC_HANDLE_RANGES}) "
+                "GROUP BY o.audience_key", part).fetchall()
     for key, handle in rows:
         units[key] = handle[len("bc://"):].split("/", 1)[0]
     return units
@@ -674,6 +685,9 @@ def _layer_pool() -> Any:
 # Seconds of a plx.find's limit left below which its delta layers are not asked: the
 # served answer returns with the overlay-unmerged gap instead of a timeout with nothing.
 OVERLAY_MARGIN_SECONDS = 6.0
+# A layer that failed to open is tried again on a request at least this long after the
+# failure (HOST-001), the pointer unchanged; a new pointer is tried at once.
+OVERLAY_RETRY_SECONDS = 30.0
 _OWNED_TYPES: dict[int, tuple[frozenset[str], frozenset[str]]] = {}
 _OWNED_TYPES_LOCK = threading.Lock()
 
@@ -804,6 +818,9 @@ class CaseHostTools:
         self._overlay: Any = None
         self._overlay_stamp: Any = None
         self._overlay_checked = False
+        # (pointer stamp, monotonic time) of the last failed open: answers say so and the
+        # open is retried (HOST-001); None when the last open did not fail
+        self._overlay_failed: tuple[Any, float] | None = None
         self._bc_units: dict[str, str] = {}
         self._bc_lookup: Any = None
         self._reader: StoreReader | None = None
@@ -1216,7 +1233,15 @@ class CaseHostTools:
         tools.policy = self.policy_for(actor)
         result = self._dispatch(name, arguments, actor)
         overlay = self._overlay
-        if overlay is not None and getattr(overlay, "partial", False):
+        if self._overlay_failed is not None:
+            # HOST-001: the layer could not be opened: the answer reads the older
+            # generation and says so (``delta_overlay.UNAVAILABLE``)
+            from . import delta_overlay
+            marked = delta_overlay.with_unavailable_gap(result, name)
+            if marked is not result and (name not in tools.contracts["tools"]
+                                         or tools._checked(name, marked) is marked):
+                return marked
+        elif overlay is not None and getattr(overlay, "partial", False):
             # the overlay lists only the newest layers (a Postgres base dropped the rest):
             # every answer over it says it may be older (``delta_overlay.PARTIAL``)
             from . import delta_overlay
@@ -1270,21 +1295,28 @@ class CaseHostTools:
         try:
             pointer = delta_overlay.pointer_path(self.store_path)
             stamp = delta_overlay.pointer_stamp(pointer)
-            if stamp == self._overlay_stamp:
+            failed = self._overlay_failed
+            if failed is None and stamp == self._overlay_stamp:
                 return
+            if failed is not None and stamp == failed[0] \
+                    and time.monotonic() - failed[1] < OVERLAY_RETRY_SECONDS:
+                return   # still failed: answers say so (``_call``) until the retry
             self._drop_overlay()
+            self._overlay_failed = None
             self._overlay_stamp = stamp
             if stamp is None:
                 return
             overlay = delta_overlay.open_overlay(pointer, stamp, self._tools)
             if overlay is None:
-                return
+                return   # a refused pointer (another generation or format): not applied
             keys = sorted(set(self._base_reader_keys) | set(overlay.audience_keys()))
             self._overlay = overlay
             self._reader_keys = keys
-        except Exception:  # noqa: BLE001 - the served generation answers alone
+        except Exception:  # noqa: BLE001 - the served generation answers, saying so
+            # HOST-001: a failed open is no decided pointer: every answer says it reads
+            # the older generation, and the open is tried again (OVERLAY_RETRY_SECONDS)
             self._drop_overlay()
-            self._overlay_stamp = stamp   # tried again when the pointer changes
+            self._overlay_failed = (stamp, time.monotonic())
 
     def _overlaid(self, name: str, arguments: Any, actor: Any, served: Any) -> dict[str, Any]:
         """``plx.object``/``plx.find`` (``served``: the table's handler over the served
@@ -1402,6 +1434,12 @@ class CaseHostTools:
         else:
             if not arguments.get("object_type") and not arguments.get("filters"):
                 return 0
+            if arguments.get("filters"):
+                # HOST-002: a changed record may have left the filter (matched in the
+                # served generation, not in its layer), so the layers' matches cannot
+                # count it: any changed record of the type this reader may read (in the
+                # served generation or its layer) makes the totals undecidable
+                return self._changed_of_type(arguments.get("object_type"), actor)
             asked = {key: arguments[key] for key in ("object_type", "filters")
                      if key in arguments}
             count = 0
@@ -1413,6 +1451,37 @@ class CaseHostTools:
                              if c["object"]["object_id"] in layer.serves)
             return count
         return sum(len(layer.readable(actor, ids)) for layer in overlay.layers)
+
+    def _changed_of_type(self, object_type: Any, actor: Any) -> int | None:
+        """0 when no layer serves a record of ``object_type`` (any type when None) that
+        ``actor`` may read, in the served generation or in that layer; else None (the
+        totals may hold or miss it: undecidable, said as such, never a count)."""
+        overlay, tools = self._overlay, self._tools
+        if not isinstance(object_type, (str, type(None))):
+            return None
+        for layer in overlay.layers:
+            ids = sorted(layer.serves)
+            if isinstance(object_type, str) and ids:
+                # of the type in its layer or in the served generation (a record the
+                # layer no longer holds is still the served one's)
+                typed: set[str] = set()
+                for store in (layer.tools.store, tools.store):
+                    with store.lock:
+                        typed.update(row[0] for row in store.conn.execute(
+                            "SELECT object_id FROM objects WHERE object_type = ? AND "
+                            "object_id IN (SELECT value FROM json_each(?))",
+                            (object_type, json.dumps(ids))))
+                ids = sorted(typed)
+            if not ids:
+                continue
+            if layer.readable(actor, ids):
+                return None
+            with tools.store.lock:
+                scope = tools._scope(actor, tools._as_known_at({}))
+                versions = tools.store.visible_versions(scope, ids)
+            if any(tools._item_allowed(actor, row["l1_handle"]) for row in versions):
+                return None
+        return 0
 
     def _answer_call(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
         """``plx.aggregate``/``plx.compare`` over the served store, saying when objects

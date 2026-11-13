@@ -15,6 +15,9 @@ User=@PLX_USER@
 Group=@PLX_GROUP@
 WorkingDirectory=@PLX_CURRENT@
 EnvironmentFile=@PLX_HOME@/.config/plx/plx.env
+# Reads no business system: the credentials that can send, write or reach one are dropped
+# (SEC-S-05; tests/test_deploy_release.py names the units that may keep them).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/data/venv/bin/python3 -m operating.source_precedence --pg-dsn "dbname=plx" --out /data/plx-state/precedence/measured.json
 Nice=10

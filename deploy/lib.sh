@@ -20,8 +20,9 @@ fi
 : "${PLX_RUNS:=$PLX_SCRATCH/runs}"
 : "${PLX_OPS_PRIVATE:=$PLX_SCRATCH/cfg}"            # tools whose rule lists name people (scrub rules): host-only
 : "${PLX_OPS:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ops}"   # these scripts
+: "${PLX_RELEASE_OWNER=root}"                      # owns every sealed release (empty: unsealed)
 : "${PLX_API_URL:=http://127.0.0.1:8780}"
 : "${PLX_TZ:=America/New_York}"
 export PLX_USER PLX_GROUP PLX_HOME PLX_CONFIG PLX_REPO PLX_RELEASES PLX_CURRENT PLX_STATE \
-  PLX_VENV PLX_NODE PLX_SCRATCH PLX_RUNS PLX_OPS PLX_OPS_PRIVATE PLX_API_URL PLX_TZ
+  PLX_VENV PLX_NODE PLX_RELEASE_OWNER PLX_SCRATCH PLX_RUNS PLX_OPS PLX_OPS_PRIVATE PLX_API_URL PLX_TZ
 plx_now() { TZ=$PLX_TZ date +%-I:%M\ %p; }

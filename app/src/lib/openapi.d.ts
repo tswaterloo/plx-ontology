@@ -689,6 +689,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/briefing/unjudged": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Briefing Unjudged
+         * @description The records one check could not judge that you may read, a page at a time (a
+         *     data note's list on the briefing).
+         */
+        get: operations["briefing_unjudged_api_briefing_unjudged_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/briefing/watcher/{item_id}": {
         parameters: {
             query?: never;
@@ -1110,6 +1131,27 @@ export type paths = {
          *     nudges. Only yours (and your granted reports'). Nothing is sent or written.
          */
         get: operations["my_work_api_my_work_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/my-work/{item_id}/order-import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My Work Order Import
+         * @description Your item's prepared order as an import file (CSV, one row per order line) to
+         *     paste or import into the Portal or Business Central. Nothing is entered.
+         */
+        get: operations["my_work_order_import_api_my_work__item_id__order_import_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2250,11 +2292,15 @@ export type components = {
              * @description Why the assistant could not work the question (its usage limit, its sign-in, its time limit or an error), in words; the answer then shows what the records read without it show. Null when it ran.
              */
             assistant_unavailable?: string | null;
+            /** @description What the answer took an open question to mean, with the other readings to change it. */
+            assumption?: components["schemas"]["Assumption"] | null;
             /**
              * Attachments
              * @description The question's attachments: what was read and what was not, and why.
              */
             attachments?: components["schemas"]["AskAttachmentNote"][];
+            /** @description One question asked back because the answer turns on a choice the question leaves open; nothing else is answered until it is picked. */
+            clarify?: components["schemas"]["Clarify"] | null;
             /** Conflicts */
             conflicts?: components["schemas"]["Conflict"][];
             /** Conversation Id */
@@ -2542,6 +2588,8 @@ export type components = {
              * @description Files and images the person attached (PDF, .xlsx, .csv, text, PNG, JPEG, GIF, WebP): up to five, 10 MB together.
              */
             attachments?: components["schemas"]["AskAttachment"][];
+            /** @description An answer to the question an earlier answer asked back (or another reading of its assumption): continues that question. */
+            clarified?: components["schemas"]["ClarifyReply"] | null;
             /** @description The page the box was opened on (a meeting, an autopilot item, a page); an email or file goes in ``source``, a record in ``object_id``. */
             context?: components["schemas"]["InstructContext"] | null;
             /** Conversation Id */
@@ -2567,6 +2615,17 @@ export type components = {
              * @description Ask about this document: the citation of a mail, attachment or file the person has open or picked; read for them as they may read it.
              */
             source?: string | null;
+        };
+        /**
+         * Assumption
+         * @description What the answer took the question to mean, in one line, and the other readings:
+         *     picking one asks it again under that reading (``AskRequest.clarified.option``).
+         */
+        Assumption: {
+            /** Options */
+            options?: components["schemas"]["ClarifyOption"][];
+            /** Text */
+            text: string;
         };
         /** AtRisk */
         AtRisk: {
@@ -3522,6 +3581,11 @@ export type components = {
              */
             counts_exact: boolean;
             /**
+             * Data Note Items
+             * @description The same notes with their check and reason, so a reader can list the records (GET /api/briefing/unjudged).
+             */
+            data_note_items?: components["schemas"]["BriefingDataNote"][];
+            /**
              * Data Notes
              * @description What the checks could not judge, per check and reason, as counts only: e.g. 'late customer orders: cannot check 12 records that lack order lines'.
              */
@@ -3666,6 +3730,20 @@ export type components = {
             words: string;
         };
         /**
+         * BriefingDataNote
+         * @description One check's records it could not judge for one reason, as a count.
+         */
+        BriefingDataNote: {
+            /** Check */
+            check: string;
+            /** Count */
+            count: number;
+            /** Reason */
+            reason: string;
+            /** Words */
+            words: string;
+        };
+        /**
          * BriefingEventType
          * @description One event type: its checks' state this run and whether a recorded run over this data
          *     has found one of this type.
@@ -3675,7 +3753,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** First Found */
             first_found?: string | null;
             /**
@@ -3707,7 +3785,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** In Top */
             in_top: number;
             /** Label */
@@ -3773,7 +3851,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /**
              * Evidence
              * @description 'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.
@@ -3850,7 +3928,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
             /** Items */
             items?: components["schemas"]["BriefingItem"][];
             /**
@@ -3869,6 +3947,38 @@ export type components = {
             at?: string | null;
             /** Ok */
             ok: boolean;
+        };
+        /**
+         * BriefingUnjudged
+         * @description The records one check could not judge that you may read (the count on your
+         *     briefing), a page at a time; a record you may not read is never listed or counted.
+         */
+        BriefingUnjudged: {
+            /** Check */
+            check: string;
+            /**
+             * Complete
+             * @description False when the check also skipped records it could not name, so the list is not all it skipped.
+             */
+            complete: boolean;
+            /**
+             * More
+             * @default false
+             */
+            more: boolean;
+            /**
+             * Next Offset
+             * @description The offset of the next page (a record your whole read does not show is left out of this one, so it can hold fewer).
+             */
+            next_offset: number;
+            /** Offset */
+            offset: number;
+            /** Reason */
+            reason?: string | null;
+            /** Records */
+            records?: components["schemas"]["UnjudgedRecord"][];
+            /** Total */
+            total: number;
         };
         /**
          * BuildWait
@@ -3956,6 +4066,53 @@ export type components = {
             source: components["schemas"]["Source"];
             /** Value */
             value: string;
+        };
+        /**
+         * Clarify
+         * @description The one question asked back instead of guessing: answer it with an option
+         *     (``AskRequest.clarified.option``) or in your own words (``clarified.text``); the
+         *     answer continues the same conversation.
+         */
+        Clarify: {
+            /**
+             * Free Text
+             * @default true
+             */
+            free_text: boolean;
+            /** Options */
+            options?: components["schemas"]["ClarifyOption"][];
+            /** Question */
+            question: string;
+        };
+        /**
+         * ClarifyOption
+         * @description One quick reply: its words, and the record it picks (a record the reader may
+         *     read, offered from their own records) or none (a reading such as a period).
+         */
+        ClarifyOption: {
+            /**
+             * Detail
+             * @description The record's own values that tell it apart (date, amount, status).
+             * @default null
+             */
+            detail: string | null;
+            /** Label */
+            label: string;
+            /** @default null */
+            object: components["schemas"]["ObjectRef"] | null;
+        };
+        /**
+         * ClarifyReply
+         * @description The person's answer to an earlier answer's ``clarify`` question or ``assumption``:
+         *     the answer it replies to, and an option's index or their own words.
+         */
+        ClarifyReply: {
+            /** Answer Id */
+            answer_id: string;
+            /** Option */
+            option?: number | null;
+            /** Text */
+            text?: string | null;
         };
         /** Conflict */
         Conflict: {
@@ -5144,6 +5301,11 @@ export type components = {
             /** Meetings Used */
             meetings_used?: string[];
             /**
+             * Options
+             * @description Choices for the question, each from your materials; answering in your own words works too.
+             */
+            options?: string[];
+            /**
              * Proposed
              * @description Meetings whose notes the question proposes to use.
              */
@@ -5989,6 +6151,12 @@ export type components = {
             mine: boolean;
             /** Offers */
             offers?: components["schemas"]["CardActionOffer"][];
+            /**
+             * Order Import
+             * @description A prepared order with its lines: GET ``/api/my-work/{item_id}/order-import`` gives it as an import file (CSV) for the Portal or Business Central.
+             * @default false
+             */
+            order_import: boolean;
             /** Prepared */
             prepared?: {
                 [key: string]: unknown;
@@ -8160,6 +8328,18 @@ export type components = {
             resolved: components["schemas"]["ObjectRef"] | null;
             /** Text */
             text: string;
+        };
+        /** UnjudgedRecord */
+        UnjudgedRecord: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /**
+             * Type
+             * @description The record's object type (its id's prefix).
+             */
+            type: string;
         };
         /** UpcomingMeeting */
         UpcomingMeeting: {
@@ -10473,7 +10653,7 @@ export interface operations {
     briefing_items_api_briefing_items_get: {
         parameters: {
             query: {
-                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
+                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention" | "stock_out_risk" | "overdue_receivable" | "unit_cost_jump" | "customer_demand_drop" | "promise_date_slip" | "margin_erosion" | "supplier_reliability" | "shipped_not_invoiced" | "duplicate_customer_order" | "recurring_component_damage" | "customer_chasing_order" | "tell_before_they_ask" | "quality_hold_aging" | "reject_trend" | "expedite_unanswered" | "supplier_shortage_open_orders" | "return_unanswered" | "supplier_chasing_payment" | "customer_paying_slower" | "early_pay_discount_missed" | "duplicate_supplier_invoice" | "duplicate_supplier_payment" | "customer_credits_rising" | "price_below_typical" | "price_below_cost" | "customer_price_drop" | "mc_task_overdue" | "mc_task_stuck" | "mc_approval_pending" | "planner_task_overdue" | "aged_receivable_worsening" | "aged_payable_worsening" | "production_late" | "assembly_damage_spike" | "teams_unanswered_ask" | "commitment_due" | "commitment_missed" | "needs_my_reply" | "approval_waiting" | "chase_escalating" | "party_chase_unanswered" | "internal_order_chase" | "slow_moving_stock" | "expiring_lot_stock" | "assembly_blocked_by_component" | "certificate_expiring" | "freight_cost_anomaly" | "stale_quote" | "priority_order_unfilled" | "duplicate_party_candidate" | "key_field_missing" | "twins_disagree" | "source_stale" | "sync_missing" | "sync_mismatch" | "reorder_soon" | "inventory_adjustment" | "blocked_account_activity" | "gl_posting_errors" | "recurring_task_missed" | "label_change" | "label_revision_superseded" | "rd_project" | "unapplied_remittance" | "short_payment" | "statement_difference";
                 offset?: number;
                 limit?: number;
                 view?: "all" | "since_visit";
@@ -10533,6 +10713,58 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    briefing_unjudged_api_briefing_unjudged_get: {
+        parameters: {
+            query: {
+                check: string;
+                reason?: string | null;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefingUnjudged"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11509,6 +11741,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    my_work_order_import_api_my_work__item_id__order_import_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

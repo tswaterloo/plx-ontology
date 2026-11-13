@@ -100,10 +100,11 @@ def make_chunk(*, kind: str, parts: Sequence[str], source_handle: str, object_id
                markings: Sequence[str]) -> Chunk:
     if kind not in AUTHORITY:
         raise ValueError(f"chunk_kind_unknown:{kind}")
-    # a card number is never stored, in the text, its header or its title (every chunker)
-    from .normalise import mask_cards
-    header, body = mask_cards(clean(header) or ""), mask_cards(clean(body) or "")
-    title = None if title is None else mask_cards(clean(title) or "")
+    # a card number or a credential is never stored, in the text, its header or its title
+    # (every chunker)
+    from .normalise import mask_private
+    header, body = mask_private(clean(header) or ""), mask_private(clean(body) or "")
+    title = None if title is None else mask_private(clean(title) or "")
     return Chunk(chunk_id=chunk_id(kind, *parts), source_handle=source_handle,
                  object_id=object_id, kind=kind, title=title, author_role=clean(author_role),
                  occurred_at=occurred_at, header=header, body=body,

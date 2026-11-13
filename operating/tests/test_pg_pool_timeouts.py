@@ -52,14 +52,24 @@ class PoolTimeoutTests(unittest.TestCase):
                                 connect_timeout=2, statement_timeout_ms=5000)
             conn = pool._new()
         self.assertEqual(made, [{"connect_timeout": 2}])
-        self.assertEqual(conn.sql, ["SET statement_timeout = 5000"])
+        self.assertEqual(conn.sql, ["SET statement_timeout = 5000",
+                                    "SET idle_in_transaction_session_timeout = 900000"])
 
     def test_a_pool_without_limits_connects_as_before(self):
         made = []
         with mock.patch.object(pg_pool, "connect",
                                side_effect=lambda dsn, **kw: made.append(kw) or Conn()):
             conn = pg_pool.Pool("postgresql://made-up/db", configure=lambda c: None)._new()
-        self.assertEqual((made, conn.sql), ([{}], []))
+        self.assertEqual(made, [{}])
+        self.assertEqual(conn.sql, ["SET idle_in_transaction_session_timeout = 900000"])
+        with mock.patch.object(pg_pool, "connect",
+                               side_effect=lambda dsn, **kw: Conn()):
+            bare = pg_pool.Pool("postgresql://made-up/db", configure=lambda c: None,
+                                idle_in_transaction_ms=None)._new()
+        self.assertEqual(bare.sql, [])
+        for bad in (-1, True, "5", 1.5):
+            with self.assertRaises(ValueError):
+                pg_pool.Pool("postgresql://made-up/db", idle_in_transaction_ms=bad)
 
 
 @unittest.skipIf(pg_pool is None, "psycopg not installed")
@@ -90,6 +100,24 @@ class PoolTimeoutAcrossBorrowsTests(unittest.TestCase):
                     conn.execute("SELECT pg_sleep(3)")
         self.assertEqual(len(ids), 1)   # one connection, reused
         self.assertEqual(seen, ["300ms"] * 3)
+
+    def test_a_session_idle_in_a_transaction_is_ended_and_the_pool_replaces_it(self):
+        import psycopg
+        import time
+        pool = pg_pool.Pool(self.dsn, max_size=1, configure=lambda conn: None,
+                            idle_in_transaction_ms=300)
+        self.addCleanup(pool.close)
+        with pool.connection() as conn:
+            self.assertEqual(conn.execute("SHOW idle_in_transaction_session_timeout")
+                             .fetchone()[0], "300ms")
+            first = conn.info.backend_pid
+            conn.execute("SELECT 1")   # a transaction is now open; the borrower stalls
+            time.sleep(0.8)
+            with self.assertRaises(psycopg.Error):
+                conn.execute("SELECT 1")
+        with pool.connection() as conn:   # the dead connection was discarded, not reused
+            self.assertNotEqual(conn.info.backend_pid, first)
+            self.assertEqual(conn.execute("SELECT 1").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

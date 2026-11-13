@@ -20,6 +20,7 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   AuthConfig,
   Briefing,
   BriefingItems,
+  BriefingUnjudged,
   BriefingSeen,
   BriefingView,
   Brief,
@@ -253,6 +254,12 @@ export function getBriefingItems(
 ): Promise<BriefingItems> {
   const q = new URLSearchParams({ event_type: eventType, offset: String(offset), limit: "25", view });
   return getJson<BriefingItems>(`/api/briefing/items?${q}`, signal);
+}
+
+/** The records one check could not judge that you may read (a data note's list), a page at a time. */
+export function getBriefingUnjudged(check: string, reason: string, offset = 0, signal?: AbortSignal): Promise<BriefingUnjudged> {
+  const q = new URLSearchParams({ check, reason, offset: String(offset), limit: "50" });
+  return getJson<BriefingUnjudged>(`/api/briefing/unjudged?${q}`, signal);
 }
 
 /** Marks your briefing seen: the next "since your last visit" starts now. */

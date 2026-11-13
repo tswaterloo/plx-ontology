@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX autopilot live feed 5 minutes after the last cycle ended
+
+[Timer]
+OnBootSec=12min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

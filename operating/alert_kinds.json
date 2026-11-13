@@ -687,6 +687,22 @@
    "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
+   "type": "return_unanswered",
+   "kind": "customer_chasing",
+   "label": "Return or credit asked, no answer",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "CS",
+    "SALES",
+    "QA",
+    "FIN"
+   ],
+   "unmeasured": "not measurable yet: new 2026-11-12 (CAP-L105); judge 15 items from a served run before switching on"
+  },
+  {
    "type": "supplier_chasing_payment",
    "kind": "payable_attention",
    "label": "Supplier chasing us for payment",
@@ -1079,14 +1095,16 @@
    "kind": "price_exception",
    "label": "Customer paying far below the usual price",
    "precision": {
-    "value": 0.867,
+    "value": 0.933,
     "checked": 15,
-    "on": "2026-11-10",
-    "source": "/data/scratch/alert-precision-1110.md",
-    "note": "like-for-like 15/15; 2 of 15 are a reseller or private-label tier, explained by the price list"
+    "correct": 14,
+    "on": "2026-11-12",
+    "source": "/data/scratch/alerts-fresh-judged-1112.tsv (seed 1114, fresh days, evidence outside 10-26..11-05)",
+    "note": "after 66dc81ba0a: judged against the customer's own price list; 1 reseller on the standard list still slips through",
+    "commit": "66dc81ba0a"
    },
    "actionable": true,
-   "default": "off",
+   "default": "on",
    "home": false,
    "roles": [
     "SALES",

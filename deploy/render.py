@@ -40,8 +40,10 @@ def load_env(path: Path, environ=os.environ) -> dict[str, str]:
     return {k: v for k, v in values.items() if v and "<" not in v}
 
 
-def sources(user: bool) -> list[tuple[Path, str]]:
-    """(template, path relative to the install dir)."""
+def sources(user: bool, api_user: bool = False) -> list[tuple[Path, str]]:
+    """(template, path relative to the install dir). ``api_user``: also the drop-ins that
+    run the API as its own user (deploy/systemd/api-user, deploy/release/README-api-user.md),
+    a separate switch from the release units."""
     found: list[tuple[Path, str]] = []
     if user:
         for pattern in UNIT:
@@ -50,8 +52,10 @@ def sources(user: bool) -> list[tuple[Path, str]]:
     for folder in (DEPLOY / "systemd", DEPLOY / "backup"):
         for pattern in UNIT:
             found += [(p, p.name) for p in sorted(folder.glob(pattern))]
-    for conf in sorted((DEPLOY / "systemd" / "host").glob("*.d/*.conf")):
-        found.append((conf, f"{conf.parent.name}/{conf.name}"))
+    folders = [DEPLOY / "systemd" / "host"] + ([DEPLOY / "systemd" / "api-user"] if api_user else [])
+    for folder in folders:
+        for conf in sorted(folder.glob("*.d/*.conf")):
+            found.append((conf, f"{conf.parent.name}/{conf.name}"))
     return found
 
 
@@ -69,9 +73,11 @@ def main(argv: list[str] | None = None) -> int:
                         default=Path(os.environ.get("PLX_DEPLOY_ENV",
                                                     Path.home() / ".config/plx/deploy.env")))
     parser.add_argument("--user", action="store_true", help="user units (deploy/user)")
+    parser.add_argument("--api-user", action="store_true",
+                        help="also the drop-ins that run the API as its own user")
     args = parser.parse_args(argv)
     values = load_env(args.env)
-    for template, rel in sources(args.user):
+    for template, rel in sources(args.user, args.api_user):
         try:
             text = render(template.read_text(), values)
         except KeyError as missing:

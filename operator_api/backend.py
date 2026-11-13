@@ -264,6 +264,9 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.agent_ask = agent_ask
         self.front_door = front_door
+        # asks back when the answer turns on a choice not made (``operating.clarify``;
+        # None: every question is answered as read)
+        self.clarifier: Any = None
         # the general answerer's model call (``general_answer.claude_call`` on the agent's
         # binary); tests replace it
         self.general_call: Optional[Callable[..., Optional[str]]] = None
@@ -1315,6 +1318,9 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
         conversation = request.conversation_id or secrets.token_hex(8)
         yield "status", m.StatusEvent(step="understanding", message="Reading your question",
                                       elapsed_ms=ms())
+        if request.clarified is not None:
+            # a reply to the question asked back: that question, as the person meant it
+            request = self._clarified(reader, request)
         answer = None
         asked = request
         # the agent's host starts while the question is read and its records resolved
@@ -1329,6 +1335,17 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
                                           elapsed_ms=ms())
             if reading.changed:
                 request = request.model_copy(update={"question": reading.rewrite})
+        # One question asked back when the answer turns on a choice the person has not
+        # made (``operating.clarify``), or the reading assumed, said in one line; a reply
+        # to that question continues it and is never asked back again.
+        assumed: Optional[m.Assumption] = None
+        clarify: Optional[m.Clarify] = None
+        if request.clarified is None and reading is not None and reading.open is not None \
+                and not labour_hours.serves(request.question):
+            # (labour hours never reach a model: no record of them is offered to one)
+            decided = self._clarify(reader, request, reading, early, conversation)
+            if decided is not None:
+                clarify, assumed, request = decided
         # A did-you-mean pick keeps the question it answers (its intent) with the record
         # picked as ``object_id``.
         intent = picked_question(request) or request.question
@@ -1357,7 +1374,14 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
                                            files=files) \
             if scope == "mixed" or (files is not None and files.read
                                     and scope != "general") else None
-        if labour:
+        if clarify is not None:
+            answer = m.AnswerPayload(
+                answer_id=secrets.token_hex(12), question=request.question,
+                outcome="partial", direct_answer=clarify.question, hidden=m.Hidden(count=0),
+                freshness=m.Freshness(), clarify=clarify, conversation_id=conversation,
+                latency_ms=ms())
+            general_part = None
+        elif labour:
             # Labour hours are answered from the hr-marked aggregates alone, for a reader
             # holding hr or ops-management; never by the agent, so no time sheet reaches a
             # model.
@@ -1394,7 +1418,7 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
                                                 early=early)
         else:
             answer = yield from self._box_ask(reader, request, conversation, ms)
-        if general_part is None and scope == "company" and not labour \
+        if general_part is None and scope == "company" and not labour and clarify is None \
                 and answer.outcome != "answered" and self._general_served():
             # Never a refusal: what the records could not give is said above, and the
             # model's general help follows it, marked so (``general_answer`` "fallback")
@@ -1411,7 +1435,9 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
         # a question about a period the data does not reach yet says so: one short note
         # after the answer (never in place of its start), naming a lagging source only
         # where it bears on the answer, and once per conversation
-        notice = presentation.period_notice(
+        if assumed is not None:
+            answer.assumption = assumed
+        notice = None if clarify is not None else presentation.period_notice(
             intent, answer.freshness, self.clock(),
             cited={s.system for f in answer.facts for s in f.sources},
             settled=answer.outcome == "answered")
@@ -1419,8 +1445,9 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
                 and self._first_notice(reader.key, conversation, notice):
             answer.direct_answer = f"{answer.direct_answer} {notice}".strip()
         # what to ask next: from the answer's own records and gaps, as this reader sees them
-        answer.follow_ups = presentation.follow_ups(request.question, answer)
-        answer.proposals = proposals.for_answer(answer)   # drafts only: never sent
+        if clarify is None:
+            answer.follow_ups = presentation.follow_ups(request.question, answer)
+            answer.proposals = proposals.for_answer(answer)   # drafts only: never sent
         cited = {s.handle: s for f in answer.facts for s in f.sources}
         if cited:
             yield "sources", m.SourcesEvent(sources=list(cited.values()))
@@ -1440,6 +1467,16 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
                                                "at": _iso_now(),
                                                **_answer_kept(answer),
                                                "markings": markings}
+            if clarify is not None or assumed is not None:
+                # what a reply to the question (or another reading) continues
+                self._answers[answer.answer_id]["clarify"] = {
+                    # the person's own words, never the rewrite or the assumed reading
+                    "question": asked.question,
+                    "context": asked.context.model_dump() if asked.context else None,
+                    "asked": clarify.question if clarify is not None else "",
+                    "options": [{"label": o.label, "object_id": o.object.object_id
+                                 if o.object else None} for o in (
+                        clarify or assumed).options]}   # type: ignore[union-attr]
             while len(self._answers) > MAX_ANSWERS_KEPT:
                 self._answers.pop(next(iter(self._answers)))
             recent = self._recent.setdefault(reader.key, [])
@@ -1449,6 +1486,91 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
             del recent[10:]
         self.reader_wrote(reader)   # Home lists the question now
         yield "answer", answer
+
+    def _clarify(self, reader: Reader, request: m.AskRequest, reading: Any,
+                 early: Optional[tuple[str, Future, dict[str, Any]]], conversation: str
+                 ) -> Optional[tuple[Optional[m.Clarify], Optional[m.Assumption],
+                                     m.AskRequest]]:
+        """The front door flagged a choice the question leaves open: the reader's own
+        records of that kind (``clarify.gather`` through their view) and the decision
+        (``Clarifier.decide``): (the question to ask back, or the assumption and the
+        request reworded under it); None: answered as read (no clarifier, nothing to
+        ask, or no decision in time)."""
+        from operating import clarify as cl
+        if self.clarifier is None or request.object_id or request.source:
+            return None
+        try:
+            found = early[1].result(timeout=READ_TIMEOUT_SECONDS) if early else None
+        except Exception:  # noqa: BLE001 - the candidates are then listed by kind
+            found = None
+        page = request.context.object_id if request.context is not None and getattr(
+            request.context, "object_id", None) else None
+
+        def read(view: Any) -> list[dict[str, Any]]:
+            with view._request():
+                return cl.gather(lambda name, args: view._call(name, dict(args)), found,
+                                 reading.open.get("among"), page_object=page)
+        try:
+            candidates = submit(self.ask_jobs, self.ask_stopped, reader, read, 1).result(
+                timeout=READ_TIMEOUT_SECONDS)
+            decision = self.clarifier.decide(
+                request.question, reading.open,
+                conversation=[{"role": t.role, "text": t.text} for t in request.history],
+                reader={"name": reader.display_name, "roles": self._reader_roles(reader)},
+                page=page, candidates=candidates)
+        except Exception:  # noqa: BLE001 - no decision: answered as read
+            return None
+        if decision is None or decision.kind == "answer":
+            return None
+        options = [m.ClarifyOption(
+            label=c.label, detail=c.detail or None, object=m.ObjectRef(
+                object_id=c.object_id, type=c.object_type or "Object", label=c.label,
+                open_url=object_url(c.object_type or "Object", c.object_id))
+            if c.object_id else None) for c in decision.options]
+        if decision.kind == "ask":
+            return m.Clarify(question=decision.question, options=options), None, request
+        return None, m.Assumption(text=decision.assumption, options=options), \
+            request.model_copy(update={"question": cl.understood(
+                request.question, assumption=decision.assumption)})
+
+    def _clarified(self, reader: Reader, request: m.AskRequest) -> m.AskRequest:
+        """A reply to the question an earlier answer asked back (or another reading of
+        its assumption): that question again, with the record picked as ``object_id``
+        or the person's words added. When the earlier answer is not this reader's own,
+        no longer kept (a restart) or kept no question, the reply's own words are
+        answered as they stand (never another reader's question or records), and never
+        asked back again."""
+        from operating import clarify as cl
+        reply = request.clarified
+        assert reply is not None
+        with self._lock:
+            kept = self._answers.get(reply.answer_id)
+        if not kept or kept.get("reader") != reader.key or not kept.get("clarify"):
+            return request
+        held = kept["clarify"]
+        if request.context is None and held.get("context"):
+            # the page the question was asked on
+            request = request.model_copy(update={
+                "context": m.InstructContext.model_validate(held["context"])})
+        if reply.option is not None:
+            if reply.option >= len(held["options"]):
+                return request
+            picked = held["options"][reply.option]
+            return request.model_copy(update={
+                "question": cl.understood(held["question"], choice=picked["label"]),
+                "object_id": picked.get("object_id") or request.object_id})
+        return request.model_copy(update={"question": cl.understood(
+            held["question"], choice=reply.text, asked=held.get("asked") or "")})
+
+    def _reader_roles(self, reader: Reader) -> list[str]:
+        """The reader's roles in the roles file (``autopilot._roles``); [] when none."""
+        try:
+            employee = getattr(reader.session, "employee", None)
+            oid = str(getattr(employee, "object_id", "") or "").lower()
+            return sorted(role for role, members in self._apa_roles().items()
+                          if oid and oid in members)
+        except Exception:  # noqa: BLE001 - no roles known
+            return []
 
     def _general_served(self) -> bool:
         """Whether general answers run here: a model the app reads questions with (the
@@ -3519,6 +3641,36 @@ class WorkspaceBackend(BriefsMixin, TeamViewMixin, ActionsMixin, WriteIntentsMix
             view, event_type, offset=offset, limit=limit, since_visit=since_visit),
             timeout=READ_TIMEOUT_SECONDS)
 
+    def briefing_unjudged(self, reader: Reader, check: str, reason: Optional[str], *,
+                          offset: int = 0, limit: int = 50) -> m.BriefingUnjudged:
+        """The records one check could not judge that this reader may read (the count its
+        briefing's data notes give), each with its label as this reader reads it."""
+        return self.reads.run(reader, lambda view: self._briefing_unjudged(
+            view, check, reason, offset=offset, limit=limit), timeout=READ_TIMEOUT_SECONDS)
+
+    def _briefing_unjudged(self, view: Any, check: str, reason: Optional[str], *,
+                           offset: int, limit: int) -> m.BriefingUnjudged:
+        from operating.proactive_engine import UnknownCheck
+        try:
+            found = view.unjudged(check, reason, offset=offset, limit=limit)
+        except UnknownCheck:
+            raise errors.UserFacing("check_unknown", "There is no such check.", 404) from None
+        ids = list(found.get("records") or ())
+        words: dict[str, tuple[str, Optional[str]]] = {}
+        if ids:
+            with view._request():
+                words = cards_words(view, ids, cards=self.cards)
+        # a record the reader's whole read does not show (no label) is left out, never
+        # named by its id; paging follows the engine's page, so none repeats
+        shown = [(oid, (words.get(oid) or ("", None))[0]) for oid in ids]
+        total = int(found.get("total") or 0)
+        return m.BriefingUnjudged(
+            check=check, reason=reason, total=total, offset=offset,
+            next_offset=offset + len(ids), complete=bool(found.get("complete")),
+            records=[m.UnjudgedRecord(id=oid, type=oid.split(":", 1)[0], label=label)
+                     for oid, label in shown if label],
+            more=offset + len(ids) < total)
+
     def _briefing_items_cached(self, view: Any, event_type: str, *, offset: int, limit: int,
                                since_visit: bool) -> m.BriefingItems:
         """``_briefing_items`` as read last for this reader (keyed as the briefing is, its
@@ -5240,6 +5392,11 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                    agent_ask=agent, agent_sessions=ASK_SESSIONS_MOST,
                                    front_door=front_door,
                                    keep_pages=live and getattr(args, "keep_pages", 1) == 1)
+        if front_door is not None:
+            from operating.clarify import Clarifier
+            if Clarifier.enabled():
+                backend.clarifier = Clarifier(binary=agent.claude_bin)
+                backend.clarifier.warm()
         resolver = ctx.get("resolver")
         if resolver is not None and not args.dev_fixture_principal:
             from operating.session_identity import warm_session

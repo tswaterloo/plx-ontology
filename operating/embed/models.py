@@ -8,8 +8,9 @@
   remote, so it runs only with ``PLX_EMBED_ALLOW_REMOTE=1`` set in ``plx.env`` or the
   environment, and ``OPENAI_API_KEY``. Batches of at most ``OPENAI_MAX_INPUTS`` inputs and
   ``OPENAI_MAX_TOKENS`` estimated tokens, retry with backoff on 429/5xx (Retry-After
-  honoured), the one allowlisted sender (``operating.embed_sender``). ``dimensions``
-  shortens the vector (Matryoshka) when the store's column is narrower.
+  honoured), the one allowlisted sender (``operating.embed_sender``). An explicit
+  ``PLX_EMBED_DIMENSIONS`` shortens the vector (Matryoshka); a column narrower than the
+  model without it is refused, so indexing and query always load the same model.
 * ``intfloat/e5-large-v2`` (local, 1024): ``passage: `` / ``query: `` prefixes.
 
 Every vector is L2-normalised (cosine = dot). Nothing here logs text or the key.
@@ -141,17 +142,25 @@ def _openai(model: str, settings: Mapping[str, str], dimensions: int | None,
 
 def load(settings: Mapping[str, str], *, column_dim: int | None = None,
          post: Callable[..., bytes] | None = None) -> Embedder:
-    """The configured embedder. A remote model shortens its vectors to ``column_dim`` when
-    the column is narrower; a local model narrower than the column is zero-padded by the
-    store (cosine unchanged), never truncated."""
+    """The configured embedder, the same for indexing and for a query: only the settings
+    decide it (SEARCH-002). A remote model shortens its vectors only to an explicit
+    ``PLX_EMBED_DIMENSIONS``; a remote model wider than the indexing column
+    (``column_dim``) without it is refused (``RemoteRefused``), since the query side,
+    which reads no column, would embed at the model's full width under another name. A
+    local model narrower than the column is zero-padded by the store (cosine unchanged),
+    never truncated."""
     name = settings.get("PLX_EMBED_MODEL") or "BAAI/bge-m3"
     if name.startswith("openai:"):
         model = name.split(":", 1)[1]
         if model not in OPENAI_MODELS:
             raise ValueError(f"embed_model_unknown:{name}")
         wanted = settings.get("PLX_EMBED_DIMENSIONS")
-        dims = int(wanted) if wanted else (column_dim if column_dim and column_dim <
-                                           OPENAI_MODELS[model] else None)
+        dims = int(wanted) if wanted else None
+        width = dims or OPENAI_MODELS[model]
+        if column_dim and width > column_dim:
+            raise RemoteRefused(f"embed_dimensions_wider_than_column:{width}>{column_dim}: "
+                                f"set PLX_EMBED_DIMENSIONS={column_dim} for indexing and "
+                                "search alike")
         return _openai(model, settings, dims, post=post)
     if name in LOCAL_MODELS:
         return _local(name, settings)

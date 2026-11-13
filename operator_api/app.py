@@ -15,9 +15,11 @@ milliseconds are logged (``operator_api.latency``), never its query or body.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import itertools
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Any, Callable, Iterator, Literal, Mapping, Optional
@@ -25,7 +27,7 @@ from urllib.parse import urlsplit
 
 from fastapi import Body, Depends, FastAPI, Path as PathParam, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse as _JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import feedback as fb
@@ -33,6 +35,7 @@ from . import view_as as va
 from . import work_log as wl
 from .ask_drafts import cited_handles
 from operating.instruct import route as route_of
+from operating.secret_text import mask_secrets, mask_secrets_in
 from . import models as m
 from .auth import SESSION_COOKIE, AuthRequired, DevAuth, Reader
 from .errors import BUSY, UserFacing
@@ -76,8 +79,17 @@ def _incident(error: BaseException, where: str) -> str:
     return incident
 
 
+class JSONResponse(_JSONResponse):
+    """Every JSON body the API sends, with credential-shaped text masked (SEC-S-09: a
+    secret in captured mail or a document is never shown, whichever route reads it)."""
+
+    def render(self, content: Any) -> bytes:
+        return super().render(mask_secrets_in(content))
+
+
 def sse(event: str, payload: Any) -> str:
     data = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload
+    data = mask_secrets_in(data)
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
@@ -176,7 +188,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                   description="Read-only Workbench API for the web app. Every "
                               "route but auth/config, auth/dev-login and health needs a "
                               "signed-in reader. Errors are {error:{code,message}}.",
-                  docs_url=None, redoc_url=None, openapi_url=None)
+                  docs_url=None, redoc_url=None, openapi_url=None,
+                  default_response_class=JSONResponse)
     app.state.backend, app.state.auth = backend, auth
     app.add_middleware(BodyLimit, limit=BODY_MAX, limits={"/api/ask": m.ASK_BODY_MAX})
     # Operator freshness targets (operating.ops_health): the page latency window this
@@ -472,14 +485,26 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             try:
                 # one box: a line asking for something done goes to the instruction
                 # engine (``instruct_api``), a question to the cited answer path
-                route = route_of(body.question, mode=body.mode,
-                                 continuing=body.instruction is not None)
+                # (a reply to a question the answer asked back continues that answer)
+                route = "ask" if body.clarified is not None else route_of(
+                    body.question, mode=body.mode, continuing=body.instruction is not None)
                 events = (my_work_answer(who, body) if route == "ask"
+                          and body.clarified is None
                           and wl.asks_about_my_work(body.question)
                           and not body.object_id and not body.source
                           else backend.ask(who, body) if route == "ask"
                           else backend.instruct_ask(who, body))
-                for event, payload in events:
+                # the answer's words are held until the next event and masked as one text:
+                # a credential split over two words is still masked (``sse`` masks each)
+                held: list[str] = []
+                for event, payload in itertools.chain(events, [("", None)]):
+                    if held and event != "token":
+                        for word in re.findall(r"^\s+|\S+\s*", mask_secrets("".join(held))):
+                            yield sse("token", m.TokenEvent(text=word))
+                        held = []
+                    if event == "token":
+                        held.append(payload.text)
+                        continue
                     if event not in m.ASK_EVENTS:
                         continue
                     if event == "status":
@@ -591,6 +616,18 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         return backend.briefing_items(who, event_type, offset=offset, limit=limit,
                                       since_visit=view == "since_visit")
 
+    @app.get("/api/briefing/unjudged", response_model=m.BriefingUnjudged, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                        422: {"model": m.ErrorResponse}})
+    def briefing_unjudged(check: str = Query(min_length=1, max_length=64),
+                          reason: Optional[str] = Query(None, min_length=1, max_length=64),
+                          offset: int = Query(0, ge=0, le=100000),
+                          limit: int = Query(50, ge=1, le=200),
+                          who: Reader = Depends(reader)) -> m.BriefingUnjudged:
+        """The records one check could not judge that you may read, a page at a time (a
+        data note's list on the briefing)."""
+        return backend.briefing_unjudged(who, check, reason, offset=offset, limit=limit)
+
     @app.get("/api/suggestions", response_model=m.Suggestions, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
     def suggestions(who: Reader = Depends(reader)) -> m.Suggestions:
@@ -643,6 +680,17 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Your item's prepared entry as a write intent the autopilot prepared: preview and
         approve it in ``/api/writes*`` (dry run until writes are granted)."""
         return backend.my_work_write(who, item_id)
+
+    @app.get("/api/my-work/{item_id}/order-import", tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                        409: {"model": m.ErrorResponse}})
+    def my_work_order_import(item_id: str, who: Reader = Depends(reader)) -> Response:
+        """Your item's prepared order as an import file (CSV, one row per order line) to
+        paste or import into the Portal or Business Central. Nothing is entered."""
+        name, data = backend.my_work_order_import(who, item_id)
+        return Response(data, media_type="text/csv; charset=utf-8",
+                        headers={"Cache-Control": "no-store",
+                                 "Content-Disposition": f'attachment; filename="{name}"'})
 
     @app.get("/api/autopilot", response_model=m.AutopilotArea, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
@@ -924,7 +972,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
              responses={401: {"model": m.ErrorResponse}})
     def qc_audit_text(who: Reader = Depends(reader)) -> PlainTextResponse:
         """The QC audit pack as one printable plain-text page, each line with its sources."""
-        return PlainTextResponse(backend.qc_pack_text(who, "audit"))
+        return PlainTextResponse(mask_secrets(backend.qc_pack_text(who, "audit")))
 
     @app.get("/api/meetings/follow-up/{meeting_id}", response_model=m.MeetingFollowUp,
              tags=["briefs"], responses={401: {"model": m.ErrorResponse},

@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 from typing import Any, Optional
 
 from operating import autopilot as ap
@@ -98,6 +99,7 @@ class AutopilotMixin:
             queue.close()
 
     def my_work(self, reader: Reader) -> m.MyWork:
+        from operating import autopilot_work as aw
         now = datetime.now(timezone.utc)
         path = self._ap_queue_path()
         off = path is not None and (path.parent / ap.KILL_FILE).exists() or \
@@ -117,7 +119,8 @@ class AutopilotMixin:
                 due_at=item["due_at"], created_at=item["created_at"],
                 card_id=card["id"] if card else None,
                 offers=[m.CardActionOffer(**o) for o in ca.offers(card)] if card else [],
-                write_ready=bool(item["mine"] and ap.write_spec(item))))
+                write_ready=bool(item["mine"] and ap.write_spec(item)),
+                order_import=bool(item["mine"] and aw.order_import_csv(ap.write_spec(item)))))
         return m.MyWork(status="off" if off else "read", items=out,
                         digest=m.MyWorkDigest(**ap.digest(items, now)), sent=0, writes=0)
 
@@ -137,6 +140,17 @@ class AutopilotMixin:
         except UserFacing:
             return None
         return ap.card_of(item)
+
+    def my_work_order_import(self, reader: Reader, item_id: str) -> tuple[str, bytes]:
+        """Your item's prepared order as an import file (CSV, one row per line): copy-ready
+        for the Portal or Business Central. Only your own item; nothing is entered."""
+        from operating import autopilot_work as aw
+        item = self._own_item(reader, item_id)
+        text = aw.order_import_csv(ap.write_spec(item))
+        if text is None:
+            raise UserFacing("not_found", "That item has no prepared order with lines.", 404)
+        name = re.sub(r"[^A-Za-z0-9_-]", "", item_id)[:60] or "order"
+        return f"order-{name}.csv", ("\ufeff" + text).encode("utf-8")
 
     def my_work_write(self, reader: Reader, item_id: str) -> m.WriteIntentView:
         """The item's order entry as a write intent the autopilot prepared (dry run; a

@@ -696,6 +696,9 @@ def mail_sources(state: Path) -> Iterator[Source]:
             "a.text_sha256, a.message_handle FROM attachments a WHERE a.content_status = "
             "'captured' AND a.text_sha256 IS NOT NULL AND a.l1_handle IS NOT NULL")
         wanted = [r for r in rows if r[1] and form_of(r[1])]
+        from integrations.capture_mail import undecided_free_sql
+        free = undecided_free_sql(db)
+        withheld: set[str] = set()
         messages: dict[str, tuple[str | None, tuple[str, ...]]] = {}
         handles = sorted({r[4] for r in wanted})
         for i in range(0, len(handles), 500):
@@ -704,7 +707,14 @@ def mail_sources(state: Path) -> Iterator[Source]:
                     "l1_handle IN (SELECT value FROM json_each(?))",
                     (json.dumps(handles[i:i + 500]),)):
                 messages[handle] = _participants(record)
+            if free != "1":   # a message naming an undecided address is no reader's
+                withheld.update(h for (h,) in db.execute(
+                    "SELECT DISTINCT l1_handle FROM messages WHERE l1_handle IN (SELECT "
+                    f"value FROM json_each(?)) AND NOT {free}",
+                    (json.dumps(handles[i:i + 500]),)))
         for handle, name, content, text, message in wanted:
+            if message in withheld:
+                continue
             received, people = messages.get(message, (None, ("",)))
             yield Source(handle, "mail", name, content, text, received, people, message)
     finally:

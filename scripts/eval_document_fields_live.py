@@ -783,7 +783,7 @@ def _served_links(served: Any, reader: Any, document: str, link_types: Iterable[
     """(link id -> tier of every link ``plx.around`` serves ``reader`` from ``document``
     over ``link_types``, or None when the document is not served; and the edges, objects
     and reached counts it was served)."""
-    from operating.ontology_tools_traverse import TIER_ORDER
+    from operating.ontology_tools_traverse import TIER_ORDER, with_leads
 
     edges: dict[str, str] = {}
     served_count = 0
@@ -793,7 +793,9 @@ def _served_links(served: Any, reader: Any, document: str, link_types: Iterable[
             arguments = {"from": document, "limit": 50, "tier_floor": TIER_ORDER[-1],
                          "path": [{"link_type": link_type, "direction": "forward"}],
                          **({"cursor": cursor} if cursor else {})}
-            out = served.call("plx.around", arguments, reader)
+            # plx.around lists lead links apart (possibly_related); this measurement counts
+            # them under their tier, so it reads the lead set too.
+            out = with_leads(served.call("plx.around", arguments, reader))
             if "error" in out:
                 return None, served_count
             edges.update({edge["link_id"]: edge["tier"] for edge in out["edges"]})

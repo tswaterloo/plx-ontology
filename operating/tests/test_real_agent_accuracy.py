@@ -282,14 +282,23 @@ class HomeRuleCoverageTests(unittest.TestCase):
     def run_all_rules(self, world, coverage):
         from datetime import datetime, timezone
         from operating import proactive_engine as pe
+        from operating.tests.test_proactive_engine import ON_HAND, people
         world.build(self.base.store)
+        # Lot stock is served and events are indexed by (type, time) as on a served store (a
+        # rule blocked for a missing source, or one that cannot list recent mail, makes the
+        # read incomplete); the sheet readings are a setup state, which leaves it complete.
+        import sqlite3
+        with sqlite3.connect(self.base.store) as conn:
+            conn.execute("CREATE INDEX IF NOT EXISTS fx_events_type_time ON events "
+                         "(event_type, time)")
 
         def card(_tool, arguments):
             return {"object": {"object_id": arguments["object_id"]}, "leads": [],
                     "conflicts": []}
         return pe.run(self.base.store, pe.inbox_path(self.base.store), self.home.AS_OF,
                       coverage=coverage, qc_link_types=(self.home.QC_LINK,), call=card,
-                      clock=lambda: datetime(2026, 10, 19, 6, tzinfo=timezone.utc))
+                      on_hand_sources=(ON_HAND,), people=people(), cadence={},   # mail rules need people; a second run runs every rule
+                      clock=lambda: self.home.ENGINE_MOMENT)
 
     def rules(self, host):
         found = self.base.find(host, {"query": "What needs my attention?", "limit": 50})
@@ -299,6 +308,10 @@ class HomeRuleCoverageTests(unittest.TestCase):
 
     def test_each_rule_says_what_it_left_unjudged_of_what_the_reader_may_read(self):
         world, ids = self.home.seeded(receipt_markings='["quality_controlled"]')
+        # A Sage header with iscomplete 1 is a closed historical record (decision
+        # 2026-11-02): the seed's Sage order is judged by nothing. The unmapped Sage word
+        # (iscomplete 0: Sage shows it open, we do not know) is the one counted here.
+        world.obj("PurchaseOrder", {"sage_is_complete": "0", "expected_date": "2026-10-01"})
         summary = self.run_all_rules(world, ids["coverage"])
         found, rules = self.rules(self.home.Host(self.base.store))
         self.assertEqual(set(rules), set(summary["detectors"]))
@@ -321,7 +334,8 @@ class HomeRuleCoverageTests(unittest.TestCase):
         # Every rule ran to the end, yet records were left unjudged: never a clean result.
         self.assertEqual((found["home"]["complete"], found["completeness"]["complete"],
                           found["completeness"]["reason"]), (False, False, "rule_not_evaluated"))
-        # A narrower reader is told only of the records it may read; one with no grant 0.
+        # A narrower reader is told only of the records it may read; one with no grant 0
+        # (unknown stays unknown for every reader: a skip no record stands for).
         _, narrow = self.rules(self.home.Host(self.base.store, units=("api:a",
                                                                       self.home.UNIT), held=()))
         for name, rule in narrow.items():
@@ -332,7 +346,7 @@ class HomeRuleCoverageTests(unittest.TestCase):
         _, none = self.rules(self.home.Host(self.base.store, units=(), held=()))
         self.assertEqual({name: rule["not_evaluated"] for name, rule in none.items()
                           if rule["not_evaluated"] is not None},
-                         {name: 0 for name in none if name != "order_without_customer_po"})
+                         {name: 0 for name in none if rules[name]["not_evaluated"] is not None})
 
     def test_a_clean_store_is_complete_and_an_unknown_rules_shape_is_not(self):
         from unittest import mock

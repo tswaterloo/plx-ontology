@@ -886,7 +886,10 @@ class Resume:
                     raise ResumeRefused("resume_link_code_differs_after_links")
                 self.drop_parts()   # the jobs run again; the load stands
         if held is None or fresh:
-            self._clear()   # a run that never reached a checkpoint, or a fresh start
+            # a run that never reached a checkpoint, or a fresh start: the earlier run's
+            # files go, its working and builder files too (SCHEMA-003: named by the
+            # manifest just read, as this one is not set yet)
+            self._clear(held)
             held = {"format": RESUME_FORMAT, "identity": self.identity, "phase": None,
                     "values": {}}
         held["link_code"] = link_code()
@@ -909,7 +912,9 @@ class Resume:
         _atomic(self.dir / "manifest.json",
                 json.dumps(self.manifest, sort_keys=True, indent=1).encode())
 
-    def _clear(self) -> None:
+    def _clear(self, held: Mapping[str, Any] | None) -> None:
+        """Empty the resume folder and remove the working and builder files ``held`` (the
+        earlier run's manifest) names."""
         for path in self.dir.iterdir():
             if path.name == "lock":
                 continue
@@ -917,11 +922,11 @@ class Resume:
                 shutil.rmtree(path)
             else:
                 path.unlink()
-        held = getattr(self, "manifest", None) or {}
-        builder = held.get("builder")
-        if builder:
-            for suffix in ("", "-journal"):
-                Path(builder + suffix).unlink(missing_ok=True)
+        for key in ("work", "builder"):
+            kept = (held or {}).get(key)
+            if isinstance(kept, str) and kept:
+                for suffix in ("", "-journal"):
+                    Path(kept + suffix).unlink(missing_ok=True)
 
     def value(self, name: str, compute: Any) -> Any:
         """``name``'s value as the build first read it (``compute()`` then)."""

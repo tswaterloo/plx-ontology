@@ -51,7 +51,6 @@ function Autopilot() {
       <Toolbar heading title="Autopilot" />
       <div className="w-full px-6 py-5">
         {item && <ThreadContext thread={`autopilot:${item}`} title="Your work on this item" />}
-        <FormFill />
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : area ? (
@@ -62,6 +61,9 @@ function Autopilot() {
         ) : (
           <Pending page label="Reading the autopilots" />
         )}
+        <div className="mt-8">
+          <FormFill />
+        </div>
       </div>
     </div>
   );

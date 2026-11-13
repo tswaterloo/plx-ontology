@@ -49,7 +49,7 @@ export interface TurnRequest {
   objectId?: string;
   source?: string;
   files: Attachment[];
-  extra: Pick<AskRequest, "context" | "mode" | "instruction">;
+  extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified">;
 }
 
 /** API limits (operator_api AskRequest): at most 12 history turns of 4,000 characters. */
@@ -113,7 +113,7 @@ export function useThread() {
    *  `source` to one document (a mail, attachment or file the reader has open); `extra`
    *  carries the page's context and an instruction's continuation (the one box's "do"). */
   const run = useCallback(
-    async (question: string, objectId?: string, source?: string, files: Attachment[] = [], extra: Pick<AskRequest, "context" | "mode" | "instruction"> = {}) => {
+    async (question: string, objectId?: string, source?: string, files: Attachment[] = [], extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified"> = {}) => {
       ctrl.current?.abort();
       const c = new AbortController();
       ctrl.current = c;
@@ -167,7 +167,12 @@ export function useThread() {
 
   /** A suggested follow-up: asked in the same scope as the turn it follows (not its files). */
   const followUp = useCallback(
-    (next: string, from: Turn) => run(next, from.request?.objectId, from.request?.source, [], from.request?.extra ?? {}),
+    (next: string, from: Turn) => {
+      // a new question: never the reply to a question asked back
+      const extra = { ...(from.request?.extra ?? {}) };
+      delete extra.clarified;
+      return run(next, from.request?.objectId, from.request?.source, [], extra);
+    },
     [run],
   );
 

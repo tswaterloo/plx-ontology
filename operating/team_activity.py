@@ -109,10 +109,11 @@ def _mail_slice(args: tuple[str, int, int, str]) -> list[tuple]:
     conn = _ro(Path(path))
     out = []
     try:
+        from integrations.capture_mail import undecided_free_sql
         for mailbox, record in conn.execute(
                 "SELECT mailbox_id, record FROM messages WHERE version_id >= ? AND "
-                "version_id < ? AND superseded_at IS NULL AND removed_reason IS NULL",
-                (lo, hi)):
+                "version_id < ? AND superseded_at IS NULL AND removed_reason IS NULL AND "
+                f"{undecided_free_sql(conn)}", (lo, hi)):
             rec = json.loads(record)
             at = _instant(rec.get("sent_at") or rec.get("received_at"))
             if at is None or at.isoformat() < since:

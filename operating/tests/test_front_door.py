@@ -23,7 +23,7 @@ class Scripted:
     def turn(self, text, seconds):
         self.turns += 1
         self.sent.append(text)
-        if text == fd.RULES:
+        if text == fd.FrontDoor().primer():   # the rules, the record kinds named
             return '{"ready": true}'
         return Scripted.replies.pop(0) if Scripted.replies else None
 
@@ -70,6 +70,12 @@ class FrontDoorReads(unittest.TestCase):
                          "What is the status of PO100044?")
         got = front.read("bz-deo-21f wheres the rest")
         self.assertEqual((got.route, got.status), ("investigate", "Tracing BZ-DEO-21F"))
+        # a system's shorthand spelled out grounds; a company added never does
+        spelled = door(reply("Is Business Central invoice S-ORD900001 paid?"),
+                       reply("Is Business Central invoice S-ORD900001 from Acme paid?"))
+        self.assertEqual(spelled.read("is bc invoice S-ORD900001 paid?").rewrite,
+                         "Is Business Central invoice S-ORD900001 paid?")
+        self.assertIsNone(spelled.read("is bc invoice S-ORD900001 paid?"))
 
     def test_no_reply_or_not_the_json_asked_for_is_none(self):
         front = door("I think you mean late POs", None)

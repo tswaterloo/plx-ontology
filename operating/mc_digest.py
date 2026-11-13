@@ -13,11 +13,16 @@ The class (``classify``) comes from the gate's own reason, by the first class wh
 it states, the riskier classes first (a reason naming money and a merge is money); a reason
 naming none is ``other``, never low risk. ``history`` counts, per class, the gates of the
 same MC audience (operator scope and project) decided in the ``HISTORY_DAYS`` before the
-request: a replay of a past day reads only what was decided by then. A class is marked low
-risk only when it is declared a low-risk candidate (``CLASSES``) and its history shows at
-least ``LOW_RISK_MIN`` decisions of which at least ``LOW_RISK_SHARE`` were approvals; the mark
-is advice for the decider. Whether any class may ever be approved without a person is the
-owner's open decision (A11): an approval is an MC write, which the Workbench never makes.
+request, and the same counts over every MC project (``company``): a replay of a past day
+reads only what was decided by then. A class is marked low risk only when it is declared a
+low-risk candidate (``CLASSES``) and the project's history, else the company's while the
+project decided too few of the class to tell, shows at least ``LOW_RISK_MIN`` decisions
+of which at least ``LOW_RISK_SHARE`` were approvals (measured on dev days 2026-10-06..11-03:
+the project's history alone marked 1 of 502 decided gates, with the company's too 29, 28
+of them approved; fresh days 2026-11-06..12: 17 marked, all approved); the mark is advice
+for the decider and the company's part is counts only. Whether any class may ever be
+approved without a person is the owner's open decision (A11): an approval is an MC write,
+which the Workbench never makes.
 """
 
 from __future__ import annotations
@@ -119,12 +124,16 @@ def history(st: Any, audience: str, before: Any, *, days: int = HISTORY_DAYS
                 "unknown": "request_time_unknown" if at is None else "audience_unknown"}
     since = at - timedelta(days=days)
     by: dict[str, dict[str, int]] = {}
+    company: dict[str, dict[str, int]] = {}
     for unit, decided, cid, word in _decisions(st):
-        if unit == audience and since <= decided < at:
-            row = by.setdefault(cid, {"approved": 0, "decided": 0})
+        if not (unit.startswith("mc:") and since <= decided < at):
+            continue
+        for scope in ((by, company) if unit == audience else (company,)):
+            row = scope.setdefault(cid, {"approved": 0, "decided": 0})
             row["decided"] += 1
             row["approved"] += word == "approved"
-    return {"days": days, "by_class": dict(sorted(by.items()))}
+    return {"days": days, "by_class": dict(sorted(by.items())),
+            "company": dict(sorted(company.items()))}
 
 
 def task_link(task_id: Any) -> str | None:
@@ -136,28 +145,49 @@ def task_link(task_id: Any) -> str | None:
 def judged(cid: str, past: Mapping[str, Any] | None) -> dict[str, Any]:
     """The class's history line and its low-risk mark (module doc)."""
     _c, _label, risk = _meta(cid)
-    row = ((past or {}).get("by_class") or {}).get(cid) or {}
-    try:
-        approved, decided = int(row.get("approved") or 0), int(row.get("decided") or 0)
-    except (TypeError, ValueError):
-        approved, decided = 0, 0
-    if not 0 <= approved <= decided:
-        approved, decided = 0, 0
+    approved, decided = _counts(((past or {}).get("by_class") or {}).get(cid))
     days = (past or {}).get("days") or HISTORY_DAYS
     out: dict[str, Any] = {"approved": approved, "decided": decided, "days": days}
     if past is None or "by_class" not in past:
         out.update(low_risk=False, why="no history recorded with this item")
-    elif risk != "low":
+        return out
+    if risk != "low":
         out.update(low_risk=False, why=f"{risk}-risk class: always decided by a person")
+        return out
+    if _passes(approved, decided):
+        out.update(low_risk=True, why=f"{approved} of {decided} approved in {days} days")
+        return out
+    company = past.get("company")
+    c_approved, c_decided = _counts(company.get(cid) if isinstance(company, Mapping) else None)
+    if decided < LOW_RISK_MIN and _passes(c_approved, c_decided):
+        # too few in the project to tell (a project whose own record fails never is)
+        out.update(low_risk=True, scope="company", company_approved=c_approved,
+                   company_decided=c_decided,
+                   why=f"{c_approved} of {c_decided} approved in {days} days across "
+                       f"projects ({decided} in this one)")
     elif decided < LOW_RISK_MIN:
         out.update(low_risk=False, why=f"{decided} decided in {days} days "
                                        f"(fewer than {LOW_RISK_MIN})")
-    elif approved * LOW_RISK_SHARE[1] < LOW_RISK_SHARE[0] * decided:
+    else:
         out.update(low_risk=False, why=f"{approved} of {decided} approved "
                                        f"(below {LOW_RISK_SHARE[0]}%)")
-    else:
-        out.update(low_risk=True, why=f"{approved} of {decided} approved in {days} days")
     return out
+
+
+def _counts(row: Any) -> tuple[int, int]:
+    """(approved, decided) of a history row; a malformed row: none."""
+    if not isinstance(row, Mapping):
+        return 0, 0
+    try:
+        approved, decided = int(row.get("approved") or 0), int(row.get("decided") or 0)
+    except (TypeError, ValueError):
+        return 0, 0
+    return (approved, decided) if 0 <= approved <= decided else (0, 0)
+
+
+def _passes(approved: int, decided: int) -> bool:
+    return decided >= LOW_RISK_MIN and \
+        approved * LOW_RISK_SHARE[1] >= LOW_RISK_SHARE[0] * decided
 
 
 def item_facts(reason: Any, task_id: Any, past: Mapping[str, Any]) -> dict[str, Any]:

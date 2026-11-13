@@ -63,7 +63,22 @@ the earlier questions. Then reply with JSON only, no other text:
 {"rewrite": "<the question restated as one clear, complete question in plain business \
 English>", "route": "lookup" | "investigate", "status": "<3 to 8 words saying what \
 you will look up, e.g. Looking up late purchase orders>", "recipe": "<one recipe name \
-below that answers the whole question, or null>", "scope": "company" | "general" | "mixed"}
+below that answers the whole question, or null>", "scope": "company" | "general" | "mixed", \
+"open": null | {"what": "<the one choice the answer depends on, in a few words>", \
+"among": "<the kind of record the choice is among, one of the record kinds below, or \
+null when it is not a record>"}}
+
+open says whether the answer turns on a choice the person has not made: two plausible \
+readings of the question would give materially different answers (which of several \
+records a name could mean, which customer or product, which period or measure, which \
+template or recipient a document needs), and neither the question nor the earlier \
+questions settle it. A question about one record that does not say which (the \
+customer, the product, the order, "of batch", "this PO", a record kind with no number, \
+code or name) is open, among that kind, \
+unless an earlier question names it. A question that names its record by number, code \
+or name, or asks about all of something, or whose reading any colleague would take for \
+granted, is not open: null. Only flag it; never refuse or answer the question here.
+Record kinds: <KINDS>
 
 scope says what answers the question:
 - company: PLX's own records (its orders, items, lots, customers, suppliers, people, \
@@ -112,6 +127,9 @@ class Reading:
     # what answers it (``general_answer.SCOPES``): anything the model did not say is
     # "company", the evidence path (``general_answer.scope_of`` decides the route)
     scope: str = "company"
+    # the choice the answer turns on that the person has not made (``clarify``):
+    # {"what": words, "among": a record type or None}; None when the question is settled
+    open: Optional[dict[str, Any]] = None
 
     @property
     def changed(self) -> bool:
@@ -234,9 +252,45 @@ def _status_grounded(status: str, question: str, earlier: Sequence[str]) -> bool
     return all(set(lead.forms) & asked for lead in identifier_leads(status))
 
 
+_KINDS: list[str] = []
+
+
+def record_kinds() -> list[str]:
+    """The ontology's record kinds a person asks about (its object types, the source
+    relations' mirror types left out), read once from the schema; [] when unreadable."""
+    if not _KINDS:
+        try:
+            from ontology.schema import load_schema
+            _KINDS.extend(sorted(t for t in load_schema().object_types
+                                 if not t.startswith("Rel")))
+        except Exception:  # noqa: BLE001 - no kinds named: "among" is then unchecked
+            return []
+    return list(_KINDS)
+
+
+def open_point(said: Any) -> Optional[dict[str, Any]]:
+    """The model's ``open`` as {"what", "among"}, or None: anything but an object with a
+    short ``what`` is no open point (the question goes on as read)."""
+    if not isinstance(said, dict):
+        return None
+    what, among = said.get("what"), said.get("among")
+    if not isinstance(what, str) or not what.strip() or len(what) > 200:
+        return None
+    kinds = record_kinds()
+    among = among if isinstance(among, str) and re.fullmatch(r"[A-Z][A-Za-z0-9]{1,63}",
+                                                              among) \
+        and (among in kinds or not kinds) else None
+    return {"what": " ".join(what.split()), "among": among}
+
+
 class FrontDoor:
     """The warm sessions and the read of one question (module doc). ``spawn``: tests
-    replace the session factory (``argv, env -> session with turn/close``)."""
+    replace the session factory (``argv, env -> session with turn/close``). ``rules``:
+    what each session is primed with (``operating.clarify.Clarifier`` primes its own)."""
+
+    rules = RULES
+    ledger = "front_door"
+    turns_kept = TURNS   # a session is retired after this many turns
 
     def __init__(self, *, binary: str = "claude", model: Optional[str] = None,
                  pool: int = POOL, spawn: Optional[Callable[..., Any]] = None,
@@ -254,6 +308,10 @@ class FrontDoor:
     @staticmethod
     def enabled() -> bool:
         return (os.environ.get(SWITCH) or "").strip().lower() != "off"
+
+    def primer(self) -> str:
+        """What a new session is primed with: ``rules``, the record kinds named."""
+        return self.rules.replace("<KINDS>", " ".join(record_kinds()))
 
     def argv(self) -> list[str]:
         argv = [self.binary, "-p", "--input-format", "stream-json", "--output-format",
@@ -275,7 +333,7 @@ class FrontDoor:
         try:
             from operating.agent_environment import agent_environment
             session = self._spawn(self.argv(), agent_environment(os.environ))
-            ready = _parse(session.turn(RULES, 60.0))
+            ready = _parse(session.turn(self.primer(), 60.0))
             if ready and ready.get("ready"):
                 self._free.put(session)
             else:
@@ -290,6 +348,30 @@ class FrontDoor:
         """How the model reads ``question`` (module doc), or None: no free session, no
         reply in time, not the JSON asked for, or a restatement that adds a subject."""
         started = time.monotonic()
+        reply = self.reply({"question": question, "earlier": list(earlier)[-3:]})
+        if reply is None:
+            return None
+        rewrite = reply.get("rewrite")
+        route = reply.get("route")
+        status = reply.get("status")
+        if not isinstance(rewrite, str) or not rewrite.strip() or len(rewrite) > 1000 \
+                or route not in ("lookup", "investigate"):
+            return None
+        if not grounded(rewrite, question, earlier):
+            return None
+        status = status.strip()[:80] if isinstance(status, str) and status.strip() \
+            and _status_grounded(status, question, earlier) else "Reading your question"
+        recipe = reply.get("recipe")
+        scope = reply.get("scope")
+        return Reading(question, " ".join(rewrite.split()), route, status,
+                       time.monotonic() - started,
+                       recipe if recipe in RECIPES else None,
+                       scope if scope in ("general", "mixed") else "company",
+                       open_point(reply.get("open")))
+
+    def reply(self, message: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """One turn of a warm session: ``message`` as JSON in, the JSON object it replies
+        with out, or None (no free session in time, no reply in time, not JSON)."""
         self.warm()   # a session that ended is replaced; never more than the pool
         try:
             # questions beyond the pool wait their turn for a warm session
@@ -301,38 +383,21 @@ class FrontDoor:
         keep = True
         try:
             from operating import model_ledger
-            asked = json.dumps({"question": question, "earlier": list(earlier)[-3:]},
-                               ensure_ascii=False)
+            asked = json.dumps(message, ensure_ascii=False)
             turn_started = time.monotonic()
             reply = _parse(session.turn(asked, self.seconds))
             # one turn of a warm session: the reading's own seconds, not the queue wait
-            model_ledger.record("front_door", prompt=asked, ok=reply is not None, turns=1,
+            model_ledger.record(self.ledger, prompt=asked, ok=reply is not None, turns=1,
                                 seconds=time.monotonic() - turn_started)
             if reply is None:
                 keep = False
-                return None
-            rewrite = reply.get("rewrite")
-            route = reply.get("route")
-            status = reply.get("status")
-            if not isinstance(rewrite, str) or not rewrite.strip() or len(rewrite) > 1000 \
-                    or route not in ("lookup", "investigate"):
-                return None
-            if not grounded(rewrite, question, earlier):
-                return None
-            status = status.strip()[:80] if isinstance(status, str) and status.strip() \
-                and _status_grounded(status, question, earlier) else "Reading your question"
-            recipe = reply.get("recipe")
-            scope = reply.get("scope")
-            return Reading(question, " ".join(rewrite.split()), route, status,
-                           time.monotonic() - started,
-                           recipe if recipe in RECIPES else None,
-                           scope if scope in ("general", "mixed") else "company")
+            return reply
         finally:
             with self._lock:
                 self._busy -= 1
-            if keep and session.turns < TURNS:
+            if keep and session.turns < self.turns_kept:
                 self._free.put(session)
-            elif not keep and getattr(session, "owed", 0) > 0 and session.turns < TURNS:
+            elif not keep and getattr(session, "owed", 0) > 0 and session.turns < self.turns_kept:
                 # Timed out, not ended: the warm session reads its late reply on its own
                 # thread and serves again, rather than a cold one starting in its place.
                 with self._lock:
@@ -357,4 +422,4 @@ class FrontDoor:
             self.warm()
 
 
-__all__ = ["FrontDoor", "Reading", "RULES", "grounded"]
+__all__ = ["FrontDoor", "Reading", "RULES", "grounded", "open_point"]

@@ -710,7 +710,7 @@ def _macos_pdf_text(content: bytes, *, max_pages: int | None = None,
         path = Path(directory) / "source.pdf"
         path.write_bytes(content)
         path.chmod(0o600)
-        env = dict(os.environ)
+        env = _tool_env()   # DOC-007: no credential reaches the parser (as poppler's)
         env["SWIFT_MODULECACHE_PATH"] = str(cache / "swift")
         env["CLANG_MODULE_CACHE_PATH"] = str(cache / "clang")
         try:

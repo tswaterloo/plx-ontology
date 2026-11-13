@@ -19,6 +19,7 @@ import re
 from datetime import date
 
 from ontology.units import CURRENCY_SIGN_FORMS, ISO_4217, RECEIVE_ALIASES, UOM_ALIASES, UOM_CANONICAL
+from operating.secret_text import mask_secrets
 
 # Unit spellings after a figure -> the canonical unit (``ontology.units`` plus the page
 # spellings ``operating.claim_checks._PAGE_UNITS`` lists). Multi-letter only: a one-letter
@@ -109,6 +110,12 @@ def _issued(digits: str) -> bool:
     return 13 <= len(digits) <= 19 and _ISSUED.fullmatch(digits) is not None
 
 
+def mask_private(text: str) -> str:
+    """``text`` with card numbers (``mask_cards``) and credential-shaped values
+    (``operating.secret_text.mask_secrets``) masked: what every chunker and snippet applies."""
+    return mask_secrets(mask_cards(text))
+
+
 def mask_cards(text: str) -> str:
     """``text`` with every card number in a card layout replaced by ``[card]``."""
     def one(match: re.Match[str]) -> str:
@@ -188,8 +195,9 @@ def normalise(text: str) -> str:
     out = _NAMED_DATE.sub(_named_date, out)
     out = _SPACES.sub(" ", out)
     out = "\n".join(line.strip() for line in out.split("\n"))
-    # again on the tidied text: a card the gaps or entities hid is caught here too
-    return mask_cards(_BLANKS.sub("\n\n", out).strip())
+    # again on the tidied text: a card the gaps or entities hid is caught here too, and
+    # credential-shaped values (after the long links, which keep only their site)
+    return mask_private(_BLANKS.sub("\n\n", out).strip())
 
 
-__all__ = ["mask_cards", "normalise"]
+__all__ = ["mask_cards", "mask_private", "normalise"]

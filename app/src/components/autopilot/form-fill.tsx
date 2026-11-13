@@ -4,7 +4,8 @@
 // ("PO 1234"). The server fills only the blanks one record value answers and lists every
 // blank with its source; nothing is saved or sent from here.
 
-import { useState } from "react";
+import { Paperclip } from "lucide-react";
+import { useRef, useState } from "react";
 import { fillForm } from "@/lib/api";
 import { MAX_BYTES } from "@/lib/attachments";
 import type { InstructFill } from "@/lib/types";
@@ -29,6 +30,7 @@ export function FormFill() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fill, setFill] = useState<InstructFill | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
   const submit = async () => {
     if (!file || !record.trim()) return;
     if (file.size > MAX_BYTES) {
@@ -47,8 +49,11 @@ export function FormFill() {
     }
   };
   return (
-    <section className="mb-5 space-y-2" data-testid="form-fill">
-      <h2 className="text-[13px] leading-5 font-medium">Fill a form</h2>
+    <section className="space-y-2 border-t border-border pt-4" data-testid="form-fill">
+      <div>
+        <h2 className="text-[13px] leading-5 font-medium">Fill a form</h2>
+        <p className="text-[12px] leading-4 text-muted">A Word, Excel or PDF form and the record it is for. You get a filled copy to check; nothing is saved or sent.</p>
+      </div>
       <form
         className="flex flex-wrap items-center gap-2"
         onSubmit={(e) => {
@@ -56,10 +61,27 @@ export function FormFill() {
           void submit();
         }}
       >
-        <label className="sr-only" htmlFor="form-fill-file">
-          Form
-        </label>
-        <input id="form-fill-file" type="file" accept={FORMS} className="text-[13px]" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        <input
+          ref={picker}
+          id="form-fill-file"
+          type="file"
+          accept={FORMS}
+          hidden
+          data-testid="form-fill-file"
+          onChange={(e) => {
+            setFile(e.target.files?.[0] ?? null);
+            setError(null);
+          }}
+        />
+        <Button size="sm" variant="outline" type="button" onClick={() => picker.current?.click()} aria-label={file ? `Form: ${file.name}. Choose another` : "Choose the form"}>
+          <Paperclip className="size-3.5" strokeWidth={2} aria-hidden />
+          {file ? "Change form" : "Choose form"}
+        </Button>
+        {file && (
+          <span className="max-w-[16rem] truncate text-[13px]" title={file.name} data-testid="form-fill-name">
+            {file.name}
+          </span>
+        )}
         <label className="sr-only" htmlFor="form-fill-record">
           Record
         </label>
@@ -67,8 +89,8 @@ export function FormFill() {
           id="form-fill-record"
           value={record}
           onChange={(e) => setRecord(e.target.value)}
-          placeholder="PO 1234"
-          className="w-40 rounded-[3px] border border-border bg-bg px-2.5 py-1.5 text-[13px]"
+          placeholder="Record, e.g. PO 1234"
+          className="w-48 rounded-[3px] border border-border bg-bg px-2.5 py-1.5 text-[13px]"
         />
         <Button size="sm" type="submit" disabled={busy || !file || !record.trim()}>
           {busy ? "Filling…" : "Fill"}

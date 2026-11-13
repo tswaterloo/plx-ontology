@@ -898,7 +898,7 @@ class TraverseTools:
             # one wait per read: a call after one that waited it out only looks
             # Event.wait: False only when it timed out
             ready = done.wait(0 if getattr(self, "_waited", None) is done
-                              else PG_REQUEST_WAIT_SECONDS if postgres
+                              else _pg_request_wait(path) if postgres
                               else BACKGROUND_WAIT_SECONDS) is not False
             if postgres and not ready:
                 self._waited = done
@@ -918,7 +918,7 @@ class TraverseTools:
                 if again is not None:
                     (path, identity), families, done = again
                     if done.wait(0 if getattr(self, "_waited", None) is done
-                                 else PG_REQUEST_WAIT_SECONDS) is False:
+                                 else _pg_request_wait(path)) is False:
                         self._waited = done
                     else:
                         self._pending = None
@@ -3415,6 +3415,21 @@ BACKGROUND_WAIT_SECONDS = 1800
 # How long a call on Postgres waits for the facts being kept for its version (a fold over
 # the layers since: seconds) before it reads the ones it needs itself.
 PG_REQUEST_WAIT_SECONDS = 30
+
+
+def _pg_request_wait(marker: str | Path) -> float:
+    """How long a Postgres call waits for its version's facts: ``PG_REQUEST_WAIT_SECONDS``
+    when facts of an earlier version are kept for this database (the background folds
+    them over the layers since: seconds), else none: with nothing kept the background
+    reads them in full (half an hour and more), so the wait only delayed the call that
+    reads its own slices after it (an Ask's first call paid 30 s on every new host
+    process, 2026-11-13)."""
+    try:
+        return PG_REQUEST_WAIT_SECONDS if facts_path(marker).exists() else 0.0
+    except OSError:
+        return PG_REQUEST_WAIT_SECONDS
+
+
 _BACKGROUND: dict[str, threading.Event] = {}
 _BACKGROUND_LOCK = threading.Lock()
 

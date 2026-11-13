@@ -985,11 +985,12 @@ def capture_sheets(capture: Any) -> Iterator[Sheet]:
     """Every time sheet in a mail capture (``integrations.capture_mail.MailCaptureStore``,
     opened read-only): attachments named as one with captured text, and bodies of messages
     whose subject names one. Read-only."""
+    from integrations.capture_mail import undecided_free_sql
     db = capture.db
     cur = db.execute("SELECT a.l1_handle, a.text_sha256, json_extract(a.metadata,'$.name'), "
                      "m.record, m.mailbox_id FROM attachments a JOIN messages m ON "
                      "m.l1_handle = a.message_handle AND m.superseded_at IS NULL "
-                     "WHERE a.content_status='captured'")
+                     f"WHERE a.content_status='captured' AND {undecided_free_sql(db, 'm')}")
     with_attachment: set[str] = set()
     for handle, text_digest, name, record, mailbox in cur:
         if not isinstance(name, str) or not TIME_SHEET.search(name):
@@ -1005,7 +1006,8 @@ def capture_sheets(capture: Any) -> Iterator[Sheet]:
         yield _sheet(handle, rec, mailbox, text, name)
     for handle, record, mailbox, body in db.execute(
             "SELECT l1_handle, record, mailbox_id, body_sha256 FROM messages WHERE "
-            "superseded_at IS NULL AND body_sha256 IS NOT NULL AND (lower(json_extract("
+            f"superseded_at IS NULL AND body_sha256 IS NOT NULL AND {undecided_free_sql(db)} "
+            "AND (lower(json_extract("
             "record, '$.subject')) LIKE '%time%' OR lower(json_extract(record, '$.subject'))"
             " LIKE '%hours%')"):
         rec = json.loads(record)

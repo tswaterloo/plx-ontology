@@ -64,14 +64,15 @@ def schema() -> str:
     return SCHEMA
 
 
-def ensure(cur: Any, run_key: str) -> None:
+def ensure(cur: Any, run_key: str, s: str | None = None) -> None:
     """The stage schema and its tables (unlogged: a crash loses them together, markers
     included, and the steps are staged again from their stores); refused when another
     run's key is held. Commit it before staging: no DDL runs once the tables are there, so
     a part staging never locks the tables the other parts' overlays read (measured 11-11:
     an ``ALTER TABLE`` here held the links table exclusively for each part's whole stage,
-    and every other part's reads waited on it)."""
-    s = schema()
+    and every other part's reads waited on it). ``s``: another stage schema than
+    :func:`schema` (the delta follower's, :data:`DELTA_SCHEMA`)."""
+    s = s or schema()
     cur.execute("SELECT to_regclass(%s)", (f"{s}.staged",))
     if cur.fetchone()[0] is None:
         # made once, by one session (the parts may start together)
@@ -113,16 +114,16 @@ def _create(cur: Any, s: str) -> None:
                 "part integer NOT NULL, report text NOT NULL, PRIMARY KEY (step, part))")
 
 
-def exists(cur: Any) -> bool:
-    cur.execute("SELECT to_regclass(%s)", (f"{schema()}.staged",))
+def exists(cur: Any, s: str | None = None) -> bool:
+    cur.execute("SELECT to_regclass(%s)", (f"{s or schema()}.staged",))
     return cur.fetchone()[0] is not None
 
 
-def staged(cur: Any, step: str) -> dict[int, dict[str, Any]]:
+def staged(cur: Any, step: str, s: str | None = None) -> dict[int, dict[str, Any]]:
     """The staged parts of ``step``: part -> its report (none when the schema is gone)."""
-    if not exists(cur):
+    if not exists(cur, s):
         return {}
-    cur.execute(f"SELECT part, report FROM {schema()}.staged WHERE step = %s", (step,))
+    cur.execute(f"SELECT part, report FROM {s or schema()}.staged WHERE step = %s", (step,))
     return {p: json.loads(r) for p, r in cur.fetchall()}
 
 
@@ -208,13 +209,9 @@ def stage(dsn: str, run_key: str, step: str, part: int, store: Path,
     from one). One transaction: the (step, part) staged again from nothing, its marker
     last. Returns its report."""
     import psycopg
-    from ontology import store_ddl
     narrow = step in NARROWED
     objs = set(objects) if objects is not None else None
-    cols = list(store_ddl.LINK_COLUMNS)
     s = schema()
-    report = {"rows": 0, "same": 0, "extractor_only": 0, "written": 0, "gone": 0,
-              "outside": 0}
     digest = hashlib.sha256()
     with psycopg.connect(dsn, application_name="plx-step-stage") as pg:
         with pg.cursor() as cur:
@@ -228,56 +225,17 @@ def stage(dsn: str, run_key: str, step: str, part: int, store: Path,
             for scope in scopes:
                 held.update(_served(cur, {**scope, "objects": sorted(objs)}
                                     if objs is not None else scope, narrow))
-            seen: set[str] = set()
-            pending: list[tuple] = []
             outside: list[str] = []
 
-            def flush() -> None:
-                if not pending:
-                    return
-                with cur.copy(f"COPY {s}.links ({', '.join(cols)}, step, part, ord) "
-                              "FROM STDIN") as cp:
-                    for row in pending:
-                        cp.write_row(row)
-                pending.clear()
-
-            ends: set[str] = set()
-            for n, row in enumerate(_store_rows(store)):
-                report["rows"] += 1
-                ends.add(row[2].split(":", 1)[0] + ":")
-                ends.add(row[3].split(":", 1)[0] + ":")
-                if row[0] in seen:
-                    raise StageRefused(f"store_link_twice:{step}:{row[0]}")
-                seen.add(row[0])
-                inside = any(_in_scope(row, sc, objs) for sc in scopes)
-                if not inside:
+            def check(row: tuple) -> None:
+                if not any(_in_scope(row, sc, objs) for sc in scopes):
                     if objs is not None:
                         raise StageRefused(f"store_link_outside_scope:{step}:{row[0]}")
                     outside.append(row[0])
-                    report["outside"] += 1
-                h, hn = _hashes(row, narrow)
-                served = held.pop(row[0], None)
-                if served is not None and served[0] == h:
-                    report["same"] += 1
-                    continue
-                if served is not None and narrow and served[1] == hn:
-                    report["extractor_only"] += 1
-                    continue
-                if served is not None:
-                    gone_now = [row[0]]
-                else:
-                    gone_now = []
-                for g in gone_now:
-                    digest.update(b"-" + g.encode())
-                if gone_now:
-                    _gone(cur, s, step, part, gone_now)
-                    report["gone"] += len(gone_now)
-                digest.update(b"+" + json.dumps(row, default=str).encode())
-                pending.append((*row, step, part, n))
-                report["written"] += 1
-                if len(pending) >= _BATCH:
-                    flush()
-            flush()
+
+            report, digest, _replaced = stage_rows(cur, s, step, part, _store_rows(store),
+                                                   held, narrow, check, digest=digest)
+            report["outside"] = len(outside)
             # a store link outside every owned scope (the layer's ``steps:rest``): written as
             # the plain apply writes it, replacing a served one of its id
             if outside:
@@ -294,12 +252,84 @@ def stage(dsn: str, run_key: str, step: str, part: int, store: Path,
             for g in rest:
                 digest.update(b"-" + g.encode())
             report["gone"] += len(rest)
-            report["digest"] = digest.hexdigest()
-            report["ends"] = sorted(ends)   # the type prefixes of its links' ends (the scope)
+            report["digest"] = digest.hexdigest()   # "ends": its links' end type prefixes
             cur.execute(f"INSERT INTO {s}.staged (step, part, report) VALUES (%s, %s, %s)",
                         (step, part, json.dumps(report, sort_keys=True)))
         pg.commit()
     return report
+
+
+def stage_rows(cur: Any, s: str, step: str, part: int, rows: Iterable[tuple],
+               held: dict[str, tuple[int, int | None]], narrow: bool = False,
+               check: Any = None, digest: Any = None) -> tuple[dict[str, Any], Any, int]:
+    """``rows`` (``LINK_COLUMNS`` tuples) staged in the caller's transaction as (step,
+    part) of schema ``s`` against ``held`` (the served links of the scope: link id -> row
+    hashes, :func:`served_rows`): a row held alike is left out, any other is written to
+    ``links`` (a served one of its id to ``gone``); the ids found are popped from
+    ``held``, so what it keeps after is served and not in ``rows`` (the caller's to gone).
+    ``check(row)``: called on every row (it may refuse). Refused: one link id twice.
+    Returns (report, digest so far, rows replacing a served one)."""
+    from ontology import store_ddl
+    cols = list(store_ddl.LINK_COLUMNS)
+    digest = digest or hashlib.sha256()
+    report = {"rows": 0, "same": 0, "extractor_only": 0, "written": 0, "gone": 0,
+              "outside": 0}
+    seen: set[str] = set()
+    pending: list[tuple] = []
+    ends: set[str] = set()
+    replaced = 0
+
+    def flush() -> None:
+        if not pending:
+            return
+        with cur.copy(f"COPY {s}.links ({', '.join(cols)}, step, part, ord) "
+                      "FROM STDIN") as cp:
+            for row in pending:
+                cp.write_row(row)
+        pending.clear()
+
+    for n, row in enumerate(rows):
+        report["rows"] += 1
+        ends.add(row[2].split(":", 1)[0] + ":")
+        ends.add(row[3].split(":", 1)[0] + ":")
+        if row[0] in seen:
+            raise StageRefused(f"store_link_twice:{step}:{row[0]}")
+        seen.add(row[0])
+        if check is not None:
+            check(row)
+        h, hn = _hashes(row, narrow)
+        served = held.pop(row[0], None)
+        if served is not None and served[0] == h:
+            report["same"] += 1
+            continue
+        if served is not None and narrow and served[1] == hn:
+            report["extractor_only"] += 1
+            continue
+        if served is not None:
+            digest.update(b"-" + row[0].encode())
+            _gone(cur, s, step, part, [row[0]])
+            report["gone"] += 1
+            replaced += 1
+        digest.update(b"+" + json.dumps(row, default=str).encode())
+        pending.append((*row, step, part, n))
+        report["written"] += 1
+        if len(pending) >= _BATCH:
+            flush()
+    flush()
+    report["ends"] = sorted(ends)
+    return report, digest, replaced
+
+
+def served_rows(cur: Any, where: str, params: Sequence[Any] = (),
+                held: dict[str, tuple[int, int | None]] | None = None
+                ) -> dict[str, tuple[int, int | None]]:
+    """The served links ``where`` holds (on ``ontology.link_rows l``), link id -> row
+    hashes, as :func:`stage_rows` compares them (added to ``held``)."""
+    from operating.pg.migrate_chunks import _served_links
+    held = {} if held is None else held
+    for row in _served_links(cur, where, list(params)):
+        held[row[0]] = _hashes(row, False)
+    return held
 
 
 def _gone(cur: Any, s: str, step: str, part: int, ids: Sequence[str]) -> None:
@@ -362,9 +392,9 @@ def _ensure_applied(cur: Any, s: str) -> None:
                 "timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (step, part))")
 
 
-def applied(cur: Any, step: str) -> dict[int, dict[str, Any]]:
+def applied(cur: Any, step: str, s: str | None = None) -> dict[int, dict[str, Any]]:
     """The applied parts of ``step``: part -> the staged report it applied."""
-    s = schema()
+    s = s or schema()
     cur.execute("SELECT to_regclass(%s)", (f"{s}.applied",))
     if cur.fetchone()[0] is None:
         return {}
@@ -383,9 +413,7 @@ def apply_now(dsn: str, run_key: str, step: str, parts: Iterable[int] | None = N
     Refused (that bit rolled back) when a ``gone`` link is no longer served, or the
     counts per link type differ from the stage."""
     import psycopg
-    from ontology import store_ddl
     from operating.pg.ontology_migrate import LOCK
-    cols = ", ".join(columns or store_ddl.LINK_COLUMNS)
     s = schema()
     out: dict[str, Any] = {"step": step, "bits": {}}
     with psycopg.connect(dsn, application_name="plx-step-stage") as pg:
@@ -405,84 +433,104 @@ def apply_now(dsn: str, run_key: str, step: str, parts: Iterable[int] | None = N
                         raise StageRefused(f"applied_other_stage:{step}:{part}")
                     out["bits"][part] = {"skipped": "applied"}
                     continue
-                t = time.monotonic()
                 cur.execute(LOCK)
                 cur.execute("SET LOCAL jit = off")
-                rep = held[part]
-                cur.execute(f"SELECT link_type, count(*) FROM {s}.links WHERE step = %s AND "
-                            "part = %s GROUP BY 1", (step, part))
-                to_insert = dict(cur.fetchall())
-                cur.execute(f"INSERT INTO {s}.undo_deleted SELECT l.*, g.step, g.part FROM "
-                            f"ontology.link_rows l JOIN {s}.gone g ON g.link_id = l.link_id "
-                            "WHERE g.step = %s AND g.part = %s", (step, part))
-                cur.execute(f"DELETE FROM ontology.link_rows l USING {s}.gone g WHERE "
-                            "g.step = %s AND g.part = %s AND l.link_id = g.link_id "
-                            "RETURNING l.link_type", (step, part))
-                deleted: dict[str, int] = {}
-                for (t_,) in cur.fetchall():
-                    deleted[t_] = deleted.get(t_, 0) + 1
-                if sum(deleted.values()) != int(rep["gone"]):
+                try:
+                    bit = apply_in(cur, s, step, part, held[part], columns)
+                except StageRefused:
                     pg.rollback()
-                    raise StageRefused(f"gone_not_served:{step}:{part}:"
-                                       f"{sum(deleted.values())}:{rep['gone']}")
-                cur.execute(f"INSERT INTO ontology.link_rows ({cols}) SELECT {cols} FROM "
-                            f"{s}.links WHERE step = %s AND part = %s ORDER BY ord "
-                            "RETURNING link_type", (step, part))
-                inserted: dict[str, int] = {}
-                for (t_,) in cur.fetchall():
-                    inserted[t_] = inserted.get(t_, 0) + 1
-                if inserted != to_insert or sum(inserted.values()) != int(rep["written"]):
-                    pg.rollback()
-                    raise StageRefused(f"inserted_differs:{step}:{part}")
-                cur.execute(f"INSERT INTO {s}.undo_inserted (link_id, step, part) SELECT "
-                            f"link_id, step, part FROM {s}.links WHERE step = %s AND "
-                            "part = %s", (step, part))
-                cur.execute(f"DELETE FROM {s}.links WHERE step = %s AND part = %s",
-                            (step, part))
-                types = sorted(set(deleted) | set(inserted))
-                bit = {"deleted": sum(deleted.values()), "inserted": sum(inserted.values()),
-                       "types": {t_: {"deleted": deleted.get(t_, 0),
-                                      "inserted": inserted.get(t_, 0)} for t_ in types},
-                       "seconds": round(time.monotonic() - t, 3)}
-                cur.execute(f"INSERT INTO {s}.applied (step, part, staged, report) VALUES "
-                            "(%s, %s, %s, %s)", (step, part, json.dumps(rep, sort_keys=True),
-                                                 json.dumps(bit, sort_keys=True)))
+                    raise
                 pg.commit()
                 out["bits"][part] = bit
     return out
 
 
-def undo(dsn: str, step: str, parts: Iterable[int] | None = None) -> dict[str, Any]:
+def apply_in(cur: Any, s: str, step: str, part: int, rep: Mapping[str, Any],
+             columns: Sequence[str] | None = None) -> dict[str, Any]:
+    """One staged bit (``rep``: its staged report) written to the served links in the
+    caller's transaction, which holds the delta's lock: its served rows kept as they were
+    (``undo_deleted``) and deleted, its staged links inserted (their ids kept:
+    ``undo_inserted``) and dropped from the stage, the marker (``applied``) written last.
+    Refused (the caller rolls back) when a ``gone`` link is no longer served, or the
+    counts per link type differ from the stage. Returns the bit's report."""
+    from ontology import store_ddl
+    cols = ", ".join(columns or store_ddl.LINK_COLUMNS)
+    t = time.monotonic()
+    cur.execute(f"SELECT link_type, count(*) FROM {s}.links WHERE step = %s AND "
+                "part = %s GROUP BY 1", (step, part))
+    to_insert = dict(cur.fetchall())
+    cur.execute(f"INSERT INTO {s}.undo_deleted SELECT l.*, g.step, g.part FROM "
+                f"ontology.link_rows l JOIN {s}.gone g ON g.link_id = l.link_id "
+                "WHERE g.step = %s AND g.part = %s", (step, part))
+    cur.execute(f"DELETE FROM ontology.link_rows l USING {s}.gone g WHERE "
+                "g.step = %s AND g.part = %s AND l.link_id = g.link_id "
+                "RETURNING l.link_type", (step, part))
+    deleted: dict[str, int] = {}
+    for (t_,) in cur.fetchall():
+        deleted[t_] = deleted.get(t_, 0) + 1
+    if sum(deleted.values()) != int(rep["gone"]):
+        raise StageRefused(f"gone_not_served:{step}:{part}:"
+                           f"{sum(deleted.values())}:{rep['gone']}")
+    cur.execute(f"INSERT INTO ontology.link_rows ({cols}) SELECT {cols} FROM "
+                f"{s}.links WHERE step = %s AND part = %s ORDER BY ord "
+                "RETURNING link_type", (step, part))
+    inserted: dict[str, int] = {}
+    for (t_,) in cur.fetchall():
+        inserted[t_] = inserted.get(t_, 0) + 1
+    if inserted != to_insert or sum(inserted.values()) != int(rep["written"]):
+        raise StageRefused(f"inserted_differs:{step}:{part}")
+    cur.execute(f"INSERT INTO {s}.undo_inserted (link_id, step, part) SELECT "
+                f"link_id, step, part FROM {s}.links WHERE step = %s AND "
+                "part = %s", (step, part))
+    cur.execute(f"DELETE FROM {s}.links WHERE step = %s AND part = %s", (step, part))
+    types = sorted(set(deleted) | set(inserted))
+    bit = {"deleted": sum(deleted.values()), "inserted": sum(inserted.values()),
+           "types": {t_: {"deleted": deleted.get(t_, 0),
+                          "inserted": inserted.get(t_, 0)} for t_ in types},
+           "seconds": round(time.monotonic() - t, 3)}
+    cur.execute(f"INSERT INTO {s}.applied (step, part, staged, report) VALUES "
+                "(%s, %s, %s, %s)", (step, part, json.dumps(rep, sort_keys=True),
+                                     json.dumps(bit, sort_keys=True)))
+    return bit
+
+
+def undo(dsn: str, step: str, parts: Iterable[int] | None = None,
+         s: str | None = None) -> dict[str, Any]:
     """An applied bit taken back (the latest first): its inserted links deleted, its
     deleted rows put back as they were, its marker removed (the stage of its links is
     gone: the step runs again for it)."""
     import psycopg
     from operating.pg.ontology_migrate import LOCK
-    s = schema()
+    s = s or schema()
     out: dict[str, Any] = {}
     with psycopg.connect(dsn, application_name="plx-step-stage") as pg, pg.cursor() as cur:
-        done = applied(cur, step)
+        done = applied(cur, step, s)
         for part in sorted(done if parts is None else parts, reverse=True):
             if part not in done:
                 continue
             cur.execute(LOCK)
-            cur.execute(f"DELETE FROM ontology.link_rows l USING {s}.undo_inserted u WHERE "
-                        "u.step = %s AND u.part = %s AND l.link_id = u.link_id",
-                        (step, part))
-            removed = cur.rowcount
-            cur.execute("SELECT string_agg(quote_ident(column_name), ', ' ORDER BY "
-                        "ordinal_position) FROM information_schema.columns WHERE "
-                        "table_schema = 'ontology' AND table_name = 'link_rows'")
-            raw = cur.fetchone()[0]
-            cur.execute(f"INSERT INTO ontology.link_rows ({raw}) SELECT {raw} FROM "
-                        f"{s}.undo_deleted WHERE step = %s AND part = %s", (step, part))
-            restored = cur.rowcount
-            for table in ("undo_inserted", "undo_deleted", "applied", "staged", "gone"):
-                cur.execute(f"DELETE FROM {s}.{table} WHERE step = %s AND part = %s",
-                            (step, part))
+            out[part] = undo_in(cur, s, step, part)
             pg.commit()
-            out[part] = {"removed": removed, "restored": restored}
     return out
+
+
+def undo_in(cur: Any, s: str, step: str, part: int) -> dict[str, int]:
+    """One applied bit taken back in the caller's transaction (it holds the delta's
+    lock): its inserted links deleted, its deleted rows put back as they were, its
+    markers removed."""
+    cur.execute(f"DELETE FROM ontology.link_rows l USING {s}.undo_inserted u WHERE "
+                "u.step = %s AND u.part = %s AND l.link_id = u.link_id", (step, part))
+    removed = cur.rowcount
+    cur.execute("SELECT string_agg(quote_ident(column_name), ', ' ORDER BY "
+                "ordinal_position) FROM information_schema.columns WHERE "
+                "table_schema = 'ontology' AND table_name = 'link_rows'")
+    raw = cur.fetchone()[0]
+    cur.execute(f"INSERT INTO ontology.link_rows ({raw}) SELECT {raw} FROM "
+                f"{s}.undo_deleted WHERE step = %s AND part = %s", (step, part))
+    restored = cur.rowcount
+    for table in ("undo_inserted", "undo_deleted", "applied", "staged", "gone"):
+        cur.execute(f"DELETE FROM {s}.{table} WHERE step = %s AND part = %s", (step, part))
+    return {"removed": removed, "restored": restored}
 
 
 # ---------------------------------------------------------------- the apply's chunk

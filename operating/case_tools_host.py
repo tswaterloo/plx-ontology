@@ -1349,11 +1349,15 @@ class CaptureCaseHostTools(CaseHostTools):
                     messages[handle] = next(iter(named))
         wanted = sorted({m for m in messages.values() if m is not None})
         rows: dict[str, tuple[str, Any, Any]] = {}
+        # a message naming an undecided address has no row here: no reader's (facts None)
+        from integrations.capture_mail import undecided_free_sql
+        free = undecided_free_sql(store.db)
         for at in range(0, len(wanted), 900):
             for row in store.db.execute(
                     "SELECT l1_handle, mailbox_id, json_extract(record, '$.from', '$.sender') "
                     "FROM messages WHERE version_id IN (SELECT MAX(version_id) FROM messages "
-                    "WHERE l1_handle IN (SELECT value FROM json_each(?)) GROUP BY l1_handle)",
+                    "WHERE l1_handle IN (SELECT value FROM json_each(?)) GROUP BY l1_handle) "
+                    f"AND {free}",
                     (json.dumps(wanted[at:at + 900]),)):
                 sent = json.loads(row[2]) if row[2] is not None else [None, None]
                 rows[row[0]] = (row[1], sent[0], sent[1])
@@ -1414,7 +1418,7 @@ class CaptureCaseHostTools(CaseHostTools):
                 if seen not in memo:
                     memo[seen] = (audience, frozenset(store._visible(gated, audience)))
                 if ahead is _UNREAD:
-                    row = store._latest(message)
+                    row = store._latest(message, readable=True)
                     if row is None:
                         memo[kept] = False
                         return False

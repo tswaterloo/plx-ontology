@@ -232,6 +232,7 @@ from operating import declared_schema as _schemas
 from operating.declared_schema import capture_mail as _CAPTURE_MAIL
 from operating.declared_schema.capture_mail import (_CARRIED_DDL, _FOLDER_LISTING_DDL,
                                                     _PRIORITY_DDL, _PURGED_DDL,
+                                                    _UNDECIDED_ADDRESSES_DDL,
                                                     _UNDECIDED_DDL, _WITHHELD_DDL)
 
 SCOPE_SCHEMA = "plx-mail-capture-scope/v1"
@@ -254,6 +255,16 @@ DEFAULT_THROTTLE_WAITS = (30.0, 60.0, 120.0)
 _TRANSIENT = frozenset({"http_429", "http_502", "http_503", "http_504", "timeout",
                         "transport_failure", "conn_reset", "remote_closed", "urlerror",
                         "download_incomplete"})
+# A source outage, not one mailbox's trouble: Graph answering a mailbox read with a 5xx
+# or no answer at all (a 429 is throttling, held and retried, never an outage).
+_OUTAGE = frozenset(_TRANSIENT - {"http_429"})
+# A run stops reading once that many different mailboxes in a row failed so, nothing
+# read in between: the folders keep their cursors and the next run resumes them. Without
+# it a Graph outage on every mailbox read (2026-11-12, HTTP 502 after 21 s on each) cost
+# about a minute of retries per mailbox listing; 166 of them outlived the run's budget,
+# the child was killed and the run wrote and reported nothing.
+OUTAGE_MAILBOXES = 5
+SOURCE_UNAVAILABLE = "source_unavailable"   # the run's incomplete reason when it stopped so
 _ISO_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
 _UPN = re.compile(r"^[a-z0-9._%+'-]{1,64}@[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+$")
 _DOMAIN = re.compile(r"^[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+$")
@@ -568,6 +579,38 @@ _COPIES = ("SELECT b, m FROM temp.copy_pairs WHERE EXISTS (SELECT 1 FROM message
 _MAILBOX_ROWS = ("SELECT m.*, d.department AS department, d.listed_at AS listed_at FROM "
                  "mailboxes m LEFT JOIN mailbox_directory d ON d.mailbox_id=m.mailbox_id "
                  "ORDER BY m.mailbox_id")
+# A message row ``{0}`` naming an address the last purge could not decide, in its sender
+# or a To/Cc/Bcc recipient (``undecided_addresses``; the purge's own fields, trimmed and
+# lowered). The address set is read once per statement (an uncorrelated ``IN``).
+_NAMES_UNDECIDED = (
+    "(lower(trim(coalesce(json_extract({0}.record, '$.from'), ''))) IN "
+    "(SELECT address FROM undecided_addresses)" + "".join(
+        " OR EXISTS (SELECT 1 FROM json_each({0}.record, '$.%s') j WHERE "
+        "lower(trim(j.value)) IN (SELECT address FROM undecided_addresses))" % field
+        for field in ("to", "cc", "bcc")) + ")")
+
+
+def undecided_free_sql(db: sqlite3.Connection, alias: str = "messages") -> str:
+    """SQL true for a row ``alias`` of ``messages`` no reader is withheld for an
+    undecided address: none in its sender or recipients names an address the last
+    capture purge could not decide (``MailCaptureStore.purge_withheld``: a list whose
+    members cannot all be read and confirmed, so an excluded person may be on it). Every
+    read of captured messages for a reader, or for anything derived from them, ands it
+    in. ``1`` when no address is undecided (none recorded, or a store no purge has
+    decided yet); a store that cannot be read fails the read (the error raised)."""
+    if not alias.isidentifier():
+        raise ValueError("alias")
+    try:
+        held = db.execute("SELECT 1 FROM undecided_addresses LIMIT 1").fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        return "1"
+    if held is None:
+        return "1"
+    return "NOT " + _NAMES_UNDECIDED.format(alias)
+
+
 _ENV_GUARD: dict[str, Any] = {}
 _DENY: dict[str, Any] = {}
 
@@ -958,9 +1001,16 @@ class MailCaptureStore:
                               "AND superseded_at IS NULL", (mailbox_id, message_id)).fetchone()
         return dict(row) if row else None
 
-    def _latest(self, handle: str) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM messages WHERE l1_handle=? "
-                               "ORDER BY version_id DESC LIMIT 1", (handle,)).fetchone()
+    def _latest(self, handle: str, *, readable: bool = False) -> sqlite3.Row | None:
+        """The highest version row of ``handle``. ``readable``: None when that row names an
+        address the last purge could not decide (``undecided_free_sql``): every reader's
+        read of a message or attachment goes through here."""
+        if not readable:
+            return self.db.execute("SELECT * FROM messages WHERE l1_handle=? "
+                                   "ORDER BY version_id DESC LIMIT 1", (handle,)).fetchone()
+        return self.db.execute(
+            "SELECT * FROM messages WHERE version_id = (SELECT MAX(version_id) FROM messages "
+            f"WHERE l1_handle=?) AND {undecided_free_sql(self.db)}", (handle,)).fetchone()
 
     def observe(self, handle: str, folder_id: str) -> str:
         """A version listed again by the source.
@@ -2146,6 +2196,7 @@ class MailCaptureStore:
                  if withholds(row)]
         addresses: list[str] = []
         undecided = 0
+        undecided_found: set[str] = set()
         if people.bound:
             found = self.db.execute(
                 "SELECT DISTINCT lower(json_extract(record, '$.from')) FROM messages UNION "
@@ -2166,6 +2217,8 @@ class MailCaptureStore:
                     # (2026-11-12: one hidden-membership list in the store stopped mail
                     # capture for the day); the capture holds new mail to it by id.
                     undecided += 1
+                    undecided_found.add(address.strip(" "))   # as SQL trim()
+            self._record_undecided(undecided_found)
         self.purge_undecided = undecided
         # every copy of a message remembered as withheld (stored in a mailbox before the
         # copy that showed the excluded person was read)
@@ -2173,6 +2226,42 @@ class MailCaptureStore:
         if not boxes and not addresses and not remembered:
             return counts
         return self._purge(boxes, addresses, remembered)
+
+    def _record_undecided(self, found: set[str]) -> None:
+        """Keep exactly ``found`` (lowered, trimmed) as the addresses every reader withholds
+        mail to (``undecided_free_sql``): one still undecided keeps its ``since``, a new
+        one starts now, one decided since is forgotten. Only a purge that decided every
+        stored address calls it (a guard bound and usable)."""
+        now = self.now()
+        db = self.db
+        if not found and not self._has_table("undecided_addresses"):
+            return   # none undecided and none ever recorded: nothing to keep or forget
+        with db:
+            db.execute(_UNDECIDED_ADDRESSES_DDL)
+            db.execute("CREATE TEMP TABLE IF NOT EXISTS undecided_now (a TEXT PRIMARY KEY)")
+            try:
+                db.execute("DELETE FROM temp.undecided_now")
+                db.executemany("INSERT OR IGNORE INTO temp.undecided_now VALUES (?)",
+                               [(a,) for a in sorted(found) if a])
+                db.execute("DELETE FROM undecided_addresses WHERE address NOT IN "
+                           "(SELECT a FROM temp.undecided_now)")
+                db.execute("INSERT INTO undecided_addresses SELECT a, ?, ? FROM "
+                           "temp.undecided_now WHERE true ON CONFLICT(address) DO UPDATE "
+                           "SET checked_at=excluded.checked_at", (now, now))
+            finally:
+                db.execute("DROP TABLE IF EXISTS temp.undecided_now")
+
+    def undecided_since(self) -> dict[str, Any]:
+        """How many addresses every reader withholds mail to as undecided, and the
+        oldest ``since`` among them (None: none), counts and times only."""
+        try:
+            row = self.db.execute("SELECT COUNT(*), MIN(since) FROM "
+                                  "undecided_addresses").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            return {"addresses": 0, "oldest_since": None}
+        return {"addresses": row[0], "oldest_since": row[1]}
 
     def purge_messages(self, pairs: Iterable[tuple[str, str]]) -> dict[str, int]:
         """Delete these messages (``(mailbox id, message id)``, every version) and every
@@ -2390,7 +2479,7 @@ class MailCaptureStore:
             return {"items": [], "total": 0, "lineage": LINEAGE}
         clause, params = self._as_of(as_known_at)
         marks = ",".join("?" * len(visible))
-        where = f"mailbox_id IN ({marks}) AND {clause}"
+        where = f"mailbox_id IN ({marks}) AND {clause} AND {undecided_free_sql(self.db)}"
         total = self.db.execute(f"SELECT COUNT(*) FROM messages WHERE {where}",
                                 (*visible, *params)).fetchone()[0]
         rows = self.db.execute(
@@ -2411,7 +2500,8 @@ class MailCaptureStore:
             return []
         rows = self.db.execute("SELECT l1_handle, change_key, recorded_at, superseded_at, "
                                "removed_reason, digest FROM messages WHERE mailbox_id=? AND "
-                               "message_id=? ORDER BY recorded_at, version_id",
+                               f"message_id=? AND {undecided_free_sql(self.db)} "
+                               "ORDER BY recorded_at, version_id",
                                (row["mailbox_id"], row["message_id"])).fetchall()
         return [dict(r) for r in rows]
 
@@ -2419,7 +2509,7 @@ class MailCaptureStore:
                      ) -> dict[str, Any] | None:
         if not isinstance(handle, str):
             return None
-        row = self._latest(handle)
+        row = self._latest(handle, readable=True)
         if row is None or row["mailbox_id"] not in self._visible(actor, audience):
             return None
         return dict(row)
@@ -2541,24 +2631,27 @@ class MailCaptureStore:
         rows are probed through ``messages_by_sender``; rows not keyed yet (NULL) are
         read the slow way, so the answer never depends on whether the fill ran."""
         from_of = "lower(trim(json_extract(record, '$.from')))"
+        free = undecided_free_sql(self.db)
         if not self._keyed():
             marks = ",".join("?" * len(ordered))
             hit = self.db.execute(
                 f"SELECT mailbox_id, {from_of} FROM messages "
                 f"WHERE mailbox_id IN ({marks}) AND superseded_at IS NULL AND "
-                f"plx_address_key({from_of}) = ? "
+                f"plx_address_key({from_of}) = ? AND {free} "
                 "ORDER BY mailbox_id LIMIT 1", (*ordered, key)).fetchone()
             return None if hit is None else (hit[0], hit[1])
         for mailbox in ordered:
             hit = self.db.execute(
                 f"SELECT {from_of} FROM messages INDEXED BY messages_by_sender "
-                "WHERE mailbox_id = ? AND sender_key = ? AND superseded_at IS NULL LIMIT 1",
+                "WHERE mailbox_id = ? AND sender_key = ? AND superseded_at IS NULL "
+                f"AND {free} LIMIT 1",
                 (mailbox, key)).fetchone()
             if hit is None:
                 hit = self.db.execute(
                     f"SELECT {from_of} FROM messages INDEXED BY messages_by_sender "
                     "WHERE mailbox_id = ? AND sender_key IS NULL AND superseded_at IS NULL "
-                    f"AND plx_address_key({from_of}) = ? LIMIT 1", (mailbox, key)).fetchone()
+                    f"AND plx_address_key({from_of}) = ? AND {free} LIMIT 1",
+                    (mailbox, key)).fetchone()
             if hit is not None:
                 return mailbox, hit[0]
         return None
@@ -2590,6 +2683,7 @@ class MailCaptureStore:
         marks = ",".join("?" * len(addresses))
         found = self.db.execute(
             "SELECT 1 FROM messages m WHERE m.mailbox_id = ? AND m.superseded_at IS NULL AND "
+            f"{undecided_free_sql(self.db, 'm')} AND "
             f"(lower(trim(json_extract(m.record, '$.from'))) IN ({marks}) OR EXISTS ("
             "SELECT 1 FROM json_each(m.record, '$.to') j WHERE lower(trim(j.value)) "
             f"IN ({marks})) OR EXISTS (SELECT 1 FROM json_each(m.record, '$.cc') j "
@@ -2808,7 +2902,8 @@ class MailCaptureStore:
         marks = ",".join("?" * len(inside))
         rows = self.db.execute(
             f"SELECT l1_handle, mailbox_id, message_id, record FROM messages WHERE "
-            f"mailbox_id IN ({marks}) AND superseded_at IS NULL ORDER BY "
+            f"mailbox_id IN ({marks}) AND superseded_at IS NULL AND "
+            f"{undecided_free_sql(self.db)} ORDER BY "
             "json_extract(record, '$.received_at') DESC, version_id LIMIT ?",
             (*inside, limit + 1)).fetchall()
         for row in rows[:limit]:
@@ -2835,7 +2930,8 @@ class MailCaptureStore:
         rows = self.db.execute(
             f"SELECT l1_handle FROM messages WHERE mailbox_id IN ({marks}) AND "
             "superseded_at IS NULL AND substr(json_extract(record, '$.received_at'), 1, 19)"
-            " = ? ORDER BY version_id", (*visible, second)).fetchall()
+            f" = ? AND {undecided_free_sql(self.db)} ORDER BY version_id",
+            (*visible, second)).fetchall()
         return [row["l1_handle"] for row in rows]
 
     def attachments(self, message_handle: Any, actor: Actor, audience: LiveSourceAudience
@@ -3016,6 +3112,7 @@ class MailCaptureStore:
         degraded versions and stored bytes; plus the store bound. A withheld mailbox
         has no entry and adds nothing to any count."""
         visible = self._visible(actor, audience)
+        free = undecided_free_sql(self.db)
         mailboxes = []
         for mailbox_id in visible:
             folders = []
@@ -3031,11 +3128,13 @@ class MailCaptureStore:
             counts = self.db.execute(
                 "SELECT COUNT(*) AS versions, SUM(superseded_at IS NULL) AS current, "
                 "SUM(superseded_at IS NULL AND body_status LIKE ?) AS degraded "
-                "FROM messages WHERE mailbox_id=?", (_DEGRADED_BODY, mailbox_id)).fetchone()
+                f"FROM messages WHERE mailbox_id=? AND {free}",
+                (_DEGRADED_BODY, mailbox_id)).fetchone()
             attachments = self.db.execute(
                 "SELECT COUNT(*) FROM attachments a WHERE mailbox_id=? AND "
                 "content_status='unavailable' AND EXISTS (SELECT 1 FROM messages m WHERE "
-                "m.l1_handle=a.message_handle AND m.superseded_at IS NULL)",
+                "m.l1_handle=a.message_handle AND m.superseded_at IS NULL AND "
+                f"{undecided_free_sql(self.db, 'm')})",
                 (mailbox_id,)).fetchone()[0]
             truncated = self.truncated_lists(mailbox_id)
             if folders and all(f["status"] == NO_MAILBOX for f in folders):
@@ -3107,10 +3206,13 @@ class MailCaptureStore:
         marks = ",".join("?" * len(visible))
         row = self.db.execute(
             f"SELECT COUNT(*) AS versions, SUM(superseded_at IS NULL) AS current FROM messages "
-            f"WHERE mailbox_id IN ({marks})", visible).fetchone()
+            f"WHERE mailbox_id IN ({marks}) AND {undecided_free_sql(self.db)}",
+            visible).fetchone()
         attachments = self.db.execute(
-            f"SELECT COUNT(*) FROM attachments WHERE mailbox_id IN ({marks}) "
-            "AND content_status='captured'", visible).fetchone()[0]
+            f"SELECT COUNT(*) FROM attachments a WHERE mailbox_id IN ({marks}) "
+            "AND content_status='captured' AND NOT EXISTS (SELECT 1 FROM messages m WHERE "
+            f"m.l1_handle=a.message_handle AND NOT {undecided_free_sql(self.db, 'm')})",
+            visible).fetchone()[0]
         return {"mailboxes": len(visible), "messages_current": row["current"] or 0,
                 "versions": row["versions"], "attachments_captured": attachments}
 
@@ -3134,7 +3236,8 @@ class MailCaptureStore:
         marks = ",".join("?" * len(visible))
         for row in self.db.execute(
                 f"SELECT mailbox_id, record FROM messages WHERE superseded_at IS NULL "
-                f"AND mailbox_id IN ({marks})", list(visible)):
+                f"AND mailbox_id IN ({marks}) AND {undecided_free_sql(self.db)}",
+                list(visible)):
             mailbox_id = row["mailbox_id"]
             record = json.loads(row["record"])
             if (owner(record.get("source_acl"), mailbox_id)
@@ -4611,6 +4714,11 @@ class MailCapture:
         self._lane = threading.local()
         self._monotonic = monotonic
         self._deadline = None if budget_seconds is None else monotonic() + budget_seconds
+        # The mailboxes whose reads failed in a row (:meth:`_source_failed`); set while
+        # the source is down this run.
+        self._outage: set[str] = set()
+        self._outage_lock = threading.Lock()
+        self._source_down = False
         if isinstance(attachment_list_cap, bool) or not isinstance(attachment_list_cap, int) \
                 or not 1 <= attachment_list_cap <= MAX_ATTACHMENTS_LISTED:
             raise CaptureError("attachment_list_cap_invalid")
@@ -4647,8 +4755,29 @@ class MailCapture:
         # store lock about 0.1-0.9 s on the live store's large folders, 2026-11-03).
         self._repaired: set[tuple[str, ...]] = set()
 
-    def _spent(self) -> bool:
+    def _budget_spent(self) -> bool:
         return self._deadline is not None and self._monotonic() >= self._deadline
+
+    def _spent(self) -> bool:
+        """No more source reads this run: its time budget is spent, or the source is
+        down (:meth:`_source_failed`). Every read loop checks it."""
+        return self._source_down or self._budget_spent()
+
+    def _source_failed(self, mailbox_id: str, exc: BaseException) -> None:
+        """A mailbox read failed; an outage failure (:data:`_OUTAGE`) on the
+        :data:`OUTAGE_MAILBOXES`-th different mailbox with nothing read in between marks
+        the source down for the rest of the run."""
+        detail = (unavailable_detail(exc) or "").removeprefix("retried.")
+        if detail not in _OUTAGE:
+            return
+        with self._outage_lock:
+            self._outage.add(mailbox_id)
+            if len(self._outage) >= OUTAGE_MAILBOXES:
+                self._source_down = True
+
+    def _source_answered(self) -> None:
+        with self._outage_lock:
+            self._outage.clear()
 
     def _unsettled_now(self) -> dict[str, tuple[bytes, Mapping[str, Any] | None]]:
         if not hasattr(self._lane, "unsettled"):
@@ -5111,7 +5240,7 @@ class MailCapture:
         if self._ocr is None:
             return
         end = time.monotonic() + OCR_TAIL_SECONDS
-        while not self._spent() and time.monotonic() < end:
+        while not self._budget_spent() and time.monotonic() < end:
             self._drain_ocr()
             if not self._ocr.busy():
                 with self.store.lock:
@@ -5535,6 +5664,7 @@ class MailCapture:
                                           delta_url=None)
                     reason = "throttled" if _transient(detail) else _failure(exc)
                     result["blocked"] = _blocked("folder", exc)
+                    self._source_failed(mailbox_id, exc)
             store.save_folder(mailbox_id, folder_key, status="incomplete", reason=reason,
                               last_run_at=store.now())
             return {**result, "status": "incomplete", "complete": False, "reason": reason}
@@ -5609,9 +5739,12 @@ class MailCapture:
         except NotVisible as exc:
             return stop(hidden_reason(exc))
         except SourceUnavailable as exc:
-            if is_nextlink_refusal(exc):
-                store.save_folder(mailbox_id, folder_key, backfill_next_url=None)
             detail = unavailable_detail(exc) or "unclassified"
+            self._source_failed(mailbox_id, exc)
+            if is_nextlink_refusal(exc) or (cursor is not None and detail == "http_410"):
+                # a refused or expired (CAPTURE-007) continuation is dropped: the next
+                # run lists the history again from its start, under the same bound
+                store.save_folder(mailbox_id, folder_key, backfill_next_url=None)
             return stop("throttled" if _transient(detail) else _failure(exc))
         raise SourceUnavailable("graph listing invalid: history listing ended without an end")
 
@@ -5678,6 +5811,8 @@ class MailCapture:
                         if before.get("round") is not None:
                             result["round"] = before["round"]
                     done[unit] = result
+                    if result.get("complete") or result.get("reason") == TURN:
+                        self._source_answered()   # the source read for this folder
                     if result.get("reason") == TURN:
                         if self._spent():
                             self.store.save_folder(*unit, status="incomplete",
@@ -5717,7 +5852,11 @@ class MailCapture:
         fresh = whole and listed_at is not None and (
             self.store._clock() - datetime.fromisoformat(listed_at.replace("Z", "+00:00"))
         ).total_seconds() < FOLDER_RELIST_SECONDS
-        if not fresh:
+        if not fresh and self._spent():
+            # Budget spent or source down: no request; the stored listing stands and the
+            # mailbox is not complete (listed again by the next run).
+            whole = False
+        elif not fresh:
             try:
                 listing = self.reader.list_folders(self.actor, mailbox_id)
                 whole = listing["complete"]
@@ -5729,8 +5868,13 @@ class MailCapture:
                                      for f in stored], complete=whole)
             except MailboxAbsent:
                 raise   # no Exchange Online mailbox: the run records it, nothing to read
-            except (NotVisible, SourceUnavailable):
+            except NotVisible:
                 whole = False
+            except SourceUnavailable as exc:
+                whole = False
+                self._source_failed(mailbox_id, exc)
+            else:
+                self._source_answered()
         if not stored:
             return ("inbox", "sentitems"), False
         named = {row["folder_id"]: row["folder_key"] for row in self.store.db.execute(
@@ -5797,6 +5941,9 @@ class MailCapture:
         self.window_days = scope.window_days
         self.history = scope.history
         self._pages_read = {}
+        with self._outage_lock:
+            self._outage.clear()
+            self._source_down = False
         named = len(scope.mailboxes)
         # The people guard first: without its ID list (or the directory listing that
         # finds the excluded people's addresses) no mailbox is opened, listed or read.
@@ -5817,6 +5964,7 @@ class MailCapture:
         # A later exclusion: what the store holds of it is purged before anything is read;
         # reads hid it already.
         purged = dict.fromkeys(PURGE_COUNTS, 0)
+        self.store.purge_undecided = 0
         people = getattr(self.reader, "people", None)
         if _usable(people):
             if self.store.people is None:
@@ -5909,7 +6057,7 @@ class MailCapture:
             self.store.load_deferred_folders()
             self._repaired = set()
             if self.ocr_workers and self._ocr is None and _ocr_engine():
-                self._ocr = _OcrQueue(self.store, self.ocr_workers, self._spent,
+                self._ocr = _OcrQueue(self.store, self.ocr_workers, self._budget_spent,
                                       processes=self.extract_workers > 0)
                 self._ocr.refill(force=True)
             self._priority = (MailPriority(self.store, scope, opened,
@@ -5948,6 +6096,9 @@ class MailCapture:
         return {"mailboxes": mailboxes, "directory": directory_status,
                 "mailboxes_listed": len(targets) - named, "mailboxes_excluded": excluded,
                 "people_excluded": people_excluded, "people_blocked": None, "purged": purged,
+                # stored addresses the purge could not decide: kept, every reader
+                # withholds mail naming one (``undecided_free_sql``)
+                "purge_undecided": self.store.purge_undecided,
                 "mailboxes_absent": len(absent),
                 "complete": (bool(mailboxes) and all(m["complete"] for m in mailboxes)
                              and directory_status in (None, "complete")),
@@ -5958,7 +6109,10 @@ class MailCapture:
                                                 if directory_status not in (None, "complete")
                                                 else set())
                                              | ({"folder_listing_incomplete"} if unlisted
+                                                else set())
+                                             | ({SOURCE_UNAVAILABLE} if self._source_down
                                                 else set())),
+                "source_down": self._source_down,
                 "ocr": ocr}
 
 
@@ -6122,6 +6276,7 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
             "people_excluded": run.get("people_excluded", 0),
             "mailboxes_absent": run.get("mailboxes_absent", 0),
             "purged": dict(run.get("purged") or dict.fromkeys(PURGE_COUNTS, 0)),
+            "purge_undecided": run.get("purge_undecided", 0),
             "mailboxes": mailboxes}
 
 
@@ -6235,6 +6390,9 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                             m["mismatched_attachments"] for m in completeness["mailboxes"]),
                         "complete_bound": last["complete_bound"],
                         "bound_total": last["bound_total"],
+                        # stored addresses the last purge could not decide (kept, withheld
+                        # from every reader)
+                        "purge_undecided": last.get("purge_undecided", 0),
                         "store_bytes": store.store_bytes(),
                         "store_full": store.store_full()},
             "resolve_check": {"handles_checked": len(view["items"]),

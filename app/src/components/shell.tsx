@@ -25,8 +25,6 @@ import { ViewAsBar, ViewAsPicker } from "./view-as";
 import { ErrorNotice } from "./ui/notice";
 import { ApiError } from "@/lib/errors";
 
-const TZ = "America/Toronto";
-
 /**
  * The cube mark: a block with one corner cut away, in the app's three accents (cyan top,
  * blue lit face, navy shaded face). Flat polygons on no tile; the same drawing as the
@@ -235,16 +233,6 @@ function isOn(path: string, href: string) {
   return href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
 }
 
-/** "1:51 a.m." today, "5 Nov, 1:51 a.m." before. */
-function when(iso: string, withDay = false, now = new Date()): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const day = (x: Date) => x.toLocaleDateString("en-CA", { timeZone: TZ });
-  const time = d.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: TZ });
-  if (day(d) === day(now) && !withDay) return time;
-  return `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: TZ }).replace("Sept", "Sep")}, ${time}`;
-}
-
 /** The sidebar's sync line: when the data was read, the systems that are behind, each system on click. */
 function SyncStatus({ home }: { home: HomeResponse | null }) {
   const f = home?.freshness;
@@ -256,12 +244,12 @@ function SyncStatus({ home }: { home: HomeResponse | null }) {
     <Menu.Root>
       <Menu.Trigger
         className="group flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-hover max-xl:justify-center max-xl:px-0 cursor-pointer"
-        title={`Updated ${when(f.as_of)}`}
+        title={`Updated ${eastern(f.as_of)}`}
         data-testid="home-freshness"
       >
         <RefreshCw className={cn("size-[14px] shrink-0", behind.length ? "text-faint" : "text-live")} strokeWidth={2} aria-hidden />
         <span className="min-w-0 text-[12px] leading-4 max-xl:hidden">
-          <span className="block text-muted">Updated {when(f.as_of, true)}</span>
+          <span className="block text-muted">Updated {eastern(f.as_of)}</span>
           {behind.length > 0 && <span className="block truncate text-faint">{behind.map((s) => name(s.system)).join(" and ")} behind</span>}
         </span>
       </Menu.Trigger>
@@ -273,7 +261,7 @@ function SyncStatus({ home }: { home: HomeResponse | null }) {
               <span className="flex-1 truncate">{name(s.system)}</span>
               {!(s.stale || s.capture === "failed") && s.as_of && <span className="size-1.5 shrink-0 bg-live" aria-hidden data-testid="fresh-mark" />}
               <span className={cn("text-meta tabular-nums", s.stale || s.capture === "failed" ? "text-fg" : "text-muted")}>
-                {s.as_of ? when(s.as_of) : "never"}
+                {s.as_of ? eastern(s.as_of) : "never"}
                 {(s.stale || s.capture === "failed") && " · behind"}
               </span>
             </div>
@@ -446,19 +434,24 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
   if (!owner || !seen || !seen.configured) return null;
   const open = seen.open ?? [];
   if (open.length === 0 && seen.running && !unavailable) return null;
+  // one line: each problem by its headline (the server's line up to its first "; "), the
+  // detail in the tooltip and on the Reliability page, so the count and "N more" stay in view
+  const headline = (line: string) => line.split("; ")[0];
   const base = open.length > 0
-    ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.slice(0, 3).map((i) => i.line).join(" · ")}${open.length > 3 ? ` · ${open.length - 3} more` : ""}`
+    ? `${open.length} reliability problem${open.length === 1 ? "" : "s"}: ${open.slice(0, 2).map((i) => headline(i.line)).join(" · ")}${open.length > 2 ? ` · ${open.length - 2} more` : ""}`
     : seen.running
       ? ""
       : `Reliability checks are not running${seen.checked_at ? ` (last ${eastern(seen.checked_at)})` : ""}; a new problem would not show here.`;
   // a failed poll keeps the last alarms on screen and says they may be out of date
   const lost = `Monitoring unavailable: the last check could not be read${seen.checked_at ? ` (alarms shown are from ${eastern(seen.checked_at)})` : ""}.`;
-  const text = unavailable ? (base ? `${base} · ${lost}` : lost) : base;
+  // the failed poll is said first: a long problem line must not truncate it away
+  const text = unavailable ? (base ? `${lost} ${base}` : lost) : base;
+  const full = open.length > 0 ? [`${open.length} reliability problem${open.length === 1 ? "" : "s"}:`, ...open.map((i) => i.line)].join("\n") : base;
   return (
     <Link
       href="/ops"
       role="alert"
-      title={text}
+      title={unavailable && full ? `${lost}\n${full}` : unavailable ? lost : full}
       className={cn("flex items-center gap-1.5 border-b border-late-line bg-late-soft px-5 py-1 text-[12px] leading-4 text-late hover:underline", className)}
       data-testid="ops-alarm-banner"
     >

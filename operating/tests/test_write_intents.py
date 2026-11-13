@@ -346,6 +346,7 @@ class Execution(Base):
         again = self.desk.approve(iid, APPROVER, self.ctx(grants=grants), confirmed=True,
                                   shown_hash=shown["preview_hash"], acknowledge_warnings=True)
         self.assertFalse(again["replayed"])
+        self.assertEqual([h["status"] for h in again["history"]].count("approved"), 2)
         self.assertEqual(self.desk.execute(iid, runner, self.ctx(grants=grants),
                                            idempotency_key="b" * 20)["status"], "would_write")
         self.desk.clock = lambda: now   # a standing approval is replayed, not doubled
@@ -449,6 +450,21 @@ class Execution(Base):
             self.desk.execute(iid, APPROVER, self.ctx(env), idempotency_key="v" * 20)
         self.assertIn("check BC", " ".join(caught.exception.problems))
         self.assertEqual(len(self.desk.transport.sent), 1)
+        # ACT-005: past the approval's age the retry continues the same approved run (it
+        # is judged on its people, not its age), still only once BC is checked; it is
+        # never approved again over the unknown outcome
+        later = datetime.now(timezone.utc) + wi.APPROVAL_MAX_AGE + timedelta(days=1)
+        self.desk.clock = lambda: later
+        with self.assertRaises(wi.WriteRefused) as caught:
+            self.desk.execute(iid, APPROVER, self.ctx(env), idempotency_key="w" * 20)
+        self.assertIn("check BC", " ".join(caught.exception.problems))
+        with self.assertRaises(wi.WriteRefused):
+            shown = self.desk.preview(iid, self.ctx(env))
+            self.desk.approve(iid, APPROVER, self.ctx(env), confirmed=True,
+                              shown_hash=shown["preview_hash"], acknowledge_warnings=True)
+        self.desk.execute(iid, APPROVER, self.ctx(env), idempotency_key="x" * 20,
+                          checked_bc=True)
+        self.assertEqual(len(self.desk.transport.sent), 2)
 
     def test_an_active_run_cannot_be_dispatched_again_through_recovery(self) -> None:
         # ACT-001 invariant: while the first run is out, a second run with "I checked BC"

@@ -159,6 +159,20 @@ describe("reliability banner on every page", () => {
     expect(banner.outerHTML).not.toMatch(/animate-|rounded-full/);
   });
 
+  it("keeps the count, each problem's headline and the failed-poll notice in view of one line", async () => {
+    auth.state = me({ ops_reader: true });
+    const long = (n: number) => ({ key: `k${n}`, line: `mail capture last refreshed ${n} days ago (target 5 h); stale since Nov 10; last error child_timeout`, opened_at: "2030-01-02T16:40:00Z" });
+    api.alarms = { ...alarms, open: [long(1), long(2), long(3), long(4)] };
+    render(<OpsAlarmBanner every={30} />);
+    const banner = await screen.findByTestId("ops-alarm-banner");
+    expect(banner).toHaveTextContent("4 reliability problems: mail capture last refreshed 1 days ago (target 5 h) · mail capture last refreshed 2 days ago (target 5 h) · 2 more");
+    expect(banner).not.toHaveTextContent("child_timeout");
+    // the detail is not lost: every line in full in the tooltip
+    expect(banner.getAttribute("title")).toContain("4 days ago (target 5 h); stale since Nov 10; last error child_timeout");
+    api.alarms = new Error("network");
+    await waitFor(() => expect(screen.getByTestId("ops-alarm-banner").textContent).toMatch(/^Monitoring unavailable/));
+  });
+
   it("says when the checks themselves stopped", async () => {
     auth.state = me({ ops_reader: true });
     api.alarms = { ...alarms, running: false, open: [] };

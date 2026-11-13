@@ -1082,6 +1082,17 @@
             "description": "Why the assistant could not work the question (its usage limit, its sign-in, its time limit or an error), in words; the answer then shows what the records read without it show. Null when it ran.",
             "title": "Assistant Unavailable"
           },
+          "assumption": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Assumption"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the answer took an open question to mean, with the other readings to change it."
+          },
           "attachments": {
             "description": "The question's attachments: what was read and what was not, and why.",
             "items": {
@@ -1089,6 +1100,17 @@
             },
             "title": "Attachments",
             "type": "array"
+          },
+          "clarify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Clarify"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "One question asked back because the answer turns on a choice the question leaves open; nothing else is answered until it is picked."
           },
           "conflicts": {
             "items": {
@@ -1773,6 +1795,17 @@
             "title": "Attachments",
             "type": "array"
           },
+          "clarified": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClarifyReply"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An answer to the question an earlier answer asked back (or another reading of its assumption): continues that question."
+          },
           "context": {
             "anyOf": [
               {
@@ -1869,6 +1902,29 @@
           "question"
         ],
         "title": "AskRequest",
+        "type": "object"
+      },
+      "Assumption": {
+        "additionalProperties": false,
+        "description": "What the answer took the question to mean, in one line, and the other readings:\npicking one asks it again under that reading (``AskRequest.clarified.option``).",
+        "properties": {
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ClarifyOption"
+            },
+            "maxItems": 3,
+            "title": "Options",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "Assumption",
         "type": "object"
       },
       "AtRisk": {
@@ -4202,6 +4258,14 @@
             "title": "Counts Exact",
             "type": "boolean"
           },
+          "data_note_items": {
+            "description": "The same notes with their check and reason, so a reader can list the records (GET /api/briefing/unjudged).",
+            "items": {
+              "$ref": "#/components/schemas/BriefingDataNote"
+            },
+            "title": "Data Note Items",
+            "type": "array"
+          },
           "data_notes": {
             "description": "What the checks could not judge, per check and reason, as counts only: e.g. 'late customer orders: cannot check 12 records that lack order lines'.",
             "items": {
@@ -4463,6 +4527,37 @@
         "title": "BriefingCheck",
         "type": "object"
       },
+      "BriefingDataNote": {
+        "additionalProperties": false,
+        "description": "One check's records it could not judge for one reason, as a count.",
+        "properties": {
+          "check": {
+            "title": "Check",
+            "type": "string"
+          },
+          "count": {
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "check",
+          "reason",
+          "count",
+          "words"
+        ],
+        "title": "BriefingDataNote",
+        "type": "object"
+      },
       "BriefingEventType": {
         "additionalProperties": false,
         "description": "One event type: its checks' state this run and whether a recorded run over this data\nhas found one of this type.",
@@ -4499,6 +4594,7 @@
               "reject_trend",
               "expedite_unanswered",
               "supplier_shortage_open_orders",
+              "return_unanswered",
               "supplier_chasing_payment",
               "customer_paying_slower",
               "early_pay_discount_missed",
@@ -4649,6 +4745,7 @@
               "reject_trend",
               "expedite_unanswered",
               "supplier_shortage_open_orders",
+              "return_unanswered",
               "supplier_chasing_payment",
               "customer_paying_slower",
               "early_pay_discount_missed",
@@ -4873,6 +4970,7 @@
               "reject_trend",
               "expedite_unanswered",
               "supplier_shortage_open_orders",
+              "return_unanswered",
               "supplier_chasing_payment",
               "customer_paying_slower",
               "early_pay_discount_missed",
@@ -5119,6 +5217,7 @@
               "reject_trend",
               "expedite_unanswered",
               "supplier_shortage_open_orders",
+              "return_unanswered",
               "supplier_chasing_payment",
               "customer_paying_slower",
               "early_pay_discount_missed",
@@ -5226,6 +5325,69 @@
           "ok"
         ],
         "title": "BriefingSeen",
+        "type": "object"
+      },
+      "BriefingUnjudged": {
+        "additionalProperties": false,
+        "description": "The records one check could not judge that you may read (the count on your\nbriefing), a page at a time; a record you may not read is never listed or counted.",
+        "properties": {
+          "check": {
+            "title": "Check",
+            "type": "string"
+          },
+          "complete": {
+            "description": "False when the check also skipped records it could not name, so the list is not all it skipped.",
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "more": {
+            "default": false,
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_offset": {
+            "description": "The offset of the next page (a record your whole read does not show is left out of this one, so it can hold fewer).",
+            "minimum": 0.0,
+            "title": "Next Offset",
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/UnjudgedRecord"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "check",
+          "total",
+          "offset",
+          "next_offset",
+          "complete"
+        ],
+        "title": "BriefingUnjudged",
         "type": "object"
       },
       "BuildWait": {
@@ -5402,6 +5564,116 @@
           "source"
         ],
         "title": "CitedText",
+        "type": "object"
+      },
+      "Clarify": {
+        "additionalProperties": false,
+        "description": "The one question asked back instead of guessing: answer it with an option\n(``AskRequest.clarified.option``) or in your own words (``clarified.text``); the\nanswer continues the same conversation.",
+        "properties": {
+          "free_text": {
+            "default": true,
+            "title": "Free Text",
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ClarifyOption"
+            },
+            "maxItems": 4,
+            "title": "Options",
+            "type": "array"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "Clarify",
+        "type": "object"
+      },
+      "ClarifyOption": {
+        "additionalProperties": false,
+        "description": "One quick reply: its words, and the record it picks (a record the reader may\nread, offered from their own records) or none (a reading such as a period).",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The record's own values that tell it apart (date, amount, status).",
+            "title": "Detail"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "ClarifyOption",
+        "type": "object"
+      },
+      "ClarifyReply": {
+        "additionalProperties": false,
+        "description": "The person's answer to an earlier answer's ``clarify`` question or ``assumption``:\nthe answer it replies to, and an option's index or their own words.",
+        "properties": {
+          "answer_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "option": {
+            "anyOf": [
+              {
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 400,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "answer_id"
+        ],
+        "title": "ClarifyReply",
         "type": "object"
       },
       "Conflict": {
@@ -8449,6 +8721,15 @@
             "title": "Meetings Used",
             "type": "array"
           },
+          "options": {
+            "description": "Choices for the question, each from your materials; answering in your own words works too.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Options",
+            "type": "array"
+          },
           "proposed": {
             "description": "Meetings whose notes the question proposes to use.",
             "items": {
@@ -10664,6 +10945,12 @@
             },
             "title": "Offers",
             "type": "array"
+          },
+          "order_import": {
+            "default": false,
+            "description": "A prepared order with its lines: GET ``/api/my-work/{item_id}/order-import`` gives it as an import file (CSV) for the Portal or Business Central.",
+            "title": "Order Import",
+            "type": "boolean"
           },
           "prepared": {
             "additionalProperties": true,
@@ -15933,6 +16220,31 @@
         "title": "UnderstoodEntity",
         "type": "object"
       },
+      "UnjudgedRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "type": {
+            "description": "The record's object type (its id's prefix).",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "label"
+        ],
+        "title": "UnjudgedRecord",
+        "type": "object"
+      },
       "UpcomingMeeting": {
         "additionalProperties": false,
         "properties": {
@@ -20040,6 +20352,7 @@
                 "reject_trend",
                 "expedite_unanswered",
                 "supplier_shortage_open_orders",
+                "return_unanswered",
                 "supplier_chasing_payment",
                 "customer_paying_slower",
                 "early_pay_discount_missed",
@@ -20198,6 +20511,113 @@
           }
         },
         "summary": "Briefing Seen",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/briefing/unjudged": {
+      "get": {
+        "description": "The records one check could not judge that you may read, a page at a time (a\ndata note's list on the briefing).",
+        "operationId": "briefing_unjudged_api_briefing_unjudged_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "check",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Check",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefingUnjudged"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Briefing Unjudged",
         "tags": [
           "home"
         ]
@@ -21561,6 +21981,77 @@
           }
         },
         "summary": "My Work",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/my-work/{item_id}/order-import": {
+      "get": {
+        "description": "Your item's prepared order as an import file (CSV, one row per order line) to\npaste or import into the Portal or Business Central. Nothing is entered.",
+        "operationId": "my_work_order_import_api_my_work__item_id__order_import_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "My Work Order Import",
         "tags": [
           "actions"
         ]

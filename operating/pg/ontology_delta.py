@@ -490,16 +490,8 @@ _KEYED = {
     "identifiers": (f"object_id IN {_OWNED_PG}",),
     "events": (f"event_id IN {_EVENTS_PG}",),
     "event_objects": (f"event_id IN {_EVENTS_PG}",),
-    # each delete on its own index; a whole-store step's links are not the layer's
-    "link_rows": (f"from_object IN {_OWNED_PG} AND {_whole_steps.pg_excluded()}",
-                  f"to_object IN {_OWNED_PG} AND {_whole_steps.pg_excluded()}"),
 }
-# a served column read as the layer writes it (a link row stored packed, migration 0007)
-_SERVED_AS = {"link_rows": {
-    "reason": "coalesce(t.reason, ontology.link_text(t.reason_id, t.slots, t.ek + 1, 64))",
-    "evidence_handles": "coalesce(t.evidence_handles, ontology.link_text(t.evidence_id, "
-                        "t.slots, 1, t.ek))"}}
-_RENUMBERED = {"objects": "row_no", "link_rows": "row_no"}   # a changed row reads as new
+_RENUMBERED = {"objects": "row_no"}   # a changed row reads as new
 _SIG_BLOCK = 20_000   # sources whose cells are signed at once
 
 
@@ -547,12 +539,10 @@ def _diff_keyed(cur: Any, table: str, columns: Sequence[str], rows: Any,
                     + ")")
         deleted += cur.rowcount
     rest = [c for c in columns if c not in key]
-    served = _SERVED_AS.get(table, {})
     sets = ([f"{c} = excluded.{c}" for c in rest]
-            + [f"{c} = DEFAULT" for c in _UNPACK.get(table, ()) if c not in columns]
             + ([f"{_RENUMBERED[table]} = DEFAULT"] if table in _RENUMBERED else []))
     if rest:
-        differs = (f"({', '.join(served.get(c, 't.' + c) for c in rest)}) IS DISTINCT FROM "
+        differs = (f"({', '.join('t.' + c for c in rest)}) IS DISTINCT FROM "
                    f"({', '.join('excluded.' + c for c in rest)})")
         action = f"DO UPDATE SET {', '.join(sets)} WHERE {differs}"
     else:
@@ -959,13 +949,185 @@ def _replace(conn: sqlite3.Connection, path: str, cur: Any, ids: str,
         rows = conn.execute(f"SELECT * FROM ({select}) WHERE {_PLAIN[table]}", {"ids": ids})
         report.update(_diff_keyed(cur, table, spec.columns[numbered:], rows, keys))
     report.update(_diff_versions(conn, path, cur, ids, dsn))
-    links = conn.execute(
-        f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links WHERE (from_object IN "
-        f"{_OWNED} OR to_object IN {_OWNED}) AND {_whole_steps.sqlite_excluded()}",
-        {"ids": ids})
-    report.update(_diff_keyed(cur, "link_rows", store_ddl.LINK_COLUMNS, links, keys))
+    report.update(_links_staged(conn, cur, ids, Path(path).name))
     report.update(_diff_text(conn, cur, ids, dsn))
     return report
+
+
+# --------------------------------------------------------------------------- links
+
+# The links with an end at an owned object are written by the step migrations' staged
+# apply (``operating.pg.step_staging``: ``stage_rows``, ``apply_in``), in this
+# transaction, as the step ``delta:<generation>:<layer>`` of the stage schema STAGE_SCHEMA
+# (never the migrations' ``steps_stage``, which a run holds and drops), one part per batch
+# of owned objects (a link is in the batch of its from object when that is owned, else of
+# its owned to object): a link the layer holds alike stays where it is, a changed or new
+# one is inserted (a served one of its id deleted, wherever its ends are), a served one
+# the layer no longer holds deleted, with the apply's checks (a deleted link still served,
+# the rows inserted per link type equal to the stage) and its undo (the deleted rows as
+# they were, the inserted ids and the transaction that wrote them). The undo of the last
+# UNDO_KEEP layers is kept (``undo_layer``: the newest only); older bits are pruned in the
+# same transaction. The schema is made again (its undo dropped) when ``link_rows``' columns
+# are not the ones it was made with.
+STAGE_SCHEMA = os.environ.get("PLX_DELTA_STAGE_SCHEMA", "delta_stage")
+UNDO_KEEP = int(os.environ.get("PLX_DELTA_UNDO_KEEP", "48"))
+_LINK_RUN = "delta"   # the stage schema's run key (one follower: every layer the same)
+_LINK_BATCH = 5_000   # owned objects whose links are compared at once
+_BITS = ("undo_deleted", "undo_inserted", "staged", "applied", "links", "gone")
+
+
+def _stage_schema() -> str:
+    import re
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", STAGE_SCHEMA) or STAGE_SCHEMA == "ontology":
+        raise ValueError(f"delta_stage_schema_name:{STAGE_SCHEMA}")
+    return STAGE_SCHEMA
+
+
+def _link_step(generation: str | None, name: str) -> str:
+    """A layer's step name in the stage schema: its generation's and its own (a layer
+    name a later generation reuses is another step; an undo never crosses a reload)."""
+    return f"delta:{str(generation or '').rsplit(':', 1)[-1][:16]}:{name}"
+
+
+def _ensure_stage(cur: Any, s: str) -> None:
+    """The delta's stage schema, made again when ``link_rows``' columns changed (its
+    copies of served rows would no longer fit: every cycle would fail)."""
+    from operating.pg import step_staging
+    cur.execute("SELECT string_agg(column_name, ',' ORDER BY ordinal_position) FROM "
+                "information_schema.columns WHERE table_schema = 'ontology' AND "
+                "table_name = 'link_rows'")
+    columns = cur.fetchone()[0]
+    if step_staging.exists(cur, s):
+        cur.execute("SELECT to_regclass(%s)", (f"{s}.applied",))
+        made = None
+        if cur.fetchone()[0] is not None:
+            cur.execute(f"SELECT value FROM {s}.meta WHERE key = 'link_columns'")
+            made = (cur.fetchone() or (None,))[0]
+        if made != columns:
+            cur.execute(f"DROP SCHEMA {s} CASCADE")
+    step_staging.ensure(cur, _LINK_RUN, s)
+    step_staging._ensure_applied(cur, s)
+    cur.execute(f"INSERT INTO {s}.meta (key, value) VALUES ('link_columns', %s) "
+                "ON CONFLICT (key) DO NOTHING", (columns,))
+
+
+def _links_staged(conn: sqlite3.Connection, cur: Any, ids: str, name: str
+                  ) -> dict[str, int]:
+    """The owned objects' links (an end at one; a whole-store step's are not the
+    layer's) brought to the layer's through the staged apply (see above)."""
+    from operating.pg import step_staging
+    s = _stage_schema()
+    step = _link_step(_meta(conn, "content_digest"), name)
+    _ensure_stage(cur, s)
+    # a layer applied again under this generation (its record removed): its earlier bits
+    # describe rows it is about to compare again, so they go
+    for table in _BITS:
+        cur.execute(f"DELETE FROM {s}.{table} WHERE step = %s", (step,))
+    excluded = _whole_steps.pg_excluded()
+    cols = ", ".join(store_ddl.LINK_COLUMNS)
+    owned = json.loads(ids)
+    out = {k: 0 for k in ("deleted.link_rows", "written.link_rows", "replaced.link_rows",
+                          "kept.link_rows", "copied.link_rows", "undo.link_rows")}
+    for part, k in enumerate(range(0, len(owned), _LINK_BATCH)):
+        batch = owned[k:k + _LINK_BATCH]
+        rows = [tuple(_clean(v) for v in row) for row in conn.execute(
+            f"SELECT {cols} FROM links WHERE from_object IN (SELECT value FROM json_each(:b)) "
+            f"AND {_whole_steps.sqlite_excluded()} UNION ALL SELECT {cols} FROM links WHERE "
+            f"to_object IN (SELECT value FROM json_each(:b)) AND from_object NOT IN {_OWNED} "
+            f"AND {_whole_steps.sqlite_excluded()}", {"b": json.dumps(batch), "ids": ids})]
+        held = step_staging.served_rows(
+            cur, f"l.from_object = ANY(%s::text[]) AND {excluded}", [batch])
+        step_staging.served_rows(
+            cur, f"l.to_object = ANY(%s::text[]) AND l.from_object NOT IN {_OWNED_PG} AND "
+                 f"{excluded}", [batch], held=held)
+        # a served link of a layer link's id with no owned end (its ends moved): replaced
+        elsewhere = [r[0] for r in rows if r[0] not in held]
+        for m in range(0, len(elsewhere), 20_000):
+            step_staging.served_rows(cur, "l.link_id = ANY(%s::text[])",
+                                     [elsewhere[m:m + 20_000]], held=held)
+        rep, digest, replaced = step_staging.stage_rows(cur, s, step, part, rows, held)
+        removed = sorted(held)   # served with an owned end in the batch, not in the layer
+        for m in range(0, len(removed), 20_000):
+            step_staging._gone(cur, s, step, part, removed[m:m + 20_000])
+        for g in removed:
+            digest.update(b"-" + g.encode())
+        rep["gone"] += len(removed)
+        rep["digest"] = digest.hexdigest()
+        cur.execute(f"INSERT INTO {s}.staged (step, part, report) VALUES (%s, %s, %s)",
+                    (step, part, json.dumps(rep, sort_keys=True)))
+        bit = step_staging.apply_in(cur, s, step, part, rep)
+        cur.execute(f"DELETE FROM {s}.gone WHERE step = %s AND part = %s", (step, part))
+        out["deleted.link_rows"] += len(removed)
+        out["written.link_rows"] += rep["written"]
+        out["replaced.link_rows"] += replaced
+        out["kept.link_rows"] += rep["same"]
+        out["copied.link_rows"] += rep["rows"]
+        out["undo.link_rows"] += bit["deleted"]
+    # the transaction that wrote them: an undo refuses once another one rewrote any
+    cur.execute(f"SELECT DISTINCT l.xmin::text FROM ontology.link_rows l JOIN "
+                f"{s}.undo_inserted u ON u.link_id = l.link_id WHERE u.step = %s", (step,))
+    xmins = {r[0] for r in cur.fetchall()}
+    cur.execute(f"INSERT INTO {s}.meta (key, value) VALUES (%s, %s)",
+                (f"xmin:{step}", json.dumps(sorted(xmins))))
+    _prune_undo(cur, s)
+    return out
+
+
+def _prune_undo(cur: Any, s: str) -> None:
+    """The undo of every delta layer but the newest UNDO_KEEP removed."""
+    cur.execute(f"SELECT step FROM {s}.applied WHERE starts_with(step, 'delta:') GROUP BY "
+                "step ORDER BY max(applied_at) DESC, step DESC OFFSET %s",
+                (max(UNDO_KEEP, 1),))
+    old = [r[0] for r in cur.fetchall()]
+    if old:
+        for table in _BITS:
+            cur.execute(f"DELETE FROM {s}.{table} WHERE step = ANY(%s)", (old,))
+        cur.execute(f"DELETE FROM {s}.meta WHERE key = ANY(%s)", ([f"xmin:{o}" for o in old],))
+
+
+def undo_layer(dsn: str, name: str) -> dict[str, Any]:
+    """The links an applied layer (its file name) wrote taken back: its inserted links
+    deleted and the served rows it deleted put back as they were. Only the newest layer
+    of the served generation whose undo is kept, and only while no other transaction has
+    written one of its links since (a step migration's apply, another layer); its objects,
+    values and text stay the layer's, and it stays recorded applied. Refused otherwise,
+    nothing changed."""
+    import psycopg
+    from operating.pg import step_staging
+    s = _stage_schema()
+    with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg, pg.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext('ontology_delta'))")
+        cur.execute("SELECT value FROM ontology.load_state WHERE name = 'generation'")
+        row = cur.fetchone()
+        step = _link_step((row[0] or {}).get("content_digest") if row else None, name)
+        cur.execute("SELECT to_regclass(%s)", (f"{s}.applied",))
+        newest = None
+        if cur.fetchone()[0] is not None:
+            cur.execute(f"SELECT step FROM {s}.applied WHERE starts_with(step, 'delta:') "
+                        "ORDER BY applied_at DESC, step DESC LIMIT 1")
+            newest = (cur.fetchone() or (None,))[0]
+        if newest != step:   # not kept, of another generation, or a later layer applied
+            raise step_staging.StageRefused(f"delta_undo_not_newest:{name}")
+        cur.execute(f"SELECT value FROM {s}.meta WHERE key = %s", (f"xmin:{step}",))
+        wrote = set(json.loads((cur.fetchone() or ("[]",))[0]))
+        # its inserted rows still the ones it wrote, the rows it only deleted still absent
+        cur.execute(f"SELECT count(*) FROM {s}.undo_inserted u LEFT JOIN ontology.link_rows "
+                    "l ON l.link_id = u.link_id WHERE u.step = %s AND (l.link_id IS NULL OR "
+                    "NOT l.xmin::text = ANY(%s))", (step, sorted(wrote)))
+        changed = cur.fetchone()[0]
+        cur.execute(f"SELECT count(*) FROM {s}.undo_deleted d JOIN ontology.link_rows l ON "
+                    f"l.link_id = d.link_id WHERE d.step = %s AND NOT EXISTS (SELECT 1 FROM "
+                    f"{s}.undo_inserted u WHERE u.step = d.step AND u.link_id = d.link_id)",
+                    (step,))
+        changed += cur.fetchone()[0]
+        if changed:
+            raise step_staging.StageRefused(f"delta_undo_links_written_since:{name}:{changed}")
+        out = {"removed": 0, "restored": 0}
+        for part in sorted(step_staging.applied(cur, step, s), reverse=True):
+            got = step_staging.undo_in(cur, s, step, part)
+            out = {k: out[k] + got[k] for k in out}
+        cur.execute(f"DELETE FROM {s}.meta WHERE key = %s", (f"xmin:{step}",))
+        return out
 
 
 def _keep_facts(dsn: str, report: dict[str, Any], text_store: Path | None = None,
@@ -1232,8 +1394,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="a floor below the next projection build's room, which every "
                              "load keeps free (ontology_load.build_floor)")
     parser.add_argument("--workers", type=int, default=12)
+    parser.add_argument("--undo-links", metavar="LAYER", default=None,
+                        help="take back the links the newest applied layer (its file name) "
+                             "wrote (``undo_layer``)")
     args = parser.parse_args(argv)
     dsn = args.dsn or config.dsn()
+    if args.undo_links:
+        print(json.dumps(undo_layer(dsn, args.undo_links), sort_keys=True), flush=True)
+        return 0
     if args.follow:
         out = follow(args.follow, dsn, reload=not args.no_reload, workers=args.workers,
                      min_free=int(args.min_free_gb * 1024 ** 3))

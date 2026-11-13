@@ -27,6 +27,11 @@ overriding any of them):
   Portal mirror (its newest refresh of a relation of that lineage), calendar events and
   Planner tasks of the meetings capture (its last complete run of that kind), bounded by
   their carrier's turn; checked only while the carrier is configured.
+* ``capture_undecided_list``: hours the oldest address the mail capture's purge could not
+  decide (a list whose members cannot all be read and confirmed: ``undecided_addresses``
+  in ``mail-capture/capture.db``) has stayed undecided; every reader is withheld the mail
+  naming one meanwhile, so past ``capture_undecided_list_hours`` it is a breach (counts
+  and times only, never an address). No mail capture: no check.
 * ``search_follow_last_pass``: minutes since the search index follower last saved its
   cursor (``search/follow.json``).
 * ``ingest_start``: the host's ``serve`` refused to start (bad config, state dir) at least
@@ -69,6 +74,7 @@ DEFAULT_TARGETS: dict[str, float] = {
     "delta_cycle_runtime_minutes": 30,
     "capture_minutes": 360,
     "capture_failed_runs": 2,      # runs in a row a capture source may fail
+    "capture_undecided_list_hours": 24,   # an address withheld as undecided this long
     "ingest_start_failures": 3,
     "pg_follow_behind_layers": 6,
     "pg_follow_stall_minutes": 30,
@@ -226,6 +232,45 @@ def capture_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[C
         check.update(last_success_at=_iso(last), newest_record_at=_iso(newest))
         out.append(check)
     return out
+
+
+def undecided_list_check(state: Path, now: datetime, t: Mapping[str, float]
+                         ) -> Optional[Check]:
+    """``capture_undecided_list``: hours since the oldest still-undecided address of the
+    mail capture was first found undecided (``MailCaptureStore.purge_withheld``), a
+    breach past the bound. None without a mail capture store; ``unknown`` when it cannot
+    be read; 0 when no purge recorded one."""
+    bound = t["capture_undecided_list_hours"]
+    path = state / "mail-capture" / "capture.db"
+    if not path.is_file():
+        return None
+    try:
+        conn = _ro(path)
+        try:
+            count, oldest = conn.execute(
+                "SELECT COUNT(*), MIN(since) FROM undecided_addresses").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return _check("capture_undecided_list", 0, bound, False, "h",
+                          "no undecided address recorded")
+        return _check("capture_undecided_list", None, bound, None, "h",
+                      "mail capture store unreadable")
+    except sqlite3.Error:
+        return _check("capture_undecided_list", None, bound, None, "h",
+                      "mail capture store unreadable")
+    if not count:
+        return _check("capture_undecided_list", 0, bound, False, "h")
+    since = _parse(oldest)
+    if since is None:   # a count with no readable time: undecided for an unknown time
+        return _check("capture_undecided_list", None, bound, True, "h",
+                      f"{count} undecided address(es), since unknown; mail naming them "
+                      "is withheld from every reader")
+    hours = round(max(0.0, (now - since).total_seconds()) / 3600, 1)
+    return _check("capture_undecided_list", hours, bound, hours > bound, "h",
+                  f"{count} undecided address(es) since {_et(since, now)}; mail naming "
+                  "them is withheld from every reader")
 
 
 def _iso(when: Optional[datetime]) -> Optional[str]:
@@ -681,7 +726,7 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
     checks += capture_run_checks(state, now, t)
     checks += source_checks(state, now, t)
     for extra in (start_check(state, t), service_check(state, now),
-                  config_keys_check(state)):
+                  config_keys_check(state), undecided_list_check(state, now, t)):
         if extra is not None:
             checks.append(extra)
     checks.append(pg_check(state, now, t, pg_dsn))

@@ -667,6 +667,49 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+
+# The prepared order as a file to import or paste (Business Central's sales line captions;
+# one row per line, the header's fields on each row). Text only: a value a spreadsheet would
+# run as a formula is written with a leading apostrophe.
+IMPORT_COLUMNS = ("Document Type", "Sell-to Customer No.", "External Document No.",
+                  "Order Date", "Type", "No.", "Quantity", "Unit of Measure Code",
+                  "Unit Price")
+_PLAIN_NUMBER = re.compile(r"^-?\d+(?:\.\d+)?$")
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+
+def _cell(value: Any) -> str:
+    """A plain number as it is; any other value a spreadsheet would read as a formula
+    (``=``, ``+``, ``-``, ``@`` or a control character first) with a leading apostrophe."""
+    text = "" if value is None else str(value)
+    if _PLAIN_NUMBER.match(text):
+        return text
+    return "'" + text if text.startswith(_FORMULA_START) else text
+
+
+def order_import_csv(spec: Mapping[str, Any] | None) -> str | None:
+    """The order entry write spec (``sales_order_create`` with its lines) as CSV text; None
+    for any other spec or one without lines (nothing copy-ready)."""
+    import csv
+    import io
+    if not isinstance(spec, Mapping) or spec.get("operation") != "sales_order_create":
+        return None
+    head = spec.get("payload")
+    if not isinstance(head, Mapping):
+        return None
+    lines = [ln for ln in head.get("salesOrderLines") or () if isinstance(ln, Mapping)]
+    if not lines or not head.get("customerNumber"):
+        return None
+    out = io.StringIO()
+    w = csv.writer(out, lineterminator="\r\n")
+    w.writerow(IMPORT_COLUMNS)
+    for ln in lines:
+        w.writerow([_cell(v) for v in (
+            "Order", head.get("customerNumber"), head.get("externalDocumentNumber"),
+            head.get("orderDate"), ln.get("lineType") or "Item", ln.get("lineObjectNumber"),
+            ln.get("quantity"), ln.get("unitOfMeasureCode"), ln.get("unitPrice"))])
+    return out.getvalue()
+
 # ----------------------------------------------------------------------------- supplier POs
 
 PO_HEAD = ("po_number", "status", "bc_status", "order_date", "expected_date", "vendor_name",

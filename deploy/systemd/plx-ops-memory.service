@@ -14,6 +14,9 @@ Group=@PLX_GROUP@
 WorkingDirectory=@PLX_CURRENT@
 EnvironmentFile=/etc/plx/ingest.env
 EnvironmentFile=-@PLX_HOME@/.config/plx/plx.env
+# Reads no business system: the credentials that can send, write or reach one are dropped
+# (SEC-S-05; tests/test_deploy_release.py names the units that may keep them).
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
 EnvironmentFile=-/etc/plx/workbench-api.env
 EnvironmentFile=-/etc/plx/ops-page.env
 Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin

@@ -913,6 +913,18 @@ def _then(first: list[int], rest: Iterator[list[int]]) -> Iterator[list[int]]:
         rest.close()
 
 
+# Every distinct audience key, ascending, read by the ``audience_key`` index one key at a
+# time (each step the smallest key above the last). ``SELECT DISTINCT`` read all 14.3
+# million objects on Postgres (14-24 s at every new host process, 11-13; the first tool
+# call of an Ask session paid it) for ~9 thousand keys: this reads ~9 thousand index
+# entries (1.3 s). Postgres only: a SQLite store has no audience_key index, so each step
+# would scan every object (``audience_keys`` keeps the one scan there).
+AUDIENCE_KEYS_SQL = (
+    "WITH RECURSIVE k(a) AS (SELECT MIN(audience_key) FROM objects UNION ALL "
+    "SELECT (SELECT MIN(audience_key) FROM objects WHERE audience_key > k.a) FROM k "
+    "WHERE k.a IS NOT NULL) SELECT a FROM k WHERE a IS NOT NULL")
+
+
 class StoreReader:
     """Read-only access to a ``plx-ontology-store/v10`` SQLite file.
 
@@ -1047,13 +1059,16 @@ class StoreReader:
     def audience_keys(self) -> list[str]:
         """Every audience key of the store's objects (no reader's grants applied), kept
         until the store changes: a commit on another connection (``PRAGMA data_version``)
-        or a write on this one (``total_changes``), the stamp of ``facts``. The read scans
-        every object, so each tool call's scope paid for it as the store grew."""
+        or a write on this one (``total_changes``), the stamp of ``facts``. On Postgres read
+        by the audience index, one step per key (``AUDIENCE_KEYS_SQL``), never a scan of
+        every object; a SQLite store has no such index (each step would scan), so it is
+        one scan there."""
         with self.lock:
             stamp = (self.data_version(), self.conn.total_changes)
             if self._audiences is None or self._audiences[0] != stamp:
                 self._audiences = (stamp, tuple(row[0] for row in self.conn.execute(
-                    "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")))
+                    AUDIENCE_KEYS_SQL if getattr(self.conn, "postgres", False)
+                    else "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")))
             return list(self._audiences[1])
 
     def remember_audience_keys(self, keys: Sequence[str]) -> None:

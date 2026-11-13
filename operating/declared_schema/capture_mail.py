@@ -161,6 +161,16 @@ _UNDECIDED_DDL = """CREATE TABLE IF NOT EXISTS people_undecided (
     held_at TEXT NOT NULL,
     tried_at TEXT,
     PRIMARY KEY (mailbox_id, message_id))"""
+# Addresses the last capture purge could not decide (``purge_withheld``: a list whose
+# members cannot all be read and confirmed, or an address that may be one): every reader
+# withholds a message from, to, cc or bcc one (``undecided_free_sql``), as long as it
+# stays undecided. ``since``: when it was first found undecided (kept across runs);
+# ``checked_at``: the last purge that found it so. An address a purge decides is removed.
+# Made with the first purge that finds one undecided (not at open).
+_UNDECIDED_ADDRESSES_DDL = """CREATE TABLE IF NOT EXISTS undecided_addresses (
+    address TEXT PRIMARY KEY,
+    since TEXT NOT NULL,
+    checked_at TEXT NOT NULL)"""
 _PRIORITY_DDL = (
     "CREATE TABLE IF NOT EXISTS priority_folders (mailbox_id TEXT NOT NULL, folder_id TEXT "
     "NOT NULL, oldest TEXT, newest TEXT, PRIMARY KEY (mailbox_id, folder_id))",

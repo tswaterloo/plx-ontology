@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from ontology.types import Actor
@@ -745,12 +746,45 @@ class GraphTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, path.parent)
         with sqlite3.connect(path) as conn:
             conn.execute("CREATE TABLE link_rows (link_id TEXT, link_type TEXT, "
-                         "from_object TEXT, to_object TEXT)")
-            conn.execute("INSERT INTO link_rows VALUES ('l','PurchaseOrder.ordered_from','a','b')")
+                         "from_object TEXT, to_object TEXT, tier TEXT, markings TEXT, "
+                         "superseded_at TEXT)")
+            conn.execute("INSERT INTO link_rows VALUES ('l','PurchaseOrder.ordered_from','a','b',"
+                         "'verified','[]',NULL)")
         graph = qu.ProjectionGraph(str(path))
         self.assertEqual(graph.neighbors(["b"]), {"b": {"a": "PurchaseOrder.ordered_from"}})
         with self.assertRaises(sqlite3.OperationalError):
             graph._conn().execute("DELETE FROM link_rows")
+
+
+
+class ProjectionGraphAuthorityTests(unittest.TestCase):
+    """UNDERSTAND-003: two visible candidates are one record only by a current, unmarked
+    same_record_as link at an identity tier; a contradicted, superseded, weak or marked
+    one keeps the choice."""
+
+    def test_only_a_current_identity_link_makes_two_candidates_one(self):
+        path = Path(tempfile.mkdtemp()) / "p.sqlite"
+        self.addCleanup(shutil.rmtree, path.parent)
+        rows = {"none": None, "contradicted": ("contradicted", "[]", None),
+                "superseded": ("verified", "[]", "2026-01-02T00:00:00Z"),
+                "lead": ("lead", "[]", None), "marked": ("verified", '["finance"]', None),
+                "verified": ("verified", "[]", None), "reviewed": ("reviewed", "[]", None)}
+        cands = [qu.Candidate("Supplier:a", "Supplier", "Acme", 0.9, "", ""),
+                 qu.Candidate("Supplier:b", "Supplier", "Acme Inc", 0.9, "", "")]
+        for name, row in rows.items():
+            with self.subTest(name), sqlite3.connect(path) as conn:
+                conn.execute("DROP TABLE IF EXISTS link_rows")
+                conn.execute("CREATE TABLE link_rows (link_id TEXT, link_type TEXT, "
+                             "from_object TEXT, to_object TEXT, tier TEXT, markings TEXT, "
+                             "superseded_at TEXT)")
+                if row is not None:
+                    conn.execute("INSERT INTO link_rows VALUES (?,?,?,?,?,?,?)",
+                                 ("l", "Supplier.same_record_as", "Supplier:a", "Supplier:b",
+                                  *row))
+                conn.commit()
+                resolver = mock.Mock(neighbors=qu.ProjectionGraph(str(path)).neighbors)
+                groups = qu._group(cands, resolver)
+                self.assertEqual(len(groups), 1 if name in ("verified", "reviewed") else 2)
 
 
 @unittest.skipUnless(PG, "Postgres with pg_trgm and psycopg needed")

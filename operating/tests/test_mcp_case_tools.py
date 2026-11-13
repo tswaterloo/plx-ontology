@@ -1679,6 +1679,57 @@ class DocumentMetadataToolTests(CaseToolsTestCase):
                 self.assertEqual("portal.app_purchase_order" in bindings,
                                  "staff:operations" in principals)
 
+    def test_a_name_several_readable_records_answer_is_asked_back_with_only_those(self):
+        """MCP clarify (operating.clarify.ask_back): plx.find's ambiguous answer to a
+        number carries ask_back with the records this reader matched, never one another
+        reader's grants hold; one match, a filter listing or an agent's own session
+        (switch off) carries none, and every answer passes the output contract."""
+        self.sage_po_keyed()
+        rows = self.fake.tables["public.app_purchase_order"]
+        rows.append(dict(rows[0], id="po-b"))  # a second Portal PO printed PO-1001
+        runtime = self.runtime_for(CONFIRMATION, ocr=False)
+        expected = {OPS: 2, OPS_FINANCE: 3, FINANCE: 0}
+        for principals, count in expected.items():
+            with self.subTest(principals=sorted(principals)):
+                server = self.server(principals, runtime)
+                found = self.ok(server, "plx.find", {"query": "PO-1001"})
+                readable = [c["object"]["object_id"] for c in found["candidates"]
+                            if c["tier"] != "contradicted"]
+                if not count:
+                    self.assertNotIn("ask_back", found)
+                    continue
+                self.assertEqual(found["status"], "ambiguous")
+                back = found["ask_back"]
+                self.assertEqual(back["why"], "several_records_match")
+                ids = [o["object_id"] for o in back["options"]]
+                self.assertEqual(len(ids), count)
+                self.assertEqual(len(set(ids)), count)
+                self.assertTrue(set(ids) <= set(readable))
+                types = " ".join(json.dumps(o) for o in back["options"])
+                self.assertEqual("sage" in types.lower(), "staff:finance" in principals)
+                with mock.patch.dict(os.environ, {"PLX_MCP_ASK_BACK": "off"}):
+                    plain = self.ok(server, "plx.find", {"query": "PO-1001"})
+                self.assertNotIn("ask_back", plain)
+                # options that would push the answer past its size bound are left out;
+                # the answer itself still comes back whole
+                def size(off: bool) -> int:
+                    self.request_id += 1
+                    with mock.patch.dict(os.environ, {"PLX_MCP_ASK_BACK": "off" if off
+                                                      else "on"}):
+                        sent = server.handle({"jsonrpc": "2.0", "id": self.request_id,
+                                              "method": "tools/call", "params": {
+                                                  "name": "plx.find",
+                                                  "arguments": {"query": "PO-1001"}}})
+                    return mcp_server._envelope_size(sent["result"])
+                bound = size(True) + mcp_server._UNKEPT_NOTE_BYTES + 100
+                self.assertGreater(size(False) + mcp_server._UNKEPT_NOTE_BYTES, bound)
+                with mock.patch.object(mcp_server, "MAX_RESULT_BYTES", bound):
+                    near = self.ok(server, "plx.find", {"query": "PO-1001"})
+                self.assertNotIn("ask_back", near)
+                self.assertEqual(near["candidates"], plain["candidates"])
+                listing = self.ok(server, "plx.find", {"object_type": "PurchaseOrder"})
+                self.assertNotIn("ask_back", listing)
+
     def test_link_lookup_failure_is_reported_not_an_empty_answer(self):
         runtime = self.runtime_for(CONFIRMATION, ocr=False)
         server = self.server(OPS, runtime)

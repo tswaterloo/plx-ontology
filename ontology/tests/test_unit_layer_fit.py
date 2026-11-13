@@ -563,6 +563,25 @@ class ResumeTests(tp.ProjectionCase):
             finally:
                 held.close()
 
+    def test_a_fresh_start_removes_the_earlier_runs_working_files(self):
+        """SCHEMA-003: a fresh start over an earlier run's checkpoint removes the working
+        and builder files its manifest names (and only those)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            files = {k: Path(tmp, f"{k}.sqlite") for k in ("work", "builder")}
+            other = Path(tmp, "unrelated.sqlite")
+            for path in (*files.values(), other, Path(f"{files['builder']}-journal")):
+                path.write_bytes(b"x")
+            first = fit.Resume(Path(tmp) / "r", self.IDENTITY)
+            first.manifest.update(phase="loaded", **{k: str(v) for k, v in files.items()})
+            first._write()
+            first.close()
+            fit.Resume(Path(tmp) / "r", {**self.IDENTITY, "plan": "another"},
+                       fresh=True).close()
+            self.assertEqual([p for p in files.values() if p.exists()], [])
+            self.assertFalse(Path(f"{files['builder']}-journal").exists())
+            self.assertTrue(other.exists())
+            self.assertFalse(Path(tmp, "r", "manifest.json").exists())
+
 
 class ParallelUnitsTests(tp.ProjectionCase):
     """A unit layer's units projected by worker processes, a task each, merged as they

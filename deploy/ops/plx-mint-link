@@ -1,0 +1,121 @@
+#!/bin/bash
+# The one way to mint a live access link once the live session secret is root's alone
+# (SEC-S-07; install: deploy/release/README-api-user.md). Installed root:root 0755 as
+# /usr/local/sbin/plx-mint-link and run through sudo:
+#
+#   sudo plx-mint-link [TTL_MINUTES]                 the owner reader (agent scripts use this)
+#   sudo plx-mint-link --person VAR [TTL_MINUTES]    another reader's claims variable (e.g. the
+#                                                    full-read person's): a person at a
+#                                                    terminal only, never an agent script
+#
+# Reads only root's files, never the caller's environment or env files: the secret from
+# /etc/plx/live-session.env (root 0600), reader claims from /etc/plx/mint-readers.env (root
+# 0600: PLX_EVAL_READER=<owner claims JSON>, plus any person's variable), the state and host
+# config from the API's own /etc/plx/workbench-api.env. The mint itself runs as the API's
+# user, so its audit row lands in the API's state with the API's owner; who asked goes to the
+# system log (and sudo's). The link goes to the caller's ~/.config/plx/workbench-access-link
+# (0600, the caller's); it is never printed.
+set -euo pipefail
+umask 077
+API_USER=${PLX_MINT_API_USER:-plx-workbench}
+ETC=${PLX_MINT_ETC:-/etc/plx}
+VENV=${PLX_MINT_VENV:-/data/venv}
+RELEASE=${PLX_MINT_RELEASE:-/data/plx-releases/current}
+die() { echo "plx-mint-link: $*" >&2; exit 2; }
+[ "$(id -u)" = 0 ] || die "run through sudo"
+CALLER=${SUDO_USER:-}
+[ -n "$CALLER" ] && [ "$CALLER" != root ] || die "run through sudo from your own account"
+
+VAR=PLX_EVAL_READER
+if [ "${1:-}" = "--person" ]; then
+  VAR=${2:?--person needs the reader variable}
+  shift 2
+  # a person's link is made by that person or the owner at a terminal (owner rule: agents
+  # never sign in as another person); sudo -n from a script has no terminal
+  [ -t 0 ] && [ -t 2 ] || die "--person: run it yourself at a terminal"
+  read -r -p "Mint a link for $VAR? Type the variable name again: " again
+  [ "$again" = "$VAR" ] || die "not confirmed"
+fi
+[[ $VAR =~ ^[A-Z][A-Z0-9_]*$ ]] || die "reader variable must be an env name"
+TTL=${1:-120}
+[[ $TTL =~ ^[0-9]+$ ]] && [ "$TTL" -ge 1 ] && [ "$TTL" -le 480 ] || die "TTL is 1..480 minutes"
+
+for f in "$ETC/live-session.env" "$ETC/mint-readers.env"; do
+  [ -f "$f" ] || die "$f missing"
+  [ "$(stat -c '%U %a' "$f")" = "root 600" ] || die "$f must be root's, mode 0600"
+done
+args=$(sed -n 's/^PLX_API_ARGS=//p' "$ETC/workbench-api.env" | tr -d "\"'")
+arg() { sed -n "s/.*$1 \([^ ]*\).*/\1/p" <<<"$args"; }
+STATE=$(arg --state-dir); HOST_CONFIG=$(arg --host-config)
+[ -n "$STATE" ] && [ -n "$HOST_CONFIG" ] || die "--state-dir/--host-config not in $ETC/workbench-api.env"
+APP_HOST=$(sed -n 's/^PLX_APP_HOST=//p' "$ETC/workbench-caddy.env")
+[ -n "$APP_HOST" ] || die "PLX_APP_HOST missing in $ETC/workbench-caddy.env"
+grep -q "^$VAR=" "$ETC/mint-readers.env" || die "$VAR is not in $ETC/mint-readers.env"
+
+# the code that holds the secret must be code no agent can change: a sealed release and a
+# root-owned interpreter, else nothing is minted (README-api-user.md steps 2 and 2b)
+RELEASE=$(readlink -f "$RELEASE"); VENV=$(readlink -f "$VENV")    # used resolved from here on
+for tree in "$RELEASE" "$VENV"; do
+  [ -d "$tree" ] || die "$tree missing"
+  find "$tree" \( ! -user root -o -perm /022 \) ! -type l -print -quit > "/run/plx-mint-check.$$" \
+    || die "cannot check $tree: refusing"
+  [ ! -s "/run/plx-mint-check.$$" ] || { rm -f "/run/plx-mint-check.$$"; die "$tree is not sealed (root-owned, nothing group/other-writable): refusing"; }
+  rm -f "/run/plx-mint-check.$$"
+  # nor can anyone else swap the tree: every directory above it is root's, and one others
+  # may write is sticky (the owner may not rename root's entries in it)
+  d=$(dirname "$tree")
+  while :; do
+    [ "$(stat -c %U "$d")" = root ] || die "$d is not root's: $tree could be swapped; refusing"
+    if [ -n "$(find "$d" -maxdepth 0 -perm /022 ! -perm -1000)" ]; then
+      die "$d is writable by others and not sticky: $tree could be swapped; refusing"
+    fi
+    [ "$d" = / ] && break
+    d=$(dirname "$d")
+  done
+done
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+# the API reads the host config through its unit's read capability; the mint runs without
+# it, so it checks the reader against a private copy of the same files
+cp -a "$(dirname "$HOST_CONFIG")" "$work/host"
+chown -R "$API_USER" "$work"
+# the mint's environment: the secret, the one reader's claims and the exclusion, nothing of
+# the caller's. They reach the mint on its stdin, never in an argument list (/proc/*/cmdline
+# is readable by every local account).
+secrets=()
+while IFS= read -r line; do
+  case $line in PLX_WORKBENCH_SESSION_SECRET=*|"$VAR="*) secrets+=("$line") ;; esac
+done < <(grep -h -E "^(PLX_WORKBENCH_SESSION_SECRET|$VAR)=" "$ETC/live-session.env" "$ETC/mint-readers.env" \
+         | sed -E "s/^([A-Z0-9_]+)=([\"'])(.*)\2$/\1=\3/")
+# the people exclusion from the API's own env files (the same value the API checks a
+# sign-in against): without it nothing is minted (fail closed)
+excl=""
+while read -r f _; do
+  [ -f "$f" ] && excl=$(grep -h '^PLX_EXCLUDED_PEOPLE_OIDS=' "$f" | tail -1 || true)
+  [ -n "$excl" ] && break
+done < <(systemctl show plx-api -p EnvironmentFiles --value 2>/dev/null)
+[ -n "$excl" ] || die "PLX_EXCLUDED_PEOPLE_OIDS not in the API's env files: refusing"
+secrets+=("$(sed -E "s/=([\"'])(.*)\1$/=\2/" <<<"$excl")")
+cd "$RELEASE"
+printf '%s\n' "${secrets[@]}" | runuser -u "$API_USER" -- env -i "PATH=$VENV/bin:/usr/bin:/bin" "HOME=$work" \
+  "$VENV/bin/python3" -c '
+import os, runpy, sys
+for line in sys.stdin.read().splitlines():
+    key, sep, value = line.partition("=")
+    if sep:
+        os.environ[key] = value
+sys.path.insert(0, sys.argv[1])
+sys.argv = ["console_ticket"] + sys.argv[2:]
+runpy.run_module("operator_api.workspace.console_ticket", run_name="__main__", alter_sys=True)
+' "$(readlink -f "$RELEASE")" mint --state-dir "$STATE" --host-config "$work/host/$(basename "$HOST_CONFIG")" \
+  --reader-env "$VAR" --ttl-minutes "$TTL" --out "$work/ticket.url" >/dev/null
+secrets=(); excl=""
+url=$(cat "$work/ticket.url")
+home=$(getent passwd "$CALLER" | cut -d: -f6)
+out="$home/.config/plx/workbench-access-link"
+# written by the caller, not root: a path the caller controls (a planted symlink) can never
+# make root write the link anywhere else
+printf 'https://%s/#ticket=%s\n' "$APP_HOST" "${url#*#access=}" \
+  | runuser -u "$CALLER" -- sh -c 'umask 077; mkdir -p "$(dirname "$1")" && cat > "$1"' - "$out"
+url=""
+logger -t plx-mint-link "link minted for $VAR (ttl ${TTL}m) asked by $CALLER" || true
+echo "access link written to $out (expires in $TTL min)"

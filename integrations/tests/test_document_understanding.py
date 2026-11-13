@@ -1314,6 +1314,15 @@ class AbandonedOcrTest(unittest.TestCase):
             self.assertEqual(child_process.run([sys.executable, "-c", "print(1)"],
                                                timeout=30).stdout.strip(), b"1")
 
+    def test_a_timed_out_child_takes_what_it_started_with_it(self):
+        """INT-003: a child that started its own child is stopped as a group."""
+        from integrations import child_process
+        pidfile = self.tmp / "grandchild.pid"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            child_process.run(["sh", "-c", f"sleep 60 & echo $! > {pidfile}; wait"],
+                              timeout=1)
+        self.assertTrue(process_gone(wait_for_pid(pidfile, wait=5)))
+
     def test_the_watchdog_stops_ocr_before_its_hard_exit(self):
         """``os._exit`` runs no atexit handler: the eval watchdog abandons first."""
         import argparse

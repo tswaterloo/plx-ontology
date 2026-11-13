@@ -118,6 +118,15 @@ export function InstructionPart({
       )}
       {part.status === "question" && (
         <section className="space-y-2" data-testid="instruct-question">
+          {(part.options ?? []).length > 0 && (
+            <div className="flex flex-wrap gap-2" data-testid="instruct-options">
+              {(part.options ?? []).map((o) => (
+                <Button key={o} size="sm" variant="outline" disabled={busy} onClick={() => follow(o, { answer: o })}>
+                  {o}
+                </Button>
+              ))}
+            </div>
+          )}
           {(part.proposed ?? []).map((m) => (
             <Button key={m.meeting_id} size="sm" disabled={busy} onClick={() => follow(`Use ${m.title}`, { use: [m.meeting_id] })}>
               Use {m.title} ({m.day})

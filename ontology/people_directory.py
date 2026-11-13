@@ -131,21 +131,25 @@ def mailboxes(conn: sqlite3.Connection) -> list[Mailbox]:
 
 # Every address a mailbox's current messages are from, to or cc, with how many it sent
 # (0: only ever a recipient there).
+# A message naming an address the capture could not decide is no reader's ({free}:
+# ``capture_mail.undecided_free_sql`` of ``m``).
 _CENSUS = ("SELECT a, sum(s) FROM ("
-           "SELECT lower(trim(json_extract(record, '$.from'))) AS a, 1 AS s FROM messages "
-           "WHERE mailbox_id = :m AND superseded_at IS NULL UNION ALL "
+           "SELECT lower(trim(json_extract(m.record, '$.from'))) AS a, 1 AS s FROM messages m "
+           "WHERE m.mailbox_id = :m AND m.superseded_at IS NULL AND {free} UNION ALL "
            "SELECT lower(trim(j.value)), 0 FROM messages m, json_each(m.record, '$.to') j "
-           "WHERE m.mailbox_id = :m AND m.superseded_at IS NULL UNION ALL "
+           "WHERE m.mailbox_id = :m AND m.superseded_at IS NULL AND {free} UNION ALL "
            "SELECT lower(trim(j.value)), 0 FROM messages m, json_each(m.record, '$.cc') j "
-           "WHERE m.mailbox_id = :m AND m.superseded_at IS NULL) GROUP BY a")
+           "WHERE m.mailbox_id = :m AND m.superseded_at IS NULL AND {free}) GROUP BY a")
 
 
 def _scan_range(path: str, ids: Sequence[str]) -> Counter:
     counts: Counter = Counter()
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
     try:
+        from integrations.capture_mail import undecided_free_sql
+        census = _CENSUS.format(free=undecided_free_sql(conn, "m"))
         for mailbox in ids:
-            for found, n in conn.execute(_CENSUS, {"m": mailbox}):
+            for found, n in conn.execute(census, {"m": mailbox}):
                 if isinstance(found, str) and found:
                     counts[(found, mailbox)] += int(n or 0)
     finally:

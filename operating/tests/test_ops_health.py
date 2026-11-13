@@ -160,3 +160,45 @@ class StaleCaptureAlarmTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UndecidedListAlarmTest(unittest.TestCase):
+    """``capture_undecided_list``: mail naming an address the capture's purge could not
+    decide is withheld from every reader; an address undecided for more than a day is a
+    breach that pages (counts and times only, never the address)."""
+
+    def test_an_address_undecided_past_a_day_is_a_breach(self) -> None:
+        from operating import ops_alarms
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_state(Path(tmp))
+            self.assertNotIn("capture_undecided_list",
+                             states(ops_health.collect(root, now=NOW, environ={},
+                                                       include_api=False)))   # no mail store
+            store = root / "mail-capture" / "capture.db"
+            _db(store, "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)", [],
+                "INSERT INTO meta VALUES (?, ?)")
+            report = ops_health.collect(root, now=NOW, environ={}, include_api=False)
+            self.assertEqual(states(report)["capture_undecided_list"], "ok")   # none recorded
+            conn = sqlite3.connect(store)
+            conn.execute("CREATE TABLE undecided_addresses (address TEXT PRIMARY KEY, "
+                         "since TEXT NOT NULL, checked_at TEXT NOT NULL)")
+            conn.commit()
+            for rows, expected, value in (
+                    ([], "ok", 0),
+                    ([("list-a@example-plx.com", "2030-01-02T06:00:00Z")], "ok", 6.0),
+                    ([("list-a@example-plx.com", "2030-01-01T11:00:00Z"),
+                      ("list-b@example-plx.com", "2030-01-02T11:00:00Z")], "breach", 25.0),
+                    ([("list-a@example-plx.com", "not a time")], "breach", None)):
+                conn.execute("DELETE FROM undecided_addresses")
+                conn.executemany("INSERT INTO undecided_addresses VALUES (?, ?, ?)",
+                                 [(a, s, s) for a, s in rows])
+                conn.commit()
+                report = ops_health.collect(root, now=NOW, environ={}, include_api=False)
+                [check] = [c for c in report["checks"]
+                           if c["name"] == "capture_undecided_list"]
+                self.assertEqual((check["state"], check["value"]), (expected, value), rows)
+                self.assertNotIn("example-plx.com", json.dumps(report))
+                self.assertEqual("capture_undecided_list" in report["breaches"],
+                                 expected == "breach")
+            conn.close()
+            self.assertTrue("capture_undecided_list".startswith(ops_alarms.PAGED_HEALTH))

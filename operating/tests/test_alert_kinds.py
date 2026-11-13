@@ -65,7 +65,7 @@ class Registry(unittest.TestCase):
             self.assertTrue(ak.default_on(name) and not ak.home(name), name)
         for name in ("customer_order_late", "po_undated", "approval_waiting",
                      "chase_escalating", "watcher_attention", "lot_near_expiry",
-                     "price_below_typical", "commitment_due", "priority_order_unfilled",
+                     "commitment_due", "priority_order_unfilled",
                      "labour_overtime_spike"):
             self.assertFalse(ak.default_on(name), name)
         self.assertEqual(ak.kind_of("teams_unanswered_ask"), "reply_owed")

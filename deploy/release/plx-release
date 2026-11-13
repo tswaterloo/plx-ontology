@@ -19,26 +19,58 @@
 #       their next run. plx-ingest restarts only with --with-ingest (a restart ends a build).
 #       Then waits for /api/health. Needs sudo; the supervisor runs it.
 #   plx-release status | list | prune [--keep N]
+#   plx-release verify [<id>]   the release (default: current) is sealed: every file owned by
+#                               $PLX_RELEASE_OWNER, none writable by group or others (exit 1)
 #
-# Settings: deploy/lib.sh (PLX_REPO, PLX_RELEASES, PLX_STATE, PLX_VENV, PLX_NODE).
+# Sealed releases (SEC-S-12): with PLX_RELEASE_OWNER set (deploy/lib.sh default: root) the
+# build itself runs as the calling user in $PLX_RELEASES/.staging (git archive, npm, next
+# build: no repo code ever runs as root), then `sudo -n` seals it: owned by root, nothing
+# writable by anyone else, readable by every unit's user (code holds no secret), renamed into
+# place. Switch, prune and the history log need the same sudo; the API's user can read a
+# release and change nothing in it. PLX_RELEASE_OWNER= (empty) keeps the old unsealed
+# releases (tests, a dev box).
+#
+# Settings: deploy/lib.sh (PLX_REPO, PLX_RELEASES, PLX_STATE, PLX_VENV, PLX_NODE,
+# PLX_RELEASE_OWNER).
 set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 . "$here/../lib.sh"
 LONG_RUNNING="plx-api plx-app plx-search-follow plx-search-generation plx-rag-backfill"
 
 die() { echo "plx-release: $*" >&2; exit 1; }
-log() { mkdir -p "$PLX_RELEASES"; echo "$(date -u +%FT%TZ) $*" >> "$PLX_RELEASES/history.log"; }
+sealed() { [ -n "${PLX_RELEASE_OWNER:-}" ]; }
+# as_root CMD...: the release tree's owner runs CMD (sudo -n when sealed, else the caller)
+as_root() {
+  if sealed && [ "$(id -un)" != "$PLX_RELEASE_OWNER" ]; then
+    sudo -n "$@" || die "needs sudo for: $* (sealed releases are owned by $PLX_RELEASE_OWNER)"
+  else "$@"; fi
+}
+log() { sealed || mkdir -p "$PLX_RELEASES"; echo "$(date -u +%FT%TZ) $*" | as_root tee -a "$PLX_RELEASES/history.log" >/dev/null; }
+staging_root() {
+  if sealed; then
+    [ -d "$PLX_RELEASES/.staging" ] && [ -w "$PLX_RELEASES/.staging" ] \
+      || die "no writable $PLX_RELEASES/.staging (setup: deploy/release/README-api-user.md step 2)"
+    echo "$PLX_RELEASES/.staging"
+  else mkdir -p "$PLX_RELEASES"; echo "$PLX_RELEASES"; fi
+}
 current_id() { basename "$(readlink "$PLX_RELEASES/current" 2>/dev/null || echo none)"; }
 
-served_digest() {
+served_digest() {  # empty: no served projection; fails when one is there but unreadable
   local store="$PLX_STATE/projection/ontology.sqlite"
-  [ -r "$store" ] || return 0
+  [ -e "$store" ] || return 0
   "$PLX_VENV/bin/python3" - "$store" <<'PY'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=5)
 row = c.execute("SELECT value FROM store_meta WHERE key = 'schema_digest'").fetchone()
-print(row[0] if row else "")
+if not row or not row[0]:
+    sys.exit("the served projection records no schema_digest")
+print(row[0])
 PY
+}
+
+# OPS-005: a failed inspection is its own outcome, never read as "nothing to compare"
+served_or_die() {
+  served_digest || die "the served projection's schema digest could not be read: not built (--no-schema-check to build without the check)"
 }
 
 build() {
@@ -64,21 +96,39 @@ build() {
     id="$id-o$(printf %s "$spec" | sha256sum | cut -c1-8)"
   fi
   local dir="$PLX_RELEASES/$id"
-  if [ -f "$dir/RELEASE.json" ]; then echo "$id"; return 0; fi
-  mkdir -p "$PLX_RELEASES"
-  local tmp="$PLX_RELEASES/.build-$id-$$"
+  if [ -f "$dir/RELEASE.json" ]; then
+    # OPS-002: a release is reused only when it was built as this build asks: with the app
+    # when the app is wanted, and on the served schema when the check is on
+    if [ "$app" = 1 ] && [ -f "$dir/app/package.json" ] && [ ! -d "$dir/app/.next" ]; then
+      die "release $id was built without the app (--no-app): build with --no-app, or remove $dir to rebuild it"
+    fi
+    if [ "$schema_check" = 1 ]; then
+      local had served
+      had=$("$PLX_VENV/bin/python3" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("schema_digest") or "")' "$dir/RELEASE.json") \
+        || die "release $id: RELEASE.json could not be read"
+      served=$(served_or_die)
+      if [ -n "$served" ] && [ "$had" != "$served" ]; then
+        die "release $id has schema ${had:-unknown}, the served generation's is $served: not reused (--no-schema-check to reuse it)"
+      fi
+    fi
+    echo "$id"; return 0
+  fi
+  local tmp; tmp="$(staging_root)/.build-$id-$$"
   rm -rf "$tmp"; mkdir -p "$tmp"
-  trap 'rm -rf "$tmp"' EXIT
+  trap 'as_root rm -rf "$tmp"' EXIT
   git -C "$PLX_REPO" archive "$sha" | tar -x -C "$tmp"
   for o in "${overlays[@]}"; do
     git -C "$PLX_REPO" archive "${o%%:*}" -- "${o#*:}" | tar -x -C "$tmp"
   done
-  local got="" want
+  local got="" want="" built_app=0
   if [ -d "$tmp/ontology/schema" ]; then
-    got=$(cd "$tmp" && timeout 300 "$PLX_VENV/bin/python3" -c \
-          "from ontology.schema import load_schema; print(load_schema().digest)")
+    if ! got=$(cd "$tmp" && timeout 300 "$PLX_VENV/bin/python3" -c \
+          "from ontology.schema import load_schema; print(load_schema().digest)"); then
+      [ "$schema_check" = 1 ] && die "the release's schema could not be loaded: not built"
+      got=""
+    fi
   fi
-  want=$(served_digest || true)
+  [ "$schema_check" = 1 ] && want=$(served_or_die)
   if [ "$schema_check" = 1 ] && [ -n "$want" ] && [ "$got" != "$want" ]; then
     die "schema $got differs from the served generation's $want: not built (--overlay the served schema, or --no-schema-check)"
   fi
@@ -88,36 +138,61 @@ build() {
       seed="$cur/node_modules"
     fi
     if [ -n "$seed" ]; then
-      cp -al "$(readlink -f "$seed")" "$tmp/app/node_modules"
+      # sealed: hard links only to a sealed seed (root may link root's files; linking an
+      # unsealed seed would make the seal re-own that tree's files), else a copy
+      if sealed && [ "$(stat -c %U "$(readlink -f "$seed")")" = "$PLX_RELEASE_OWNER" ]; then
+        as_root cp -al "$(readlink -f "$seed")" "$tmp/app/node_modules"
+      elif sealed; then
+        cp -a "$(readlink -f "$seed")" "$tmp/app/node_modules"
+      else
+        cp -al "$(readlink -f "$seed")" "$tmp/app/node_modules"
+      fi
     else
       (cd "$tmp/app" && PATH="$PLX_NODE/bin:/usr/bin:/bin" npm ci --no-audit --no-fund >/dev/null)
     fi
     (cd "$tmp/app" && PATH="$PLX_NODE/bin:/usr/bin:/bin" NEXT_TELEMETRY_DISABLED=1 \
        node node_modules/next/dist/bin/next build > "$tmp/.app-build.log" 2>&1) \
       || { tail -20 "$tmp/.app-build.log" >&2; die "app build failed"; }
+    built_app=1
   fi
-  "$PLX_VENV/bin/python3" - "$tmp/RELEASE.json" "$id" "$sha" "$ref" "$got" "${overlays[@]}" <<'PY'
+  "$PLX_VENV/bin/python3" - "$tmp/RELEASE.json" "$id" "$sha" "$ref" "$got" "$built_app" \
+      "$schema_check" "${overlays[@]}" <<'PY'
 import json, sys, datetime
-path, rid, sha, ref, digest, *overlays = sys.argv[1:]
+path, rid, sha, ref, digest, built_app, checked, *overlays = sys.argv[1:]
 json.dump({"id": rid, "sha": sha, "ref": ref, "overlays": overlays, "schema_digest": digest,
+           "profile": {"app": built_app == "1", "schema_checked": checked == "1"},
            "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
           open(path, "w"), indent=1)
 PY
-  chmod -R go+rX "$tmp"          # caddy reads the Caddyfile from the release
-  mv -T "$tmp" "$dir"
+  # the bytecode is part of the release: a sealed tree is read-only to every unit, so a
+  # process could not write its __pycache__ and would recompile on every start
+  [ -x "$PLX_VENV/bin/python3" ] && "$PLX_VENV/bin/python3" -m compileall -q -j 0 -x '/node_modules/' \
+    "$tmp" >/dev/null 2>&1 || true
+  if sealed; then
+    # nothing in a release is writable but by its owner: no unit's user can change the code
+    # it runs (the release holds no secret, so every user may read it)
+    as_root chown -R "$PLX_RELEASE_OWNER:$(id -gn "$PLX_RELEASE_OWNER")" "$tmp"
+    as_root chmod -R u+rwX,go+rX,go-w "$tmp"
+  else
+    chmod -R go+rX "$tmp"        # caddy reads the Caddyfile from the release
+  fi
+  as_root mv -T "$tmp" "$dir"
   trap - EXIT
+  # the builder owned the staging directory until the rename: check what landed
+  if sealed; then verify "$id" >/dev/null || die "release $id is not sealed after the build"; fi
   log "built $id from $ref ($sha)${overlays:+ overlays ${overlays[*]}}"
   echo "$id"
 }
 
 relink() {  # relink <name> <target id>: atomic (rename over the old link)
-  ln -sfn "$2" "$PLX_RELEASES/.$1.new"
-  mv -Tf "$PLX_RELEASES/.$1.new" "$PLX_RELEASES/$1"
+  as_root ln -sfn "$2" "$PLX_RELEASES/.$1.new"
+  as_root mv -Tf "$PLX_RELEASES/.$1.new" "$PLX_RELEASES/$1"
 }
 
 switch() {
   local id=${1:?switch needs a release id}
   [ -f "$PLX_RELEASES/$id/RELEASE.json" ] || die "no built release $id"
+  if sealed; then verify "$id" >/dev/null || die "release $id is not sealed: not switched"; fi
   local old; old=$(current_id)
   [ "$old" = "$id" ] && { echo "already current: $id"; return 0; }
   relink current "$id"
@@ -178,12 +253,26 @@ prune() {
     [ -f "$d/RELEASE.json" ] || continue
     n=$((n + 1))
     if [ "$id" = "$cur" ] || [ "$id" = "$prev" ] || [ $n -le "$keep" ] || grep -qx "$d.*" <<<"$busy"; then continue; fi
-    rm -rf "$d" && log "pruned $id" && echo "pruned $id"
+    as_root rm -rf "$d" && log "pruned $id" && echo "pruned $id"
   done
+}
+
+verify() {   # verify [<id>]: sealed = owned by the release owner, nothing group/other-writable
+  local id=${1:-$(current_id)} owner=${PLX_RELEASE_OWNER:-root}
+  local dir="$PLX_RELEASES/$id"
+  [ -f "$dir/RELEASE.json" ] || die "no built release $id"
+  local bad
+  bad=$(find "$dir" \( ! -user "$owner" -o -perm /022 \) ! -type l -print 2>/dev/null | head -5)
+  if [ -n "$bad" ]; then
+    echo "release $id is NOT sealed (owner $owner, no group/other write); first offenders:" >&2
+    echo "$bad" | sed "s|^$PLX_RELEASES/||" >&2
+    return 1
+  fi
+  echo "release $id sealed: owned by $owner, nothing writable by group or others"
 }
 
 cmd=${1:-status}; shift || true
 case $cmd in
-  build|switch|rollback|restart|status|list|prune) "$cmd" "$@" ;;
-  *) die "unknown command $cmd (build|switch|rollback|restart|status|list|prune)" ;;
+  build|switch|rollback|restart|status|list|prune|verify) "$cmd" "$@" ;;
+  *) die "unknown command $cmd (build|switch|rollback|restart|status|list|prune|verify)" ;;
 esac

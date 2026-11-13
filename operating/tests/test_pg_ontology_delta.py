@@ -145,6 +145,14 @@ class DeltaToPostgresTests(unittest.TestCase):
             found += bool(expected)
         self.assertGreater(found, 2)
 
+        # a link the layer wrote, written again by another transaction: its undo is refused
+        from operating.pg.step_staging import StageRefused
+        with psycopg.connect(self.dsn, autocommit=True) as pg:
+            pg.execute("UPDATE ontology.link_rows SET tier = tier WHERE link_id = (SELECT "
+                       "link_id FROM delta_stage.undo_inserted LIMIT 1)")
+        with self.assertRaisesRegex(StageRefused, "delta_undo_links_written_since"):
+            ontology_delta.undo_layer(self.dsn, Path(report["store"]).name)
+
         again = ontology_delta.apply_layer(report["store"], self.dsn)
         self.assertEqual((again["applied"], again["reason"]), (False, "already_applied"))
         # a load in progress (a table not recorded loaded) takes no layer
@@ -242,7 +250,9 @@ class DeltaToPostgresTests(unittest.TestCase):
 
         with psycopg.connect(self.dsn) as pg, pg.cursor() as cur:
             before = snapshot(cur)
-        applied = ontology_delta.apply_layer(report["store"], self.dsn)
+        # one owned object a batch: every link is compared and applied in its own part
+        with mock.patch.object(ontology_delta, "_LINK_BATCH", 1):
+            applied = ontology_delta.apply_layer(report["store"], self.dsn)
         self.assertTrue(applied["applied"], applied)
         with psycopg.connect(self.dsn) as pg, pg.cursor() as cur:
             after = snapshot(cur)
@@ -278,6 +288,23 @@ class DeltaToPostgresTests(unittest.TestCase):
         # something changed and was written: the layer is not a no-op
         self.assertGreater(applied["copied.object_versions"]
                            + applied["written.object_versions"], 0)
+
+        # NW-14: the links went through the staged apply with undo (one write path with the
+        # step migrations): taking the layer's links back restores the owned objects'
+        # served links as they were, row numbers included; only the newest layer's
+        from operating.pg.step_staging import StageRefused
+        self.assertGreater(applied["written.link_rows"], 0)
+        with self.assertRaises(StageRefused):
+            ontology_delta.undo_layer(self.dsn, "never-applied.sqlite")
+        undone = ontology_delta.undo_layer(self.dsn, Path(report["store"]).name)
+        self.assertEqual(undone, {"removed": applied["written.link_rows"],
+                                  "restored": applied["undo.link_rows"]})
+        with psycopg.connect(self.dsn) as pg, pg.cursor() as cur:
+            back = snapshot(cur)[2]
+        self.assertEqual({i: v[1:] for i, v in back.items()},
+                         {i: v[1:] for i, v in before[2].items()})
+        with self.assertRaises(StageRefused):   # taken back once
+            ontology_delta.undo_layer(self.dsn, Path(report["store"]).name)
 
     def assert_cover(self, kept, read, families):
         """``kept`` holds every fact a full read finds (a slice never narrower, so no
@@ -452,6 +479,60 @@ class DeltaToPostgresTests(unittest.TestCase):
         import psycopg
         gone = psycopg.conninfo.make_conninfo(self.dsn, dbname=f"{self.name}_no_such_db")
         self.assertFalse(tt._keep_pg_facts_apart(gone, families))
+
+    def test_a_call_waits_for_facts_only_when_earlier_ones_can_be_folded(self):
+        """With no facts kept for the database, the background reads them whole (half an
+        hour and more on a large store): a call does not wait for that read and reads
+        what it needs itself at once. With an earlier version's facts kept (a fold:
+        seconds) it waits up to ``PG_REQUEST_WAIT_SECONDS`` as before."""
+        import threading
+        import time as _time
+        from unittest import mock
+        from ontology.tests.test_delta import DeltaEquivalenceTests
+        from ontology.tests.test_projection import T1
+        from operating import ontology_tools as ot, ontology_tools_evidence as ev
+        from operating import ontology_tools_traverse as tt
+        from operating.pg import ontology_load
+        from operating.pg.ontology_reader import PgStoreReader
+
+        facts_dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, facts_dir, True)
+        self.enterContext(mock.patch.dict(os.environ, {"PLX_PG_FACTS_DIR": facts_dir}))
+        tt._LOADED.clear()
+        self.addCleanup(tt._LOADED.clear)
+        fixture = DeltaEquivalenceTests("test_changed_records_equal_a_full_build_and_nothing_"
+                                        "else_is_owned")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.capture(T1)
+        ontology_load.load(fixture.full("gen1.sqlite"), self.dsn, workers=1, replace=True,
+                           log=io.StringIO())
+        families = ev.STORE_DOCUMENT_FAMILIES
+
+        def waited() -> float:
+            release = threading.Event()
+            self.addCleanup(release.set)
+            tt._BACKGROUND.clear()
+            reader = PgStoreReader.open(self.dsn, only=False)
+            self.addCleanup(reader.close)
+            host = tt.TraverseTools(ot.OntologyTools(reader, ot.ReadPolicy("plx", {})))
+            with mock.patch.object(tt, "_keep_pg_facts_apart",
+                                   side_effect=lambda *a, **k: release.wait(60) and False), \
+                    mock.patch.object(tt, "PG_REQUEST_WAIT_SECONDS", 3):
+                self.assertFalse(host.prime_lazily(families))   # read in the background
+                started = _time.monotonic()
+                host._current_facts(("no_such_fact",))
+                took = _time.monotonic() - started
+                release.set()
+                self.assertTrue(host._pending is None or host._pending[2].wait(60))
+            return took
+
+        self.assertLess(waited(), 2)            # nothing kept: no wait
+        reader = PgStoreReader.open(self.dsn, only=False)
+        marker = tt._store_identity(reader.conn)[0]
+        reader.close()
+        tt.facts_path(marker).write_text("{}", encoding="utf-8")   # an earlier version's
+        self.assertGreaterEqual(waited(), 2.5)  # kept before: waits for the fold
 
     def test_a_host_folds_the_layers_since_the_kept_version_instead_of_reading_it_whole(self):
         """A layer applied without its facts kept (a follower that did not fold): the

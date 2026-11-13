@@ -14,7 +14,7 @@ import { MyWorkList, groupsOf } from "./my-work";
 const base: MyWorkItem = {
   item_id: "ap_1", autopilot: "customer_po", label: "Customer PO received", title: "Customer PO received: PO 1 is entered",
   mine: true, happened: { object_id: "Email:x:1" }, citations: ["mail://synth/1"], due_at: "2026-11-08T17:00:00Z",
-  created_at: "2026-11-08T15:00:00Z", card_id: "autopilot:ap_1", offers: [], write_ready: true,
+  created_at: "2026-11-08T15:00:00Z", card_id: "autopilot:ap_1", offers: [], write_ready: true, order_import: false,
   prepared: { summary: "PO 1 is entered as order 7", draft: { body: "Hello, received." }, gaps: ["lines_from_po_document"] },
 };
 const work = (items: MyWorkItem[]): MyWork => ({ status: "read", sent: 0, writes: 0, digest: { open: items.length, due_today: 0, by_autopilot: {}, nudges: [] }, items });
@@ -53,6 +53,14 @@ describe("my work", () => {
     fireEvent.click(within(dry).getByTestId("assist-accept"));
     expect(api.decide).toHaveBeenCalledWith("ap_1", { decision: "accept", bulk: true });
     expect(await within(dry).findByRole("status")).toHaveTextContent("Dry run: your yes is recorded, nothing was sent or written.");
+  });
+
+  it("offers the order import file only on the reader's own item that has one", () => {
+    api.area.mockRejectedValue(new Error("offline"));
+    render(<MyWorkList work={work([{ ...base, item_id: "ap/9", order_import: true }, base, { ...base, item_id: "ap_2", mine: false, order_import: true }])} />);
+    const links = screen.getAllByTestId("my-work-order-import");
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "/api/my-work/ap%2F9/order-import");
   });
 
   it("groups past due first, then today, then later", () => {

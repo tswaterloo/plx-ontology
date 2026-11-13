@@ -1183,5 +1183,37 @@ class LanesAndPriorityTests(ThroughputCase):
         self.assertLessEqual(len([m for m in later if m.startswith("C-OLD")]), 1)
 
 
+    def test_an_expired_history_continuation_starts_the_history_again(self):
+        """CAPTURE-007: a saved backfill continuation answered 410 is dropped; the next
+        run lists the older mail again from its start and reaches its end."""
+        c, upn_c = self.add_mailbox(3)
+        self.graph.put(c, "C-RECENT", "CK-1", received="2026-09-20T09:00:00Z")
+        for m in range(4):
+            self.graph.put(c, f"C-OLD-{m}", "CK-1", received=f"2021-0{1 + m}-01T09:00:00Z")
+        scope_c = lane_scope([upn_c], history="all", priority={})
+        self.lane_capture([upn_c], lanes=1, pages_per_turn=1, page_size=1,
+                          page_budget=2).run(scope_c)
+
+        def inbox():
+            return self.store.db.execute("SELECT * FROM folders WHERE mailbox_id=? AND "
+                                         "folder_id='AAMkIN-3='", (c,)).fetchone()
+        saved = inbox()["backfill_next_url"]
+        self.assertTrue(saved)
+        graph = self.graph
+
+        def expired(method, url, *rest):
+            return j(410, {"error": {"code": "syncStateNotFound"}}) if url == saved \
+                else graph(method, url, *rest)
+        self.graph = mock.Mock(wraps=graph, side_effect=expired, delta_calls=graph.delta_calls)
+        self.lane_capture([upn_c], lanes=1, pages_per_turn=1, page_size=1).run(scope_c)
+        self.assertIsNone(inbox()["backfill_next_url"], dict(inbox()))
+        from datetime import timedelta
+        self.graph = graph   # a fresh listing's continuations are live again
+        self.clock.now += timedelta(seconds=capture_mail.FRESH_SECONDS + 60)
+        self.lane_capture([upn_c], lanes=1, page_size=1).run(scope_c)
+        self.assertEqual(inbox()["backfill_status"], "complete", dict(inbox()))
+        self.assertLessEqual({f"C-OLD-{m}" for m in range(4)},
+                             {m for m, _f in self.stored()})
+
 if __name__ == "__main__":
     unittest.main()

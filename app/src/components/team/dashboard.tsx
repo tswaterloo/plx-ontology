@@ -173,7 +173,7 @@ export function TeamDashboard({ data }: { data: TeamView }) {
   const medianReply = replies.length ? replies[Math.floor((replies.length - 1) / 2)] : null;
 
   const head = (key: SortKey, label: string, title: string, className?: string) => (
-    <th scope="col" title={title} aria-sort={sort.key === key ? (sort.desc ? "descending" : "ascending") : undefined}
+    <th key={key} scope="col" title={title} aria-sort={sort.key === key ? (sort.desc ? "descending" : "ascending") : undefined}
       className={cn("whitespace-nowrap px-2 py-1.5 font-normal", className)}>
       <button type="button" data-tap="inline" onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : key !== "name" && key !== "team" }))}
         className={cn("cursor-pointer hover:text-fg", sort.key === key && "text-fg font-medium")}>

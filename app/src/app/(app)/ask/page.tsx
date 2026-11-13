@@ -283,6 +283,7 @@ function Ask() {
                   onPick={busy ? undefined : (c) => run(`I mean ${c.label}`, c.object_id)}
                   onAsk={busy ? undefined : (next) => followUp(next, t)}
                   onInstruct={busy ? undefined : (next, extra) => run(next, extra.object_id ?? undefined, extra.source ?? undefined, [], { context: extra.context, mode: extra.mode, instruction: extra.instruction })}
+                  onClarify={busy ? undefined : (words, reply) => run(words, undefined, undefined, [], { clarified: reply })}
                 />
               </section>
             ))}

@@ -100,9 +100,9 @@ originals and mail the items cite; items that cite no mirror row need no mirror 
 run pin::
 
     python3 -m evals.runner run --items evals/exposed --split dev --runs 1 \\
-        --state-dir "$PLX_STATE" --source-mirror-audience "$PLX_AUDIENCE" \\
-        --principal <employee principal> --out <dir outside the repo> \\
-        --evidence-label live-captures
+        --state-dir "$PLX_FIXTURE_STATE" --source-mirror-audience "$PLX_AUDIENCE" \\
+        --principal <fixture principal> --out <dir outside the repo> \\
+        --evidence-label isolated-fixture
 
 **Run pin**. Oracle items pin the
 oracle's own read digests, which no tool returns. Before the agent runs, ``make_run_pin``
@@ -121,18 +121,20 @@ separately (09 R7 e).
 
 **Live check.** ``eval.real_agent`` (``scripts/eval_real_agent.py``, daily, tier
 ``real_agent``) runs this agent at k=1 over the exposed F7-F9 items and a pinned fixture
-sample. Larger runs (the whole dev set, k > 1) are on demand in the credentialed
-environment::
+sample. Larger runs (the whole dev set, k > 1) run here over fixture state, and are
+replayed from their transcripts::
 
     python3 -m evals.runner run --items evals/dev --split dev --runs 1 \\
-        --state-dir "$PLX_STATE" --source-mirror-audience "$PLX_AUDIENCE" \\
-        --tenant plx --principal <employee principal> --out <dir outside the repo> \\
-        --evidence-label live-captures
+        --state-dir "$PLX_FIXTURE_STATE" --source-mirror-audience "$PLX_AUDIENCE" \\
+        --tenant plx --principal <fixture principal> --out <dir outside the repo> \\
+        --evidence-label isolated-fixture
     python3 -m evals.runner replay --items evals/dev --transcripts <that dir>
 
 Evidence label of a run (``--evidence-label``, required, recorded in each transcript):
-``live-captures`` only when the host's state holds live L1 captures and the agent is a
-real Claude session; a ``ScriptedAgent`` or fixture host run is ``isolated-fixture``.
+``live-captures`` is refused by ``run`` (EVAL-004: a live host needs a single-use
+employee session ticket per host start, which this command line cannot give each item;
+live evals run through ``scripts/eval_real_agent.py``); a ``ScriptedAgent`` or fixture
+host run is ``isolated-fixture``.
 Neither is ``live-verified``, which only the live verifier grants.
 """
 
@@ -1592,7 +1594,7 @@ def main(argv: list[str] | None = None) -> int:
                      help="the question set's name in the results file (default: the "
                           "items path's name)")
     run.add_argument("--evidence-label", choices=EVIDENCE_LABELS, required=True,
-                     help="live-captures only when --state-dir holds live L1 captures")
+                     help="live-captures is refused here (scripts/eval_real_agent.py runs live)")
     args = parser.parse_args(argv)
     if args.command == "gate":
         server = args.server[1:] if args.server[:1] == ["--"] else args.server
@@ -1630,12 +1632,20 @@ def main(argv: list[str] | None = None) -> int:
             items = LoadedItems((item for item in items if item["id"] in set(args.only)),
                                 (r for r in items.refused if r["id"] in set(args.only)))
 
+        if args.evidence_label == "live-captures":
+            # EVAL-004: a live host needs a verified employee identity per host start (a
+            # single-use session ticket, CaseHost employee_args) that this command line
+            # cannot give each item; refused before any item runs or any score is kept,
+            # never one failed item per question. Live evals run through
+            # scripts/eval_real_agent.py.
+            raise RunnerError("live_captures_run_needs_an_employee_identity:"
+                              "use scripts/eval_real_agent.py")
+
         def host_for(item: Mapping[str, Any]) -> Host:
             principals = (item.get("actor") or {}).get("principals") or args.principal
-            # Fixture or injected-transport state launches a --fixture host; live
-            # captures need an employee identity (CaseHost employee_args).
+            # Fixture or injected-transport state launches a --fixture host.
             return CaseHost(args.state_dir, args.source_mirror_audience, args.tenant,
-                            principals, fixture=args.evidence_label != "live-captures")
+                            principals, fixture=True)
         agent = ClaudeCodeAgent(binary=args.claude_bin, model=args.model,
                                 timeout=args.timeout, case_tools=args.case_tools,
                                 max_turns=args.max_turns)

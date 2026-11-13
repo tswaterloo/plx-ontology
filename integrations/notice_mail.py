@@ -429,8 +429,10 @@ def measure(mail_state: Path, as_of: str, *, sample: int = 15, seed: int = 11,
     counts = {f.id: {"messages": 0, "parsed": 0, "with_body": 0} for f in families}
     pools: dict[str, list[tuple[int, str]]] = {f.id: [] for f in families}
     rnd = random.Random(seed)
+    from integrations.capture_mail import undecided_free_sql
     rows = db.execute("SELECT version_id, record, body_sha256 FROM messages WHERE "
-                      "superseded_at IS NULL AND recorded_at <= ?", (as_of,))
+                      f"superseded_at IS NULL AND recorded_at <= ? AND {undecided_free_sql(db)}",
+                      (as_of,))
     for version_id, record, digest in rows:
         try:
             message = json.loads(record)

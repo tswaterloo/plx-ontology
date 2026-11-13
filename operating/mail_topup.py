@@ -198,7 +198,9 @@ def scan(db: sqlite3.Connection, *, pin: int, mailboxes: Sequence[str],
     marks = ",".join("?" * len(mailboxes))
     # ``+mailbox_id``: never the mailbox index, which would read every version of the
     # granted mailboxes for each chunk; each statement reads its version-id range alone.
-    where = [f"+mailbox_id IN ({marks})", "superseded_at IS NULL", "removed_reason IS NULL"]
+    from integrations.capture_mail import undecided_free_sql
+    where = [f"+mailbox_id IN ({marks})", "superseded_at IS NULL", "removed_reason IS NULL",
+             undecided_free_sql(db, "m")]
     params: list[Any] = list(mailboxes)
     # Each ``instr`` reads every record of the range once (a delta of 800k versions:
     # about a second each; SQLite runs it outside the interpreter lock, so concurrent

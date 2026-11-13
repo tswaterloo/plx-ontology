@@ -23,14 +23,22 @@ OWNER = ("ana@plx.example", "33333333-3333-4333-8333-333333333333")
 STRANGER = ("sam@plx.example", "55555555-5555-4555-8555-555555555555")
 
 
-def item(item_id: str, *, markings=(), write=False) -> dict:
+LINES = [{"lineType": "Item", "lineObjectNumber": "SYN-1", "quantity": "12",
+          "unitOfMeasureCode": "CS", "unitPrice": "41.50"},
+         {"lineType": "Item", "lineObjectNumber": "=HYPERLINK(1)", "quantity": "-1"},
+         {"lineType": "Item", "lineObjectNumber": "-2+HYPERLINK(1)", "quantity": "+5",
+          "unitPrice": "0.075"}]
+
+
+def item(item_id: str, *, markings=(), write=False, lines=None) -> dict:
     prepared = {"summary": "PO 88123 received",
                 "draft": {"channel": "email", "to": [{"address": "buyer@synth.example"}],
                           "subject": "RE: PO 88123", "body": "Hello,\n\nReceived."}}
     if write:
         prepared["write"] = {"system": "bc", "operation": "sales_order_create",
                              "payload": {"customerNumber": "C100",
-                                         "externalDocumentNumber": "88123"},
+                                         "externalDocumentNumber": "88123",
+                                         **({"salesOrderLines": lines} if lines else {})},
                              "reason": "Customer PO received", "precondition": {}}
     return {"item_id": item_id, "event_id": "e-" + item_id, "autopilot": "customer_po",
             "owner": OWNER[1], "title": "Customer PO received: PO 88123",
@@ -50,6 +58,8 @@ class MyWorkApi(unittest.TestCase):
         with q.conn:
             q.add_item(item("ap_one", write=True))
             q.add_item(item("ap_fin", markings=["finance"]))
+            q.add_item(item("ap_lines", write=True, lines=LINES))
+            q.add_item(item("ap_fin_lines", write=True, lines=LINES, markings=["finance"]))
         q.close()
         self.backend = MockBackend()
         self.backend.writes_environ = {}
@@ -70,10 +80,11 @@ class MyWorkApi(unittest.TestCase):
         owner, stranger = self.client(OWNER), self.client(STRANGER)
         mine = owner.get("/api/my-work").json()
         # the finance-marked item stays hidden from a reader without the finance marking
-        self.assertEqual([i["item_id"] for i in mine["items"]], ["ap_one"])
+        self.assertEqual(sorted(i["item_id"] for i in mine["items"]), ["ap_lines", "ap_one"])
         self.assertEqual((mine["sent"], mine["writes"], mine["status"]), (0, 0, "read"))
-        self.assertEqual(mine["items"][0]["card_id"], "autopilot:ap_one")
-        self.assertTrue(mine["items"][0]["write_ready"])
+        one = next(i for i in mine["items"] if i["item_id"] == "ap_one")
+        self.assertEqual(one["card_id"], "autopilot:ap_one")
+        self.assertTrue(one["write_ready"])
         self.assertEqual(stranger.get("/api/my-work").json()["items"], [])
         self.assertEqual(stranger.post("/api/my-work/ap_one/write").status_code, 404)
         # the entry is refused until its lines are filled in: nothing is written
@@ -86,6 +97,35 @@ class MyWorkApi(unittest.TestCase):
                          "autopilot:ap_one")
         self.assertIsNone(self.backend.my_work_card_of(_reader(owner_session(STRANGER)),
                                                        "autopilot:ap_one"))
+
+    def test_order_import_file_for_the_owner_only(self) -> None:
+        """CAP-L259: a prepared order with its lines is a CSV import file (one row per
+        line, the header's fields on each), for its owner only; a value a spreadsheet
+        would run as a formula is written as text; no lines, no file."""
+        owner, stranger = self.client(OWNER), self.client(STRANGER)
+        flags = {i["item_id"]: i["order_import"] for i in owner.get("/api/my-work").json()["items"]}
+        self.assertEqual(flags, {"ap_one": False, "ap_lines": True})
+        got = owner.get("/api/my-work/ap_lines/order-import")
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertTrue(got.headers["content-type"].startswith("text/csv"))
+        self.assertIn('attachment; filename="order-ap_lines.csv"', got.headers["content-disposition"])
+        self.assertEqual(got.headers["cache-control"], "no-store")
+        import csv
+        import io
+        rows = list(csv.reader(io.StringIO(got.content.decode("utf-8-sig"))))
+        self.assertEqual(rows[0][:2], ["Document Type", "Sell-to Customer No."])
+        self.assertEqual(rows[1], ["Order", "C100", "88123", "", "Item", "SYN-1", "12", "CS", "41.50"])
+        self.assertEqual(rows[2][5:7], ["'=HYPERLINK(1)", "-1"])
+        # a number is as the spec states it; anything else a spreadsheet would run is text
+        self.assertEqual(rows[3][5:], ["'-2+HYPERLINK(1)", "'+5", "", "0.075"])
+        self.assertEqual(len(rows), 4)
+        # no lines: nothing copy-ready; another's item, or one the reader may not read: 404
+        self.assertEqual(owner.get("/api/my-work/ap_one/order-import").status_code, 404)
+        self.assertEqual(owner.get("/api/my-work/ap_fin_lines/order-import").status_code, 404)
+        self.assertEqual(owner.get("/api/my-work/nope/order-import").status_code, 404)
+        self.assertEqual(stranger.get("/api/my-work/ap_lines/order-import").status_code, 404)
+        self.backend.writes_environ = {ap.KILL_ENV: "1"}
+        self.assertEqual(owner.get("/api/my-work/ap_lines/order-import").status_code, 409)
 
     def test_kill_switch_stops_approval(self) -> None:
         self.backend.writes_environ = {ap.KILL_ENV: "1"}

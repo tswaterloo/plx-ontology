@@ -87,6 +87,45 @@ class OntologyLoadTests(unittest.TestCase):
         self.assertEqual(ontology_parity.parity(str(self.store), self.dsn,
                                                 sample=50)["differing"], [])
 
+    def test_audience_keys_and_bc_units_read_by_index_equal_the_whole_scan(self):
+        """The store's audience keys (read one index step per key) and its BC capture
+        units (named by those keys) are what a scan of every object gave, on SQLite and on
+        Postgres, the BC keys matched in any letter case."""
+        from operating import ontology_host
+        from operating.ontology_tools import StoreReader
+        from operating.pg import ontology_load, ontology_reader
+        ontology_load.load(self.store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        scan = "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key"
+        old_bc = ("SELECT o.audience_key, MIN(v.l1_handle) FROM object_versions v JOIN "
+                  "objects o ON o.object_id = v.object_id WHERE o.audience_key LIKE 'bc:%' "
+                  f"AND ({ontology_host._BC_HANDLE_RANGES}) GROUP BY o.audience_key")
+        lite = StoreReader.open(self.store)
+        pg = ontology_reader.PgStoreReader.open(self.dsn)
+        try:
+            for reader in (lite, pg):
+                with self.subTest(reader=type(reader).__name__):
+                    with reader.lock:
+                        keys = [row[0] for row in reader.conn.execute(scan)]
+                        units = {key: handle[len("bc://"):].split("/", 1)[0] for key, handle
+                                 in reader.conn.execute(old_bc).fetchall()}
+                    self.assertTrue(any(key.lower().startswith("bc:") for key in keys))
+                    self.assertEqual(reader.audience_keys(), keys)
+                    self.assertEqual(ontology_host.store_bc_units(reader), units)
+                    self.assertTrue(units)
+            # SQLite has no audience_key index: its keys stay one scan, never a step per
+            # key (each step a scan of every object)
+            said: list[str] = []
+            fresh = StoreReader.open(self.store)
+            fresh.conn.set_trace_callback(said.append)
+            try:
+                self.assertEqual(fresh.audience_keys(), lite.audience_keys())
+            finally:
+                fresh.conn.close()
+            self.assertFalse([sql for sql in said if "RECURSIVE" in sql.upper()], said)
+        finally:
+            pg.close()
+            lite.conn.close()
+
     def test_a_stopped_load_resumes_without_copying_a_range_twice(self):
         from operating.pg import ontology_load, ontology_parity
         import psycopg
@@ -114,6 +153,87 @@ class OntologyLoadTests(unittest.TestCase):
                                    "value_cells_words"})   # the word index kept
         self.assertEqual(ontology_parity.parity(str(self.store), self.dsn,
                                                 sample=50)["differing"], [])
+
+    def test_document_names_read_through_their_index_find_what_a_whole_read_finds(self):
+        """``document_tables.find_documents`` on Postgres finds the documents SQLite's word
+        index finds: with no name index, with one over every name field (asked through it:
+        the planner proves the partial index applies), and with one missing a field added
+        since it was built (that field read by its btree). Past the caller's SQL deadline it
+        is interrupted, never read as no documents, and the session's own statement
+        timeout stands again after."""
+        import re
+        import time
+        import psycopg
+        from operating import call_limits
+        from operating import document_tables as dt
+        from operating.ontology_tools import StoreReader
+        from operating.pg import document_names as dn, ontology_load, ontology_reader
+        ontology_load.load(self.store, self.dsn, workers=1, replace=True, log=io.StringIO())
+        lite = StoreReader.open(self.store)
+        with lite.lock:
+            names = [row[0] for row in lite.conn.execute(
+                "SELECT v.value FROM object_values v JOIN objects o ON o.object_id = "
+                "v.object_id WHERE v.superseded_at IS NULL AND o.object_type IN "
+                "(SELECT value FROM json_each(?)) AND v.property IN ('name', 'path')",
+                (json.dumps(list(dt.DOC_TYPES)),))]
+        words = sorted({w for n in names for w in re.findall(r"[a-z0-9]+", str(n).lower())
+                        if len(w) >= 3})
+        self.assertTrue(words, "the fixture holds named documents")
+        asks = [[words[0]], [words[-1], words[len(words) // 2]], [words[0][:3] + "*"],
+                ["zzqqxnothing"]]
+        with lite.lock:
+            want = [[(d.object_id, d.handle, d.name) for d in
+                     dt.find_documents(lite.conn, ask).docs] for ask in asks]
+        self.assertTrue(any(want), "some ask finds a document")
+        pg = ontology_reader.PgStoreReader.open(self.dsn)
+
+        def found() -> list:
+            with pg.lock:
+                return [[(d.object_id, d.handle, d.name) for d in
+                         dt.find_documents(pg.conn, ask).docs] for ask in asks]
+
+        with psycopg.connect(self.dsn, autocommit=True) as admin:
+            admin.execute("DROP INDEX IF EXISTS ontology.value_cells_doc_names")
+            self.assertEqual(found(), want, "no name index")
+            self.assertTrue(dn.build(self.dsn, concurrently=False)["built"])
+            fields = dn.fields_of(admin.cursor())
+            self.assertEqual(dn.status(self.dsn)["uncovered"], [])
+            self.assertFalse(dn.build(self.dsn)["built"], "a covering index stands")
+            self.assertEqual(found(), want, "every name field indexed")
+            admin.execute("SET enable_seqscan = off")
+            plan = "\n".join(r[0] for r in admin.execute(
+                "EXPLAIN SELECT 1 FROM ontology.value_cells c WHERE c.field IN ("
+                + ", ".join(map(str, fields)) + ") AND lower(c.value) LIKE '%"
+                + words[0] + "%'"))
+            self.assertIn("value_cells_doc_names", plan)
+            # the fields holding the documents' names added since the index was built
+            named = sorted(r[0] for r in admin.execute(
+                "SELECT DISTINCT c.field FROM ontology.value_cells c JOIN "
+                "ontology.value_sources s ON s.src = c.src JOIN ontology.object_versions v "
+                "ON v.ver = s.ver JOIN ontology.objects o ON o.object_id = v.object_id "
+                "WHERE o.object_type = ANY(%s) AND c.field = ANY(%s)",
+                (list(dt.DOC_TYPES), fields)))
+            self.assertTrue(named)
+            if len(named) < len(fields):
+                admin.execute("DROP INDEX ontology.value_cells_doc_names")
+                admin.execute(dn._create(dn.INDEX, [f for f in fields if f not in named],
+                                         False))
+                self.assertEqual(dn.status(self.dsn)["uncovered"], named)
+                self.assertEqual(found(), want, "a field the index misses")
+                self.assertTrue(dn.build(self.dsn)["built"], "built again over it")
+                self.assertEqual(dn.status(self.dsn)["uncovered"], [])
+                self.assertEqual(found(), want)
+        with pg.lock:
+            (before,) = pg.conn._pg.execute("SHOW statement_timeout").fetchone()
+            with call_limits.sql_deadline(time.monotonic() - 1):
+                with self.assertRaisesRegex(sqlite3.OperationalError, "interrupt"):
+                    dt.find_documents(pg.conn, asks[0])
+            with call_limits.sql_deadline(time.monotonic() + 0.3):
+                with self.assertRaisesRegex(sqlite3.OperationalError, "interrupt"):
+                    with pg.conn.deadline_bounded():
+                        pg.conn.execute("SELECT pg_sleep(3)").fetchall()
+            self.assertEqual(pg.conn._pg.execute("SHOW statement_timeout").fetchone()[0],
+                             before)
 
     def test_word_search_reads_the_rows_fts5_reads(self):
         """The values' word index on Postgres answers every FTS5 query the tools write

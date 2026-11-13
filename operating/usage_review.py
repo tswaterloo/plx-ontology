@@ -110,7 +110,9 @@ def _answers(conn: sqlite3.Connection, since: str, guard: Any, text: Text,
         answers.append({
             "at": row["at"], "who": who, "question": text(data.get("question")
                                                            or row["title"], 400),
-            "outcome": data.get("outcome") or ("error" if row["verb"] == "failed" else None),
+            # a question asked back (``clarify``) is the person's turn, not a low answer
+            "outcome": "asked_back" if data.get("clarify") else data.get("outcome") or (
+                "error" if row["verb"] == "failed" else None),
             "error": review.get("error"), "answer": text(data.get("direct_answer"), 4000),
             "sources": sources, "not_found": [text(n.get("what"), 200)
                                               for n in data.get("not_found") or ()],

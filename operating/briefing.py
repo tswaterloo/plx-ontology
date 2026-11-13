@@ -252,6 +252,10 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                                       "label": "Supplier shortage hits open orders",
                                       "departments": ("PROC", "OPS", "SALES"),
                                       "check": ("supplier_shortage",), "hidden": "none"},
+    "return_unanswered": {"kinds": ("return_unanswered",),
+                          "label": "Return or credit asked, no answer",
+                          "departments": ("CS", "SALES", "QUALITY", "QA", "FIN"),
+                          "check": ("return_requests",), "hidden": "none"},
     "supplier_chasing_payment": {"kinds": ("supplier_chasing_payment",),
                                  "label": "Supplier chasing us for payment",
                                  "departments": ("FIN", "PROC"),
@@ -476,6 +480,7 @@ CHECK_WORDS = {"late_or_unconfirmed_po": "late purchase orders",
                "early_pay_discounts": "early-pay discounts missed",
                "duplicate_payables": "supplier invoices and payments entered twice",
                "returns_and_credits": "customers' credits and returns rising",
+               "return_requests": "customers' return and credit requests",
                "slow_moving_stock": "stock not moving",
                "expiring_lot_stock": "lots with stock expiring",
                "assembly_component_shortfall": "assembly orders short of components",
@@ -633,6 +638,8 @@ NEXT_ACTIONS = {
                                "chase_reply_status"),
     "expedite_unanswered": ("Answer the expedite with the date that will hold, or chase "
                             "the other side for one.", "expedite_answer_date"),
+    "return_unanswered": ("Answer the customer: agree the return or the credit, or say why "
+                          "not.", "return_answer"),
     "supplier_shortage_open_orders": ("Get the supplier's new date or quantity, then re-plan "
                                       "or tell the customers of the orders it hits.",
                                       "shortage_replan_tell"),
@@ -876,6 +883,15 @@ NEXT_ACTIONS_BY_DEPARTMENT: dict[str, dict[str, tuple[str, str]]] = {
                  "expedite_chase_supplier"),
         "SALES": ("Tell the customer the date that will hold for the expedited order.",
                   "expedite_tell_customer"),
+    },
+    "return_unanswered": {
+        "CS": ("Answer the customer's return or credit request: agree how the goods come "
+               "back, or say why not.", "return_answer"),
+        "SALES": ("Tell the customer whether the return or credit is agreed.",
+                  "return_tell_customer"),
+        "QUALITY": ("Find out what is wrong with the goods the customer wants to send back.",
+                    "return_check_quality"),
+        "FIN": ("Issue the agreed credit, or tell Sales why not.", "return_credit"),
     },
     "supplier_shortage_open_orders": {
         "PROC": ("Ask the supplier for its new date or quantity, or find another source.",
@@ -1549,6 +1565,8 @@ TODAY_WORDS = {
     "customer_chasing_order": ("order", "orders", "was chased by its customer",
                                "chased by customers"),
     "expedite_unanswered": ("expedite", "expedites", "went unanswered", "unanswered"),
+    "return_unanswered": ("return request", "return requests", "went unanswered",
+                          "unanswered"),
     "supplier_shortage_open_orders": ("supplier shortage", "supplier shortages",
                                       "hit open orders", "hitting open orders"),
     "supplier_chasing_payment": ("supplier payment chase", "supplier payment chases",

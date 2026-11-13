@@ -11,6 +11,7 @@ import { cn } from "@/lib/cn";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref } from "@/lib/format";
 import { briefingKind } from "@/lib/status";
 import type { Briefing, BriefingGroup, BriefingItem, BriefingItems, BriefingView, LatePo } from "@/lib/types";
+import { DataNotes } from "./data-notes";
 import { ItemFeedback, MarkedLine, WrongReason, type ItemVerdict } from "./item-feedback";
 import { lateEdge, lateFigure, StatusGlyph } from "./ui/glyphs";
 import { StatusWord } from "./ui/status-badge";
@@ -534,11 +535,13 @@ export function BriefingCard({
 
 function BriefingCountsSection({ briefing }: { briefing: Briefing }) {
   const body = BriefingCounts({ briefing });
-  if (!body) return null;
+  const notes = briefing.data_note_items ?? [];
+  if (!body && !notes.length) return null;
   return (
     <section>
       <SideTitle>Not in this list</SideTitle>
       {body}
+      <DataNotes notes={notes} className="mt-1.5" />
     </section>
   );
 }

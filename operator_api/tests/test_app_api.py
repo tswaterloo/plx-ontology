@@ -518,6 +518,81 @@ class CardActionsRoutes(unittest.TestCase):
         self.assertEqual(missing.status_code, 404)
 
 
+class CredentialsMasked(unittest.TestCase):
+    """SEC-S-09: a credential a source quoted (an API key mailed to a colleague) is never
+    served: not in a page, not in an answer (even split over its streamed words), and not
+    in a drafted message, whose preview hash and send carry the masked text."""
+
+    KEY = "Abc8Q~bcDEFghiJKLmnoPQRstuVWxyz0123456789"      # Azure client-secret shape
+    PASSWORD = "Welcome123!"
+
+    def test_pages_answers_and_drafts_never_carry_a_credential(self):
+        from integrations.graph_send import ActionSender
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
+        key, password = self.KEY, self.PASSWORD
+        leak = f"the MC key is MC_MCP_API_KEY={key} and the portal password: {password}"
+        sent: list[dict] = []
+
+        class Leaky(MockBackend):
+            def home(self, reader):
+                return super().home(reader).model_copy(update={"greeting_name": leak})
+
+            def ask(self, reader, request):
+                for event, payload in super().ask(reader, request):
+                    if event == "token":
+                        continue
+                    if event == "answer":
+                        payload = payload.model_copy(update={"direct_answer": leak})
+                        for word in leak.split(" "):
+                            yield "token", m.TokenEvent(text=word + " ")
+                    yield event, payload
+
+            def suggestions(self, reader):
+                found = super().suggestions(reader)
+                for card in found.items:
+                    if card.kind == "vendor_chase" and card.draft and card.draft.to:
+                        card.draft.body = f"{card.draft.body}\n{leak}"
+                return found
+
+        class Recording(ActionSender):
+            def dispatch(self, kind, sender, payload):
+                sent.append(dict(payload))
+                return super().dispatch(kind, sender, payload)
+
+        backend = Leaky()
+        backend.actions_environ = {"PLX_EXCLUDED_PEOPLE_OIDS":
+                                   "22222222-2222-4222-8222-222222222222"}
+        backend.action_sender = Recording(backend.actions_environ)
+        session = fixture_session("plx", ["staff:demo"], channel=CHANNEL_CONSOLE,
+                                  subject_email="vince@plx.example",
+                                  subject_oid="11111111-1111-4111-8111-111111111111")
+        client = TestClient(create_app(backend, DevAuth(lambda: session, mode="mock"),
+                                       secure_cookie=False), base_url="http://testserver")
+        self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+        home = client.get("/api/home")
+        streamed = client.post("/api/ask", json={"question": "is PO 90412 late"}).text
+        card = next(c for c in client.get("/api/suggestions").json()["items"]
+                    if c["kind"] == "vendor_chase" and c["draft"]["to"]["address"])
+        ask = {"card_id": card["id"], "kind": "send_email"}
+        preview = client.post("/api/actions/preview", json=ask).json()
+        result = client.post("/api/actions/confirm", json={
+            **ask, "confirm": True, "idempotency_key": "dialog-secret-0123456789",
+            "payload_hash": preview["payload_hash"]})
+        self.assertEqual(result.json()["status"], "dry_run", result.text)
+        for text in (home.text, streamed, json.dumps(card), json.dumps(preview), result.text,
+                     json.dumps(sent)):
+            self.assertNotIn(key, text)
+            self.assertNotIn(password, text)
+        self.assertIn("MC_MCP_API_KEY=[secret]", home.json()["greeting_name"])
+        answer = events(streamed)
+        tokens = "".join(data["text"] for name, data in answer if name == "token")
+        self.assertEqual(tokens.strip(), answer[-1][1]["direct_answer"])
+        self.assertIn("password: [secret]", tokens)
+        # what the person previewed is what goes: the drafted text was masked before the hash
+        self.assertEqual(len(sent), 1)
+        self.assertIn("password: [secret]", sent[0]["body"])
+        self.assertEqual(sent[0]["body"], preview["payload"]["body"])
+
 if __name__ == "__main__":
     unittest.main()
 

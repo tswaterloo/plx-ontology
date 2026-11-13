@@ -258,6 +258,9 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
     "expedite_unanswered": {"about": "subject", "ask": None,
         "owner": "{n} was asked to be expedited and nobody answered: confirm a date.",
         "change": None},
+    "return_unanswered": {"about": "subject", "ask": None,
+        "owner": "{n}: the customer asked to return goods or for a credit and nobody "
+                 "answered: agree it or say why not.", "change": None},
     "supplier_shortage_open_orders": {"about": "subject", "ask": None,
         "owner": "{n}: the supplier announced a shortage or delay that hits open orders: "
                  "re-plan and tell the customers.", "change": None},

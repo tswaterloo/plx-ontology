@@ -126,16 +126,41 @@ class Digest(World):
         money = groups[0]["items"][0]
         self.assertEqual(money["link"], f"https://mc.plxcustomer.io/tasks/{money['task_id']}")
         self.assertFalse(money["history"]["low_risk"])
-        # their project: 10 launches decided, fewer than the 15 a mark needs; the
-        # malformed task id gets no link
+        # their project: 10 launches decided, fewer than the 15 a mark needs on its own;
+        # every project's 26 (all approved) mark it, as counts only; the malformed task id
+        # gets no link
         their_launch = their_d["deciders"][0]["groups"]
         self.assertEqual([(g["class"], g["low_risk"]) for g in their_launch],
-                         [("launch", False)])
+                         [("launch", True)])
+        h = their_launch[0]["items"][0]["history"]
+        self.assertEqual((h["approved"], h["decided"], h["scope"], h["company_approved"],
+                          h["company_decided"]), (10, 10, "company", 26, 26))
+        self.assertNotIn("scope", launch)          # our own 16 decide ours
         self.assertEqual(sorted(str(e["link"]) for e in their_launch[0]["items"]),
                          ["None", "https://mc.plxcustomer.io/tasks/TASK-1019"])
         self.assertEqual((ours_d["approves"], their_d["approves"]), (0, 0))
         # the daily digest carries it
         self.assertEqual(ap.digest(mine, NOW)["mc_approvals"]["pending"], 18)
+
+    def test_company_history_marks_only_where_the_project_cannot_tell(self):
+        """The company's record marks a low-risk class only for a project that decided too
+        few of it; a project whose own record fails, a riskier class, a company record
+        below the share or too short, and a malformed or missing row never are."""
+        company = {"launch": {"approved": 40, "decided": 40},
+                   "merge": {"approved": 40, "decided": 40}}
+        def mark(own, comp=company, cid="launch"):
+            return md.judged(cid, {"days": 60, "by_class": own, "company": comp})["low_risk"]
+        self.assertTrue(mark({}))
+        self.assertTrue(mark({"launch": {"approved": 14, "decided": 14}}))
+        self.assertFalse(mark({"launch": {"approved": 15, "decided": 16}}))   # own fails
+        self.assertFalse(mark({}, cid="merge"))                               # normal risk
+        self.assertFalse(mark({}, {"launch": {"approved": 37, "decided": 40}}))
+        self.assertFalse(mark({}, {"launch": {"approved": 14, "decided": 14}}))
+        for bad in (None, [], "x", {"launch": {"approved": 9, "decided": 2}},
+                    {"launch": {"approved": "n", "decided": 40}}, {"launch": []}):
+            self.assertFalse(mark({}, bad), bad)
+        # an item prepared before the company's counts were recorded: the project's only
+        self.assertFalse(md.judged("launch", {"days": 60, "by_class": {}})["low_risk"])
 
     def test_a_reader_who_may_not_read_mc_sees_no_gate(self):
         q = self.prepare(self.twenty())

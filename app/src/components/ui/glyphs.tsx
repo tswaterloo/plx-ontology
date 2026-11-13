@@ -1,4 +1,4 @@
-import { BookOpen, Bot, BellRing, Calculator, Database, FileText, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
+import { Activity, BookOpen, Bot, BellRing, Calculator, Database, FileText, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /** No date on record: the ring left open, dashed. */
@@ -33,6 +33,9 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/meetings": { icon: CalendarClock, hue: "text-[var(--place-meetings)]" },
   "/team": { icon: Users, hue: "text-[var(--place-team)]" },
   "/activity": { icon: History, hue: "text-[var(--place-activity)]" },
+  "/work-log": { icon: History, hue: "text-[var(--place-activity)]" },
+  "/ops": { icon: Activity, hue: "text-[var(--place-activity)]" },
+  "/trust": { icon: Gauge, hue: "text-[var(--place-activity)]" },
   "/feedback": { icon: MessageSquareText, hue: "text-[var(--place-feedback)]" },
 };
 

@@ -40,6 +40,7 @@ is logged once.
 from __future__ import annotations
 
 from decimal import Decimal
+from contextlib import contextmanager
 import functools
 import hashlib
 import json
@@ -982,6 +983,33 @@ class PgCompatConnection:
                         "members text[] NOT NULL)")
             cur.execute("DELETE FROM sq_lists")
         self._kept: dict[str, str] = {}
+
+    @contextmanager
+    def deadline_bounded(self) -> Iterator[None]:
+        """Each statement run in this block (on this thread, which holds the connection
+        throughout) ends within the time the thread's SQL deadline left on entry (``call_limits.sql_deadline``), which
+        Postgres statements do not otherwise see (``set_progress_handler`` is a no-op
+        here): the session's ``statement_timeout`` lowered to the time left, a statement
+        past it cancelled as ``sqlite3.OperationalError("interrupted")`` (as a SQLite
+        interrupt). No deadline: as before; none left: interrupted at once."""
+        from operating import call_limits
+        left = call_limits.seconds_left()
+        if left is None:
+            yield
+            return
+        if left <= 0:
+            raise sqlite3.OperationalError("interrupted")
+        with self._lock:
+            pg = self._pg
+            (before,) = pg.execute("SHOW statement_timeout").fetchone()
+            pg.execute(f"SET statement_timeout = {max(1, int(left * 1000))}")
+            try:
+                yield
+            finally:
+                try:
+                    pg.execute(f"SET statement_timeout = '{before}'")
+                except Exception:  # noqa: BLE001 - a lost session is opened anew with its own
+                    pass
 
     # -- the held connection, replaced when lost --------------------------------------
     @property

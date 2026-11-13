@@ -9,8 +9,17 @@ layer has touched since. This pass reads those records from the Postgres ontolog
 chunks them by the same rule (``operating.chunking.records.RecordChunker``: markings,
 audience units and the people exclusion as a generation pass applies them).
 
-What it writes: only the chunks of objects that hold no record-text row yet (any kind
-``RECORD_KINDS`` names); an object that holds one is left to the layer that wrote it. It
+A captured document type whose text a document chunker indexes (``record_text.json``
+``documents``) and whose chunk kind is in ``DOCUMENT_KINDS`` (calendar meetings, Mission
+Control tasks, Teams messages) is chunked the same way by its own rule
+(``operating.chunking.projection.ProjectionChunker``: the meeting people check, the Teams
+window, the document's re-marked markings): a calendar captured after the last generation
+pass held 1,059 meetings with text and 155 meeting chunks. Mail, attachments and SharePoint
+files are never passed here: their text is large and the mail window decides which is held.
+
+What it writes: only the chunks of objects that hold no row of their own kinds yet
+(``RECORD_KINDS`` for a record type, the document kind for a document type); an object
+that holds one is left to the layer that wrote it. It
 deletes nothing but the rows of a unit the people exclusion withholds (as every pass does).
 Slices of ``SLICE`` objects, each under the follower's lock (``search/follow.json.lock``),
 so a layer run never writes beside it. Refused (exit 2): the exclusion unavailable, a type
@@ -36,6 +45,8 @@ from .shards import WRITE_BATCH, _exclusion
 # what ``RecordChunker`` writes (``records.record_kind``, ``records.WORDS_KIND``)
 RECORD_KINDS = ("portal_text", "bc_text", "record_text", "mc_task", "list_item",
                 "record_words")
+# document chunk kinds this pass may write (module docstring)
+DOCUMENT_KINDS = ("meeting", "mc_task", "teams")
 SLICE = 2000
 LOCK = Path("search") / "follow.json.lock"
 
@@ -45,20 +56,27 @@ def record_pass(store: Any, conn: Any, exclusion: Any, types: Sequence[str], *,
     """Chunk and (unless ``dry``) write the records of ``types`` read from ``store`` (a
     SQLite-dialect connection) that hold no record-text row in ``conn``'s index. ``lock()``:
     a context manager yielding whether this run may write a slice now."""
+    from operating.chunking.projection import _PRIMARY, ProjectionChunker
     from operating.chunking.records import RecordChunker
     if exclusion.unavailable:
         return {"refused": f"people_exclusion_unavailable:{exclusion.unavailable}"}
     counts = Counts()
     chunker = chunker or RecordChunker(store, exclusion, counts)
+    # a document chunk lands on its version's primary object: only those types are passed
+    # (a CalendarEvent's text is its Meeting's)
+    documents = {t: d["kind"] for t, d in chunker.config["documents"].items()
+                 if d.get("kind") in DOCUMENT_KINDS and t in _PRIMARY}
     asked = sorted(set(types))
-    unknown = [t for t in asked if t not in chunker.plan]
+    unknown = [t for t in asked if t not in chunker.plan and t not in documents]
     if unknown or not asked:
         return {"refused": "type_not_indexed:" + ",".join(unknown or ["<none>"])}
     whole = dict(chunker.plan)
+    projection = ProjectionChunker(store, exclusion, counts)
     started = time.monotonic()
     writer = None if dry else st.ChunkWriter(conn, unit_of=lambda key: unit_row(key, exclusion))
     report: dict[str, Any] = {"dry": dry, "types": {}}
     for object_type in asked:
+        own_kinds = [documents[object_type]] if object_type in documents else list(RECORD_KINDS)
         ids = [r[0] for r in store.execute(
             "SELECT object_id FROM objects WHERE object_type = ? ORDER BY object_id",
             (object_type,)).fetchall()]
@@ -73,15 +91,19 @@ def record_pass(store: Any, conn: Any, exclusion: Any, types: Sequence[str], *,
                     return report
                 indexed = {r[0] for r in conn.execute(
                     "SELECT DISTINCT object_id FROM search.chunks WHERE object_id = ANY(%s) "
-                    "AND kind = ANY(%s)", (part, list(RECORD_KINDS))).fetchall()}
+                    "AND kind = ANY(%s)", (part, own_kinds)).fetchall()}
                 conn.commit()
                 done["already_indexed"] += len(indexed)
                 todo = frozenset(part) - indexed
                 if not todo:
                     continue
-                chunker.plan = {object_type: whole[object_type]}   # this type's records only
+                if object_type in documents:
+                    made_from = projection.chunks(own_kinds, objects=todo)
+                else:
+                    chunker.plan = {object_type: whole[object_type]}   # this type's only
+                    made_from = chunker.record_chunks(None, objects=todo)
                 made, objects = [], set()
-                for chunk in chunker.record_chunks(None, objects=todo):
+                for chunk in made_from:
                     if chunk.object_id not in todo:
                         continue
                     made.append(chunk)

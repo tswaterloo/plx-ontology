@@ -24,7 +24,7 @@ import zlib
 from pathlib import Path
 from typing import AbstractSet, Any, Iterator, Mapping, Sequence
 
-from . import MIN_BODY, Chunk, make_chunk
+from . import MAX_BODY, MIN_BODY, Chunk, make_chunk
 from . import headers as hd
 from .normalise import normalise
 from .permissions import family, parse_markings, valid_key
@@ -89,11 +89,15 @@ _PHONE_PLUS = re.compile(_EDGE_L + r"\+\d{1,3}[\s.-]?\(?\d{1,4}\)?(?:[\s.-]?\d{2
                          + _EDGE_R)
 _PHONE_NANP = re.compile(_EDGE_L + r"(?:\(\d{3}\)\s?|\d{3}[-.\s])\d{3}[-.\s]\d{4}" + _EDGE_R)
 _LINK = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
+# A directory object id or any other GUID (a person's id in a Planner or Teams field)
+_GUID = re.compile(r"(?i)(?<![0-9a-f-])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                   r"[0-9a-f]{12}(?![0-9a-f-])")
 
 
 def masked(text: str) -> str:
-    """``text`` with every email address and phone number replaced by a placeholder."""
-    out = _EMAIL.sub("[email]", text)
+    """``text`` with every email address, phone number and GUID (a directory object id)
+    replaced by a placeholder."""
+    out = _GUID.sub("[id]", _EMAIL.sub("[email]", text))
     out = _PHONE_CUE.sub(lambda m: f"{m.group(1)}{m.group(2)}[phone]", out)
     return _PHONE_NANP.sub("[phone]", _PHONE_PLUS.sub("[phone]", out))
 
@@ -180,9 +184,16 @@ def text_plan(config: Mapping[str, Any], types: Mapping[str, Mapping[str, Any]]
             if how.startswith("deny:") or name in entry["label"] + entry["free"] + entry["json"]:
                 continue
             entry["label" if how == "label" else "free"].append(name)
-        if any(entry.values()):
-            plan[type_id] = entry
+        if any(entry.values()) or carded(config, type_id):
+            plan[type_id] = entry   # a type with no text property is still carded
     return plan
+
+
+def carded(config: Mapping[str, Any], object_type: str) -> bool:
+    """Whether records of this type get a card (``record_text.json`` ``card``)."""
+    card = config.get("card") or {}
+    return bool(card.get("max_value_chars")) and not re.match(
+        str(card.get("except_types") or r"(?!)"), object_type)
 
 
 def type_title(object_type: str) -> str:
@@ -251,6 +262,7 @@ class RecordChunker(ProjectionChunker):
         self.words_only = dict(self.config.get("words_only") or {})
         # raw relation rows (Rel*): found by their words, never embedded
         self.raw_types = re.compile(str(self.words_only.get("raw_types") or r"(?!)"))
+        self.card = dict(self.config.get("card") or {})
 
     def record_chunks(self, kinds: Sequence[str] | None = None, limit: int | None = None,
                       shard: tuple[int, int] | None = None,
@@ -329,10 +341,19 @@ class RecordChunker(ProjectionChunker):
         json_props = set(props.get("json", ()))
         wanted = sorted(labels | set(props.get("free", ())) | json_props)
         latest = self._latest_markings(ids)
-        current = {row["object_id"]: row["markings"] for row in self.conn.execute(
-            "SELECT object_id, markings FROM object_versions WHERE superseded_at IS NULL "
-            "AND object_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),))}
+        current, handles = {}, {}
+        for row in self.conn.execute(
+                "SELECT object_id, markings, l1_handle FROM object_versions WHERE superseded_at "
+                "IS NULL AND object_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),)):
+            current[row["object_id"]] = row["markings"]
+            handles[row["object_id"]] = row["l1_handle"]
         texts: dict[str, list[tuple[Any, str]]] = {}
+        # short values no chunk of their own carries (a status, a code, a currency): the
+        # record's card, only those the record's own markings cover (an unmarked value)
+        short_values: dict[str, list[tuple[str, str, Any]]] = {}
+        # raw mirror rows get no card (``card.except_types``): their business types do
+        card_max = int(self.card.get("max_value_chars", 0)) if carded(
+            self.config, live[0]["object_id"].split(":", 1)[0]) else 0
         for row in self.conn.execute(
                 "SELECT object_id, property, value, markings, l1_handle, field_path, value_type "
                 "FROM object_values WHERE object_id IN (SELECT value FROM json_each(?)) "
@@ -346,16 +367,26 @@ class RecordChunker(ProjectionChunker):
                     value := masked(row["value"]),
                     mins[0] if row["property"] in labels else mins[1], share):
                 texts.setdefault(row["object_id"], []).append((row, value))
-        if not texts:
+            elif isinstance(row["value"], str) and card_max and \
+                    0 < len(value := " ".join(masked(row["value"]).split())) <= card_max:
+                short_values.setdefault(row["object_id"], []).append(
+                    (row["property"], value, row["markings"]))
+        if not texts and not (card_max and live):
             return
-        idents = self._identifiers(list(texts))
+        idents = self._identifiers(ids if card_max else list(texts))
         for record in live:
             oid = record["object_id"]
-            if oid not in texts:
-                continue
             audience = record["audience_key"]
             if oid not in current:
-                self.counts.skip("no_current_version")
+                if oid in texts:
+                    self.counts.skip("no_current_version")
+                continue
+            if card_max:
+                card = self._card(record, handles[oid], current[oid], latest.get(oid, "[]"),
+                                  idents.get(oid, ()), short_values.get(oid, ()))
+                if card is not None:
+                    yield card
+            if oid not in texts:
                 continue
             own_kind = record_kind(audience)
             self.counts.documents[own_kind] += 1
@@ -393,6 +424,46 @@ class RecordChunker(ProjectionChunker):
                                         ids=id_labels, about=about,
                                         where=f"field {row['field_path']}"),
                         body=piece, linked_ids=keys, audience_key=audience, markings=marks)
+
+
+    def _card(self, record: Any, handle: str, current: str, latest: str,
+              idents: Sequence[tuple[str, str, str]], values: Sequence[tuple[str, str, Any]]
+              ) -> Chunk | None:
+        """One words-only chunk naming a record by what it is: its type, its identifiers
+        and its short values (status, codes, currency, carrier) no chunk of their own
+        carries, so a record of any type is found by its numbers and state. Only what the
+        record's own markings cover (an identifier or value marked beyond them stays
+        out), keyed by the record's unit and markings; no figure (money, quantity, date)
+        is ever a card value: only text properties the rule reads are."""
+        marks = parse_markings("[]", current, latest)
+        if marks is None:
+            self.counts.skip("markings_unknown:card")
+            return None
+        own = [(k, v) for k, v, m in idents
+               if (held := parse_markings(m)) is not None and set(held) <= set(marks)]
+        values = [(p, v) for p, v, m in values
+                  if (held := parse_markings(m)) is not None and set(held) <= set(marks)]
+        if not own:
+            # a card is the record named by its numbers: without one, its body (type and
+            # status) would be every such record's, clustered as one copy in search
+            self.counts.skip("card_no_identifier")
+            return None
+        oid = record["object_id"]
+        type_name = type_title(oid.split(":", 1)[0])
+        lines = [f"{type_name} " + ", ".join(hd.id_label(k, v) for k, v in own[:6])]
+        lines += [f"{p.replace('_', ' ')}: {v}" for p, v in sorted(set(values))]
+        body = normalise("\n".join(lines))   # a name, as short as it is (no passage minimum)
+        title = f"{type_name} {own[0][1]}"
+        self.counts.documents["card"] += 1
+        return make_chunk(
+            kind=WORDS_KIND, parts=(record["audience_key"], handle, "card", "0"),
+            source_handle=handle, object_id=oid, title=title, author_role=None,
+            occurred_at=None,
+            header=hd.build(kind=WORDS_KIND, title=title, date=None, author_role=None,
+                            ids=[hd.id_label(k, v) for k, v in own][:4],
+                            about=f"the record {title}", where="record card"),
+            body=body[:MAX_BODY], linked_ids=[f"{k}:{v}" for k, v in own],
+            audience_key=record["audience_key"], markings=marks)
 
 
 __all__ = ["CONFIG", "DENY_CATEGORIES", "WORDS_KIND", "denied", "human", "masked", "RecordChunker", "classify", "json_lines",

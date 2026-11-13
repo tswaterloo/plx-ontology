@@ -63,6 +63,7 @@ WHOLE_PASS = frozenset({"stock_out_risk", "overdue_receivable", "unit_cost_jump"
                         "shipped_not_invoiced", "duplicate_customer_order",
                         "recurring_component_damage", "customer_chase", "quality_holds",
                         "expedite_requests", "supplier_shortage", "payment_chase",
+                        "return_requests",
                         "customer_payment_behaviour", "early_pay_discounts",
                         "duplicate_payables", "returns_and_credits",
                         "price_consistency",

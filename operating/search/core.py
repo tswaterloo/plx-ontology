@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from typing import AbstractSet, Any, Callable, Mapping, Sequence
 
-from operating.chunking.normalise import mask_cards
+from operating.chunking.normalise import mask_private
 from operating.search import authority as au
 from operating.search import retrievers as rt
 from operating.search.config import (Weights, dsn as default_dsn, load_owners,
@@ -166,9 +166,9 @@ def _ms(start: float) -> float:
 
 
 def _snippet(body: str, terms: Sequence[str]) -> str:
-    # a card number is masked over the whole text before it is cut (a row indexed before
-    # chunks were masked, until ``operating.embed.card_purge`` has run)
-    text = mask_cards(" ".join((body or "").split()))
+    # a card number or credential is masked over the whole text before it is cut (a row
+    # indexed before chunks were masked, until ``operating.embed.card_purge`` has run)
+    text = mask_private(" ".join((body or "").split()))
     at = -1
     for term in terms:
         found = re.search(r"(?<!\w)" + re.escape(term), text, re.IGNORECASE)
@@ -347,7 +347,7 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             taken.add(row["source_handle"])
             hits.append({"handle": row["source_handle"], "object_id": row["object_id"],
                          "kind": row["kind"],
-                         "title": mask_cards(row["title"]) if row["title"] else row["title"],
+                         "title": mask_private(row["title"]) if row["title"] else row["title"],
                          "snippet": _snippet(row["body"], terms), "score": round(score, 6),
                          "signals": signals, "chunk_id": cid,
                          "occurred_at": (row["occurred_at"].isoformat()

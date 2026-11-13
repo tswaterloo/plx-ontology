@@ -647,6 +647,43 @@ class WaitingOnYou(World):
                 self.assertNotIn("th-", dump)
                 self.assertEqual(self.replay()["workflows"], out["workflows"])  # no double
 
+    def own_again(self, i: int) -> None:
+        """A second own message in thread ``i``, the day before the window."""
+        made = mail(self.w, SENT - timedelta(days=1), sender=OURS, to=(REP,),
+                    body="Revised sheet attached.", subject=f"Re: Spec {i}", mailbox=OURS_OID,
+                    conversation=f"th-{i}", n=83_000 + i, hour=9)
+        self.sent(made, 9, -1)
+
+    def test_cardinality_an_ask_in_a_copied_thread_the_owner_keeps_answering(self):
+        """``mail_thread_turn`` (a fallback ahead of ``reply_prep``): an ask with two or more
+        people copied, in a thread the owner wrote in twice or more in 14 days, is its own
+        workflow; one copied person or one own message stays ``reply_prep``; never both."""
+        copied = ("ann@synth-supplier.example", "bob@synth-supplier.example")
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                for i in range(n):
+                    kind = i % 3          # 0: the turn; 1: one copied; 2: one own message
+                    self.thread(i, cc=copied if kind != 1 else copied[:1])
+                    if kind != 2:
+                        self.own_again(i)
+                    if i % 2 == 0:
+                        self.answer(i)
+                self.store()
+                out = self.replay()
+                turns = (n + 2) // 3
+                self.assertEqual(out["prepared_by_autopilot"],
+                                 {k: v for k, v in (("mail_thread_turn", turns),
+                                                    ("reply_prep", n - turns)) if v})
+                self.assertEqual(out["workflows"]["mail_thread"]["judged"], turns)
+                self.assertEqual(out["workflows"]["mail_thread"]["matched"],
+                                 len([i for i in range(n) if i % 3 == 0 and i % 2 == 0]))
+                q = self.queue_file()
+                per_event = [r[0] for r in q.conn.execute(
+                    "SELECT COUNT(*) FROM items GROUP BY event_id")]
+                self.assertEqual((len(per_event), set(per_event)), (n, {1}))
+                self.assertEqual(self.replay()["workflows"], out["workflows"])  # no double
+
     def test_only_mail_written_before_the_message_engages_the_thread(self):
         self.thread(1, earlier=False, ask="Here is the updated spec.")  # no ask, no history
         self.answer(1, hour=14)                     # the reply comes later the same day
@@ -765,7 +802,9 @@ class WaitingOnYou(World):
                     {"when": {"quiet_sender": [3, 0.5]}},
                     {"when": {"quiet_sender": [3, 0.5, ["partner"]]}},
                     {"when": {"after_own_post": [60]}},
-                    {"when": {"after_own_post": [60, 0.5]}}):
+                    {"when": {"after_own_post": [60, 0.5]}},
+                    {"when": {"cc_min": 0}}, {"when": {"cc_min": "2"}},
+                    {"when": {"cc_min": True}}):
             with self.subTest(bad=bad):
                 broken = json.loads(json.dumps(good))
                 entry = next(a for a in broken["autopilots"] if a["id"] == "reply_prep")

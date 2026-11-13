@@ -246,6 +246,169 @@ class AgentPath(unittest.TestCase):
         self.addCleanup(setattr, backend, "general_call", None)
         return prompts
 
+    def clarify_with(self, served, decide, open_point):
+        """The front door flags ``open_point``; the clarifier's model replies
+        ``decide(message)`` (the real gathering and checks run as the reader)."""
+        from operating.clarify import Clarifier
+        from operating.front_door import Reading
+        backend = served.app.state.backend
+        backend.front_door = SimpleNamespace(read=lambda question, earlier: Reading(
+            question, question, "investigate", "Reading your question", 0.1,
+            open=open_point))
+        messages = []
+
+        class Scripted(Clarifier):
+            def warm(self):
+                pass
+
+            def reply(self, message):
+                messages.append(message)
+                return decide(message)
+        backend.clarifier = Scripted()
+        self.addCleanup(setattr, backend, "front_door", None)
+        self.addCleanup(setattr, backend, "clarifier", None)
+        return messages
+
+    def test_an_open_choice_is_asked_back_from_the_readers_own_records_and_the_reply_continues(self):
+        """A question whose answer turns on which record it means is asked back once,
+        before any session, with options that are the reader's own records (their
+        numbers, as the records read); picking one continues the same question about
+        that record; another reader can neither continue it nor is offered a record they
+        may not read; an option naming a record never offered asks nothing."""
+        status = "Overdue"
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, status))]
+        seen, sessions = {}, []
+        self.use(self.ops, lambda on_line: sessions.append(1) or ScriptedSession(
+            on_line, lines, answer_block(self.handle, status), seen=seen))
+        ask = {"decision": "ask", "question": "Which purchase order do you mean?",
+               "options": [{"key": "C1", "label": "the first"},
+                           {"key": "C2", "label": "the second 99999"}]}
+        messages = self.clarify_with(self.ops, lambda message: ask,
+                                     {"what": "which purchase order",
+                                      "among": "PurchaseOrder"})
+        question = "is the order from that supplier late?"
+        got = self.ask_with(self.ops, {"question": question, "conversation_id": "c1"})
+        m.AnswerPayload.model_validate(got)
+        self.assertEqual(sessions, [])                     # asked before any session
+        self.assertEqual(got["clarify"]["question"], "Which purchase order do you mean?")
+        offered = messages[0]["candidates"]
+        self.assertGreaterEqual(len(offered), 2)
+        self.assertTrue(all(c["type"] == "PurchaseOrder" for c in offered))
+        # each offered as the record reads (its number), never a tool envelope or citation
+        self.assertFalse([c for c in offered if "untrusted_text" in c["label"] + c["facts"]
+                          or "api://" in c["label"] + c["facts"]])
+        options = got["clarify"]["options"]
+        self.assertEqual(options[0]["label"], "the first")
+        self.assertEqual(len({o["object"]["object_id"] for o in options}), 2)
+        # a figure no record gave is never shown: the record's own label instead
+        self.assertEqual(options[1]["label"], offered[1]["label"])
+        self.assertEqual((got["outcome"], got["follow_ups"], got["facts"]),
+                         ("partial", [], []))
+        # the reply continues the same question, about the record picked
+        picked = options[0]["object"]["object_id"]
+        done = self.ask_with(self.ops, {"question": options[0]["label"],
+                                        "conversation_id": "c1",
+                                        "clarified": {"answer_id": got["answer_id"],
+                                                      "option": 0}})
+        self.assertEqual(done["outcome"], "answered")
+        self.assertIsNone(done.get("clarify"))
+        self.assertEqual(len(messages), 1)                 # never asked back twice
+        self.assertIn(question, seen["prompt"])
+        self.assertIn(f"They mean: {options[0]['label']}", seen["prompt"])
+        self.assertIn(f"object id {picked}", seen["prompt"])
+        # another reader cannot continue it (their reply is answered as their own words,
+        # never with this reader's question or record), and the candidates are read
+        # through their own view: the record this reader picked does not read for them
+        from operating import clarify as cl
+        through = []
+
+        def gather(call, *args, **kwargs):
+            through.append(call("plx.object", {"object_id": picked}))
+            return real_gather(call, *args, **kwargs)
+        real_gather = cl.gather
+        self.addCleanup(setattr, cl, "gather", real_gather)
+        cl.gather = gather
+        outsider_seen = {}
+        self.use(self.outsider, lambda on_line: ScriptedSession(
+            on_line, lines, answer_block(self.handle, status), seen=outsider_seen))
+        theirs = self.clarify_with(self.outsider, lambda message: ask,
+                                   {"what": "which purchase order",
+                                    "among": "PurchaseOrder"})
+        stolen = self.ask_with(self.outsider, {"question": "x", "clarified": {
+            "answer_id": got["answer_id"], "option": 0}})
+        self.assertNotIn(picked, json.dumps(stolen))
+        self.assertNotIn(question, outsider_seen.get("prompt", ""))
+        self.assertNotIn(picked, outsider_seen.get("prompt", ""))
+        other = self.ask_with(self.outsider, {"question": question})
+        self.assertEqual(theirs[-1]["candidates"], [])
+        self.assertTrue(through and all(not (r or {}).get("object") for r in through))
+        self.assertIsNone(other.get("clarify"))            # nothing offered: answered
+        self.assertNotIn(picked, json.dumps(other))
+        # with no record of that kind offered, a reading naming one is never shown
+        self.clarify_with(self.outsider, lambda message: {**ask, "options": [
+            {"key": None, "label": "Acme Corp"}, {"key": None, "label": "Delta"}]},
+            {"what": "which purchase order", "among": "PurchaseOrder"})
+        self.assertIsNone(self.ask_with(self.outsider, {"question": question}).get(
+            "clarify"))
+        # an option naming a record never offered, or a question stating a number no
+        # record gave: answered as read, nothing asked
+        for said in ({**ask, "options": [{"key": "C1", "label": "a"},
+                                         {"key": "C99", "label": "b"}]},
+                     {**ask, "question": "Do you mean PO 777123?"}):
+            self.clarify_with(self.ops, lambda message, said=said: said,
+                              {"what": "which purchase order", "among": "PurchaseOrder"})
+            self.assertIsNone(self.ask_with(self.ops, {"question": question}).get("clarify"))
+
+    def test_a_likely_reading_is_answered_under_a_one_line_assumption_that_can_be_changed(self):
+        """When one reading is clearly the likely one the question is answered under it,
+        said in one line with the other reading offered; picking that reading asks the
+        question again under it. A reading stating a figure nobody gave is dropped."""
+        status = "Overdue"
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, status))]
+        prompts = []
+
+        def session(on_line):
+            seen = {}
+            prompts.append(seen)
+            return ScriptedSession(on_line, lines, answer_block(self.handle, status),
+                                   seen=seen)
+        self.use(self.ops, session)
+        self.clarify_with(self.ops, lambda message: {
+            "decision": "assume", "assumption": "the calendar quarter, 1 July to 30 September 2026",
+            "options": [{"key": None, "label": "the fiscal quarter"},
+                        {"key": None, "label": "the 13 weeks to 12 October"}]},
+            {"what": "which quarter", "among": None})
+        question = "how late were deliveries last quarter?"
+        got = self.ask_with(self.ops, {"question": question})
+        self.assertEqual(got["question"], question)         # the person's own words
+        self.assertEqual(got["outcome"], "answered")
+        self.assertEqual(got["assumption"]["text"],
+                         "the calendar quarter, 1 July to 30 September 2026")
+        self.assertEqual([o["label"] for o in got["assumption"]["options"]],
+                         ["the fiscal quarter"])
+        self.assertIn("Read as: the calendar quarter, 1 July to 30 September 2026",
+                      prompts[0]["prompt"])
+        # a period's dates may be said; a record number nobody gave may not
+        from operating.clarify import read_decision
+        self.assertIsNone(read_decision({"decision": "assume", "assumption":
+                                         "PO 777123, the one due 12 October", "options": []},
+                                        [], question))
+        # a count beside a word that starts like a month, or a year after "of", is a
+        # figure nobody gave, never a date
+        for invented in ("the 5 marketplace orders this quarter", "the 3 junctions open",
+                         "the 12 decisions due", "the invoice of 2024 alone"):
+            self.assertIsNone(read_decision({"decision": "assume", "assumption": invented,
+                                             "options": []}, [], question), invented)
+        for dated in ("orders from 2024", "Q3 2025", "3 Mar 2025 to 10 Sept 2025"):
+            self.assertIsNotNone(read_decision({"decision": "assume", "assumption": dated,
+                                                "options": []}, [], question), dated)
+        again = self.ask_with(self.ops, {"question": "the fiscal quarter", "clarified": {
+            "answer_id": got["answer_id"], "option": 0}})
+        self.assertIsNone(again.get("assumption"))
+        self.assertIn(f"{question}\n(They mean: the fiscal quarter)", prompts[1]["prompt"])
+
     def test_a_general_question_is_answered_from_knowledge_marked_and_never_a_company_fact(self):
         """A question no record answers gets the model's general knowledge under the
         general heading, with no fact, source or citation, and no agent session; a

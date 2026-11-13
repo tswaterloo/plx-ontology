@@ -59,6 +59,8 @@ import re
 import threading
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from operating.secret_text import mask_secrets
+
 SCHEMA = "plx-card-actions/v1"
 OUTBOUND = ("send_email", "reply_in_thread", "forward", "teams_message")
 LOCAL = ("create_follow_up", "mark_done", "snooze", "dismiss", "assign")
@@ -332,7 +334,10 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
         raise ActionRefused(["Unknown action."])
     if kind not in {o["kind"] for o in offers(card)}:
         raise ActionRefused([f"{LABELS[kind]} is not offered on this card."])
-    base = default_payload(kind, card, ctx)
+    # a drafted text never carries a credential it quoted from a source: the preview shows,
+    # the hash covers and the send takes the masked text (the person's own edits are theirs)
+    base = {k: mask_secrets(v) if isinstance(v, str) else v
+            for k, v in default_payload(kind, card, ctx).items()}
     # the thread's own recipients are read from the message, never taken from the edits
     edits = {k: v for k, v in (edits or {}).items()
              if v is not None and k != "thread_recipients"}

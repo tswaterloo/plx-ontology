@@ -580,14 +580,15 @@ def capture_history(state_dir: Any, oid: str, own: set[str], *, until: str | Non
     path = Path(state_dir) / "mail-capture" / "capture.db"
     if not path.is_file():
         return []
+    from integrations.capture_mail import undecided_free_sql
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
     try:
         rows = conn.execute(
             "SELECT json_extract(record, '$.from'), json_extract(record, '$.sent_at'), "
             "json_extract(record, '$.received_at'), json_extract(record, '$.to'), "
             "json_extract(record, '$.cc'), json_extract(record, '$.subject') FROM messages "
-            "WHERE mailbox_id = ? AND superseded_at IS NULL AND removed_reason IS NULL",
-            (oid,)).fetchall()
+            "WHERE mailbox_id = ? AND superseded_at IS NULL AND removed_reason IS NULL AND "
+            f"{undecided_free_sql(conn)}", (oid,)).fetchall()
     finally:
         conn.close()
     return sent_rows(({"from": f, "sent_at": s, "received_at": r, "to": _json(t),

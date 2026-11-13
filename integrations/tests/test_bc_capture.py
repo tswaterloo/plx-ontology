@@ -1566,6 +1566,22 @@ class PermissionTests(unittest.TestCase):
             with self.assertRaises(CaptureError):
                 store.begin_run("bc", bc_unit(CO[0], "vendors"),
                                 [h.reader.resource(CO[0], "vendors")])
+            # INT-005: no mutator changes the other tenant's store, the run's end
+            # (which can mark records missing) included
+            run_id = store._db.execute("SELECT MAX(run_id) FROM runs").fetchone()[0]
+            before = [tuple(r) for r in store._db.execute("SELECT * FROM runs")]
+            for name, call in (
+                    ("set_cursor", lambda: store.set_cursor(run_id, "c")),
+                    ("restart_run", lambda: store.restart_run(run_id, "x")),
+                    ("pause_run", lambda: store.pause_run(run_id, reason="x")),
+                    ("finish_run", lambda: store.finish_run(run_id, "complete")),
+                    ("set_state", lambda: store.set_state("k", "v"))):
+                with self.subTest(name), self.assertRaises(CaptureError) as caught:
+                    call()
+                self.assertEqual(caught.exception.code, "binding_mismatch")
+            self.assertEqual([tuple(r) for r in store._db.execute("SELECT * FROM runs")],
+                             before)
+            self.assertIsNone(store.state("k"))
 
 
 class CliTests(unittest.TestCase):

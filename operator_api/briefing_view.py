@@ -289,6 +289,10 @@ def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, diges
         carried=int(found.get("carried") or 0),
         data_notes=[str(n.get("words"))[:300] for n in found.get("data_notes") or ()
                     if isinstance(n, Mapping)][:20],
+        data_note_items=[m.BriefingDataNote(check=str(n["check"]), reason=str(n["reason"]),
+                                            count=int(n["count"]), words=str(n["words"])[:300])
+                         for n in found.get("data_notes") or ()
+                         if isinstance(n, Mapping) and isinstance(n.get("count"), int)][:20],
         digest_preview=digest, test_records_hidden=hidden_words(tests_hidden),
         yours=int(found.get("yours") or 0),
         involvement=involvement_state(found.get("involvement")))

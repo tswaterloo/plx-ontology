@@ -201,6 +201,37 @@ class MembersFallbackTests(FallbackCase):
         self.assertFalse({"text 1004", "text 1005"} & bodies)
         self.assertEqual(self.by_kind(run)["channel:private"]["status"], "complete")
 
+    def test_a_census_member_the_guard_cannot_decide_drops_the_stored_membership(self):
+        """A conversation the census cannot clear (a member the guard cannot decide)
+        loses the membership an earlier capture stored, as the content path drops it:
+        none of its versions is served until a run clears it again. On the census
+        threads the store is not touched (its sqlite connection is this thread's): the
+        memberships are dropped after, here. A team the census cannot clear drops its
+        standard channels' membership; a private channel keeps its own."""
+        from integrations.capture_teams import CHANNEL_KIND, Conversation
+        self.capture.run(scope())
+        units = {name: Conversation("channel", thread, TEAM, membership).unit
+                 for name, thread, membership in (("general", GENERAL, "standard"),
+                                                  ("private", PRIVATE, "private"))}
+        held = lambda: {n: self.store.unit_acl(CHANNEL_KIND.name, u) is not None
+                        for n, u in units.items()}
+        self.assertEqual(held(), {"general": True, "private": True})
+        self.assertTrue(self.visible(COS_ONLY, GENERAL))
+        undecided = ("0d0d0d0d-0000-4000-8000-00000000dd01", "maybe-a-list@petrasoap.com")
+        self.capture.workers = 4   # the census reads on its threads
+        self.graph.channel_members[PRIVATE] = [(U_VINCE, VINCE), undecided]
+        census, _private = self.capture.census(scope(), [])
+        self.assertEqual(census["channels_refused"]["members_unread"], 1, census)
+        self.assertEqual(held(), {"general": True, "private": False})
+        self.graph.channel_members[PRIVATE] = [(U_VINCE, VINCE)]
+        self.capture.run(scope())
+        self.assertEqual(held(), {"general": True, "private": True})
+        self.graph.team_members = [*self.graph.team_members, undecided]
+        census, _private = self.capture.census(scope(), [])
+        self.assertEqual(census["teams_refused"]["members_unread"], 1, census)
+        self.assertEqual(held(), {"general": False, "private": True})
+        self.assertEqual(self.visible(COS_ONLY, GENERAL), [])
+
 
 class FallbackSpecTests(unittest.TestCase):
     """The live-check spec's own argv. Its census clears a team only on its members

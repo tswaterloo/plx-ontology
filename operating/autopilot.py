@@ -84,7 +84,7 @@ CONDITIONS = ("intents_any", "intents_none", "side_in", "status_in", "assigned",
               "quality_in", "tested", "ended", "organizer_copy", "external_or_linked",
               "mailbox_role", "mailbox_role_none", "engaged", "correspondent", "engaged_or_asks",
               "answers_sender", "closing", "addressed_other", "quiet_sender", "object_type_in",
-              "to_me", "after_own_post")
+              "to_me", "after_own_post", "cc_min")
 DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_released",
               "owner_mailed_attendees", "question_answered")
 MAX_RECORDS = 12          # business records one handler reads around its event
@@ -217,6 +217,10 @@ def validate_registry(raw: Any) -> dict[str, Any]:
                 and all(isinstance(x, int) and not isinstance(x, bool) and x >= 1
                         for x in turn)):
             raise RegistryInvalid(f"registry_condition:{ap['id']}")
+        cc_min = when.get("cc_min")
+        if cc_min is not None and not (isinstance(cc_min, int) and not isinstance(cc_min, bool)
+                                       and cc_min >= 1):
+            raise RegistryInvalid(f"registry_condition:{ap['id']}")
         if ap.get("done_when") not in DONE_RULES:
             raise RegistryInvalid(f"registry_done:{ap['id']}")
         if not isinstance(ap.get("due_minutes"), int) or ap["due_minutes"] <= 0:
@@ -284,6 +288,12 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             last, posts = (list(event.get("own_posts") or ()) + [None, 0])[:2]
             if not isinstance(last, (int, float)) or isinstance(last, bool) or \
                     last > want[0] or not isinstance(posts, int) or posts < want[1]:
+                return False
+            continue
+        if key == "cc_min":
+            # at least ``want`` addresses copied on the message (an unreadable list: no)
+            cc = event.get("cc")
+            if not isinstance(cc, list) or len(cc) < want:
                 return False
             continue
         if key == "engaged_or_asks" and bool(event.get("engaged") or (
@@ -761,11 +771,86 @@ def _dated(st: Any, otype: str, prop: str) -> list[tuple[datetime, str]]:
     return cache[(otype, prop)]
 
 
-def layer_ids(store: Path, queue: Queue, digest: str | None) -> tuple[set[str], list[str]]:
-    """The records the served delta layers own that this feed has not taken in yet."""
-    from .proactive_incremental import layer_owned
-    owned, taken, _waiting = layer_owned(store, digest, queue.conn, None)
-    return owned, taken
+def layer_ids(store: Path, queue: Queue, stamp: str | None,
+              cap: int | None = None) -> tuple[set[str], list[str], int]:
+    """(the records the served delta layers own that this feed has not taken in yet, those
+    layers, how many records of them were taken in unread). Only from a store that holds
+    them: Postgres (``stamp`` its ``<digest>@<data version>``, the generation is the part
+    before the ``@``), and there only the layers it has applied (a layer it has not is
+    taken in by a later cycle). The SQLite generation file alone holds none of the layers'
+    records: no layer is taken in, since one taken in unread would lose its events. A layer
+    that would bring the records read past ``cap`` (by the size the pointer states) is
+    taken in without being opened (the window feed covers it, ``follow_ids``); one whose
+    size it does not state is read only as the cycle's first layer."""
+    from . import delta_overlay
+    from .proactive_incremental import _applied, generation_digest
+    applied = _applied(store)
+    if applied is None:
+        return set(), [], 0
+    digest = generation_digest(stamp)
+    try:
+        raw = json.loads(delta_overlay.pointer_path(store).read_text())
+    except (OSError, ValueError):
+        return set(), [], 0
+    if not isinstance(raw, dict) or not digest or raw.get("base_digest") != digest:
+        return set(), [], 0
+    layers = [(str(x["store"]), x.get("owned")) for x in raw.get("layers") or ()
+              if isinstance(x, dict) and x.get("store")]
+    if not layers and raw.get("store"):
+        layers = [(str(raw["store"]), None)]
+    seen = {row[0] for row in queue.conn.execute(
+        "SELECT layer FROM layers WHERE base_digest = ?", (digest,))}
+    owned: set[str] = set()
+    taken: list[str] = []
+    unread = read = 0
+    for layer, size in layers:
+        if layer in seen or Path(layer).name not in applied:
+            continue
+        known = isinstance(size, int)
+        if cap is not None and (read + size > cap if known else bool(taken)):
+            taken.append(layer)
+            unread += size if known else 0
+            continue
+        try:
+            with contextlib.closing(sqlite3.connect(f"file:{layer}?mode=ro", uri=True)) as c:
+                owned.update(r[0] for r in c.execute("SELECT object_id FROM delta_owned"))
+        except sqlite3.Error:
+            continue     # pruned or unreadable now: a later layer holds its records
+        taken.append(layer)
+        read += size if known else len(owned)
+    return owned, taken, unread
+
+
+# Live follow's feed (``follow_ids``). The served delta layers each own every record changed
+# since the generation (2026-11-13: 0.66-0.8 M records a layer), so typing a layer's records
+# every cycle is not a feed: above ``FOLLOW_LAYER_CAP`` a layer is taken in unopened and the
+# feed is the store's event index over the last ``FOLLOW_HORIZON``, the very feed the replay
+# gate scores (``window_ids``). A cycle reads the whole horizon whenever the store changed
+# since the last one (its content stamp: Postgres's moves with every applied layer), so a
+# record that lands up to the horizon after its own time is still seen (an event read twice
+# is one event); a store unchanged holds nothing new and is not read again (a re-read of the
+# horizon took 141 s of the cycle's 240 s handling budget on 2026-11-13, every 5 minutes).
+# A message or meeting older than the horizon is not prepared (``run_cycle``
+# ``horizon``): the replay judges an answer within ``REPLY_HOURS``, and a first cycle would
+# otherwise prepare a week of answered mail.
+FOLLOW_LAYER_CAP = 50_000
+FOLLOW_HORIZON = timedelta(hours=REPLY_HOURS)
+HORIZON_EVENTS = ("message.received", "meeting.ended")
+
+
+def follow_ids(st: Any, store: Path, queue: Queue, registry: Mapping[str, Any],
+               now: datetime) -> tuple[set[str], list[str], dict[str, Any]]:
+    """(the records one live cycle types, the layers it takes in, what it read)."""
+    ids, taken, unread = layer_ids(store, queue, st.digest, FOLLOW_LAYER_CAP)
+    read: dict[str, Any] = {"layers": len(taken), "layer_records": len(ids),
+                            "layer_records_unread": unread}
+    if st.digest and queue.meta("follow_stamp") == st.digest:
+        read["window"], read["window_records"] = None, 0     # the store is unchanged
+        return set(ids), taken, read
+    since = now - FOLLOW_HORIZON
+    window = window_ids(st, registry, _iso(since), _iso(now))
+    read["window"], read["window_records"] = [_iso(since), _iso(now)], len(window)
+    return set(ids) | set(window), taken, read
 
 
 def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: Any, *,
@@ -2285,7 +2370,8 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
               gate: Callable[..., bool] | None = None,
               rate_by_event_hour: bool = False,
               feed_lag: Mapping[str, timedelta] | None = None,
-              read_work_log: bool = False, event_queue: bool = False) -> dict[str, Any]:
+              read_work_log: bool = False, event_queue: bool = False,
+              horizon: datetime | None = None) -> dict[str, Any]:
     """One cycle: type the changed records, store each event once, prepare the work of each
     new event every matching autopilot declares, settle items their evidence closed.
     ``only_owners``: prepare only for these people (a replay of one role); ``gate(owner,
@@ -2299,7 +2385,9 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     replay never learns what the Workbench did after the day it judges.
     ``event_queue``: hand the events out through the ordered event queue when
     ``PLX_AUTOPILOT_EVQ`` is on (``OrderedFeed``). Live only: the ``follow`` command alone
-    passes it, so a replay or its catch-up never touches the live queue's order."""
+    passes it, so a replay or its catch-up never touches the live queue's order.
+    ``horizon``: a message or meeting before it (or with no time) is not stored as an event
+    (live follow, ``FOLLOW_HORIZON``); a sender's history still counts it."""
     environ = os.environ if environ is None else environ
     registry = registry or load_registry()
     now = now or datetime.now(timezone.utc)
@@ -2335,6 +2423,15 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
         wrote = queue.writers(_iso(oldest - timedelta(days=OWN_POSTS_DAYS)))
         events = [e for e in events if not e.get("unaddressed") or (
             str(e.get("mailbox") or ""), _digest("thread", e.get("conversation_id"))) in wrote]
+    if horizon is not None:
+        kept = []
+        for e in events:
+            at = _instant(e.get("at")) if e.get("event_type") in HORIZON_EVENTS else horizon
+            if at is None or at < horizon:
+                skipped["before_horizon"] += 1
+            else:
+                kept.append(e)
+        events = kept
     discovered = time.monotonic()
     summary["skipped"].update(skipped)
     directory, addresses_of, domains = _people_maps(people)
@@ -2935,7 +3032,9 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
                 ended = _instant(body.get("at"))
                 parties = sorted({_digest("party", str(a).lower())
                                   for a in body.get("attendees") or ()
-                                  if not _internal(str(a).lower(), domains)})
+                                  if not _internal(str(a).lower(), domains)
+                                  and str(a).lower() not in addresses_of.get(item["owner"], set())
+                                  and str(a).lower() != item["owner"]})
                 if ended is not None and parties and queue.conn.execute(
                         "SELECT 1 FROM sent WHERE owner = ? AND at > ? AND counterpart IN "
                         "(SELECT value FROM json_each(?)) LIMIT 1",
@@ -3140,6 +3239,10 @@ def _drain(st: Any, queue: Queue, people: Any, registry: Mapping[str, Any],
     return dict(total)
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from . import proactive_engine as pe
     p = argparse.ArgumentParser(prog="python3 -m operating.autopilot")
@@ -3166,6 +3269,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     registry = load_registry(a.registry)
     queue = Queue(a.queue)
     store = Path(a.store)
+    # the delta pointer sits beside the served projection (``host.projection_path``, as the
+    # proactive pass reads it), not beside a generation's file
+    if a.state_dir:
+        from .host import projection_path
+        layers_at = projection_path(Path(a.state_dir))
+    else:
+        layers_at = store
     people = pe._people(store)
     st = _store(a.store)
     capture_dir = a.capture_state or a.state_dir
@@ -3193,17 +3303,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                               "reason": "no_workflow_passed_replay"}))
             return 0
         if a.command == "follow":
-            ids, taken = layer_ids(store, queue, st.digest)
+            now = _utcnow()
+            ids, taken, read = follow_ids(st, layers_at, queue, registry, now)
             summary = run_cycle(st, queue, ids, people=people, registry=registry, gate=gate,
-                                read_work_log=True, event_queue=True)
+                                now=now, read_work_log=True, event_queue=True,
+                                horizon=now - FOLLOW_HORIZON)
+            summary["read"] = read
             summary["workflows_on"] = {"owners": len(passed),
                                        "workflows": sorted({w for v in passed.values()
                                                             for w in v})}
             if summary["status"] in ("complete", "partial"):
+                from .proactive_incremental import generation_digest
                 with queue.conn:
-                    for layer in taken:
+                    for layer in taken:   # kept by generation, as ``layer_ids`` reads them
                         queue.conn.execute("INSERT OR IGNORE INTO layers VALUES (?, ?)",
-                                           (layer, st.digest))
+                                           (layer, generation_digest(st.digest)))
+                    if read.get("window") is not None:
+                        queue.set_meta("follow_stamp", st.digest)
+            summary["layers_taken"] = len(taken)
         else:
             until = a.until or _iso(datetime.now(timezone.utc))
             since = _iso(_instant(until) - timedelta(days=a.days))

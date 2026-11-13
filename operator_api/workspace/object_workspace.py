@@ -732,6 +732,25 @@ class ObjectWorkspace:
                 **({"include_off": True} if include_off else {}))
             return {**base, **found}
 
+    def unjudged(self, rule: str, reason: str | None = None, *, offset: int = 0,
+                 limit: int = 50) -> dict[str, Any]:
+        """The records one check left unjudged that this reader is counted on its briefing
+        (``proactive_engine.unjudged_records``: only records whose whole skip cause its
+        grant shows). Nothing without a grant or a store."""
+        from operating import proactive_engine as pe
+
+        with self._request():
+            self._base()   # a refused store answers nothing
+            grant = getattr(self.access, "grant", None)
+            path = getattr(self.store_status, "store_path", None)
+            if grant is None or path is None:
+                return {"rule": rule, "reason": reason, "total": 0, "records": [],
+                        "complete": False}
+            may_read, held = grant()
+            return pe.unjudged_records(pe.inbox_path(path), path, rule=rule, reason=reason,
+                                       may_read=may_read, held=held, offset=offset,
+                                       limit=limit)
+
     def briefing(self, *, inbox: Any = None, since_visit: bool = False) -> dict[str, Any]:
         """This reader's briefing (``operating.briefing``): the proactive events of the
         gap inbox its grant shows, routed to it by department, ranked, with the count of

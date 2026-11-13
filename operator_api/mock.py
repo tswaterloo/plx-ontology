@@ -574,6 +574,12 @@ def _pick(question: str) -> tuple[str, Any]:
     return "other", _unknown_answer
 
 
+# demo customer orders the late-order check could not judge (made up, no lines captured)
+_UNJUDGED = [("SalesOrder:demo:51007", "Sales order 51007"),
+             ("SalesOrder:demo:51012", "Sales order 51012"),
+             ("SalesOrder:demo:51019", "Sales order 51019")]
+
+
 class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
                   AutopilotStudioMixin, InstructMixin, DocFillMixin, MockWatchMixin,
                   AskDraftsMixin):
@@ -864,7 +870,10 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
         detectors["vendor_terms_unapplied"] = "truncated"
         inbox = {"status": "read", "gaps": gaps, "complete": False, "as_of": _iso(0.5)[:10],
                  "run_at": _iso(0.5), "detectors": detectors, "history": history,
-                 "detector_reasons": {"vendor_terms_unapplied": ["time_budget"]}}
+                 "detector_reasons": {"vendor_terms_unapplied": ["time_budget"]},
+                 # three demo orders the late-order check could not judge (no lines)
+                 "rules": [{"rule": "late_customer_order", "not_evaluated": len(_UNJUDGED),
+                            "not_evaluated_by_reason": {"no_order_lines": len(_UNJUDGED)}}]}
         found = bf.build(inbox, routing=bf.Routing(frozenset({"PROC", "QUALITY"})),
                          hidden={"lot_on_hold": 3, "vendor_no_reply": 1},
                          last_visit=_iso(24), since_visit=since_visit)
@@ -880,6 +889,22 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
         top = [briefing_item(i, labels, None) for i in found["items"][:bf.TOP_ITEMS]]
         return briefing_model(found, top, digest=bf.digest_text(
             found, first_name=reader.display_name.split(" ")[0], labels=labels))
+
+    def briefing_unjudged(self, reader: Reader, check: str, reason: Optional[str], *,
+                          offset: int = 0, limit: int = 50) -> m.BriefingUnjudged:
+        """The demo's unjudged orders (``_UNJUDGED``), only for the check and reason its
+        data note names."""
+        from operating import proactive_engine as pe
+        if check not in pe.DETECTORS:
+            raise UserFacing("check_unknown", "There is no such check.", 404)
+        rows = _UNJUDGED if check == "late_customer_order" \
+            and reason in (None, "no_order_lines") else []
+        page = rows[offset:offset + limit]
+        return m.BriefingUnjudged(check=check, reason=reason, total=len(rows), offset=offset,
+                                  next_offset=offset + len(page), complete=True,
+                                  records=[m.UnjudgedRecord(id=i, type=i.split(":", 1)[0], label=lb)
+                                           for i, lb in page],
+                                  more=offset + len(page) < len(rows))
 
     def briefing_items(self, reader: Reader, event_type: str, *, offset: int = 0,
                        limit: int = 25, since_visit: bool = False) -> m.BriefingItems:

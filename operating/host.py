@@ -1178,7 +1178,10 @@ class Host:
                    "counts": {key: sum(f["counts"][key] for f in folders) for key in (
                        "pages", "messages_seen", "versions_new", "unchanged", "removed")}
                    | {"folders": len(folders),
-                      "folders_complete": sum(1 for f in folders if f["complete"])}}
+                      "folders_complete": sum(1 for f in folders if f["complete"])},
+                   # stored addresses the purge could not decide: withheld from every
+                   # reader (ops_health ``capture_undecided_list`` alarms on their age)
+                   "purge_undecided": run.get("purge_undecided", 0)}
         # Every bound mailbox refused (a missing grant): the source's outage, as Teams'.
         return _with_refusals(outcome, capture_mail.refused_parts(run))
 

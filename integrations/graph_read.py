@@ -2604,4 +2604,11 @@ __all__ = ["GraphMailReader", "SharePointReader", "SharePointSites", "build_grap
 
 
 if __name__ == "__main__":
+    import faulthandler
+    import signal
+    # The ingest runner sends SIGUSR1 to a capture child that outlived its time, before it
+    # kills it: every thread's stack (files, lines, functions; no values) goes to stderr,
+    # which the runner keeps (operating.ingest_forever.keep_stderr).
+    if hasattr(signal, "SIGUSR1"):
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     raise SystemExit(main())

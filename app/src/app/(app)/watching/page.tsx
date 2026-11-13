@@ -155,7 +155,7 @@ export default function WatchingPage() {
               onChange={(e) => { setText(e.target.value); setDraft(null); }}
               onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) preview(); }}
               placeholder={EXAMPLES[0]}
-              className="h-9 min-w-0 flex-1 rounded-lg border border-control bg-transparent px-3 text-[13px]"
+              className="h-9 min-w-0 shrink-0 rounded-lg border border-control bg-transparent px-3 text-[13px]"
             />
             <button type="button" disabled={busy || !text.trim()} onClick={preview} className="h-8 self-start rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] cursor-pointer disabled:opacity-50">
               {busy && !draft ? "Checking" : "Check"}

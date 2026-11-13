@@ -372,6 +372,27 @@ class RecordAndReplayTests(Temp):
         self.assertIn(fx.item()["question"]["paraphrases"][0], stdout.getvalue())
 
 
+    def test_cli_run_refuses_a_live_label_before_any_item_runs(self):
+        """EVAL-004: a live-captures run is refused up front (no host identity can be
+        given per item), so no agent runs and no score is kept for the set."""
+        items_dir = self.root / "items"
+        items_dir.mkdir()
+        (items_dir / "dev-F3-0901.json").write_text(json.dumps(fx.item()), encoding="utf-8")
+        results = self.root / "results.json"
+        stderr = io.StringIO()
+        with mock.patch.object(runner, "run_items") as ran, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            code = runner.main(["run", "--items", str(items_dir), "--split", "dev",
+                                "--state-dir", str(self.root), "--source-mirror-audience",
+                                str(self.root / "a.json"), "--principal", "p",
+                                "--out", str(self.root / "out"), "--results-file",
+                                str(results), "--evidence-label", "live-captures"])
+        self.assertEqual(code, 2)
+        self.assertIn("live_captures_run_needs_an_employee_identity", stderr.getvalue())
+        ran.assert_not_called()
+        self.assertFalse(results.exists())
+
+
 class HeldOutTests(Temp):
     def env(self, **extra):
         values = {"PLX_WORKBENCH_API_KEY": "placeholder-not-a-key",

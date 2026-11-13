@@ -36,6 +36,13 @@ LATE = 'PurchaseOrder:portal.app_purchase_order:{"id":"po-synth-5448"}'
 DUE = "2026-09-01"
 
 
+def spread(i):
+    """Due day of the i-th order of a cardinality probe: distinct, all before AS_OF. A bulk
+    share of one source's orders on one day is an import day, not a business date (BIZ-007),
+    so n identical dates would be erased and the orders judged undated."""
+    return (date(2026, 6, 1) + timedelta(days=i)).isoformat()
+
+
 def scripted_planner(object_id, text="The order's record holds {v}."):
     """Reads the order's card, then answers with one structured claim: a value the card
     returned, by reference (value, citation handle, field)."""
@@ -531,7 +538,7 @@ class Oracle(unittest.TestCase):
 
     def test_cardinality_no_order_lost_or_doubled(self):
         for n in (1, 10, 60):
-            portal = {PO: [portal_po(f"p{i}", f"N{i}", "SUBMITTED", DUE) for i in range(n)],
+            portal = {PO: [portal_po(f"p{i}", f"N{i}", "SUBMITTED", spread(i)) for i in range(n)],
                       PO_LINE: [portal_line(f"l{i}", f"p{i}", "2", None) for i in range(n)],
                       RECEIPT: []}
             out = self.late(portal)
@@ -569,7 +576,7 @@ class EntityMapJoin(unittest.TestCase):
                        for i in range(n)],
                   PO_LINE: [portal_line(f"l{i}", f"p{i}", "5", None) for i in range(n)],
                   pl.ENTITY_MAP: list(maps)}
-        bc = [bc_po(f"B-{i}", f"PO1000{i}", requested="2026-09-01") for i in range(n)]
+        bc = [bc_po(f"B-{i}", f"PO1000{i}", requested=spread(i)) for i in range(n)]
         bc += [bc_line(f"bl{i}", f"B-{i}", "5", "0") for i in range(n)]
         return pl.late_orders(portal, bc + list(extra_bc), AS_OF)
 
@@ -619,7 +626,7 @@ class YourReferenceJoin(unittest.TestCase):
             row["row"].update(date_generated=portal_date, supplier_id=supplier)
             pos.append(row)
             lines.append(portal_line(f"l{i}", f"p{i}", "5", None))
-            order = bc_po(f"b{i}", f"BC{i}", requested="2026-09-01")
+            order = bc_po(f"b{i}", f"BC{i}", requested=spread(i))
             order["fields"].update(orderDate=order_date, vendorNumber=bc_vendor)
             orders.append(order)
             bc_lines.append(bc_line(f"bl{i}", f"b{i}", "5", "0"))
@@ -974,11 +981,13 @@ class Steps(unittest.TestCase):
                          ("pass", "371.20 CAD", "371.199420010000000000000000101"))
 
     def test_the_margin_is_the_first_order_the_impact_chain_says_the_po_feeds(self):
-        """No direct link type: the margin step asks the impact chain (firm links only,
-        the entity map among them) and takes the order it ranks first; the margin is the
+        """With no direct link given (``feeds=[]``) the margin step asks the impact chain
+        (firm links only, the entity map among them) and takes the order it ranks first; the margin is the
         order_margin answer for that order, finance-gated. No order fed fails with where
         the walk stopped, never a pass and never an unrelated sample."""
-        self.assertEqual(fp.feeds_links(), [])   # no direct purchase-order -> sales-order link
+        # the schema's direct purchase-order -> customer-order link types (since 11-08)
+        self.assertEqual(fp.feeds_links(), ["SalesOrder.awaits_purchase_order",
+                                            "SalesOrderLine.supplied_by"])
         shown = {"investigation": {"answer": [
             {"kind": "computed", "name": "order_margin", "value": "10", "basis": ["x"]},
             {"kind": "property", "name": "n", "citation": {"l1_handle": "bc://so/1@1"}}],

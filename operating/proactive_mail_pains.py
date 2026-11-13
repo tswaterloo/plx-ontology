@@ -1,4 +1,4 @@
-"""Three pains found in the business's mail, as alerts, run by ``operating.proactive_engine``
+"""Four pains found in the business's mail, as alerts, run by ``operating.proactive_engine``
 beside its other rules (each in its own time window, ``DETECTOR_SECONDS``):
 
 * ``expedite_requests`` (kind ``expedite_unanswered``). A message (inbound from outside, or
@@ -21,6 +21,17 @@ beside its other rules (each in its own time window, ``DETECTOR_SECONDS``):
   item twins joined). Raised only when an open customer order depends on it. Firm when the
   sender is the order's supplier (a settled ``Email.sent_by_supplier`` link, or the sender's
   address or private domain on the supplier's record) and the mention settled; else a lead.
+* ``return_requests`` (kind ``return_unanswered``). An inbound message from outside (not
+  automated) whose own text asks to send goods back, for a return authorization (RMA), a
+  credit or a refund (``RETURN`` families) and names a customer order (a ``SalesOrder``
+  record or the customer PO it references) by a mention link, sent within ``RETURN_DAYS``,
+  at least ``RETURN_WAIT_DAYS`` old, with no answer: no later message of ours to outside in
+  its conversation or naming the same order. An open or a closed order may be named (a
+  return follows a shipment; a draft or an order the one definition leaves unjudged is
+  counted) while the one active rule keeps it (``active_population``: a
+  business date within its window); a closed order nothing dates is counted, not read. No return or RMA record is served (Portal sales returns, BC return orders) and a
+  Sage credit note names no order, so a credit issued without a reply is not seen: the
+  alert says what the mail shows. One alert per order, every ask cited.
 * ``payment_chase``: who chased whom about which invoice.
 
   - Ours chasing a customer: an outbound message of ours to outside addresses whose own
@@ -69,6 +80,7 @@ import json
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from . import active_population as active
 from .copy_gate import count as _count, say_date as _say
 from .proactive_business import FINANCE, _one, _tick
 from .proactive_chasers import (AUTOMATED, CUSTOMER_PO, PUBLIC_MAIL, SETTLED_MENTION, SO,
@@ -81,14 +93,18 @@ SHORTAGE = "supplier_shortage"
 SHORTAGE_KIND = "supplier_shortage_open_orders"
 PAYMENT = "payment_chase"
 PAYABLE_KIND = "supplier_chasing_payment"
-RULES = (EXPEDITE, SHORTAGE, PAYMENT)
-KINDS = (EXPEDITE_KIND, SHORTAGE_KIND, PAYABLE_KIND)
+RETURNS = "return_requests"
+RETURN_KIND = "return_unanswered"
+RULES = (EXPEDITE, SHORTAGE, PAYMENT, RETURNS)
+KINDS = (EXPEDITE_KIND, SHORTAGE_KIND, PAYABLE_KIND, RETURN_KIND)
 
 EXPEDITE_DAYS = 30
 EXPEDITE_WAIT_DAYS = 3
 SHORTAGE_DAYS = 30
 SHORTAGE_HIGH_DAYS = 14        # an affected order wanted within this many days: high
 PAY_CHASE_DAYS = 90
+RETURN_DAYS = 60               # a return or credit ask sent within this many days
+RETURN_WAIT_DAYS = 2           # and at least this old with no answer
 SUBJECT_CHARS = 60
 MAX_NAMED = 4                  # a message naming more orders or invoices is a report
 MAX_MESSAGES = 20000           # per rule: the bounded read (the rest counted, never judged)
@@ -157,6 +173,25 @@ PAYMENT_FAMILIES = {
                         r"process\s+(?:the\s+)?payment|send\s+(?:the\s+)?payment)\b|"
                         r"\b(?:has|have)\s+not\s+(?:yet\s+)?been\s+paid\b|"
                         r"\bexpect\s+(?:the\s+)?payment\b|\bpayment\s+status\b", re.I),
+}
+# A customer asking to send goods back, for a return authorization, or for a credit or a
+# refund. Counted over the held mail naming a customer order (body previews, never read or
+# printed; 11-12): about 1,700 messages over the whole history, 1,000 of them refunds.
+RETURN_FAMILIES = {
+    "return_authorization": re.compile(r"\brmas?\b|\breturn\s+(?:material\s+)?"
+                                       r"authori[sz]ation\b|\breturn\s+(?:request|label|"
+                                       r"form|number|instructions)s?\b", re.I),
+    "send_back": re.compile(r"\breturn(?:ing)?\s+(?:back\s+)?(?:the|these|this|those|it|"
+                            r"them|our|all|some)\s+(?:\w+\s+){0,2}(?:products?|items?|goods|"
+                            r"order|bottles?|cases?|pallets?|units?|shipment|material|"
+                            r"cartons?|boxes)\b|\b(?:send|ship)(?:ing)?\s+(?:back\s+(?:the|"
+                            r"these|this|those|our|all|some)\b|(?:it|them|these|this|those)"
+                            r"\s+back\b)", re.I),
+    "credit": re.compile(r"\bcredit\s+(?:note|memo)\s+(?:request|for)\b|\b(?:issue|"
+                         r"request|need|send|process|arrange)\s+(?:us\s+|me\s+)?(?:a\s+|"
+                         r"the\s+)?credit\b(?!\s*(?:card|limit|application|terms|check|"
+                         r"hold|team|department))", re.I),
+    "refund": re.compile(r"\brefund(?:ed|s)?\b(?!\s+polic)", re.I),
 }
 
 # A conditional sentence says nothing yet ("if we do not get it by Friday we will need to
@@ -677,6 +712,106 @@ def supplier_shortage(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                      "purchase_orders": len(src.clusters),
                      **{k: counts.get(k, 0) for k in ("noticed", "no_open_order_depends",
                                                        "po_not_open")}}
+    return out
+
+
+# --------------------------------------------------------------------------- returns
+
+def return_requests(st: Any, as_of: date, *, gap: Callable, cites: Callable,
+                    result: Callable, settled: Sequence[str], skips: Callable, people: Any,
+                    orders: Callable[[], tuple[dict[str, Any], list[Any]]],
+                    absence: Callable[[Sequence[str]], list[str]]) -> dict[str, Any]:
+    """``return_unanswered`` (module doc)."""
+    blocked = _blocked(people, result)
+    if blocked is not None:
+        return blocked
+    skipped = skips()
+    counts: Counter = Counter()
+    _found, verdicts = orders()
+    # a return follows a shipment, so a closed order may be named as well as an open one
+    # (``CLOSED_ORDER_RULES``), while the one active rule keeps it (``active_population``:
+    # a business date within its window, or none); a closed order nothing dates is
+    # counted, not read (a legacy import: the whole history otherwise). A draft, or an
+    # order the one definition leaves unjudged (unknown status, a lead twin closed, a lead
+    # shipment only, no line), is counted, never judged.
+    recent: dict[str, Any] = {}
+    for v in verdicts:
+        if v.cls not in ("open", "closed"):
+            counts["order_not_judged"] += 1
+            continue
+        if active.inactive_reason("open", as_of=as_of, dates=v.dates) is not None:
+            continue
+        if v.cls == "closed" and not any(d is not None for d in v.dates):
+            counts["closed_undated"] += 1
+            continue
+        recent[v.top] = v
+    so_key = {m: v.top for v in recent.values() for m in v.group}
+    cpo_key = {l["to_object"]: so_key[l["from_object"]]
+               for l in _touch(st, so_key, [CUSTOMER_PO], end="from_object")}
+    mail = _Mail(st, people, as_of, skipped)
+    since = as_of - timedelta(days=RETURN_DAYS)
+    asked: dict[str, list[dict]] = defaultdict(list)
+    every: dict[str, list[dict]] = defaultdict(list)
+    for key_of, types in ((so_key, MENTIONS_SO), (cpo_key, MENTIONS_CPO)):
+        if not key_of:
+            continue
+        for m in mail.read(key_of, types, since, RETURN_FAMILIES, requests=True):
+            for key in m["keys"]:
+                every[key].append(m)
+                # the customer asks: a message of ours offering a return asks nothing
+                if m["family"] is not None and not m["ours"]:
+                    asked[key].append(m)
+    thread: dict[str, list[dict]] = defaultdict(list)
+    for m in {m["dedupe"]: m for ms in every.values() for m in ms}.values():
+        if m["conversation"]:
+            thread[m["conversation"]].append(m)
+    requires_base = absence(("SalesOrder",))
+    gaps = []
+    for top, asks in sorted(asked.items()):
+        _tick(st)
+        asks = sorted({m["dedupe"]: m for m in asks}.values(), key=lambda m: (m["at"], m["id"]))
+        counts["asked"] += 1
+        if (as_of - asks[0]["day"]).days < RETURN_WAIT_DAYS:
+            counts["asked_recently"] += 1
+            continue
+        if _answered(asks, every[top], thread):
+            counts["answered"] += 1
+            continue
+        members = list(recent[top].group)
+        number, number_cites = _number(st, members, [SO], ("order_number", "fm_erp_code"),
+                                       cites)
+        lead = not any(m["settled"].get(top) for m in asks)
+        days = (as_of - asks[0]["day"]).days
+        families = sorted({m["family"] for m in asks})
+        made = gap(
+            RETURN_KIND, RETURNS, top, SO, f"return|{asks[0]['day'].isoformat()}",
+            summary=("Lead, not firm: " if lead else "") + "Customer asked to return goods "
+                    f"or for a credit on customer order {number or top} "
+                    f"{_count(len(asks), 'time')}, first {_count(days, 'day')} ago, last on "
+                    f"{_say(asks[-1]['day'])}; no answer",
+            missing=("Answer the customer: agree the return (authorization and how it comes "
+                     "back) or the credit, or say why not"),
+            why=(f"{_count(len(asks), 'inbound message')} from outside ask in their own text "
+                 "(not a question or a condition) to send goods back, for a return "
+                 "authorization, a credit or a refund, and name this customer order by a "
+                 "mention link; no later message of ours to outside answers in their "
+                 "conversation or naming the order (each message cited)."),
+            priority="low" if lead else ("high" if len(asks) >= 2 or days >= 7 else "medium"),
+            about=(SO, "status"),
+            groups=[*([number_cites] if number_cites else []),
+                    *[_cite_message(st, cites, m) for m in asks]],
+            event={"days": days, "asks": len(asks), "families": families,
+                   "orders_affected": 1,
+                   "messages": [_shown(m) for m in asks[-SHOWN_MESSAGES:]]})
+        if made is None:
+            skipped["return_uncited"] += 1
+            continue
+        made["requires"] = sorted({*requires_base, *(m["audience"] for m in asks)})
+        gaps.append(made)
+    out = result(gaps, not_evaluated=skipped)
+    out["counts"] = {"orders_read": len(recent),
+                     **{k: counts.get(k, 0) for k in ("closed_undated", "order_not_judged", "asked",
+                                                       "asked_recently", "answered")}}
     return out
 
 

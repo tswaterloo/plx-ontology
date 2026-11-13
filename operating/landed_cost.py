@@ -2647,6 +2647,16 @@ def quote_landed(facts: Mapping[str, Any], *,
                                          "The RateSettings row has no numeric value; the Portal "
                                          "prices with its code default.", "Finance",
                                          [rates_cite], portal_used=default))
+            elif rates_row.get(key) < 0:
+                # BIZ-004: a negative rate takes cost away; never a computed figure
+                unknowns.append(_unknown("RATE_SETTING_INVALID", f"RateSettings.{key}",
+                                         "The RateSettings rate is negative.", "Finance",
+                                         [rates_cite], portal_used=rates_row.get(key)))
+        for k, v in sorted(rates_row.items(), key=lambda kv: str(kv[0])):
+            if isinstance(k, str) and k.startswith("overheadPer") and _finite(v) and v < 0:
+                unknowns.append(_unknown("RATE_SETTING_INVALID", f"RateSettings.{k}",
+                                         "The overhead rate is negative.", "Finance",
+                                         [rates_cite], portal_used=v))
         if not any(isinstance(k, str) and k.startswith("overheadPer") and _finite(v)
                    for k, v in rates_row.items()):
             unknowns.append(_unknown("RATE_SETTING_DEFAULTED", "RateSettings.overheadPer*",
@@ -2708,10 +2718,30 @@ def quote_landed(facts: Mapping[str, Any], *,
     customer_raws = {m["key"] for m in q["customerSupplied"] if m["kind"] == "raw"}
     if formulation:
         cite(formulation, "formulation")
+        # BIZ-004: every inclusion is a number from 0 to 100 and they make the whole
+        # formula, else the bulk cost leaves part of it out (or counts it twice)
+        shares = [ing.get("percentage") for ing in formulation.get("ingredients") or []]
+        if shares and all(_finite(p) and 0 <= p <= 100 for p in shares):
+            total = sum(Decimal(str(p)) for p in shares)
+            if abs(total - 100) > Decimal("0.5"):
+                unknowns.append(_unknown("FORMULA_COMPOSITION_INCOMPLETE", "formulation",
+                                         f"The inclusions sum to {total}%, not 100%; the "
+                                         "bulk is priced on what is listed.",
+                                         "Product Development",
+                                         [formulation.get("_source")],
+                                         portal_used=float(total)))
         for i, ing in enumerate(formulation.get("ingredients") or []):
             product = ing.get("product") or {}
             subject = product.get("name") or f"ingredient {i}"
             cite(product, f"formulation.ingredients[{i}].product")
+            pct = ing.get("percentage")
+            if not (_finite(pct) and 0 <= pct <= 100):
+                unknowns.append(_unknown("INCLUSION_PERCENT_INVALID", subject,
+                                         f"The ingredient's inclusion is {pct!r}, not a "
+                                         "percentage from 0 to 100; the Portal prices it at "
+                                         "0.", "Product Development",
+                                         [ing.get("_source"), formulation.get("_source")],
+                                         portal_used=0))
             if ing.get("productId") in customer_raws:
                 continue  # priced at $0 (G9); the supply basis is cited below
             card = None if _pos(product.get("unitCost")) is not None else \
@@ -2763,6 +2793,12 @@ def quote_landed(facts: Mapping[str, Any], *,
             unknowns.append(_unknown("PACKAGING_QTY_DEFAULTED", subject, "BOM line quantity is "
                                      "0 or missing; the Portal uses 1.", "Product Development",
                                      [raw.get("_source")], portal_used=1))
+        elif not (_finite(raw.get("quantity")) and raw.get("quantity") > 0):
+            # BIZ-004: a negative (or non-numeric) quantity takes cost away
+            unknowns.append(_unknown("PACKAGING_QTY_INVALID", subject, "BOM line quantity "
+                                     f"is {raw.get('quantity')!r}, not a positive number.",
+                                     "Product Development", [raw.get("_source")],
+                                     portal_used=raw.get("quantity")))
         if line["supplySource"] != "PLX":
             continue  # priced at $0 (G9); the supply basis is cited below
         if not line["linked"]:
@@ -2929,6 +2965,27 @@ def quote_landed(facts: Mapping[str, Any], *,
             standard_used(used["setup_standard"], "setup minutes" + at)
         if priced and (column["vesselCharges"] or 1) > 1:
             standard_used(used["setup_standard"], "changeover minutes" + at)
+        # BIZ-004: the supplier card tier a column priced from is a cited, positive price
+        # (the card's base price is checked above; a tier is its own row)
+        cards = {line["lineKey"]: line.get("card") for line in q["componentLines"]}
+        for comp in column["componentLines"]:
+            if comp.get("tierMinQty") is None:
+                continue
+            tiers = (cards.get(comp["lineKey"]) or {}).get("tiers") or []
+            tier = next((t for t in tiers if t["minQty"] == comp["tierMinQty"]), None)
+            subject = f"packaging line {comp['lineName']}{at}"
+            if tier is None or not tier.get("_source"):
+                unknowns.append(_unknown("INPUT_NOT_CITED", subject,
+                                         "The supplier card tier this volume is priced from "
+                                         "carries no source citation.", "Workbench operator"))
+            else:
+                cited.append(tier["_source"])
+            price = (tier or {}).get("unitCost")
+            if not (_finite(price) and price > 0):
+                unknowns.append(_unknown("SUPPLIER_TIER_PRICE_INVALID", subject,
+                                         f"The supplier card tier price is {price!r}, not a "
+                                         "positive number.", "PROC",
+                                         [(tier or {}).get("_source")], portal_used=price))
     fill = used["routing_fill"]
     if fill and "standardSetupMinutes" in fill["fields"] and routing_setup_used:
         standard_used(fill["standard"], "routing setup minutes")

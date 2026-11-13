@@ -125,6 +125,10 @@ _SHORTHAND = {
     "fba": "fulfilment by amazon", "hs": "harmonized system tariff code",
     "inv": "invoice", "w/": "with", "pls": "please", "rn": "right now", "asap": "urgently",
 }
+# the business systems' shorthand: grounds a model rewrite that spells a system out
+# ("BC" -> Business Central); never used to expand a search
+_SYSTEM_SHORTHAND = {"bc": "business central", "mc": "mission control", "fm": "filemaker",
+                     "sp": "sharepoint"}
 _SYNONYMS = {
     "late": "delayed overdue", "delayed": "late overdue", "received": "delivered arrived",
     "arrive": "delivered received", "shipped": "dispatched sent", "price": "cost rate",
@@ -778,10 +782,15 @@ class ProjectionGraph:
             return out
         marks = ",".join("?" * len(ids))
         conn = self._conn()
+        # UNDERSTAND-003: only current, unmarked links that are not contradicted; a
+        # ``same_record_as`` link (which makes two candidates one) only at an identity
+        # tier, so a weak, contradicted or superseded twin never removes the choice
+        kept = ("superseded_at IS NULL AND tier <> 'contradicted' AND markings = '[]' AND "
+                "(link_type NOT LIKE '%same_record_as' OR tier IN ('verified', 'reviewed'))")
         for a, b, kind in conn.execute(
                 f"SELECT from_object, to_object, link_type FROM link_rows WHERE from_object IN ({marks})"
-                f" UNION ALL SELECT to_object, from_object, link_type FROM link_rows"
-                f" WHERE to_object IN ({marks})", ids + ids):
+                f" AND {kept} UNION ALL SELECT to_object, from_object, link_type FROM link_rows"
+                f" WHERE to_object IN ({marks}) AND {kept}", ids + ids):
             out.setdefault(a, {})[b] = kind
         return out
 
@@ -2332,6 +2341,8 @@ def _grounding_words(question: str, labels: Sequence[str]) -> set[str]:
     words: set[str] = set()
     for word in fold(question).split() + fold(" ".join(labels)).split():
         words.update(_attribute_words(word) if word.isalpha() else [word])
+        # a shorthand the question wrote grounds its spelled-out words
+        words.update((_SHORTHAND.get(word) or _SYSTEM_SHORTHAND.get(word) or "").split())
     return words
 
 

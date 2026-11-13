@@ -1025,6 +1025,14 @@ class ProviderTests(unittest.TestCase):
 
         values = {"PLX_EMBED_MODEL": "openai:text-embedding-3-large",
                   "PLX_EMBED_ALLOW_REMOTE": "1", "OPENAI_API_KEY": "test-key"}
+        # SEARCH-002: never shortened to the column on its own (a query, which reads no
+        # column, would embed at full width under another name): refused, and with
+        # PLX_EMBED_DIMENSIONS indexing and query load the same model
+        with self.assertRaises(md.RemoteRefused):
+            md.load(values, column_dim=1024, post=post)
+        values["PLX_EMBED_DIMENSIONS"] = "1024"
+        self.assertEqual((md.load(values, post=post).name, md.load(values, post=post).dim),
+                         ("openai:text-embedding-3-large@1024", 1024))
         with mock.patch("time.sleep", lambda s: slept.append(s)):
             embedder = md.load(values, column_dim=1024, post=post)
             vectors = embedder.encode([f"text {i}" for i in range(md.OPENAI_MAX_INPUTS + 5)])
@@ -1756,6 +1764,62 @@ class PostgresTests(unittest.TestCase):
                 self.assertEqual(self.conn.execute(
                     "SELECT count(*) FROM search.chunks").fetchone()[0], 0)
 
+    def test_a_records_pass_chunks_unchunked_meetings_by_the_meeting_rule(self):
+        """Calendar meetings captured after the last generation pass held text and no
+        chunk: the pass writes each by the meeting rule (people check, markings), once, at
+        any count; a type whose document kind it may not write (mail) is refused."""
+        from operating.embed import record_pass as rp
+        staff, box = "staff.one@example-plx.com", "0e0e0e0e-0000-4000-8000-0000000000b1"
+        excl = exclusion(directory={staff: "0e0e0e0e-0000-4000-8000-0000000000aa",
+                                    "gone@example-plx.com": EXCLUDED})
+        unit = f"meetings:calendar:{box}"
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.conn.execute("TRUNCATE search.chunks")
+                self.conn.commit()
+                tmp = tempfile.TemporaryDirectory()
+                self.addCleanup(tmp.cleanup)
+                path = Path(tmp.name) / "store.sqlite"
+                fx = Fixture(path)
+                plain = [f"Meeting:m{i:03}" for i in range(n)]
+                for i, oid in enumerate(plain + ["Meeting:pay", "Meeting:gone"]):
+                    handle = f"calendar-event://{box}/{oid}@1"
+                    attendee = "gone@example-plx.com" if oid == "Meeting:gone" else \
+                        "buyer@customer-example.com"
+                    fx.obj(oid, "Meeting", unit, handle=handle, kind="calendar_event",
+                           marks='["finance", "pii"]' if oid == "Meeting:pay" else "[]",
+                           text={"row.body_preview": (handle, f"Agenda {i}: review the "
+                                                      "carton artwork proof and ship date.")},
+                           values={"subject": ("Carton artwork review", "[]"),
+                                   "organizer": (json.dumps({"address": staff}), "[]"),
+                                   "attendees": (json.dumps([{"address": attendee}]), "[]")})
+                fx.done()
+                store = open_ro(path)
+                self.addCleanup(store.close)
+                held = self.chunk(0, "an older indexed row of the first meeting",
+                                  audience=unit, kind="meeting")
+                self.st.ChunkWriter(self.conn).write([dataclasses.replace(
+                    held, object_id="Meeting:m000")])
+                with mock.patch.object(rp, "SLICE", 7):
+                    got = rp.record_pass(store, self.conn, excl, ["Meeting"])
+                done = got["types"]["Meeting"]
+                self.assertEqual((done["objects"], done["already_indexed"],
+                                  done["chunked_objects"]), (n + 2, 1, n))
+                self.assertEqual(got["skipped"].get("people_exclusion:meeting_person"), 1)
+                rows = {r[0]: (r[1], sorted(r[2]), r[3]) for r in self.conn.execute(
+                    "SELECT object_id, kind, markings, body FROM search.chunks")}
+                self.assertEqual(sorted(rows), sorted(plain + ["Meeting:pay"]))
+                self.assertEqual({k for k, _, _ in rows.values()}, {"meeting"})
+                self.assertEqual(rows["Meeting:pay"][1], ["finance", "pii"])
+                self.assertEqual(rows["Meeting:m000"][2],
+                                 "an older indexed row of the first meeting")
+                again = rp.record_pass(store, self.conn, excl, ["Meeting"])
+                self.assertEqual(again["types"]["Meeting"]["chunks"], 0)
+        for refused in ("Email", "SharePointFile", "Attachment", "CalendarEvent"):
+            with self.subTest(refused=refused):
+                self.assertEqual(rp.record_pass(store, self.conn, excl, [refused])["refused"],
+                                 f"type_not_indexed:{refused}")
+
     def test_sender_purge_removes_an_excluded_senders_rows_in_any_unit(self):
         writer = self.st.ChunkWriter(self.conn)
         writer.write([self.chunk(1, "Kept message about lavender soap orders."),
@@ -1772,15 +1836,23 @@ class PostgresTests(unittest.TestCase):
         dim = self.st.column_dim(self.conn)
         cards = ("4111 1111 1111 1111", "5500-0000-0000-0004", "378282246310005")
         rows = []
+        secrets = {}   # and a credential a mail quoted (SEC-S-09), on rows without a card
         for i in range(60):   # N=60: every card row purged once, every other row untouched
             card = cards[i % 3] if i % 4 == 0 else None
+            if i % 10 == 5:
+                secrets[i] = f"Spring{i:02d}Pw!x"
             chunk = self.chunk(i, f"Order {i} for lavender soap, PO 1045{i:02d}, lot "
                                   f"2026110912{i:03d}, call 416-555-0199"
-                                  + (f", paid by Visa {card} exp 09/27." if card else "."))
+                                  + (f", paid by Visa {card} exp 09/27." if card else ".")
+                                  + (f" Portal password: {secrets[i]}" if i in secrets else ""))
             if card:   # an index written before chunks were masked
                 chunk = dataclasses.replace(chunk, body=chunk.body.replace("[card]", card),
                                             title=f"Card {card}" if i == 0 else chunk.title)
                 self.assertIn(card, chunk.body)
+            if i in secrets:
+                chunk = dataclasses.replace(chunk, body=chunk.body.replace("[secret]",
+                                                                           secrets[i]))
+                self.assertIn(secrets[i], chunk.body)
             rows.append(chunk)
         self.st.ChunkWriter(self.conn).write(rows)
         self.conn.execute("UPDATE search.chunks SET embedding = %s::halfvec, embed_model = 'm'",
@@ -1801,32 +1873,35 @@ class PostgresTests(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 self.assertEqual(card_purge.main(["--dsn", dsn, *args]), 0)
             text = out.getvalue()
-            for card in cards + ("4111111111111111",):
+            for card in cards + ("4111111111111111", *secrets.values()):
                 self.assertNotIn(card, text)
             self.assertNotIn("O1", text)
             return json.loads(text)
         dry = run()
-        self.assertEqual((dry["mode"], dry["chunks"]["with_card"], dry["chunks"]["by_column"],
-                          dry["chunks"]["embeddings_to_drop"], dry["entities"]["with_card"]),
-                         ("dry_run", 15, {"body": 15, "title": 1}, 15, 1))
+        self.assertEqual((dry["mode"], dry["chunks"]["with_card"], dry["chunks"]["with_secret"],
+                          dry["chunks"]["by_column"], dry["chunks"]["embeddings_to_drop"],
+                          dry["entities"]["with_card"]),
+                         ("dry_run", 15, 6, {"body": 21, "title": 1}, 21, 1))
         self.conn.rollback()
         self.assertEqual(self.conn.execute(
             "SELECT md5(string_agg(chunk_id || body || content_sha, '' ORDER BY chunk_id)) "
             "FROM search.chunks").fetchone()[0], before)          # a dry run writes nothing
         done = run("--apply")
         self.assertEqual((done["chunks"]["with_card"], done["chunks"]["embeddings_dropped"],
-                          done["entities"]["by_column"]), (15, 15, {"alias": 1}))
+                          done["entities"]["by_column"]), (15, 21, {"alias": 1}))
         self.conn.rollback()
         stored = {r[0]: r[1:] for r in self.conn.execute(
             "SELECT chunk_id, title, body, content_sha, embedding IS NULL FROM search.chunks")}
         self.assertEqual(len(stored), 60)
         for chunk in rows:
             title, body, sha, no_vector = stored[chunk.chunk_id]
-            self.assertFalse(any(c in body or c in (title or "") for c in cards))
+            self.assertFalse(any(c in body or c in (title or "")
+                                 for c in (*cards, *secrets.values())))
             masked = dataclasses.replace(chunk, body=chunk.body.replace(
-                next((c for c in cards if c in chunk.body), "\0"), "[card]"))
+                next((c for c in cards if c in chunk.body), "\0"), "[card]").replace(
+                next((v for v in secrets.values() if v in chunk.body), "\0"), "[secret]"))
             self.assertEqual((body, sha), (masked.body, masked.content_sha))
-            self.assertEqual(no_vector, "[card]" in body)        # only purged rows re-embed
+            self.assertEqual(no_vector, "[card]" in body or "[secret]" in body)  # only purged
         self.assertEqual(self.conn.execute(
             "SELECT count(*) FROM search.chunks WHERE tsv @@ to_tsquery('simple', '4111') "
             "OR tsv @@ to_tsquery('simple', '378282246310005') OR body LIKE '%0000-0004%'"
@@ -1837,7 +1912,8 @@ class PostgresTests(unittest.TestCase):
              (["4006381333931"], "Soap 4006381333931")])          # a barcode stays
         self.conn.rollback()
         again = run()
-        self.assertEqual((again["chunks"]["with_card"], again["entities"]["with_card"]), (0, 0))
+        self.assertEqual((again["chunks"]["with_card"], again["chunks"]["with_secret"],
+                          again["entities"]["with_card"]), (0, 0, 0))
 
     def test_vectors_are_padded_to_the_column_never_truncated(self):
         self.assertEqual(self.st.column_dim(self.conn) is not None, True)

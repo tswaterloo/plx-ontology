@@ -75,6 +75,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -439,7 +440,12 @@ def summarize_mail(report: Mapping[str, Any]) -> dict[str, Any]:
               for mailbox in _rows(_last_run(report).get("mailboxes"))
               if not _rows(mailbox.get("folders")) and mailbox.get("status") != "people_excluded"
               and mailbox.get("complete") is not True]
-    return _units(units, report)
+    summary = _units(units, report)
+    if "source_unavailable" in (_last_run(report).get("incomplete_reasons") or ()):
+        # The capture stopped reading because Graph failed every mailbox it tried
+        # (capture_mail.OUTAGE_MAILBOXES): the run failed, whatever it read before.
+        summary["error_code"] = "source_unavailable"
+    return summary
 
 
 def summarize_teams(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -744,7 +750,9 @@ def _judge(result: dict[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]
                   resumed_from_cursor=bool(cursor_units) and resumed == len(cursor_units))
     if summary.get("evidence_label"):
         result["evidence_label"] = summary["evidence_label"]
-    if total and complete == total and not blocked:
+    if code(summary.get("error_code")):
+        result.update(status="failed", error_code=code(summary["error_code"]))
+    elif total and complete == total and not blocked:
         result["status"] = "complete"
     elif blocked and not complete:
         result["status"] = "blocked"
@@ -756,6 +764,46 @@ def _judge(result: dict[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]
                       reasons=sorted(reasons | ({"blocked_parts"} if blocked else set()))
                       [:MAX_ITEMS])
     return result
+
+
+STDERR_DIR = ("host", "logs")   # <state>/host/logs/<source>.stderr: each child's last run
+STDERR_KEEP_BYTES = 256 * 1024     # its tail
+STACK_DUMP_SECONDS = 5.0           # a timed-out child's stack dump is waited for this long
+
+
+def keep_stderr(state: Path, name: str, stderr: bytes | None) -> None:
+    """The tail of a capture child's stderr, kept in ``<state>/host/logs/<name>.stderr``
+    (0600, replaced by its next run): the runner reads only the last JSON line's code,
+    and a child cut by its timeout reported nothing at all (2026-11-12: mail capture
+    wrote nothing for a day and its stderr, the one place a cause could be, was
+    dropped). Never raises: a log that cannot be written costs only the log."""
+    if not code(name):
+        return
+    try:
+        folder = state.joinpath(*STDERR_DIR)
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = folder / f"{name}.stderr"
+        tmp = target.with_name(target.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write((stderr or b"")[-STDERR_KEEP_BYTES:])
+        os.replace(tmp, target)
+    except OSError:
+        pass
+
+
+def _dump_stacks(child: "subprocess.Popen") -> None:
+    """Ask a timed-out child for every thread's stack (SIGUSR1: ``faulthandler`` in
+    ``integrations.graph_read``) and give it :data:`STACK_DUMP_SECONDS` to write it; the
+    output stays buffered in ``child`` for the ``communicate`` after the kill. A child
+    without the handler ends on the signal, as it was about to."""
+    if not hasattr(signal, "SIGUSR1"):
+        return
+    try:
+        os.kill(child.pid, signal.SIGUSR1)
+        child.communicate(timeout=STACK_DUMP_SECONDS)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        pass
 
 
 def run_source(spec: SourceSpec, options: Mapping[str, Any], state: Path,
@@ -790,6 +838,7 @@ def run_source(spec: SourceSpec, options: Mapping[str, Any], state: Path,
         return {**result, "status": "failed", "error_code": code(type(exc).__name__)
                 or "start_failed"}
     PRIORITY.started(child.pid)   # its own session: the group is the child's
+    stdout = stderr = None
     try:
         if children is not None:
             children.add(child.pid, spec.name)
@@ -804,11 +853,18 @@ def run_source(spec: SourceSpec, options: Mapping[str, Any], state: Path,
                     return {**result, "status": "failed", "error_code": STOPPED,
                             "seconds": round(time.monotonic() - started, 1)}
                 if time.monotonic() >= deadline:
+                    _dump_stacks(child)
                     return {**result, "status": "failed", "error_code": "child_timeout",
                             "seconds": round(time.monotonic() - started, 1)}
     finally:
         PRIORITY.ended(child.pid)
         child_process.stop(child)
+        if stderr is None:   # cut: what it wrote before the kill
+            try:
+                _out, stderr = child.communicate(timeout=STACK_DUMP_SECONDS)
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                stderr = None
+        keep_stderr(state, spec.name, stderr)
         for pipe in (child.stdout, child.stderr):
             pipe.close()
         if children is not None:

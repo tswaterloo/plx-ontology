@@ -653,12 +653,20 @@ export function AutopilotView({ area: initial, onReload }: { area: Area; onReloa
             ["Passed, awaiting you", passed, passed ? "text-accent" : ""],
             ["Auto", live, ""],
           ] as const
-        ).map(([k, v, tone]) => (
-          <div key={k}>
-            <p className="text-[12px] text-muted">{k}</p>
-            <p className={cn("num text-[19px] leading-6", tone)}>{v}</p>
-          </div>
-        ))}
+        ).map(([k, v, tone]) =>
+          // the workflows that passed are waiting on the owner's switch: the figure opens them
+          k === "Passed, awaiting you" && v > 0 ? (
+            <button key={k} type="button" className="cursor-pointer text-left" onClick={() => setTab("workflows")} title="Open the workflows" data-testid="autopilot-passed">
+              <p className="text-[12px] text-muted">{k}</p>
+              <p className={cn("num text-[19px] leading-6 hover:underline", tone)}>{v}</p>
+            </button>
+          ) : (
+            <div key={k}>
+              <p className="text-[12px] text-muted">{k}</p>
+              <p className={cn("num text-[19px] leading-6", tone)}>{v}</p>
+            </div>
+          ),
+        )}
         {area.owner && (
           <div className="ml-auto flex flex-wrap items-center gap-2 text-[12px]">
             <span className="text-muted">

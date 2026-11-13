@@ -977,6 +977,15 @@ class UsageReview(unittest.TestCase):
                                              "rating": -1, "note": "date is wrong"})
         self.ana.post("/api/feedback/note", json={"kind": "page", "note": "Too slow",
                                                   "page": "/purchasing"})
+        from operator_api import models as m
+        back = m.AnswerPayload(
+            answer_id="a" * 24, question="Is the order late?", outcome="partial",
+            direct_answer="Which purchase order?", hidden=m.Hidden(count=0),
+            freshness=m.Freshness(), conversation_id="c-back", latency_ms=1,
+            clarify=m.Clarify(question="Which purchase order?", options=[
+                m.ClarifyOption(label="PO 1"), m.ClarifyOption(label="PO 2")]))
+        with mock.patch.object(self.backend, "ask", return_value=iter([("answer", back)])):
+            self.ana.post("/api/ask", json={"question": "Is the order late?"})
         with mock.patch.object(self.backend, "ask", side_effect=TimeoutError()):
             self.ana.post("/api/ask", json={"question": "Which lots expire this week?"})
         now = datetime.now(timezone.utc).isoformat()
@@ -998,6 +1007,10 @@ class UsageReview(unittest.TestCase):
         self.assertTrue(first["steps"])
         self.assertEqual(first["feedback"][0]["rating"], -1)
         self.assertIn(first, found["flagged"])                # thumbs down
+        # a question asked back is the person's turn, never a low answer
+        asked_back = by_q["Is the order late?"]
+        self.assertEqual(asked_back["outcome"], "asked_back")
+        self.assertNotIn(asked_back, found["flagged"])
         failed = by_q["Which lots expire this week?"]
         self.assertEqual((failed["outcome"], failed["error"]), ("error", "busy"))
         note = next(f for f in found["feedback"] if f["kind"] == "page")

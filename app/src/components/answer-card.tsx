@@ -18,6 +18,7 @@ import { Feedback } from "./feedback";
 import { ProposalCards } from "./proposal-cards";
 import { AskDrafts, AttachmentNotes } from "./ask-drafts";
 import { InstructionPart, type InstructAsk } from "./instruction-part";
+import { AssumptionLine, ClarifyPart, type ClarifyReply } from "./clarify-part";
 import { AskOrganizer } from "./ask-organize";
 import { Inlines, RichText } from "./rich-text";
 import { CiteNumbers, EvidenceDrawer, SourceChips, sourceName } from "./source-chip";
@@ -660,7 +661,7 @@ function whoToAsk(a: Answer): string | null {
   return null;
 }
 
-export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct }: { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void }) {
+export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }: { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void }) {
   const a = turn.answer;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
   const u = turn.understanding;
@@ -724,7 +725,8 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct }: { turn:
             />
           ))}
 
-          {a && <Confidence a={a} systems={usedSystems} />}
+          {a && !a.clarify && <Confidence a={a} systems={usedSystems} />}
+          {a && <AssumptionLine a={a} onReply={onClarify} />}
 
           {composed || lead.length > 0 ? (
             <div
@@ -825,6 +827,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct }: { turn:
             ))}
             <AttachmentNotes items={a.attachments ?? []} />
             <AskDrafts drafts={a.drafts ?? []} />
+            {a.clarify && <ClarifyPart a={a} onReply={onClarify} />}
             {a.instruction && <InstructionPart part={a.instruction} answerId={a.answer_id} onInstruct={onInstruct} />}
             {ask && (
               <section data-testid="who-to-ask">
@@ -851,7 +854,8 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct }: { turn:
         )}
       </div>
 
-      {a && (
+      {/* a question asked back read nothing yet: no sources or checks to list */}
+      {a && !a.clarify && (
         <aside className="grid min-w-0 content-start gap-x-10 gap-y-7 sm:grid-cols-2 xl:col-start-2 xl:row-span-2 xl:row-start-1 xl:grid-cols-1 xl:self-start" aria-label="Sources and records">
           {refs.length > 0 && (
             <div className="hidden xl:block">
@@ -871,8 +875,8 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct }: { turn:
           <div className="order-last w-full min-w-0">
             <FreshnessLabel freshness={a.freshness} used={usedSystems} />
           </div>
-          <SaveButton question={turn.question} href={`/ask?c=${encodeURIComponent(a.conversation_id)}`} />
-          <AskOrganizer conversationId={a.conversation_id} records={a.subjects ?? []} />
+          {!a.clarify && <SaveButton question={turn.question} href={`/ask?c=${encodeURIComponent(a.conversation_id)}`} />}
+          {!a.clarify && <AskOrganizer conversationId={a.conversation_id} records={a.subjects ?? []} />}
           <Feedback answerId={a.answer_id} facts={(a.facts ?? []).map((f) => f.text)} />
           {primary && (
             <Link

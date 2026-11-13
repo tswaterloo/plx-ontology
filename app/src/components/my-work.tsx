@@ -148,7 +148,7 @@ function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: Auto
                 Accept
               </Button>
             ))}
-          {apItem && !more && (item.card_id || item.write_ready) && (
+          {apItem && !more && (item.card_id || item.write_ready || item.order_import) && (
             <Button size="sm" variant="ghost" aria-expanded={false} onClick={() => setMore(true)}>
               More
             </Button>
@@ -162,6 +162,13 @@ function Item({ item, area, state, onDone, now }: { item: MyWorkItem; area: Auto
               onClick={() => prepareMyWorkWrite(item.item_id).then(() => setEntry("Entry prepared: preview and approve it in the write panel (dry run)."), (e) => setEntry(plainError(e)))}
             >
               Prepare the entry
+            </Button>
+          )}
+          {item.order_import && (!apItem || more) && (
+            <Button size="sm" variant="ghost" asChild>
+              <a href={`/api/my-work/${encodeURIComponent(item.item_id)}/order-import`} download data-testid="my-work-order-import">
+                Order import file
+              </a>
             </Button>
           )}
         </div>

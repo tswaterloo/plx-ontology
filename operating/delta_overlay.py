@@ -60,6 +60,14 @@ _PARTIAL_GAP = {"state": "stale", "reason": PARTIAL,
                           "Postgres, which this answer could not read; it reads only the "
                           "newest delta layers, so a record may be older than it is"}
 
+# A layer this host could not open (a read error, not a refused pointer): every answer
+# says it reads the older generation until the open succeeds (HOST-001).
+UNAVAILABLE = "delta_overlay_unavailable"
+_UNAVAILABLE_GAP = {"state": "stale", "reason": UNAVAILABLE,
+                    "detail": "the records changed since the served projection generation "
+                              "could not be opened just now; this answer reads that older "
+                              "generation, so a record may be older than it is"}
+
 
 def pointer_path(store_path: str | Path) -> Path:
     """The overlay pointer file of the store served at ``store_path``."""
@@ -240,6 +248,14 @@ def with_partial_gap(result: dict[str, Any], subject: str) -> dict[str, Any]:
     """``result`` saying the overlay it read is partial (``PARTIAL``), not complete; an
     error, or one with no room for the gap, as it is."""
     marked = with_gap(result, dict(_PARTIAL_GAP, subject=subject)) \
+        if isinstance(result, dict) else None
+    return result if marked is None else marked
+
+
+def with_unavailable_gap(result: dict[str, Any], subject: str) -> dict[str, Any]:
+    """``result`` saying the overlay could not be opened (``UNAVAILABLE``), not complete;
+    an error, or one with no room for the gap, as it is."""
+    marked = with_gap(result, dict(_UNAVAILABLE_GAP, subject=subject)) \
         if isinstance(result, dict) else None
     return result if marked is None else marked
 

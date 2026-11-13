@@ -174,6 +174,13 @@ describe("autopilot studio: review queue", () => {
 });
 
 describe("autopilot studio: workflows, modes and the owner's controls", () => {
+  it("the passed-workflows figure opens the workflows waiting on the owner", () => {
+    render(<AutopilotView area={area()} onReload={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("autopilot-passed"));
+    expect(screen.getByRole("tab", { name: "Workflows" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getAllByTestId("autopilot-workflow")[0]).toHaveTextContent("Passed, awaiting you");
+  });
+
   it("the owner sets a mode per workflow and role (Auto only after its gate); anyone else sees no controls and no audit log", async () => {
     api.mode.mockResolvedValue({});
     const reload = vi.fn();

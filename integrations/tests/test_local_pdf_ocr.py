@@ -262,6 +262,28 @@ class PortablePdfOcrTest(unittest.TestCase):
         with patch.object(du.platform, "system", return_value="Linux"), \
                 patch.object(du.shutil, "which", return_value="/usr/bin/tool"):
             self.assertEqual(du._local_ocr_backend(), "portable")
+        # DOC-007: the macOS helper runs with the tools' minimal environment, never the
+        # host's credentials
+        import os
+        import subprocess
+        seen = []
+
+        def swift(command, *, timeout, env=None):
+            seen.append(env)
+            return subprocess.CompletedProcess(command, 0, b"[]", b"")
+        with patch.object(du.platform, "system", return_value="Darwin"), \
+                patch.object(du.Path, "is_file", return_value=True), \
+                patch.object(du.child_process, "run", swift), \
+                patch.dict(os.environ, {"AZURE_CLIENT_SECRET": "s", "PLX_WORKBENCH_API_KEY": "k"}):
+            try:
+                du._macos_pdf_text(PDF.read_bytes())
+            except Exception:  # noqa: BLE001 - the faked helper's output is not the point
+                pass
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(set(seen[0]) - {"PATH", "LANG", "LC_ALL", "TESSDATA_PREFIX", "HOME",
+                                         "TMPDIR", "OMP_THREAD_LIMIT",
+                                         "SWIFT_MODULECACHE_PATH", "CLANG_MODULE_CACHE_PATH"},
+                         set())
 
     @unittest.skipUnless(_portable_available(), "poppler and tesseract not installed")
     def test_metadata_cannot_forge_the_page_count(self):

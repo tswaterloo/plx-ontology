@@ -44,7 +44,8 @@ PEOPLE_SECONDS = 5 * 60
 # action states, the late list), alerts (watching, approvals, the alert registry) and drafts
 # (the autopilot's prepared items, My work's items).
 ROUTES = frozenset({
-    "/api/home", "/api/late", "/api/briefing", "/api/briefing/items", "/api/suggestions",
+    "/api/home", "/api/late", "/api/briefing", "/api/briefing/items", "/api/briefing/unjudged",
+    "/api/suggestions",
     "/api/replies", "/api/actions/state", "/api/my-work", "/api/autopilot", "/api/approvals",
     "/api/watch", "/api/alert-kinds"})
 READ_ONLY = "Viewing as someone is read only: nothing can be sent, approved or logged as them."

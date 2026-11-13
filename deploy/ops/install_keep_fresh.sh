@@ -15,6 +15,9 @@
 #     plx-ops-health.timer       every 5 min      reliability alarms (operating/ops_alarms.py): in-app banner + /ops
 #     plx-ops-memory.timer       every 1 min      memory early warning (under 8 GB, top consumers named)
 #     plx-expiry.timer           daily 06:20 UTC  credential expiry list (alarm within 30 days)
+#     plx-autopilot-follow.timer 5 min after the last cycle, and .path on each delta publish:
+#                                the autopilot's live feed; prepares My work items only (never
+#                                sends, writes or approves), ordered event queue on (EVQ=1)
 #   and ~/.local/bin/plx-release -> $PLX_REPO/deploy/release/plx-release
 #
 #Nothing here writes to a business system or reads a secret; the units name env files, not
@@ -27,7 +30,8 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry"
+SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow"
+SYS_PATHS="plx-autopilot-follow"   # also started by a .path unit
 
 python3 "$render" --user --out "$tmp/user" >/dev/null
 python3 "$render" --out "$tmp/sys" >/dev/null
@@ -46,9 +50,11 @@ verify_unit() {  # verify_unit [--user] service timer
 }
 for u in $USER_UNITS; do verify_unit --user "$tmp/user/$u.service" "$tmp/user/$u.timer"; done
 for u in $SYS_UNITS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.timer"; done
-for f in "$tmp"/user/plx-{sheet-readings,system-activity,team-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory,expiry}.*; do
-  grep -q "^MemoryMax=" "$f" || [[ $f == *.timer ]] || { echo "no MemoryMax: $f" >&2; exit 1; }
-  grep -q "^Nice=" "$f" || [[ $f == *.timer ]] || { echo "no Nice: $f" >&2; exit 1; }
+for u in $SYS_PATHS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.path"; done
+for f in "$tmp"/user/plx-{sheet-readings,system-activity,team-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow}.*; do
+  [[ $f == *.timer || $f == *.path ]] && continue
+  grep -q "^MemoryMax=" "$f" || { echo "no MemoryMax: $f" >&2; exit 1; }
+  grep -q "^Nice=" "$f" || { echo "no Nice: $f" >&2; exit 1; }
 done
 [ $dry = 1 ] && { echo "dry run: rendered and verified, nothing installed"; exit 0; }
 
@@ -66,8 +72,13 @@ for u in $SYS_UNITS; do for ext in service timer; do
   dst=/etc/systemd/system/$u.$ext
   cmp -s "$tmp/sys/$u.$ext" "$dst" || { sudo -n install -m 644 "$tmp/sys/$u.$ext" "$dst"; schanged=1; }
 done; done
+for u in $SYS_PATHS; do
+  dst=/etc/systemd/system/$u.path
+  cmp -s "$tmp/sys/$u.path" "$dst" || { sudo -n install -m 644 "$tmp/sys/$u.path" "$dst"; schanged=1; }
+done
 [ $schanged = 0 ] || sudo -n systemctl daemon-reload
 for u in $SYS_UNITS; do sudo -n systemctl enable --now "$u.timer"; done
+for u in $SYS_PATHS; do sudo -n systemctl enable --now "$u.path"; done
 
 ln -sfn "$PLX_REPO/deploy/release/plx-release" "$HOME/.local/bin/plx-release"
 
@@ -77,5 +88,7 @@ for v in PLX_TEAM_ACTIVITY_FILE PLX_TEAM_VIEW_READERS PLX_TEAM_HIDDEN_PEOPLE; do
   grep -qs "^$v=" /etc/plx/workbench-api.env 2>/dev/null \
     || echo "note: set $v in the API's environment (see operator_api/team_view.py)"
 done
+[ -s "$PLX_STATE/autopilot/autopilot-gate.json" ] \
+  || echo "note: no $PLX_STATE/autopilot/autopilot-gate.json: the live feed prepares only the Draft people's workflows (operating/autopilot_draft.json) until a passing replay's gate file is copied there"
 echo "note: the work-graph unit writes $PLX_STATE/work-graph/roles-derived.json (candidate roles); the autopilot reads it only if PLX_AUTOPILOT_ROLES_FILE names it"
-systemctl list-timers --all --no-legend 'plx-sheet*' 'plx-system*' 'plx-team*' 'plx-work*' 'plx-proactive-whole*' 'plx-backup*' 'plx-restore*' 'plx-ops*' || true
+systemctl list-timers --all --no-legend 'plx-sheet*' 'plx-system*' 'plx-team*' 'plx-work*' 'plx-proactive-whole*' 'plx-backup*' 'plx-restore*' 'plx-ops*' 'plx-autopilot*' || true

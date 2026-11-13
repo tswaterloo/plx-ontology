@@ -29,6 +29,10 @@ DEFAULT_EF_SEARCH = 100
 # come slightly out of order, so a dense query re-sorts its candidates (pgvector 0.8).
 ITERATIVE_SCAN = "relaxed_order"
 DEFAULT_MAX_SCAN_TUPLES = 20000
+# A session that opened a transaction and then sat idle holds its locks and its snapshot
+# (vacuum cannot clean past it); the server ends it after this long. 15 minutes: far past
+# any request, short of a lock held overnight. ``None`` on a Pool keeps the server's own.
+DEFAULT_IDLE_IN_TRANSACTION_MS = 15 * 60 * 1000
 # Readable-socket rounds ``alive`` reads before it calls an idle connection live.
 ALIVE_ROUNDS = 4
 
@@ -101,13 +105,21 @@ class Pool:
     def __init__(self, dsn: str | None = None, *, max_size: int = 8, timeout: float = 10.0,
                  configure: Callable[[psycopg.Connection], None] | None = None,
                  connect_timeout: int | None = None,
-                 statement_timeout_ms: int | None = None) -> None:
-        """``connect_timeout``: seconds a new connection may take (None: libpq's, which
+                 statement_timeout_ms: int | None = None,
+                 idle_in_transaction_ms: int | None = DEFAULT_IDLE_IN_TRANSACTION_MS) -> None:
+        """``idle_in_transaction_ms``: how long a lent connection may sit idle inside a
+        transaction before the server ends it (None: the server's; 0: never);
+        ``connect_timeout``: seconds a new connection may take (None: libpq's, which
         waits as long as the network does); ``statement_timeout_ms``: the longest any
         statement on a lent connection runs (None: the server's)."""
         if max_size < 1:
             raise ValueError("pool_max_size_invalid")
         self.connect_timeout, self.statement_timeout_ms = connect_timeout, statement_timeout_ms
+        if idle_in_transaction_ms is not None and (
+                not isinstance(idle_in_transaction_ms, int)
+                or isinstance(idle_in_transaction_ms, bool) or idle_in_transaction_ms < 0):
+            raise ValueError("pool_idle_in_transaction_invalid")
+        self.idle_in_transaction_ms = idle_in_transaction_ms
         self.dsn = dsn or config.dsn()
         self.max_size = max_size
         self.timeout = timeout
@@ -135,12 +147,15 @@ class Pool:
         return conn
 
     def _limits(self, conn: psycopg.Connection) -> None:
-        """The pool's statement time limit, set on a new connection and set again after
+        """The pool's statement time limit and idle-in-transaction limit, set on a new connection and set again after
         every ``RESET ALL`` (which would otherwise put the server's limit back, so the
         cap held on a connection's first borrow only)."""
-        if self.statement_timeout_ms is not None:
-            with conn.cursor() as cur:
+        with conn.cursor() as cur:
+            if self.statement_timeout_ms is not None:
                 cur.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
+            if self.idle_in_transaction_ms is not None:
+                cur.execute("SET idle_in_transaction_session_timeout = "
+                            f"{int(self.idle_in_transaction_ms)}")
 
     def _take(self) -> psycopg.Connection | None:
         """An idle connection, or None after reserving a slot for a new one."""

@@ -822,7 +822,7 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "shipped_not_invoiced", "duplicate_customer_order",
               "recurring_component_damage", "customer_chasing_order",
               "tell_before_they_ask", "quality_hold_aging", "reject_trend",
-              "expedite_unanswered", "supplier_shortage_open_orders",
+              "expedite_unanswered", "supplier_shortage_open_orders", "return_unanswered",
               "supplier_chasing_payment",
               "customer_paying_slower", "early_pay_discount_missed",
               "duplicate_supplier_invoice", "duplicate_supplier_payment",
@@ -885,6 +885,21 @@ _HOME_PHRASES: tuple[tuple[re.Pattern[str], tuple[str, ...] | None], ...] = tupl
         (r"(?:which |what )?(?:quantities|quantity mismatches) (?:are wrong|disagree|conflict)",
          ("po_receipt_quantity_mismatch", "conflicting_quantity")),
     ))
+
+
+def _with_ask_back(arguments: Any, result: Any) -> Any:
+    """plx.find's ambiguous answer to a name, with ``ask_back`` (``clarify.ask_back``:
+    2-4 of its own records for the client to ask its person which one) unless this
+    server's client is the Workbench's own agent (``clarify.ASK_BACK_SWITCH`` off).
+    Options that would push the answer past its size bound are left out where the
+    answer is sent (``handle``), never the answer."""
+    from operating import clarify
+    if not clarify.ask_back_enabled() or not isinstance(result, dict):
+        return result
+    back = clarify.ask_back(arguments, result)
+    if not back:
+        return result
+    return dict(result, ask_back=back)
 
 
 def _no_record_named(found: Any) -> bool:
@@ -2722,6 +2737,18 @@ class MCPServer:
                 # result_too_large after the gate had decided it, and the session lost its
                 # answer. A result whose text is a rendering of its own (``self._text``)
                 # has no JSON to fall back to.
+                if encoded_is_value and isinstance(value, dict) and "ask_back" in value:
+                    # plx.find's ask_back (``_with_ask_back``) never costs the answer:
+                    # when the answer with its full freshness would not fit, it goes
+                    # without the options.
+                    payload["_meta"] = {FRESHNESS_META_KEY: meta,
+                                        AGENT_META_KEY: run.meta(escalation)}
+                    if _envelope_size(payload) + _UNKEPT_NOTE_BYTES > MAX_RESULT_BYTES:
+                        value = {k: v for k, v in value.items() if k != "ask_back"}
+                        encoded = json.dumps(value, ensure_ascii=False,
+                                             separators=(",", ":"))
+                        payload["content"] = [{"type": "text", "text": encoded}]
+                        payload["structuredContent"] = value
                 tiers = [(meta, True), (_meta_summary(meta), True)]
                 if encoded_is_value:
                     tiers.append((_meta_summary(meta), False))
@@ -3336,6 +3363,7 @@ class MCPServer:
                 if name == "plx.find":
                     result = self._home_mode(host, gated, arguments, result)
                     result = self._portfolio_mode(host, gated, arguments, result)
+                    result = _with_ask_back(arguments, result)
                 elif name == "plx.investigate":
                     self._verdict_text(host, gated, arguments, result)
             else:

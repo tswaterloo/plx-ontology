@@ -15,7 +15,7 @@ SYNTHETIC queue, gate files, scorer output and people. Evidence label: ``isolate
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -534,7 +534,8 @@ class DraftPrepares(Fixture):
         with contextlib.redirect_stdout(out), \
                 mock.patch.dict(os.environ, {ap.DRAFT_ENV: str(conf)}), \
                 mock.patch.object(ap, "window_ids", return_value=ids), \
-                mock.patch.object(ap, "layer_ids", return_value=(set(ids), [])), \
+                mock.patch.object(ap, "layer_ids", return_value=(set(ids), [], 0)), \
+                mock.patch.object(ap, "_utcnow", return_value=NOW), \
                 mock.patch.object(pe, "_people", return_value=people()):
             code = ap.main([command, "--store", str(store), "--queue", str(queue)]
                            + (["--until", ap._iso(NOW)] if command == "replay" else []))
@@ -559,3 +560,127 @@ class DraftPrepares(Fixture):
         self.assertEqual(self.run_into("nobody", {"nobody@plx.example": flows}), 0)
         # the same draft in a replay prepares nothing into the shared queue
         self.assertEqual(self.run_into("replayed", {OURS: flows}, "replay"), 0)
+
+
+class FollowReadsTheLayers(Fixture):
+    """Live follow (``autopilot.main follow``) takes in the delta layers only from a store
+    that holds their records: on Postgres, whose content stamp is ``<digest>@<data
+    version>``, each layer once it is applied (one not applied yet waits for a later
+    cycle, never taken in unread); the SQLite generation file alone takes in none. Before
+    11-13 follow compared the whole stamp with the delta's base and took in no layer on
+    Postgres, ever (the live feed prepared nothing)."""
+
+    def test_follow_takes_applied_layers_under_a_moving_stamp_and_none_from_the_file(self):
+        import contextlib
+        import io
+        texts = ("Please send the COA for lot 9.", "Where is order SO-2? When will it ship?")
+        ids = [self.message(90 + n, t) for n, t in enumerate(texts)]
+        flows = sorted({wf.of_item("customer_request", {"subject": "PO", "text": t,
+                                                        "side": "customer"}) for t in texts}
+                       - ap.DRAFT_NEVER)
+        store = self.w.build(self.dir / "s.sqlite")
+        with sqlite3.connect(store) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
+        delta = self.dir / "delta"
+        delta.mkdir()
+        layers: list[dict] = []
+        for n, oid in enumerate(ids, 1):
+            layer = delta / f"delta-{n}.sqlite"
+            with sqlite3.connect(layer) as conn:
+                conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+                conn.execute("INSERT INTO delta_owned VALUES (?)", (oid,))
+            layers.insert(0, {"store": str(layer)})
+        (delta / "CURRENT.json").write_text(json.dumps({
+            "format": "plx-delta/v1", "base_digest": digest, "store": layers[0]["store"],
+            "layers": layers}))
+        conf = self.dir / "draft.json"
+        conf.write_text(json.dumps({"schema": ap.DRAFT_SCHEMA, "people": {OURS: flows}}))
+        version, applied, seen = [100], set(), []
+        real_meta = pe._Store.meta
+
+        def stamped(st, key):
+            value = real_meta(st, key)
+            return f"{value}@{version[0]}" if key == "content_digest" else value
+
+        def follow(queue: Path, reads_postgres: bool, *, now=NOW, window=()) -> dict:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), \
+                    mock.patch.dict(os.environ, {ap.DRAFT_ENV: str(conf)}), \
+                    mock.patch.object(ap, "_utcnow", return_value=now), \
+                    mock.patch.object(ap, "window_ids", lambda _st, _r, since, until:
+                                      seen.append((since, until)) or list(window)), \
+                    mock.patch.object(pe, "_people", return_value=people()), \
+                    mock.patch.object(pe._Store, "meta", stamped), \
+                    mock.patch("operating.proactive_incremental._applied",
+                               lambda _s: set(applied) if reads_postgres else None):
+                code = ap.main(["follow", "--store", str(store), "--queue", str(queue)])
+            self.assertEqual(code, 0, out.getvalue())
+            return json.loads(out.getvalue())
+
+        def events(queue: Path) -> int:
+            q = ap.Queue(queue)
+            try:
+                return q.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            finally:
+                q.close()
+        pg = self.dir / "pg" / ap.QUEUE_FILE
+        pg.parent.mkdir()
+        applied.add("delta-1.sqlite")                 # delta-2 not in Postgres yet
+        self.assertEqual(follow(pg, True)["layers_taken"], 1)
+        self.assertEqual(events(pg), 1)
+        version[0], applied = 101, applied | {"delta-2.sqlite"}
+        self.assertEqual(follow(pg, True)["layers_taken"], 1)   # only the new one
+        self.assertEqual(events(pg), 2)
+        version[0] = 102
+        self.assertEqual(follow(pg, True)["layers_taken"], 0)   # both kept, nothing new
+        # a layer the pointer says is over the cap is taken in without being opened (its
+        # file need not even be readable): the window feed covers its records
+        big = {"store": str(delta / "delta-big.sqlite"), "owned": ap.FOLLOW_LAYER_CAP + 1}
+        layers.insert(0, big)
+        (delta / "CURRENT.json").write_text(json.dumps({
+            "format": "plx-delta/v1", "base_digest": digest, "store": big["store"],
+            "layers": layers}))
+        applied.add("delta-big.sqlite")
+        out = follow(pg, True)
+        self.assertEqual((out["layers_taken"], out["read"]["layer_records_unread"],
+                          out["read"]["layer_records"]), (1, ap.FOLLOW_LAYER_CAP + 1, 0))
+        self.assertFalse((delta / "delta-big.sqlite").exists())
+        # the cap is on the records one cycle reads: two layers that together pass it are
+        # not both opened
+        for n, size in ((3, ap.FOLLOW_LAYER_CAP - 1), (4, 2)):
+            layer = delta / f"delta-{n}.sqlite"
+            with sqlite3.connect(layer) as conn:
+                conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+                conn.execute("INSERT INTO delta_owned VALUES (?)", (ids[0],))
+            layers.insert(0, {"store": str(layer), "owned": size})
+            applied.add(layer.name)
+        (delta / "CURRENT.json").write_text(json.dumps({
+            "format": "plx-delta/v1", "base_digest": digest, "store": layers[0]["store"],
+            "layers": layers}))
+        out = follow(pg, True)
+        self.assertEqual((out["layers_taken"], out["read"]["layer_records_unread"]),
+                         (2, ap.FOLLOW_LAYER_CAP - 1), out["read"])
+        q = ap.Queue(pg)
+        try:
+            self.assertGreater(q.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0], 0)
+        finally:
+            q.close()
+        # the generation file alone holds none of the layers' records: none taken in
+        sq = self.dir / "file" / ap.QUEUE_FILE
+        sq.parent.mkdir()
+        self.assertEqual(follow(sq, False)["layers_taken"], 0)
+        self.assertEqual(events(sq), 0)
+        # the window feed (what the replay gate scored): the horizon back, read again only
+        # when the store changed (its stamp moved): versions 100, 101, 102 and the file's
+        self.assertEqual(seen, [(ap._iso(NOW - ap.FOLLOW_HORIZON), ap._iso(NOW))] * 4)
+        # a message older than the horizon is not prepared (a first cycle never fills
+        # the queue with a week of answered mail)
+        late = self.dir / "late" / ap.QUEUE_FILE
+        late.parent.mkdir()
+        out = follow(late, False, now=NOW + timedelta(days=4), window=ids)
+        self.assertEqual((events(late), out["skipped"]["before_horizon"]), (0, 2), out)
+        on_time = self.dir / "on-time" / ap.QUEUE_FILE
+        on_time.parent.mkdir()
+        follow(on_time, False, window=ids)
+        self.assertEqual(events(on_time), 2)

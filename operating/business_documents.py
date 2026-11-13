@@ -43,6 +43,19 @@ sent, written or changed; every row cites the records and sheet cells it comes f
   supplies a named item through ``SupplierItem``). A mail from a supplier's domain that
   supplies none of the named items ``reported_by`` it (a lab, a broker), kept apart. Mail
   from no supplier's domain is not read. Per-supplier and per-reporter monthly trends.
+* ``formula_lines`` (``subject``: a product): what its formula sheets say it is made of.
+  Sheets are documents whose name holds a formula number or a formula word
+  (``FORMULA_WORDS``) and at least ``FORMULA_NAME_WORDS`` of the product's name words; a
+  sheet counts only when its stated ``CODE`` is one of the product's codes (``basis:
+  code``) or, stating none, its ``NAME`` is the product's name (``basis: name``); a sheet
+  stating another code is another product's (counted). Each sheet's lines are read by
+  ``operating.composition_lines`` (part code, share %, quantity, the share x size check,
+  the sheet ``complete`` or ``partial``, never filled in); a part code resolves to the one
+  item its identifier names (``resolved``) or none (``unresolved``, counted), and the
+  item's supplier items (``SupplierItem.for_item``) the reader may read are listed by id
+  (prices stay on those records, under their own markings). The formula lines the Portal
+  holds (FileMaker ``formula_item``, ``app_formulation_ingredient``) are not served, so
+  every answer counts ``portal_formula_lines_not_served``; sheets are the only source.
 * ``uat_feedback``: SharePoint list items of a list whose address names user acceptance
   testing or feedback (``UAT_WORDS``), each item's status read as ``open``, ``answered`` or
   ``fixed`` (``STATUS_CLASS``); an unknown status word is ``unknown`` (counted, never guessed).
@@ -72,7 +85,8 @@ TOOL_NAME = "plx.aggregate"
 MODE = "business_documents"
 FORMAT = "plx-business-documents/v1"
 VIEWS = ("forecasts", "forecast_accuracy", "priority_fill", "price_sheets",
-         "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback")
+         "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback",
+         "formula_lines")
 MAX_ROWS = 200
 FINANCE = "finance"
 
@@ -83,6 +97,11 @@ QUESTIONNAIRE_WORDS = ("questionnaire*",)
 ISSUE_WORDS = ("reject*", "deviation*", "complaint*", "ncr", "nonconform*", "quarantine*",
                "oos", "contaminat*", "defect*")
 UAT_WORDS = ("uat", "feedback", "acceptance")
+FORMULA_WORDS = ("formula*", "sample")
+FORMULA_BUDGET_SECONDS = 35.0   # inside plx.aggregate's 45 s: past it, a labelled partial
+FORMULA_NAME_WORDS = 3   # product name words a sheet's name must hold (all, when fewer)
+_FORMULA_NUMBER = re.compile(r"(?i)\bF-\d{2}-\d{4}\b")
+_NAME_STOP = frozenset({"the", "and", "for", "with", "of", "a", "an", "on", "in", "to"})
 # a reject or a defect is a quality issue only beside a word of material or quality (a
 # rejected bill or an approve/reject request is none)
 GENERIC_ISSUE = ("reject*", "defect*")
@@ -1366,13 +1385,106 @@ def view_uat_feedback(conn, gate, ans, args, as_of) -> None:
     ans.extra = {"totals": dict(sorted(totals.items()))}
 
 
+# --------------------------------------------------------------------------- formula lines
+
+def _name_words(text: Any) -> list[str]:
+    return [w for w in re.findall(r"[a-z0-9]+", str(text or "").lower())
+            if w not in _NAME_STOP and len(w) > 1]
+
+
+def view_formula_lines(conn, gate, ans, args, as_of, *,
+                       budget: float | None = None, clock: Callable[[], float] = time.monotonic
+                       ) -> None:
+    from .composition_lines import read_sheet
+    deadline = clock() + (FORMULA_BUDGET_SECONDS if budget is None else budget)
+
+    def spent(left: int) -> bool:
+        """Past the budget: the rest (``left`` sheets) is counted, never read."""
+        if clock() < deadline:
+            return False
+        ans.complete = False
+        ans.counts["budget_exhausted"] = 1
+        ans.counts["sheets_not_read"] += left
+        return True
+    ans.counts["portal_formula_lines_not_served"] = 1
+    subject = args.get("subject")
+    if not isinstance(subject, str) or not subject.startswith(("Product:", "FgItem:")):
+        ans.counts["subject_required"] += 1
+        return
+    if not gate.visible(subject):
+        ans.withheld["withheld_not_readable"] += 1
+        return
+    codes = {_norm_code(c) for c in _codes(conn, subject)}
+    name = dt.first(dt.values(conn, [subject], ("name",)).get(subject), "name")
+    words = list(dict.fromkeys(_name_words(name)))
+    if not words and not codes:
+        ans.counts["subject_has_no_name_or_code"] += 1
+        return
+    need = min(FORMULA_NAME_WORDS, len(words))
+
+    def named(n: str) -> bool:
+        toks = set(re.findall(r"[a-z0-9]+", n.lower()))
+        return (bool(_FORMULA_NUMBER.search(n)) or _words_in(n, FORMULA_WORDS)) and \
+            sum(w in toks for w in words) >= need
+    # the product's longest name words find its sheets' names (any one of them)
+    probe = sorted(words, key=len, reverse=True)[:3]
+    docs = _docs(conn, gate, probe, ans, require=named) if probe else []
+    resolve = dt.Resolver(conn)
+    for i, d in enumerate(docs):
+        if spent(len(docs) - i):
+            return
+        sheet = read_sheet(d.text or "")
+        if not sheet["lines"]:
+            ans.counts["sheet_no_lines_read"] += 1
+            continue
+        stated = (sheet["header"].get("product_code") or {}).get("value")
+        if stated is not None:
+            if _norm_code(stated) not in codes:
+                ans.counts["sheet_other_product"] += 1
+                continue
+            basis = "code"
+        else:
+            said = (sheet["header"].get("name") or {}).get("value")
+            if not said or _name_words(said) != _name_words(name):
+                ans.counts["sheet_product_not_stated"] += 1
+                continue
+            basis = "name"
+        formula = (sheet["header"].get("formula_code") or {}).get("value")
+        ans.counts["sheet_" + sheet["status"]] += 1
+        ans.add({"kind": "sheet", "document": d.object_id, "name": d.name[:160],
+                 "dated": d.day.isoformat() if d.day else None, "subject": subject,
+                 "basis": basis, "formula_code": formula, "status": sheet["status"],
+                 "share_total": sheet["share_total"], "lines": len(sheet["lines"]),
+                 "missing_lines": sheet["missing_lines"][:50]}, [*d.cited, subject])
+        for line in sheet["lines"]:
+            members = resolve.group(line["part"], ITEM_TYPES, ITEM_TWINS)
+            item = members[0] if members else None
+            ans.counts["part_resolved" if item else "part_unresolved"] += 1
+            supplier_items: list[str] = []
+            if item is not None:
+                found = sorted({si for m in members for si in dt.links_to(
+                    conn, [m], "SupplierItem.for_item").get(m, [])})
+                gate.load(found)
+                supplier_items = [si for si in found if gate.visible(si)]
+                if len(supplier_items) < len(found):
+                    ans.withheld["supplier_item_not_readable"] += \
+                        len(found) - len(supplier_items)
+            ans.add({"kind": "component", "document": d.object_id, "subject": subject,
+                     "formula_code": formula, "line": line["line"], "no": line["no"],
+                     "part": line["part"], "description": line["description"],
+                     "share_percent": line["share"], "quantity": line["quantity"],
+                     "unit": line["unit"], "check": line["check"], "item": item,
+                     "supplier_items": supplier_items[:50]},
+                    [*d.cited, subject] + ([item] if item else []))
+
 # --------------------------------------------------------------------------- serving
 
 VIEW_FUNCS: dict[str, Callable] = {
     "forecasts": view_forecasts, "forecast_accuracy": view_forecast_accuracy,
     "priority_fill": view_priority_fill, "price_sheets": view_price_sheets,
     "compliance_pack": view_compliance_pack, "answer_bank": view_answer_bank,
-    "supplier_issues": view_supplier_issues, "uat_feedback": view_uat_feedback}
+    "supplier_issues": view_supplier_issues, "uat_feedback": view_uat_feedback,
+    "formula_lines": view_formula_lines}
 
 
 def answer(conn, *, view: str, may_read: Callable[[str], bool], held: frozenset[str],

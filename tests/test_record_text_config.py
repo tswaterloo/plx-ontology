@@ -146,6 +146,52 @@ class Completeness(unittest.TestCase):
                        "9999  9999  9999  9999"):
             self.assertEqual(mask_cards(f"see {figure} here"), f"see {figure} here")
 
+    def test_credentials_are_never_indexed_and_business_text_is_left_alone(self):
+        """SEC-S-09: a credential quoted in mail or a document never reaches a chunk or a
+        snippet; identifiers that look random (object IDs, hashes, orders) stay searchable."""
+        from operating.chunking import make_chunk
+        from operating.search.core import _snippet
+        secrets_in = {
+            "MC_MCP_API_KEY=Zq81mXw0Lp4Rt7Yv2Bn5Cs9Dk3Fh6Gj": "Zq81mXw0Lp4Rt7Yv2Bn5Cs9Dk3Fh6Gj",
+            "client secret: Abc8Q~bcDEFghiJKLmnoPQRstuVWxyz0123456789":
+                "Abc8Q~bcDEFghiJKLmnoPQRstuVWxyz0123456789",
+            "the new password is Spring2026!": "Spring2026!",
+            "AccountName=plx;AccountKey=a1B2c3D4e5F6g7H8i9J0kLmN==;EndpointSuffix=x":
+                "a1B2c3D4e5F6g7H8i9J0kLmN==",
+            "postgresql://api:pg-pass-1234@db.internal/plx": "pg-pass-1234",
+            "use sk-proj-" + "a1" * 24 + " for the model": "a1" * 24,
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlMTIz":
+                "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+            "https://x.blob.core.windows.net/c/f.pdf?sv=2022&sig=Q2xV9pRm%2B8sTn4": "Q2xV9pRm",
+            "-----BEGIN " "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----":
+                "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+            'vpn password: "blue river 2041"': "blue river 2041",
+            "https://api.example.com/v1/feed?token=f00dCafe99x&page=2": "f00dCafe99x",
+        }
+        for text, value in secrets_in.items():
+            chunk = make_chunk(kind="mail", parts=("a",), source_handle="h", object_id=None,
+                               title=text, author_role=None, occurred_at=None, header=text,
+                               body=f"Hello team,\n{text}\nThanks", linked_ids=(),
+                               audience_key="mail:x", markings=())
+            for field in (chunk.title, chunk.header, chunk.body, normalise(text),
+                          _snippet(text, ("password", "key"))):
+                self.assertNotIn(value, field, text)
+            self.assertIn("[secret]", chunk.body, text)
+        for text in ("OID 0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0 on PO 104523, lot 2026110912345",
+                     "sha256 " + "9f" * 32, "the password reset link expired", "Token: 3",
+                     "key points for the soap order", "Product Key: 12345-ABCDE",
+                     "see https://plx.example.com/p?id=4412", "Invoice sig=2024-11-0512",
+                     "Token: 12345678 lot",
+                     "secret sauce recipe from Maple Leaf"):
+            self.assertEqual(normalise(text), normalise(text).replace("[secret]", ""), text)
+        self.assertEqual(normalise("API key: [secret]"), "API key: [secret]")   # idempotent
+        # linear on hostile text: 4,000 unterminated key headers (112 KB) is no stall
+        import time
+        from operating.secret_text import mask_secrets
+        started = time.perf_counter()
+        mask_secrets("-----BEGIN " "PRIVATE KEY-----\n" * 4000 + "password: '" * 4000)
+        self.assertLess(time.perf_counter() - started, 1.0)
+
     def test_card_numbers_are_masked_in_every_chunker(self):
         self.assertEqual(normalise("paid by 4111 1111 1111 1111 exp 09/27"),
                          "paid by [card] exp 09/27")
@@ -254,17 +300,56 @@ class RuleChunks(unittest.TestCase):
                              '["finance", "pii"]'),
             "api_token": (secret + " token value for the widget api", "[]"),
             "status_code": ("OK", "[]"),
-            "widget_id": ("widget order identifier abcdefghij", "[]")})
+            "widget_id": ("widget order identifier abcdefghij", "[]")},
+            idents=(("po_number", "PO-1", "own", "[]"),))
         self.fx.obj("Hidden:1", "Hidden", "api:public.app_hidden",
                     values={"notes": ("A note on a type that is not served at all", "[]")})
         chunks, _ = self.run_chunker()
+        cards = [c for c in chunks if "Where: record card" in c.header]
+        chunks = [c for c in chunks if c not in cards]
         by_field = {c.header.split("field ")[-1].split("\n")[0]: c for c in chunks}
         self.assertEqual(sorted(by_field), ["row.name", "row.payroll_note", "row.widget_remark"])
+        # its card: the short status no chunk carries, never a denied or secret value
+        self.assertEqual([(c.object_id, c.kind, c.markings) for c in cards],
+                         [("WidgetOrder:1", WORDS_KIND, ())])
+        self.assertIn("status code: OK", cards[0].body)
+        self.assertNotIn("identifier", cards[0].body)
+        self.assertNotIn("sk_", cards[0].body)
         self.assertEqual(by_field["row.payroll_note"].markings, ("finance", "pii"))
         self.assertEqual(by_field["row.widget_remark"].markings, ())
         self.assertIn("Acme", by_field["row.name"].body)
         self.assertFalse(any(secret in c.body or secret in c.header for c in chunks))
         self.assertEqual({c.kind for c in chunks}, {"portal_text"})
+
+    def test_who_did_a_thing_and_directory_ids_never_reach_a_chunk(self):
+        """A Planner task's creator and completer are directory object ids and an MC task
+        event's actor a person: none is search text, whatever the
+        type; a GUID in any indexed value is masked; the task's own text stays."""
+        oid = "0e0e0e0e-0000-4000-8000-0000000000aa"
+        self.fx.obj("PlannerTask:t1", "PlannerTask", "meetings:plan:PlanOne", values={
+            "title": ("Order lavender carton artwork proofs", "[]"),
+            "description": (f"Ask the printer for the proof; owner {oid} signs it off", "[]"),
+            "created_by": (oid, "[]"), "completed_by": (oid.replace("aa", "ab"), "[]")})
+        self.fx.obj("MCTaskEvent:e1", "MCTaskEvent", "mc:live/tasks/PRJ-X", values={
+            "kind": ("stage_changed_to_waiting_on_supplier", "[]"),
+            "actor": ("Staff Member Example Person", "[]")})
+        self.fx.done()
+        conn = open_ro(self.path)
+        self.addCleanup(conn.close)
+        types = {t: schema_types()[t] for t in ("PlannerTask", "MCTaskEvent")}
+        chunks = list(RecordChunker(conn, exclusion(), Counts(), types=types).record_chunks())
+        fields = sorted(c.header.split("field ")[-1].split("\n")[0] for c in chunks)
+        self.assertEqual(fields, ["row.description", "row.kind", "row.title"])
+        text = "\n".join(c.title + c.header + c.body for c in chunks)
+        self.assertNotIn("0e0e0e0e", text)
+        self.assertNotIn("Example Person", text)
+        self.assertIn("[id] signs it off", text)
+        for type_id, t in _served(schema_types()).items():
+            for p in t.get("properties") or []:
+                if p["name"] in ("actor", "created_by", "completed_by", "approved_by",
+                                 "requested_by", "organizer", "owner", "assignees"):
+                    self.assertEqual(classify(load_config(), type_id, p["name"]),
+                                     "deny:never_text", f"{type_id}.{p['name']}")
 
     def test_sage_gl_ar_ap_free_text_is_never_search_text_and_the_fields_block_is_read(self):
         from operating.chunking.records import load_config
@@ -315,6 +400,66 @@ class RuleChunks(unittest.TestCase):
         self.assertIn("hold the lavender order", text)            # AR customer comments stay
         self.assertIn("Lavender relaunch reference text", text)   # the fields block is read
         self.assertIn("Wrap the lavender bars", text)
+
+    def test_every_record_gets_one_card_by_its_numbers_and_state_within_its_markings(self):
+        """A record whose text is all short codes (most Portal and BC records) is found by
+        its card: type, identifiers, status. One per record at any count, each distinct
+        (never clustered as a duplicate); an identifier or value marked beyond the record
+        stays out; a finance record's card is finance; a type with no text property is
+        carded; a raw mirror row, an excluded person's unit and a record with no business
+        identifier (its card would be every such record's) are not."""
+        types = {"LineThing": {"availability": {"state": "served"}, "properties": [
+                     {"name": "quantity", "value_type": "quantity"}]},
+                 "WidgetOrder": self.TYPES["WidgetOrder"],
+                 "RelPublicAppWidget": {"availability": {"state": "served"}, "properties": [
+                     {"name": "status_code", "value_type": "text"}]}}
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                for i in range(n):
+                    self.fx.obj(f"LineThing:{i}", "LineThing", "api:public.app_line",
+                                values={"quantity": ("12", "[]")},
+                                idents=(("so_number", f"SO-{1000 + i}", "own", "[]"),))
+                self.fx.obj("WidgetOrder:paid", "WidgetOrder", "api:public.app_widget_order",
+                            values={"status_code": ("Open", "[]"),
+                                    "name": ("Payroll run", '["finance"]')},
+                            idents=(("po_number", "PO-77", "own", "[]"),
+                                    ("invoice_number", "INV-9", "own", '["finance"]')))
+                self.fx.obj("WidgetOrder:fin", "WidgetOrder", "api:public.app_widget_order",
+                            marks='["finance"]', values={"status_code": ("Paid", '["finance"]')},
+                            idents=(("po_number", "PO-78", "own", '["finance"]'),))
+                self.fx.obj("WidgetOrder:nameless", "WidgetOrder",
+                            "api:public.app_widget_order", values={"status_code": ("Open", "[]")})
+                self.fx.obj("RelPublicAppWidget:1", "RelPublicAppWidget",
+                            "api:public.app_widget", values={"status_code": ("Open", "[]")})
+                self.fx.obj("WidgetOrder:mine", "WidgetOrder",
+                            f"meetings:calendar:{EXCLUDED}",
+                            values={"status_code": ("Open", "[]")},
+                            idents=(("po_number", "PO-79", "own", "[]"),))
+                self.fx.done()
+                conn = open_ro(self.path)
+                self.addCleanup(conn.close)
+                chunks = list(RecordChunker(conn, exclusion(), Counts(),
+                                            types=types).record_chunks())
+                cards = {c.object_id: c for c in chunks if "Where: record card" in c.header}
+                self.assertEqual(sorted(cards), sorted(
+                    [f"LineThing:{i}" for i in range(n)] + ["WidgetOrder:fin",
+                                                             "WidgetOrder:paid"]))
+                self.assertEqual({c.kind for c in cards.values()}, {WORDS_KIND})
+                self.assertEqual(len({c.dup_key for c in cards.values()}), len(cards))
+                self.assertEqual(len({c.chunk_id for c in cards.values()}), len(cards))
+                self.assertIn("SO-1003" if n > 3 else "SO-1000",
+                              cards["LineThing:3" if n > 3 else "LineThing:0"].body)
+                self.assertNotIn("12", cards["LineThing:0"].body.replace("SO-10", ""))
+                paid = cards["WidgetOrder:paid"]
+                self.assertEqual(paid.markings, ())
+                self.assertIn("status code: Open", paid.body)
+                self.assertIn("PO-77", paid.body)
+                for hidden in ("INV-9", "Payroll"):
+                    self.assertNotIn(hidden, paid.body + paid.header + (paid.title or ""))
+                fin = cards["WidgetOrder:fin"]
+                self.assertEqual((fin.markings, "PO-78" in fin.body, "Paid" in fin.body),
+                                 (("finance",), True, True))
 
     def test_codes_are_words_only_and_contact_details_never_reach_a_chunk(self):
         self.fx.obj("WidgetOrder:2", "WidgetOrder", "api:sage.widget", values={

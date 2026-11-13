@@ -575,6 +575,70 @@ class WorkbenchLayerTest(unittest.TestCase):
                               tariff_evidence=tariff, asked_volumes=sc["asked_volumes"])
         self.assertEqual([u["code"] for u in out["unknowns"]], ["PORTAL_DUTY_RATE_DIFFERS"])
 
+    def test_a_malformed_or_uncited_consumed_input_is_never_computed(self):
+        """BIZ-004: from the fully evidenced quote, one input changed at a time (a missing
+        or out-of-range inclusion, a negative BOM quantity, a negative rate, an uncited
+        zero tier) leaves the quote unknown with its typed unknown; the Portal
+        reproduction stays."""
+        def evidenced():
+            sc = json.loads(json.dumps(scenario("linked_cards_routed")))
+            lines = sc["db"]["billOfMaterials"][0]["lines"]
+            lines[1]["product"]["supplierProducts"][0].update(deliveryCost=0.004,
+                                                              incoterms="FOB")
+            lines[1]["product"]["hsCode"] = "3923.50"
+            lines[2]["quantity"] = 1
+            lines[2]["product"]["supplierProducts"][0].update(
+                currency="USD", countryOfOrigin="CN", uomPerSellingUnit=1)
+            return sc
+
+        def run(sc):
+            lines = sc["db"]["billOfMaterials"][0]["lines"]
+            tariff = {line["productId"]: {"hs_code": line["product"]["hsCode"],
+                                          "duty_rate": "0.065",
+                                          "_source": F + f"broker/{line['productId']}"}
+                      for line in lines if line.get("product")}
+            facts = facts_of(sc)
+            facts["vessel_plans"] = {u: {"charges": 1, "_source": F + f"vessel_plan/{u}"}
+                                     for u in ("5000", "24000", "60000")}
+            return lc.quote_landed(facts, quote_currency="USD",
+                                   cost_currency={"currency": "USD",
+                                                  "_source": F + "finance/house-currency"},
+                                   tariff_evidence=tariff, asked_volumes=sc["asked_volumes"])
+
+        self.assertEqual(run(evidenced())["status"], "computed")
+
+        def inclusion(value):
+            def change(sc):
+                sc["db"]["formulation"][0]["ingredients"][1]["percentage"] = value
+            return change
+
+        def bom_qty(sc):
+            sc["db"]["billOfMaterials"][0]["lines"][1]["quantity"] = -1
+
+        def rate(sc):
+            sc["db"]["rateSettings"][0]["assemblyQuotingLaborRate"] = -5
+
+        def tier(sc):
+            card = sc["db"]["billOfMaterials"][0]["lines"][0]["product"]["supplierProducts"][1]
+            for row in card["tiers"]:
+                row.update(unitCost=0, _source=None)
+
+        for name, change, codes in (
+                ("missing inclusion", inclusion(None), {"INCLUSION_PERCENT_INVALID"}),
+                ("negative inclusion", inclusion(-20), {"INCLUSION_PERCENT_INVALID"}),
+                ("composition", inclusion(10), {"FORMULA_COMPOSITION_INCOMPLETE"}),
+                ("negative bom quantity", bom_qty, {"PACKAGING_QTY_INVALID"}),
+                ("negative rate", rate, {"RATE_SETTING_INVALID"}),
+                ("uncited zero tier", tier, {"INPUT_NOT_CITED",
+                                             "SUPPLIER_TIER_PRICE_INVALID"})):
+            with self.subTest(name):
+                sc = evidenced()
+                change(sc)
+                out = run(sc)
+                self.assertEqual((out["status"], out["workbench"]), ("unknown", None))
+                self.assertLessEqual(codes, {u["code"] for u in out["unknowns"]})
+                self.assertIsNotNone(out["portal"]["estimate"]["totalCostPerUnit"])
+
     def test_unread_po_history_or_stock_is_an_unknown_never_no_evidence(self):
         """BIZ-010: a failed purchase-history or stock read became an empty list, so the
         quote stayed computed with "no history, no stock" provenance."""

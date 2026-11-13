@@ -151,6 +151,19 @@ describe("AnswerCard", () => {
     expect(card).toHaveAttribute("aria-busy", "false");
   });
 
+  it("a question asked back lists no sources or checks and offers no save, only its replies and feedback", () => {
+    const asked = {
+      ...answer, outcome: "partial", direct_answer: "Which order do you mean?", facts: [], not_found: [], hidden: { count: 0 },
+      freshness: {}, clarify: { question: "Which order do you mean?", free_text: true, options: [{ label: "SO-1", detail: null }] },
+    } as unknown as Answer;
+    render(<AnswerCard turn={{ id: "t", question: "is it shipped", phase: "done", streamed: "", answer: asked }} onClarify={vi.fn()} />);
+    expect(screen.getByTestId("clarify")).toBeInTheDocument();
+    expect(screen.queryByTestId("what-checked")).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "Sources and records" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
+    expect(screen.getByTestId("feedback")).toBeInTheDocument();
+  });
+
   it("shows an Ask's drafts in full, an email's send only behind its preview, and nothing sent on render", async () => {
     const fetch = vi.fn(() => new Promise(() => undefined));
     vi.stubGlobal("fetch", fetch);

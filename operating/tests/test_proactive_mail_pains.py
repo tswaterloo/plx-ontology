@@ -146,6 +146,22 @@ class MailPains(Engine):
              "expedite"),
             ("The invoice has not yet been paid and is overdue.", mp.PAYMENT_FAMILIES,
              "past_due"),
+            # returns: the goods back, an authorization, a credit or a refund
+            ("We need to return these 3 cases, please send an RMA.", mp.RETURN_FAMILIES,
+             "return_authorization"),
+            ("Please send us a return authorization number.", mp.RETURN_FAMILIES,
+             "return_authorization"),
+            ("We would like to send the damaged pallet back.", mp.RETURN_FAMILIES, None),
+            ("Can you send them back to our warehouse?", mp.RETURN_FAMILIES, "send_back"),
+            ("Could you please issue a credit for the short shipment?", mp.RETURN_FAMILIES,
+             "credit"),
+            ("We would like a refund for this order.", mp.RETURN_FAMILIES, "refund"),
+            ("Please ship the order today.", mp.RETURN_FAMILIES, None),
+            ("Please process the credit card payment.", mp.RETURN_FAMILIES, None),
+            ("Can we return this?", mp.RETURN_FAMILIES, None),
+            ("If it arrives damaged we will return the goods.", mp.RETURN_FAMILIES, None),
+            ("We are not returning the product.", mp.RETURN_FAMILIES, None),
+            ("Please see our refund policy.", mp.RETURN_FAMILIES, None),
         ]
         for text, families, want in cases:
             with self.subTest(text=text):
@@ -229,6 +245,90 @@ class MailPains(Engine):
         gaps = {g["object_id"]: g for g in self.kinds(mp.EXPEDITE_KIND)}
         self.assertEqual(set(gaps), {asked, unknown})
         self.assertIn("SYNTH-SO-8: we asked 1 time,", gaps[asked]["summary"])
+
+    # ------------------------------------------------------------------ returns
+
+    def test_an_unanswered_return_request_is_raised_on_a_shipped_order_only(self):
+        w = World()
+        who = w.obj("Customer", {"name": "SYNTH Customer", "email": CUSTOMER},
+                    audience="api:customers")
+        made: list[str] = []
+
+        def order(number: str, *, dated: int | None = None, status: str = "Closed") -> str:
+            # distinct days: a day most orders share is an import stamp, no business date
+            made.append(number)
+            dated = 20 + 3 * len(made) if dated is None else dated
+            so = w.obj("SalesOrder", {"order_number": number, "status": status,
+                                      "order_date": day(dated + 10),
+                                      "required_date": day(dated)},
+                       binding="portal.app_sales_order", audience="api:orders")
+            w.link("SalesOrder.ordered_by", so, who)
+            return so
+
+        shipped = order("SYNTH-RET-1")
+        first = mail(w, shipped, "Email.mentions_sales_order", day(5),
+                     f"We need to return these 3 cases, please send an RMA. {SECRET}", n=1)
+        mail(w, shipped, "Email.mentions_sales_order", day(5), "copy", n=1,
+             mailbox=OTHER_BOX)                                       # another mailbox's copy
+        mail(w, shipped, "Email.mentions_sales_order", day(4), "Please send an RMA.",
+             mailbox=f"mail:{EXCLUDED_OID}")                          # excluded mailbox
+        answered = order("SYNTH-RET-2")
+        mail(w, answered, "Email.mentions_sales_order", day(6),
+             "Could you please issue a credit for the broken bottles?")
+        mail(w, answered, "Email.mentions_sales_order", day(5), "Credit note attached.",
+             sender=OURS, to=CUSTOMER)
+        recent = order("SYNTH-RET-3")
+        mail(w, recent, "Email.mentions_sales_order", day(1), "Please send an RMA.")
+        offered = order("SYNTH-RET-4")      # ours offering a return asks nothing
+        mail(w, offered, "Email.mentions_sales_order", day(6), "Please return the goods.",
+             sender=OURS, to=CUSTOMER)
+        asked = order("SYNTH-RET-5")        # a question is no ask
+        mail(w, asked, "Email.mentions_sales_order", day(6), "Can we return this?")
+        old = order("SYNTH-RET-6", dated=600)   # historic (``active_population``): not read
+        mail(w, old, "Email.mentions_sales_order", day(6), "Please send an RMA.")
+        draft = order("SYNTH-RET-7", status="Draft")
+        mail(w, draft, "Email.mentions_sales_order", day(6), "Please send an RMA.")
+        unknown = order("SYNTH-RET-8", status="Mystery")   # unjudged by the one definition
+        mail(w, unknown, "Email.mentions_sales_order", day(6), "Please send an RMA.")
+        undated = w.obj("SalesOrder", {"order_number": "SYNTH-RET-9", "status": "Closed"},
+                        binding="portal.app_sales_order", audience="api:orders")
+        w.link("SalesOrder.ordered_by", undated, who)      # closed, nothing dates it
+        mail(w, undated, "Email.mentions_sales_order", day(6), "Please send an RMA.")
+        summary = self.run_rules(w)
+        self.assertEqual(summary["detectors"][mp.RETURNS], "complete")
+        gaps = {g["object_id"]: g for g in self.kinds(mp.RETURN_KIND)}
+        self.assertEqual(set(gaps), {shipped})
+        gap = gaps[shipped]
+        self.assertEqual([m["id"] for m in gap["event"]["messages"]], [first])
+        self.assertEqual(gap["event"]["families"], ["return_authorization"])
+        self.assertIn("customer order SYNTH-RET-1 1 time,", gap["summary"])
+        self.assertNotIn(SECRET, json.dumps(gaps))
+        for hidden in (MAILBOX, "api:orders"):
+            with self.subTest(hidden=hidden):
+                seen = self.kinds(mp.RETURN_KIND, may_read=lambda a, h=hidden: a != h)
+                self.assertNotIn(shipped, [g["object_id"] for g in seen])
+
+    def test_n_return_requests_give_n_alerts_none_lost_or_doubled(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w = World()
+                p = item(w)
+                want = set()
+                for i in range(n):
+                    so, _ = sales_order(w, p, number=f"SYNTH-SO-{i}")
+                    want.add(so)
+                    for box in (MAILBOX, OTHER_BOX):
+                        mail(w, so, "Email.mentions_sales_order", day(5),
+                             "Please send an RMA.", n=30_000 + i, mailbox=box)
+                if self.store.exists():
+                    self.store.unlink()
+                    self.inbox.unlink()
+                started = time.monotonic()
+                self.run_rules(w)
+                took = time.monotonic() - started
+                found = [g["object_id"] for g in self.kinds(mp.RETURN_KIND)]
+                self.assertEqual(sorted(found), sorted(want))
+                self.assertLess(took, 60)
 
     # ------------------------------------------------------------------ shortage
 

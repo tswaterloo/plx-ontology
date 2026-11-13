@@ -6,14 +6,17 @@ across readers or after the inbox or store changed."""
 from __future__ import annotations
 
 import json
+import os
 import random
 import sqlite3
 import tempfile
 import time
 import unittest
+from unittest import mock
 from contextlib import closing
 from pathlib import Path
 
+from ontology import store as ostore
 from operating import proactive_engine as pe
 
 # The query as it stood before the set-based rewrite: per counted record, every record of
@@ -56,7 +59,8 @@ def _inbox(tmp: Path, causes: list[tuple[str, int, str, str, int]],
             "CREATE TABLE object_versions (object_id TEXT, superseded_at TEXT, markings TEXT);"
             "CREATE INDEX object_versions_by_object ON object_versions (object_id);")
         st.executemany("INSERT INTO store_meta VALUES (?, ?)",
-                       [("content_digest", "d1"), ("audience_keys", json.dumps(AUDIENCES))])
+                       [("content_digest", "d1"), ("audience_keys", json.dumps(AUDIENCES)),
+                        ("format", ostore.FORMAT)])
         st.executemany("INSERT INTO objects VALUES (?, ?)",
                        [(o, a) for o, (a, _) in objects.items()])
         st.executemany("INSERT INTO object_versions VALUES (?, NULL, ?)",
@@ -67,6 +71,7 @@ def _inbox(tmp: Path, causes: list[tuple[str, int, str, str, int]],
         st.commit()
     with closing(sqlite3.connect(inbox)) as conn:
         conn.executescript(_DDL)
+        conn.execute("INSERT INTO meta VALUES ('schema', ?)", (pe.INBOX_SCHEMA,))
         conn.executemany("INSERT OR IGNORE INTO unjudged_causes VALUES (?, ?, ?, ?, ?)", causes)
         conn.executemany("INSERT INTO unjudged_reasons VALUES (?, ?, ?)",
                          [(d, s, r) for (d, s), r in reasons.items()])
@@ -79,6 +84,7 @@ def _inbox(tmp: Path, causes: list[tuple[str, int, str, str, int]],
 
 
 _DDL = """
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE detector_runs (detector TEXT PRIMARY KEY, status TEXT NOT NULL,
   reasons TEXT NOT NULL, found INTEGER NOT NULL, not_evaluated TEXT NOT NULL,
   run_at TEXT NOT NULL);
@@ -101,7 +107,6 @@ def _open(inbox: Path, store: Path) -> sqlite3.Connection:
 
 def _params(reader: str) -> dict[str, str]:
     aud, held = READERS[reader]
-    from ontology import store as ostore
     return {"aud": json.dumps(aud), "marks": json.dumps(ostore.allowed_marking_sets(held))}
 
 
@@ -154,6 +159,43 @@ class RuleCoverageTest(unittest.TestCase):
         self.addCleanup(pe._tables_kept.clear)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        kept = mock.patch.dict(os.environ, {"PLX_RULE_COVERAGE_DIR": self.tmp.name + "/kept"})
+        kept.start()
+        self.addCleanup(kept.stop)
+
+    def test_another_process_reads_the_table_kept_on_disk_and_counts_exactly(self) -> None:
+        """A restart, the warm-up or an Ask host (no table in memory) reads the table one
+        process built from disk, with no statement over the store, and every reader's
+        counts are exactly the per-record query's; a kept file that is unreadable or of
+        another table is never read: the table is built again, exact."""
+        inbox, store = _inbox(Path(self.tmp.name), *_mixed(5))
+        with closing(_open(inbox, store)) as conn:
+            _new(conn, _params("owner"))
+            files = list((Path(self.tmp.name) / "kept").glob("table-*.json"))
+            self.assertEqual(len(files), 1)
+            self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
+            other = json.loads(files[0].read_text(encoding="utf-8"))
+            other["key"] = "('another inbox',)"   # a whole table, kept for another key
+            for broken in (None, "{not json", json.dumps(other)):
+                for reader in READERS:
+                    pe._coverage_kept.clear()
+                    pe._tables_kept.clear()
+                    if broken is not None:
+                        files[0].write_text(broken, encoding="utf-8")
+                    statements: list[str] = []
+                    conn.set_trace_callback(statements.append)
+                    expected = _old(conn, _params(reader))
+                    statements.clear()
+                    self.assertEqual(_new(conn, _params(reader)), expected, (broken, reader))
+                    store_reads = [s for s in statements if "st.object" in s]
+                    if broken is None:
+                        self.assertFalse(store_reads, reader)   # read from disk
+                    else:
+                        self.assertTrue(store_reads, reader)    # built again
+                    conn.set_trace_callback(None)
+                    if broken is None:
+                        continue
+                    break
 
     def test_set_query_counts_exactly_what_the_per_record_query_counted(self) -> None:
         for seed in range(4):
@@ -172,6 +214,57 @@ class RuleCoverageTest(unittest.TestCase):
                     seen.add(json.dumps(old, sort_keys=True))
                 # the fixture really mixes visibility: readers see different counts
                 self.assertGreater(len(seen), 2)
+
+    def test_listed_records_are_exactly_the_ones_counted_for_each_reader(self) -> None:
+        """CAP-L167: a reader's unjudged list per rule and per reason names exactly the
+        records the per-record reference counts for them (never one whose skip cause
+        they may not read), its total is their count, and paging loses or repeats none."""
+        listed_ids = (
+            "SELECT DISTINCT u.object_id FROM unjudged_causes u {join}"
+            "WHERE u.detector = :rule AND u.subject = 1 AND NOT EXISTS (SELECT 1 FROM "
+            "unjudged_causes c WHERE c.detector = u.detector AND c.skip = u.skip AND NOT "
+            "(c.markings IN (SELECT value FROM json_each(:marks)) AND "
+            + pe._OBJECT_VISIBLE.format(o="c.object_id") + "))")
+        by_reason = ("JOIN unjudged_reasons r ON r.detector = u.detector AND "
+                     "r.skip = u.skip AND r.reason = :reason ")
+        rules = {"rule_a": "late_or_unconfirmed_po", "rule_b": "late_customer_order"}
+        for seed in range(2):
+            sub = Path(self.tmp.name) / f"l{seed}"
+            sub.mkdir()
+            causes, objects, reasons = _mixed(seed)
+            causes = [(rules.get(c[0], c[0]), *c[1:]) for c in causes if c[0] in rules]
+            reasons = {(rules[d], k): r.replace(" ", "_") for (d, k), r in reasons.items()
+                       if d in rules}
+            inbox, store = _inbox(sub, causes, objects, reasons)
+            for reader, (auds, held) in READERS.items():
+                params = _params(reader)
+                with closing(_open(inbox, store)) as conn:
+                    counts, per_reason = _new(conn, params)
+                    for rule in rules.values():
+                        for reason in (None, "no_lines", "no_vendor"):
+                            want = sorted(r[0] for r in conn.execute(
+                                listed_ids.format(join=by_reason if reason else ""),
+                                {**params, "rule": rule, "reason": reason}))
+                            got, offset = [], 0
+                            while True:
+                                page = pe.unjudged_records(
+                                    inbox, store, rule=rule, reason=reason,
+                                    may_read=lambda a, auds=auds: a in auds, held=held,
+                                    offset=offset, limit=7)
+                                got += page["records"]
+                                offset += 7
+                                if offset >= page["total"]:
+                                    break
+                            self.assertEqual(got, want, (seed, reader, rule, reason))
+                            count = counts.get(rule, 0) if reason is None \
+                                else per_reason.get(rule, {}).get(reason, 0)
+                            self.assertEqual(page["total"], count, (seed, reader, rule, reason))
+                            self.assertTrue(page["complete"])
+        # an unknown rule or a reason that is no reason name is refused, not read
+        for bad in ({"rule": "no_such_rule"},
+                    {"rule": "late_customer_order", "reason": "x' OR 1=1 --"}):
+            with self.assertRaises(pe.UnknownCheck):
+                pe.unjudged_records(inbox, store, may_read=lambda a: True, held=(), **bad)
 
     def test_kept_counts_are_per_reader_and_dropped_when_the_inbox_changes(self) -> None:
         objects = {"open1": ("aud:a", "[]"), "open2": ("aud:a", "[]"),

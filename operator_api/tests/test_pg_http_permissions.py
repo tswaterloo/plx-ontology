@@ -233,5 +233,69 @@ class SuggestOverPostgres(unittest.TestCase):
             conn.commit()
 
 
+    def test_the_api_role_serves_and_logs_but_can_do_nothing_else(self) -> None:
+        """SEC-S-13: deploy/pg/plx_api_role.sql grants the API what it measurably uses (read
+        the ontology and search, write the two search logs, temporary tables for the item
+        gate) and nothing a SQL injection could turn into more: no DDL, no other writes, no
+        file or program COPY, no role change. The session takes the role's rights with
+        ``options=-c role=plx_api`` from the test's superuser login; that RESET ROLE is closed
+        too holds only under the real peer login (deploy/README.md), checked at the switch."""
+        from pathlib import Path
+        from psycopg import conninfo, errors
+        from operating.search import core
+        sql = (Path(__file__).resolve().parents[2] / "deploy" / "pg" / "plx_api_role.sql")
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
+            conn.execute(sql.read_text())
+            conn.execute(sql.read_text())                       # idempotent
+            self.assertEqual(conn.execute("SELECT rolsuper OR rolcreatedb OR rolcreaterole "
+                                          "FROM pg_roles WHERE rolname = 'plx_api'"
+                                          ).fetchone()[0], False)
+        role_dsn = conninfo.make_conninfo(self.dsn, options="-c role=plx_api")
+        owner_view = self.names(self.client(BUYER, FINANCE))[0]
+        as_role = Backend(lambda s: None, data_label="t", pg_dsn=role_dsn)
+        swap = mock.patch.object(self, "backend", as_role)
+        swap.start()
+        self.addCleanup(swap.stop)
+        self.item_check(ITEM_OPENS)
+        self.assertEqual(self.names(self.client(BUYER, FINANCE))[0], owner_view)
+        with psycopg.connect(role_dsn, autocommit=True) as conn:
+            self.assertEqual(conn.execute("SELECT current_user").fetchone()[0], "plx_api")
+            query = SimpleNamespace(question="zed?", intent="lookup", entities=(),
+                                    rewrites=())
+            result = SimpleNamespace(hits=[], hidden={}, notes=[], timings={})
+            self.assertIsNotNone(core._log(conn, "reader", query, result))
+            core.prune_query_log(conn, days=1)
+            conn.execute("INSERT INTO search.feedback (at, actor, question, answer_id, rating,"
+                         " note) VALUES (now(), 'r', 'q', 'a', 1, NULL) RETURNING id")
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS sq_calls (fn text, arg text, "
+                         "result text)")
+            with conn.cursor() as cur, cur.copy("COPY sq_calls (fn, arg, result) FROM STDIN"
+                                                ) as copy:
+                copy.write_row(("f", "a", "r"))
+            # a facts read bounds its temporary files (2026-11-12: unbounded sorts filled the
+            # database's disk); the setting is a superuser's unless granted, and the session
+            # code skips a refused SET silently, leaving the server's far larger limit
+            from operating.pg.sqlite_compat import PgCompatConnection
+            facts = PgCompatConnection(role_dsn, temp_limit="1GB")
+            try:
+                self.assertEqual(facts._conn.execute("SHOW temp_file_limit").fetchone()[0],
+                                 "1GB")
+            finally:
+                facts.close()
+            for refused in ("CREATE TABLE search.planted (x int)",
+                            "CREATE TABLE public.planted (x int)",
+                            "UPDATE search.entities SET name = 'x'",
+                            "DELETE FROM search.feedback",
+                            "TRUNCATE search.query_log",
+                            "INSERT INTO search.entities (entity_id) VALUES ('x')",
+                            "COPY (SELECT 1) TO PROGRAM 'true'",
+                            "COPY search.entities FROM '/etc/hostname'",
+                            "SELECT pg_read_file('/etc/hostname')",
+                            "ALTER ROLE plx_api SUPERUSER",
+                            "SET session_replication_role = replica",
+                            "CREATE ROLE planted"):
+                with self.assertRaises(errors.InsufficientPrivilege, msg=refused):
+                    conn.execute(refused)
+
 if __name__ == "__main__":
     unittest.main()

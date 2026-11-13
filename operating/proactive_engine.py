@@ -268,8 +268,9 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              "customer_chase", "quality_holds",
              # pains found in the mail (``operating.proactive_mail_pains``): expedites with
              # no answer, supplier shortage notices against open orders, suppliers chasing
-             # us for payment (our chases of customers ride on ``overdue_receivable``)
-             "expedite_requests", "supplier_shortage", "payment_chase",
+             # us for payment (our chases of customers ride on ``overdue_receivable``),
+             # customers asking to return goods or for a credit with no answer
+             "expedite_requests", "supplier_shortage", "payment_chase", "return_requests",
              # receivables and payables (``operating.proactive_cash``): customers paying
              # slower, early-pay discounts missed, supplier invoices or payments twice
              "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables",
@@ -365,7 +366,7 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # (dates first, at most ``MAX_MESSAGES`` a rule); the order join and
                     # the purchase-order source are shared with the late-order rules
                     "expedite_requests": 60.0, "supplier_shortage": 60.0,
-                    "payment_chase": 60.0,
+                    "payment_chase": 60.0, "return_requests": 60.0,
                     # the Sage AR and AP documents (122k and 73k records) read once per run
                     # on the store's threads (``proactive_cash.read_records``), shared by
                     # the three rules
@@ -488,7 +489,7 @@ REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor
                             "teams_unanswered_ask",
                             "customer_demand_drop", "promise_date_slip",
                             "supplier_reliability", "shipped_not_invoiced",
-                            "customer_chase", "expedite_requests",
+                            "customer_chase", "expedite_requests", "return_requests",
                             "supplier_shortage", "slow_moving_stock",
                             "assembly_component_shortfall", "commitments", "needs_reply",
                             "stale_quote", "key_fields_missing",
@@ -3735,6 +3736,10 @@ def _business_steps(st: _Store, as_of: date,
             **common),
         "payment_chase": lambda: mail_pains.payment_chase(st, as_of, people=people(),
                                                           **common),
+        "return_requests": lambda: mail_pains.return_requests(
+            st, as_of, people=people(), orders=lambda: _customer_orders(st),
+            absence=lambda types: _absence_audiences(st, types, "sales_order:none_stored"),
+            **common),
         # receivables and payables (``operating.proactive_cash``)
         "customer_payment_behaviour": lambda: cash.customer_payment_behaviour(
             st, as_of, **common),
@@ -4169,6 +4174,138 @@ class TimeBudgetSpent(Exception):
 
 
 TOOL_BUDGET_MAX_MS = 600000   # plx.investigate's schema maximum for time_budget_ms
+
+
+# A detector starts beside the ones running only while the process's cgroup (the unit's,
+# with the pool's workers in it) holds, counting ``DETECTOR_RESERVE_BYTES`` for each
+# detector already running (one just started has not grown yet) and each one cut off
+# whose thread still runs, less than this share of its memory limit (the lower of
+# memory.high and memory.max); its page cache is not counted (the kernel reclaims it at
+# the limit). Over it, a lane waits for a running detector to end, so the rules' reads
+# stop adding up past the limit (CC-P-04: plx-proactive OOM-killed at 15.0 GB of 16,
+# plx-proactive-whole at 12.6 of 14, plx-proactive-inc at 5.7 of 6, 11-12/13; one detector
+# at a time grows by up to ~1.6 GB on the live store, 11-13). A detector alone always
+# runs; no limit (or none readable): no wait. ``PLX_PROACTIVE_MEMORY_SHARE`` overrides
+# the share (0 < share <= 1).
+MEMORY_GATE_SHARE = 0.6
+DETECTOR_RESERVE_BYTES = 1_500_000_000
+MEMORY_GATE_POLL_SECONDS = 2.0
+MEMORY_SHARE_ENV = "PLX_PROACTIVE_MEMORY_SHARE"
+
+
+def _own_cgroup(proc_cgroup: str = "/proc/self/cgroup",
+                root: str = "/sys/fs/cgroup") -> str | None:
+    """The directory of this process's own cgroup (v2), or None."""
+    try:
+        with open(proc_cgroup, encoding="ascii") as handle:
+            path = next((line.strip().split(":", 2)[2] for line in handle
+                         if line.startswith("0::")), None)
+    except (OSError, IndexError):
+        return None
+    return None if path is None else root.rstrip("/") + path
+
+
+def _cgroup_value(directory: str | None, name: str) -> int | None:
+    """``name`` (a one-number cgroup file) in bytes; None: unlimited (``max``) or not
+    readable."""
+    if directory is None:
+        return None
+    try:
+        with open(f"{directory}/{name}", encoding="ascii") as handle:
+            raw = handle.read().strip()
+        return None if raw == "max" else int(raw)
+    except (OSError, ValueError):
+        return None
+
+
+def _cgroup_used(directory: str | None) -> int | None:
+    """memory.current less the page cache the kernel can reclaim (memory.stat ``file``
+    less ``shmem``); None when either cannot be read."""
+    current = _cgroup_value(directory, "memory.current")
+    if current is None:
+        return None
+    try:
+        with open(f"{directory}/memory.stat", encoding="ascii") as handle:
+            stat = dict(line.split() for line in handle if line.count(" ") == 1)
+        cache = int(stat["file"]) - int(stat.get("shmem", 0))
+    except (OSError, ValueError, KeyError):
+        return None
+    return max(0, current - max(0, cache))
+
+
+def _cgroup_limit(directory: str | None) -> int | None:
+    found = [v for v in (_cgroup_value(directory, "memory.high"),
+                         _cgroup_value(directory, "memory.max")) if v is not None]
+    return min(found) if found else None
+
+
+class _MemoryGate:
+    """Admission of detectors by memory (``MEMORY_GATE_SHARE``): ``enter`` waits while
+    another detector runs and ``used()`` plus ``reserve`` for each running or cut-off
+    (``abandon``) detector is at or over ``share`` of ``limit()``; ``leave`` when it ends.
+    ``held`` counts the detectors that waited, ``most`` the most that ran at once."""
+
+    def __init__(self, used: Callable[[], int | None], limit: Callable[[], int | None],
+                 share: float = MEMORY_GATE_SHARE, reserve: int = DETECTOR_RESERVE_BYTES,
+                 poll: float = MEMORY_GATE_POLL_SECONDS) -> None:
+        if not 0 < share <= 1 or reserve < 0:
+            raise ValueError("memory_gate_invalid")
+        self.used, self.limit, self.share, self.reserve = used, limit, share, reserve
+        self.poll = poll
+        self.running = self.most = self.held = self.orphans = 0
+        self._cond = threading.Condition()
+
+    @classmethod
+    def for_process(cls, environ: Mapping[str, str] | None = None) -> "_MemoryGate":
+        env = os.environ if environ is None else environ
+        share = MEMORY_GATE_SHARE
+        raw = (env.get(MEMORY_SHARE_ENV) or "").strip()
+        if raw:
+            try:
+                share = float(raw)
+            except ValueError:
+                share = MEMORY_GATE_SHARE   # unreadable: the default, never no gate
+            if not 0 < share <= 1:
+                share = MEMORY_GATE_SHARE
+        directory = _own_cgroup()
+        return cls(lambda: _cgroup_used(directory), lambda: _cgroup_limit(directory), share)
+
+    def over(self) -> bool:
+        limit = self.limit()
+        if limit is None:
+            return False
+        used = self.used()
+        if used is None:
+            return True   # a limit whose use cannot be read: over (one at a time)
+        return used + (self.running + self.orphans) * self.reserve >= self.share * limit
+
+    def enter(self, stop: Callable[[], bool] = lambda: False) -> None:
+        with self._cond:
+            waited = False
+            while self.running > 0 and not stop() and self.over():
+                waited = True
+                self._cond.wait(self.poll)
+            self.held += waited
+            self.running += 1
+            self.most = max(self.most, self.running)
+
+    def leave(self) -> None:
+        with self._cond:
+            self.running -= 1
+            self._cond.notify_all()
+
+    def abandon(self, ended: threading.Event) -> None:
+        """A detector cut off at its window whose thread still runs: its memory is counted
+        (a reserve) until ``ended`` is set, without holding up the others' turns."""
+        with self._cond:
+            self.orphans += 1
+
+        def wait() -> None:
+            ended.wait()
+            with self._cond:
+                self.orphans -= 1
+                self._cond.notify_all()
+        threading.Thread(target=wait, name="proactive-gate-orphan", daemon=True).start()
 
 
 class Budget:
@@ -4606,7 +4743,8 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         pool: Any = None, people: Any = None, threads: int | None = 1,
         detector_seconds: Mapping[str, float] | None = None,
         scope: "Scope | None" = None, sheet_readings: Any = None,
-        cadence: Mapping[str, float] | None = None) -> dict[str, Any]:
+        cadence: Mapping[str, float] | None = None,
+        memory: "_MemoryGate | None" = None) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -4668,6 +4806,7 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     # every detector runs in its own window, with or without a run budget: an unbounded
     # run is one whose deadline never comes (its tool calls are not guarded)
     window = budget if budget is not None else Budget(math.inf)
+    gate = memory if memory is not None else _MemoryGate.for_process()
     st.watch(window.interrupt, window.pinned, window.left)
     st.cursor_path = Path(str(inbox) + ".commitments-recent.json")
     try:
@@ -4774,6 +4913,19 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             if budget is not None and budget.spent():
                 results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
                 return
+            # beside the running detectors only while the memory allows (``_MemoryGate``):
+            # the wait is the run's time, not this detector's window
+            gate.enter(lambda: (budget is not None and budget.spent())
+                       or window.deadline - window.monotonic() <= 0)
+            try:
+                judged(name, runner, rest)
+            finally:
+                gate.leave()
+
+        def judged(name: str, runner: list, rest: Sequence[str]) -> None:
+            if budget is not None and budget.spent():
+                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                return
             started = time.monotonic()
             limit = _share(name, rest, windows, window.deadline - window.monotonic(),
                            cadenced=name in hours)
@@ -4795,6 +4947,7 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             else:
                 results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
                 seconds[name] = round(time.monotonic() - started, 1)
+                gate.abandon(done.event)   # its thread still holds what it read
                 runner[0].stop()
                 runner[0] = _Runner()
                 abandoned.append(name)
@@ -4842,6 +4995,10 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             if abandoned:
                 # a cut-off detector's statement still running stops now, never reads on
                 st.interrupt_all()
+        if gate.held:
+            # counts only: the journal says when memory, not the store, set the pace
+            print(f"proactive_engine: {gate.held} detector(s) waited for memory "
+                  f"(at most {gate.most} side by side)", file=sys.stderr, flush=True)
         if budget is not None:
             budget.release()   # the amounts run in the reserve, still inside the bound
         if scope is not None:
@@ -5106,6 +5263,7 @@ CLOSED_ORDER_RULES = {
     "twin_disagreement": "one copy closed and the other open is the disagreement",
     "negative_margin": "margins are judged on invoiced orders",
     "margin_erosion": "margins are judged on invoiced orders",
+    "return_requests": "goods come back after the order shipped",
 }
 # Gap kinds whose claim is that one copy is closed and another open (the late rule's
 # ``systems_disagree``): kept for a closed order whatever rule raised them (hand-check
@@ -6014,6 +6172,13 @@ def _unjudged_table(conn: sqlite3.Connection, tables: set[str],
             if hit is not None:
                 _tables_kept.move_to_end(key)
                 return hit
+        hit = _table_from_disk(key)
+        if hit is not None:
+            with _coverage_lock:
+                _tables_kept[key] = hit
+                while len(_tables_kept) > _TABLES_KEPT:
+                    _tables_kept.popitem(last=False)
+            return hit
     pairs_of: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for object_id, audience, markings in conn.execute(
             "SELECT so.object_id, so.audience_key, sv.markings FROM st.objects so JOIN "
@@ -6062,7 +6227,73 @@ def _unjudged_table(conn: sqlite3.Connection, tables: set[str],
             _tables_kept[key] = table
             while len(_tables_kept) > _TABLES_KEPT:
                 _tables_kept.popitem(last=False)
+        _table_to_disk(key, table)
     return table
+
+
+# ``_unjudged_table`` kept on disk too, per key, so every process (the API, its warm-up and
+# section workers, each Ask host) and a restart read it instead of each building it again
+# (15 s for the owner's inbox under load, 2026-11-12). It holds markings, audience keys and
+# counts only, never a record. ``PLX_RULE_COVERAGE_DIR`` (default
+# ``~/.cache/plx/rule-coverage``); the newest ``_TABLES_ON_DISK`` files are kept.
+_TABLE_FORMAT = "unjudged-table/1"
+_TABLES_ON_DISK = 8
+
+
+def _table_file(key: tuple[Any, ...]) -> Path:
+    folder = Path(os.environ.get("PLX_RULE_COVERAGE_DIR")
+                  or Path.home() / ".cache" / "plx" / "rule-coverage")
+    digest = hashlib.sha256(f"{_TABLE_FORMAT}\x00{key!r}".encode()).hexdigest()
+    return folder / f"table-{digest[:32]}.json"
+
+
+def _table_from_disk(key: tuple[Any, ...]) -> dict[str, Any] | None:
+    """The table kept for ``key`` (its file names the key's digest and holds the key's
+    text again: a digest collision or a foreign file reads as none); anything unreadable
+    or of another shape: none (built as before)."""
+    try:
+        doc = json.loads(_table_file(key).read_text(encoding="utf-8"))
+        if doc.get("format") != _TABLE_FORMAT or doc.get("key") != repr(key):
+            return None
+        causes = [(m if m is None else str(m),
+                   tuple((str(a), str(b)) for a, b in pairs)) for m, pairs in doc["causes"]]
+        skips = [tuple(int(k) for k in kinds) for kinds in doc["skips"]]
+        counts = {(str(name), None if reason is None else str(reason),
+                   frozenset(int(k) for k in kinds)): int(n)
+                  for name, reason, kinds, n in doc["counts"]}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    if any(k >= len(skips) for _, _, kinds in counts for k in kinds) or \
+            any(c >= len(causes) for kinds in skips for c in kinds):
+        return None   # an index past its list: not this table
+    return {"causes": causes, "skips": skips, "counts": counts}
+
+
+def _table_to_disk(key: tuple[Any, ...], table: Mapping[str, Any]) -> None:
+    """Keep ``table`` for ``key``, written whole or not at all (owner-only, a temporary
+    file renamed over it); a directory that cannot be written keeps nothing."""
+    path = _table_file(key)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        text = json.dumps({"format": _TABLE_FORMAT, "key": repr(key),
+                           "causes": [[m, [list(p) for p in pairs]]
+                                      for m, pairs in table["causes"]],
+                           "skips": [list(kinds) for kinds in table["skips"]],
+                           "counts": [[name, reason, sorted(kinds), n] for
+                                      (name, reason, kinds), n in table["counts"].items()]})
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+        kept = sorted(path.parent.glob("table-*.json"), key=lambda p: p.stat().st_mtime)
+        for old in kept[:-_TABLES_ON_DISK]:
+            old.unlink(missing_ok=True)
+    except (OSError, TypeError, ValueError):
+        try:
+            tmp.unlink(missing_ok=True)   # a write that failed leaves nothing behind
+        except OSError:
+            pass
 
 
 def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str], bool],
@@ -6493,6 +6724,62 @@ def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
                        if row["kind"] not in _OWNER_KINDS)
     return {kind: total[kind] - seen[kind] for kind in sorted(total)
             if total[kind] - seen[kind] > 0}
+
+
+UNJUDGED_SHOWN = 200   # records of one check's unjudged list read per page at most
+
+
+class UnknownCheck(ValueError):
+    """A check or reason no rule has (``unjudged_records``): refused, nothing read."""
+
+
+def unjudged_records(inbox: Any, store: Any, *, rule: str, reason: str | None = None,
+                     may_read: Callable[[str], bool], held: Iterable[str],
+                     offset: int = 0, limit: int = 50) -> dict[str, Any]:
+    """The records one rule left unjudged that this reader is counted (``_rule_coverage``'s
+    ``not_evaluated``, per ``reason`` its ``not_evaluated_by_reason``): each a subject of a
+    skip whose whole cause the reader may read, so the list never names or hints at a
+    record the count leaves out, and its ``total`` is that count. ``complete`` is false
+    when the rule left a skip no record stands for (its count is unknown to every reader).
+    An unknown rule or a malformed reason is refused (``UnknownCheck``); no inbox or no
+    recorded causes: nothing listed, not complete."""
+    if rule not in DETECTORS:
+        raise UnknownCheck("rule_unknown")
+    if reason is not None and (not isinstance(reason, str)
+                               or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", reason)):
+        raise UnknownCheck("reason_unknown")
+    offset = max(0, int(offset))
+    limit = max(0, min(int(limit), UNJUDGED_SHOWN))
+    out: dict[str, Any] = {"rule": rule, "reason": reason, "total": 0, "records": [],
+                           "complete": False}
+    path = Path(inbox)
+    if not path.is_file():
+        return out
+    with closing(_attach(path, Path(store))) as conn:
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if not {"unjudged_causes", "rule_coverage"} <= tables \
+                or (reason is not None and "unjudged_reasons" not in tables):
+            return out
+        aud, marks = _reader_view(conn, may_read, held)
+        params = {"aud": aud, "marks": marks, "rule": rule, "reason": reason}
+        row = conn.execute("SELECT unattributed FROM rule_coverage WHERE detector = :rule",
+                           params).fetchone()
+        if row is None:   # never run with per-skip causes: no count, so no list
+            return out
+        out["complete"] = int(row[0] or 0) == 0
+        hidden = ("SELECT c.skip FROM unjudged_causes c WHERE c.detector = :rule AND NOT "
+                  "(c.markings IN (SELECT value FROM json_each(:marks)) AND "
+                  + _OBJECT_VISIBLE.format(o="c.object_id") + ")")
+        shown = ("SELECT DISTINCT u.object_id FROM unjudged_causes u "
+                 + ("JOIN unjudged_reasons r ON r.detector = u.detector AND r.skip = u.skip "
+                    "AND r.reason = :reason " if reason is not None else "")
+                 + f"WHERE u.detector = :rule AND u.subject = 1 AND u.skip NOT IN ({hidden})")
+        out["total"] = conn.execute(f"SELECT count(*) FROM ({shown})", params).fetchone()[0]
+        out["records"] = [r[0] for r in conn.execute(
+            f"{shown} ORDER BY u.object_id LIMIT :limit OFFSET :offset",
+            {**params, "limit": limit, "offset": offset})]
+    return out
 
 
 

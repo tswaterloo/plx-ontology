@@ -74,6 +74,12 @@
       "columns": "name.*|.*name",
       "unless": "",
       "about": "Customer, vendor and remitter name columns of Sage GL lines say who a pay line paid: never search text (lane/mega, 2026-11-08)."
+    },
+    {
+      "types": ".*",
+      "columns": "(.*_)?(actor|created_by|completed_by|updated_by|modified_by|approved_by|requested_by|organizer|owner|assignees?|reporter)",
+      "unless": "",
+      "about": "Who did or owns a thing (actors, creators, completers, approvers, requesters, organizers, owners, assignees): a person, said as a name, an address or a directory object id. A person is found through the identity resolver under the people exclusion, never by text search; Planner's created_by/completed_by are directory object ids (lane search-cov-1113, 2026-11-13)."
     }
   ],
   "documents": {
@@ -238,5 +244,10 @@
     "min_words": 3,
     "min_letter_share": 0.6,
     "raw_types": "^Rel[A-Z]"
+  },
+  "card": {
+    "max_value_chars": 80,
+    "except_types": "^Rel[A-Z]",
+    "about": "Every business record gets one words-only card (kind record_words, never embedded): its type, its identifiers and its short text values (status, codes, currency, carrier, at most max_value_chars) that no chunk of its own carries, so a record of any type is found by its numbers and state (lane search-cov-1113, 2026-11-13: most Portal and BC records held no searchable text because every text value was shorter than min_chars). A record with no business identifier gets none (its card would be every such record's, one cluster in search). Only values and identifiers the record's own markings cover; never a figure (only text properties the rule reads); keyed by the record's unit and markings, cited to its current version. Raw mirror rows (except_types) get none: their business types carry the card."
   }
 }

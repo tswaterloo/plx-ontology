@@ -545,7 +545,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                         "store_bytes": store.store_bytes(),
                         "store_full": store.store_full(),
                         "purged": {key: sum(r["purged"][key] for r in runs)
-                                   for key in cm.PURGE_COUNTS}},
+                                   for key in cm.PURGE_COUNTS},
+                        "purge_undecided": runs[-1]["purge_undecided"] if runs else 0},
             "exclusion_check": probes["exclusion"],
             "owner_marking": probes["marking"],
             "owner_probe": probes["probe"],

@@ -1,0 +1,11 @@
+# Starts plx-autopilot-follow.service when a delta cycle publishes (delta/CURRENT.json). A
+# publish while a cycle runs starts no second one.
+[Unit]
+Description=Run the autopilot live feed after each delta publish
+
+[Path]
+PathChanged=/data/plx-state/projection/delta/CURRENT.json
+Unit=plx-autopilot-follow.service
+
+[Install]
+WantedBy=paths.target

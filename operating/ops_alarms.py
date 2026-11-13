@@ -66,7 +66,7 @@ IGNORE_ENV, DISK_ENV = "PLX_OPS_IGNORE_UNITS", "PLX_OPS_DISK_PATH"
 # on the sidebar line only.
 MEMORY_CHECKS = ("memory_pressure", "memory_available")
 PAGED_HEALTH = ("delta_last_cycle", "delta_cycle_runtime", "capture:", "capture_failing:",
-                "ingest_start",
+                "capture_undecided_list", "ingest_start",
                 "ingest_service", "pg_follow", "proactive_last_pass",
                 "search_follow_last_pass")
 # Long-running service types: one enabled but not running has stopped (a oneshot has not).

@@ -604,7 +604,10 @@ class InstructMixin:
             conversation_id=conversation, latency_ms=latency,
             drafts=[m.AskDraft.model_validate(d) for d in drafts],
             instruction=m.InstructPart(
-                status=outcome.status, text=text, question=question, proposed=proposed,
+                status=outcome.status, text=text, question=question,
+                options=[c for o in outcome.options if (c := clean(o, guard, 140))]
+                if asking else [],
+                proposed=proposed,
                 meetings=meetings, writes=writes, documents=documents,
                 workflow=m.InstructWorkflow.model_validate(outcome.workflow)
                 if outcome.workflow else None, read=read, context=context,

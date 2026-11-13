@@ -647,12 +647,20 @@ class InstructApi(unittest.TestCase):
 
     def test_one_clarifying_question_then_the_draft_from_the_answer(self):
         model = self.backend.instruct_call = Model(
-            "[[QUESTION]]\nWhich delivery address should the reply give?\n[[END]]",
+            "[[QUESTION]]\nWhich delivery address should the reply give?\n"
+            "Option: Ship the 12,000 bars on PO 90412 to the usual dock\n"
+            "Option: Ask Pat for the address\nOption: Dock 7 at 55 Harbour Road\n[[END]]",
             "[[DRAFT email]]\nSubject: RE: PO 90412\nThe address is 12 Mill Road.\n[[END]]")
         first = self.instruct(self.ana, "reply to this", {"kind": "email", "handle": MAIL})
         got = first.json()
         self.assertEqual((got["status"], got["question"], got["drafts"]),
                          ("question", "Which delivery address should the reply give?", []))
+        # the choices offered are the materials' own: one with a figure they do not
+        # state is dropped
+        self.assertEqual(got["answer"]["instruction"]["options"], [
+            "Ship the 12,000 bars on PO 90412 to the usual dock", "Ask Pat for the address"])
+        self.assertIn("Never ask for something the materials already answer",
+                      model.prompts[0])
         # the answer continues the same instruction, its page rebuilt from the log (the
         # request's context is ignored)
         second = self.instruct(self.ana, "12 Mill Road", {"kind": "email", "handle": BEN_MAIL},

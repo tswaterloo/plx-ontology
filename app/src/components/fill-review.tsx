@@ -44,7 +44,8 @@ export function FillReview({ fill }: { fill: InstructFill }) {
           · {filled} of {fill.fields.length} filled
         </span>
       </p>
-      <table className="w-full text-[13px] leading-5" data-testid="fill-fields">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[32rem] text-[13px] leading-5" data-testid="fill-fields">
         <thead className="text-left text-[12px] text-muted">
           <tr>
             <th className="pr-4 font-normal">Field</th>
@@ -66,6 +67,7 @@ export function FillReview({ fill }: { fill: InstructFill }) {
           ))}
         </tbody>
       </table>
+      </div>
       {(fill.notes ?? []).map((n, i) => (
         <p key={i} className="text-[12px] leading-4 text-muted">
           {n}

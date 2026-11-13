@@ -544,6 +544,45 @@ class AskDraft(_Model):
     sent: Literal[False] = False
 
 
+class ClarifyOption(_Model):
+    """One quick reply: its words, and the record it picks (a record the reader may
+    read, offered from their own records) or none (a reading such as a period)."""
+    label: str
+    detail: Optional[str] = Field(None, description="The record's own values that tell "
+                                  "it apart (date, amount, status).")
+    object: Optional[ObjectRef] = None
+
+
+class Clarify(_Model):
+    """The one question asked back instead of guessing: answer it with an option
+    (``AskRequest.clarified.option``) or in your own words (``clarified.text``); the
+    answer continues the same conversation."""
+    question: str
+    options: list[ClarifyOption] = Field(default_factory=list, max_length=4)
+    free_text: bool = True
+
+
+class Assumption(_Model):
+    """What the answer took the question to mean, in one line, and the other readings:
+    picking one asks it again under that reading (``AskRequest.clarified.option``)."""
+    text: str
+    options: list[ClarifyOption] = Field(default_factory=list, max_length=3)
+
+
+class ClarifyReply(_Model):
+    """The person's answer to an earlier answer's ``clarify`` question or ``assumption``:
+    the answer it replies to, and an option's index or their own words."""
+    answer_id: str = Field(min_length=1, max_length=80)
+    option: Optional[int] = Field(None, ge=0, le=3)
+    text: Optional[str] = Field(None, min_length=1, max_length=400)
+
+    @model_validator(mode="after")
+    def _one(self) -> "ClarifyReply":
+        if (self.option is None) == (self.text is None):
+            raise ValueError("Pick one option or write an answer.")
+        return self
+
+
 class AnswerPayload(_Model):
     answer_id: str
     question: str
@@ -601,6 +640,14 @@ class AnswerPayload(_Model):
         None, json_schema_extra=_optional,
         description="When the box was told to do something: its question, exact writes, "
                     "documents or proposed workflow (the drafts are in ``drafts``).")
+    clarify: Optional[Clarify] = Field(
+        None, json_schema_extra=_optional,
+        description="One question asked back because the answer turns on a choice the "
+                    "question leaves open; nothing else is answered until it is picked.")
+    assumption: Optional[Assumption] = Field(
+        None, json_schema_extra=_optional,
+        description="What the answer took an open question to mean, with the other "
+                    "readings to change it.")
 
 
 # ---- ask (SSE) -------------------------------------------------------------------------
@@ -653,11 +700,19 @@ class AskRequest(_Model):
         None, json_schema_extra=_optional,
         description="An answer to the question an instruction asked, or the meetings to "
                     "use: continues that instruction.")
+    clarified: Optional[ClarifyReply] = Field(
+        None, json_schema_extra=_optional,
+        description="An answer to the question an earlier answer asked back (or another "
+                    "reading of its assumption): continues that question.")
 
     @model_validator(mode="after")
     def _attachments_fit(self) -> "AskRequest":
         if sum(len(a.data) for a in self.attachments) > ATTACHMENTS_BASE64_MAX:
             raise ValueError("Attachments together can be up to 10 MB.")
+        if self.clarified is not None and (self.instruction is not None
+                                           or self.mode is not None):
+            raise ValueError("An answer to a question asked back continues only that "
+                             "question.")
         return self
 
 
@@ -1599,6 +1654,7 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "recurring_component_damage", "customer_chasing_order",
                     "tell_before_they_ask", "quality_hold_aging", "reject_trend",
                     "expedite_unanswered", "supplier_shortage_open_orders",
+                    "return_unanswered",
                     "supplier_chasing_payment",
                     "customer_paying_slower", "early_pay_discount_missed",
                     "duplicate_supplier_invoice", "duplicate_supplier_payment",
@@ -1758,6 +1814,14 @@ class BriefingCheck(_Model):
     last_run: Optional[str] = Field(None, description="When the check last ran (ISO time).")
 
 
+class BriefingDataNote(_Model):
+    """One check's records it could not judge for one reason, as a count."""
+    check: str
+    reason: str
+    count: int = Field(ge=0)
+    words: str
+
+
 class Briefing(_Model):
     """Your briefing: the events routed to you that you may see, ranked; the top items one
     by one and every other one in its type's group; each check's state; a preview of the
@@ -1799,6 +1863,9 @@ class Briefing(_Model):
     data_notes: list[str] = Field(default_factory=list, description=(
         "What the checks could not judge, per check and reason, as counts only: e.g. "
         "'late customer orders: cannot check 12 records that lack order lines'."))
+    data_note_items: list[BriefingDataNote] = Field(default_factory=list, description=(
+        "The same notes with their check and reason, so a reader can list the records "
+        "(GET /api/briefing/unjudged)."))
     more: bool = False
     items: list[BriefingItem] = Field(default_factory=list, description="The top items.")
     groups: list[BriefingGroup] = Field(default_factory=list)
@@ -1845,6 +1912,28 @@ class BriefingItems(_Model):
     total: int = Field(ge=0)
     offset: int = Field(ge=0)
     items: list[BriefingItem] = Field(default_factory=list)
+    more: bool = False
+
+
+class UnjudgedRecord(_Model):
+    id: str
+    type: str = Field(description="The record's object type (its id's prefix).")
+    label: str
+
+
+class BriefingUnjudged(_Model):
+    """The records one check could not judge that you may read (the count on your
+    briefing), a page at a time; a record you may not read is never listed or counted."""
+    check: str
+    reason: Optional[str] = None
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    next_offset: int = Field(ge=0, description="The offset of the next page (a record your "
+                                               "whole read does not show is left out of "
+                                               "this one, so it can hold fewer).")
+    complete: bool = Field(description="False when the check also skipped records it could "
+                                       "not name, so the list is not all it skipped.")
+    records: list[UnjudgedRecord] = Field(default_factory=list)
     more: bool = False
 
 
@@ -2860,6 +2949,9 @@ class MyWorkItem(_Model):
     write_ready: bool = Field(False, description="A prepared entry: POST "
                               "``/api/my-work/{item_id}/write`` makes it a dry-run write "
                               "intent for ``/api/writes*``.")
+    order_import: bool = Field(False, description="A prepared order with its lines: GET "
+                               "``/api/my-work/{item_id}/order-import`` gives it as an import "
+                               "file (CSV) for the Portal or Business Central.")
 
 
 class MyWorkNudge(_Model):
@@ -3752,6 +3844,9 @@ class InstructPart(_Model):
     status: Literal["question", "drafted", "workflow", "route"]
     text: str
     question: Optional[str] = None
+    options: list[str] = Field(default_factory=list, max_length=4, description="Choices "
+                               "for the question, each from your materials; answering in "
+                               "your own words works too.")
     proposed: list[InstructMeeting] = Field(default_factory=list, description="Meetings "
                                             "whose notes the question proposes to use.")
     meetings: list[InstructMeeting] = Field(default_factory=list, description="Meetings you "
