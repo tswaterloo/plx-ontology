@@ -24,6 +24,7 @@ from .actions import ActionsMixin
 from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
 from .autopilot_studio import AutopilotStudioMixin
+from .doc_fill_api import DocFillMixin
 from .instruct_api import InstructMixin
 from .ask_drafts import AskDraftsMixin
 from .write_intents_api import WriteIntentsMixin
@@ -574,7 +575,7 @@ def _pick(question: str) -> tuple[str, Any]:
 
 
 class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
-                  AutopilotStudioMixin, InstructMixin, MockWatchMixin,
+                  AutopilotStudioMixin, InstructMixin, DocFillMixin, MockWatchMixin,
                   AskDraftsMixin):
     data_label = LABEL
 
@@ -713,8 +714,11 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
                                  latency_ms=ms(), **parts)
         answer.follow_ups = presentation.follow_ups(request.question, answer)
         from .backend import _answer_kept
+        from .feedback import served_markings
+        markings = served_markings(self, reader)
         with self._lock:
-            self._kept[answer_id] = {"question": request.question, **_answer_kept(answer)}
+            self._kept[answer_id] = {"question": request.question, **_answer_kept(answer),
+                                     "markings": markings}
             while len(self._kept) > 200:
                 self._kept.pop(next(iter(self._kept)))
         yield "answer", answer
@@ -1147,6 +1151,23 @@ class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotArea
                              items=[suggestion_model(c) for c in built["suggestions"]],
                              rank_basis=bf.RANK_BASIS, note=SUGGESTIONS_NOTE,
                              as_of=_iso(0.5), complete=False)
+
+    def record_facts(self, reader: Reader, object_type: str, object_id: str
+                     ) -> tuple[list[Any], list[str], m.ObjectRef]:
+        """The demo's PO 90412 for a form fill (its BC row and supplier)."""
+        from operating import doc_fill as df
+        if object_id not in ("PurchaseOrder:demo:90412", "90412"):
+            raise KeyError("object_not_found")
+        oid = "PurchaseOrder:demo:90412"
+        row = {"PurchaseOrder.po_number": "90412", "PurchaseOrder.vendor_name":
+               "Maple Leaf Soapworks", "PurchaseOrder.order_date": "2026-09-22",
+               "PurchaseOrder.expected_date": "2026-10-17", "PurchaseOrder.currency": "CAD",
+               "PurchaseOrder.incoterms": "FCA"}
+        facts = [df.Fact(k, v, df.Citation(oid, k.split(".", 1)[1], H_PO))
+                 for k, v in row.items()]
+        facts.append(df.Fact("Supplier.name", "Maple Leaf Soapworks",
+                             df.Citation("Supplier:demo:maple-leaf", "name", H_PO)))
+        return facts, [], PO_REF
 
     def object_page(self, reader: Reader, object_type: str, object_id: str, *,
                     quick: bool = False) -> m.ObjectPage:

@@ -175,6 +175,18 @@ class Transports(Base):
         self.assertEqual((headers["If-Match"], body), ('W/"1"', b'{"quantity":5.25}'))
         t = wt.BCWriteTransport(OPEN, bearer=lambda: "t", send=Sender((503, {})))
         self.assertEqual(t.send(request)["status"], "unknown")
+        # INT-001: the sandbox switch alone opens the configured sandbox, never Production
+        from operating import write_intents as wi
+        sandbox_env = {**{k: v for k, v in OPEN.items() if k != "PLX_WRITES_LIVE"},
+                       wi.SANDBOX_FLAG: "1", wi.SANDBOX_ENV: "Sandbox"}
+        in_sandbox = {**request, "url": request["url"].replace("/Production/", "/Sandbox/", 1)}
+        self.assertNotEqual(in_sandbox["url"], request["url"])
+        send = Sender((200, {"@odata.etag": 'W/"2"'}))
+        t = wt.BCWriteTransport(sandbox_env, bearer=lambda: "t", send=send)
+        self.assertEqual(t(request, "k")[0], 403)
+        self.assertEqual(t.send(in_sandbox), {"status": "written", "http_status": 200})
+        self.assertEqual(len(send.calls), 1)
+        self.assertIn(f"/{TENANT}/Sandbox/", send.calls[0][1])
 
     def test_approved_item_reaches_planner_once_through_the_guard(self):
         send = Sender((201, {"id": "pt_9", "@odata.etag": 'W/"e"'}))

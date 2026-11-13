@@ -372,7 +372,15 @@ CODE_WORDS = {"LINE_NOT_INVOICED": "line not invoiced",
 PHRASES = ((re.compile(r"\bclaim check failed\b", re.I),
             "figures not confirmed against the records"),
            (re.compile(r"\bcheck(?:ed)? claims?\b", re.I), "checked figures"))
-XML_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+XML_ESCAPE = re.compile(r"(?:_x[0-9A-Fa-f]{4}_)+")   # a run: a pair is one character
+
+
+def _unescaped(found: re.Match) -> str:
+    """A run of ``_xHHHH_`` escapes as UTF-16 units: a surrogate pair is one character, a
+    lone surrogate (never valid text) the replacement character (API-015)."""
+    units = re.findall(r"_x([0-9A-Fa-f]{4})_", found.group(0))
+    return b"".join(int(u, 16).to_bytes(2, "big") for u in units).decode(
+        "utf-16-be", errors="replace")
 CODE = re.compile(r"\b[A-Z]{2,}(?:_[A-Z]{2,})+\b")   # letters only: never an item code
 # "S-ORD101102: LINE_NOT_INVOICED: no posted invoice ..." : the code before its own words
 CODE_LABEL = re.compile(r"\b[A-Z]{2,}(?:_[A-Z]{2,})+:\s+(?=\w)")
@@ -408,7 +416,7 @@ def shown_words(text: str) -> str:
     its own words goes, any other code reads as words (``CODE_WORDS``)."""
     if not isinstance(text, str) or not text:
         return text
-    out = XML_ESCAPE.sub(lambda f: chr(int(f.group(1), 16)), text)
+    out = XML_ESCAPE.sub(_unescaped, text)
     out = without_float_noise(out)
     out = CODE_LABEL.sub("", out)
     out = CODE.sub(lambda f: CODE_WORDS.get(f.group(0), f.group(0).replace("_", " ").lower())

@@ -94,8 +94,13 @@ class _Transport:
     def _lacks(self, token: str) -> str | None:
         return None
 
+    def _missing_for(self, request: Mapping[str, Any]) -> list[str]:
+        """What a write of ``request`` still lacks (the BC transport judges its target
+        environment: a sandbox write needs the sandbox switch, not the live one)."""
+        return self.missing()
+
     def __call__(self, request: Mapping[str, Any], key: str) -> tuple[int, Mapping[str, Any]]:
-        if self.missing():
+        if self._missing_for(request):
             return 403, {"code": "write_not_opened"}
         method, url = str(request.get("method") or ""), self._url(request)
         headers = {str(k): str(v) for k, v in (request.get("headers") or {}).items()}
@@ -187,10 +192,10 @@ class BCWriteTransport(_Transport):
         parts = path.split("/")
         return parts[3] if len(parts) > 3 else ""
 
-    def __call__(self, request: Mapping[str, Any], key: str) -> tuple[int, Mapping[str, Any]]:
-        if self.missing(self._environment(request)):
-            return 403, {"code": "write_not_opened"}
-        return super().__call__(request, key)
+    def _missing_for(self, request: Mapping[str, Any]) -> list[str]:
+        # INT-001: judged once, for the request's own environment (the base call no
+        # longer re-judges it as Production)
+        return self.missing(self._environment(request))
 
     def _token(self) -> str:
         if self._bearer is not None:

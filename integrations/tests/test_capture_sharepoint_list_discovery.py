@@ -185,6 +185,30 @@ class DiscoveryTests(DiscoveryCase):
         self.assertFalse(run["complete"])
         self.assertTrue(run["blocked_upstream"])
 
+    def test_a_cut_or_truncated_column_listing_keeps_discovery_incomplete(self):
+        """INT-017: a column listing cut at its page bound, or more columns than are
+        kept, is a named reason, never a silently short column set."""
+        from unittest import mock
+        with mock.patch.object(csl, "MAX_DISCOVERED_COLUMNS", 1):
+            run = self.capture(EstateGraph(2)).run(discovering())
+        found = run["discovery"]
+        self.assertEqual(found["status"], "incomplete")
+        self.assertIn("columns_truncated", found["reasons"])
+        self.assertEqual(found["lists_columns_truncated"], 2)
+        self.assertFalse(run["complete"])
+        capture = self.capture(EstateGraph(2))
+        real = capture.api.get_pages
+
+        def cut(url, **kwargs):
+            items, walk = real(url, **kwargs)
+            if "/columns" in unquote(urlsplit(url).path):
+                walk = {**walk, "complete": False, "truncated": True}
+            return items, walk
+        capture.api.get_pages = cut
+        found = capture.run(discovering())["discovery"]
+        self.assertEqual(found["status"], "incomplete")
+        self.assertEqual(found["reasons"], ["columns_listing_incomplete"])
+
     def test_discover_only_reads_no_item_and_reports_counts(self):
         graph = EstateGraph(4)
         parser = argparse.ArgumentParser()

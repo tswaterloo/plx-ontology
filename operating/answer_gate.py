@@ -377,6 +377,11 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
     raw = decision.get("unknowns") if isinstance(decision, Mapping) else None
     unknowns = [str(u)[:MAX_UNKNOWN_CHARS] for u in raw
                 if isinstance(u, str)][:MAX_UNKNOWNS] if isinstance(raw, list) else []
+    if dropped > len(unsupported):
+        # AGT-004: claims left out unchecked (past the cap, or not claims at all) leave
+        # part of the answer open: an unknown, so it is never answerable as complete.
+        unknowns = [u for u in unknowns if u != CLAIMS_LEFT_OUT][:MAX_UNKNOWNS - 1] \
+            + [CLAIMS_LEFT_OUT]
     if relevant is not None and claims:
         on_question = []
         for claim in claims:
@@ -490,6 +495,11 @@ def answerability(gated: Mapping[str, Any], gaps: Any = ()) -> str | None:
     return "partial" if gated.get("unknowns") or gated.get("unsupported") \
         or gated.get("partly_read") or unresolved_conflict(gaps) else "answerable"
 
+
+# The unknown a decision adds when claims were left out unchecked (past ``MAX_CLAIMS`` or
+# not readable as claims). No number in it, as ``UNREAD_PART``.
+CLAIMS_LEFT_OUT = ("not checked: further claims of this answer were left out (past the "
+                   "claim limit or not readable as claims)")
 
 # The unknown a final decision adds per text field a passed claim cites that this session
 # was served only part of (a ``plx.read`` the session got truncated): the rest is unread,
@@ -2623,11 +2633,19 @@ def kept_value(value: Mapping[str, Any], passed: Sequence[Mapping[str, Any]]
         # An expression input keeps the quote the gate checked it with (and its unit,
         # which the expression key already matched); any other input states no quote.
         checked = claim.get("input_quotes") or []
-        out["calculation"] = {**calculation, "inputs": [
-            {**{key: item for key, item in given.items() if key != "quote"},
-             **({"quote": checked[at]} if at < len(checked) and checked[at] else {})}
-            for at, given in enumerate(inputs)]} if isinstance(calculation, Mapping) \
-            else calculation
+        if isinstance(calculation, Mapping) and op is not None and expression is None \
+                and isinstance(claim.get("inputs"), list):
+            # GATE-005: a count, sum or other op keeps every input the gate checked it
+            # over, as checked: a restatement that drops, repeats or swaps an input
+            # never describes a calculation other than the one that passed.
+            out["calculation"] = {**calculation, "inputs": [
+                dict(given) for given in claim["inputs"]]}
+        else:
+            out["calculation"] = {**calculation, "inputs": [
+                {**{key: item for key, item in given.items() if key != "quote"},
+                 **({"quote": checked[at]} if at < len(checked) and checked[at] else {})}
+                for at, given in enumerate(inputs)]} if isinstance(calculation, Mapping) \
+                else calculation
     for key, checked in (("quantity_role", claim["role"]), ("unit", claim["unit"]),
                          ("currency", claim.get("currency"))):
         if key in value and _text_or_none(value[key]) is not None \

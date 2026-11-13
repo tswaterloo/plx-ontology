@@ -342,7 +342,7 @@ def build_world(sales: int = 24, purchases: int = 16) -> World:
     for c in range(1, 6):
         rel["public.app_customer"].append({"id": f"fm-cust-{c}", "code": f"FXC{c:03d}",
                                            "updated_at": UPDATED_AT})
-    # The object_view unparsed-denominator case (tests/test_object_workspace_http.py
+    # The object_view unparsed-denominator case (tests/test_object_workspace_live_checks.py
     # ObjectViewLiveCheckTest): the world's one declared malformed upstream identifier, an
     # erp_code keyed with an ampersand, outside the customer_erp_code grammar. A customer
     # is never a question root (keys.ROOT_KEYS); every question-root identifier parses as

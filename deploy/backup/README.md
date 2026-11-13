@@ -23,8 +23,15 @@ providers), nightly Postgres dumps and state backups, and a restore test.
   the app's data dir `${XDG_STATE_HOME:-~/.local/state}/plx-workbench-app` (feedback,
   known readers, test records), archived under `extra/`. A file over 512 MB is refused.
 - **Config**: `~/.config/plx`, `/etc/plx`, `/etc/systemd/system/plx-*` as a tar with modes,
-  owners and times kept. A secret-bearing file (any name but `*.json`, unit or Caddyfile, or
-  text assigning a KEY/SECRET/TOKEN/PASSWORD/DSN) is never stored in plain text: with
+  owners and times kept. Only an allowlist is stored in plain text: unit files (`.service`,
+  `.timer`, `.path`) and the Caddyfile whose text assigns no key/secret/token/password/DSN/
+  authorization value, plus systemd drop-ins (`<unit>.d/*.conf`) and the reader-policy files
+  (`host.json`, `employee_policy.json`, `portal_access.json`, `*_audience.json`) under the same
+  screen. A backup that would leave out one of these (a secret-shaped line, an unreadable
+  file) and has no passphrase to encrypt it exits 7 and lists it as `restore_files_missing`.
+  Every other file (JSON, `.conf`, env files, anything unfamiliar) is
+  a secret-class file, whatever its content looks like (the name screen is a second check,
+  not the boundary): with
   `PLX_BACKUP_SECRETS_PASSPHRASE_FILE` set it goes to `secrets-<stamp>.tar.gpg` (gpg
   symmetric AES256; keep the passphrase off this machine too), else it is only listed in the
   manifest (path, mode, size).

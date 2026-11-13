@@ -41,7 +41,18 @@ ENTITY_TYPES = {"Customer": ("customer", ("name",)), "Supplier": ("supplier", ("
                 "Receipt": ("receipt", ()), "SalesInvoice": ("sales_invoice", ()),
                 "Shipment": ("shipment", ()), "SupplierInvoice": ("supplier_invoice", ()),
                 "PackingSlip": ("packing_slip", ()),
-                "CertificateOfAnalysis": ("certificate_of_analysis", ())}
+                "CertificateOfAnalysis": ("certificate_of_analysis", ()),
+                # what people call a conversation, a task or a file by: its own title.
+                # Chats, channels, Planner tasks and files are item-gated (a member, an
+                # attendee, the file's ACL): ``query_understanding.item_gated`` rows a
+                # reader sees only when the item check admits the record (IN-13)
+                "TeamsChat": ("chat", ("topic",)), "TeamsChannel": ("channel", ("display_name",)),
+                "MCTask": ("task", ("title",)), "PlannerTask": ("task", ("title",)),
+                "SharePointFile": ("file", ("name",))}
+# Types named only by their title: one without a title (a one-to-one chat) is no entity,
+# never one named by its technical id.
+TITLED_ONLY = frozenset({"TeamsChat", "TeamsChannel", "MCTask", "PlannerTask",
+                         "SharePointFile"})
 # A document's own number the store keeps as a text value, not an identifier (a Sage
 # invoice, receipt or shipment number; a CoA's document number): read as a code alias of
 # that record. Only a value holding a digit, one token, is a code.
@@ -188,6 +199,9 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
                     continue
                 if not _cleared(row, rtype, addresses.get(row["object_id"], []), exclusion,
                                 counts):
+                    continue
+                if object_type in TITLED_ONLY and not ordered.get(row["object_id"]):
+                    counts.skip(f"entity_untitled:{rtype}")
                     continue
                 entity = _entity(row, rtype, latest.get(row["object_id"], "[]"),
                                  ordered.get(row["object_id"], []),

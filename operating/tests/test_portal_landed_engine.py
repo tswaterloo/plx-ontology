@@ -575,6 +575,25 @@ class WorkbenchLayerTest(unittest.TestCase):
                               tariff_evidence=tariff, asked_volumes=sc["asked_volumes"])
         self.assertEqual([u["code"] for u in out["unknowns"]], ["PORTAL_DUTY_RATE_DIFFERS"])
 
+    def test_unread_po_history_or_stock_is_an_unknown_never_no_evidence(self):
+        """BIZ-010: a failed purchase-history or stock read became an empty list, so the
+        quote stayed computed with "no history, no stock" provenance."""
+        sc = json.loads(json.dumps(scenario("linked_cards_routed")))
+        for key in ("purchase_order_lines", "inventory"):
+            with self.subTest(relation=key):
+                facts = facts_of(sc)
+                base = lc.quote_landed(facts, quote_currency="USD",
+                                       cost_currency={"currency": "USD", "_source": F + "fin"},
+                                       asked_volumes=sc["asked_volumes"])
+                facts[key] = None
+                out = lc.quote_landed(facts, quote_currency="USD",
+                                      cost_currency={"currency": "USD", "_source": F + "fin"},
+                                      asked_volumes=sc["asked_volumes"])
+                pairs = lambda o: {(u["code"], u["subject"]) for u in o["unknowns"]}  # noqa: E731
+                self.assertNotIn(("RECORDS_NOT_READ", key), pairs(base))
+                self.assertIn(("RECORDS_NOT_READ", key), pairs(out))
+                self.assertNotEqual(out["status"], "computed")
+
     def test_a_volume_without_hours_is_an_unknown_for_that_column(self):
         out = self.landed("draft_tier_overrides")
         subjects = {(u["code"], u["subject"]) for u in out["unknowns"]}

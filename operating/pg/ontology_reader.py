@@ -684,7 +684,8 @@ class PgStoreReader(StoreReader):
     @classmethod
     def open(cls, dsn: str | Path | None = None, *, text_store: str | Path | None = None,
              only: bool | None = None,
-             statement_timeout_ms: int | None = None) -> "PgStoreReader":
+             statement_timeout_ms: int | None = None,
+             temp_limit: str | None = None) -> "PgStoreReader":
         """The reader over Postgres; ``text_store``: the SQLite generation word queries
         read until the word index is built here. ``only`` (default ``pg_only()``): no
         SQLite generation is read and a store that is not whole raises
@@ -694,8 +695,10 @@ class PgStoreReader(StoreReader):
         text = None
         if not only and text_store is not None and Path(text_store).is_file():
             text = StoreReader.open(text_store)
-        limit = {} if statement_timeout_ms is None else {
+        limit: dict[str, Any] = {} if statement_timeout_ms is None else {
             "statement_timeout_ms": statement_timeout_ms}
+        if temp_limit is not None:
+            limit["temp_limit"] = temp_limit   # each statement's temp files (a facts read)
         reader = cls(PgCompatConnection(str(dsn) if dsn else config.dsn(), **limit), text,
                      only=only)
         if only:
@@ -904,6 +907,9 @@ class PgStoreReader(StoreReader):
             with self.conn._pg.transaction():
                 if objects is None and name is None:
                     cur.execute("SET LOCAL enable_nestloop = off")
+                    # few groups (type, markings, gated texts): hashed in memory, where
+                    # a sort of each part's millions of rows spilled to temp files
+                    cur.execute("SET LOCAL enable_sort = off")
                 elif objects is not None:   # a few objects' links: by index, nested
                     cur.execute("SET LOCAL enable_seqscan = off")
                 params: dict[str, Any] = {"schemes": sorted(schemes), "odd": list(odd)}

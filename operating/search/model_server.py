@@ -154,6 +154,8 @@ def serve(folder: Path, idle: float = IDLE_SECONDS) -> int:
 def _serve(models: "_Models", req: Path, resp: Path, idle: float) -> int:
     import concurrent.futures as cf
 
+    inflight: set[str] = set()   # the .work files this server's pool is answering
+
     def handle(work: Path, name: str) -> None:
         try:
             if work.stat().st_size > MAX_REQUEST:
@@ -163,8 +165,13 @@ def _serve(models: "_Models", req: Path, resp: Path, idle: float) -> int:
             out = {"ok": False, "problem": "error:" + type(exc).__name__}
         finally:
             work.unlink(missing_ok=True)
+            inflight.discard(work.name)
         _write(resp / name, out)
 
+    # This server holds the directory: a claimed request (.work) or a half-written file
+    # (.tmp) left here is a stopped server's or client's, never answered now (its client
+    # has given up); removed at start and, when older than STALE_SECONDS, in each sweep.
+    _sweep_stale(req, resp, inflight, 0)
     print("plx search models: serving", file=sys.stderr, flush=True)
     swept = time.monotonic()
     with cf.ThreadPoolExecutor(WORKERS, thread_name_prefix="plx-models") as pool:
@@ -183,18 +190,40 @@ def _serve(models: "_Models", req: Path, resp: Path, idle: float) -> int:
                 except OSError:
                     continue
                 found = True
+                inflight.add(work.name)
                 pool.submit(handle, work, entry.name)
             if time.monotonic() - swept > 60:   # answers no client came back for
                 swept = time.monotonic()
                 for answer in resp.glob("*.json"):
                     try:
-                        if time.time() - answer.stat().st_mtime > 300:
+                        if time.time() - answer.stat().st_mtime > STALE_SECONDS:
                             answer.unlink(missing_ok=True)
                     except OSError:
                         pass
+                _sweep_stale(req, resp, inflight, STALE_SECONDS)
             if not found:
                 time.sleep(POLL_SECONDS)
     return 0
+
+
+STALE_SECONDS = 300
+
+
+def _sweep_stale(req: Path, resp: Path, inflight: set[str], age: float) -> int:
+    """Remove claimed requests (``req/*.work``) this server is not answering and
+    half-written files (``*.tmp``) older than ``age`` seconds; how many."""
+    gone = 0
+    now = time.time()
+    for path in [*req.glob("*.work"), *req.glob("*.tmp"), *resp.glob("*.tmp")]:
+        if path.name in inflight:
+            continue
+        try:
+            if now - path.stat().st_mtime >= age:
+                path.unlink(missing_ok=True)
+                gone += 1
+        except OSError:
+            pass
+    return gone
 
 
 # ------------------------------------------------------------------ client

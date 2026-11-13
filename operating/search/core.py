@@ -46,6 +46,12 @@ SNIPPET_CHARS = 300
 RERANK_PASSAGE_CHARS = 1200
 RERANK_FLOOR = 0.1
 STATEMENT_TIMEOUT_MS = 3000
+# One deadline for a search's question embedding, from the search's start: the dense list
+# and the fused answer wait for it no longer, and the search ranks without vectors
+# (lexical), saying so. And at most this many embeddings running or queued in a process:
+# past it a search ranks without the dense list rather than wait in an unbounded queue.
+EMBED_SECONDS = 10.0
+EMBED_ADMITTED = 16
 _UNSET: Any = object()
 
 Neighbours = Callable[[Sequence[str], Sequence[tuple[str, float]]],
@@ -222,6 +228,7 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
     # lexical retrievers (none of which needs its vector): only the dense list waits.
     texts_now = (query.texts() if weights.query_texts == "rewrites" else [query.question])
     embedding = _start_embed(embedder, texts_now)
+    embed_deadline = time.monotonic() + EMBED_SECONDS
 
     borrowed = _Borrowed(target)
     conn = borrowed.__enter__()
@@ -255,7 +262,7 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
         }
         if embedding is not None and model:
             def dense_job(c: Any) -> Any:
-                vectors = _embedded(embedding)
+                vectors = _embedded(embedding, embed_deadline)
                 if not vectors:
                     raise _NoVectors()
                 return rt.dense(c, scope, vectors, model, n,
@@ -280,7 +287,7 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
         if embedding is not None:
             # As if embedded before the retrievers ran: its failure is a note ahead of
             # theirs, and without vectors no dense list was asked for.
-            vectors, embed_ms, embed_error = embedding.result()
+            vectors, embed_ms, embed_error = _embed_result(embedding, embed_deadline)
             timings["embed"] = embed_ms
             if embed_error is not None:
                 notes.insert(embed_note_at, "dense_unavailable:" + embed_error)
@@ -507,13 +514,23 @@ class _NoVectors(Exception):
 
 # Embeds a question beside its scope read and lexical retrievers (``_start_embed``).
 _EMBED_POOL = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="plx-embed")
+_EMBED_SLOTS = threading.BoundedSemaphore(EMBED_ADMITTED)
+
+
+class _Busy(Exception):
+    """No embedding slot was free (``EMBED_ADMITTED``): the dense list is not asked for."""
 
 
 def _start_embed(embedder: Any, texts: Sequence[str]) -> "cf.Future | None":
     """The question's embedding, started now on its own thread: a future of (vectors,
-    milliseconds, the failure's exception name or None); None without an embedder."""
+    milliseconds, the failure's exception name or None); None without an embedder. With
+    every slot taken the future is already done, failed ``_Busy`` (never queued)."""
     if embedder is None:
         return None
+    if not _EMBED_SLOTS.acquire(blocking=False):
+        busy: cf.Future = cf.Future()
+        busy.set_result(([], 0.0, _Busy.__name__))
+        return busy
 
     def embed() -> tuple[list[list[float]], float, str | None]:
         t = time.perf_counter()
@@ -521,11 +538,27 @@ def _start_embed(embedder: Any, texts: Sequence[str]) -> "cf.Future | None":
             return embedder.embed(list(texts)), _ms(t), None
         except Exception as exc:  # noqa: BLE001 - dense is skipped, stated
             return [], _ms(t), type(exc).__name__
-    return _EMBED_POOL.submit(embed)
+        finally:
+            _EMBED_SLOTS.release()
+    try:
+        return _EMBED_POOL.submit(embed)
+    except BaseException:
+        _EMBED_SLOTS.release()
+        raise
 
 
-def _embedded(embedding: "cf.Future") -> list[list[float]]:
-    return embedding.result()[0]
+def _embed_result(embedding: "cf.Future", deadline: float
+                  ) -> tuple[list[list[float]], float, str | None]:
+    """The embedding's (vectors, ms, error), waited for until ``deadline``
+    (``time.monotonic``); past it no vectors and the error ``EmbedTimeout``."""
+    try:
+        return embedding.result(timeout=max(0.0, deadline - time.monotonic()))
+    except cf.TimeoutError:
+        return [], round((EMBED_SECONDS) * 1000, 1), "EmbedTimeout"
+
+
+def _embedded(embedding: "cf.Future", deadline: float) -> list[list[float]]:
+    return _embed_result(embedding, deadline)[0]
 
 
 def _run(jobs: Mapping[str, Callable[[Any], Any]], target: str,

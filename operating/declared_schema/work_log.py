@@ -22,4 +22,15 @@ CREATE TABLE IF NOT EXISTS thread (reader TEXT NOT NULL, thread TEXT NOT NULL,
 """
 
 STORE = "work_log"
-STEPS = ((1, "initial", (_DDL,)),)
+# A row's ``detail`` (an Ask answer, up to 200 KB) sits before ``people`` and ``awaiting``,
+# so reading those from the row walks the answer's overflow pages: the reads that check
+# every matching row (a page's people re-check, the autopilot's answered-in-Workbench
+# lookup) are answered from these indexes alone, never from the rows (AP-11).
+_COVERING = """
+CREATE INDEX IF NOT EXISTS event_light ON event (reader, seq, thread, kind, at, people);
+CREATE INDEX IF NOT EXISTS event_awaiting ON event (kind, at, awaiting)
+  WHERE awaiting IS NOT NULL;
+"""
+
+STEPS = ((1, "initial", (_DDL,)),
+         (2, "covering_indexes", (_COVERING,)))

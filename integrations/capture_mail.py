@@ -230,9 +230,9 @@ from .live_source_guard import (HOLD_SCOPE, LiveSourceAudience, NotVisible, Sour
 from .plx_hub_guard import GRAPH_BLOCKS, upstream_blocks
 from operating import declared_schema as _schemas
 from operating.declared_schema import capture_mail as _CAPTURE_MAIL
-from operating.declared_schema.capture_mail import (_FOLDER_LISTING_DDL, _PRIORITY_DDL,
-                                                    _PURGED_DDL, _UNDECIDED_DDL,
-                                                    _WITHHELD_DDL)
+from operating.declared_schema.capture_mail import (_CARRIED_DDL, _FOLDER_LISTING_DDL,
+                                                    _PRIORITY_DDL, _PURGED_DDL,
+                                                    _UNDECIDED_DDL, _WITHHELD_DDL)
 
 SCOPE_SCHEMA = "plx-mail-capture-scope/v1"
 ALL_FOLDERS = "all"   # a scope's folders: every folder of the mailbox
@@ -646,6 +646,8 @@ ATTACHMENT_DEFERRED = "deferred:ocr_backlog"
 # A deferred attachment whose message the people exclusion refused on its backfill read
 # (``deferred-attachments``): never requested again; ``purge_withheld`` deletes it.
 ATTACHMENT_EXCLUDED = "excluded:people"
+# An attachment carrying a mail the people guard cannot clear (DOC-008): never stored.
+ATTACHMENT_CARRIED_UNDECIDED = "withheld:carried_mail_undecided"
 _COMPRESSED_KINDS = ("body", "text")
 # attachments.content_status of bytes that failed verification (module docstring).
 MISMATCH_SHA256 = "mismatch:sha256"
@@ -734,6 +736,7 @@ class MailCaptureStore:
         # The exclusion every read applies (``withheld_mailboxes``): this people guard,
         # else the process environment's; this deny list, else the shipped one.
         self.people = people
+        self.purge_undecided = 0   # addresses the last purge could not decide (kept)
         self.deny = deny
         # One connection, one writer: the lanes of a run share it, each call under
         # ``lock`` (``MailCapture`` lanes), so the store never sees two writers.
@@ -1863,6 +1866,128 @@ class MailCaptureStore:
             self.db.executemany("DELETE FROM purged_handles WHERE l1_handle=?", rows)
             return self.db.total_changes - before
 
+    # ------------------------------------------------- carried mail (DOC-008)
+
+    def carried_walk(self, digest: Any, code: str) -> tuple[Any] | None:
+        """The kept walk of a container's carried mails (``integrations.carried_mail``,
+        ``(walk,)``; ``(None,)``: it carries none) made by ``code``, else None (never
+        walked, walked by other code, or unreadable as kept). Read-only."""
+        from . import carried_mail
+        if not isinstance(digest, str) or not self._has_table("carried_people"):
+            return None
+        row = self.db.execute("SELECT code, walk FROM carried_people WHERE "
+                              "content_sha256=?", (digest,)).fetchone()
+        if row is None or row[0] != code:
+            return None
+        try:
+            return (carried_mail.decode(row[1]),)
+        except (ValueError, TypeError):
+            return None
+
+    def keep_carried(self, rows: Iterable[tuple[str, Any]], code: str) -> int:
+        """Keep walks (``(container digest, walk)``) under ``code``; returns how many."""
+        from . import carried_mail
+        now = self.now()
+        values = [(d, code, carried_mail.encode(w), now) for d, w in rows
+                  if isinstance(d, str) and _SHA256.fullmatch(d)]
+        if not values:
+            return 0
+        with self.lock, self.db:
+            self.db.execute(_CARRIED_DDL)
+            self.db.executemany("INSERT INTO carried_people VALUES (?,?,?,?) ON CONFLICT"
+                                "(content_sha256) DO UPDATE SET code=excluded.code, "
+                                "walk=excluded.walk, walked_at=excluded.walked_at", values)
+        return len(values)
+
+    def _has_table(self, name: str) -> bool:
+        return self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                               "name=?", (name,)).fetchone() is not None
+
+    def blob_head(self, digest: str, size: int = 4096) -> bytes | None:
+        """The first ``size`` bytes of a blob (its bytes form, else the start of its
+        compressed form), unverified: enough to tell what it may be. None when gone."""
+        try:
+            with open(blob_path(self.blobs, digest), "rb") as handle:
+                return handle.read(size)
+        except FileNotFoundError:
+            pass
+        try:
+            with open(blob_path(self.blobs, digest, COMPRESSED_SUFFIX), "rb") as handle:
+                return zlib.decompressobj().decompress(handle.read(size), size)
+        except (OSError, zlib.error):
+            return None
+
+    def withhold_attachments(self, handles: Mapping[str, str]) -> dict[str, int]:
+        """Withhold stored attachments in place (``{l1 handle: content status}``: the
+        DOC-008 verdict, ``excluded:people`` or ``withheld:carried_mail_undecided``): each
+        row keeps its message and id but loses its bytes, text, text history and handle,
+        as an attachment the capture dropped; the handles are journalled in
+        ``purged_handles`` (their derived copies go with ``mail_exclusion_purge``), and
+        every blob nothing references any more is deleted with its file."""
+        rows = [(h, s) for h, s in handles.items() if isinstance(h, str) and s in (
+            ATTACHMENT_EXCLUDED, ATTACHMENT_CARRIED_UNDECIDED)]
+        counts = {"attachments": 0, "text_versions": 0, "blobs": 0}
+        if not rows:
+            return counts
+        db = self.db
+        with self.lock:
+            db.execute("CREATE TEMP TABLE IF NOT EXISTS withhold_attachments (h TEXT "
+                       "PRIMARY KEY, s TEXT NOT NULL)")
+            db.execute("CREATE TEMP TABLE IF NOT EXISTS purge_blobs (d TEXT PRIMARY KEY)")
+            try:
+                with db:
+                    db.execute("DELETE FROM temp.withhold_attachments")
+                    db.execute("DELETE FROM temp.purge_blobs")
+                    db.executemany("INSERT OR IGNORE INTO temp.withhold_attachments VALUES "
+                                   "(?,?)", rows)
+                    db.execute(
+                        "INSERT OR IGNORE INTO temp.purge_blobs SELECT d FROM (SELECT "
+                        "content_sha256 AS d FROM attachments WHERE l1_handle IN (SELECT h "
+                        "FROM temp.withhold_attachments) UNION SELECT text_sha256 FROM "
+                        "attachments WHERE l1_handle IN (SELECT h FROM "
+                        "temp.withhold_attachments) UNION SELECT text_sha256 FROM "
+                        "attachment_text_versions WHERE l1_handle IN (SELECT h FROM "
+                        "temp.withhold_attachments)) WHERE d IS NOT NULL")
+                    db.execute(_PURGED_DDL)
+                    db.execute("INSERT OR IGNORE INTO purged_handles SELECT a.l1_handle, ? "
+                               "FROM attachments a WHERE a.l1_handle IN (SELECT h FROM "
+                               "temp.withhold_attachments)", (self.now(),))
+                    db.execute("DROP TRIGGER attachment_text_versions_no_delete")
+                    counts["text_versions"] = db.execute(
+                        "DELETE FROM attachment_text_versions WHERE l1_handle IN (SELECT h "
+                        "FROM temp.withhold_attachments)").rowcount
+                    db.execute(_TEXT_NO_DELETE)
+                    db.execute("DELETE FROM message_events WHERE l1_handle IN (SELECT h "
+                               "FROM temp.withhold_attachments)")
+                    counts["attachments"] = db.execute(
+                        "UPDATE attachments SET content_status=(SELECT s FROM "
+                        "temp.withhold_attachments WHERE h=attachments.l1_handle), "
+                        "content_sha256=NULL, text_status=NULL, text_sha256=NULL, "
+                        "l1_handle=NULL WHERE l1_handle IN (SELECT h FROM "
+                        "temp.withhold_attachments)").rowcount
+                    db.execute(
+                        "DELETE FROM temp.purge_blobs WHERE d IN (SELECT body_sha256 FROM "
+                        "messages UNION SELECT content_sha256 FROM attachments UNION SELECT "
+                        "text_sha256 FROM attachments UNION SELECT text_sha256 FROM "
+                        "attachment_text_versions)")
+                    gone = [d for (d,) in db.execute("SELECT d FROM temp.purge_blobs")]
+                    counts["blobs"] = db.execute(
+                        "DELETE FROM blobs WHERE sha256 IN (SELECT d FROM temp.purge_blobs)"
+                    ).rowcount
+                    if self._has_table("carried_people"):   # who the gone mail named
+                        db.execute("DELETE FROM carried_people WHERE content_sha256 IN "
+                                   "(SELECT d FROM temp.purge_blobs)")
+                for digest in gone:   # after the commit: a file is never missing for a row
+                    if _SHA256.fullmatch(digest):
+                        for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX):
+                            blob_path(self.blobs, digest, suffix).unlink(missing_ok=True)
+            finally:
+                db.execute("DROP TABLE IF EXISTS temp.withhold_attachments")
+                db.execute("DROP TABLE IF EXISTS temp.purge_blobs")
+                if db.in_transaction:
+                    db.commit()
+        return counts
+
     def purged_handles_table(self) -> bool:
         return self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND "
                                "name='purged_handles'").fetchone() is not None
@@ -2020,6 +2145,7 @@ class MailCaptureStore:
         boxes = [row["mailbox_id"] for row in self.db.execute(_MAILBOX_ROWS)
                  if withholds(row)]
         addresses: list[str] = []
+        undecided = 0
         if people.bound:
             found = self.db.execute(
                 "SELECT DISTINCT lower(json_extract(record, '$.from')) FROM messages UNION "
@@ -2027,7 +2153,20 @@ class MailCaptureStore:
                 "'$.to') j UNION SELECT DISTINCT lower(j.value) FROM messages, "
                 "json_each(messages.record, '$.cc') j UNION SELECT DISTINCT lower(j.value) "
                 "FROM messages, json_each(messages.record, '$.bcc') j").fetchall()
-            addresses = [a for (a,) in found if isinstance(a, str) and people.is_excluded(a)]
+            for (address,) in found:
+                if not isinstance(address, str):
+                    continue
+                try:
+                    if people.is_excluded(address):
+                        addresses.append(address)
+                except ExclusionUnavailable:
+                    # A list whose members cannot all be read and confirmed (or, with no
+                    # complete groups listing, an address that may be one): undecided, so
+                    # nothing is deleted on it. Raised here it failed every capture run
+                    # (2026-11-12: one hidden-membership list in the store stopped mail
+                    # capture for the day); the capture holds new mail to it by id.
+                    undecided += 1
+        self.purge_undecided = undecided
         # every copy of a message remembered as withheld (stored in a mailbox before the
         # copy that showed the excluded person was read)
         remembered = self.remembered_copies()
@@ -2176,6 +2315,9 @@ class MailCaptureStore:
                 counts["blobs"] = db.execute(
                     "DELETE FROM blobs WHERE sha256 IN (SELECT d FROM temp.purge_blobs)"
                 ).rowcount
+                if self._has_table("carried_people"):   # who the gone mail named
+                    db.execute("DELETE FROM carried_people WHERE content_sha256 IN "
+                               "(SELECT d FROM temp.purge_blobs)")
             for digest in gone:   # after the commit: a file is never missing for a row
                 if _SHA256.fullmatch(digest):
                     for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX):
@@ -2455,10 +2597,55 @@ class MailCaptureStore:
             (mailbox, *addresses, *addresses, *addresses)).fetchone()
         return found is not None
 
+    def _carried_verdict(self, row: Mapping[str, Any], people: Any) -> Any:
+        """The people exclusion's verdict now on the mail a stored attachment carries
+        (``carried_mail.stored_verdict``: the kept walk, else the bytes; the caller's
+        guard, else the store's, else the environment's; anything undecided withheld)."""
+        from . import carried_mail
+        try:
+            guard = people if people is not None else (
+                self.people if self.people is not None else _env_people())
+            kept = self.carried_walk(row.get("content_sha256"), carried_mail.code())
+        except MemoryError:
+            raise
+        except Exception:  # noqa: BLE001 - no guard or kept walk to read: withheld whole
+            return carried_mail.WHOLE
+        return carried_mail.stored_verdict(self.blobs, row, guard, self.root.parent, kept)
+
+    def carried_withholds(self, handle: Any, people: Any = None) -> bool:
+        """Whether a mail attachment citation (a page of it, or a member of it) is
+        withheld from every reader for the mail it carries (DOC-008: the attachment when
+        any mail it carries is not cleared, a member when it is such a mail or under one;
+        :meth:`_carried_verdict`), so a gate deciding on the rows alone (a search's)
+        withholds what :meth:`resolve` withholds. False for any other citation; an
+        attachment the store does not hold: True."""
+        if not isinstance(handle, str) or "#" not in handle:
+            return False
+        base = cited_page(handle)[0]
+        member = split_member(base)
+        attachment = base if member is None else member[0]
+        if not is_mail_attachment_citation(attachment):
+            return False
+        found = self.db.execute("SELECT metadata, content_sha256 FROM attachments WHERE "
+                                "l1_handle=?", (attachment,)).fetchone()
+        if found is None:
+            return True
+        row = {**json.loads(found["metadata"]), "content_sha256": found["content_sha256"]}
+        if member is None:
+            return bool(self._carried_verdict(row, people).withheld)
+        return self._member_withheld(row, member[1], people)
+
+    def _member_withheld(self, row: Mapping[str, Any], path: str, people: Any) -> bool:
+        """Whether a member of a captured container is withheld from every reader for the
+        mail it carries (:meth:`_carried_verdict`)."""
+        if not isinstance(row.get("content_sha256"), str):
+            return True
+        return self._carried_verdict(row, people).withholds(path)
+
     def resolve(self, handle: Any, actor: Actor, audience: LiveSourceAudience, *,
                 text: bool = False, text_version: Any = None,
                 page_exists: bool = False, mailboxes: Iterable[str] | None = None,
-                people: Any = None) -> dict[str, Any] | None:
+                people: Any = None, _whole: bool = True) -> dict[str, Any] | None:
         """The captured row an L1 handle names, offline, for a reader who may see its
         mailbox; ``None`` when not visible or never captured (indistinguishable).
         Shape for ``claim_checks`` rows: ``{"relation", "l1_handle", "lineage",
@@ -2470,6 +2657,12 @@ class MailCaptureStore:
         text does not have), so a cited span is checkable. A member of a captured
         zip/.msg/.eml attachment (``&member=<path>&member_sha256=<hex>``) resolves for a
         reader who may see the attachment, as that member.
+        DOC-008: an attachment carrying mail the people exclusion does not clear now (an
+        excluded person's, one it cannot decide, or any when the list cannot be read)
+        resolves for nobody, its pages and text with it, so neither a citation nor a
+        search hit (the item gate resolves it) serves it; a member resolves unless it is
+        such a mail or under one (``_whole=False``: the container gate of a member,
+        internal).
         Machine-only: values are raw (claim_checks compares them); anything shown
         to a model goes through ``messages`` (untrusted-text envelopes).
 
@@ -2499,9 +2692,11 @@ class MailCaptureStore:
             # A member of a captured zip/.msg/.eml attachment
             # (``integrations.captured_text``): visible with its attachment.
             container, path, digest = member
-            view = self.resolve(container, actor, audience)
+            view = self.resolve(container, actor, audience, people=people, _whole=False)
             if view is None or view["relation"] != "graph-mail.attachment":
                 return None
+            if self._member_withheld(view["row"], path, people):
+                return None   # DOC-008: carried mail the exclusion does not clear
             row = {"container": container, "path": path, "content_sha256": digest}
             if text or page is not None:
                 found = member_view(self.blobs, view["row"], path, digest, page)
@@ -2527,6 +2722,8 @@ class MailCaptureStore:
             if message is None:
                 return None
             row = {**json.loads(found["metadata"]), "content_sha256": found["content_sha256"]}
+            if _whole and self._carried_verdict(row, people).withheld:
+                return None   # DOC-008: it carries mail the exclusion does not clear now
             if text:
                 chain = self.text_chain(base)
                 reading = (chain[-1] if text_version is None else next(
@@ -2671,11 +2868,15 @@ class MailCaptureStore:
             return mailbox_id in visible[actor]
         return check
 
-    def item_gate(self, audience: LiveSourceAudience) -> Callable[[Actor, str], bool]:
+    def item_gate(self, audience: LiveSourceAudience, people: Any = None
+                  ) -> Callable[[Actor, str], bool]:
         """An ``operating.ontology_tools`` ``item_gate`` for projected mail: a
         ``graph-mail://`` message or attachment handle is readable only when it
-        resolves offline for this reader (mailbox audience and owner ACL)."""
-        return lambda actor, handle: self.resolve(handle, actor, audience) is not None
+        resolves offline for this reader (mailbox audience and owner ACL; the mail an
+        attachment carries decided with ``people``, else the store's or environment's
+        guard: :meth:`resolve`)."""
+        return lambda actor, handle: self.resolve(handle, actor, audience,
+                                                  people=people) is not None
 
     def rows(self, actor: Actor, audience: LiveSourceAudience) -> Callable[[str], Any]:
         """A ``claim_checks`` ``Rows`` callable bound to one reader."""
@@ -3588,13 +3789,17 @@ EXTRACTION_TIMED_OUT = "extraction_timed_out"
 EXTRACTION_CRASHED = "extraction_crashed"
 EXTRACTION_GAPS = (EXTRACTION_TIMED_OUT, EXTRACTION_CRASHED)
 EXTRACTION_RETRIES = 2
+# The largest answer an extraction process may send (its text and readings): a bigger
+# length prefix ends the process as crashed, never an allocation of that size.
+MAX_ANSWER_BYTES = 64 << 20
 # The longest one reading may take: an attachment's text (``EXTRACT_SECONDS``) and an OCR
 # reading of a scan (``OCR_EXTRACT_SECONDS``: page by page, each tool call bounded).
 EXTRACT_SECONDS = 600.0
 OCR_EXTRACT_SECONDS = 1800.0
 # The environment of an extraction process: what its parsers and OCR tools need to run,
 # nothing else (no token, key, secret or exclusion list; it reads bytes, never a source).
-EXTRACTION_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ")
+EXTRACTION_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ",
+                  "PLX_EXTRACT_SANDBOX")
 
 
 def extraction_env(environ: Mapping[str, str]) -> dict[str, str]:
@@ -3603,14 +3808,17 @@ def extraction_env(environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def extract_attachment(content: bytes, attachment: Mapping[str, Any], defer_ocr: bool,
-                       defer_all: bool, *, readings: bool = True
+                       defer_all: bool, *, readings: bool = True,
+                       image_ocr: bool | None = None
                        ) -> tuple[str, str | None, dict[str, Any] | None]:
     """(text status, text, readings) of attachment bytes: the reader side's text work, in
     an extraction process (``integrations.extract_worker``) or inline. ``readings``
     False: the text only (an OCR reading, settled by the store afterwards)."""
     # A pasted image (an inline table or screenshot, or an attached one) is OCR-read like
     # a scanned page; logos and signature images are left by their size alone.
-    extra = {"image_ocr": True} if image_worth_reading(content, attachment) else {}
+    # ``image_ocr``: the caller's own rule (SharePoint reads every image), else mail's.
+    worth = image_worth_reading(content, attachment) if image_ocr is None else image_ocr
+    extra = {"image_ocr": True} if worth else {}
     status, text = capture_text(content, attachment, defer_ocr=defer_ocr, **extra)
     return status, text, (_readings(content, attachment, status, text, defer_ocr=defer_all)
                           if readings else None)
@@ -3664,7 +3872,8 @@ class _Extractors:
             return [p.pid for p in self._idle]
 
     def read(self, content: bytes, attachment: Mapping[str, Any], *, defer_ocr: bool,
-             defer_all: bool, readings: bool = True
+             defer_all: bool, readings: bool = True, image_ocr: bool | None = None,
+             seconds: float | None = None
              ) -> tuple[str, str | None, dict[str, Any] | None]:
         with self._ready:
             while not self._idle:
@@ -3673,9 +3882,11 @@ class _Extractors:
                 self._ready.wait()
             process = self._idle.pop()
         try:
-            answer = self._ask(process, content, {
-                "attachment": dict(attachment), "defer_ocr": defer_ocr,
-                "defer_all": defer_all, "readings": readings})
+            request = {"attachment": dict(attachment), "defer_ocr": defer_ocr,
+                       "defer_all": defer_all, "readings": readings}
+            if image_ocr is not None:
+                request["image_ocr"] = image_ocr
+            answer = self._ask(process, content, request, seconds)
         except _ExtractionLost as lost:
             self._end(process)
             process = self._start()
@@ -3690,18 +3901,19 @@ class _Extractors:
         status, text, made = answer
         return status, text, made
 
-    def _ask(self, process: "subprocess.Popen", content: bytes, request: Mapping[str, Any]
-             ) -> list[Any]:
+    def _ask(self, process: "subprocess.Popen", content: bytes, request: Mapping[str, Any],
+             seconds: float | None = None) -> list[Any]:
         from .extract_worker import HEADER
 
-        deadline = time.monotonic() + self.seconds
+        deadline = time.monotonic() + (self.seconds if seconds is None else seconds)
         header = json.dumps(request, ensure_ascii=False).encode("utf-8")
-        try:
-            process.stdin.write(HEADER.pack(len(header), len(content)) + header + content)
-            process.stdin.flush()
-        except (BrokenPipeError, OSError):
-            raise _ExtractionLost(EXTRACTION_CRASHED) from None
+        # Written under the reading's deadline (INT-002): a process that stops reading its
+        # input is this reading's timeout, never a capture thread blocked on the pipe.
+        self._give(process, HEADER.pack(len(header), len(content)) + header + content,
+                   deadline)
         size = struct.unpack(">Q", self._take(process, 8, deadline))[0]
+        if size > MAX_ANSWER_BYTES:   # a frame no reading makes: the process is not trusted
+            raise _ExtractionLost(EXTRACTION_CRASHED)
         try:
             answer = json.loads(self._take(process, size, deadline))
         except ValueError:
@@ -3711,6 +3923,24 @@ class _Extractors:
                 and (answer[2] is None or isinstance(answer[2], dict))):
             raise _ExtractionLost(EXTRACTION_CRASHED)
         return answer
+
+    @staticmethod
+    def _give(process: "subprocess.Popen", data: bytes, deadline: float) -> None:
+        import select
+
+        fd = process.stdin.fileno()
+        os.set_blocking(fd, False)
+        view, sent = memoryview(data), 0
+        while sent < len(data):
+            wait = deadline - time.monotonic()
+            if wait <= 0 or not select.select([], [fd], [], wait)[1]:
+                raise _ExtractionLost(EXTRACTION_TIMED_OUT)
+            try:
+                sent += os.write(fd, view[sent:sent + (1 << 20)])
+            except BlockingIOError:
+                continue
+            except OSError:   # a broken pipe: the process is gone
+                raise _ExtractionLost(EXTRACTION_CRASHED) from None
 
     @staticmethod
     def _take(process: "subprocess.Popen", size: int, deadline: float) -> bytes:
@@ -4529,9 +4759,28 @@ class MailCapture:
         its original settled once its row is written (``_settle_new``)."""
         readings, hold = entry.pop("readings", None), entry.pop("hold_ocr", False)
         if entry.pop("reused", False):
+            withheld = self._reused_withholds(entry)
+            if withheld is not None:
+                # DOC-008: a container stored before (another version of the message)
+                # is stored again only when what it carries is cleared now
+                for key in ("text_status", "content_sha256", "text_sha256"):
+                    entry.pop(key, None)
+                entry["content_status"] = withheld
+                counts["people_dropped" if withheld == ATTACHMENT_EXCLUDED
+                       else "people_undecided"] += 1
+                return entry
             counts["attachments_reused"] += 1
         elif "content" in entry:
             content, read, text = entry.pop("content"), entry.pop("read"), entry.pop("text")
+            withheld, walked = self._carries_withheld_mail(content, read)
+            if withheld is not None:
+                # DOC-008: an attachment carrying an excluded person's mail (or one the
+                # guard cannot clear) is never stored: no bytes, text or readings
+                entry.pop("text_status", None)
+                entry["content_status"] = withheld
+                counts["people_dropped" if withheld == ATTACHMENT_EXCLUDED
+                       else "people_undecided"] += 1
+                return entry
             try:
                 digest = self.store.put_blob(content, read["content_sha256"])
             except CaptureError as exc:
@@ -4541,6 +4790,8 @@ class MailCapture:
                 entry["content_status"] = MISMATCH_SHA256
                 counts["attachments_mismatched"] += 1
                 return entry
+            if walked is not None:   # who the stored container's carried mail names
+                self.store.keep_carried([(digest, walked)], self._carried_code())
             entry.update(content_status="captured", content_sha256=digest, metadata=read,
                          text_sha256=self.store.put_text(text))
             self._unsettled_now()[digest] = (content, readings, hold)
@@ -4554,6 +4805,62 @@ class MailCapture:
         entry["l1_handle"] = mail_attachment_citation(message["citation"], entry["id"],
                                                       entry["content_sha256"])
         return entry
+
+    def _carries_withheld_mail(self, content: bytes, read: Mapping[str, Any]
+                               ) -> tuple[str | None, Any]:
+        """(the content status an attachment is withheld under for the mail it carries
+        (``integrations.carried_mail``, with the reader's people guard): excluded, or not
+        cleared; None when it carries none or only cleared mail, the walk of what it
+        carries: None when it is no container)."""
+        from . import carried_mail
+        walked = carried_mail.walk(content, str(read.get("name") or ""),
+                                   read.get("content_type"))
+        return self._carried_status(walked), walked
+
+    def _carried_status(self, walked: Any) -> str | None:
+        from . import carried_mail
+        found = carried_mail.decided(walked, getattr(self.reader, "people", None))
+        if found.state == carried_mail.CLEAR:
+            return None
+        return (ATTACHMENT_EXCLUDED if found.state == carried_mail.EXCLUDED
+                else ATTACHMENT_CARRIED_UNDECIDED)
+
+    def _carried_code(self) -> str:
+        found = getattr(self, "_carried_code_value", None)
+        if found is None:
+            from . import carried_mail
+            found = self._carried_code_value = carried_mail.code()
+        return found
+
+    def _reused_withholds(self, entry: Mapping[str, Any]) -> str | None:
+        """:meth:`_carries_withheld_mail` of an attachment stored before, by its kept
+        walk, else its stored bytes (walked once and kept); bytes the store no longer
+        holds were no container (a container's original is never dropped) unless its
+        name or type says it is a mail."""
+        from . import carried_mail
+        digest, meta = entry.get("content_sha256"), entry.get("metadata") or {}
+        name, hint = str(meta.get("name") or ""), meta.get("content_type")
+        if not isinstance(digest, str):
+            return None
+        code = self._carried_code()
+        kept = self.store.carried_walk(digest, code)
+        if kept is not None:
+            return self._carried_status(kept[0])
+        head = self.store.blob_head(digest)
+        if head is None:
+            return (ATTACHMENT_CARRIED_UNDECIDED if carried_mail.may_carry(b"", name, hint)
+                    else None)
+        if not carried_mail.may_carry(head, name, hint):
+            return None
+        try:
+            content = self.store.blob(digest)
+        except (OSError, CaptureError):
+            return ATTACHMENT_CARRIED_UNDECIDED
+        walked = carried_mail.walk(content, name, hint)
+        status = self._carried_status(walked)
+        if status is None:
+            self.store.keep_carried([(digest, walked)], code)
+        return status
 
     def _fetch_attachment(self, mailbox_id: str, message: Mapping[str, Any],
                           meta: Mapping[str, Any], counts: dict[str, int],

@@ -38,8 +38,10 @@ generation resets the delta (its changes are in it).
 (``ontology.reading_budget``, :data:`DOCUMENT_SECONDS`): a cycle reads the files no
 layer or generation read before for up to that many seconds, each under
 its own time limit, and publishes its rows either way. A file it did not read is pending,
-never unreadable: nothing is kept for it, the records holding it stay open and the next
-cycle projects them again, reading on (meanwhile the record's rows are current, the
+never unreadable: nothing is kept for it, the records holding it are queued (held) and
+later cycles take them back a batch at a time (:func:`take_held`), reading on, so a
+cycle's work stays its new changes plus that batch (meanwhile the record's rows are
+current, the
 served generation's document objects stay served, and the layer's ``documents_pending``
 meta and ``CURRENT.json``'s ``documents`` say which files and records are pending); a
 file that timed out gets a longer limit there,
@@ -68,6 +70,7 @@ import time
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import unquote
 from operating import declared_schema as _schemas
+from operating.declared_schema import delta_held as _DELTA_HELD
 from operating.declared_schema import delta_state as _DELTA_STATE
 
 FORMAT = "plx-delta/v1"
@@ -117,6 +120,17 @@ MAX_LAYERS = 48
 # build. A file not read is pending: the records holding it stay open and the next cycle
 # projects them again, so its fields follow its rows a layer later.
 DOCUMENT_SECONDS = 120.0
+# Records held for a file not read yet wait in a queue (``State.hold``); a cycle takes back
+# ``HELD_BATCH`` of them, the longest queued first (``PLX_DELTA_HELD_BATCH``: a fixed
+# number, 0: none), less what it already follows, at least a quarter of it. The batch
+# doubles while a cycle reads every file of the records it took and halves while it leaves
+# most of them, between ``HELD_BATCH_MIN`` and ``HELD_BATCH_MAX``. A cycle's work is its new
+# changes and this batch: 11-12 every held record (200k) was followed and projected with
+# its closure every cycle, 3.2 h for 24 new changes, while the reading budget read a few
+# thousand files.
+HELD_BATCH = 2000
+HELD_BATCH_MIN = 250
+HELD_BATCH_MAX = 20000
 DOCUMENT_LIMIT = 60.0
 DOCUMENT_GROWTH = 4
 DOCUMENT_TIMEOUTS = 2
@@ -391,12 +405,20 @@ def pg_base_enabled(environ: Mapping[str, str]) -> bool:
 
 # --------------------------------------------------------------------------- state
 
+# ``changed.closed``: open (a cycle follows it), done (a layer holds it as it reads now) or
+# held (a layer holds its rows, a file it holds is not read yet: queued, :meth:`State.take`)
+OPEN, DONE, HELD = 0, 1, 2
+
+
 class State:
     """``<delta dir>/state.sqlite``: the served generation the changes are counted from,
-    each capture's scan position and every changed record since that generation."""
+    each capture's scan position and every changed record since that generation; beside
+    it ``held.sqlite``, the files each held record waits on."""
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.held_path = path.with_name("held.sqlite")
+        self._held: sqlite3.Connection | None = None
         self.conn = sqlite3.connect(path, timeout=60, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL")
         _schemas.apply(self.conn, _DELTA_STATE)
@@ -433,6 +455,21 @@ class State:
                                           (rowid, key))
             self.put("state_format", STATE_FORMAT)
 
+    def held_files(self) -> sqlite3.Connection:
+        """``held.sqlite`` (opened on first use): ``files`` (source, key, digest)."""
+        if self._held is None:
+            conn = sqlite3.connect(self.held_path, timeout=60, isolation_level=None)
+            conn.execute("PRAGMA journal_mode=WAL")
+            _schemas.apply(conn, _DELTA_HELD)
+            self._held = conn
+        return self._held
+
+    def close(self) -> None:
+        if self._held is not None:
+            self._held.close()
+            self._held = None
+        self.conn.close()
+
     def get(self, name: str) -> Any:
         row = self.conn.execute("SELECT value FROM meta WHERE name = ?", (name,)).fetchone()
         return None if row is None else json.loads(row[0])
@@ -446,6 +483,7 @@ class State:
         self.conn.execute("DELETE FROM owned")
         self.conn.execute("DELETE FROM slow")
         self.conn.execute("DELETE FROM meta")
+        self.held_files().execute("DELETE FROM files")
         self.put("base_digest", digest)
         self.put("state_format", STATE_FORMAT)
 
@@ -475,6 +513,91 @@ class State:
         """Every record of ``source`` held as changed, with its input mark (None: none)."""
         return {_tuple(json.loads(r[0])): r[1] for r in self.conn.execute(
             "SELECT key, mark FROM changed WHERE source = ?", (source,))}
+
+    def counts(self) -> dict[str, int]:
+        """source -> records held as changed since the generation (every state)."""
+        found = dict(self.conn.execute("SELECT source, count(*) FROM changed GROUP BY source"))
+        return {s: int(found.get(s, 0)) for s in SOURCES}
+
+    def open_count(self, sources: Iterable[str] = SOURCES) -> int:
+        wanted = json.dumps(sorted(sources))
+        return int(self.conn.execute(
+            "SELECT count(*) FROM changed WHERE closed = 0 AND source IN (SELECT value FROM "
+            "json_each(?))", (wanted,)).fetchone()[0])
+
+    def queued(self) -> dict[str, list[Any]]:
+        """source -> the held records waiting in the queue (oldest first)."""
+        out: dict[str, list[Any]] = {}
+        for source, key in self.conn.execute(
+                "SELECT source, key FROM changed WHERE closed = ? ORDER BY seen_at, source, "
+                "key", (HELD,)):
+            out.setdefault(source, []).append(_tuple(json.loads(key)))
+        return out
+
+    def take(self, count: int, sources: Iterable[str] = SOURCES) -> dict[str, list[Any]]:
+        """Open again the ``count`` held records queued longest (of ``sources``): this
+        cycle projects them, reading their files; one still held after it goes to the back
+        of the queue (:meth:`hold`)."""
+        if count <= 0:
+            return {}
+        rows = self.conn.execute(
+            "SELECT source, key FROM changed WHERE closed = ? AND source IN (SELECT value "
+            "FROM json_each(?)) ORDER BY seen_at, source, key LIMIT ?",
+            (HELD, json.dumps(sorted(sources)), int(count))).fetchall()
+        with self.transaction():
+            self.conn.executemany("UPDATE changed SET closed = 0 WHERE source = ? AND key = ? "
+                                  "AND closed = ?", [(s, k, HELD) for s, k in rows])
+        out: dict[str, list[Any]] = {}
+        for source, key in rows:
+            out.setdefault(source, []).append(_tuple(json.loads(key)))
+        return {s: sorted(v, key=_order) for s, v in out.items()}
+
+    def hold(self, held: Mapping[str, Mapping[Any, Iterable[str]]],
+             projected: Mapping[str, Iterable[Any]]) -> None:
+        """Queue the records a layer holds whose files (``held``: source -> key -> digests)
+        it has not read: rows current, files pending. A record the cycle closed (or never
+        held) is queued; one changed again meanwhile stays open, for the next cycle. The
+        files of every record the layer projected (``projected``) are replaced by what it
+        left pending."""
+        now = _now()
+        self.conn.executemany(
+            "INSERT INTO changed (source, key, seen_at, closed) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (source, key) DO UPDATE SET closed = excluded.closed, "
+            "seen_at = excluded.seen_at WHERE changed.closed = 1",
+            [(source, json.dumps(k), now, HELD) for source, keys in held.items()
+             for k in sorted(keys, key=_order)])
+        files = self.held_files()
+        files.execute("BEGIN IMMEDIATE")
+        try:
+            for source, keys in projected.items():
+                files.executemany("DELETE FROM files WHERE source = ? AND key = ?",
+                                  [(source, json.dumps(k)) for k in keys])
+            files.executemany("INSERT OR IGNORE INTO files VALUES (?, ?, ?)",
+                              [(source, json.dumps(k), d) for source, keys in held.items()
+                               for k, digests in keys.items() for d in sorted(set(digests))])
+        except BaseException:
+            files.execute("ROLLBACK")
+            raise
+        files.execute("COMMIT")
+
+    def pending_files(self, projected: Mapping[str, Iterable[Any]],
+                      held: Mapping[str, Mapping[Any, Iterable[str]]]) -> int:
+        """Distinct files pending once a layer projecting ``projected`` and holding ``held``
+        publishes: those the other held records wait on, and the layer's own."""
+        files = self.held_files()
+        own = {d for keys in held.values() for digests in keys.values() for d in digests}
+        files.execute("CREATE TEMP TABLE IF NOT EXISTS projected_now (source TEXT, key TEXT, "
+                      "PRIMARY KEY (source, key))")
+        try:
+            files.executemany("INSERT OR IGNORE INTO temp.projected_now VALUES (?, ?)",
+                              [(s, json.dumps(k)) for s, keys in projected.items()
+                               for k in keys])
+            others = {r[0] for r in files.execute(
+                "SELECT DISTINCT digest FROM files f WHERE NOT EXISTS (SELECT 1 FROM "
+                "temp.projected_now p WHERE p.source = f.source AND p.key = f.key)")}
+        finally:
+            files.execute("DROP TABLE IF EXISTS temp.projected_now")
+        return len(others | own)
 
     def changed(self, source: str, *, open_only: bool = False, done_only: bool = False
                 ) -> list[Any]:
@@ -1589,7 +1712,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
     generation, open ones included, and their closure, read from the captures now); it
     discovers nothing and marks nothing done. Run apart from the cycles
     (``python3 -m ontology.delta compact``), so a cycle never waits for it."""
-    from integrations.people_exclusion import PeopleExclusion
+    from integrations.people_exclusion import ExclusionUnavailable, PeopleExclusion
     from ontology import project
     from ontology.schema import load_schema
     from operating import build_steps
@@ -1614,7 +1737,8 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
     from ontology.reading_budget import BUDGET_ENV
     budget_was = os.environ.get(BUDGET_ENV)
     documents: Path | None = None
-    held: dict[str, list[Any]] = {}
+    held: dict[str, dict[Any, set[str]]] = {}
+    taken: dict[str, list[Any]] = {}
     timed: list[str] = []
     try:
         # what a killed cycle read is taken in, and its work directory removed
@@ -1645,8 +1769,32 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         except Exception as exc:  # noqa: BLE001 - no guard: mail is skipped, the rest runs
             exclusion, unavailable = None, f"exclusion_unreadable:{type(exc).__name__}"
 
+        undecided: set[str] = set()
+        decided: dict[str, bool] = {}
+
         def excluded(mailbox: str) -> bool:
-            return unavailable is not None or exclusion.is_excluded(mailbox)
+            """Whether a mailbox's mail is left out of this cycle: every mailbox without
+            the guard; one the guard cannot decide now too (its mail is never read, and
+            counted). The changed mail itself was decided when it was found (``discover``
+            refuses before the closure); a mailbox only the closure or a back-link
+            brought in (a thread's context) no longer fails the cycle after its
+            closure was paid for (CC-P-01: 10.4 CPU-h of failed cycles). A followed
+            message of such a mailbox stays open when the layer publishes: the first
+            cycle that can decide its mailbox reads it."""
+            if unavailable is not None:
+                return True
+            if mailbox in undecided:
+                return True
+            if mailbox in decided:
+                return decided[mailbox]
+            try:
+                if exclusion.decides(mailbox):
+                    decided[mailbox] = bool(exclusion.is_excluded(mailbox))
+                    return decided[mailbox]
+            except ExclusionUnavailable:
+                pass
+            undecided.add(mailbox)
+            return True
         t = time.monotonic()
         stores = {family: path for family, path in store_paths(state_dir).items()
                   if path.is_file()}
@@ -1659,6 +1807,9 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             added = discover(mirror, state_dir, base, state, plan, stores, exclusion,
                              unavailable, report)
             reproject_requests(state, base, environ, report)
+            # held records come back from their queue a batch a cycle, never all at once
+            taken = take_held(state, environ, report,
+                              skip=("graph_mail",) if unavailable is not None else ())
         if unavailable is not None:   # mail is never read without the guard, forced or not
             report["mail_skipped"] = unavailable
         t = lap("discover", t)
@@ -1670,14 +1821,20 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         # A fold holds every change since the generation, the ones a cycle has not
         # published yet too (their layer may never come): it replaces the layers it read,
         # so a change it left out would fall back to the served version.
-        changed = {s: state.changed(s) for s in SOURCES}
-        if force_changed:
-            for source, keys in force_changed.items():
-                changed[source] = sorted(set(changed.get(source, ())) | {_tuple(k) for k in keys}, key=_order)
+        # Over Postgres no layer is cumulative: only the count of every change since the
+        # generation is reported, never the changes read (they grow with every cycle).
+        changed: dict[str, list[Any]] | None = None
+        if base.postgres and not compact_only and not force_changed:
+            report["changed"] = state.counts()
+        else:
+            changed = {s: state.changed(s) for s in SOURCES}
+            if force_changed:
+                for source, keys in force_changed.items():
+                    changed[source] = sorted(set(changed.get(source, ())) | {_tuple(k) for k in keys}, key=_order)
+            report["changed"] = {s: len(v) for s, v in changed.items()}
+            if report.get("mail_skipped"):
+                changed["graph_mail"] = []
         report["new_changes"] = added
-        report["changed"] = {s: len(v) for s, v in changed.items()}
-        if report.get("mail_skipped"):
-            changed["graph_mail"] = []
         captures = Captures(state_dir, mirror)
         # open changes are followed here; a fold follows them too but marks nothing done
         fresh = {s: state.changed(s, open_only=True) for s in SOURCES}
@@ -1733,7 +1890,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                             if opened_as is not None:
                                 opened_as[source].update(state.opened(source, keys))
                         fresh[source] = sorted(following[source] | set(keys), key=_order)
-                        if source in changed:
+                        if changed is not None and source in changed:
                             changed[source] = sorted(set(changed[source]) | set(keys), key=_order)
             return got
 
@@ -1829,6 +1986,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         compact = compact_only or (not base.postgres and (
             not layers or len(layers) >= MAX_LAYERS or bool(state.get("pointer_partial"))))
         if compact:
+            assert changed is not None
             records = {s: (state.context(s) | set(changed[s]) | found[s]) for s in SOURCES}
             mine = changed
         else:
@@ -1845,6 +2003,10 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
 
         sub_state = work / "state"
         mail_keys = {k for k in records["graph_mail"] if not excluded(k[0])}
+        for key in fresh["graph_mail"]:   # each followed message's mailbox is decided or kept
+            excluded(key[0])
+        if undecided:   # a count only: the mailboxes are people's addresses
+            report["mail_undecided_mailboxes"] = len(undecided)
         sources: dict[str, Any] = {}
         with contextlib.ExitStack() as stack:
             if mail_keys:
@@ -1885,8 +2047,19 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 held, timed = held_documents(documents, sub_state, mine, report)
             t = lap("project", t)
         owned_ids = finish_store(store, base, mine)
-        if report.get("documents"):
-            note_documents(store, report["documents"], held)
+        # the files pending are those of every held record, queued or held by this layer
+        projected = {s: {_tuple(k) for k in keys} for s, keys in mine.items()}
+        waiting = {s: [k for k in keys if k not in projected.get(s, set())]
+                   for s, keys in state.queued().items()}
+        if documents is not None or any(waiting.values()):
+            documents_report = report.setdefault(
+                "documents", {"pending": 0, "timed_out": 0, "left_to_generation": 0,
+                              "held_open": {}})
+            documents_report["pending"] = state.pending_files(mine, held)
+            documents_report["queued"] = sum(len(v) for v in waiting.values())
+            listed = {s: sorted(set(waiting.get(s, ())) | set(held.get(s, {})), key=_order)
+                      for s in SOURCES}
+            note_documents(store, documents_report, {s: v for s, v in listed.items() if v})
         report["owned"] = owned = len(owned_ids)
         t = lap("finish", t)
         shutil.rmtree(work, ignore_errors=True)
@@ -1927,13 +2100,21 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 state.put("pointer_partial", partial)
                 # only now are the changes this layer holds marked done: a cycle that
                 # fails before this leaves them open, and the next cycle projects them
+                # a message of a mailbox the guard could not decide was never read: it
+                # stays open (and out of the kept context), for the first cycle that can
+                # decide its mailbox (CC-P-01 review)
+                for source in ("graph_mail",):
+                    for keys in (fresh, found):
+                        if source in keys and undecided:
+                            keys[source] = type(keys[source])(
+                                k for k in keys[source] if k[0] not in undecided)
                 if not force_changed and not compact_only:
                     state.close_over(found, fresh, opened_as)
                 state.remember_owned(owned_ids)
-                # a record holding a file not read yet stays open (opened again when a
-                # fold re-projected it): the next cycle projects it with the reading
-                for source, keys in held.items():
-                    state.add(source, keys)
+                # a record holding a file not read yet is queued (a fold re-projecting a
+                # queued one keeps it there): a later cycle takes it back with its reading
+                state.hold(held, mine)
+                adapt_held_batch(state, environ, taken, held, report)
                 state.timed_out(timed)
             (delta_dir / CHECKPOINT).unlink(missing_ok=True)   # its records are closed
             report["pruned"] = prune(delta_dir, keep={Path(item["store"]) for item in layers})
@@ -1948,6 +2129,15 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                         [item["store"] for item in layers], pg_config.dsn(environ))
                     if report["postgres"].get("stalled"):   # loud: the cycle's status too
                         report["status"] = "postgres_stalled"
+                    # the traverse facts of the version Postgres holds now, kept here:
+                    # folded over the layers since the kept version, else read in full
+                    # (no fold when nothing was kept for this fact code: a deploy that
+                    # changed it, a fresh facts folder). Never left to a host's request,
+                    # where every record page and Home waited minutes on them, per
+                    # process, after each such cycle (``_keep_facts``: never raises)
+                    from operating.pg.ontology_delta import _keep_facts
+                    _keep_facts(pg_config.dsn(environ), report["postgres"],
+                                base.path if base.path.is_file() else None)
                 except Exception as exc:  # noqa: BLE001 - reported; SQLite layers serve
                     report["postgres"] = {"applied": False,
                                           "error": f"{type(exc).__name__}"[:120]}
@@ -1969,7 +2159,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             readings.close()
         busy.close()
         base.close()
-        state.conn.close()
+        state.close()
 
 
 KEPT = ("readings.sqlite", "member-readings.sqlite", "fields.sqlite")
@@ -2310,28 +2500,76 @@ def bound_reading(work: Path, state: State, environ: Mapping[str, str]) -> Path 
     return log
 
 
-def pending_records(state: Path, digests: Sequence[str]) -> dict[str, set[Any]]:
+def held_batch(state: State, environ: Mapping[str, str]) -> tuple[int, bool]:
+    """(records a cycle takes back from the held queue, whether the number is fixed by
+    ``PLX_DELTA_HELD_BATCH``)."""
+    raw = environ.get("PLX_DELTA_HELD_BATCH")
+    if raw is not None and raw.strip():
+        try:
+            return max(int(float(raw)), 0), True
+        except ValueError:
+            pass   # not a number: the adaptive batch
+    kept = state.get("held_batch")
+    if isinstance(kept, int) and not isinstance(kept, bool):
+        return min(max(kept, HELD_BATCH_MIN), HELD_BATCH_MAX), False
+    return HELD_BATCH, False
+
+
+def take_held(state: State, environ: Mapping[str, str], report: dict[str, Any], *,
+              skip: Iterable[str] = ()) -> dict[str, list[Any]]:
+    """Open again a batch of the held records (:meth:`State.take`): the batch less the
+    records already open, and at least a quarter of it (one at least), so a burst of
+    changes delays the queue without stopping it. ``skip``: sources this cycle does not follow."""
+    batch, _fixed = held_batch(state, environ)
+    sources = [s for s in SOURCES if s not in set(skip)]
+    count = max(batch - state.open_count(sources), batch // 4, 1) if batch else 0
+    taken = state.take(count, sources)
+    report["held_queue"] = {"batch": batch, "taken": sum(len(v) for v in taken.values())}
+    return taken
+
+
+def adapt_held_batch(state: State, environ: Mapping[str, str],
+                     taken: Mapping[str, Sequence[Any]],
+                     held: Mapping[str, Mapping[Any, Any]], report: dict[str, Any]) -> None:
+    """After a layer: double the batch when every record it took back had its files read,
+    halve it when most of them are held again (the budget had no time for them)."""
+    count = sum(len(v) for v in taken.values())
+    batch, fixed = held_batch(state, environ)
+    if fixed or not count:
+        return
+    again = sum(len(set(map(_tuple, keys)) & set(held.get(source, {})))
+                for source, keys in taken.items())
+    if again == 0:
+        batch = min(batch * 2, HELD_BATCH_MAX)
+    elif 2 * again > count:
+        batch = max(batch // 2, HELD_BATCH_MIN)
+    state.put("held_batch", batch)
+    report.setdefault("held_queue", {})["next_batch"] = batch
+
+
+def pending_records(state: Path, digests: Sequence[str]) -> dict[str, dict[Any, set[str]]]:
     """source -> the records of the capture subset in ``state`` (a cycle's) holding one
-    of these files: a mail message by an attachment's bytes or OCR text, a SharePoint item
-    by its bytes."""
-    out: dict[str, set[Any]] = {}
+    of these files, each with the ones it holds: a mail message by an attachment's bytes
+    or OCR text, a SharePoint item by its bytes."""
+    out: dict[str, dict[Any, set[str]]] = {}
     if not digests:
         return out
     wanted = json.dumps(sorted(set(digests)))
     for db, sql in (
             (state / "mail-capture" / "capture.db",
-             "SELECT message_handle FROM attachments WHERE content_sha256 IN (SELECT value "
-             "FROM json_each(:w)) OR text_sha256 IN (SELECT value FROM json_each(:w))"),
+             "SELECT message_handle, content_sha256 FROM attachments WHERE content_sha256 "
+             "IN (SELECT value FROM json_each(:w)) UNION SELECT message_handle, text_sha256 "
+             "FROM attachments WHERE text_sha256 IN (SELECT value FROM json_each(:w))"),
             (sharepoint_paths(state)[0],
-             "SELECT l1_handle FROM items WHERE content_sha256 IN (SELECT value FROM "
-             "json_each(:w))")):
+             "SELECT l1_handle, content_sha256 FROM items WHERE content_sha256 IN (SELECT "
+             "value FROM json_each(:w))")):
         if not db.is_file():
             continue
         with contextlib.closing(_ro(db)) as conn:
-            for (handle,) in conn.execute(sql, {"w": wanted}):
+            for handle, digest in conn.execute(sql, {"w": wanted}):
                 hit = record_of_handle(handle) if isinstance(handle, str) else None
                 if hit is not None:
-                    out.setdefault(hit[0], set()).add(_tuple(hit[1]))
+                    out.setdefault(hit[0], {}).setdefault(_tuple(hit[1]), set()).add(digest)
     return out
 
 
@@ -2350,17 +2588,22 @@ def note_documents(store: Path, documents: Mapping[str, Any],
 
 
 def held_documents(log: Path, state: Path, owned: Mapping[str, Iterable[Any]],
-                   report: dict[str, Any]) -> tuple[dict[str, list[Any]], list[str]]:
+                   report: dict[str, Any]
+                   ) -> tuple[dict[str, dict[Any, set[str]]], list[str]]:
     """The records this layer owns that hold a file left pending (``log``, the cycle's
-    budget's), by source, to keep open; and the files that timed out."""
+    budget's), by source, each with those files, to queue (:meth:`State.hold`); and the
+    files that timed out."""
     from ontology import reading_budget as rb
     found = rb.pending(log)
     retry = sorted(d for d, why in found.items() if why - {rb.GENERATION})
     timed = sorted(d for d, why in found.items() if rb.TIMED_OUT in why)
     holders = pending_records(state, retry)
-    held = {source: sorted(holders.get(source, set()) & {_tuple(k) for k in keys})
-            for source, keys in owned.items()}
-    held = {source: keys for source, keys in held.items() if keys}
+    held: dict[str, dict[Any, set[str]]] = {}
+    for source, keys in owned.items():
+        mine = holders.get(source, {})
+        got = {k: mine[k] for k in sorted({_tuple(k) for k in keys} & set(mine), key=_order)}
+        if got:
+            held[source] = got
     report["documents"] = {"pending": len(retry), "timed_out": len(timed),
                            "left_to_generation": len(found) - len(retry),
                            "held_open": {s: len(v) for s, v in sorted(held.items())}}
@@ -2558,9 +2801,22 @@ def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: 
             "changed": report.get("changed"), "seconds": report.get("seconds"),
             "documents": report.get("documents"), "partial": bool(partial),
             "base": "postgres" if base.postgres else "sqlite"}
-    temp = delta_dir / f".{POINTER}.tmp"
-    temp.write_text(json.dumps(body, sort_keys=True), encoding="utf-8")
-    os.replace(temp, delta_dir / POINTER)
+    _write_durable(delta_dir / POINTER, json.dumps(body, sort_keys=True))
+
+
+def _write_durable(path: Path, text: str) -> None:
+    """Publish ``text`` at ``path`` whole or not at all, and on disk before the name
+    changes (the file's bytes, then the directory entry; the generation's
+    ``project_incremental._write_json`` does the same): a power loss never leaves the
+    pointer naming a layer whose bytes were not written."""
+    from ontology.store import _fsync_dir
+    temp = path.with_name(f".{path.name}.tmp")
+    with open(temp, "w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
+    _fsync_dir(path.parent)
 
 
 def keep_layer_facts(store: str | Path, *, workers: int = 1) -> bool:

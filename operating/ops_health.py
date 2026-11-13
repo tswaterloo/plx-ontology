@@ -16,6 +16,12 @@ overriding any of them):
   (``host/host.sqlite`` ``source_state``); a breach past twice its normal turn (interval
   plus run budget, ``host/serve-health.json`` ``turn_seconds``; else ``capture_minutes``)
   or with ``stale_since``.
+* ``capture_failing:<source>``: the failures in a row of each capture source's runs
+  (``host/source-runs.json``, written by the ingest as each run ends; else the host
+  ledger's cycles), a breach at ``capture_failed_runs``; a breach is named
+  ``capture_failing:<source>:<error>`` so a new cause opens a new incident, and says it in
+  words: ``mail: ExclusionUnavailable since 5:15 AM ET (4 runs failed in a row); last
+  success Nov 10 12:13 PM ET; newest record 11:12 PM ET`` (times in US Eastern).
 * ``capture:sage``, ``capture:filemaker``, ``capture:calendar``, ``capture:planner``: the
   sources one capture carries (``source_checks``): Sage and FileMaker relations of the
   Portal mirror (its newest refresh of a relation of that lineage), calendar events and
@@ -62,6 +68,7 @@ DEFAULT_TARGETS: dict[str, float] = {
     "delta_last_cycle_minutes": 15,
     "delta_cycle_runtime_minutes": 30,
     "capture_minutes": 360,
+    "capture_failed_runs": 2,      # runs in a row a capture source may fail
     "ingest_start_failures": 3,
     "pg_follow_behind_layers": 6,
     "pg_follow_stall_minutes": 30,
@@ -178,24 +185,209 @@ def capture_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[C
     try:
         conn = _ro(ledger)
         try:
-            rows = conn.execute("SELECT source, captured_at, stale_since FROM source_state "
-                                "WHERE configured = 1 ORDER BY source").fetchall()
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(source_state)")}
+            rows = conn.execute(
+                "SELECT source, captured_at, stale_since, "
+                + ("error" if "error" in columns else "NULL")
+                + " FROM source_state WHERE configured = 1 ORDER BY source").fetchall()
         finally:
             conn.close()
     except sqlite3.Error:
         return [_check("capture", None, t["capture_minutes"], None, "min", "ledger unreadable")]
     turns = serve_health(state).get("turn_seconds") or {}
     out = []
-    for source, captured, stale_since in rows:
-        age = _minutes(now, _parse(captured))
+    runs = source_runs(state)
+    for source, captured, stale_since, error in rows:
+        run = runs.get(source) or {}
+        # The ingest's own record of a later success (the ledger waits for a refresh).
+        last = max((d for d in (_parse(captured), _parse(run.get("last_success_at")))
+                    if d is not None), default=None)
+        age = _minutes(now, last)
         turn = turns.get(source) if isinstance(turns, dict) else None
         bound = (round(2 * float(turn) / 60, 1) if isinstance(turn, (int, float))
                  and not isinstance(turn, bool) and turn > 0 else t["capture_minutes"])
-        out.append(_check(f"capture:{source}", age, bound,
-                          age is None or age > bound or bool(stale_since), "min",
-                          f"stale since {stale_since}" if stale_since else
-                          ("no success for twice its normal interval"
-                           if age is not None and age > bound else "")))
+        # stale until a run the ingest recorded since (the ledger catches up at a refresh)
+        ran = _parse(run.get("last_success_at"))
+        stale = bool(stale_since) and not (ran is not None and _parse(stale_since) is not None
+                                           and ran > _parse(stale_since))
+        why = ("stale since " + _et(_parse(stale_since), now) if stale and _parse(stale_since)
+               else f"stale since {stale_since}" if stale else
+               "no success for twice its normal interval" if age is not None and age > bound
+               else "")
+        error = run.get("last_error") or error
+        newest = newest_record(state, source)
+        extra = [why] if why else []
+        if why and isinstance(error, str) and error:
+            extra.append(f"last error {error}")
+        if why and newest is not None:
+            extra.append("newest record " + _et(newest, now))
+        check = _check(f"capture:{source}", age, bound,
+                       age is None or age > bound or stale, "min", "; ".join(extra))
+        check.update(last_success_at=_iso(last), newest_record_at=_iso(newest))
+        out.append(check)
+    return out
+
+
+def _iso(when: Optional[datetime]) -> Optional[str]:
+    return None if when is None else when.isoformat().replace("+00:00", "Z")
+
+
+def _et(when: Optional[datetime], now: datetime) -> str:
+    """A time as the owner reads it, in US Eastern: ``5:15 AM ET`` today, else
+    ``Nov 10 12:13 PM ET``."""
+    if when is None:
+        return "never"
+    try:
+        from zoneinfo import ZoneInfo
+        zone = ZoneInfo("America/New_York")
+    except Exception:  # noqa: BLE001 - no tz database: UTC, said so
+        return when.strftime("%b %d %H:%M UTC")
+    local, today = when.astimezone(zone), now.astimezone(zone)
+    clock = local.strftime("%I:%M %p").lstrip("0")
+    return (f"{clock} ET" if local.date() == today.date()
+            else f"{local.strftime('%b')} {local.day} {clock} ET")
+
+
+RUNS_FILE = "source-runs.json"   # ``operating.ingest_forever.SourceRuns``
+RUNS_SCHEMA = "plx-source-runs/v1"
+_RECORD_TABLES = ("messages", "items", "versions")   # capture stores' record tables
+
+
+def newest_record(state: Path, source: str) -> Optional[datetime]:
+    """When the newest record of ``source``'s capture store was written (the row last
+    inserted: one indexed read); None when unknown."""
+    try:
+        from .ingest_forever import SOURCES
+        spec = SOURCES.get(source)
+        paths = spec.writes(state) if spec is not None and spec.writes else ()
+    except Exception:  # noqa: BLE001 - unknown, never a crash of the checks
+        return None
+    for path in paths:
+        if not Path(path).is_file():
+            continue
+        try:
+            conn = _ro(Path(path))
+            try:
+                tables = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                for table in _RECORD_TABLES:
+                    if table not in tables:
+                        continue
+                    row = conn.execute(f"SELECT recorded_at FROM {table} WHERE rowid = "
+                                       f"(SELECT max(rowid) FROM {table})").fetchone()
+                    if row is not None and _parse(row[0]) is not None:
+                        return _parse(row[0])
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue
+    return None
+
+
+def _ledger_runs(state: Path, limit: int = 200) -> dict[str, dict[str, Any]]:
+    """Each source's run streak from the host ledger's cycles (newest first): what
+    ``source-runs.json`` holds, as of the last refresh."""
+    ledger = state / "host" / "host.sqlite"
+    if not ledger.is_file():
+        return {}
+    try:
+        conn = _ro(ledger)
+        try:
+            rows = conn.execute("SELECT started_at, report FROM cycle ORDER BY cycle_id "
+                                "DESC LIMIT ?", (limit,)).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    settled: set[str] = set()
+    for started, report in rows:
+        try:
+            sources = json.loads(report or "{}").get("sources")
+        except (ValueError, AttributeError):
+            continue
+        for name, outcome in (sources or {}).items() if isinstance(sources, dict) else ():
+            if name in settled or not isinstance(outcome, dict):
+                continue
+            state_ = outcome.get("state")
+            row = out.setdefault(name, {"consecutive_failures": 0})
+            if state_ in ("captured", "partial"):
+                row["last_success_at"] = started
+                row.setdefault("last_run_at", started)
+                settled.add(name)
+            elif state_ in ("failed", "blocked"):
+                reasons = [r for r in outcome.get("reasons") or () if isinstance(r, str)]
+                reason = reasons[0] if reasons else state_
+                row.setdefault("last_run_at", started)
+                row.setdefault("last_error", reason)
+                row["consecutive_failures"] += 1
+                row["failing_since"] = started
+                if "failing_reason" not in row:
+                    row.update(failing_reason=reason, reason_since=started)
+                elif row["failing_reason"] == reason and not row.get("_changed"):
+                    row["reason_since"] = started
+                else:
+                    row["_changed"] = True
+    for row in out.values():
+        row.pop("_changed", None)
+    return out
+
+
+def source_runs(state: Path) -> dict[str, dict[str, Any]]:
+    """Each capture source's run streak: the ingest's ``host/source-runs.json`` where it
+    names the source, else the host ledger's cycles."""
+    runs = _ledger_runs(state)
+    try:
+        held = json.loads((state / "host" / RUNS_FILE).read_text(encoding="utf-8"))
+        if isinstance(held, dict) and held.get("schema") == RUNS_SCHEMA \
+                and isinstance(held.get("sources"), dict):
+            runs.update({str(k): v for k, v in held["sources"].items() if isinstance(v, dict)})
+    except (OSError, ValueError):
+        pass
+    return runs
+
+
+def capture_run_checks(state: Path, now: datetime, t: Mapping[str, float]) -> list[Check]:
+    """``capture_failing:<source>`` for every configured capture source: a breach once it
+    failed ``capture_failed_runs`` runs in a row, named with its error (a new cause is a
+    new incident) and said in words with when it began, the last success and the newest
+    record captured."""
+    ledger = state / "host" / "host.sqlite"
+    if not ledger.is_file():
+        return []
+    try:
+        conn = _ro(ledger)
+        try:
+            configured = [r[0] for r in conn.execute(
+                "SELECT source FROM source_state WHERE configured = 1 ORDER BY source")]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return [_check("capture_failing", None, t["capture_failed_runs"], None, "runs",
+                       "ledger unreadable")]
+    runs = source_runs(state)
+    bound = t["capture_failed_runs"]
+    out = []
+    for source in configured:
+        run = runs.get(source) or {}
+        failures = run.get("consecutive_failures")
+        failures = failures if isinstance(failures, int) and not isinstance(failures, bool) \
+            else None
+        if failures is None or failures < bound:
+            out.append(_check(f"capture_failing:{source}", failures, bound,
+                              None if failures is None else False, "runs"))
+            continue
+        reason = run.get("failing_reason") or run.get("last_error") or "failed"
+        since = _parse(run.get("reason_since")) or _parse(run.get("failing_since"))
+        newest = newest_record(state, source)
+        text = (f"{source}: {reason} since {_et(since, now)} ({failures} runs failed in a "
+                f"row); last success {_et(_parse(run.get('last_success_at')), now)}; "
+                f"newest record {_et(newest, now)}")
+        check = _check(f"capture_failing:{source}:{reason}", failures, bound, True, "runs",
+                       text)
+        check.update(source=source, last_success_at=run.get("last_success_at"),
+                     newest_record_at=_iso(newest), failing_since=run.get("failing_since"))
+        out.append(check)
     return out
 
 
@@ -486,6 +678,7 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
     checks: list[Check] = []
     checks += delta_checks(state, now, t)
     checks += capture_checks(state, now, t)
+    checks += capture_run_checks(state, now, t)
     checks += source_checks(state, now, t)
     for extra in (start_check(state, t), service_check(state, now),
                   config_keys_check(state)):

@@ -40,6 +40,8 @@ class BackupRestoreTest(unittest.TestCase):
         if not shutil.which("pg_dump") and not Path("/usr/lib/postgresql/17/bin").is_dir():
             raise unittest.SkipTest("no pg_dump")
         cls.db, cls.dsn = pg_testdb.create_db()
+        if os.environ.get("PGPORT"):   # the backup tool drops PG* variables: name the server
+            cls.dsn = psycopg.conninfo.make_conninfo(cls.dsn, port=os.environ["PGPORT"])
         with psycopg.connect(cls.dsn) as conn:
             migrate.migrate(conn, values={"embed_model": "m", "embed_dim": 3})
             for i in range(5):
@@ -69,7 +71,8 @@ class BackupRestoreTest(unittest.TestCase):
         self.config = self.tmp / "config"
         self.config.mkdir(mode=0o700)
         (self.config / "host.json").write_text('{"tenant": "plx"}')
-        (self.config / "host.json").chmod(0o640)
+        (self.config / "plx-demo.service").write_text("[Service]\nExecStart=/bin/true\n")
+        (self.config / "plx-demo.service").chmod(0o640)
         (self.config / "plx.env").write_text("PLX_X_API_KEY=k3yVALUE\n")
         (self.config / "plx.env").chmod(0o600)
         (self.config / "leak.json").write_text('{"PLX_PG_DSN": "x"}')
@@ -190,7 +193,7 @@ class BackupRestoreTest(unittest.TestCase):
         self.env = env
         code, out = self.run_script("backup.sh", PLX_BACKUP_DIR=str(self.tmp / "backups"))
         self.assertEqual((code, out["config_files"], out["config_secret_files"],
-                          out["config_secrets"]), (0, 1, 2, "omitted"), out)   # plx.env and leak.json withheld
+                          out["config_secrets"]), (0, 2, 2, "omitted"), out)   # env and unfamiliar json are withheld; units and host.json are plain
         daily = self.tmp / "backups" / "daily"
         manifest = json.loads(next(daily.glob("manifest-*.json")).read_text())
         self.assertIsNone(manifest["table_counts"]["search.chunks"])
@@ -201,10 +204,33 @@ class BackupRestoreTest(unittest.TestCase):
         self.assertNotIn(b"k3yVALUE", json.dumps(manifest).encode())
         import tarfile
         with tarfile.open(config) as tar:
-            member = tar.getmember(str(self.config / "host.json").lstrip("/"))
+            member = tar.getmember(str(self.config / "plx-demo.service").lstrip("/"))
         self.assertEqual(member.mode & 0o777, 0o640)
         code, out = self.run_script("restore_test.sh")
-        self.assertEqual((code, out["problems"], out["config_files"]), (0, [], 1), out)
+        self.assertEqual((code, out["problems"], out["config_files"]), (0, [], 2), out)
+
+    def test_a_dropin_and_the_policy_files_are_in_the_restorable_archive(self) -> None:
+        dropin = self.config / "plx-demo.service.d"
+        dropin.mkdir()
+        (dropin / "zz-mem.conf").write_text("[Service]\nMemoryMax=8G\n")
+        (self.config / "employee_policy.json").write_text('{"p": 1}')
+        code, out = self.run_script("backup.sh", PLX_BACKUP_DIR=str(self.tmp / "backups"))
+        self.assertEqual((code, out["restore_files_missing"]), (0, []), out)
+        config = next((self.tmp / "backups" / "daily").glob("config-*.tar.gz"))
+        import tarfile
+        with tarfile.open(config) as tar:
+            names = {Path(m.name).name for m in tar.getmembers() if m.isfile()}
+        self.assertTrue({"zz-mem.conf", "host.json", "employee_policy.json"} <= names, names)
+        code, out = self.run_script("restore_test.sh")
+        self.assertEqual((code, out["problems"]), (0, []), out)
+
+    def test_the_backup_fails_when_a_restore_needed_file_is_left_out(self) -> None:
+        dropin = self.config / "plx-demo.service.d"
+        dropin.mkdir()
+        (dropin / "zz-pg.conf").write_text("[Service]\nEnvironment=PLX_PG_DSN=postgresql://u:pw@h/x\n")
+        code, out = self.run_script("backup.sh", PLX_BACKUP_DIR=str(self.tmp / "backups"))
+        self.assertEqual(code, 7, out)
+        self.assertEqual([Path(p).name for p in out["restore_files_missing"]], ["zz-pg.conf"])
 
     def test_rotation_keeps_seven_daily_and_four_weekly(self) -> None:
         root = self.tmp / "rot"

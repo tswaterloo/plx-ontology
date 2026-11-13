@@ -23,7 +23,14 @@ by ``operating.proactive_engine`` beside its other rules in its own time window
   one vote per customer is weak). With ``MIN_CUSTOMERS`` customers or more, a customer
   whose price is under that percentile AND ``BELOW_TYPICAL`` or more under that median is
   raised, citing its own lines and every other customer's lines (a reader who may not
-  open them all sees nothing).
+  open them all sees nothing). A customer that bought fewer than ``MIN_OTHER_PRODUCTS``
+  other judged products has no known price standing (a reseller's tier or its own price
+  list reads as far below typical): not judged (``customer_standing_unknown``). The
+  typical price is the other customers' on the customer's own price list
+  (``Customer.price_list_code``, every list its records state; none stated is a tier of
+  its own): another list is another agreed tier (``price_list_peers_few``: fewer than
+  ``MIN_CUSTOMERS`` on its list). A tenth or more of the other customers paying as little
+  or less: no outlier (``peers_as_low``), however their volume weighs.
 * A series whose lines' own system books a cost per line (Sage ``unit_cost``) and booked
   none above 0 on any line of either window, with no purchase cost of the item, is not
   judged (``item_uncosted``): a code never costed (a service, a miscellaneous non-stock
@@ -80,6 +87,7 @@ INVOICE_PROPS = ("status", "posting_date", "invoice_date")
 UNPOSTED = frozenset({"draft", "in review", "in_review"})
 PRICE_DAYS = 180
 MIN_CUSTOMERS = 3
+MIN_OTHER_PRODUCTS = 2              # judged products a customer bought besides this one
 BELOW_TYPICAL = Decimal("0.15")     # a share of the weighted median price
 LOW_SHARE = Decimal("0.10")         # the weighted percentile a price must also be under
 HIGH_BELOW_TYPICAL = Decimal("0.30")
@@ -249,6 +257,13 @@ def price_consistency(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             paid.cost_groups.append(cites(rows, FINANCE))
         counts["lines"] += 1
     names = _names(st, CUSTOMER, {c for by in series.values() for c in by}, cust_root)
+    # how many judged products each customer bought: what it pays elsewhere is the only
+    # read of its price tier the store holds (no tier field tells a reseller apart)
+    tier = _price_lists(st, {c for by in series.values() for c in by}, cust_root)
+    standing = Counter(c for key, by in series.items()
+                       if not (key in booked_zero and key not in costed)
+                       for c in by
+                       if sum(tier[o] == tier[c] for o in by) >= MIN_CUSTOMERS)
     gaps = []
     for (item, unit, currency), by_customer in sorted(series.items()):
         _tick(st)
@@ -316,25 +331,41 @@ def price_consistency(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                            "price": _price(price), "floor": _price(cost), "unit": unit,
                            "item": item, "lines": paid.lines}))
                 continue
-            if not judged:
+            # the other customers on the customer's own price list: another list is
+            # another agreed tier, never a typical price for this one
+            peers = {c: p for c, p in by_customer.items()
+                     if c != customer and tier[c] == tier[customer]}
+            if len(peers) + 1 < MIN_CUSTOMERS:
+                if judged:
+                    counts["price_list_peers_few"] += 1
                 continue
             # the other customers' lines, each weighted by its quantity
-            rest = [pt for c, p in by_customer.items() if c != customer for pt in p.points]
+            rest = [pt for p in peers.values() for pt in p.points]
             typical, low = weighted_share(rest, Decimal("0.5")), weighted_share(rest, LOW_SHARE)
             if typical is None or low is None or typical <= 0 or not paid.price < low:
                 continue
             below = (typical - paid.price) / typical
             if below < BELOW_TYPICAL:
                 continue
+            if standing[customer] - 1 < MIN_OTHER_PRODUCTS:
+                # a customer seen on no other judged product has no known price standing:
+                # a reseller's or own-price-list tier reads as far below typical (live
+                # 11-12: 3 of 15 were such customers, every right one bought 2 or more)
+                skipped.note("customer_standing_unknown", [customer], [(customer, FINANCE)])
+                continue
+            if sum(p.price <= paid.price for p in peers.values()) >= LOW_SHARE * len(peers):
+                # one large buyer's price is no typical when a tenth or more of the other
+                # customers pay as little (live 11-12: 2 others, one of them lower)
+                counts["peers_as_low"] += 1
+                continue
             counts[BELOW_TYPICAL_KIND] += 1
             pct = (below * 100).quantize(Decimal("1"))
-            others = [g for c, p in sorted(by_customer.items()) if c != customer
-                      for g in p.groups]
+            others = [g for _c, p in sorted(peers.items()) for g in p.groups]
             gaps.append(gap(
                 BELOW_TYPICAL_KIND, RULE, customer, CUSTOMER, f"{item}|{unit}|{currency}",
                 summary=_named(f"Price {pct}% below typical: {_price(paid.price)} {per} "
                                f"paid for a product against a typical {_price(typical)} "
-                               f"{per} (volume-weighted, {len(by_customer) - 1} other "
+                               f"{per} (volume-weighted, {len(peers)} other "
                                f"customers) in the last {days} days", names.get(customer)),
                 missing="Why does this customer pay so much less for the product than the "
                         "others (a volume deal, an old price never raised, a discount "
@@ -343,7 +374,7 @@ def price_consistency(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                      f"lines of the last {days} days is under the lowest "
                      f"{int(LOW_SHARE * 100)}% of the other customers' volume and "
                      f"{int(BELOW_TYPICAL * 100)}% or more below their volume-weighted "
-                     "median, same product, unit and currency "
+                     "median, same product, unit, currency and price list "
                      f"({MIN_CUSTOMERS} customers or more; each line cited)."),
                 priority="high" if below >= HIGH_BELOW_TYPICAL else "medium",
                 about=(LINE, "amount_excluding_tax"),
@@ -352,12 +383,28 @@ def price_consistency(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                                   "currency": currency, "basis": "below_typical"},
                        "below_pct": str(pct), "price": _price(paid.price),
                        "typical": _price(typical), "unit": unit, "item": item,
-                       "customers": len(by_customer), "lines": paid.lines}))
+                       "customers": len(peers) + 1, "lines": paid.lines}))
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts.get(k, 0) for k in ("lines", "series", "judged_series",
                                                    "uncosted_series", "unposted",
+                                                   "price_list_peers_few", "peers_as_low",
                                                    "earlier_lines", *KINDS)}
     return out
+
+
+def _price_lists(st: Any, customers: set[str], root: Mapping[str, str]
+                 ) -> dict[str, frozenset[str]]:
+    """customer cluster -> the price lists its records state (``Customer.price_list_code``;
+    none stated: the empty set, a tier of its own kind)."""
+    members = [m for m, r in root.items() if r in customers] + sorted(customers)
+    found = st.values([CUSTOMER], ("price_list_code",), objects=sorted(set(members)))
+    out: dict[str, set[str]] = defaultdict(set)
+    for oid, entry in found.items():
+        for row in entry["props"].get("price_list_code") or ():
+            code = str(row.get("value") or "").strip().casefold()
+            if code and code not in ("none", "null"):
+                out[root.get(oid, oid)].add(code)
+    return defaultdict(frozenset, {c: frozenset(v) for c, v in out.items()})
 
 
 def _own_cost(props: Mapping[str, list], codes: Mapping[tuple, str | None],

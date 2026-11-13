@@ -209,6 +209,13 @@ class TrustAndDraft(unittest.TestCase):
         self.assertEqual(page["autopilot_gate"], {"need_judged": 20, "need_percent": 95.0})
         words = next(x["words"] for x in page["lines"] if x["words"].startswith(line))
         self.assertIn("after 20 judged held-out items at 95% or better", words)
+        self.assertNotIn("approves", words)
+        # API-020: kinds opened to person-approved writes skip the gate, and it says so
+        self.backend.writes_environ = {**self.backend.writes_environ,
+                                       aw.APPROVED_ENV: "bc_write,send_mail"}
+        words = next(x["words"] for x in self.client(TEAM).get("/api/trust").json()["lines"]
+                     if x["words"].startswith(line))
+        self.assertIn("or for bc write, send mail when a person approves and confirms", words)
         with mock.patch.object(aw, "load_rules", side_effect=aw.RulesInvalid("schema")):
             page = self.client(TEAM).get("/api/trust").json()
         self.assertIsNone(page["autopilot_gate"])

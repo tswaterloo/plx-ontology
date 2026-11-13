@@ -250,6 +250,7 @@ def thread_population(st: Any, rows: dict[str, Any], inside: set[str], indexed: 
     others = sorted({o for ms in members.values() for o in ms[:pt.MAX_THREAD]} - set(rows))
     # read by id: no word index needed (the whole-mail scan held every message, over 4 GB)
     rows.update(pt._read(st, others, MAIL_PROPS) if others else {})
+    cut = pt.cut_short(members, rows)
     rows = pt.seen_by(rows, as_of)
     audience: dict[str, str] = {}
     wanted = sorted(rows)
@@ -262,7 +263,7 @@ def thread_population(st: Any, rows: dict[str, Any], inside: set[str], indexed: 
     clear = {k: bool(people.unit_clear(k)) for k in set(audience.values())}
     kept = {o: r for o, r in rows.items() if o in audience and clear[audience[o]]}
     return {"rows": kept, "audience": audience, "members": members, "inside": inside,
-            "indexed": indexed, "dropped_unread": len(rows) - len(kept)}
+            "cut": cut, "indexed": indexed, "dropped_unread": len(rows) - len(kept)}
 
 
 def _links(st: Any, oids: Sequence[str]) -> dict[str, dict[str, list[str]]]:

@@ -164,6 +164,30 @@ class LaterExclusionTests(AllMailboxesCase):
         self.assertEqual(len(graph.calls), requests)   # offline: no request at all
         self.assertTrue(self.x_handles())             # hidden, not yet purged
 
+    def test_a_list_nobody_can_confirm_never_stops_the_capture_or_its_purge(self):
+        """2026-11-12: one stored message addressed to a distribution list whose members
+        cannot be read (hidden membership) made the purge's address check raise, and every
+        mail capture run failed (``ExclusionUnavailable``) from 5:15 AM ET on. The purge
+        decides nothing on that address and deletes nothing for it; the excluded person's
+        mail is still purged; new mail to the list is held, not stored."""
+        listed = "hidden-list@example-plx.com"
+        graph = DirectoryGraph(members=8)
+        cc(graph, oid(3), "M-list-before", to=[listed])
+        self.captured(graph)
+        graph.groups = [{"id": "g-hidden", "mail": listed, "proxyAddresses": [],
+                         "groupTypes": [], "hiddenMembership": True}]
+        cc(graph, oid(2), "M-list-after", to=[listed])
+        code, report = self.main(graph)       # ENV: the person is excluded now
+        self.assertIsNotNone(report, "the run crashed instead of reporting")
+        self.assertEqual(report["summary"]["purged"]["mailboxes"], 1, report)
+        self.assertEqual(self.x_handles(), [])
+        self.assertEqual(self.raw("SELECT COUNT(*) FROM messages WHERE message_id="
+                                  "'M-cc-before'")[0][0], 0)
+        self.assertEqual(self.raw("SELECT COUNT(*) FROM messages WHERE message_id="
+                                  "'M-list-before'")[0][0], 1)
+        self.assertEqual(self.raw("SELECT COUNT(*) FROM messages WHERE message_id="
+                                  "'M-list-after'")[0][0], 0)
+
     def test_the_next_capture_purges_it_and_mail_naming_the_person_stays_out(self):
         graph = self.captured()
         store = MailCaptureStore(self.state)

@@ -710,6 +710,28 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/doc-fill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Doc Fill
+         * @description Fill a form for a record: a new file with every blank listed beside its source,
+         *     for you to review. Nothing is saved or sent; saving it beside its SharePoint
+         *     original is the upload you approve.
+         */
+        post: operations["doc_fill_api_doc_fill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/explore/{object_type}/{object_id}": {
         parameters: {
             query?: never;
@@ -2689,6 +2711,8 @@ export type components = {
             title?: string | null;
             /** Undo Note */
             undo_note?: string | null;
+            /** Undo Status */
+            undo_status?: string | null;
             /**
              * Undoable
              * @default false
@@ -4161,6 +4185,24 @@ export type components = {
             ok: boolean;
         };
         /**
+         * DocFillRequest
+         * @description Fill this form for this record: the file (base64), the record (an identifier such
+         *     as "PO 1234" or a record id), and optionally the SharePoint file it came from (the
+         *     filled copy goes beside it) or the email it came in (a reply is prepared).
+         */
+        DocFillRequest: {
+            /** Data */
+            data: string;
+            /** Name */
+            name: string;
+            /** Record */
+            record: string;
+            /** Reply To */
+            reply_to?: string | null;
+            /** Source */
+            source?: string | null;
+        };
+        /**
          * DocumentsPending
          * @description Documents the latest delta cycle has not read yet (its reading budget ran out or a
          *     file timed out): the records holding them are current, their document fields pending;
@@ -4579,6 +4621,65 @@ export type components = {
              */
             status: "new" | "accepted" | "fixed" | "wont_fix";
         };
+        /**
+         * FillCitation
+         * @description Where a filled value was read: the record, its property and the source it came
+         *     from (``open_url`` opens that source as you may read it).
+         */
+        FillCitation: {
+            /** Field */
+            field: string;
+            /** Open Url */
+            open_url?: string | null;
+            /** Record */
+            record: string;
+            /** Source */
+            source: string;
+        };
+        /**
+         * FillField
+         * @description One blank of the form: what it held, what the fill put there and why.
+         */
+        FillField: {
+            /** After */
+            after: string;
+            /** Before */
+            before: string;
+            citation?: components["schemas"]["FillCitation"] | null;
+            /** Label */
+            label: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Status
+             * @description filled: from one value the records agree on (``citation``); kept: it already held a value; person_only: a signature, signer or signing date; unknown_field: no rule for the label; no_fact: no record read holds it; ambiguous: the records disagree. Only filled changes.
+             * @enum {string}
+             */
+            status: "filled" | "kept" | "person_only" | "unknown_field" | "no_fact" | "ambiguous";
+        };
+        /**
+         * FillReply
+         * @description The filled copy as a reply to the email the form came in: prepared, never sent from
+         *     here (``missing`` says what a send with a file needs).
+         */
+        FillReply: {
+            /** Attachment */
+            attachment: string;
+            /** Missing */
+            missing: string[];
+            /**
+             * Status
+             * @constant
+             */
+            status: "not_available";
+            /** Subject */
+            subject: string;
+            /** To */
+            to: string[];
+        };
         /** Freshness */
         Freshness: {
             /**
@@ -4939,6 +5040,55 @@ export type components = {
             upload_id: string;
         };
         /**
+         * InstructFill
+         * @description A form filled from the records as a new file (the original is never changed),
+         *     every blank listed with its source, for review before anything is saved. Saving it
+         *     to SharePoint is the upload you approve (``/api/instruct/uploads/{upload_id}``).
+         */
+        InstructFill: {
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Digest After */
+            digest_after?: string | null;
+            /** Digest Before */
+            digest_before: string;
+            /**
+             * Download Url
+             * @description The filled copy, for you only; none when nothing was filled.
+             */
+            download_url?: string | null;
+            /** Fields */
+            fields: components["schemas"]["FillField"][];
+            /** Folder */
+            folder?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "docx" | "xlsx" | "pdf";
+            /**
+             * Name
+             * @description The filled copy's file name.
+             */
+            name: string;
+            /** Notes */
+            notes?: string[];
+            /** Original */
+            original: string;
+            record: components["schemas"]["ObjectRef"];
+            reply?: components["schemas"]["FillReply"] | null;
+            /**
+             * Size
+             * @description The filled copy's bytes (0: nothing was filled).
+             * @default 0
+             */
+            size: number;
+            /** Upload Id */
+            upload_id?: string | null;
+        };
+        /**
          * InstructFollowUp
          * @description An answer to the question an instruction asked, or the meetings to use.
          */
@@ -4976,6 +5126,16 @@ export type components = {
             };
             /** Documents */
             documents?: components["schemas"]["InstructDocument"][];
+            /**
+             * Files
+             * @description The files this instruction read (never their content): continuing it needs them attached again.
+             */
+            files?: components["schemas"]["AskAttachmentNote"][];
+            /**
+             * Fills
+             * @description Forms filled from the records, each as a new file to review.
+             */
+            fills?: components["schemas"]["InstructFill"][];
             /**
              * Meetings
              * @description Meetings you attended that may hold context.
@@ -6000,6 +6160,11 @@ export type components = {
             /** @description A BC customer's or sales order's margin and why (the margin section). */
             profitability?: components["schemas"]["Profitability"] | null;
             /**
+             * Profitability Choices
+             * @description The margin section's same-named customers that no identity link joins: each a choice, never added together.
+             */
+            profitability_choices?: components["schemas"]["ObjectRef"][];
+            /**
              * Proposals
              * @description Follow-up drafts and proposed updates built from this page's gated facts and trail; never sent or applied.
              */
@@ -6065,6 +6230,11 @@ export type components = {
             people?: components["schemas"]["Person"][] | null;
             /** @description margin: a BC customer's margin and why, or a BC sales order's (its customer's, led by the order). */
             profitability?: components["schemas"]["Profitability"] | null;
+            /**
+             * Profitability Choices
+             * @description margin: the Business Central customers of this page's exact name that no identity link makes one record: each its own choice (its own page shows its margin), never added together; profitability is null then.
+             */
+            profitability_choices?: components["schemas"]["ObjectRef"][];
             /**
              * Proposals
              * @description trail: the page's follow-up drafts and proposed updates, built from the record, its late lines and this trail (replace the quick read's); never sent or applied. Omitted for the other sections.
@@ -8537,6 +8707,11 @@ export type components = {
             /** Nudge */
             nudge?: string | null;
             /**
+             * Possible Reply At
+             * @description Mail from a recipient after the send, outside its thread: maybe the reply, never counted as one.
+             */
+            possible_reply_at?: string | null;
+            /**
              * State
              * @enum {string}
              */
@@ -10425,6 +10600,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    doc_fill_api_doc_fill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DocFillRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InstructFill"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

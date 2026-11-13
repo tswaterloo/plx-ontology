@@ -54,6 +54,22 @@ NOT_RUN = frozenset({"dry_run", "needs_confirm", "killed", "refused", "excluded"
                      "not_performed"})
 
 
+
+def decision_sent(dec: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
+    """Whether an accepted item's email went out: the decision's own ``sent`` (only the
+    email's own result counts); a decision recorded before ``sent`` was kept, by its
+    outcomes read against the item's actions in the order they ran (an email whose own
+    outcome is done). Anything else (no outcomes, no email step) reads as not sent."""
+    if "sent" in dec:
+        return dec.get("sent") is True
+    outcomes = dec.get("outcomes")
+    if not isinstance(outcomes, list):
+        return False
+    kinds = [a.get("kind") for a in aw.actions_of(item)]
+    return any(kind == "send_mail" and status == "done"
+               for kind, status in zip(kinds, outcomes))
+
+
 def item_outcome(statuses: list[str]) -> str | None:
     """One word for an accepted item's actions (in order): ``unknown`` when any did not
     say how it ended (pending, unknown: check before retrying), ``done`` when all were
@@ -314,7 +330,7 @@ class AutopilotAreaMixin:
                             status=str(step.get("status") or "unknown"),
                             reasons=[str(x) for x in step.get("reasons") or ()][:2])
                             for step in dec.get("steps") or () if isinstance(step, dict)],
-                        sent=dec.get("sent") is True)
+                        sent=decision_sent(dec, item))
             created = _instant(item["created_at"])
             due = _instant(item["due_at"])
             is_today = bool((created and created.astimezone(_LOCAL).date() == today) or
@@ -641,8 +657,14 @@ class AutopilotAreaMixin:
             raise UserFacing("forbidden", "Only the owner reads the autopilot's audit log.",
                              403)
         rows = self._apa_rows(self._apa_state())
-        undone = {r.get("of") for r in rows if r.get("event") in ("attempt", "outcome")
-                  and r.get("of")}
+        # API-019: an action is undone only when its undo's latest state (attempt, outcome
+        # or a person's reconciliation) is done; pending, failed or unknown say so. Any
+        # undo attempt blocks a second one either way.
+        undo_key = {r["of"]: r.get("key") for r in rows
+                    if r.get("event") in ("attempt", "outcome") and r.get("of")}
+        latest = aw._outcomes(rows)
+        undo_state = {of: latest.get(key) if key else "unknown"
+                      for of, key in undo_key.items()}
         titles: dict[str, str] = {}
         path = self._ap_queue_path()  # type: ignore[attr-defined]
         if path is not None and path.exists():
@@ -665,8 +687,10 @@ class AutopilotAreaMixin:
                 item_id=r.get("item_id"), title=titles.get(str(r.get("item_id"))),
                 why=r.get("why"), reasons=[str(x) for x in r.get("reasons") or ()][:8],
                 key=r.get("key"), by=r.get("by"),
-                undoable=bool(done and r.get("inverse") and r.get("key") not in undone),
-                undone=bool(done and r.get("key") in undone),
+                undoable=bool(done and r.get("inverse") and r.get("key") not in undo_state),
+                undone=bool(done and undo_state.get(r.get("key")) == "done"),
+                undo_status=undo_state.get(r.get("key")) if done and undo_state.get(
+                    r.get("key")) not in (None, "done") else None,
                 undo_note=r.get("undo_note") if done else None))
         live = sum(1 for r in rows if r.get("event") == "outcome" and r.get("mode") == "live"
                    and r.get("status") == "done")

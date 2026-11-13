@@ -133,6 +133,27 @@ class ToolsAttachTests(unittest.TestCase):
             time.sleep(0.05)
         return _gone(pids)
 
+    def test_a_cancelled_ask_ends_its_session_at_the_next_line(self):
+        """API-011: the cancel token an abandoned Ask sets stops the session's stream."""
+        import threading
+        host = _Host(self.work, "answer")
+        read: list[int] = []
+        lines = [_init("connected"), *ANSWERED]
+
+        def stream(n):
+            for line in lines:
+                read.append(n)
+                yield line
+        spawn, _starts = _session(stream)
+        agent = runner.ClaudeCodeAgent(spawn=spawn)
+        agent.cancel_event = threading.Event()
+        agent.cancel_event.set()
+        try:
+            runner.gated_run(agent, "task", host, "question")
+        except Exception:  # noqa: BLE001 - an ended session may be refused; what counts
+            pass           # is that it read no further
+        self.assertEqual(len(read), 1)
+
     def test_claude_code_starting_without_the_plx_server_never_answers(self):
         # Claude Code's start-up line says plx failed (its MCP_TIMEOUT passed): the
         # session is stopped there, started once more with a fresh host, then refused.

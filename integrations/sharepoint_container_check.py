@@ -16,8 +16,12 @@ directory, deleted after the counts. Then, offline:
   (``unread``, ``skipped_by_cap``) is counted with its reason, never dropped;
 * ``members_typed``: typed documents (``documentFields``) cited by a member handle;
 * ``members_resolved``: member handles that resolve offline (container gate, then the
-  member's bytes) for the capture audience (one run: one handle per member object, so
-  it equals ``container_members`` or a member is ``members_unresolved``);
+  member's bytes) for the capture audience; ``members_withheld_people``: members that do
+  not, only because the mail they are or sit under is not cleared by the people exclusion
+  (DOC-008: the run's list, with the host's recorded directory deciding addresses; an
+  unreadable list clears none); ``members_accounted`` their sum (one run: one handle per
+  member object, so it equals ``container_members`` or a member is
+  ``members_unresolved``);
 * ``containers_unopened``: captured files named or typed as a container (zip, ``.msg``,
   ``.eml``) whose bytes were not captured (over the content cap, or unavailable), so
   they yield no member record; each is still a container (counted in ``containers``)
@@ -90,7 +94,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from integrations import capture_sharepoint as cs
-from integrations.capture_mail import assert_outside_git, check_state_dir
+from integrations.capture_mail import WORKBENCH_STATE_ENV, assert_outside_git, check_state_dir
 from integrations.captured_text import split_member
 from integrations.live_source_guard import LiveSourceAudience
 from ontology.mentions import cited_page
@@ -125,7 +129,7 @@ WALK_COUNTS = ("walks_held", "walk_folders_listed")   # the cursor's movement
 LEDGER_FILE = "container-check-ledger.json"
 LEDGER_SCHEMA = "plx-sharepoint-container-ledger/v1"
 ITEM_COUNTS = ("member_records", "container_members", "members_typed",
-               "members_resolved", "containers")
+               "members_resolved", "members_withheld_people", "containers")
 # Wall time a run spends verifying new versions after the capture (at least one
 # version a run; the rest wait), so the whole run stays inside the spec's timeout.
 VERIFY_SECONDS = 40.0
@@ -241,9 +245,12 @@ def _current_items(store: Any) -> list[tuple[int, str, str]]:
 
 def _ledger_context(store: Any, args: argparse.Namespace) -> str:
     """What every ledger entry was verified under: the ledger layout, the audience file,
-    the principal and the captured roots (the folder-only gate's). Any change voids the
-    ledger. An item's own permissions are in its key (``_current_items``)."""
+    the principal, the captured roots (the folder-only gate's) and the people exclusion's
+    list (a carried mail's verdict, DOC-008). Any change voids the ledger. An item's own
+    permissions are in its key (``_current_items``)."""
     digest = hashlib.sha256(LEDGER_SCHEMA.encode())
+    fingerprint = getattr(getattr(store, "people", None), "fingerprint", None)
+    digest.update(str(fingerprint() if callable(fingerprint) else None).encode())
     digest.update(Path(args.live_audience).read_bytes())
     digest.update(json.dumps([str(args.principal), [list(r) for r in store.db.execute(
         "SELECT drive_id, root_path FROM roots ORDER BY drive_id, root_path")]]).encode())
@@ -309,14 +316,33 @@ def _verify_item(files: Any, schema: Any, version_id: int, work: Path, store: An
         for leftover in work.glob(f"item-{version_id}.sqlite*"):
             leftover.unlink()
     actor, audience = checks["actor"], checks["audience"]
+    unresolved = [h for h in handles if store.resolve(h, actor, audience) is None]
     return {"member_records": records, "by_state": by_state, "unread": unread,
             "container_members": members, "members_typed": typed,
             "containers": len({split_member(h)[0] for h in handles}),
-            "members_resolved": sum(1 for h in handles
-                                    if store.resolve(h, actor, audience) is not None),
+            "members_resolved": len(handles) - len(unresolved),
+            "members_withheld_people": sum(1 for h in unresolved
+                                           if _withheld_for_people(store, h, checks)),
             "no_grant": sum(1 for h in handles if checks["gate"](checks["withheld"], h)),
             "folder_only": sum(1 for h in handles
                                if checks["folder_gate"](checks["folder_actor"], h))}
+
+
+def _withheld_for_people(store: Any, handle: str, checks: Mapping[str, Any]) -> bool:
+    """Whether a member that did not resolve is withheld by the people exclusion alone:
+    its container resolves for the actor and the mail it carries is not cleared under the
+    store's guard (DOC-008; ``carried_mail.member_withheld``)."""
+    from integrations import carried_mail
+    member = split_member(cited_page(handle)[0])
+    if member is None:
+        return False
+    container, path, _digest = member
+    view = store.resolve(container, checks["actor"], checks["audience"], text=False,
+                         _whole=False)
+    if view is None:
+        return False
+    return carried_mail.member_withheld(store.blobs, view["row"], path, store.people,
+                                        store.root.parent)
 
 
 def _projected(projection: Path) -> tuple[int, list[str], int]:
@@ -347,6 +373,19 @@ def _verify_deadline(budget: float | None, run_start: float, now: float) -> floa
     return max(now, run_start + budget) + VERIFY_SECONDS
 
 
+def _people(environ: Mapping[str, str]) -> Any:
+    """The people guard of this run's environment (``PeopleExclusion.from_env``; an
+    unreadable list is the unavailable guard: every carried mail withheld), with the
+    directory the host's mail capture recorded (``$PLX_WORKBENCH_STATE_DIR``) attached, so
+    a carried mail's addresses are decided as the host decides them."""
+    from integrations import people_exclusion
+    guard = people_exclusion.PeopleExclusion.from_env(environ)
+    host = environ.get(WORKBENCH_STATE_ENV)
+    if host and Path(host).is_absolute():
+        guard = people_exclusion.with_directory(guard, host)
+    return guard
+
+
 def run(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,
         sender: Any = None, sleep: Callable[[float], None] | None = None,
         monotonic: Callable[[], float] | None = None) -> dict[str, Any]:
@@ -370,7 +409,8 @@ def run(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None,
     with tempfile.TemporaryDirectory(prefix=WORK_PREFIX, dir=state) as work:
         report = _report(args, state, Path(work), capture,
                          deadline=_verify_deadline(args.budget_seconds, run_start, clock()),
-                         clock=clock)
+                         clock=clock, people=_people(os.environ if environ is None
+                                                     else environ))
     report["storage"] = {"host_state": host_state, "carried": carried,
                          "state_base": state_base}
     report["cursor"] = {**_cursor(capture),
@@ -455,9 +495,8 @@ def _verify(args: argparse.Namespace, state: Path, work: Path, store: Any,
         entry = kept.get(key)
         if entry is None:
             continue
-        for count in ("member_records", "container_members", "members_typed",
-                      "members_resolved", "containers"):
-            report[count] += entry[count]
+        for count in ITEM_COUNTS:
+            report[count] += entry.get(count, 0)   # a ledger entry from before: none
         for name, number in entry["by_state"].items():
             by_state[name] = by_state.get(name, 0) + number
         for name, number in entry["unread"].items():
@@ -490,7 +529,8 @@ def _verify(args: argparse.Namespace, state: Path, work: Path, store: Any,
 
 def _report(args: argparse.Namespace, state: Path, work: Path,
             capture: Mapping[str, Any], *, deadline: float = float("inf"),
-            clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+            clock: Callable[[], float] = time.monotonic, people: Any = None
+            ) -> dict[str, Any]:
     summary = capture["summary"]
     report: dict[str, Any] = {
         "check": CHECK, "evidence_label": capture["evidence_label"],
@@ -506,6 +546,7 @@ def _report(args: argparse.Namespace, state: Path, work: Path,
         "containers": 0, "containers_unopened": 0, "containers_unopened_truncated": False,
         "container_members": 0, "member_records": 0, "members_typed": 0,
         "members_by_state": {}, "members_unread": {}, "members_resolved": 0,
+        "members_withheld_people": 0,
         "projection_error": None,
         "leak_check": {"no_grant_members_visible": 0, "folder_only_members_visible": 0}}
     failed = set()
@@ -526,6 +567,7 @@ def _report(args: argparse.Namespace, state: Path, work: Path,
     report["projection"] = {"items_verified": 0, "items_carried": 0, "items_deferred": 0}
     try:
         store = cs.SharePointCaptureStore.open_read_only(state)
+        store.people = people
     except cs.CaptureError as exc:
         report["projection_error"] = ("sharepoint_capture_missing" if exc.code == "store_missing"
                                       else exc.code)
@@ -551,7 +593,11 @@ def _report(args: argparse.Namespace, state: Path, work: Path,
                 failed.add("no_container_members")
         if report["member_records"] != report["container_members"]:
             failed.add("members_not_projected")
-        if report["members_resolved"] != report["container_members"]:
+        # a member the people exclusion withholds (a carried mail it does not clear) is
+        # accounted for, never a failure; any other member that does not resolve is
+        report["members_accounted"] = (report["members_resolved"]
+                                       + report["members_withheld_people"])
+        if report["members_accounted"] != report["container_members"]:
             failed.add("members_unresolved")
     if report["leak_check"]["no_grant_members_visible"]:   # whatever else failed
         failed.add("no_grant_sees_members")

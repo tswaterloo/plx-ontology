@@ -67,6 +67,13 @@ function Select({ label, value, onChange, options }: { label: string; value: str
   );
 }
 
+// An undo that was tried and is not done says where it stands (never "Undone").
+const UNDO_STATUS: Record<string, string> = {
+  pending: "Undo sent: waiting for the system to confirm it.",
+  failed: "Undo failed: the change is still in place.",
+  unknown: "Undo outcome not known: check the system before trying again.",
+};
+
 const uniq = (xs: string[]) => [...new Set(xs.filter(Boolean))].sort();
 
 const TZ = "America/Toronto";
@@ -541,6 +548,7 @@ function AuditView({ area, filters }: { area: Area; filters: Filters }) {
                   .join(" · ")}
               </p>
               {r.undone && <p className="text-[12px] text-muted">Undone.</p>}
+              {r.undo_status && <p className="text-[12px] text-muted">{UNDO_STATUS[r.undo_status] ?? "Undo outcome not known: check the system before trying again."}</p>}
               {r.undoable && r.key &&
                 (confirm === r.key ? (
                   <div className="flex flex-wrap items-center gap-2">

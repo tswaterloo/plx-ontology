@@ -865,14 +865,14 @@ def read_relations(runtime: Any, actor: Actor, *, max_staleness: float | None
     is built from (GET-only, bounded pages; ``integrations.source_mirror.scan_relation``):
     per part, its status, rows read, completeness and reasons, value-free, and the
     Portal's failure (``upstream``) when the Portal failed the read."""
-    from integrations.source_mirror import scan_relation
+    from integrations.source_mirror import scan_label, scan_relation
 
     out: dict[str, dict[str, Any]] = {}
     for part, relation in SURVEY_RELATIONS:
         scan = scan_relation(runtime.mirror, actor, relation, MAX_SURVEY_ROWS, max_staleness)
         out[part] = {"relation": relation, "status": scan["status"],
                      "rows_scanned": len(scan["rows"]), "complete": scan["complete"],
-                     "reasons": list(scan["reasons"]),
+                     "reasons": list(scan["reasons"]), **scan_label(scan),
                      **({"upstream": dict(scan["upstream"])} if "upstream" in scan else {})}
     return out
 

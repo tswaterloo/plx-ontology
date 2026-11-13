@@ -309,6 +309,57 @@ class FactsReadApart(unittest.TestCase):
         self.assertEqual(seen["env"]["PGOPTIONS"], "-c jit=off")
         self.assertNotIn("nonexistent-plx-socket-dir", " ".join(seen["args"]))
 
+    def test_the_read_ends_with_its_parent_and_leaves_no_half_written_file(self):
+        # a parent stopped without its exit handlers (SIGKILL): its facts read stops
+        # within seconds and removes its half-written file, never scans on for half an hour
+        import signal
+        import subprocess
+        import sys
+        import time as clock
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, folder, True)
+        hang = ("import os, pathlib, time; from operating import ontology_tools_traverse as t\n"
+                "def keep(*a, **k):\n"
+                "    pathlib.Path(os.environ['PLX_PG_FACTS_DIR'], "
+                "f'..store-facts-1-2.json.{os.getpid()}.ab12.tmp').write_text('half')\n"
+                "    print(os.getpid(), flush=True); time.sleep(60)\n"
+                "t.keep_pg_facts = keep; t._keep_pg_facts_child()")
+        parent_code = (
+            "import subprocess, sys; from operating import ontology_tools_traverse as t\n"
+            "real = subprocess.Popen\n"
+            f"subprocess.Popen = lambda args, **kw: real([args[0], '-c', {hang!r}], "
+            "**{**kw, 'stdout': None})\n"
+            "t.keep_pg_facts = lambda *a, **k: False\n"
+            f"t._keep_pg_facts_apart({self.UNREACHABLE!r}, ())")
+        root = str(Path(traverse.__file__).resolve().parents[1])
+        env = {**os.environ, "PLX_PG_FACTS_DIR": str(folder), "PYTHONPATH": root}
+        parent = subprocess.Popen([sys.executable, "-c", parent_code], stdout=subprocess.PIPE,
+                                  env=env, cwd=root, text=True)
+        self.addCleanup(lambda: parent.poll() is None and parent.kill())
+        child = int(parent.stdout.readline())
+        self.assertEqual(len(list(folder.iterdir())), 1)    # the read is under way
+        os.kill(parent.pid, signal.SIGKILL)
+        parent.wait()
+
+        def alive() -> bool:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                return False
+            # reaped by whoever adopted it, or a zombie awaiting that: ended either way
+            try:
+                with open(f"/proc/{child}/stat") as stat:
+                    return stat.read().split(") ", 1)[1][:1] != "Z"
+            except OSError:
+                return True
+        deadline = clock.monotonic() + 15
+        while alive() and clock.monotonic() < deadline:
+            clock.sleep(0.2)
+        if alive():
+            os.kill(child, signal.SIGKILL)
+            self.fail("the facts read outlived its parent")
+        self.assertEqual(list(folder.iterdir()), [])
+
     def test_a_read_past_its_time_is_stopped_and_keeps_nothing(self):
         folder = Path(tempfile.mkdtemp())
         self.addCleanup(__import__("shutil").rmtree, folder, True)

@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
 import ipaddress
 import json
 import os
@@ -65,6 +66,12 @@ METADATA_PATH = "/.well-known/oauth-protected-resource"
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-03-26", "2025-06-18",
                                          mcp_server.PROTOCOL_VERSION})
 MAX_SESSIONS = 64
+# One employee's reconnects replace that employee's own oldest session; they never evict
+# another employee's (a full host refuses a new session instead).
+MAX_SESSIONS_PER_EMPLOYEE = 4
+# A request's headers and body must arrive within this many seconds in all: the listener
+# serves one request at a time, so a stalled or dripping client is closed, not waited on.
+REQUEST_READ_SECONDS = 10
 SESSION_IDLE_SECONDS = 2 * 60 * 60
 DEFAULT_PORT = 8766
 _JSON = "application/json"
@@ -213,8 +220,12 @@ class McpHttpHost:
             if response is None or "result" not in response:
                 server.close()
                 return _json(200, response) if response else (202, {}, b"")
-            while len(self.sessions) >= MAX_SESSIONS:
-                self._close(next(iter(self.sessions)))
+            own = [k for k, v in self.sessions.items() if v.employee == employee]
+            for session_id in own[:max(0, len(own) - MAX_SESSIONS_PER_EMPLOYEE + 1)]:
+                self._close(session_id)
+            if len(self.sessions) >= MAX_SESSIONS:
+                server.close()
+                return _json(503, {"error": {"code": "sessions_full"}}, {"Retry-After": "60"})
             session_id = secrets.token_urlsafe(32)
             self.sessions[session_id] = _Session(employee, server, self.clock())
             return _json(200, response, {"Mcp-Session-Id": session_id})
@@ -238,9 +249,39 @@ class McpHttpHost:
             self._close(next(iter(self.sessions)))
 
 
+class _DeadlineReader(io.RawIOBase):
+    """The request side of a connection: every receive waits at most until the handler's
+    deadline, so a request that arrives a byte at a time still ends at the deadline."""
+
+    def __init__(self, handler: "_Handler") -> None:
+        self.handler = handler
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        left = self.handler.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("mcp_request_deadline")
+        self.handler.connection.settimeout(left)
+        return self.handler.connection.recv_into(buffer)
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "plx-workbench-mcp"
     sys_version = ""
+    deadline = 0.0
+
+    def setup(self) -> None:
+        super().setup()
+        self.rfile = io.BufferedReader(_DeadlineReader(self))
+
+    def handle_one_request(self) -> None:
+        # One deadline per request, headers and body together: a read past it raises a
+        # timeout, which ``handle_one_request`` turns into a closed connection (before
+        # any authentication). The idle wait for a kept-alive request counts too.
+        self.deadline = time.monotonic() + REQUEST_READ_SECONDS
+        super().handle_one_request()
 
     def _serve(self) -> None:
         host: McpHttpHost = self.server.mcp_host   # type: ignore[attr-defined]
@@ -252,11 +293,15 @@ class _Handler(BaseHTTPRequestHandler):
             status, headers, body = _rpc_error(413, -32600, "Request too large")
         else:
             raw = self.rfile.read(length) if length else b""
+            if len(raw) != length:   # the client went away mid-body: nothing to answer
+                self.close_connection = True
+                return
             try:
                 status, headers, body = host.respond(self.command, self.path,
                                                      dict(self.headers.items()), raw)
             except Exception:  # noqa: BLE001 - never a stack trace to the client
                 status, headers, body = _rpc_error(500, -32603, "Internal error")
+        self.connection.settimeout(REQUEST_READ_SECONDS)   # the reply's own bound
         self.send_response(status)
         for name, value in headers.items():
             self.send_header(name, value)

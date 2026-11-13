@@ -355,7 +355,11 @@ class MissionControlReadClient:
     def __repr__(self) -> str:
         return f"MissionControlReadClient(host={self._host!r}, repo={self._repo!r})"
 
-    def _get(self, route: str, params: list[tuple[str, str]] | None = None) -> Mapping[str, Any]:
+    def _get(self, route: str, params: list[tuple[str, str]] | None = None,
+             check: Callable[[Mapping[str, Any]], None] | None = None) -> Mapping[str, Any]:
+        """The validated envelope of one GET; its audit record carries the final outcome
+        (INT-012): an answer refused by the envelope, actor or ``check`` (the caller's
+        shape rule) is audited as that refusal, never ``ok``."""
         url = self._base + "/api/cursor" + route + ("?" + urlencode(params) if params else "")
         label = "GET /api/cursor" + ("/tasks/{id}" if route.startswith("/tasks/") else route)
         arguments: dict[str, Any] = {}
@@ -371,28 +375,34 @@ class MissionControlReadClient:
                 "X-MC-Repo": self._repo,
                 "X-MC-Runtime": "plx-operating-platform-read",
             })
+            if not isinstance(response, dict) or not isinstance(response.get("data"), dict) \
+                    or not isinstance(response.get("meta"), dict):
+                raise McAnswerRefused("envelope_invalid",
+                                      "Mission Control response is not a {data, meta} envelope")
+            actor = response["meta"].get("actor")
+            if not isinstance(actor, dict) or actor.get("repo") != self._repo:
+                raise McAnswerRefused("actor_unbound", "Mission Control response actor is "
+                                      "missing or bound to another repository")
+            if check is not None:
+                check(response)
         except BaseException as error:
             outcome, code = _outcome(error)
             self.audit.record(door="rest", tool=label, kind="read", arguments=arguments,
                               outcome=outcome, error_code=code,
-                              attempts=getattr(error, "attempts", 0))
+                              attempts=getattr(error, "attempts", 0)
+                              or (max(1, self._hub.last_attempts)
+                                  if isinstance(error, McAnswerRefused) else 0))
             raise
         self.audit.record(door="rest", tool=label, kind="read", arguments=arguments,
                           outcome="ok", attempts=max(1, self._hub.last_attempts))
-        if not isinstance(response, dict) or not isinstance(response.get("data"), dict) or not isinstance(response.get("meta"), dict):
-            raise McAnswerRefused("envelope_invalid",
-                                  "Mission Control response is not a {data, meta} envelope")
-        actor = response["meta"].get("actor")
-        if not isinstance(actor, dict) or actor.get("repo") != self._repo:
-            raise McAnswerRefused("actor_unbound", "Mission Control response actor is "
-                                  "missing or bound to another repository")
         return response
 
     def self_check(self) -> Mapping[str, Any]:
-        envelope = self._get("/self-check")
-        if not isinstance(envelope["data"].get("ok"), bool):
-            raise McAnswerRefused("self_check_invalid", "Mission Control self-check lacks ok")
-        return envelope
+        def check(envelope: Mapping[str, Any]) -> None:
+            if not isinstance(envelope["data"].get("ok"), bool):
+                raise McAnswerRefused("self_check_invalid",
+                                      "Mission Control self-check lacks ok")
+        return self._get("/self-check", check=check)
 
     def search_tasks(self, *, query: str = "", bucket: str | None = None,
                      stage: str | None = None, limit: int = 50) -> Mapping[str, Any]:
@@ -403,11 +413,13 @@ class MissionControlReadClient:
             params.append(("bucket", bucket))
         if stage:
             params.append(("stage", stage))
-        envelope = self._get("/tasks", params)
-        if not isinstance(envelope["data"].get("tasks"), list) or not isinstance(envelope["data"].get("total"), int):
-            raise McAnswerRefused("search_tasks_shape_invalid",
-                                  "Mission Control task search lacks tasks/total")
-        return envelope
+
+        def check(envelope: Mapping[str, Any]) -> None:
+            if not isinstance(envelope["data"].get("tasks"), list) \
+                    or not isinstance(envelope["data"].get("total"), int):
+                raise McAnswerRefused("search_tasks_shape_invalid",
+                                      "Mission Control task search lacks tasks/total")
+        return self._get("/tasks", params, check)
 
     def context(self, *, task_ids: list[str] | None = None, bucket: str | None = None,
                 full: bool = False) -> Mapping[str, Any]:
@@ -418,32 +430,35 @@ class MissionControlReadClient:
             if not isinstance(task_id, str) or not task_id.startswith("TASK-"):
                 raise ValueError("context task IDs must be TASK-* identifiers")
             params.append(("taskIds", task_id))
-        envelope = self._get("/context", params)
         key = "tasks" if full else "topTasks"
-        if not isinstance(envelope["data"].get(key), list):
-            raise McAnswerRefused("context_lacks_tasks" if full else "context_lacks_top_tasks",
-                                  f"Mission Control context lacks {key}")
-        return envelope
+
+        def check(envelope: Mapping[str, Any]) -> None:
+            if not isinstance(envelope["data"].get(key), list):
+                raise McAnswerRefused("context_lacks_tasks" if full
+                                      else "context_lacks_top_tasks",
+                                      f"Mission Control context lacks {key}")
+        return self._get("/context", params, check)
 
     def get_task(self, task_id: str) -> Mapping[str, Any]:
         """Read MC's exact task, evidence and redacted checkout references."""
         if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
             raise ValueError("MC task ID must be TASK-*")
-        envelope = self._get("/tasks/" + task_id)
-        data = envelope["data"]
-        task = data.get("task")
-        if (data.get("taskId") != task_id or not isinstance(task, dict) or
-                task.get("id") != task_id or
-                not isinstance(data.get("events"), list) or
-                not isinstance(data.get("checkouts"), list)):
-            raise McAnswerRefused("task_answer_invalid",
-                                  "Mission Control exact task response invalid")
-        # MC read-actions intentionally returns only checkoutRef. Refuse a
-        # source regression that would expose a usable checkout credential.
-        if _USABLE_CHECKOUT.search(json.dumps(data)):
-            raise McAnswerRefused("checkout_credential_leaked",
-                                  "Mission Control read leaked a checkout credential")
-        return envelope
+
+        def check(envelope: Mapping[str, Any]) -> None:
+            data = envelope["data"]
+            task = data.get("task")
+            if (data.get("taskId") != task_id or not isinstance(task, dict) or
+                    task.get("id") != task_id or
+                    not isinstance(data.get("events"), list) or
+                    not isinstance(data.get("checkouts"), list)):
+                raise McAnswerRefused("task_answer_invalid",
+                                      "Mission Control exact task response invalid")
+            # MC read-actions intentionally returns only checkoutRef. Refuse a
+            # source regression that would expose a usable checkout credential.
+            if _USABLE_CHECKOUT.search(json.dumps(data)):
+                raise McAnswerRefused("checkout_credential_leaked",
+                                      "Mission Control read leaked a checkout credential")
+        return self._get("/tasks/" + task_id, check=check)
 
 
 class MissionControlMcpClient:

@@ -379,6 +379,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import threading
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
@@ -815,7 +816,12 @@ class SharePointCaptureStore:
     ``max_store_bytes`` bounds the store (SQLite file plus blobs; default
     ``MAX_STORE_BYTES``, None: unbounded): a blob that would pass it raises
     ``CaptureError("store_full")`` and the root stops ``incomplete``. Each root keeps the
-    bytes of its last complete capture only (:meth:`prune_superseded`)."""
+    bytes of its last complete capture only (:meth:`prune_superseded`).
+
+    ``people``: the people guard a member citation's carried mail is decided with
+    (DOC-008); None: the process environment's, read again when it changes."""
+
+    people: Any = None
 
     def __init__(self, state_dir: str | Path, *, clock: Callable[[], datetime] = _now,
                  max_store_bytes: int | None = MAX_STORE_BYTES) -> None:
@@ -1833,8 +1839,8 @@ class SharePointCaptureStore:
                 yield row
 
     def resolve(self, handle: Any, actor: Actor, audience: LiveSourceAudience, *,
-                text: bool = True, ahead: "ReadAhead | None" = None
-                ) -> dict[str, Any] | None:
+                text: bool = True, ahead: "ReadAhead | None" = None,
+                people: Any = None, _whole: bool = True) -> dict[str, Any] | None:
         """The captured version a handle names, offline, for a reader who may see the
         item (path keys and item permissions recorded at capture); ``None`` when not
         visible or never captured (indistinguishable). ``#sha256=<hex>`` must name the
@@ -1849,12 +1855,19 @@ class SharePointCaptureStore:
         against the text. A member of a captured zip/.msg/.eml file
         (``&member=<path>&member_sha256=<hex>``, ``integrations.captured_text``) resolves
         for a reader who may see its container, as that member (``text``: its text, or a
-        page's). Machine-only: values are raw."""
+        page's). DOC-008: a file carrying mail the people exclusion does not clear now
+        (an excluded person's, one it cannot decide, or any while the list cannot be read;
+        ``people``, else the store's guard, else the environment's) resolves for nobody,
+        so neither a citation nor a search hit (the item gate resolves it) serves it; a
+        member resolves unless it is such a mail or under one (``_whole=False``: the
+        container gate of a member, or the capture's own integrity check, internal).
+        Machine-only: values are raw."""
         if isinstance(handle, str):
             base, page = cited_page(handle)
             member = split_member(base)
             if member is not None:
-                return self._resolve_member(handle, member, page, actor, audience, text)
+                return self._resolve_member(handle, member, page, actor, audience, text,
+                                            people)
         try:
             (drive_id, item_id), etag, extra = parse_handle(handle, SCHEME, 2)
         except ValueError:
@@ -1871,6 +1884,8 @@ class SharePointCaptureStore:
         if "sha256" in extra and extra["sha256"] != row["content_sha256"]:
             return None
         record = json.loads(row["record"])
+        if _whole and self._carried_withheld(row, record, people):
+            return None   # DOC-008: it carries mail the exclusion does not clear now
         found = None if not text else captured_text(self.blobs, {
             **record, **{key: row[key] for key in _CONTENT_COLUMNS}})
         content_text = None if found is None else found.text
@@ -1912,15 +1927,44 @@ class SharePointCaptureStore:
             out["page"] = page
         return out
 
+    def _guard(self, people: Any) -> Any:
+        """The people guard carried mail is decided with: ``people``, else the store's,
+        else the process environment's."""
+        if people is not None:
+            return people
+        if self.people is not None:
+            return self.people
+        from .capture_mail import _env_people
+        return _env_people()
+
+    def _carried_withheld(self, row: Any, record: Mapping[str, Any], people: Any) -> bool:
+        """Whether a captured version is withheld from every reader for the mail its
+        stored bytes carry (``carried_mail.stored_verdict``; any failure withholds)."""
+        from . import carried_mail
+        try:
+            meta = {**record, **{key: row[key] for key in _CONTENT_COLUMNS}}
+            return bool(carried_mail.stored_verdict(self.blobs, meta, self._guard(people),
+                                                    self.root.parent).withheld)
+        except MemoryError:
+            raise
+        except Exception:  # noqa: BLE001 - not decided: withheld
+            return True
+
     def _resolve_member(self, handle: str, member: tuple[str, str, str | None],
                         page: int | None, actor: Actor, audience: LiveSourceAudience,
-                        text: bool) -> dict[str, Any] | None:
+                        text: bool, people: Any = None) -> dict[str, Any] | None:
         """:meth:`resolve` of a container member: the container's gate (its pinned bytes),
-        then the member (``text=False``: the gate alone, no blob read)."""
+        the people exclusion's on the mail it carries (a carried mail not cleared and
+        everything under it resolves for nobody), then the member (``text=False``: no
+        text read)."""
         container, path, digest = member
-        view = self.resolve(container, actor, audience, text=False)
+        view = self.resolve(container, actor, audience, text=False, _whole=False)
         if view is None or view.get("page") is not None or "#sha256=" not in container:
             return None
+        from . import carried_mail
+        if carried_mail.member_withheld(self.blobs, view["row"], path, self._guard(people),
+                                        self.root.parent):
+            return None   # DOC-008: carried mail the people exclusion does not clear
         row = {"container": container, "path": path, "content_sha256": digest,
                "content_text": None}
         if text:
@@ -1949,7 +1993,7 @@ class SharePointCaptureStore:
         """Whether a visible version's original verifies: its held bytes hash to the pin
         (``blob_digest_mismatch`` raises), or the store dropped it and its ``.dropped``
         record is whole."""
-        resolved = self.resolve(handle, actor, audience, text=False)
+        resolved = self.resolve(handle, actor, audience, text=False, _whole=False)
         if resolved is None or resolved["row"]["content_sha256"] is None:
             return False
         digest = resolved["row"]["content_sha256"]
@@ -2329,8 +2373,13 @@ class _Extraction:
     walk drains them (before it saves its position or ends), so no version is recorded,
     and no walk position holds an item, before its text is. ``workers`` 1: inline."""
 
-    def __init__(self, workers: int) -> None:
+    def __init__(self, workers: int,
+                 read: Callable[..., tuple[str, str | None]] | None = None) -> None:
         self.workers = workers
+        # ``read``: the capture's reading (:meth:`SharePointCapture._read_text`: a killable
+        # extraction process under a per-document deadline), else ``capture_text`` here.
+        self.read = read or (lambda content, record, *, defer_ocr: capture_text(
+            content, record, defer_ocr=defer_ocr, image_ocr=True))
         self.pool = (ThreadPoolExecutor(workers, thread_name_prefix="capture-text")
                      if workers > 1 else None)
         self.pending: deque[tuple[str, Future, Callable[[tuple], None]]] = deque()
@@ -2341,12 +2390,12 @@ class _Extraction:
     def submit(self, item_id: str, content: bytes, record: Mapping[str, Any],
                finish: Callable[[tuple], None], *, defer_ocr: bool = False) -> None:
         if self.pool is None:
-            finish(capture_text(content, record, defer_ocr=defer_ocr, image_ocr=True))
+            finish(self.read(content, record, defer_ocr=defer_ocr))
             return
         while len(self.pending) >= self.workers:
             self._harvest()
-        self.pending.append((item_id, self.pool.submit(capture_text, content, record,
-                                                       defer_ocr=defer_ocr, image_ocr=True),
+        self.pending.append((item_id, self.pool.submit(self.read, content, record,
+                                                       defer_ocr=defer_ocr),
                              finish))
 
     def _harvest(self) -> None:
@@ -2393,9 +2442,15 @@ class SharePointCapture:
                  monotonic: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
                  extract_workers: int = EXTRACT_WORKERS,
-                 read_content: bool = True) -> None:
+                 read_content: bool = True, extraction_processes: bool = False) -> None:
         if not isinstance(read_content, bool):
             raise CaptureError("read_content_invalid")
+        # INT-010: each file's text read in a killable extraction process (mail's
+        # ``_Extractors``: scrubbed environment, kernel boundary, per-document deadline),
+        # so a file that wedges a parser is its own named gap, never a stuck walk.
+        self.extraction_processes = bool(extraction_processes)
+        self._extractors: Any = None
+        self._extractors_lock = threading.Lock()
         self.read_content = read_content
         if isinstance(max_content_bytes, bool) or not isinstance(max_content_bytes, int) \
                 or not 1 <= max_content_bytes <= MAX_DECLARED_CONTENT_BYTES:
@@ -2432,7 +2487,7 @@ class SharePointCapture:
         self._slice_moved = True
         self._slice_length = 0.0   # the walking slice's own length (bounds a wait in it)
         self.extract_workers = max(1, extract_workers)
-        self._extraction = _Extraction(1)   # the walking root's (:meth:`_walk`)
+        self._extraction = _Extraction(1, self._read_text)   # the walking root's
         # The source's own Retry-After waits honoured (:meth:`_throttled`): count, seconds.
         self.retry_after_waits, self.retry_after_seconds = 0, 0.0
         # Drives whose source failed as a whole on a re-read refetch this run; whether a
@@ -2533,10 +2588,37 @@ class SharePointCapture:
         """(content columns, the record the bytes belong to)."""
         columns, source, content = self._bytes(reader, record, counts)
         if content is not None:
-            self._text(columns, capture_text(content, source, defer_ocr=not self._ocr_now(),
-                                                    image_ocr=True),
-                       counts)
+            self._text(columns, self._read_text(content, source,
+                                                defer_ocr=not self._ocr_now()), counts)
         return columns, source
+
+    def _read_text(self, content: bytes, record: Mapping[str, Any], *, defer_ocr: bool
+                   ) -> tuple[str, str | None]:
+        """(text status, text) of a file's bytes: ``capture_text`` here, or with
+        ``extraction_processes`` in an extraction process bounded by
+        ``EXTRACT_SECONDS`` (``OCR_EXTRACT_SECONDS`` when OCR runs now); one past it, or
+        whose process died, is ``extraction_timed_out`` / ``extraction_crashed``."""
+        if not self.extraction_processes:
+            return capture_text(content, record, defer_ocr=defer_ocr, image_ocr=True)
+        from .capture_mail import EXTRACT_SECONDS, OCR_EXTRACT_SECONDS, _Extractors
+
+        with self._extractors_lock:
+            if self._extractors is None:
+                self._extractors = _Extractors(self.extract_workers, OCR_EXTRACT_SECONDS)
+            extractors = self._extractors
+        plain = {k: v for k, v in record.items()
+                 if isinstance(v, (str, int, float, bool)) or v is None}
+        status, text, _made = extractors.read(
+            content, plain, defer_ocr=defer_ocr, defer_all=False, readings=False,
+            image_ocr=True, seconds=EXTRACT_SECONDS if defer_ocr else OCR_EXTRACT_SECONDS)
+        return status, text
+
+    def close_extractors(self) -> None:
+        """End the extraction processes (a run's end; the next reading starts them)."""
+        with self._extractors_lock:
+            extractors, self._extractors = self._extractors, None
+        if extractors is not None:
+            extractors.close()
 
     def _text(self, columns: dict[str, Any], extracted: tuple[str, str | None],
               counts: dict[str, int]) -> None:
@@ -2679,7 +2761,7 @@ class SharePointCapture:
         # original re-read by one guarded GET and checked against its pin, never stored.
         deferred = [] if reader is None else self.store.ocr_deferred_rows(
             drive_id, root, REPAIRS_PER_ROOT)
-        extraction = _Extraction(self.extract_workers)
+        extraction = _Extraction(self.extract_workers, self._read_text)
         try:
             for row in [*self.store.text_unread(drive_id, root, REPAIRS_PER_ROOT),
                         *deferred]:
@@ -2759,7 +2841,7 @@ class SharePointCapture:
                     counts["texts_reread_gaps"] += 1
             held.clear()
 
-        extraction = _Extraction(self.extract_workers)
+        extraction = _Extraction(self.extract_workers, self._read_text)
         try:
             for row in self.store.reader_stale_rows(drive_id, root, REPAIRS_PER_ROOT):
                 if self._spent() or (until is not None and self._checked_at >= until):
@@ -2997,7 +3079,7 @@ class SharePointCapture:
         if self._deadline is not None:
             now = self._monotonic()
             self._slice = now + max(0.0, self._deadline - now) * NAMED_PASS_SHARE
-        self._extraction = _Extraction(self.extract_workers)
+        self._extraction = _Extraction(self.extract_workers, self._read_text)
         left = 0
         try:
             for left, (_seen, drive_id, item_id) in enumerate(due):
@@ -3045,7 +3127,7 @@ class SharePointCapture:
                     fail(drive, item, "store_full")
         finally:
             self._extraction.close()
-            self._extraction = _Extraction(1)
+            self._extraction = _Extraction(1, self._read_text)
             self._slice = None
         for drive_id, item_id, seen_again in recorded:
             if seen_again:
@@ -3134,7 +3216,7 @@ class SharePointCapture:
             self._repair(reader, drive_id, root, counts, share=REEXTRACT_SHARE)
             self._reextract(drive_id, root, counts, share=REEXTRACT_SHARE, reader=reader)
             self._reread_stale(drive_id, root, counts, share=REEXTRACT_SHARE, reader=reader)
-        self._extraction = _Extraction(self.extract_workers)
+        self._extraction = _Extraction(self.extract_workers, self._read_text)
         try:
             while queue:
                 folder = queue[0]
@@ -3240,7 +3322,7 @@ class SharePointCapture:
             cut = False   # ends the walk, as a full store did before any cut
         finally:
             self._extraction.close()
-            self._extraction = _Extraction(1)
+            self._extraction = _Extraction(1, self._read_text)
         walk = {"reader": reader, "drive_id": drive_id, "root": root, "started": started,
                 "reasons": reasons | ({TIME_BUDGET} if cut else set()), "counts": counts,
                 "round": "full", "why": why, "position": None, "refresh": refresh}
@@ -3582,6 +3664,13 @@ class SharePointCapture:
     # ---------------------------------------------------------------- per run
 
     def run(self, scope: CaptureScope) -> dict[str, Any]:
+        """:meth:`_run`, its extraction processes ended after it."""
+        try:
+            return self._run(scope)
+        finally:
+            self.close_extractors()
+
+    def _run(self, scope: CaptureScope) -> dict[str, Any]:
         """One capture run over the scope; per-target and per-root outcomes plus
         ``complete_bound`` / ``bound_total`` over every scope root (a root of a target
         that could not be resolved is bound and incomplete, with the target's reason).
@@ -4417,7 +4506,8 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                     max_content_bytes=scope.max_content_bytes,
                                     budget_seconds=getattr(args, "budget_seconds", None),
                                     monotonic=monotonic, sleep=sleep or time.sleep,
-                                    read_content=getattr(args, "read_content", True))
+                                    read_content=getattr(args, "read_content", True),
+                                    extraction_processes=True)
         capture.retry_first = retry_first
         if getattr(args, "named_originals", False):
             from operating.captured_originals import sharepoint_items
@@ -4437,8 +4527,11 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         unchanged = [i for i in index["items"] if (i.get("recorded_at") or "") < started_at]
         sampled = _spread(unchanged, getattr(args, "verify_sample", None))
         checked = fresh + sampled
+        # the capture's own integrity (every version resolves offline), not what the
+        # people exclusion serves: carried mail is decided at read (DOC-008)
         resolved = sum(1 for item in checked
-                       if store.resolve(item["l1_handle"], actor, audience) is not None)
+                       if store.resolve(item["l1_handle"], actor, audience,
+                                        _whole=False) is not None)
         pinned = [i for i in checked if i["content_sha256"]]
         verified, failed_bytes = 0, {}
         for i in pinned:

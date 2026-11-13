@@ -184,6 +184,7 @@ from .employee_permissions import EmployeeRightsUnresolved
 from .session_identity import SessionIdentityRefused, intent_identity
 from operating import declared_schema as _schemas
 from operating.declared_schema import action_path as _ACTION_PATH
+from operating.app_tables import rows as _rows
 
 _LOG = logging.getLogger(__name__)
 
@@ -944,7 +945,7 @@ class ActionPath:
                    (intent_id, seq, kind, label, at, body, prev, event_hash))
         return {"intent_id": intent_id, "seq": seq, "kind": kind, "at": at}
 
-    def _fold(self, rows: list[sqlite3.Row]) -> dict[str, Any] | None:
+    def _fold(self, rows: Sequence[Any]) -> dict[str, Any] | None:
         if not rows:
             return None
         prev, chain_ok = _GENESIS, True
@@ -1074,7 +1075,7 @@ class ActionPath:
         return state
 
     def _fold_authored(self, db: sqlite3.Connection,
-                       rows: list[sqlite3.Row]) -> dict[str, Any] | None:
+                       rows: Sequence[Any]) -> dict[str, Any] | None:
         """``_fold`` plus ``authors``: the recorded subjects of the intent's case opening
         and proposal (``open_case`` / ``record_proposal``), read on the same connection,
         so a check inside a committing write sees every one recorded before it."""
@@ -1102,8 +1103,9 @@ class ActionPath:
         """The intent's folded state and its case as ``actor`` reads it now."""
         if not isinstance(actor, Actor):
             raise ValidationError("actor_required")
-        rows = db.execute("SELECT * FROM action_event WHERE intent_id=? ORDER BY intent_seq",
-                          (intent_id if isinstance(intent_id, str) else "",)).fetchall()
+        rows = _rows.ACTION_PATH_ACTION_EVENT.select(
+            db, {"intent_id": intent_id if isinstance(intent_id, str) else ""},
+            order_by=("intent_seq",))
         state = self._fold_authored(db, rows)
         if state is None:
             raise IntentNotFound("intent_not_found")
@@ -1480,8 +1482,7 @@ class ActionPath:
         intent_id = intent.intent_id
         with self._connect(write=True,
                            hold=self.cases.outside_write(actor, intent.case_id)) as db:
-            exists = db.execute("SELECT 1 FROM action_event WHERE intent_id=? LIMIT 1",
-                                (intent_id,)).fetchone()
+            exists = _rows.ACTION_PATH_ACTION_EVENT.exists(db, {"intent_id": intent_id})
             if exists:
                 current = self._load(db, actor, intent_id)
                 if _adds_subject(current, identity["sub"]):
@@ -1758,8 +1759,8 @@ class ActionPath:
             identity = _sha({"approved_by": canonical_email(approver),
                              "approved_at": _time(record["approved_at"]).isoformat(),
                              "evidence_ref": evidence.strip()})
-            if db.execute("SELECT 1 FROM consumed_call_approval WHERE approval_sha256=?",
-                          (identity,)).fetchone():
+            if _rows.ACTION_PATH_CONSUMED_CALL_APPROVAL.exists(
+                    db, {"approval_sha256": identity}):
                 raise ActionPathError("call_approval_already_used")
             event = self._append(db, intent_id, "call.approved", actor, asdict(CallApproval(
                 tool, expected, _sha(expected), approver,
@@ -2854,8 +2855,8 @@ class ActionPath:
         (no outcome row: the process died during the case-store write)."""
         self.cases.get(actor, case_id)   # CaseNotFound when not visible
         with self._connect() as db:
-            rows = db.execute("SELECT * FROM internal_action WHERE case_id=? ORDER BY seq",
-                              (case_id,)).fetchall()
+            rows = _rows.ACTION_PATH_INTERNAL_ACTION.select(db, {"case_id": case_id},
+                                                            order_by=("seq",))
         attempts: dict[str, dict[str, Any]] = {}
         for row in rows:
             if row["kind"] == "started":
@@ -2914,8 +2915,8 @@ class ActionPath:
             total = len(ids)
             intents = []
             for intent_id in ids[:MAX_LISTED_INTENTS]:
-                rows = db.execute("SELECT * FROM action_event WHERE intent_id=? "
-                                  "ORDER BY intent_seq", (intent_id,)).fetchall()
+                rows = _rows.ACTION_PATH_ACTION_EVENT.select(db, {"intent_id": intent_id},
+                                                             order_by=("intent_seq",))
                 state = self._fold_authored(db, rows)
                 if state is None or not state.get("chain_ok"):
                     intents.append({"case_id": case_id, "state": None,

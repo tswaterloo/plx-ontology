@@ -576,8 +576,14 @@ def link_issued_sends(sends: Mapping[str, Any], renders: Mapping[str, Any],
                                "rows_scanned": len(po_scan.get("rows") or []),
                                "complete": po_scan.get("complete", False),
                                "reasons": list(po_scan.get("reasons") or []),
+                               **_scan_label(po_scan),
                                "lookup_gaps": _po_lookup_gaps()}},
             "counts": counts, "chains": chains, "leads": leads, "gaps": gaps}
+
+
+def _scan_label(scan: Mapping[str, Any]) -> dict[str, Any]:
+    from integrations.source_mirror import scan_label
+    return scan_label(scan)
 
 
 def _gaps(sends: Mapping[str, Any], renders: Mapping[str, Any], po_scan: Mapping[str, Any],

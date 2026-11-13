@@ -888,7 +888,9 @@ class RuntimeCitations(CitationReader):
                 return ({"citation": handle, "relation": resolved["relation"],
                          "recorded_at": resolved["recorded_at"], "row": resolved["row"],
                          "superseded_at": None}, None)
+            # the runtime's guard decides the mail an attachment carries (DOC-008)
             resolved = store.resolve(handle, gated, audience, text=text,
+                                     people=self._people(),
                                      **({"page_exists": True} if page_exists else {}))
             if resolved is None:
                 return None

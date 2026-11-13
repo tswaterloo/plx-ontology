@@ -1854,7 +1854,10 @@ class SharePointReader:
                 state, count = "defined_unreadable", None
             else:
                 count = filled[internal]
-                state = "filled" if count else "empty" if sample["complete"] else "unknown"
+                # Documents whose fields were not read could hold a value (INT-019): no
+                # fill seen among them is unknown, never empty.
+                state = ("filled" if count else "empty" if sample["complete"]
+                         and not sample["documents_without_fields"] else "unknown")
             report[name] = {"state": state, "matched_by": how, "filled": count}
         return {"columns_defined": len(defined), "columns_listing_complete": listing["complete"],
                 "sample": sample, "columns": report,

@@ -205,6 +205,14 @@ def _delta(d: Path) -> Path:
     return d / "ds.sqlite"
 
 
+def _delta_held(d: Path) -> Path:
+    from ontology.delta import State
+    state = State(d / "ds.sqlite")
+    state.held_files()
+    state.close()
+    return d / "held.sqlite"
+
+
 def _project_objects(d: Path) -> Path:
     from ontology.project_incremental import _Objects
     o = _Objects(d / "po.sqlite")
@@ -247,7 +255,7 @@ OPENERS: dict[str, Callable[[Path], Path]] = {
     "page_counts": _page_counts, "captured_text": _captured_text,
     "kept_members": _kept_members, "document_fields": _kept_fields,
     "mention_memo": _memo, "mention_cache": _mention_cache, "briefs": _briefs, "autopilot_replay": _replay_progress,
-    "autopilot_queue": _autopilot, "delta_state": _delta, "project_objects": _project_objects,
+    "autopilot_queue": _autopilot, "delta_state": _delta, "delta_held": _delta_held, "project_objects": _project_objects,
     "session_replay": _replay_guard, "session_journal": _journal,
     "confirmation_forms": _confirmation_forms, "kind_confirmation": _kind_confirmation,
 }

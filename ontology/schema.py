@@ -351,6 +351,79 @@ def _snake_case(name: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
+def _inheritance_cycles(edges: Mapping[str, Iterable[str]]
+                        ) -> list[tuple[list[str], set[str]]]:
+    """Every lineage inheritance cycle over all of ``edges`` (binding -> the bindings it
+    inherits from), one per strongly connected group (a binding inheriting from itself is
+    one), as (a path from the group's smallest binding back to it, the shortest with ties
+    by name; every binding of the group). A depth-first walk with white/grey/black states (Tarjan's): the result never
+    depends on the order the bindings or their hops are declared in (SCHEMA-002; following
+    only each binding's first hop missed a cycle through a later one)."""
+    graph = {n: sorted(set(v)) for n, v in edges.items()}
+    index: dict[str, int] = {}        # grey or black: the order it was reached in
+    low: dict[str, int] = {}
+    on_stack: set[str] = set()        # grey (on the walk's stack)
+    stack: list[str] = []
+    groups: list[set[str]] = []
+    for root in sorted(graph):
+        if root in index:
+            continue
+        work = [(root, iter(graph.get(root, ())))]
+        index[root] = low[root] = len(index)
+        stack.append(root)
+        on_stack.add(root)
+        while work:
+            node, hops = work[-1]
+            for nxt in hops:
+                if nxt not in index:   # white
+                    index[nxt] = low[nxt] = len(index)
+                    stack.append(nxt)
+                    on_stack.add(nxt)
+                    work.append((nxt, iter(graph.get(nxt, ()))))
+                    break
+                if nxt in on_stack:    # grey: a back edge
+                    low[node] = min(low[node], index[nxt])
+            else:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[node])
+                if low[node] == index[node]:   # the root of a group: it turns black
+                    group: set[str] = set()
+                    while True:
+                        member = stack.pop()
+                        on_stack.discard(member)
+                        group.add(member)
+                        if member == node:
+                            break
+                    if len(group) > 1 or node in graph.get(node, ()):
+                        groups.append(group)
+    cycles = []
+    for group in groups:
+        start = min(group)
+        back: dict[str, str | None] = {start: None}
+        frontier, end = [start], None
+        while frontier and end is None:   # breadth first: the shortest way back
+            following = []
+            for node in frontier:
+                for nxt in graph.get(node, ()):
+                    if nxt == start:
+                        end = node
+                        break
+                    if nxt in group and nxt not in back:
+                        back[nxt] = node
+                        following.append(nxt)
+                if end is not None:
+                    break
+            frontier = following
+        path = [start]
+        node = end
+        while node is not None and node != start:
+            path.insert(1, node)
+            node = back[node]
+        cycles.append((path + [start], group))
+    return sorted(cycles, key=lambda c: c[0])
+
+
 def mention_links(object_types: Mapping[str, Mapping[str, Any]], domain_types: Iterable[str],
                   catalog: Mapping[str, Any], rule: Mapping[str, Any] = MENTION_LINK_RULE,
                   copy_kinds: Iterable[str] = ()) -> list[dict[str, Any]]:
@@ -1329,20 +1402,9 @@ def compile_documents(documents: Iterable[tuple[str, Any]], *,
                     f"{tid0} binding {b0['id']} lineage inherit", tid0, b0,
                     b0["lineage"]["inherit"])]
     cyclic: set[str] = set()
-    for start in sorted(inherits):
-        path, node = [start], start
-        while True:
-            nxt = [n for n in inherits.get(node, [])]
-            if not nxt:
-                break
-            node = nxt[0]
-            if node in path:
-                cycle = path[path.index(node):] + [node]
-                if not cyclic & set(cycle):
-                    errors.append("lineage inheritance cycle: " + " -> ".join(cycle))
-                cyclic.update(cycle)
-                break
-            path.append(node)
+    for cycle, group in _inheritance_cycles(inherits):
+        errors.append("lineage inheritance cycle: " + " -> ".join(cycle))
+        cyclic.update(group)
 
     def lineages_of(binding: Mapping[str, Any], seen: frozenset = frozenset()) -> set[str]:
         out = _binding_lineages(binding)

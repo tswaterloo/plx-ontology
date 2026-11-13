@@ -376,8 +376,12 @@ class AgentAsk:
             context: str = "", route: Optional[str] = None,
             roots: Sequence[Mapping[str, Any]] = (),
             entities: Optional[Sequence[Mapping[str, Any]]] = None,
-            looked: Optional[Mapping[str, Any]] = None) -> AskRun:
-        """One question as the reader (``ReaderRefused`` before any session for a reader
+            looked: Optional[Mapping[str, Any]] = None,
+            cancel: Optional[threading.Event] = None) -> AskRun:
+        """``cancel``: set when nobody waits for the answer any more (the reader left or
+        the Ask timed out): the session's process is ended at its next line.
+
+        One question as the reader (``ReaderRefused`` before any session for a reader
         with no employee identity). ``emit(kind, data)``: ``("call", {"tool": name})`` as
         each tool call starts; ``("result", {"tool", "step"})`` as another tool's result
         comes back (``step``: its plain-words step, ``ask_progress.result_step``, or None);
@@ -449,6 +453,8 @@ class AgentAsk:
                 "\n\n" + PREREAD_HEADING + context.strip() if context.strip() else "")
             budget = deep.question_budget(question, self.seconds, route)
             agent = self.agent_for(on_line, budget)
+            if cancel is not None:
+                agent.cancel_event = cancel
             if entities is not None and hasattr(agent, "question_entities"):
                 agent.question_entities = [dict(entity) for entity in entities]
             # the sources the pre-read brief names are read in the session itself, so

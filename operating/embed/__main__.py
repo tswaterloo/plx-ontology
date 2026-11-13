@@ -9,7 +9,10 @@ only: never text, never an id of an excluded person, never a key).
 
 Other commands: ``embed`` (only embed pending rows), ``dedup`` (only re-cluster),
 ``follow`` (follow the served generation and its row deltas: ``operating.embed.follow``),
-``backfill`` (embed the whole pending backlog beside it: ``operating.embed.backfill``).
+``backfill`` (embed the whole pending backlog beside it: ``operating.embed.backfill``),
+``entities --type T ...`` (write the entity rows of those entity types alone, from the
+served projection: a type newly indexed reaches the records already served without a
+chunking pass; rows are upserted, none deleted; ``--dry`` counts only).
 Exit codes: 0 done, 2 refused (people exclusion unavailable, remote embedding not
 allowed, schema missing), 1 failed.
 """
@@ -204,6 +207,41 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     return report
 
 
+def entity_rows(args: argparse.Namespace) -> dict[str, Any]:
+    """``entities``: the entity rows of ``args.type`` from the served projection, upserted
+    (nothing deleted; the people exclusion must load, else nothing is written)."""
+    values = _settings(args)
+    state = Path(args.state or values.get("PLX_WORKBENCH_STATE_DIR") or config.DEFAULT_STATE)
+    types = sorted(set(args.type))
+    report: dict[str, Any] = {"command": "entities", "dry": bool(args.dry), "types": types}
+    exclusion = _exclusion(state, values)
+    if exclusion.unavailable:
+        report["refused"] = f"people_exclusion_unavailable:{exclusion.unavailable}"
+        return report
+    writer = None
+    if not args.dry:
+        conn = st.connect(values.get("PLX_PG_DSN") or config.DEFAULT_DSN)
+        st.require_schema(conn)
+        writer = st.ChunkWriter(conn, unit_of=lambda key: unit_row(key, exclusion))
+    started = time.monotonic()
+    ecounts = Counts()
+    batch: list[Any] = []
+    n = 0
+    for entity in entities(open_ro(_projection_path(state, args.projection)), ecounts,
+                           types=types, exclusion=exclusion):
+        n += 1
+        if writer is not None:
+            batch.append(entity)
+            if len(batch) >= WRITE_BATCH:
+                writer.write_entities(batch)
+                batch = []
+    if writer is not None:
+        writer.write_entities(batch)
+    report["entities"] = {"total": n, **ecounts.as_dict(),
+                          "seconds": round(time.monotonic() - started, 1)}
+    return report
+
+
 def dedup(conn: Any, kinds: Sequence[str] | None) -> dict[str, Any]:
     started = time.monotonic()
     rows = ((cid, dd.body_sha(body), body) for cid, body in st.bodies(conn, kinds))
@@ -324,12 +362,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv[:1] == ["follow"]:
         from .follow import main as follow_main
         return follow_main(argv[1:])
+    if argv[:1] == ["records"]:
+        from .record_pass import main as records_main
+        return records_main(argv[1:])
     if argv[:1] == ["backfill"]:
         from .backfill import main as backfill_main
         return backfill_main(argv[1:])
     parser = argparse.ArgumentParser(prog="python3 -m operating.embed")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("reindex", help="rebuild the chunks' HNSW index (after a bulk load)")
+    p = sub.add_parser("entities", help="write the entity rows of some entity types")
+    p.add_argument("--type", action="append", required=True, choices=ENTITY_TYPES_ALL)
+    p.add_argument("--state")
+    p.add_argument("--projection")
+    p.add_argument("--model")
+    p.add_argument("--dry", action="store_true")
     for name in ("run", "embed", "dedup"):
         p = sub.add_parser(name)
         p.add_argument("--order", choices=("recent", "priority"), default="recent")
@@ -362,6 +409,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = {"reindexed": pgbulk.vector_index_present(conn)}
         elif args.command == "run":
             report = run(args)
+        elif args.command == "entities":
+            report = entity_rows(args)
         else:
             values = _settings(args)
             conn = st.connect(values.get("PLX_PG_DSN") or config.DEFAULT_DSN)

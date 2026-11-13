@@ -14,6 +14,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from operating import inbox_triage as it
 from operating import label_changes as lc
@@ -308,6 +309,39 @@ class OneToOneChats(Engine):
                                  ["detectors"][it.RULE], "blocked")
 
 
+    def test_only_the_window_chat_messages_are_read_whole(self):
+        """The chat messages before the detector's window: only their time is read, never
+        their sender or text (before, every one-to-one message ever captured was read
+        whole, then filtered by date: 77 s of a 60 s window live). N=1/10/60 in the window
+        beside as many older ones: each in-window ask found once, no older one read."""
+        ask_text = "Could you confirm the pallet count for tomorrow?"
+        heavy = set(it.TEAMS_PROPS) - set(it.WHEN_PROPS) | {"subject"}
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w, guard = World(), self.guard(n)
+                old, new = set(), set()
+                for i in range(n):
+                    other = f"{i:08x}-0000-4000-8000-00000000a{i:03x}"
+                    pair = self.PAIR.format(OURS_OID, other)
+                    new.add(self.chat(w, pair, other, 4, ask_text))
+                    old.add(self.chat(w, pair, other, it.WINDOW_DAYS + 10, ask_text))
+                asked: list[tuple[set, set]] = []
+                real = pt._read
+
+                def spy(st, ids, props):
+                    asked.append((set(ids), set(props)))
+                    return real(st, ids, props)
+                with mock.patch.object(it.pt, "_read", spy):
+                    summary = self.run_rules(w, people=guard)
+                self.assertEqual(summary["detectors"][it.RULE], "complete")
+                found = {g["object_id"] for g in self.mine(OURS_OID)}
+                self.assertEqual(found, new)
+                self.assertFalse([ids & old for ids, props in asked
+                                  if props & heavy and ids & old])
+                # every in-window message was read whole
+                self.assertTrue(any(new <= ids and props & heavy for ids, props in asked))
+
+
 class Prospects(Engine):
     run_rules = Triage.run_rules
     mine = Triage.mine
@@ -491,6 +525,15 @@ class Revisions(Engine):
                 ("Private Label Inquiry v1.pdf", None),
                 ("Synth Front Label Rev 2.docx", None),                # a document about it
                 ("Synth Label Approval Form v1.pdf", None),
+                # live 11-12: documents about a label asked for an artwork approval
+                ("2026-08-19_GEN_Synth Cleaner Label Specs_v01.pdf", None),
+                ("2026-08-19_GEN_Synth Bottle Drawing and Labeling Specs_v01.pdf", None),
+                ("2026-08-19_GEN_Synth Packaging Dieline Instructions_v01.pdf", None),
+                ("2026-08-19_GEN_PO_Purchase Order PO-SYN-1 - Synth labels reprint_v01.pdf",
+                 None),
+                ("Synth Dieline Instructions and Approval_v02.pdf", None),
+                ("1700000000000-UAT-SYN-20260907-R5-SYNTHETIC-ARTWORK-REFERENCE v1.pdf",
+                 None),                                             # a UAT test file
                 ("Synth Front Label 2026-10-01.pdf", None)):            # a date is no revision
             with self.subTest(name=name):
                 got = lr.parse(name)
@@ -600,6 +643,47 @@ class Revisions(Engine):
                           for r in f["revisions"]], ["Rev 2"])
         # the superseded alert is off for readers until it is measured (alert registry)
         self.assertEqual(self.read(kinds=[lr.SUPERSEDED], include_off=False)["gaps"], [])
+
+    def test_only_the_newest_unapproved_revision_asks_once_across_its_scopes(self):
+        """live 11-12: 8 of 15 label_revision items asked for an approval of a revision a
+        higher one superseded, or one approved, or the same revision once per thread, party
+        and folder. The ask is read across every scope holding the family's name; the rest
+        stays page history."""
+        w = World()
+
+        def library(name, at):
+            return w.obj("SharePointFile", {"name": name,
+                                            "last_modified": f"{at.isoformat()}T10:00:00Z",
+                                            "path": f"/Artwork/Synth/{name}"},
+                         binding="sharepoint.drive_items", audience="sharepoint:drive-1")
+
+        back1 = attach(w, mail(w, day(40), sender=OUTSIDE, to=(OURS,), conversation="b-1",
+                               body="Back label attached.", subject="Back", n=51_001),
+                       "Synth Soap Back Label Rev 1.pdf")
+        back2 = library("Synth Soap Back Label Rev 2.ai", day(20))
+        back2_mail = attach(w, mail(w, day(18), sender=OURS, to=(APPROVER,),
+                                    conversation="b-2", body="Back label rev 2 attached.",
+                                    subject="Back rev 2", n=51_002),
+                            "Synth Soap Back Label Rev 2.pdf")
+        lotion = attach(w, mail(w, day(15), sender=OURS, to=(OUTSIDE,), conversation="l-1",
+                                body="Lotion label attached.", subject="Lotion", n=51_003),
+                        "Synth Lotion Front Label v3.pdf")
+        mail(w, day(14), sender=OUTSIDE, to=(OURS,), conversation="l-1",
+             body="Approved, OK to print.", subject="Re: Lotion", n=51_004)
+        lotion_lib = library("Synth Lotion Front Label v3.ai", day(16))
+        summary = self.run_engine(w, only=[lr.RULE], people=people_with_drive())
+        self.assertEqual(summary["detectors"][lr.RULE], "complete")
+        asks = self.read(kinds=[lr.REVISION], limit=1000)["gaps"]
+        self.assertEqual([g["object_id"] for g in asks], [back2])
+        kept = self.read(kinds=[lr.HISTORY], limit=1000)["gaps"]
+        self.assertEqual(sorted(g["object_id"] for g in kept),
+                         sorted([back1, back2_mail, lotion, lotion_lib]))
+        superseded = next(g for g in kept if g["object_id"] == back1)
+        self.assertIn("superseded by revision Rev 2", superseded["summary"])
+        # a reader of the mail alone still sees no ask resting on a copy it cannot open
+        mail_only = self.read(kinds=[lr.REVISION], limit=1000,
+                              may_read=lambda key: key != "sharepoint:drive-1")["gaps"]
+        self.assertEqual(mail_only, [])
 
     def test_without_a_word_index_the_names_are_scanned_to_the_same_revisions(self):
         """Postgres serves no value word index yet: the names are read by type, a chunk of

@@ -2259,6 +2259,17 @@
             ],
             "title": "Undo Note"
           },
+          "undo_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undo Status"
+          },
           "undoable": {
             "default": false,
             "title": "Undoable",
@@ -6025,6 +6036,61 @@
         "title": "DevLoginResponse",
         "type": "object"
       },
+      "DocFillRequest": {
+        "additionalProperties": false,
+        "description": "Fill this form for this record: the file (base64), the record (an identifier such\nas \"PO 1234\" or a record id), and optionally the SharePoint file it came from (the\nfilled copy goes beside it) or the email it came in (a reply is prepared).",
+        "properties": {
+          "data": {
+            "maxLength": 11200000,
+            "minLength": 1,
+            "title": "Data",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "record": {
+            "maxLength": 700,
+            "minLength": 1,
+            "title": "Record",
+            "type": "string"
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply To"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "required": [
+          "name",
+          "data",
+          "record"
+        ],
+        "title": "DocFillRequest",
+        "type": "object"
+      },
       "DocumentsPending": {
         "additionalProperties": false,
         "description": "Documents the latest delta cycle has not read yet (its reading budget ran out or a\nfile timed out): the records holding them are current, their document fields pending;\nthe served generation's document objects stay served until a later cycle reads them.\nCounts only, without the excluded people's mail or OneDrives.",
@@ -7104,6 +7170,138 @@
         "title": "FeedbackStatusRequest",
         "type": "object"
       },
+      "FillCitation": {
+        "additionalProperties": false,
+        "description": "Where a filled value was read: the record, its property and the source it came\nfrom (``open_url`` opens that source as you may read it).",
+        "properties": {
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "open_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Url"
+          },
+          "record": {
+            "title": "Record",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record",
+          "field",
+          "source"
+        ],
+        "title": "FillCitation",
+        "type": "object"
+      },
+      "FillField": {
+        "additionalProperties": false,
+        "description": "One blank of the form: what it held, what the fill put there and why.",
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "string"
+          },
+          "before": {
+            "title": "Before",
+            "type": "string"
+          },
+          "citation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FillCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "description": "filled: from one value the records agree on (``citation``); kept: it already held a value; person_only: a signature, signer or signing date; unknown_field: no rule for the label; no_fact: no record read holds it; ambiguous: the records disagree. Only filled changes.",
+            "enum": [
+              "filled",
+              "kept",
+              "person_only",
+              "unknown_field",
+              "no_fact",
+              "ambiguous"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "before",
+          "after",
+          "status"
+        ],
+        "title": "FillField",
+        "type": "object"
+      },
+      "FillReply": {
+        "additionalProperties": false,
+        "description": "The filled copy as a reply to the email the form came in: prepared, never sent from\nhere (``missing`` says what a send with a file needs).",
+        "properties": {
+          "attachment": {
+            "title": "Attachment",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "status": {
+            "const": "not_available",
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "to": {
+            "items": {
+              "type": "string"
+            },
+            "title": "To",
+            "type": "array"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "attachment",
+          "status",
+          "missing"
+        ],
+        "title": "FillReply",
+        "type": "object"
+      },
       "Freshness": {
         "additionalProperties": false,
         "properties": {
@@ -8011,6 +8209,130 @@
         "title": "InstructDocument",
         "type": "object"
       },
+      "InstructFill": {
+        "additionalProperties": false,
+        "description": "A form filled from the records as a new file (the original is never changed),\nevery blank listed with its source, for review before anything is saved. Saving it\nto SharePoint is the upload you approve (``/api/instruct/uploads/{upload_id}``).",
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "digest_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest After"
+          },
+          "digest_before": {
+            "title": "Digest Before",
+            "type": "string"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The filled copy, for you only; none when nothing was filled.",
+            "title": "Download Url"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FillField"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder"
+          },
+          "kind": {
+            "enum": [
+              "docx",
+              "xlsx",
+              "pdf"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "description": "The filled copy's file name.",
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "original": {
+            "title": "Original",
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "reply": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FillReply"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size": {
+            "default": 0,
+            "description": "The filled copy's bytes (0: nothing was filled).",
+            "title": "Size",
+            "type": "integer"
+          },
+          "upload_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Id"
+          }
+        },
+        "required": [
+          "name",
+          "original",
+          "kind",
+          "record",
+          "counts",
+          "fields",
+          "digest_before"
+        ],
+        "title": "InstructFill",
+        "type": "object"
+      },
       "InstructFollowUp": {
         "additionalProperties": false,
         "description": "An answer to the question an instruction asked, or the meetings to use.",
@@ -8094,6 +8416,22 @@
               "$ref": "#/components/schemas/InstructDocument"
             },
             "title": "Documents",
+            "type": "array"
+          },
+          "files": {
+            "description": "The files this instruction read (never their content): continuing it needs them attached again.",
+            "items": {
+              "$ref": "#/components/schemas/AskAttachmentNote"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "fills": {
+            "description": "Forms filled from the records, each as a new file to review.",
+            "items": {
+              "$ref": "#/components/schemas/InstructFill"
+            },
+            "title": "Fills",
             "type": "array"
           },
           "meetings": {
@@ -10785,6 +11123,14 @@
             ],
             "description": "A BC customer's or sales order's margin and why (the margin section)."
           },
+          "profitability_choices": {
+            "description": "The margin section's same-named customers that no identity link joins: each a choice, never added together.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Profitability Choices",
+            "type": "array"
+          },
           "proposals": {
             "description": "Follow-up drafts and proposed updates built from this page's gated facts and trail; never sent or applied.",
             "items": {
@@ -10974,6 +11320,14 @@
               }
             ],
             "description": "margin: a BC customer's margin and why, or a BC sales order's (its customer's, led by the order)."
+          },
+          "profitability_choices": {
+            "description": "margin: the Business Central customers of this page's exact name that no identity link makes one record: each its own choice (its own page shows its margin), never added together; profitability is null then.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Profitability Choices",
+            "type": "array"
           },
           "proposals": {
             "anyOf": [
@@ -16936,6 +17290,18 @@
             ],
             "title": "Nudge"
           },
+          "possible_reply_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Mail from a recipient after the send, outside its thread: maybe the reply, never counted as one.",
+            "title": "Possible Reply At"
+          },
           "state": {
             "enum": [
               "waiting",
@@ -19917,6 +20283,78 @@
         "summary": "Watcher Item State",
         "tags": [
           "home"
+        ]
+      }
+    },
+    "/api/doc-fill": {
+      "post": {
+        "description": "Fill a form for a record: a new file with every blank listed beside its source,\nfor you to review. Nothing is saved or sent; saving it beside its SharePoint\noriginal is the upload you approve.",
+        "operationId": "doc_fill_api_doc_fill_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocFillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstructFill"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Doc Fill",
+        "tags": [
+          "actions"
         ]
       }
     },

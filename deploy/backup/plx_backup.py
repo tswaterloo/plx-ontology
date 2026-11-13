@@ -16,8 +16,8 @@ hard links in ``<dir>/weekly/``):
   connection, consistent while the stores are in use; never a copy of a live WAL file) of
   the small state stores, never the large capture stores;
 - ``config-<stamp>.tar.gz``: the configuration (``PLX_BACKUP_CONFIG_PATHS``) with modes,
-  owners and times kept, without any secret-bearing file (``_is_secret``: every file not
-  named ``*.json``/unit/Caddyfile, or whose text assigns a key, token, password or DSN);
+  owners and times kept, holding only an allowlist (unit files and the Caddyfile whose text
+  assigns no secret, ``_is_secret``); every other file is a secret-class file;
 - ``secrets-<stamp>.tar.gpg``: those secret files, encrypted (``gpg --symmetric``, AES256)
   with the passphrase in ``PLX_BACKUP_SECRETS_PASSPHRASE_FILE``; without it they are left
   out and only listed (path, mode, size; never content or digest) in the manifest;
@@ -112,15 +112,59 @@ OPTIONAL_STATE_FILES = (
 # stands for every file under it; ``~`` is the unit user's home.
 EXTRA_FILES = ("${XDG_STATE_HOME:-~/.local/state}/plx-workbench-app",)
 CONFIG_PATHS = ("~/.config/plx", "/etc/plx", "/etc/systemd/system/plx-*")
-# Config file names that may stay plain (still screened for assigned secrets, ``_is_secret``).
-PLAIN_SUFFIXES = (".json", ".service", ".timer", ".path", ".conf", "Caddyfile")
+# The allowlist of config files that may stay plain: unit files and the Caddyfile, which
+# name env files, never values (still screened for assigned secrets, ``_is_secret``). Every
+# other file (JSON, .conf drop-ins, env files, anything unfamiliar) is held back as a
+# secret: encrypted with the passphrase, else listed only. The name screen below is a
+# second check, never the confidentiality boundary (OPS-003).
+PLAIN_SUFFIXES = (".service", ".timer", ".path", "Caddyfile")
+# Also on the allowlist, because a restore needs them and the host keeps no secrets
+# passphrase: systemd drop-ins (``<unit>.d/*.conf``) and the named reader-policy files.
+# Each is still screened for assigned secrets, and a restore-needed file the screen holds
+# back (or that cannot be read) fails the backup when nothing encrypts it (exit 7).
+DROPIN_DIRS = (".service.d", ".timer.d", ".path.d", ".socket.d", ".mount.d")
+POLICY_JSON = ("host.json", "employee_policy.json", "portal_access.json")
+POLICY_JSON_SUFFIX = "_audience.json"
 # An assigned secret: an env-style name (``PLX_X_API_KEY=``, ``"PLX_PG_DSN":``) or a JSON
 # field named as a secret (``"password":``, ``"client_secret":``); a policy's
 # ``company_key`` (a scope name) is not one.
 _SECRET_LINE = re.compile(
     rb"[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|DSN)[A-Z0-9_]*[\"']?\s*[=:]"
-    rb"|(?i:[\"'](?:password|passwd|secret|client_secret|token|access_token|refresh_token"
-    rb"|api_key|apikey|dsn|credentials?)[\"']\s*:)")
+    rb"|(?i:[\"']?[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|apikey"
+    rb"|dsn|credentials?|private[_-]?key|authorization|bearer)[a-z0-9_.-]*[\"']?\s*[=:])"
+    rb"|(?i:bearer\s+[a-z0-9._~+/=-]{8,})|-----BEGIN [A-Z ]*PRIVATE KEY-----")
+# A DSN assignment whose value carries no password (``postgresql:///plx``, a host and user
+# only) is a locator, not a secret; the unit files name one (OPS-003 re-check).
+_DSN_ASSIGN = re.compile(
+    rb"(?i:(?:[a-z0-9_]*dsn)[\"']?\s*[=:]\s*[\"']?(postgres(?:ql)?://[^\s\"'@]*(?:@[^\s\"'/]*)?"
+    rb"[^\s\"']*|[^\s\"']*))")
+
+
+def _passwordless_dsn(value: bytes) -> bool:
+    """A postgres URL or keyword DSN with no ``user:pass@`` and no ``password=`` anywhere."""
+    low = value.lower()
+    if b"password" in low or b"passwd" in low or b"%" in low and b"pass" in low:
+        return False
+    if low.startswith((b"postgres://", b"postgresql://")):
+        authority = value.split(b"://", 1)[1].split(b"/", 1)[0].split(b"?", 1)[0]
+        return b":" not in authority.rsplit(b"@", 1)[0] if b"@" in authority else True
+    return bool(value) and b"://" not in value
+
+
+def _secret_text(data: bytes) -> bool:
+    """Whether the text assigns a secret; a password-free DSN assignment does not count."""
+    for line in data.splitlines():
+        if not _SECRET_LINE.search(line):
+            continue
+        rest, hit = line, _DSN_ASSIGN.search(line)
+        if hit and _passwordless_dsn(hit.group(1)):
+            rest = line[:hit.start()] + line[hit.end():]
+            if not _SECRET_LINE.search(rest):
+                continue
+        return True
+    return False
+
+
 KEEP_DAILY, KEEP_WEEKLY = 7, 4
 WEEK = dt.timedelta(days=7)
 _STAMP = re.compile(r"^manifest-(\d{8}T\d{6}Z)\.json$")
@@ -293,14 +337,25 @@ def _state_tar(state_dir: Path, files: list[str], target: Path, max_bytes: int, 
     return included, problems
 
 
+def _restore_needed(path: Path) -> bool:
+    """A file on the plain allowlist (units, Caddyfile, drop-ins, named policy files): a
+    restore needs it, so leaving it out is a failure, not a quiet omission."""
+    name = path.name
+    if name.endswith(PLAIN_SUFFIXES):
+        return True
+    if name.endswith(".conf") and path.parent.name.endswith(DROPIN_DIRS):
+        return True
+    return name in POLICY_JSON or name.endswith(POLICY_JSON_SUFFIX)
+
+
 def _is_secret(path: Path) -> bool:
-    """A config file that may hold a secret: any name but a JSON, unit or Caddy file, or
-    one whose text assigns a key, secret, token, password, credential or DSN, or that cannot
-    be read to tell (fail closed)."""
-    if not path.name.endswith(PLAIN_SUFFIXES):
+    """A config file that may hold a secret: any file off the allowlist (``_restore_needed``),
+    or one whose text assigns a key, secret, token, password, credential or DSN, or that
+    cannot be read to tell (fail closed)."""
+    if not _restore_needed(path):
         return True
     try:
-        return bool(_SECRET_LINE.search(path.read_bytes()))
+        return _secret_text(path.read_bytes())
     except OSError:
         return True
 
@@ -354,6 +409,9 @@ def _config_tar(patterns: list[str], target: Path, secrets_target: Path,
     out: dict[str, Any] = {"plain_files": sum(1 for p in plain if p.is_file()),
                            "secret_files": listed, "unreadable": unreadable,
                            "secrets": "omitted"}
+    # restore-needed files that did not reach the plain archive; encrypted ones are kept
+    out["restore_files_missing"] = [] if (secret and passphrase_file) else \
+        sorted([str(p) for p in secret if _restore_needed(p)] + unreadable)
     if secret and passphrase_file:
         with tempfile.TemporaryDirectory(prefix="plx-secrets-", dir=target.parent) as tmp:
             inner = Path(tmp) / "secrets.tar"
@@ -546,7 +604,8 @@ def backup(now: dt.datetime | None = None) -> tuple[int, dict[str, Any]]:
                            "bytes": {p.name: p.stat().st_size for p in parts}}
     out.update(rotate(root, stamp))
     out["total_bytes"] = _sets_bytes(root)
-    code = 6 if pg_problem else 3 if problems else 0
+    out["restore_files_missing"] = configured["restore_files_missing"]
+    code = 6 if pg_problem else 3 if problems else 7 if out["restore_files_missing"] else 0
     hook = os.environ.get("PLX_BACKUP_OFFSITE_HOOK")
     if hook:
         result = subprocess.run([hook, *map(str, parts), str(manifest)],

@@ -45,6 +45,7 @@ def suggest_phrases(q: str) -> list[tuple[int, str]]:
 
 SAME_RECORD_ASKS = 12   # records a suggestion list asks about, at most
 SAME_RECORD_SECONDS = 1.5   # past this, copies without a shared code stay apart
+ITEM_CHECK_SECONDS = 1.5    # past this, an item-gated name (mail, chat, file) is not suggested
 SAME_RECORD_KEEP_SECONDS = 600   # a record's copies, as one reader walked them, kept this long
 
 

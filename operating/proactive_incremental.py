@@ -232,6 +232,14 @@ def _applied(store: Path) -> set[str] | None:
             "SELECT substr(name, 7) FROM ontology.load_state WHERE name LIKE 'delta:%'")}
 
 
+def generation_digest(stamp: str | None) -> str | None:
+    """The generation's content digest within ``stamp`` (a SQLite store's digest as it
+    is; Postgres's ``<digest>@<data version>``, the part before the ``@``)."""
+    if not isinstance(stamp, str):
+        return None
+    return stamp.partition("@")[0] or None
+
+
 def layer_owned(store: Path, digest: str | None, ch: sqlite3.Connection,
                 applied: set[str] | None) -> tuple[set[str], list[str], bool]:
     """(the records owned by the served layers not taken in yet, those layers, whether a
@@ -261,20 +269,80 @@ def layer_owned(store: Path, digest: str | None, ch: sqlite3.Connection,
     return owned, taken, waiting
 
 
-def _base_neighbors(base: Path | None, ids: Sequence[str]) -> dict[str, set[str]]:
-    """The records each of ``ids`` is linked to in the generation file ``base`` (what the
-    full run's data held before any layer), read by the link end indexes."""
-    out: dict[str, set[str]] = {}
-    if base is None or not Path(base).is_file():
-        return out
+class BaseUnreadable(RuntimeError):
+    """No store the changed records' earlier links can be read from: the pass stops with
+    an error (judging with no earlier neighbours would silently judge less)."""
+
+
+def _neighbors_sql(conn: Any, ids: Sequence[str], sql: str, param: Callable[[list], Any],
+                   out: dict[str, set[str]]) -> None:
+    for part in _chunks(sorted(ids)):
+        held = param(list(part))
+        for end, other in (("from_object", "to_object"), ("to_object", "from_object")):
+            for a, b in conn.execute(sql.format(end=end, other=other), (held,)):
+                out.setdefault(a, set()).add(b)
+
+
+def _file_neighbors(base: Path, ids: Sequence[str], out: dict[str, set[str]]) -> None:
+    """The links of ``ids`` in the generation file ``base``; sqlite3.Error when unreadable."""
     with closing(sqlite3.connect(f"file:{base}?mode=ro", uri=True)) as conn:
-        for part in _chunks(sorted(ids)):
-            held = json.dumps(list(part))
-            for end, other in (("from_object", "to_object"), ("to_object", "from_object")):
-                for a, b in conn.execute(
-                        f"SELECT {end}, {other} FROM link_rows WHERE superseded_at IS NULL "
-                        f"AND {end} IN (SELECT value FROM json_each(?))", (held,)):
-                    out.setdefault(a, set()).add(b)
+        _neighbors_sql(conn, ids, "SELECT {end}, {other} FROM link_rows WHERE superseded_at "
+                       "IS NULL AND {end} IN (SELECT value FROM json_each(?))", json.dumps,
+                       out)
+
+
+def _pg_neighbors(ids: Sequence[str], out: dict[str, set[str]],
+                  target: str | None = None) -> None:
+    """The links of ``ids`` in the Postgres ontology (``PLX_PG_DSN``), read by the link end
+    indexes. Raises when it cannot be read or holds no loaded links (a load in progress)."""
+    import psycopg
+    from operating.pg import ontology_reader
+
+    with psycopg.connect(target or ontology_reader.dsn(), connect_timeout=10) as conn:
+        if conn.execute("SELECT 1 FROM ontology.load_state WHERE name = 'table:link_rows'"
+                        ).fetchone() is None:
+            raise BaseUnreadable("postgres_links_not_loaded")
+        _neighbors_sql(conn, ids, "SELECT {end}, {other} FROM ontology.link_rows WHERE "
+                       "superseded_at IS NULL AND {end} = ANY(%s)", list, out)
+
+
+def _base_neighbors(base: Path | None, ids: Sequence[str], *,
+                    postgres: bool = False) -> dict[str, set[str]]:
+    """The records each of ``ids`` was linked to before the changes being taken in.
+
+    The engine reading the SQLite generation (``postgres`` False): the links in the
+    generation file ``base`` (what the full run's data held before any layer).
+    The engine reading Postgres: Postgres's links (``_pg_neighbors``; it applies each layer
+    in place, so a link a layer removed is gone from it), together with the generation
+    file's when one is still there (``PLX_ONTOLOGY_PG=1``: the links before any layer, a
+    superset judged, never less). With Postgres the only store the file is gone and
+    Postgres alone is read.
+    Raises :class:`BaseUnreadable` when no store can be read (Postgres down or not loaded,
+    or the SQLite generation file missing or unreadable): never an empty answer that
+    would judge fewer subjects."""
+    out: dict[str, set[str]] = {}
+    if not ids:
+        return out
+    path = Path(base) if base is not None else None
+    if postgres:
+        try:
+            _pg_neighbors(ids, out)
+        except BaseUnreadable:
+            raise
+        except Exception as error:  # noqa: BLE001 - unreadable: the pass stops, loudly
+            raise BaseUnreadable(f"postgres_unreadable:{type(error).__name__}") from error
+        if path is not None and path.is_file():
+            try:
+                _file_neighbors(path, ids, out)
+            except sqlite3.Error:
+                pass   # Postgres was read; the file is the optional earlier half
+        return out
+    if path is None or not path.is_file():
+        raise BaseUnreadable(f"generation_file_missing:{path}")
+    try:
+        _file_neighbors(path, ids, out)
+    except sqlite3.Error as error:
+        raise BaseUnreadable(f"generation_file_unreadable:{type(error).__name__}") from error
     return out
 
 
@@ -437,7 +505,13 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
         with closing(_open(changes_path(inbox))) as ch:
             st = pe._Store(store)
             try:
-                digest = st.meta("content_digest")
+                stamp = st.meta("content_digest")
+                # the generation the data is of: Postgres says its digest with the data
+                # version (``ontology_reader.change_stamp``, changing with every applied
+                # layer); the delta pointer's ``base_digest`` and what is kept here name
+                # the generation alone (with the stamp no layer was ever taken in, and
+                # every pass dropped what the last one kept)
+                digest = generation_digest(stamp)
                 if _meta(ch, "digest") != digest:
                     # another generation: nothing kept is of it
                     ch.execute("DELETE FROM prints")
@@ -454,6 +528,7 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     ch.execute("DELETE FROM layers")
                     _set_meta(ch, "reader", reader)
                 out["reader"] = reader
+                flood: set[str] | None = None
                 if changed is None and reader == "generation_only":
                     # the layers' changes are not in what the engine reads: none is taken
                     # in (time and rules behind still are judged, below)
@@ -461,6 +536,17 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                     prints, moved = {}, set()
                 elif changed is None:
                     owned, taken, waiting = layer_owned(store, digest, ch, applied)
+                if changed is None and reader != "generation_only" and len(owned) > read_cap:
+                    # more changed records than any scope may read (a catch-up layer,
+                    # the first pass over layers kept from it): fingerprinting and
+                    # planning them would hold GBs past the pass's memory bound and never
+                    # finish, so nothing is kept; the rules are judged whole instead and
+                    # the layers marked taken in. Prints kept stay as they are (a record
+                    # whose print is older moves again later: judged once more, never less)
+                    prints, moved, flood = {}, set(), owned
+                    out["flooded"] = len(owned)
+                elif changed is None and reader != "generation_only":
+                    flood = None
                     prints = fingerprints(st, owned)
                     kept = {}
                     for part in _chunks(sorted(prints)):
@@ -468,13 +554,14 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                             "SELECT object_id, print FROM prints WHERE object_id IN "
                             "(SELECT value FROM json_each(?))", (json.dumps(list(part)),))})
                     moved = {oid for oid, (fp, _n) in prints.items() if kept.get(oid) != fp}
-                else:
+                elif changed is not None:
                     moved = set(changed)
                     prints = fingerprints(st, moved)
                 out["candidates"] = len(prints)
                 out["changed"] = len(moved)
                 before: dict[str, set[str]] = _base_neighbors(
-                    Path(base) if base is not None else store, sorted(moved))
+                    Path(base) if base is not None else store, sorted(moved),
+                    postgres=reader == "postgres")
                 for part in _chunks(sorted(moved)):
                     for r in ch.execute("SELECT object_id, neighbors FROM prints WHERE "
                                         "object_id IN (SELECT value FROM json_each(?))",
@@ -487,11 +574,16 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
                          and r not in NOT_INCREMENTAL]
                 subjects, read = (plan(st, moved, before, inbox, rules) if moved
                                   else ({}, set()))
-                if len(read) > read_cap:
+                if len(read) > read_cap or flood is not None:
                     whole = sorted(set(whole) | set(rules))
                     subjects, read = {}, set()
-                keys = _audience_keys(st, ch, digest, moved) if subjects else None
-                out["watchlists"] = _watch(st, store, moved, clock)
+                keys = _audience_keys(st, ch, stamp, moved) if subjects else None
+                # a flood's follows and rules are judged over every record the layers
+                # own (watchlists compare with their own snapshots: an unchanged one is
+                # told nothing)
+                out["watchlists"] = _watch(st, store, moved if flood is None else flood,
+                                           clock)
+                owned = flood = set()   # not held through the whole rules' run
             finally:
                 st.close()
             out["planned_seconds"] = round(time.monotonic() - started, 2)

@@ -45,6 +45,8 @@ to ``SUBJECT_CHARS`` characters, never a body. Rule-based, no model call; fixtur
 
 from __future__ import annotations
 
+from .mail_text import unquoted
+
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
@@ -102,7 +104,10 @@ SEED_WORDS = {
               '"update") OR ("status" AND "update") OR chasing OR nudge OR resending OR '
               '("second" AND "request") OR ("2nd" AND "request") OR ("third" AND "request") '
               'OR ("haven" AND "heard") OR ("not" AND "heard") OR ("previous" AND "email") OR '
-              '("last" AND "email")'),
+              '("last" AND "email") OR ("previous" AND "message") OR ("last" AND "message") '
+              'OR ("3rd" AND "request") OR ("final" AND "request") OR notice OR attempt OR '
+              'bumping OR ("any" AND "news") OR ("haven" AND "received") OR ("not" AND '
+              '"received") OR ("still" AND "got")'),
     # a supplier chasing payment (``proactive_mail_pains`` reads this window too)
     "payment": ('overdue OR remit OR remittance OR payment OR pay OR ("past" AND "due") OR '
                 '("balance" AND "due") OR ("balance" AND "owing") OR ("outstanding" AND '
@@ -228,8 +233,7 @@ def _own(text: Any) -> str:
     if not isinstance(text, str) or not text.strip():
         return ""
     quoted = QuotedRanges(text)
-    return strip_gateway_notices("".join(ch for i, ch in enumerate(text)
-                                         if not quoted.contains(i)))
+    return strip_gateway_notices(unquoted(quoted, text))
 
 
 def _sentences(text: str) -> Iterable[str]:
@@ -374,20 +378,44 @@ def _word_ids(st: Any, words: str, props: Sequence[str], prefix: str = "Email:%"
         return None
 
 
+# ``_read`` on the Postgres ontology: the ``object_values`` view's columns from its tables (a
+# record's versions, their current value sources, the cells) for the named fields
+_PG_READ = ("SELECT v.object_id, f.property, c.value, v.l1_handle, k.markings, k.unit, "
+            "c.currency FROM object_versions v JOIN value_sources s ON s.ver = v.rowid AND "
+            "s.superseded_at IS NULL JOIN value_cells c ON c.src = s.src JOIN value_kinds k "
+            "ON k.kind = c.kind JOIN value_fields f ON f.field = c.field WHERE v.object_id IN "
+            "(SELECT value FROM json_each(?)) AND c.field IN (SELECT value FROM json_each(?))")
+
+
+def pg_fields(conn: Any, props: Sequence[str]) -> str:
+    """The value fields of ``props`` on the Postgres ontology, as a JSON list."""
+    return json.dumps(sorted(row[0] for row in conn.execute(
+        "SELECT field FROM value_fields WHERE property IN (SELECT value FROM json_each(?))",
+        (json.dumps(list(props)),))))
+
+
 def _read(st: Any, ids: Sequence[str], props: Sequence[str]) -> dict[str, dict[str, Any]]:
     """object -> {property: the current row} of the named mail (chunked, side by side on
     the store's threads; each thread reads on its own connection)."""
     wanted = sorted(set(ids))
     chunks = [wanted[i:i + CHUNK] for i in range(0, len(wanted), CHUNK)]
-    sql = ("SELECT object_id, property, value, l1_handle, markings, unit, currency "
-           "FROM object_values WHERE "
-           "superseded_at IS NULL AND object_id IN (SELECT value FROM json_each(?)) AND "
-           "property IN (SELECT value FROM json_each(?))")
+    named = json.dumps(list(props))
+    if getattr(st.conn, "postgres", False):
+        # the view's columns from its tables, the properties' fields named first: through
+        # the ``object_values`` view the planner looks the fields up again for every value
+        # source (3,000 Teams messages 1.2-2.9 s, against 0.2 s; same rows)
+        sql = _PG_READ
+        named = pg_fields(st.conn, props)
+    else:
+        sql = ("SELECT object_id, property, value, l1_handle, markings, unit, currency "
+               "FROM object_values WHERE "
+               "superseded_at IS NULL AND object_id IN (SELECT value FROM json_each(?)) AND "
+               "property IN (SELECT value FROM json_each(?))")
     out: dict[str, dict[str, Any]] = defaultdict(dict)
     lock = threading.Lock()
 
     def one(chunk: list[str]) -> None:
-        rows = list(st.conn.execute(sql, (json.dumps(chunk), json.dumps(list(props)))))
+        rows = list(st.conn.execute(sql, (json.dumps(chunk), named)))
         with lock:
             for oid, prop, value, handle, markings, unit, currency in rows:
                 if value not in (None, "") and prop not in out[oid]:
@@ -536,6 +564,13 @@ def _members(st: Any, conversations: set[str], indexed: bool, prop: str = "conve
     return out
 
 
+def cut_short(members: Mapping[str, Sequence[str]], read: Iterable[str]) -> set[str]:
+    """The conversations of ``members`` longer than ``MAX_THREAD`` with a copy past it not
+    in ``read``: an answer may be among the unread, so none is judged unanswered."""
+    read = set(read)
+    return {c for c, ms in members.items() if any(o not in read for o in ms[MAX_THREAD:])}
+
+
 def population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
     """The mail both rules judge, read once per run (kept on the store's memo)."""
     key = f"proactive_threads:{as_of.isoformat()}"
@@ -581,6 +616,9 @@ def _population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
     rows.update(_read(st, others, PROPS) if indexed else
                 {o: r for o, r in _scan(st, PROPS).items() if o in set(others)}
                 if others else {})
+    # a conversation longer than ``MAX_THREAD`` whose copies past it were not read: a reply
+    # among them is unseen, so it is not judged (never "unanswered" on a sample)
+    cut = cut_short(members, rows)
     rows = seen_by(rows, as_of)
     audience: dict[str, str] = {}
     wanted = sorted(rows)
@@ -596,7 +634,7 @@ def _population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
     kept = {o: r for o, r in rows.items() if o in audience and cleared_units[audience[o]]}
     timings["total"] = round(time.monotonic() - started, 1)
     return {"rows": kept, "audience": audience, "members": members, "inside": inside,
-            "indexed": indexed, "dropped_unread": len(rows) - len(kept), "seconds": timings}
+            "cut": cut, "indexed": indexed, "dropped_unread": len(rows) - len(kept), "seconds": timings}
 
 
 # --------------------------------------------------------------------------- shared
@@ -705,7 +743,8 @@ def _blocked(people: Any, result: Callable) -> dict[str, Any] | None:
 
 class _Thread:
     """One conversation's cleared copies, deduplicated, in sent order; ``ok``: every
-    person of ours on every copy is cleared (else the conversation is not judged)."""
+    person of ours on every copy is cleared and every copy was read (else the
+    conversation is not judged; ``why``: which)."""
 
     def __init__(self, pop: Mapping[str, Any], conversation: str, people: Any,
                  domains: Sequence[str]) -> None:
@@ -713,6 +752,7 @@ class _Thread:
         copies = [o for o in pop["members"].get(conversation, ()) if o in rows]
         self.audiences = sorted({pop["audience"][o] for o in copies})
         self.ok = True
+        self.why = "participants_not_cleared"
         seen: dict[str, str] = {}
         for oid in sorted(copies):
             row = rows[oid]
@@ -729,6 +769,8 @@ class _Thread:
         self.messages = sorted(seen.values(), key=lambda o: (
             _instant(rows[o]["sent_at"]["value"]), o))
         self.rows = rows
+        if conversation in pop.get("cut", ()):
+            self.ok, self.why = False, "thread_too_long"
 
     def sender(self, oid: str) -> str:
         return _addr((self.rows[oid].get("sender") or {}).get("value"))
@@ -802,7 +844,7 @@ def approvals_waiting(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         if not asks:
             continue
         if not thread.ok:
-            skipped.note("participants_not_cleared", asks, [(o, "[]") for o in asks])
+            skipped.note(thread.why, asks, [(o, "[]") for o in asks])
             continue
         last = asks[-1]
         asker = thread.sender(last)
@@ -941,6 +983,10 @@ def _teams_approvals(st: Any, as_of: date, people: Any, *, gap: Callable, cites:
         if not asks:
             continue
         counts["teams_asks"] += 1
+        if len(oids) > MAX_THREAD:
+            # its messages past the first MAX_THREAD were not read: an answer may be there
+            skipped.note("thread_too_long", asks, [(o, "[]") for o in asks])
+            continue
         everyone = {v for v in sender.values() if v} | {m for ms in mentions.values()
                                                        for m in ms or ()}
         if any(v == "" for v in sender.values()) or any(ms is None for ms in mentions.values()) \
@@ -1138,7 +1184,7 @@ def chase_escalation(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 continue
             counts["threads_3plus"] += 1
             if not thread.ok:
-                skipped.note("participants_not_cleared", oids, [(o, "[]") for o in oids])
+                skipped.note(thread.why, oids, [(o, "[]") for o in oids])
                 continue
             last = oids[-1]
             if (as_of - thread.sent(last).date()).days > RECENT_DAYS:
@@ -1290,7 +1336,7 @@ def party_chases(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         if not chases:
             continue
         if not thread.ok:
-            skipped.note("participants_not_cleared", chases, [(o, "[]") for o in chases])
+            skipped.note(thread.why, chases, [(o, "[]") for o in chases])
             continue
         last = chases[-1]
         answered = any(_internal(thread.sender(o), domains) for o in thread.messages
@@ -1388,7 +1434,7 @@ def internal_chases(st: Any, as_of: date, *, gap: Callable, cites: Callable,
         if not chases:
             continue
         if not thread.ok:
-            skipped.note("participants_not_cleared", [o for o, _ in chases],
+            skipped.note(thread.why, [o for o, _ in chases],
                          [(o, "[]") for o, _ in chases])
             continue
         last, asked = chases[-1]

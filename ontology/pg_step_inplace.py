@@ -2443,15 +2443,23 @@ def judge_shard(state: str, shard: int, shards: int, out: str,
 
 
 def text_marks(state: str, out: Path, shards: int, workers: int,
-               readings: Sequence[str] = ()) -> tuple[list[str], dict]:
+               readings: Sequence[str] = (), served: Sequence[str] | None = None
+               ) -> tuple[list[str], dict]:
     """Every shard judged (the ones not in ``out`` yet, by ``workers`` processes); the
     marked handles. Refused unless every shard listed the same groups and the string hash
-    seed is fixed (a mail group's key holds a frozenset's repr)."""
+    seed is fixed (a mail group's key holds a frozenset's repr). ``served``: the source
+    families the served generation read (``schema_migrate.served_families``; None: every
+    bound family): the re-mark judges every document, so one of them the state directory
+    does not hold refuses it (``missing_source``; its documents would never be marked)."""
     import concurrent.futures as futures
     import multiprocessing
     import os
+    from ontology import step_migrate as sm
+    from ontology.schema import load_schema
+    from operating.host import held_captures
     if os.environ.get("PYTHONHASHSEED") != "0":
         raise Refused("text_marks_needs_PYTHONHASHSEED=0")
+    sm.require_state_sources({}, load_schema(), held_captures(state), served, every=True)
     out.mkdir(parents=True, exist_ok=True)
     todo = [n for n in range(shards) if not (out / f"shard-{n}.json").is_file()]
     if todo:
@@ -2483,7 +2491,7 @@ def build_from_state(the_plan: Mapping[str, Any], new: Any, state: Path, out: Pa
     from ontology import step_migrate as sm
     from ontology.delta import _internal_domains
     from ontology.project_incremental import MEMBERS, READINGS
-    from ontology.schema_migrate import next_sequence
+    from ontology.schema_migrate import next_sequence, served_families
     from operating import build_steps
     from operating.host import state_captures
     from operating.pg.ontology_migrate import delta_mark
@@ -2492,6 +2500,8 @@ def build_from_state(the_plan: Mapping[str, Any], new: Any, state: Path, out: Pa
     projection = state / "projection"
     with contextlib.ExitStack() as stack:
         sources = state_captures(state, stack, internal_domains=_internal_domains(os.environ))
+        never = sm.require_state_sources(the_plan["steps"]["run"], new, sources,
+                                         served_families(dsn))
         unopened = sm.open_snapshots(sources)
         blobs = [s.blobs for s in sources.values()
                  if isinstance(getattr(s, "blobs", None), (str, Path))]
@@ -2504,6 +2514,7 @@ def build_from_state(the_plan: Mapping[str, Any], new: Any, state: Path, out: Pa
                              unit_layer=unit_layer, delta_mark=mark,
                              sequence=next_sequence(dsn), commit=commit)
         report["snapshots_unopened"] = unopened
+        report["sources_never_served"] = never
         return report
 
 
@@ -2555,13 +2566,20 @@ def touched_by_apply(reports: Sequence[Path], layers: Sequence[Path],
     return sorted(types), sorted(pairs)
 
 
-def _open_sources(state: Path, stack: contextlib.ExitStack) -> dict[str, Any]:
+def _open_sources(state: Path, stack: contextlib.ExitStack,
+                  run: Mapping[str, Any], dsn: str | None) -> dict[str, Any]:
+    """The state directory's capture sources (refused when one the document steps of
+    ``run`` read is not held: ``step_migrate.require_state_sources``)."""
     import os
     from ontology import step_migrate as sm
     from ontology.delta import _internal_domains
+    from ontology.schema import load_schema
+    from ontology.schema_migrate import served_families
     from operating.host import state_captures
     projection = state / "projection"
     sources = state_captures(state, stack, internal_domains=_internal_domains(os.environ))
+    sm.require_state_sources(run, load_schema(), sources,
+                             served_families(dsn) if dsn else None)
     sm.open_snapshots(sources)
     blobs = [s.blobs for s in sources.values()
              if isinstance(getattr(s, "blobs", None), (str, Path))]
@@ -2658,8 +2676,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(report, sort_keys=True, default=str))
         return 0
     if args.command == "marks":
+        from ontology.schema_migrate import served_families
+        from operating.pg import config
+        served = served_families(config.dsn())
         marked, counts = text_marks(args.state_dir, Path(args.work), args.shards, args.workers,
-                                    args.readings)
+                                    args.readings, None if served is None else sorted(served))
         print(json.dumps({**counts, "marked": len(marked)}, sort_keys=True))
         return 0
     from operating.pg import config
@@ -2692,7 +2713,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "steps":
         from operating import build_steps
         with contextlib.ExitStack() as stack:
-            sources = _open_sources(Path(args.state_dir), stack)
+            sources = _open_sources(Path(args.state_dir), stack, run, dsn)
             tmp = Path(stack.enter_context(tempfile.TemporaryDirectory(
                 prefix=".steps-", dir=args.work)))
             steps = build_steps.post_project(Path(args.state_dir), "plx", scratch=tmp)

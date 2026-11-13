@@ -298,6 +298,11 @@ class TrackTest(Base):
         self.assertEqual(len(carried), 3)
         self.assertTrue(all(r["label"].startswith("Action item:") and r["sources"]
                             for r in carried))
+        # API-016: each source is a handle the brief keeps (a bare string was dropped)
+        from operator_api import briefs
+        for r in carried:
+            self.assertEqual([s.handle for s in briefs._sources(r["sources"])],
+                             [s["handle"] for s in r["sources"]])
 
 
 class CardinalityTest(unittest.TestCase):

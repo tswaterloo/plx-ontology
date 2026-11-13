@@ -464,6 +464,23 @@ class Safety(Base):
             ex.undo(out[1]["key"], NOW)
         self.assertEqual(len(mail.calls), 1)
 
+    def test_a_resumed_item_skips_its_done_entry_and_sends_the_rest_once(self):
+        """ACT-003: the entry done, the message unavailable (no mail adapter yet): run
+        again with the adapter, only the message goes, once; a third run sends nothing."""
+        env = self.go_live(("customer_order_intake",))
+        mail = Transport()
+        self.bc.answers = [(201, {"id": NEW_ID, "@odata.etag": "W/\"1\""})]
+        first = self.executor(env).run(po_item(), NOW)
+        self.assertEqual([(r["kind"], r["status"]) for r in first],
+                         [("bc_write", "done"), ("send_mail", "unavailable")])
+        ex = self.executor(env, send_mail=wa.MailAdapter(_Sender(mail), environ=env))
+        again = ex.run(po_item(), NOW)
+        self.assertEqual([(r["kind"], r["status"]) for r in again],
+                         [("bc_write", "duplicate"), ("send_mail", "done")])
+        third = ex.run(po_item(), NOW)
+        self.assertEqual([r["status"] for r in third], ["duplicate", "duplicate"])
+        self.assertEqual((len(self.bc.calls), len(mail.calls)), (1, 1))
+
     def test_a_message_after_an_entry_that_was_only_a_dry_run_never_goes_out(self):
         """ACT-002: only mail opened to approved writes, the BC entry a dry run: its
         confirmation is a dry run too, nothing dispatched; both opened: both go."""

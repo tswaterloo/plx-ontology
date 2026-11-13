@@ -261,10 +261,9 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
                     copy.write_row((oid,))
             cur.execute("ANALYZE owned")
             cur.execute("SET LOCAL jit = off")   # many short statements: no JIT
-            for table, where in _DELETE:
-                cur.execute(f"DELETE FROM ontology.{table} WHERE {where}")
-                report[f"deleted.{table}"] = report.get(f"deleted.{table}", 0) + cur.rowcount
-            report.update(_insert(conn, str(layer), cur, ids))
+            # no statement of the apply spills past the budget (a disk-full guard: it fails)
+            cur.execute(f"SET LOCAL temp_file_limit = '{_APPLY_TEMP_LIMIT}'")
+            report.update(_replace(conn, str(layer), cur, ids, dsn))
             ontology_migrate.log_owned(cur, layer.name, owned)
             if not held_out:   # under the served schema: no longer to be projected again
                 ontology_migrate.done(cur)
@@ -465,6 +464,507 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
     report["copied.chunk_words"] = _copy(
         cur, "chunk_words", ("chunk_id", "words"),
         chunk_word_rows((n, c[2]) for n, c in zip(numbers, chunks)), keys=keys)
+    return report
+
+
+# --------------------------------------------------------------------------- row diff
+
+# An owned object's rows are replaced by a diff (GA-F6): a row the layer holds unchanged
+# stays where it is (no dead tuple, no WAL, no new row number), a changed one is updated or
+# replaced, one the layer no longer holds is deleted, a new one inserted. The result is the
+# same rows as deleting every owned row and copying the layer's (``_DELETE``, ``_insert``:
+# a migration's path), up to the row numbers of rows that did not change.
+#
+# Rows keyed by their content or object (``_KEYED``, their primary key) are matched on the
+# key and compared column by column. Versions, value sources and cells, and text fields and
+# chunks, are numbered by the ontology, so a version is matched on its natural key
+# (object, handle, digest, lineage, markings, recorded_at) plus a signature of every source
+# and cell under it, and a text field on its columns plus a signature of its chunks: equal
+# signatures keep the served rows (their ``superseded_at`` follows the layer's), anything
+# else is replaced whole. Signatures encode NULL apart from text and prefix each text with
+# its length (``_enc``), so two different rows never share one; a value written in another
+# form only costs a rewrite, never a missed change.
+_KEYED = {
+    "objects": (f"object_id IN {_OWNED_PG}",),
+    "object_removals": (f"object_id IN {_OWNED_PG}",),
+    "identifiers": (f"object_id IN {_OWNED_PG}",),
+    "events": (f"event_id IN {_EVENTS_PG}",),
+    "event_objects": (f"event_id IN {_EVENTS_PG}",),
+    # each delete on its own index; a whole-store step's links are not the layer's
+    "link_rows": (f"from_object IN {_OWNED_PG} AND {_whole_steps.pg_excluded()}",
+                  f"to_object IN {_OWNED_PG} AND {_whole_steps.pg_excluded()}"),
+}
+# a served column read as the layer writes it (a link row stored packed, migration 0007)
+_SERVED_AS = {"link_rows": {
+    "reason": "coalesce(t.reason, ontology.link_text(t.reason_id, t.slots, t.ek + 1, 64))",
+    "evidence_handles": "coalesce(t.evidence_handles, ontology.link_text(t.evidence_id, "
+                        "t.slots, 1, t.ek))"}}
+_RENUMBERED = {"objects": "row_no", "link_rows": "row_no"}   # a changed row reads as new
+_SIG_BLOCK = 20_000   # sources whose cells are signed at once
+
+
+def _enc(value: Any) -> str:
+    """One value of a signature (``_enc_pg`` writes the same in SQL)."""
+    if value is None:
+        return "N"
+    text = str(_clean(value))
+    return f"T{len(text)}:{text}"
+
+
+def _enc_pg(expr: str) -> str:
+    return (f"(CASE WHEN ({expr}) IS NULL THEN 'N' ELSE 'T' || length(({expr})::text) || "
+            f"':' || ({expr})::text END)")
+
+
+def _md5(text: str) -> str:
+    import hashlib
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _diff_keyed(cur: Any, table: str, columns: Sequence[str], rows: Any,
+                keys: dict[str, list[str]]) -> dict[str, int]:
+    """Bring the owned rows of ``ontology.<table>`` to ``rows`` (the layer's) by key."""
+    key = _primary_key(cur, table, keys)
+    cols = ", ".join(columns)
+    stage = f"diff_{table}"
+    cur.execute(f"CREATE TEMP TABLE IF NOT EXISTS {stage} ON COMMIT DROP AS SELECT {cols} "
+                f"FROM ontology.{table} WITH NO DATA")
+    cur.execute(f"ALTER TABLE {stage} ADD COLUMN IF NOT EXISTS {_ORDER} bigint "
+                "GENERATED ALWAYS AS IDENTITY")
+    cur.execute(f"TRUNCATE {stage}")
+    staged = 0
+    with cur.copy(f"COPY {stage} ({cols}) FROM STDIN") as copy:
+        for row in rows:
+            copy.write_row(tuple(_clean(v) for v in row))
+            staged += 1
+    on = ", ".join(key)
+    cur.execute(f"CREATE INDEX ON {stage} ({on})")
+    cur.execute(f"ANALYZE {stage}")
+    deleted = 0
+    for scope in _KEYED[table]:
+        cur.execute(f"DELETE FROM ontology.{table} t WHERE {scope} AND NOT EXISTS (SELECT 1 "
+                    f"FROM {stage} s WHERE " + " AND ".join(f"s.{k} = t.{k}" for k in key)
+                    + ")")
+        deleted += cur.rowcount
+    rest = [c for c in columns if c not in key]
+    served = _SERVED_AS.get(table, {})
+    sets = ([f"{c} = excluded.{c}" for c in rest]
+            + [f"{c} = DEFAULT" for c in _UNPACK.get(table, ()) if c not in columns]
+            + ([f"{_RENUMBERED[table]} = DEFAULT"] if table in _RENUMBERED else []))
+    if rest:
+        differs = (f"({', '.join(served.get(c, 't.' + c) for c in rest)}) IS DISTINCT FROM "
+                   f"({', '.join('excluded.' + c for c in rest)})")
+        action = f"DO UPDATE SET {', '.join(sets)} WHERE {differs}"
+    else:
+        action = "DO NOTHING"
+    cur.execute(f"INSERT INTO ontology.{table} AS t ({cols}) SELECT DISTINCT ON ({on}) {cols} "
+                f"FROM {stage} ORDER BY {on}, {_ORDER} DESC ON CONFLICT ({on}) {action}")
+    written = cur.rowcount
+    cur.execute(f"SELECT count(*) FROM (SELECT DISTINCT {on} FROM {stage}) x")
+    distinct = cur.fetchone()[0]
+    return {f"deleted.{table}": deleted, f"written.{table}": written,
+            f"kept.{table}": distinct - written, f"copied.{table}": staged}
+
+
+def _layer_version_rows(conn: sqlite3.Connection, ids: str, context: dict[str, Any]
+                        ) -> Any:
+    """The layer's owned versions, each with the signature of its sources and cells."""
+    fields = {f: (p, fp) for f, p, fp in conn.execute(
+        "SELECT field, property, field_path FROM value_fields")}
+    kinds = {r[0]: r[1:] for r in conn.execute(
+        f"SELECT kind, {', '.join(store_ddl.KIND_COLUMNS)} FROM value_kinds")}
+    sources = conn.execute(
+        "SELECT ver, src, binding_id, digest, lineage, recorded_at FROM value_sources WHERE "
+        f"ver IN (SELECT rowid FROM object_versions WHERE object_id IN {_OWNED}) "
+        "ORDER BY ver, src", {"ids": ids})
+
+    def signed() -> Any:   # (ver, source signature) in version order
+        reader = conn.cursor()
+        while True:
+            part = sources.fetchmany(_SIG_BLOCK)
+            if not part:
+                return
+            cells: dict[int, list[tuple]] = {}
+            packed: set[int] = set()
+            for cell in reader.execute(
+                    "SELECT src, field, layout, value, currency, currency_citation FROM "
+                    "value_cells WHERE src IN (SELECT value FROM json_each(:s))",
+                    {"s": json.dumps([p[1] for p in part])}):
+                if cell[1] is None:
+                    packed.add(cell[0])
+                for (s_, f, k, value, _num, currency, cite) in TABLES["value_cells"].shape(
+                        context, cell):
+                    cells.setdefault(s_, []).append((*fields[f], *kinds[k], value, currency,
+                                                     cite))
+            for ver, src, binding, digest, lineage, recorded in part:
+                body = "|".join("".join(_enc(x) for x in c)
+                                for c in sorted(cells.get(src, ()), key=lambda c: c[:2]))
+                yield ver, (_enc(binding) + _enc(digest) + _enc(lineage) + _enc(recorded)
+                            + ("P" if src in packed else "U") + ":" + _md5(body))
+            del cells
+
+    pending = signed()
+    head = next(pending, None)
+    for v in conn.execute(
+            "SELECT rowid, object_id, l1_handle, digest, lineage, markings, recorded_at, "
+            f"superseded_at FROM object_versions WHERE object_id IN {_OWNED} ORDER BY rowid",
+            {"ids": ids}):
+        mine = []
+        while head is not None and head[0] < v[0]:
+            head = next(pending, None)   # a source of no owned version: not this layer's
+        while head is not None and head[0] == v[0]:
+            mine.append(head[1])
+            head = next(pending, None)
+        yield (*v, _md5("|".join(sorted(mine))))
+
+
+def _pg_signatures() -> str:
+    """The served versions of the objects ``%(ids)s`` (a text array) names, with their
+    signatures. Driven by the objects' keys: each version by ``object_versions_by_object``,
+    its sources by ``value_sources_by_version``, their cells by ``value_cells_pkey``, the
+    order kept within one source or version. The earlier whole-set form (CTEs over the
+    owned versions and sources joined to every cell) sorted all of ``value_cells`` and
+    spilled 20+ GB of temp files on a 660k-object layer (11-12)."""
+    cell = " || ".join(_enc_pg(c) for c in (
+        "f.property", "f.field_path", *(f"k.{c}" for c in store_ddl.KIND_COLUMNS), "c.value",
+        "c.currency", "c.currency_citation"))
+    source = " || ".join(_enc_pg(f"s.{c}") for c in ("binding_id", "digest", "lineage",
+                                                     "recorded_at"))
+    # a source's cells read first (OFFSET 0 keeps them apart): ``value_cells.src``'s
+    # statistics count thousands of cells a source, which plans a probe per field otherwise
+    cells = (f"(SELECT md5(string_agg({cell}, '|' ORDER BY f.property COLLATE \"C\", "
+             "f.field_path COLLATE \"C\")) FROM (SELECT * FROM ontology.value_cells c WHERE "
+             "c.src = s.src OFFSET 0) c JOIN ontology.value_fields f ON f.field = c.field "
+             "JOIN ontology.value_kinds k ON k.kind = c.kind)")
+    entry = (f"{source} || CASE WHEN EXISTS (SELECT 1 FROM ontology.packed_sources p WHERE "
+             f"p.src = s.src) THEN 'P' ELSE 'U' END || ':' || coalesce({cells}, md5(''))")
+    sources = (f"(SELECT string_agg(x.e, '|' ORDER BY x.e COLLATE \"C\") FROM (SELECT {entry} "
+               "AS e FROM ontology.value_sources s WHERE s.ver = v.ver OFFSET 0) x)")
+    return ("SELECT v.ver, v.object_id, v.l1_handle, v.digest, v.lineage, v.markings, "
+            f"v.recorded_at, md5(coalesce({sources}, '')) AS sig FROM "
+            "ontology.object_versions v WHERE v.object_id = ANY(%(ids)s::text[])")
+
+
+_TEXT_COLUMNS = ("object_id", "version_handle", "citation", "field_path", "document_kind",
+                 "sender_class", "markings", "text_digest")
+
+
+def _pg_text_signatures() -> str:
+    """The served text fields of the objects ``%(ids)s`` names, with the signature of their
+    chunks (each field's chunks by ``text_chunks_by_field``)."""
+    return ("SELECT p.field_id, " + ", ".join(f"p.{c}" for c in _TEXT_COLUMNS)
+            + ", md5(coalesce((SELECT string_agg(c.start::text || ':' || "
+              "encode(sha256(c.body), 'hex'), '|' ORDER BY c.start) FROM "
+              "ontology.text_chunks c WHERE c.field_id = p.field_id), '')) AS sig FROM "
+              "ontology.text_fields p WHERE p.object_id = ANY(%(ids)s::text[])")
+
+
+_SIG_OBJECTS = 2_000    # owned objects signed by one statement
+_SIG_WORKERS = 6        # connections signing at once, on the applying transaction's snapshot
+_SIG_LIMITS = "SET LOCAL work_mem = '64MB'; SET LOCAL temp_file_limit = '1GB'"
+# temp files of any one statement of the apply: past it the apply fails (a disk guard, not
+# a budget: the largest a layer needs is its link stage sorted, ~3.5 GB at 2.5M links)
+_APPLY_TEMP_LIMIT = "8GB"
+
+
+def _signed(cur: Any, dsn: str | None, owned: Sequence[str], query: str, stage: str,
+            *, workers: int | None = None, size: int | None = None) -> int:
+    """``query`` run over ``owned`` in chunks of ``size`` objects, its rows copied into
+    the temp table ``stage``. With a ``dsn`` and more than one chunk, ``workers``
+    read-only connections sign the chunks at once on this transaction's exported snapshot
+    (it has written none of the tables signed: the version and text tables are diffed
+    after it reads them), else this cursor signs them in turn. Each statement reads only
+    its chunk's rows by index; a statement past the temp budget fails the apply."""
+    size = size or _SIG_OBJECTS
+    workers = _SIG_WORKERS if workers is None else workers
+    parts = [list(owned[i:i + size]) for i in range(0, len(owned), size)]
+    copied = 0
+
+    def store(rows: Sequence[tuple]) -> None:
+        nonlocal copied
+        with cur.copy(f"COPY {stage} FROM STDIN") as copy:
+            for row in rows:
+                copy.write_row(row)
+        copied += len(rows)
+
+    if dsn is None or workers <= 1 or len(parts) <= 1:
+        cur.execute(_SIG_LIMITS)
+        for part in parts:
+            cur.execute(query, {"ids": part})
+            store(cur.fetchall())
+        cur.execute(f"SET LOCAL work_mem = DEFAULT; SET LOCAL temp_file_limit = "
+                    f"'{_APPLY_TEMP_LIMIT}'")
+        return copied
+    import queue
+    import threading
+    import psycopg
+    from psycopg import sql
+    cur.execute("SELECT pg_export_snapshot()")
+    snapshot = cur.fetchone()[0]
+    todo: "queue.Queue[tuple[int, list[str]] | None]" = queue.Queue()
+    for item in enumerate(parts):
+        todo.put(item)
+    done: "queue.Queue[tuple[str, Any]]" = queue.Queue(maxsize=2 * workers)
+    stop = threading.Event()
+
+    def sign() -> None:
+        try:
+            with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg:
+                pg.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+                pg.read_only = True
+                with pg.cursor() as wcur:
+                    wcur.execute(sql.SQL("SET TRANSACTION SNAPSHOT {}").format(
+                        sql.Literal(snapshot)))
+                    wcur.execute(_SIG_LIMITS)
+                    wcur.execute("SET LOCAL jit = off")
+                    while not stop.is_set():
+                        try:
+                            _, part = todo.get_nowait()
+                        except queue.Empty:
+                            break
+                        wcur.execute(query, {"ids": part})
+                        done.put(("rows", wcur.fetchall()))
+            done.put(("end", None))
+        except BaseException as exc:   # noqa: BLE001 - handed to the applying thread
+            done.put(("error", exc))
+
+    threads = [threading.Thread(target=sign, daemon=True)
+               for _ in range(min(workers, len(parts)))]
+    for t in threads:
+        t.start()
+    running, error = len(threads), None
+    try:
+        while running:
+            kind, value = done.get()
+            if kind == "rows":
+                if error is None:
+                    store(value)
+            else:
+                running -= 1
+                if kind == "error" and error is None:
+                    error = value
+                    stop.set()
+    finally:
+        stop.set()
+        while running:   # a failure in the copy: let the signers finish their chunk
+            kind, _ = done.get()
+            running -= kind != "rows"
+        for t in threads:
+            t.join()
+    if error is not None:
+        raise error
+    if not todo.empty():
+        raise RuntimeError(f"{stage}: chunks left unsigned")
+    return copied
+
+
+def _diff_versions(conn: sqlite3.Connection, path: str, cur: Any, ids: str,
+                   dsn: str | None = None) -> dict[str, int]:
+    """Versions, value sources and cells of the owned objects by signature (see above)."""
+    context = _context(path)
+    report: dict[str, int] = {}
+    cur.execute("CREATE TEMP TABLE diff_lv (lver bigint PRIMARY KEY, object_id text, "
+                "l1_handle text, digest text, lineage text, markings text, recorded_at text, "
+                "superseded_at text, sig text) ON COMMIT DROP")
+    with cur.copy("COPY diff_lv FROM STDIN") as copy:
+        for row in _layer_version_rows(conn, ids, context):
+            copy.write_row(tuple(_clean(v) for v in row))
+    cur.execute("CREATE TEMP TABLE diff_ls (lsrc bigint PRIMARY KEY, lver bigint, "
+                "binding_id text, digest text, lineage text, recorded_at text, "
+                "superseded_at text) ON COMMIT DROP")
+    with cur.copy("COPY diff_ls FROM STDIN") as copy:
+        for row in conn.execute(
+                "SELECT src, ver, binding_id, digest, lineage, recorded_at, superseded_at "
+                "FROM value_sources WHERE ver IN (SELECT rowid FROM object_versions WHERE "
+                f"object_id IN {_OWNED})", {"ids": ids}):
+            copy.write_row(tuple(_clean(v) for v in row))
+    cur.execute("CREATE INDEX ON diff_ls (lver)")
+    cur.execute("CREATE TEMP TABLE diff_pv ON COMMIT DROP AS SELECT ver, object_id, "
+                "l1_handle, digest, lineage, markings, recorded_at, ''::text AS sig FROM "
+                "ontology.object_versions WITH NO DATA")
+    _signed(cur, dsn, json.loads(ids), _pg_signatures(), "diff_pv")
+    cur.execute("ANALYZE diff_lv; ANALYZE diff_ls; ANALYZE diff_pv")
+    # one served version per layer version, of the same rows (a handle names one version)
+    cur.execute(
+        "CREATE TEMP TABLE diff_vmatch ON COMMIT DROP AS SELECT l.lver, p.ver, "
+        "l.superseded_at FROM diff_lv l JOIN diff_pv p ON p.object_id = l.object_id AND "
+        "p.l1_handle = l.l1_handle AND p.digest = l.digest AND p.lineage = l.lineage AND "
+        "p.markings = l.markings AND p.recorded_at = l.recorded_at AND p.sig = l.sig")
+    cur.execute("DELETE FROM diff_vmatch WHERE lver IN (SELECT lver FROM diff_vmatch GROUP BY "
+                "lver HAVING count(*) > 1) OR ver IN (SELECT ver FROM diff_vmatch GROUP BY ver "
+                "HAVING count(*) > 1)")
+    cur.execute(
+        "CREATE TEMP TABLE diff_smatch ON COMMIT DROP AS SELECT ls.lsrc, s.src, ls.lver, "
+        "ls.superseded_at FROM diff_ls ls JOIN diff_vmatch m ON m.lver = ls.lver JOIN "
+        "ontology.value_sources s ON s.ver = m.ver AND s.binding_id = ls.binding_id AND "
+        "s.digest IS NOT DISTINCT FROM ls.digest AND s.lineage IS NOT DISTINCT FROM "
+        "ls.lineage AND s.recorded_at = ls.recorded_at")
+    # equal signatures hold equal sources; two of one key in a version: replaced whole
+    cur.execute("DELETE FROM diff_vmatch WHERE lver IN (SELECT lver FROM diff_smatch GROUP BY "
+                "lver HAVING count(*) <> count(DISTINCT lsrc) OR count(*) <> "
+                "count(DISTINCT src))")
+    cur.execute("DELETE FROM diff_smatch x WHERE NOT EXISTS (SELECT 1 FROM diff_vmatch m "
+                "WHERE m.lver = x.lver)")
+    cur.execute("UPDATE ontology.object_versions v SET superseded_at = m.superseded_at FROM "
+                "diff_vmatch m WHERE v.ver = m.ver AND v.superseded_at IS DISTINCT FROM "
+                "m.superseded_at")
+    report["written.object_versions"] = cur.rowcount
+    cur.execute("UPDATE ontology.value_sources s SET superseded_at = x.superseded_at FROM "
+                "diff_smatch x WHERE s.src = x.src AND s.superseded_at IS DISTINCT FROM "
+                "x.superseded_at")
+    report["written.value_sources"] = cur.rowcount
+    cur.execute("SELECT count(*) FROM diff_vmatch")
+    report["kept.object_versions"] = cur.fetchone()[0]
+    gone = ("(SELECT ver FROM diff_pv p WHERE NOT EXISTS (SELECT 1 FROM diff_vmatch m WHERE "
+            "m.ver = p.ver))")
+    gone_src = f"(SELECT src FROM ontology.value_sources WHERE ver IN {gone})"
+    for table, where in (("value_cells", f"src IN {gone_src}"),
+                         ("packed_sources", f"src IN {gone_src}"),
+                         ("value_sources", f"ver IN {gone}"),
+                         ("object_versions", f"ver IN {gone}")):
+        cur.execute(f"DELETE FROM ontology.{table} WHERE {where}")
+        report[f"deleted.{table}"] = cur.rowcount
+    cur.execute("CREATE TEMP TABLE diff_vnew ON COMMIT DROP AS SELECT lver, "
+                "nextval('ontology.object_versions_ver') AS ver FROM (SELECT lver FROM diff_lv "
+                "l WHERE NOT EXISTS (SELECT 1 FROM diff_vmatch m WHERE m.lver = l.lver) "
+                "ORDER BY lver) x")
+    cur.execute("INSERT INTO ontology.object_versions (ver, object_id, l1_handle, digest, "
+                "lineage, markings, recorded_at, superseded_at) SELECT n.ver, l.object_id, "
+                "l.l1_handle, l.digest, l.lineage, l.markings, l.recorded_at, l.superseded_at "
+                "FROM diff_vnew n JOIN diff_lv l ON l.lver = n.lver")
+    report["copied.object_versions"] = cur.rowcount
+    cur.execute("CREATE TEMP TABLE diff_snew ON COMMIT DROP AS SELECT lsrc, "
+                "nextval('ontology.value_sources_src') AS src FROM (SELECT ls.lsrc FROM "
+                "diff_ls ls JOIN diff_vnew n ON n.lver = ls.lver ORDER BY ls.lsrc) x")
+    cur.execute("INSERT INTO ontology.value_sources (src, ver, binding_id, digest, lineage, "
+                "recorded_at, superseded_at) SELECT sn.src, n.ver, ls.binding_id, ls.digest, "
+                "ls.lineage, ls.recorded_at, ls.superseded_at FROM diff_snew sn JOIN diff_ls ls "
+                "ON ls.lsrc = sn.lsrc JOIN diff_vnew n ON n.lver = ls.lver")
+    report["copied.value_sources"] = cur.rowcount
+    cur.execute("SELECT lsrc, src FROM diff_snew ORDER BY lsrc")
+    src = dict(cur.fetchall())
+    numeric = context["numeric"]
+    copied = 0
+    packed: set = set()
+    src_keys = list(src)
+    for i0 in range(0, len(src_keys), _CHUNK):
+        part = src_keys[i0:i0 + _CHUNK]
+        cells = conn.execute(
+            "SELECT src, field, layout, value, currency, currency_citation FROM value_cells "
+            "WHERE src IN (SELECT value FROM json_each(:srcs))",
+            {"srcs": json.dumps(part)}).fetchall()
+        used_fields = {f for cell in cells for f, _ in context["layouts"][cell[2]]}
+        used_kinds = {k for cell in cells for _, k in context["layouts"][cell[2]]}
+        fields = _match(cur, "value_fields", "field", "value_fields_field",
+                        ("property", "field_path"),
+                        conn.execute("SELECT field, property, field_path FROM value_fields WHERE "
+                                     "field IN (SELECT value FROM json_each(:f))",
+                                     {"f": json.dumps(sorted(used_fields))}).fetchall())
+        kinds = _match(cur, "value_kinds", "kind", "value_kinds_kind", store_ddl.KIND_COLUMNS,
+                       conn.execute(f"SELECT kind, {', '.join(store_ddl.KIND_COLUMNS)} FROM "
+                                    "value_kinds WHERE kind IN (SELECT value FROM json_each(:k))",
+                                    {"k": json.dumps(sorted(used_kinds))}).fetchall())
+
+        def values(cells=cells, fields=fields, kinds=kinds) -> Any:
+            for cell in cells:
+                for (s_, f, k, value, _num, currency, cite) in TABLES["value_cells"].shape(
+                        context, cell):
+                    yield (src[s_], fields[f], kinds[k], value,
+                           _number(value) if k in numeric else None, currency, cite)
+        copied += _copy(cur, "value_cells", TABLES["value_cells"].columns, values())
+        packed.update(src[cell[0]] for cell in cells if cell[1] is None)
+        del cells
+    report["copied.value_cells"] = copied
+    report["copied.packed_sources"] = _copy(
+        cur, "packed_sources", ("src",), sorted((p,) for p in packed))
+    return report
+
+
+def _diff_text(conn: sqlite3.Connection, cur: Any, ids: str, dsn: str | None = None
+               ) -> dict[str, int]:
+    """Text fields, chunks and words of the owned objects by signature (see above)."""
+    import hashlib
+    report: dict[str, int] = {}
+    columns = _TEXT_COLUMNS
+    try:
+        text = conn.execute(
+            f"SELECT field_id, {', '.join(columns)} FROM text_fields WHERE object_id IN "
+            f"{_OWNED}", {"ids": ids}).fetchall()
+    except sqlite3.OperationalError:   # a layer without the text index
+        text = []
+    chunks: dict[int, list[tuple]] = {}
+    if text:
+        for c in conn.execute(
+                "SELECT field_id, start, body FROM text_chunks WHERE field_id IN "
+                "(SELECT value FROM json_each(:f)) ORDER BY field_id, start",
+                {"f": json.dumps([t[0] for t in text])}):
+            chunks.setdefault(c[0], []).append((c[1], c[2]))
+    cur.execute("CREATE TEMP TABLE diff_lt (lfield bigint PRIMARY KEY, "
+                + ", ".join(f"{c} text" for c in columns) + ", sig text) ON COMMIT DROP")
+    with cur.copy("COPY diff_lt FROM STDIN") as copy:
+        for t in text:
+            sig = _md5("|".join(f"{start}:{hashlib.sha256(bytes(body)).hexdigest()}"
+                                for start, body in chunks.get(t[0], ())))
+            copy.write_row(tuple(_clean(v) for v in (*t, sig)))
+    cur.execute("CREATE TEMP TABLE diff_pt ON COMMIT DROP AS SELECT field_id, "
+                + ", ".join(columns) + ", ''::text AS sig FROM ontology.text_fields WITH NO DATA")
+    _signed(cur, dsn, json.loads(ids), _pg_text_signatures(), "diff_pt")
+    cur.execute(
+        "CREATE TEMP TABLE diff_tmatch ON COMMIT DROP AS SELECT l.lfield, p.field_id FROM "
+        "diff_lt l JOIN diff_pt p ON " + " AND ".join(f"p.{c} = l.{c}" for c in columns)
+        + " AND p.sig = l.sig")
+    cur.execute("DELETE FROM diff_tmatch WHERE lfield IN (SELECT lfield FROM diff_tmatch GROUP "
+                "BY lfield HAVING count(*) > 1) OR field_id IN (SELECT field_id FROM "
+                "diff_tmatch GROUP BY field_id HAVING count(*) > 1)")
+    cur.execute("SELECT count(*) FROM diff_tmatch")
+    report["kept.text_fields"] = cur.fetchone()[0]
+    gone = (f"(SELECT field_id FROM ontology.text_fields p WHERE p.object_id IN {_OWNED_PG} "
+            "AND NOT EXISTS (SELECT 1 FROM diff_tmatch m WHERE m.field_id = p.field_id))")
+    for table, where in (
+            ("chunk_words", "chunk_id IN (SELECT chunk_id FROM ontology.text_chunks WHERE "
+                            f"field_id IN {gone})"),
+            ("text_chunks", f"field_id IN {gone}"),
+            ("text_fields", f"field_id IN {gone}")):
+        cur.execute(f"DELETE FROM ontology.{table} WHERE {where}")
+        report[f"deleted.{table}"] = cur.rowcount
+    cur.execute("SELECT lfield FROM diff_tmatch")
+    kept = {r[0] for r in cur.fetchall()}
+    new = [t for t in text if t[0] not in kept]
+    field_id = dict(zip((t[0] for t in new), _numbers(cur, "text_fields_id", len(new))))
+    report["copied.text_fields"] = _copy(cur, "text_fields", TABLES["text_fields"].columns,
+                                         ((field_id[t[0]], *t[1:]) for t in new))
+    rows = [(field_id[f], start, body) for f in field_id for start, body in chunks.get(f, ())]
+    numbers = _numbers(cur, "text_chunks_id", len(rows))
+    report["copied.text_chunks"] = _copy(
+        cur, "text_chunks", TABLES["text_chunks"].columns,
+        ((n, *r) for n, r in zip(numbers, rows)))
+    from operating.pg.words import chunk_word_rows
+    report["copied.chunk_words"] = _copy(
+        cur, "chunk_words", ("chunk_id", "words"),
+        chunk_word_rows((n, r[2]) for n, r in zip(numbers, rows)))
+    return report
+
+
+def _replace(conn: sqlite3.Connection, path: str, cur: Any, ids: str,
+             dsn: str | None = None) -> dict[str, int]:
+    """The owned objects' rows brought to the layer's by a diff (see above): every table
+    ``_DELETE`` empties and ``_insert`` fills, in their order."""
+    report: dict[str, int] = {}
+    keys: dict[str, list[str]] = {}
+    for table in ("objects", "object_removals", "identifiers", "events", "event_objects"):
+        spec = TABLES[table]
+        numbered = spec.columns[0] == "row_no"
+        select = spec.select.replace("SELECT rowid, ", "SELECT ", 1) if numbered \
+            else spec.select
+        rows = conn.execute(f"SELECT * FROM ({select}) WHERE {_PLAIN[table]}", {"ids": ids})
+        report.update(_diff_keyed(cur, table, spec.columns[numbered:], rows, keys))
+    report.update(_diff_versions(conn, path, cur, ids, dsn))
+    links = conn.execute(
+        f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links WHERE (from_object IN "
+        f"{_OWNED} OR to_object IN {_OWNED}) AND {_whole_steps.sqlite_excluded()}",
+        {"ids": ids})
+    report.update(_diff_keyed(cur, "link_rows", store_ddl.LINK_COLUMNS, links, keys))
+    report.update(_diff_text(conn, cur, ids, dsn))
     return report
 
 

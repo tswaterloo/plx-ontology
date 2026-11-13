@@ -68,7 +68,14 @@ caller's time budget (``out_of_time``; a part stopped there keeps its cursor and
   URL, its transcripts and each one's WebVTT content (``max_transcript_bytes``). Graph
   refuses the online-meeting read without an application access policy for the app (403,
   live 2026-11-04): the part ``meetings.online_meetings`` is then blocked naming
-  OnlineMeetings.Read.All and no further meeting is looked up in the run.
+  OnlineMeetings.Read.All and no further meeting is looked up in the run. A held
+  transcript's permissions (its participants) decide only while a run confirmed it within
+  ``ITEM_ACL_MAX_AGE`` (INT-008): listed again when its meeting is due, else looked up once
+  its confirmation is half that old (``graph.online_meeting_transcripts`` only, never its
+  content; ``max_transcript_rechecks_per_run`` meetings), and only while every participant
+  is cleared now. One not confirmed lapses: withheld from every reader.
+* Planner tasks' permissions (the plan's group, the task's people) are read again by
+  every run that lists the plan; past ``ITEM_ACL_MAX_AGE`` without one they lapse too.
 
 Records (``integrations.capture_store.CaptureStore``, ``<state>/meetings-capture/capture.db``):
 
@@ -127,8 +134,8 @@ from ontology.types import Actor
 from . import live_source_grammar as grammar
 from . import people_exclusion
 from .capture_mail import assert_outside_git, blocked_reason, graph_block
-from .capture_store import (CaptureError, CaptureStore, CapturedRecord, SourceKind,
-                            register_source_kind)
+from .capture_store import (ITEM_ACL_MAX_AGE, CaptureError, CaptureStore, CapturedRecord,
+                            SourceKind, register_source_kind)
 from .live_source_guard import (LiveSourceAudience, NotVisible, SourceUnavailable, jsonable,
                                 nextlink_refused, unavailable_detail)
 
@@ -195,6 +202,7 @@ _LIMITS = {"window_days_back": (365, 0, 3650), "window_days_ahead": (90, 0, 730)
            "max_event_reads_per_run": (5000, 0, 200_000),
            "max_plans_per_run": (500, 0, 10_000), "max_task_reads_per_run": (5000, 0, 200_000),
            "max_transcript_reads_per_run": (200, 0, 10_000),
+           "max_transcript_rechecks_per_run": (500, 0, 10_000),
            "transcript_days_back": (90, 0, 3650),
            "max_transcript_bytes": (2_000_000, 10_000, 8_000_000)}
 _PARTS = ("calendar", "planner", "transcripts")
@@ -239,13 +247,22 @@ TASK_KIND = register_source_kind(SourceKind(
                               _graph_id(p[1], "planner_id")),
     unit=lambda p: f"{UNIT_PREFIX}plan:{p[0]}",
     resources=lambda p: (f"teams:planner:{p[0]}",),
-    key=lambda p: {"plan_id": p[0], "id": p[1]}, current_acl=True))
+    key=lambda p: {"plan_id": p[0], "id": p[1]}, current_acl=True,
+    # every run that lists a plan reads each task's people again (INT-008): past the
+    # bound without one, a removed assignee or group would keep the task
+    acl_max_age=ITEM_ACL_MAX_AGE))
 TRANSCRIPT_KIND = register_source_kind(SourceKind(
     name="meeting_transcript", scheme="meeting-transcript", path_parts=3,
     canonical_path=lambda p: (_oid(_parts(p, 3)[0]), _graph_id(p[1], "meeting_id"),
                               _graph_id(p[2], "meeting_id")),
     unit=lambda p: f"{UNIT_PREFIX}organizer:{p[0]}", resources=lambda p: (f"mail:{p[0]}",),
-    key=lambda p: {"organizer": p[0], "meeting_id": p[1], "id": p[2]}, current_acl=True))
+    key=lambda p: {"organizer": p[0], "meeting_id": p[1], "id": p[2]}, current_acl=True,
+    # a held transcript decides only while a run found it still listed for its meeting
+    # with every participant cleared (``_recheck_transcripts``, INT-008)
+    acl_max_age=ITEM_ACL_MAX_AGE))
+# A held transcript is looked up again once its last confirmation is this old: twice per
+# bound, so one missed run never lets it lapse.
+TRANSCRIPT_RECHECK_AFTER = ITEM_ACL_MAX_AGE / 2
 KINDS = (EVENT_KIND, TASK_KIND, TRANSCRIPT_KIND)
 
 
@@ -575,7 +592,9 @@ def _new_counts() -> dict[str, int]:
         "transcripts_listed", "transcripts_read", "transcripts_withheld_unknown_speaker",
         "transcripts_withheld_excluded",
         "transcripts_unaddressable", "transcripts_over_cap", "provenance_dropped",
-        "transcripts_withheld_no_occurrence", "events_denied", "groups_listed",
+        "transcripts_withheld_no_occurrence", "transcripts_rechecked",
+        "transcripts_confirmed", "transcripts_gone", "transcripts_recheck_withheld",
+        "events_denied", "groups_listed",
         "groups_excluded", "groups_unread", "plans_from_groups", "tasks_denied")}
 
 
@@ -690,7 +709,8 @@ class MeetingsCapture:
             plan_ids.update(dict.fromkeys(found))
             reasons |= why
         budget = {"events": scope.max_event_reads_per_run, "tasks": scope.max_task_reads_per_run,
-                  "transcripts": scope.max_transcript_reads_per_run}
+                  "transcripts": scope.max_transcript_reads_per_run,
+                  "rechecks": scope.max_transcript_rechecks_per_run}
         for box in mailboxes:
             if out_of_time():
                 reasons.add(TIME_BUDGET)
@@ -1160,6 +1180,7 @@ class MeetingsCapture:
         records = []
         for raw in kept:
             held = current.get(raw["id"])
+            version = raw["@odata.etag"]
             if raw["id"] in bare:
                 row = task_row(plan, names, raw, {})
             elif raw["id"] in details:
@@ -1168,21 +1189,31 @@ class MeetingsCapture:
                 if not isinstance(found, Mapping) or found.get("id") != raw["id"]:
                     counts["task_reads_failed"] += 1
                     reasons.add("task_details_unread")
-                    if held is not None:   # the version held stays seen
-                        records.append(held)
-                    continue
-                row = task_row(plan, names, raw, found)
+                    if held is None:
+                        continue
+                    # the version held stays, its details read again next run (its own
+                    # source version), its people as this listing names them
+                    row, version = dict(held.payload["row"]), held.source_version
+                else:
+                    row = task_row(plan, names, raw, found)
             elif held is not None and held.source_version == raw["@odata.etag"]:
                 counts["tasks_unchanged"] += 1
                 row = dict(held.payload["row"])
+            elif held is not None:
+                # changed, its details not read this run (the cap): the version held stays
+                # until they are, under the permissions this listing names (INT-008)
+                row, version = dict(held.payload["row"]), held.source_version
             else:
                 continue
+            # The task's permissions as this listing names them, every run that lists it:
+            # its current version is stamped seen (``last_seen_at``) or replaced, so the
+            # permissions decide only while a run read them (``TASK_KIND.acl_max_age``).
             acl = {"status": "derived", "kind": "plan_people",
                    "identities": sorted({*group_identity, *_task_people(raw)})}
             records.append(CapturedRecord((plan_id, raw["id"]),
                                           {"row": row, "meta": {"source_acl": acl,
                                                                 "source_api": "graph.planner_plan_tasks"}},
-                                          raw["@odata.etag"], LINEAGE))
+                                          version, LINEAGE))
         saved = self.store.save_page(run["run_id"], records, None)
         counts["versions_new"] += saved["new_versions"]
         if not done.get("complete"):
@@ -1209,7 +1240,7 @@ class MeetingsCapture:
         reasons: set[str] = set()
         organizers: dict[str, str | None] = {}
         found: dict[str, list[CapturedRecord]] = {}
-        held: dict[str, set[str]] = {}   # organizer -> transcript ids held
+        held: dict[str, dict[str, CapturedRecord]] = {}   # organizer -> id -> held
         unresolved: set[str] = set()     # organizers whose lookup failed this run
         for join, meeting in sorted(meetings.items(),
                                     key=lambda m: m[1].last_end(now) or now):
@@ -1268,7 +1299,7 @@ class MeetingsCapture:
                 checks[key] = now.isoformat()
                 continue
             if organizer not in held:
-                held[organizer] = {r.path[2] for r in self.store.current_records(
+                held[organizer] = {r.path[2]: r for r in self.store.current_records(
                     TRANSCRIPT_KIND.name, TRANSCRIPT_KIND.unit((organizer, "x", "x")))}
             for record in self._meeting_transcripts(organizer, online[0], meeting, scope,
                                                     counts, blocked, budget, failed,
@@ -1278,19 +1309,78 @@ class MeetingsCapture:
             # a transcript over the byte cap is never read whole: no reason to ask again
             if not failed - {"cap:transcript_bytes"}:
                 checks[key] = now.isoformat()
-        for organizer, records in found.items():
-            unit = TRANSCRIPT_KIND.unit((organizer, "x", "x"))
-            # Every transcript held of this organizer is seen again (a run checks only the
-            # meetings due), so finishing complete marks nothing missing it did not check.
-            held = {r.path: r for r in self.store.current_records(TRANSCRIPT_KIND.name, unit)}
-            held.update({r.path: r for r in records})
-            run = self.store.begin_run(TRANSCRIPT_KIND.name, unit,
-                                       list(TRANSCRIPT_KIND.resources((organizer, "x", "x"))))
-            saved = self.store.save_page(run["run_id"], list(held.values()), None)
-            counts["versions_new"] += saved["new_versions"]
-            self.store.finish_run(run["run_id"], "complete")
         self.store.set_state(TRANSCRIPT_CHECKS, json.dumps(checks, sort_keys=True))
+        if not reasons & {TIME_BUDGET} and not any(r.startswith("blocked:") for r in reasons):
+            self._recheck_transcripts(found, counts, blocked, budget, reasons, out_of_time)
+        for organizer, records in found.items():
+            # Only what this run read or found still listed is saved (stamped seen): a
+            # held transcript nobody looked up keeps its last confirmation and lapses past
+            # the bound (INT-008). Partial: the organizer's other transcripts were not
+            # listed, so nothing is marked missing.
+            run = self.store.begin_run(TRANSCRIPT_KIND.name,
+                                       TRANSCRIPT_KIND.unit((organizer, "x", "x")),
+                                       list(TRANSCRIPT_KIND.resources((organizer, "x", "x"))))
+            saved = self.store.save_page(run["run_id"], records, None)
+            counts["versions_new"] += saved["new_versions"]
+            self.store.finish_run(run["run_id"], "partial", reason="meetings_checked_only")
         return {"status": _status(reasons), "reasons": sorted(reasons)}
+
+    def _recheck_transcripts(self, found: dict[str, list[CapturedRecord]],
+                             counts: dict[str, int], blocked: list[dict[str, Any]],
+                             budget: dict[str, int], reasons: set[str],
+                             out_of_time: Callable[[], bool]) -> None:
+        """Confirm the held transcripts whose last confirmation is past
+        ``TRANSCRIPT_RECHECK_AFTER`` (oldest first, ``max_transcript_rechecks_per_run``
+        meetings): each is confirmed (added to ``found``, saved seen) when every
+        participant its permissions name is cleared under the exclusion now and its
+        meeting's transcript list still names it. Nothing is read but that list; a
+        transcript not confirmed keeps its last confirmation and lapses past the bound."""
+        due = self.store.seen_before(TRANSCRIPT_KIND.name, TRANSCRIPT_RECHECK_AFTER, 10_000)
+        meetings: dict[tuple[str, str], list[CapturedRecord]] = {}
+        done = {r.path for records in found.values() for r in records}
+        for _unit, record in due:
+            if record.path not in done:
+                meetings.setdefault(record.path[:2], []).append(record)
+        for (organizer, meeting_id), records in meetings.items():
+            if out_of_time():
+                reasons.add(TIME_BUDGET)
+                return
+            if budget["rechecks"] <= 0:
+                reasons.add("cap:transcript_rechecks")
+                return
+            cleared = []
+            for record in records:
+                acl = record.payload.get("meta", {}).get("source_acl") or {}
+                people = [i for i in acl.get("identities") or () if isinstance(i, str) and i]
+                if not people or self._decides(people) is not False:
+                    counts["transcripts_recheck_withheld"] += 1
+                else:
+                    cleared.append(record)
+            if not cleared:
+                continue   # no request names a meeting whose people are not cleared
+            budget["rechecks"] -= 1
+            counts["transcripts_rechecked"] += 1
+            try:
+                listed, done_pages = self.api.get_pages(grammar.url(
+                    "graph.online_meeting_transcripts", None, user=organizer,
+                    meeting=meeting_id), max_pages=5, max_items=100)
+            except SourceUnavailable as exc:
+                if getattr(exc, "http_status", None) == 404:
+                    counts["transcripts_gone"] += len(cleared)
+                    continue
+                failed = _failure("meetings.transcripts", "graph.online_meeting_transcripts",
+                                  exc, blocked)
+                reasons.add(failed)
+                if failed.startswith("blocked:"):
+                    return
+                continue
+            ids = {raw.get("id") for raw in listed if isinstance(raw, Mapping)}
+            for record in cleared:
+                if record.path[2] in ids:
+                    counts["transcripts_confirmed"] += 1
+                    found.setdefault(organizer, []).append(record)
+                elif isinstance(done_pages, Mapping) and done_pages.get("complete"):
+                    counts["transcripts_gone"] += 1
 
     def _organizer(self, address: str, cache: dict[str, str | None], counts: dict[str, int],
                    blocked: list[dict[str, Any]], reasons: set[str]) -> str | None:
@@ -1328,7 +1418,8 @@ class MeetingsCapture:
     def _meeting_transcripts(self, organizer: str, online: Mapping[str, Any],
                              meeting: _Meeting, scope: MeetingsScope, counts: dict[str, int],
                              blocked: list[dict[str, Any]], budget: dict[str, int],
-                             reasons: set[str], held: set[str]) -> list[CapturedRecord]:
+                             reasons: set[str], held: Mapping[str, CapturedRecord]
+                             ) -> list[CapturedRecord]:
         meeting_id = online.get("id")
         if not _valid("meeting_id", meeting_id):
             counts["transcripts_unaddressable"] += 1
@@ -1350,7 +1441,12 @@ class MeetingsCapture:
                 counts["transcripts_unaddressable"] += 1
                 continue
             if raw["id"] in held:
-                continue   # held already: a transcript's text does not change
+                # held already (a transcript's text does not change): listed again for a
+                # meeting whose people cleared now, its permissions are confirmed
+                if held[raw["id"]].path[1] == meeting_id:
+                    counts["transcripts_confirmed"] += 1
+                    records.append(held[raw["id"]])
+                continue
             occurrence = meeting.occurrence_of(raw.get("createdDateTime"))
             if occurrence is None:
                 counts["transcripts_withheld_no_occurrence"] += 1

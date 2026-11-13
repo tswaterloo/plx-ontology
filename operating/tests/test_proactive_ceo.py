@@ -154,6 +154,24 @@ class CeoSignals(Engine):
             "customer_ambiguous": 1, "customer_order_value_unknown": 1})
         self.assertEqual(self.kinds(ceo.DEMAND), [])
 
+    def test_an_order_of_unknown_status_in_the_recent_window_is_no_drop(self):
+        """AL-01 (fresh items 11-12: 5 of 15 drops said "0 orders" of customers with Sage
+        orders of that month the status rules could not class): such an order is never
+        counted, and dated in the last 90 days its customer is not judged; dated before
+        them it changes nothing."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w = World()
+                for i in range(n):
+                    who, _orders = dropping(w, i)
+                    order(w, who, placed=day(30 + i % 7), total="5000", status="Revised")
+                held, _orders = dropping(w, n)
+                order(w, held, placed=day(200), total="5000", status="Revised")
+                summary = self.run_rules(w)
+                self.assertEqual([g["object_id"] for g in self.kinds(ceo.DEMAND)], [held])
+                self.assertEqual(summary["not_evaluated"][ceo.DEMAND],
+                                 {"customer_order_status_unknown": n})
+
     def test_a_zeroed_order_total_or_an_active_unsettled_twin_is_no_drop(self):
         # live 11-10: 14 of 15 drops were customers still buying: a Sage order header reads
         # 0 once invoiced, or the orders go to an unsettled twin of the customer

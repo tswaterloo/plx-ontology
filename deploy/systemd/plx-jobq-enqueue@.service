@@ -1,0 +1,17 @@
+# Queue one job of class %i in the host job queue (a timer's or path unit's `Unit=` after the
+# switch-over, deploy/jobq/switch/). Coalesces: a class whose job is already queued gets no
+# second one. The worker (plx-jobq-worker.service) starts the job's own service when admitted.
+[Unit]
+Description=PLX job queue: enqueue %i
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 -m operating.jobq enqueue --class %i
+TimeoutStartSec=2min
+MemoryMax=256M
+UMask=0077

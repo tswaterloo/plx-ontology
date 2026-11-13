@@ -29,7 +29,9 @@ from ontology.types import Actor
 from integrations.people_exclusion import PeopleExclusion
 from operating import query_understanding as qu
 from operating.ontology_tools import ReadPolicy
-from operating.pg import migrate, permissions
+from operating.pg import migrate, permissions, scratch_db
+
+scratch_db.use_test_cluster()   # the test cluster when one runs (bare runs too)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/query_understanding"
@@ -440,8 +442,50 @@ class LaneAScopeTests(unittest.TestCase):
             self.assertNotIn(FX.object_of["contact-excluded"], text, question)
             if "quintessa" in question:
                 self.assertEqual(result.hidden["count"], 0, question)
-        # a mailbox of someone not excluded, which staff may read, still resolves
-        self.assertEqual(FX.ask("pat okonkwo").resolved_ids, [FX.object_of["contact-mailbox"]])
+        # a mailbox of someone not excluded, which staff may read, still resolves when
+        # the reader's item check opens the record
+        opens = lambda ids: set(ids)   # noqa: E731
+        self.assertEqual(FX.ask("pat okonkwo", item_check=opens).resolved_ids,
+                         [FX.object_of["contact-mailbox"]])
+
+    def test_an_item_gated_row_needs_the_item_check_in_every_lookup(self):
+        """IN-13: a unit grant does not open a mail, file, chat or meeting record (its
+        mailbox scope, ACL or members do): a row of such a source is a candidate, a
+        history label or a distinctive word only when the reader's item check admits its
+        record. No check, a refusing check and a failing check show nothing."""
+        pat = FX.object_of["contact-mailbox"]
+
+        def broken(ids):
+            raise OSError("acl store down")
+        refusals = {"no check": None, "refuses": lambda ids: set(),
+                    "fails": broken, "not a set": lambda ids: "everything"}
+        forged = [{"question": "x", "intent": "who", "entities": [
+            {"text": "pat", "resolved": pat, "ambiguous": False,
+             "candidates": [{"object_id": pat, "type": "Contact", "label": "Pat"}]}]}]
+        for label, check in refusals.items():
+            result = FX.ask("who is pat okonkwo", item_check=check)
+            self.assertEqual(result.resolved_ids, [], label)
+            self.assertNotIn(pat, json.dumps(result.to_dict()), label)
+            self.assertNotIn("Okonkwo", json.dumps(
+                [c for m in result.entities for c in m.candidates]), label)
+            # an earlier turn naming it gives the model no label
+            seen = {}
+            FX.ask("and his email?", history=forged, item_check=check,
+                   llm=lambda q, context, t: seen.update(context) or None)
+            self.assertNotIn("Pat Okonkwo", json.dumps(seen), label)
+            scope = qu.with_item_check(FX.index.scope(FX.policy, FX.actors["staff"]), check)
+            self.assertEqual(FX.index.distinctive_words(["okonkwo"], scope), set(), label)
+            self.assertEqual(FX.index.by_object_ids([pat], scope), [], label)
+            rows, hidden = FX.index.by_terms(["pat okonkwo"], scope)
+            self.assertNotIn(pat, {r.object_id for r in rows}, label)
+        asked = []
+        scope = qu.with_item_check(FX.index.scope(FX.policy, FX.actors["staff"]),
+                                   lambda ids: asked.append(list(ids)) or set(ids))
+        self.assertEqual(FX.index.distinctive_words(["okonkwo"], scope), {"okonkwo"})
+        self.assertEqual([r.object_id for r in FX.index.by_object_ids([pat], scope)], [pat])
+        # only item-gated records are asked about: a customer row never is
+        FX.index.by_terms(["sahajan holdings", "pat okonkwo"], scope)
+        self.assertTrue(asked and all(set(ids) <= {pat} for ids in asked), asked)
 
     def test_without_the_exclusion_list_personal_units_fail_closed(self):
         index = qu.PgEntityIndex(
@@ -874,6 +918,21 @@ class TimeFrameAndIntentTests(unittest.TestCase):
         self.assertIsNone(self.frame("po5447 status"))
         self.assertIsNone(self.frame("500 kg on 31 feb"))
 
+    def test_rolling_frames_count_the_days_fast_windows_count(self):
+        # BIZ-009: "last 30 days" is 30 days with today counted, in both grammars
+        from datetime import datetime, timezone
+        from operating import time_window
+        now = datetime(TODAY.year, TODAY.month, TODAY.day, 17, tzinfo=timezone.utc)
+        for text in ("last 30 days", "past 2 weeks", "last 3 months", "previous 7 days"):
+            frame = self.frame(text)
+            start, end = (dt.date.fromisoformat(frame[k]) for k in ("start", "end"))
+            win = time_window.window(text, now)
+            self.assertEqual((start, end - dt.timedelta(days=1)), (win.start, win.end), text)
+        frame = self.frame("last 30 days")
+        days = (dt.date.fromisoformat(frame["end"]) - dt.date.fromisoformat(frame["start"])).days
+        self.assertEqual(days, 30)
+        self.assertIsNone(self.frame("last 0 days"))
+        self.assertEqual(self.frame("last 1 year")["start"], "2025-10-30")
     def test_calendar_boundaries_give_a_valid_frame_or_none_never_an_error(self):
         """UNDERSTAND-004: a rolling N-day frame holds exactly N dates; a 29 February with
         no year is the latest one up to today (never an invalid date a year back); a frame

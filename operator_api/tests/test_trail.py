@@ -269,6 +269,28 @@ class TrailBoundaryTests(unittest.TestCase):
                                     "order's materials, 1 late")
         self.assertEqual(got.materials[0].assembly.label, "AO-1")
 
+    def test_the_same_item_and_po_under_a_second_order_or_assembly_is_its_own_row(self):
+        """API-017: rows dedupe on order, assembly, item and PO, never on item and PO."""
+        po = "PurchaseOrder:portal.app_purchase_order:po-1"
+
+        def walk(assembly, order=None):
+            return {"labels": {}, "rows": [{"order": order, "assembly": assembly,
+                                            "item": "Product:p:1", "po": po, "state": "late",
+                                            "days_late": 3, "verdict": "Late"}],
+                    "gaps": [], "trails": [], "hidden": 0, "may_hide": False,
+                    "late_pos": [po], "checked_pos": [po]}
+        walks = [walk("AssemblyOrder:a:1"), walk("AssemblyOrder:b:1"),
+                 walk("AssemblyOrder:b:1", "SalesOrder:portal.fm_order_entry:9"),
+                 walk("AssemblyOrder:a:1")]
+        with mock.patch.object(tr, "MAX_STARTS", 4), \
+                mock.patch.object(tr.et, "materials", side_effect=walks):
+            got = tr.materials_trail(mapper(View()), View(), [
+                (f"AssemblyOrder:s:{i}", "AssemblyOrder") for i in range(4)])
+        self.assertEqual(sorted((r.order.object_id if r.order else "", r.assembly.object_id)
+                                for r in got.materials),
+                         [("", "AssemblyOrder:a:1"), ("", "AssemblyOrder:b:1"),
+                          ("SalesOrder:portal.fm_order_entry:9", "AssemblyOrder:b:1")])
+
     def test_a_trail_that_fails_leaves_the_answer_without_one(self):
         class Broken(View):
             def _call(self, name, args):

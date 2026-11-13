@@ -44,6 +44,22 @@ class LandedCostTests(unittest.TestCase):
         self.assertTrue(any("goods total" in s and "2500 USD" in s for s in r["steps"]))
         self.assertEqual(len(r["digest"]), 64)
 
+    def test_a_cost_named_like_an_internal_operand_computes_the_same(self):
+        """BIZ-001: a per-unit cost named qty overwrote the quantity operand (10 EA at
+        2 USD/EA came out 100 USD); any valid name gives the same money in the currency."""
+        fx = [{"from": "CNY", "to": "USD", "rate": "0.14", "unit": "USD/CNY",
+               "as_of": "2026-09-29"}]
+        for unit, rate, total in (("USD/EA", (), "3100"), ("CNY/EA", fx, "3050")):
+            for name in ("goods", "qty", "cost", "amount", "fx", "total", "goods_CNY",
+                         "fx_CNY_USD"):
+                with self.subTest(unit=unit, name=name):
+                    costs = base_costs()
+                    costs[0] = {**costs[0], "name": name, "unit": unit,
+                                "literal": "2.50" if unit == "USD/EA" else "17.5"}
+                    r = run(costs, fx=list(rate))
+                    self.assertEqual(r["status"], "computed")
+                    self.assertEqual(r["total"], {"value": total, "unit": "USD"})
+
     def test_fx_path(self):
         costs = base_costs()
         costs[0] = {"name": "goods", "category": "goods", "literal": "18", "unit": "CNY/EA"}

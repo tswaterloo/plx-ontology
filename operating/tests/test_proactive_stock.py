@@ -267,6 +267,45 @@ class OpsAlerts(Engine):
                       self.read()["detector_reasons"][ops.CERT_RULE])
         self.assertEqual(self.kinds(ops.CERT_EXPIRING, may_read=lambda k: k == "api:a"), [])
 
+    def test_a_printed_date_whose_day_and_month_cannot_be_told_apart_is_no_expiry(self):
+        """live 11-12: expiries printed 12/03/2026 and 01/11/2027 were read month first with
+        nothing on the page to say so. The document's other numeric dates with the same
+        separator decide the order; without one, or against the stored reading, no alert."""
+        import json
+        from datetime import date
+
+        n = next(n for n in range(5, 80)
+                 if date.fromisoformat(ahead(n)).day <= 12
+                 and date.fromisoformat(ahead(n)).day != date.fromisoformat(ahead(n)).month)
+        day = date.fromisoformat(ahead(n))
+        month_first = f"{day.month:02d}/{day.day:02d}/{day.year}"
+
+        def printed(lot, expiry_text, **others):
+            fields = {"expiry_date": {"citations": [{"page": 1, "text": expiry_text}],
+                                      "value": day.isoformat()}}
+            for name, text in others.items():
+                fields[name] = {"citations": [{"page": 1, "text": text}]}
+            oid = coa(w, day.isoformat(), lot_no=lot)
+            w.rows["object_values"].append({**next(
+                r for r in w.rows["object_values"]
+                if r["object_id"] == oid and r["property"] == "lot"),
+                "property": "evidence", "value": json.dumps({"fields": fields}),
+                "value_type": "json", "unit": None})
+            return oid
+
+        w = World()
+        printed("SYN-A1", month_first)                                     # no telling
+        forced = printed("SYN-A2", month_first, manufacture_date="04/16/2026")
+        printed("SYN-A3", month_first, manufacture_date="19/11/2024")       # day first
+        printed("SYN-A4", month_first, manufacture_date="2024-11-19")       # not numeric
+        worded = printed("SYN-A5", day.strftime("%B %d, %Y"))
+        plain = coa(w, day.isoformat(), lot_no="SYN-A6")                    # no evidence
+        summary = self.run_rules(w)
+        self.assertEqual(sorted(g["object_id"] for g in self.kinds(ops.CERT_EXPIRING)),
+                         sorted([forced, worded, plain]))
+        self.assertEqual(summary["not_evaluated"][ops.CERT_RULE],
+                         {"date_order_ambiguous": 2, "date_order_misread": 1})
+
     def test_a_certificate_of_nothing_or_superseded_by_a_newer_one_is_not_raised(self):
         # live 11-10: the reader wrote "None" for fields a document did not hold (worded
         # "for None lot None from None"), and an older certificate of a lot was raised

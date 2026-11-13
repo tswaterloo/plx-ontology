@@ -2550,6 +2550,15 @@ class HostAccess:
         with self.host.per_call():
             return self.host.visible_objects(gated, policy, list(object_ids))
 
+    def object_words(self, object_ids: Iterable[str],
+                     properties: Iterable[str] = ()) -> dict[str, dict[str, Any]]:
+        """Of ``object_ids`` the reader may read now under the request's policy, each
+        one's display and its readable values of ``properties`` (``host.object_words``),
+        in batched reads; a record not visible is absent."""
+        gated, policy, _memo = self._state()
+        with self.host.per_call():
+            return self.host.object_words(gated, policy, list(object_ids), list(properties))
+
     def records_of(self, handle: str) -> frozenset[str]:
         """The records whose captured version ``handle`` (its record part, before any
         ``#``) is, as the host reads them now (``_version_holders``); none when no one

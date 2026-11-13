@@ -250,7 +250,7 @@ def project_lines(st: Any, pop: Mapping[str, Any], as_of: date, people: Any, cou
             continue
         counts["threads"] += 1
         if not t.ok:
-            skipped["participants_not_cleared"] += 1
+            skipped[t.why] += 1
             continue
         threads.append({"t": t, "conversation": conversation, "humans": humans,
                         "last": humans[-1],

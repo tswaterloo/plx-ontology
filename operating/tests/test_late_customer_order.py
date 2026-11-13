@@ -124,6 +124,21 @@ class LateCustomerOrder(Engine):
         self.assertNotIn("required_date_default", summary["not_evaluated"].get(RULE, {}))
         self.assertEqual(len(others), 20)
 
+    def test_a_shared_placeholder_date_is_missing_never_years_late(self):
+        # BIZ-007 review: 1900-01-01 on 40% of orders, no import provenance (each entered
+        # on its own day) is a blank-date sentinel, not a deadline; a date years before the
+        # order was entered is no requested date either
+        w = World()
+        for i in range(12):
+            order(w, required="1900-01-01", portal_created_at=f"2026-08-{1 + i:02d}T14:00:00")
+        order(w, required="2019-03-01", portal_created_at="2026-08-20T14:00:00")
+        real = [order(w, required=f"2026-09-{1 + i:02d}",
+                      portal_created_at=f"2026-08-{1 + i:02d}T14:00:00")[0] for i in range(18)]
+        summary = self.run_rule(w)
+        self.assertEqual(sorted(g["object_id"] for g in self.read(limit=100)["gaps"]),
+                         sorted(real))
+        self.assertEqual(summary["not_evaluated"][RULE], {"required_date_default": 13})
+
     def test_a_same_day_order_is_judged_and_says_its_doubt(self):
         w = World()
         rush, _ = order(w, required="2026-10-01", portal_created_at="2026-10-01T13:30:00")

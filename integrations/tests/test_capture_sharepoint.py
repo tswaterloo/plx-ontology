@@ -1039,6 +1039,43 @@ class CaptureTests(CaptureCase):
         self.assertEqual(missing["targets"][0]["status"], "site_not_found")
 
 
+class ExtractionProcessTests(CaptureCase):
+    """INT-010: with ``extraction_processes`` each file is read in a killable extraction
+    process under a per-document deadline: the same text as inline, and a file whose
+    reading never ends is its own named gap while the walk completes."""
+
+    def test_text_read_in_processes_matches_inline_and_a_wedged_reading_is_a_gap(self):
+        import subprocess
+        import sys
+        import time
+        from unittest import mock
+        from integrations import capture_mail
+        run = self.capture(extraction_processes=True, extract_workers=2).run(scope())
+        self.assertTrue(run["complete"], run)
+        found = self.store.resolve(self.handle("01FILEB"), CAPTURE, capture_audience())
+        self.assertEqual(found["row"]["content_text"], TEXT_SECRET)
+        self.assertEqual(self.root(run)["counts"]["texts_extracted"], 1)
+        self.tearDown()
+        self.setUp()
+
+        def hung(_extractors):
+            return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    start_new_session=True)
+        capture = self.capture(extraction_processes=True, extract_workers=1)
+        started = time.monotonic()
+        with mock.patch.object(capture_mail._Extractors, "_start", hung), \
+                mock.patch.object(capture_mail, "EXTRACT_SECONDS", 2.0), \
+                mock.patch.object(capture_mail, "OCR_EXTRACT_SECONDS", 2.0):
+            run = capture.run(scope())
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual(self.root(run)["counts"]["versions_new"], 3)   # the walk went on
+        status = self.store.db.execute(
+            "SELECT text_status FROM items WHERE item_id='01FILEB'").fetchone()[0]
+        self.assertEqual(status, capture_mail.EXTRACTION_TIMED_OUT)
+        self.assertIsNone(capture._extractors)   # ended with the run
+
+
 class ScopeRemovalAndTextTests(CaptureCase):
     def test_nested_roots_are_refused_in_one_target_and_across_targets(self):
         with self.assertRaises(CaptureError) as raised:

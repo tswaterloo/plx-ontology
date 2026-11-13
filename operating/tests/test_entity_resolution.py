@@ -171,6 +171,20 @@ class Mentions(unittest.TestCase):
 
 
 class Resolve(unittest.TestCase):
+    def test_the_index_is_given_the_store_s_item_check(self):
+        """IN-13: an item-gated index row (a mail or Teams participant, a file or chat
+        name) is a candidate only when the store's gate opens its record: the scope the
+        index reads carries that gate as its item check."""
+        seen = []
+
+        class Index(FakeIndex):
+            def by_terms(self, terms, scope, types=None):
+                seen.append(scope)
+                return super().by_terms(terms, scope, types)
+        er.Resolver(FakeBase(), Index()).resolve("scope", "actor", "Why is Acme late?")
+        self.assertTrue(seen)
+        self.assertEqual(seen[0].item_check([MAIL, HIDDEN]), {MAIL})
+
     def test_a_code_reaches_every_system_through_shared_codes(self):
         entities, gaps = resolve("Where is AB-CD-12X now?")
         self.assertEqual(gaps, [])

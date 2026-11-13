@@ -14,6 +14,7 @@ from contextlib import closing
 from decimal import Decimal
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+import functools
 import io
 import json
 import os
@@ -281,6 +282,7 @@ class Engine(unittest.TestCase):
     def run_engine(self, world: World, coverage=None, *, at=None, **options) -> dict:
         world.build(self.store)
         moment = at or datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        options.setdefault("cadence", {})   # a test not about cadence runs every rule
         return pe.run(self.store, self.inbox, AS_OF, coverage=coverage,
                       qc_link_types=options.pop("qc_link_types", (QC_LINK,)),
                       on_hand_sources=options.pop("on_hand_sources", (ON_HAND,)),
@@ -1437,6 +1439,41 @@ class PoLatenessTest(Engine):
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
                          {"quantities_unknown": 1})
 
+    def test_po_dates_are_erased_only_with_provenance_and_an_own_day_is_doubted(self):
+        """BIZ-007 for purchase orders: a delivery day many orders placed on many days
+        share is a real date (judged); a bulk day a system computed from each order's own
+        day (order day + 1) is a default (undated); a placeholder 1900-01-01 is no date;
+        an expected date on the order's own day is judged at low priority with its doubt."""
+        w = World()
+
+        def order(expected: str, ordered: str) -> str:
+            oid = w.obj("PurchaseOrder", {"status": "Pending", "expected_date": expected,
+                                          "order_date": ordered})
+            w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                "ordered_quantity": ("10", "ea"),
+                "received_quantity": ("0", "ea", "received")}), oid)
+            return oid
+        shared = [order("2026-09-15", f"2026-08-{1 + i:02d}") for i in range(12)]
+        computed = [order(f"2026-08-{2 + i:02d}", f"2026-08-{1 + i:02d}") for i in range(1)]
+        computed += [order("2026-08-21", "2026-08-20") for _ in range(12)]
+        sentinel = [order("1900-01-01", f"2026-07-{1 + i:02d}") for i in range(12)]
+        later = [order(f"2026-11-{2 + i % 20:02d}", f"2026-09-{1 + i:02d}") for i in range(20)]
+        own = order("2026-09-30", "2026-09-30")
+        summary = self.run_engine(w)
+        gaps = self.read(limit=500)["gaps"]
+        dated = {g["object_id"]: g for g in gaps if g["kind"] in ("late_po", "unconfirmed_po")}
+        undated = {g["object_id"] for g in gaps if g["kind"] == "undated_po"}
+        self.assertEqual(set(dated), {*shared, computed[0], own})
+        self.assertTrue(set(computed[1:]) <= undated and set(sentinel) <= undated)
+        self.assertFalse(set(later) & (set(dated) | undated))
+        self.assertIn("the day the order was placed", dated[own]["summary"])
+        self.assertEqual(dated[own]["follow_up"]["priority"], "low")
+        self.assertNotIn("the day the order was placed", dated[shared[0]]["summary"])
+        self.assertNotEqual(dated[shared[0]]["follow_up"]["priority"], "low")
+        self.assertIn("system-computed or placeholder defaults",
+                      next(g for g in gaps if g["object_id"] == sentinel[0])["summary"])
+        self.assertEqual(summary["po_lateness"]["evaluated"], 34)   # 14 due + 20 not yet due
+
     def test_an_open_lines_expected_date_stands_in_only_below_every_header_date(self):
         """No header date: the open line's own expected date is the lowest tier (the
         lateness oracle's source), so the order is late on it, whatever was confirmed.
@@ -1993,6 +2030,209 @@ class HomeLateRecallTest(Engine):
             summary["not_evaluated"]["late_or_unconfirmed_po"]["no_need_date"], 1)
 
 
+CALLING_RULES = ("negative_margin", "margin_erosion", "orders_at_risk",
+                 "vendor_terms_unapplied", "card_rules")
+
+
+class PassShareTest(Engine):
+    """Each detector's share of a pass (``proactive_engine._share``): the tool-call rules run
+    one after another on the run's thread, and before, each took its whole window in turn:
+    the margin rules (900 s, 600 s) spent the 1,380 s the detectors had of a 1,500 s pass,
+    so the orders at risk, the vendor terms and the cards started with 0 s on every served
+    pass (2026-11-12, passes 39-43). The margin rules also run at most every
+    ``DETECTOR_CADENCE_HOURS`` (``_not_due``)."""
+
+    def rules(self, now: list, started: list, spend: set):
+        """Each tool-call rule records the window it starts with (``st.left()``) and, when
+        named in ``spend``, uses all of it (a fake clock)."""
+        real = pe._event_steps
+
+        def step(name, st):
+            left = st.left()
+            started.append((name, left))
+            if name in spend:
+                now[0] += left
+            return pe._result([])
+
+        def events(st, *args, **kwargs):
+            steps = real(st, *args, **kwargs)
+            for name in ("negative_margin", "margin_erosion", "vendor_terms_unapplied"):
+                steps[name] = functools.partial(step, name, st)
+            return steps
+        return contextlib.ExitStack(), [
+            mock.patch.object(pe, "_event_steps", events),
+            mock.patch.object(pe, "_orders_at_risk",
+                              lambda st, *_a, **_k: step("orders_at_risk", st)),
+            mock.patch.object(pe, "_card_rules", lambda st, *_a, **_k: step("card_rules", st))]
+
+    def pass_(self, world, ids, now, started, spend, **options):
+        stack, patches = self.rules(now, started, spend)
+        with stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            return self.run_engine(world, ids["coverage"], only=list(CALLING_RULES),
+                                   call=lambda _tool, _arguments: {}, **options)
+
+    def test_no_tool_call_rule_starts_with_nothing_however_slow_the_ones_before(self):
+        world, ids = seeded()
+        weights = {name: pe.DETECTOR_SECONDS[name] for name in CALLING_RULES}
+        total = sum(weights.values())
+        # every rule uses all the time it is given: each starts with its weight's part
+        now, started = [0.0], []
+        summary = self.pass_(world, ids, now, started, set(CALLING_RULES), cadence={},
+                             budget=pe.Budget(1500, monotonic=lambda: now[0], reserve=120))
+        self.assertEqual([name for name, _ in started], list(CALLING_RULES))
+        for name, window in started:
+            self.assertAlmostEqual(window, 1380 * weights[name] / total, places=6, msg=name)
+            self.assertEqual(summary["detectors"][name], "complete", name)
+        self.assertAlmostEqual(now[0], 1380, places=6)   # never past the detectors' end
+        # time a rule leaves unused carries to the ones after it, never past their window
+        now, quick = [0.0], []
+        self.pass_(world, ids, now, quick, set(), cadence={},
+                   budget=pe.Budget(1500, monotonic=lambda: now[0], reserve=120))
+        for (name, slow), (_same, fast) in zip(started[1:], quick[1:]):
+            self.assertGreater(fast, slow, name)
+            self.assertLessEqual(fast, weights[name], name)
+        # no budget: each its own whole window, as before
+        now, free = [0.0], []
+        self.pass_(world, ids, now, free, set(CALLING_RULES), cadence={})
+        self.assertEqual(set(dict(free)), set(weights))
+        for name, window in free:   # (the real clock moves meanwhile)
+            self.assertAlmostEqual(window, weights[name], delta=5, msg=name)
+
+    def test_the_margin_rules_run_at_most_every_twelve_hours_by_the_same_code(self):
+        world, ids = seeded()
+        first = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        margins = ["margin_erosion", "negative_margin"]
+
+        def ran(at, **patches):
+            now, started = [0.0], []
+            with contextlib.ExitStack() as stack:
+                for name, value in patches.items():
+                    stack.enter_context(mock.patch.object(pe, name, value))
+                summary = self.pass_(world, ids, now, started, set(), at=at,
+                                     cadence=pe.DETECTOR_CADENCE_HOURS)
+            return summary, sorted(n for n, _ in started if n in margins)
+
+        def margin_runs():
+            with closing(sqlite3.connect(self.inbox)) as conn:
+                return dict(conn.execute(
+                    "SELECT detector, run_at FROM detector_runs WHERE detector IN "
+                    "('negative_margin', 'margin_erosion')"))
+        summary, started = ran(first)
+        self.assertEqual(started, margins)
+        self.assertNotIn("not_due", summary)
+        held = margin_runs()
+        self.assertEqual(set(held), set(margins))
+        # an hour on: not due, left exactly as they were; the other rules still run
+        summary, started = ran(first + timedelta(hours=1))
+        self.assertEqual((started, summary["not_due"]), ([], margins))
+        self.assertFalse(set(margins) & set(summary["detectors"]))
+        self.assertEqual(summary["detectors"]["orders_at_risk"], "complete")
+        self.assertEqual(margin_runs(), held)
+        # other code deployed since: due at once
+        summary, started = ran(first + timedelta(hours=2), engine_code=lambda: "other-code")
+        self.assertEqual(started, margins)
+        # back on the deployed code: the last run was by the other code, so due again
+        self.assertEqual(ran(first + timedelta(hours=3))[1], margins)
+        # twelve hours after the last start: not before, then due again
+        self.assertEqual(ran(first + timedelta(hours=14, minutes=59))[1], [])
+        self.assertEqual(ran(first + timedelta(hours=15))[1], margins)
+        # a record that cannot be read, or one dated ahead of the run: due (never skipped
+        # unseen)
+        for bad in ("not json", json.dumps({"at": "2027-01-01T00:00:00+00:00",
+                                            "code": pe.engine_code()}),
+                    json.dumps({"at": None, "code": pe.engine_code()})):
+            with closing(sqlite3.connect(self.inbox)) as conn, conn:
+                conn.execute("UPDATE meta SET value = ? WHERE key = ?",
+                             (bad, "cadence:negative_margin"))
+            summary, started = ran(first + timedelta(hours=15, minutes=30))
+            self.assertIn("negative_margin", started, bad)
+        # an explicit empty cadence runs them every pass
+        now, started = [0.0], []
+        self.pass_(world, ids, now, started, set(), at=first + timedelta(hours=15, minutes=31),
+                   cadence={})
+        self.assertEqual(sorted(n for n, _ in started if n in margins), margins)
+
+    def test_a_rule_due_on_its_cadence_gets_its_whole_window_not_a_part_of_the_pass(self):
+        world, ids = seeded()
+        weights = {name: pe.DETECTOR_SECONDS[name] for name in CALLING_RULES}
+        margins = ("negative_margin", "margin_erosion")
+        now, started = [0.0], []
+        self.pass_(world, ids, now, started, {"negative_margin"},
+                   cadence=pe.DETECTOR_CADENCE_HOURS,
+                   budget=pe.Budget(1500, monotonic=lambda: now[0], reserve=120))
+        windows = dict(started)
+        # due (never run): the whole window, never more (a part of the pass by weight would
+        # be less); the second only what the first left of the deadline
+        self.assertAlmostEqual(windows["negative_margin"], weights["negative_margin"], places=6)
+        self.assertAlmostEqual(windows["margin_erosion"], 1380 - weights["negative_margin"],
+                               places=6)
+        self.assertLess(windows["margin_erosion"], weights["margin_erosion"])
+        # the others still split what is left by weight, none starting with nothing
+        for name in CALLING_RULES:
+            if name not in margins:
+                self.assertGreater(windows[name], 0, name)
+                self.assertLessEqual(windows[name], weights[name], name)
+        # a window is never more than the run's deadline leaves
+        now, short = [0.0], []
+        self.pass_(world, ids, now, short, set(), cadence=pe.DETECTOR_CADENCE_HOURS,
+                   budget=pe.Budget(300, monotonic=lambda: now[0], reserve=0))
+        for name, window in short:
+            if name in margins:
+                self.assertLessEqual(window, 300, name)
+
+    def test_a_cadenced_rule_that_was_not_configured_or_failed_is_due_again_next_pass(self):
+        world, ids = seeded()
+        first = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        for status in ("not_configured", "failed"):
+            with self.subTest(status=status):
+                self.setUp()
+                real = pe._event_steps
+
+                def events(st, *args, _status=status, **kwargs):
+                    steps = real(st, *args, **kwargs)
+                    steps["negative_margin"] = lambda: pe._result([], status=_status)
+                    return steps
+                with mock.patch.object(pe, "_event_steps", events):
+                    summary = self.run_engine(world, ids["coverage"], only=["negative_margin"],
+                                              call=lambda _t, _a: {}, at=first,
+                                              cadence=pe.DETECTOR_CADENCE_HOURS)
+                self.assertEqual(summary["detectors"]["negative_margin"], status)
+                with closing(sqlite3.connect(self.inbox)) as conn:
+                    held = conn.execute("SELECT 1 FROM meta WHERE key = ?",
+                                        ("cadence:negative_margin",)).fetchall()
+                self.assertEqual(held, [])
+                summary = self.run_engine(world, ids["coverage"], only=["negative_margin"],
+                                          call=lambda _t, _a: {}, at=first + timedelta(hours=1),
+                                          cadence=pe.DETECTOR_CADENCE_HOURS)
+                self.assertNotIn("not_due", summary)
+
+    def test_a_run_thread_statement_past_its_window_is_cancelled(self):
+        """Postgres has no progress handler: a run-thread rule's statement still running
+        past its window is cancelled (``_Watchdog``), the rule ``truncated``, the next
+        rule keeps its share. Simulated on SQLite by removing the progress handler."""
+        world, ids = seeded()
+
+        def endless(st, *_a, **_k):
+            st.conn.set_progress_handler(None, 0)   # as on Postgres
+            st.conn.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n "
+                            "WHERE i < 400000000) SELECT count(*) FROM n").fetchone()
+            return pe._result([])
+        started = time.monotonic()
+        with mock.patch.object(pe, "_orders_at_risk", endless), \
+                mock.patch.object(pe, "RUN_THREAD_GRACE_SECONDS", 0.2):
+            summary = self.run_engine(world, ids["coverage"],
+                                      only=["orders_at_risk", "card_rules"],
+                                      call=lambda _tool, _arguments: {}, budget=pe.Budget(600),
+                                      detector_seconds={"orders_at_risk": 0.3})
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertEqual(summary["detectors"]["orders_at_risk"], "truncated")
+        self.assertEqual(summary["detector_reasons"]["orders_at_risk"], [pe.TIME_BUDGET])
+        self.assertLess(summary["seconds"]["orders_at_risk"], 10)
+        self.assertNotEqual(summary["detectors"]["card_rules"], "failed")
+
+
 class BusinessDayTest(Engine):
     """The engine's day is the business day in America/New_York (decided 2026-10-28),
     never the UTC day: from 20:00 (EDT) or 19:00 (EST) to midnight ET the UTC day is one
@@ -2511,6 +2751,52 @@ class PostgresStoreTest(Engine):
                 for name in whole:
                     self.assertEqual(tools._slices_of(kind, [name, "Nothing.no_such"]),
                                      {name: whole[name]})
+
+    def test_a_value_read_on_postgres_joins_the_value_tables_and_reads_what_sqlite_reads(self):
+        """AL-04: ``_Store.values`` on Postgres reads the value tables with the properties'
+        fields named first (through the ``object_values`` view the planner looked them up
+        again for every value source: 89 s for 32k assembly orders on the served store, past
+        the detector's window) and a whole type in one statement; the records, properties,
+        rows and their order are those the SQLite generation gives, for a whole type with
+        and without properties, named records, and a property no record holds."""
+        from operating.pg.sqlite_compat import PgCompatConnection
+        world, ids = seeded()
+        world.build(self.store)
+        dsn = self.postgres(world)
+        lite = pe._Store(self.store, threads=1)
+        self.addCleanup(lite.close)
+        with mock.patch.object(pe, "_connect", lambda _path: PgCompatConnection(dsn)):
+            pg = pe._Store(self.store, threads=1)
+        self.addCleanup(pg.close)
+        self.assertTrue(pg.pg)
+        self.assertFalse(lite.pg)
+        statements: list[str] = []
+        real = PgCompatConnection.execute
+
+        def execute(conn, sql, *args, **kwargs):
+            statements.append(sql)
+            return real(conn, sql, *args, **kwargs)
+        named = sorted(ids[k] for k in ("unconfirmed", "overdue", "late_with_lead"))
+        cases = [(["PurchaseOrder"], ("status", "expected_date", "fm_status"), None),
+                 (["PurchaseOrder", "SupplierConfirmation"], None, None),
+                 (["PurchaseOrder"], None, named),
+                 (["PurchaseOrder"], ("status",), named),
+                 (["PurchaseOrder"], ("no_such_property",), None)]
+        for types, props, objects in cases:
+            with self.subTest(types=types, props=props, objects=objects):
+                want = lite.values(types, props, objects=objects)
+                statements.clear()
+                with mock.patch.object(PgCompatConnection, "execute", execute):
+                    got = pg.values(types, props, objects=objects)
+                self.assertEqual(got, want)
+                self.assertEqual(list(got), list(want))
+                self.assertEqual([list(v["props"]) for v in got.values()],
+                                 [list(v["props"]) for v in want.values()])
+                self.assertFalse([q for q in statements if "object_values" in q], statements)
+                if props == ("status", "expected_date", "fm_status"):
+                    self.assertTrue(want)
+                    # the listing, the fields, then the whole type in one statement
+                    self.assertEqual(len(statements), 3, statements)
 
     def test_every_detector_finds_on_postgres_what_it_finds_on_sqlite(self):
         from operating.pg.sqlite_compat import PgCompatConnection

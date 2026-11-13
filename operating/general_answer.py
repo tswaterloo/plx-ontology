@@ -224,6 +224,11 @@ def _given(text: str) -> tuple[str, set[Decimal], set[str]]:
     return text.casefold(), numbers, words
 
 
+# A draft's subject line ("Subject: Update on our order"): its words are capitalised as a
+# title, so they are read as names of nobody (a figure, date or record id still counts).
+_TITLE_HEADER = re.compile(r"^\s*(?:Subject|Re|Title)\s*:\s*")
+
+
 def _novel_facts(sentence: str, given: tuple[str, set[Decimal], set[str]],
                  ordinary: frozenset[str] = frozenset()) -> list[str]:
     """The figures, dates and names ``sentence`` writes that the asker did not;
@@ -238,8 +243,14 @@ def _novel_facts(sentence: str, given: tuple[str, set[Decimal], set[str]],
         if number not in numbers and abs(number) not in numbers \
                 and written.casefold() not in said:
             out.append(written)
-    tokens = _WORD.findall(sentence)
+    header = _TITLE_HEADER.match(sentence)
+    tokens = _WORD.findall(sentence[header.end():] if header else sentence)
     for index, token in enumerate(tokens):
+        if header and (index == 0 or not tokens[index - 1][:1].islower()
+                       or token.casefold() in ordinary):
+            # a subject line may be written in title case: a capital there names nobody
+            # unless it follows a lower-case word ("our supplier Acme", "from Acme")
+            continue
         # a capitalised word is a name unless the asker wrote it, or it starts the
         # sentence as an ordinary word does ("Please", "Landed")
         if token[:1].isupper() and token not in ("I", "PLX") \
@@ -257,7 +268,7 @@ TOPIC_TERMS = frozenset((
     "gmp cgmp glp gdp ec fifo lifo fefo iso fda cfr usp nf nsf haccp sop sops coa coas sds "
     "msds ghs osha epa usda eu us uk mrp erp bom sku skus moq eoq kpi kpis otif fob exw "
     "ddp dap cif incoterms rfq rfqs ap ar gl cogs usd cad eur ph hplc qc qa capa ncr "
-    "lims abc wip ltl ftl otc spf").split())
+    "lims abc wip ltl ftl otc spf pao inci cpsr mocra reach clp ifra voc").split())
 
 
 def _caps_name(token: str) -> bool:

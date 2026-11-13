@@ -506,7 +506,7 @@ class HumanLinkLiveCheckTests(unittest.TestCase):
 
 class LinkConfirmHttpTests(unittest.TestCase):
     """POST /api/link-confirm on an in-process console on 127.0.0.1 (the seeded fixture
-    mirror; ``tests.test_object_workspace_http.PersonControlsTest``'s console, signed test
+    mirror; ``tests.test_object_workspace_people.PersonControlsTest``'s console, signed test
     tickets): the CSRF token is required, a request outside the modes is a 400, a person
     without the grant reads a 409 in plain words with nothing recorded, and the granted
     employee's confirmation is listed with who and when until undone. Evidence:
@@ -519,7 +519,7 @@ class LinkConfirmHttpTests(unittest.TestCase):
         from operating.tests import test_session_identity as ids
         from operator_api.workspace import object_workspace as objects
         from operator_api.tests import case_fixtures
-        from tests import test_object_workspace_http as http
+        from tests import test_object_workspace_people as http
 
         cls.http, cls.ids = http, ids
         cls.tmp = Path(tempfile.mkdtemp(prefix="link-confirm-http-"))

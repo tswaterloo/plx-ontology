@@ -64,6 +64,17 @@ def market(w: World, product: str, n: int, *, price: int = 10, audience: str = "
     return out
 
 
+def standing(w: World, who: str, peers: list[str]) -> int:
+    """``who`` buys two other products at the price two of ``peers`` pay (its price
+    standing known); the lines added."""
+    buyers = [who, *peers[:2]]
+    for k in range(2):
+        other = w.obj("Product", {"code": f"SYNTH-OTHER-{k}"}, audience="api:items")
+        for c in buyers:
+            sale(w, c, other, "10", "100", ago=25)
+    return 2 * len(buyers)
+
+
 class PriceAlerts(Engine):
 
     def run_rules(self, w: World, **options) -> dict:
@@ -77,6 +88,7 @@ class PriceAlerts(Engine):
         p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
         others = market(w, p, 4)
         cheap = customer(w, "SYNTHLOW")
+        standing(w, cheap, others)
         sale(w, cheap, p, "10", "70")                 # 7 CAD/kg: 30% below the typical 10
         near = customer(w, "SYNTHNEAR")
         sale(w, near, p, "10", "90")                  # 10% below: within the band
@@ -198,6 +210,89 @@ class PriceAlerts(Engine):
                          {"currency_unknown": 1, "quantity_unreadable": 1,
                           "amount_unreadable": 1, "party_unknown": 1})
 
+    def test_a_customer_seen_on_no_other_product_has_no_known_price_standing(self):
+        """live 11-12: 3 of 15 below-typical prices were a reseller or a customer on its own
+        price list that bought that one judged product; every right one bought 2 or more.
+        A customer seen on fewer than two other judged products is not judged."""
+        w = World()
+        p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
+        peers = market(w, p, 4)
+        alone = customer(w, "SYNTHALONE")
+        sale(w, alone, p, "1", "5")             # each 5 CAD/kg on 1 kg: under the rest's
+        #                                          10th percentile and half the typical
+        once = customer(w, "SYNTHONCE")
+        other = w.obj("Product", {"code": "SYNTH-OTHER-X"}, audience="api:items")
+        for c in (once, *peers[:2]):
+            sale(w, c, other, "10", "100", ago=25)
+        sale(w, once, p, "1", "5")
+        known = customer(w, "SYNTHKNOWN")
+        standing(w, known, peers)
+        sale(w, known, p, "1", "4")             # under the two unjudged ones too
+        summary = self.run_rules(w)
+        self.assertEqual([g["object_id"] for g in self.kinds(pp.BELOW_TYPICAL_KIND)], [known])
+        self.assertEqual(summary["not_evaluated"][pp.RULE].get("customer_standing_unknown"), 2)
+
+    def test_a_customer_on_another_price_list_is_compared_only_within_its_list(self):
+        """live 11-12: a distributor on its own price list (another agreed tier) read 26%
+        below the standard list's typical price. The typical is the other customers' on
+        the customer's own list; too few there: not judged."""
+        w = World()
+        p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
+        peers = market(w, p, 4)
+        for who in peers:
+            w.rows["object_values"].append({**next(
+                r for r in w.rows["object_values"]
+                if r["object_id"] == who and r["property"] == "erp_code"),
+                "property": "price_list_code", "value": "SYNTH-STD"})
+        tiered = customer(w, "SYNTHTIER")
+        w.rows["object_values"].append({**next(
+            r for r in w.rows["object_values"]
+            if r["object_id"] == tiered and r["property"] == "erp_code"),
+            "property": "price_list_code", "value": "SYNTH-DIST"})
+        standing(w, tiered, peers)
+        sale(w, tiered, p, "1", "5")
+        standard = customer(w, "SYNTHSTD")
+        w.rows["object_values"].append({**next(
+            r for r in w.rows["object_values"]
+            if r["object_id"] == standard and r["property"] == "erp_code"),
+            "property": "price_list_code", "value": "SYNTH-STD"})
+        standing(w, standard, peers)
+        sale(w, standard, p, "1", "5")
+        summary = self.run_rules(w)
+        (gap,) = self.kinds(pp.BELOW_TYPICAL_KIND)
+        self.assertEqual(gap["object_id"], standard)
+        # its peers are the four on its list, never the other list's customer
+        self.assertIn("(volume-weighted, 4 other customers)", gap["summary"])
+        self.assertNotIn(tiered, str(gap["citations"]))
+        self.assertEqual(summary["detectors"][pp.RULE], "complete")
+        st = pe._Store(self.store)
+        try:
+            counts = pp.price_consistency(
+                st, AS_OF, gap=pe._gap, cites=pe._cites, result=pe._result,
+                settled=pe.SETTLED, skips=pe._Skips)["counts"]
+        finally:
+            st.close()
+        # the other-list customer on its three products, and the two standard-list
+        # customers beside it on its two other products (two on their list there)
+        self.assertEqual(counts["price_list_peers_few"], 7)
+
+    def test_a_large_buyer_is_no_typical_when_other_customers_pay_as_little(self):
+        """live 11-12: 2.49 against a typical 3.5 that one large buyer paid, while another
+        customer paid less: no outlier."""
+        w = World()
+        p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
+        big, small = customer(w, "SYNTHBIG"), customer(w, "SYNTHSMALL")
+        sale(w, big, p, "1000", "3500")
+        sale(w, small, p, "1", "2")
+        cheap = customer(w, "SYNTHLOW")
+        standing(w, cheap, [big, small])
+        standing(w, small, [big, cheap])
+        sale(w, cheap, p, "50", "124.5")
+        self.run_rules(w)
+        # the lowest payer is still raised; the one another customer undercuts is not
+        self.assertEqual([g["object_id"] for g in self.kinds(pp.BELOW_TYPICAL_KIND)],
+                         [small])
+
     def test_two_customers_never_make_a_typical_price(self):
         w = World()
         p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
@@ -209,10 +304,11 @@ class PriceAlerts(Engine):
     def test_a_restricted_reader_sees_only_what_it_may_open(self):
         w = World()
         p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
-        market(w, p, 3)
+        peers = market(w, p, 3)
         market_hidden = customer(w, "SYNTHHIDDEN")
         sale(w, market_hidden, p, "10", "100", audience="bc:hidden")
         cheap = customer(w, "SYNTHLOW")
+        standing(w, cheap, peers)
         sale(w, cheap, p, "10", "60", own_cost=("5", "1", "1"))
         under = customer(w, "SYNTHUNDER")
         sale(w, under, p, "10", "95", own_cost=("12", "1", "1"))
@@ -236,8 +332,9 @@ class PriceAlerts(Engine):
             with self.subTest(n=n):
                 w = World()
                 p = w.obj("Product", {"code": "SYNTH-ITEM"}, audience="api:items")
-                market(w, p, n)
+                peers = market(w, p, n)
                 cheap = customer(w, "SYNTHLOW")
+                added = standing(w, cheap, peers)
                 sale(w, cheap, p, "10", "50")
                 started = time.monotonic()
                 summary = self.run_rules(w)
@@ -254,7 +351,7 @@ class PriceAlerts(Engine):
                         settled=pe.SETTLED, skips=pe._Skips)["counts"]
                 finally:
                     st.close()
-                self.assertEqual((counts["lines"], counts["series"]), (2 * n + 1, 1))
+                self.assertEqual((counts["lines"], counts["series"]), (2 * n + 1 + added, 3))
                 self.setUp()
 
     def test_the_briefing_has_a_next_step_words_and_a_check_label(self):

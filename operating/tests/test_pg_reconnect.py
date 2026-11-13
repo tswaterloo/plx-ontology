@@ -61,6 +61,30 @@ class ReconnectTests(unittest.TestCase):
         with pg_testdb.psycopg.connect(self.dsn) as conn:
             return [r[0] for r in conn.execute("SELECT x FROM public.t ORDER BY x")]
 
+    def test_a_session_stops_on_a_gone_client_and_a_temp_limit_bounds_each_statement(self):
+        # every session checks that its client is still there (a killed reader's statement
+        # never goes on scanning); a bounded session's statement that would spill past its
+        # temp limit fails instead of filling the disk
+        self.assertEqual(self.conn.execute(
+            "SELECT current_setting('client_connection_check_interval')").fetchone()[0], "5s")
+        with pg_testdb.psycopg.connect(self.dsn) as admin:
+            superuser = admin.execute("SELECT rolsuper FROM pg_roles WHERE rolname = "
+                                      "current_user").fetchone()[0]
+        bounded = PgCompatConnection(self.dsn, temp_limit="1MB")
+        self.addCleanup(bounded.close)
+        if superuser:
+            self.assertEqual(bounded.execute(
+                "SELECT current_setting('temp_file_limit')").fetchone()[0], "1MB")
+            with bounded._pg.cursor() as cur:
+                cur.execute("SET work_mem = '64kB'")
+                with self.assertRaises(pg_testdb.psycopg.Error):
+                    cur.execute("SELECT g FROM generate_series(1, 400000) g "
+                                "ORDER BY md5(g::text)")
+        # a value that is no size is refused before any session opens
+        for bad in ("1GB'; DROP TABLE t; --", "lots", ""):
+            with self.assertRaises(ValueError):
+                PgCompatConnection(self.dsn, temp_limit=bad)
+
     def test_the_next_read_after_a_killed_backend_succeeds(self):
         self.assertEqual(self.conn.execute("SELECT 1 AS one").fetchone()["one"], 1)
         before = self.conn._conn.info.backend_pid

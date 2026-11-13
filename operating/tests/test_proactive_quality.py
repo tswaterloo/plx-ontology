@@ -280,6 +280,51 @@ class QualityAlerts(Engine):
             "(open); portal says Closed (done)"])
         self.assertEqual(self.kinds(q.DISAGREE, may_read=lambda k: k == "bc:orders"), [])
 
+    def test_an_order_split_in_one_system_is_compared_on_no_part_of_it(self):
+        """One Sage order holding two Portal orders (its total their sum): no part's amount
+        or differing date is a disagreement; a property every copy of one side states
+        alike is still compared (live 11-12: 2 of 15 twins_disagree were such splits)."""
+        w = World()
+        sage = order(w, "SalesOrder", "portal.sage_oe_order", status="Open",
+                     total_amount="646.58", required_date="2026-10-20",
+                     order_number="SO-SYN-S")
+        parts = [order(w, "SalesOrder", "portal.app_sales_order", status=status,
+                       total_amount=amount, required_date=due)
+                 for amount, due, status in (("259.58", "2026-10-20", "Closed"),
+                                             ("387.00", "2026-10-22", "Closed"))]
+        for oid in (sage, *parts):
+            money(w, oid, "total_amount", "CAD")
+            if oid != sage:
+                w.link("SalesOrder.same_record_as", sage, oid)
+        summary = self.run_rules(w, [q.DISAGREE_RULE])
+        self.assertEqual(summary["detectors"][q.DISAGREE_RULE], "complete")
+        gaps = self.kinds(q.DISAGREE)
+        # both parts say closed, the whole says open: that one is still a disagreement
+        self.assertEqual([g["summary"] for g in gaps], [
+            "Sales order SO-SYN-S: the systems disagree on its status: portal says Closed "
+            "(done); sage says Open (open)"])
+
+    def test_copies_whose_number_another_record_of_their_system_holds_are_not_compared(self):
+        """live 11-12: a BC order linked to a Portal backorder (another number) while the
+        Portal order of the BC number stood outside the cluster: two orders compared."""
+        w = World()
+        bc = order(w, "PurchaseOrder", "bc.purchase_order", status="Open",
+                   order_date="2026-11-10", po_number="PO-SYN-7")
+        linked = order(w, "PurchaseOrder", "portal.app_purchase_order", status="Open",
+                       order_date="2026-10-19", po_number="PO-SYN-8")
+        w.link("PurchaseOrder.same_record_as", bc, linked)
+        order(w, "PurchaseOrder", "portal.app_purchase_order", status="Open",
+              order_date="2026-09-30", po_number="PO-SYN 7")      # the BC number, apart
+        # another number with no record of it elsewhere: still one order, compared
+        legacy = order(w, "PurchaseOrder", "bc.purchase_order", status="Open",
+                       order_date="2026-07-10", po_number="SYN-106")
+        portal = order(w, "PurchaseOrder", "portal.app_purchase_order", status="Open",
+                       order_date="2026-09-30", po_number="PO-SYN-9")
+        w.link("PurchaseOrder.same_record_as", legacy, portal)
+        self.run_rules(w, [q.DISAGREE_RULE])
+        self.assertEqual([g["follow_up"]["object_id"] for g in self.kinds(q.DISAGREE)],
+                         [legacy])
+
     def test_an_amount_disagreement_is_shown_to_finance_readers_only(self):
         w = World()
         bc = order(w, "PurchaseOrder", "bc.purchase_order", status="Open",

@@ -22,6 +22,8 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
+from unittest import mock
+from integrations import source_mirror
 from integrations.source_mirror import (AudienceMap, MirrorError, SourceMirror,
     citation_generation, main, make_citation, parse_citation, parse_decimal)
 from integrations.http import SourceHttpError
@@ -404,6 +406,39 @@ class FillAndRefreshTests(MirrorTestCase):
         recovered = mirror.rows(OPS, "public.assembly_order")
         self.assertFalse(recovered["freshness"]["stale"])
         self.assertIsNone(recovered["freshness"]["last_refresh_failure"])
+
+    def test_keyset_pages_read_every_row_once_from_the_key_index(self):
+        """INT-014: keyset paging (``after``) walks the relation in stored key order,
+        no row lost or repeated; ``scan_relation`` pages that way."""
+        from integrations.source_mirror import scan_relation
+        mirror = self.mirror()
+        seen, after, pages = [], None, 0
+        while True:
+            page = mirror.rows(OPS, "public.assembly_order", limit=3, keyset=True,
+                               after=after)
+            pages += 1
+            self.assertIsNone(page["total_matched"])
+            seen += [item["key"]["id"] for item in page["rows"]]
+            after = page["next_after"]
+            if after is None:
+                break
+        self.assertEqual((seen, pages), ([10718, 10719, 10720, 10721], 2))
+        one = mirror.rows(OPS, "public.assembly_order", limit=1, keyset=True,
+                          where=[["id", "eq", 10720]])
+        self.assertEqual(([i["key"]["id"] for i in one["rows"]], one["next_after"]),
+                         ([10720], None))
+        for bad in ({"after": "[1]"}, {"after": "x"}, {"order": [["id", "desc"]]},
+                    {"offset": 1}):
+            with self.assertRaises(MirrorError):
+                mirror.rows(OPS, "public.assembly_order", keyset=True, **bad)
+        with self.assertRaises(MirrorError):
+            mirror.rows(OPS, "public.assembly_order", after=after or "[\"a\", 0]")
+        with mock.patch.object(source_mirror, "SCAN_PAGE", 1):
+            whole = scan_relation(mirror, OPS, "public.assembly_order", 100, None)
+            cut = scan_relation(mirror, OPS, "public.assembly_order", 3, None)
+        self.assertEqual(([r["key"]["id"] for r in whole["rows"]], whole["complete"]),
+                         ([10718, 10719, 10720, 10721], True))
+        self.assertEqual((len(cut["rows"]), cut["reasons"]), (3, ["scan_bound_reached"]))
 
     def test_rows_offset_pages_past_the_row_limit_in_order(self):
         mirror = self.mirror()
@@ -2660,3 +2695,38 @@ class ParallelSyncTests(MirrorTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScanFreshnessTests(unittest.TestCase):
+    """INT-013: a relation scan carries its first page's freshness (stale, as of,
+    refresh failure), and its consumers label a stale or failed-refresh read."""
+
+    def test_a_stale_scan_says_so_and_its_consumers_label_it(self):
+        from integrations.source_mirror import scan_label, scan_relation
+        from operating.issued_sends import link_issued_sends
+
+        class StaleMirror:
+            def rows(self, actor, relation, **kwargs):
+                return {"columns": ["id"], "total_matched": 1, "returned": 1,
+                        "next_offset": None,
+                        "rows": [{"citation": "api://public.purchase_order/x@1",
+                                  "key": {"id": 1}, "row": {"id": 1}}],
+                        "freshness": {"latest_capture_id": 7, "stale": True,
+                                      "last_refresh_at": "2026-11-07T18:32:00.000000Z",
+                                      "refresh_error": "source_unavailable",
+                                      "refresh_error_code": "http_503",
+                                      "refresh_http_status": 503}}
+        from ontology.types import Actor
+        scan = scan_relation(StaleMirror(), Actor("plx", frozenset({"svc"}), "internal"),
+                             "public.purchase_order", 100, None)
+        self.assertEqual(scan["freshness"]["as_of"], "2026-11-07T18:32:00.000000Z")
+        self.assertTrue(scan["freshness"]["stale"])
+        self.assertEqual(scan_label(scan), {"stale": True,
+                                            "as_of": "2026-11-07T18:32:00.000000Z",
+                                            "refresh_error": "http_503"})
+        report = link_issued_sends({"status": "read", "complete": True, "truncated": False,
+                                    "sends": [], "others": []},
+                                   {"status": "read", "complete": True, "renders": []}, scan)
+        self.assertTrue(report["sources"]["po"]["stale"])
+        self.assertEqual(report["sources"]["po"]["refresh_error"], "http_503")
+        self.assertEqual(scan_label({"status": "not_configured", "rows": []}), {})

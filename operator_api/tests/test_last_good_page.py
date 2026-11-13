@@ -108,6 +108,29 @@ class LastGoodPage(unittest.TestCase):
         # the stale page is not kept as a fresh one: a later read-through still sees it
         self.assertIsNone(self.backend._good[(who.key, who.mode, ("late", 0, 25))][1].stale_since)
 
+    def test_an_unreadable_page_is_never_kept_and_the_kept_pages_stay_bounded(self):
+        """API-012: a page whose status says it could not be read is not kept as last
+        good. API-002: pages and their inputs stamps are evicted together, bounded."""
+        state = ("s",)
+        for status in ("unavailable", "error", "failed"):
+            bad = page(3).model_copy()
+            object.__setattr__(bad, "status", status)
+            self.backend._keep_good(("k", status), bad, state, state)
+            self.assertNotIn(("k", status), self.backend._good)
+        # a record page's status is the record's own state (an ObjectStatus, unhashable),
+        # not a read outcome: such a page is kept, even when its state reads "unavailable"
+        for state_word in ("late", "unavailable"):
+            record = page(3).model_copy()
+            object.__setattr__(record, "status", m.ObjectStatus(
+                state=state_word, text="Late by 12 days"))
+            self.backend._keep_good(("obj", state_word), record, state, state)
+            self.assertIn(("obj", state_word), self.backend._good)
+        with mock.patch.object(be, "LAST_GOOD_KEPT", 3):
+            for n in range(10):
+                self.backend._keep_good(("k", n), page(n), state, state, inputs=("in", n))
+            self.assertEqual(list(self.backend._good), [("k", 7), ("k", 8), ("k", 9)])
+            self.assertEqual(set(self.backend._snap_inputs()), set(self.backend._good))
+
     def test_never_another_readers_page(self):
         self.serve(reader("grp-a"), lambda: page(7))
 
@@ -561,6 +584,109 @@ class NeverServedCold(LastGoodPage.__base__):
         self.reads.hidden = {ids[2]}
         with self.assertRaises(TimeoutError):
             self.serve(reader("grp-a"), busy)
+
+    def test_the_access_worker_runs_each_known_readers_kept_page_checks_before_it_serves(self):
+        """Speed 11-12: after a deploy the first visit's check of each kept screen (every
+        record re-decided) ran cold on the one access worker, past its 3 s wait at high
+        load: no kept page was served and the reader waited the full read. The access
+        worker now runs those checks once before it serves, for every known reader at any
+        count. It decides nothing for the visit: a record hidden after it is still not
+        served, and a reader whose check fails leaves the others' checks done."""
+        import tempfile
+        from operator_api.page_store import PageStore
+        late = ("late", 0, 100)
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                folder = tempfile.TemporaryDirectory()
+                self.addCleanup(folder.cleanup)
+                self.backend.page_cache = SimpleNamespace(
+                    store=PageStore(Path(folder.name), "c1"))
+                readers = {f"0000000{i % 10}-0000-4000-8000-{i:012d}": reader(f"grp-{n}-{i}")
+                           for i in range(n)}
+                shown = {who.key: f"PurchaseOrder:bc:PO-{who.key}" for who in readers.values()}
+                for who in readers.values():
+                    self.backend._serving(who, late, lambda w=who: self.late_page(shown[w.key]))
+                self.backend._good.clear()        # a deploy: new code, the disk copies only
+                self.backend.page_cache = SimpleNamespace(
+                    store=PageStore(Path(folder.name), "c2"))
+                broken = next(iter(readers.values())).key
+                self.reads.looked_up = []
+
+                def visible(ids):
+                    if broken in ids[0] and n > 1:
+                        raise OSError("store unreadable for this one")
+                    return Reads.visible_objects(self.reads, ids)
+
+                def view_of(session):
+                    who = SimpleNamespace(key=",".join(sorted(session.principals)))
+                    gated = Gated("t", frozenset(session.principals), None)
+                    return SimpleNamespace(_request=contextlib.nullcontext,
+                                           access=SimpleNamespace(
+                        reader_policy=lambda: (gated, self.reads.policy),
+                        decide=self.reads.decide, visible_objects=visible), who=who)
+                self.backend.known_readers = lambda: {
+                    oid: {"ref": "r" * 64, "exp": int(time.time()) + 600} for oid in readers}
+                self.backend.identity_for = lambda oid, exp: SimpleNamespace(
+                    principals=readers[oid].key.split(","))
+                self.backend.revoked = lambda ref: False
+                self.backend.reader_mode = "dev"
+                worker = SimpleNamespace(_workspace=view_of)
+                started = time.monotonic()
+                with mock.patch.object(be, "page_key", lambda view, what: ("k",)), \
+                        mock.patch.object(be, "inbox_stamp", lambda view: None), \
+                        mock.patch.object(be, "watcher_stamp", lambda view: None):
+                    self.assertEqual(self.backend.prewarm_policies(worker=worker), n)
+                self.assertLess(time.monotonic() - started, 0.05 * n + 1)
+                checked = sorted(i for batch in self.reads.looked_up for i in batch)
+                self.assertEqual(checked, sorted(v for k, v in shown.items()
+                                                 if n == 1 or k != broken))
+                # nothing decided for the visit: a record hidden since is not served
+                last = list(readers.values())[-1]
+                self.reads.hidden = {shown[last.key]}
+                with self.assertRaises(TimeoutError):
+                    self.backend._serving(last, late, busy)
+                self.reads.hidden = set()
+
+    def test_a_new_layer_opens_each_known_readers_scope_on_the_access_worker(self):
+        """After a delta layer (any inputs change) the access worker opens each known,
+        unrevoked reader's request scope once, behind every access check, and decides
+        nothing for any page; with no change nothing is queued."""
+        stamps = [("s1",)]
+        self.backend.inputs_stamp = lambda: stamps[-1]
+        known = {"11111111-0000-4000-8000-000000000001": "grp-a",
+                 "11111111-0000-4000-8000-000000000002": "grp-b",
+                 "11111111-0000-4000-8000-000000000003": "grp-gone"}
+        self.backend.known_readers = lambda: {o: {"ref": k, "exp": 1} for o, k in known.items()}
+        self.backend.revoked = lambda ref: ref == "grp-gone"
+        self.backend.identity_for = lambda oid, exp: SimpleNamespace(principals=[known[oid]])
+        self.backend.reader_mode = "dev"
+        queued, opened = [], []
+
+        @contextlib.contextmanager
+        def scope():
+            opened.append(1)
+            yield
+
+        def submit(who, job, *, priority=0, deadline=None):
+            queued.append((who.key, priority))
+            job(SimpleNamespace(_request=scope, access=SimpleNamespace(
+                decide=lambda h: self.fail("a decision"),
+                visible_objects=lambda i: self.fail("a decision"))))
+        worker = SimpleNamespace(submit=submit, stopped=threading.Event())
+        with mock.patch.object(be, "GENERATION_POLL_SECONDS", 0.01):
+            watch = threading.Thread(target=self.backend._keep_access_open, args=(worker,))
+            watch.start()
+            time.sleep(0.1)
+            self.assertEqual(queued, [])                      # nothing changed: nothing
+            stamps.append(("s2",))
+            for _ in range(200):
+                if len(queued) >= 2:
+                    break
+                time.sleep(0.01)
+            worker.stopped.set()
+            watch.join(2)
+        self.assertEqual(sorted(queued), [("grp-a", 1), ("grp-b", 1)])
+        self.assertEqual(len(opened), 2)
 
     def test_after_a_deploy_an_excluded_persons_record_is_never_served(self):
         """A page the old code kept showing a record of a person the exclusion names (the
@@ -1117,6 +1243,103 @@ class OtherScreens(LastGoodPage.__base__):
                 break
             time.sleep(0.05)
         self.assertEqual(self.visit(other)[1], [other.key])   # nothing kept for another
+
+    def test_the_warm_up_process_keeps_todays_screens_under_the_keys_the_app_asks(self):
+        """Speed 11-12: after a restart the briefing's first read never finished (104 s,
+        503) because the warm-up read Today only through its inner caches and kept no page
+        for ``_serving``. The warm-up process now reads Home, the briefing, the
+        suggestions and the late list's first page of 100 (Home's and "show all"'s), and
+        the Team screen, through ``_serving``: each is kept for that reader only."""
+        who, other = reader("grp-a"), reader("grp-b")
+        self.backend.yield_to_live, self.backend.warm_enabled = False, True
+        self.backend.warm_process = self.backend.warmer = None
+        self.backend._warmed, self.backend._pages_seen = {}, {}
+        read = []
+        self.reads.run = lambda w, job, timeout=None: job(SimpleNamespace())
+        self.backend._home = lambda w: read.append("home") or m.Home.model_construct()
+        self.backend._briefing_cached = lambda view, w, since_visit: (
+            read.append(("briefing", since_visit)) or m.Briefing.model_construct())
+        self.backend._suggestions_cached = lambda view: (
+            read.append("suggestions") or m.Suggestions.model_construct())
+        self.backend._late_list = lambda w, offset, limit: (
+            read.append(("late", offset, limit)) or page())
+        team = m.TeamView(scope="self", state="ready", note="n")
+        named = {"_home_served", "briefing", "suggestions", "late_list", "team_view"}
+        today = [k for k in be.SCREENS_AHEAD if (k if isinstance(k, str) else k[0]) in named]
+        self.assertEqual(len(today), 5)
+        wanted = [("home",), ("briefing", False), ("suggestions",), ("late", 0, 100), ("team",)]
+        with mock.patch.object(be, "SCREENS_AHEAD", tuple(today)), \
+                mock.patch.object(be.TeamViewMixin, "team_view",
+                                  lambda backend, w: read.append("team") or team):
+            self.assertTrue(self.backend.warm(who, force=True))
+            for _ in range(200):
+                if all((who.key, who.mode, k) in self.backend._good for k in wanted):
+                    break
+                time.sleep(0.05)
+        for k in wanted:
+            self.assertIn((who.key, who.mode, k), self.backend._good, k)
+            self.assertNotIn((other.key, other.mode, k), self.backend._good, k)
+        self.assertEqual(read.count("home"), 1)      # once: the warm-up's own Home read
+        self.assertIn(("late", 0, 100), read)
+
+    def test_a_reader_no_longer_named_for_the_team_screen_is_never_served_its_copy(self):
+        """The Team screen names everyone only for the owner and the Team readers named in
+        the environment: kept now (served at once on the next visit), but a reader taken
+        off that list, a person hidden (named, or an address the team snapshot now
+        resolves) or an owner learned is an access change: the copy
+        kept under it is never served, not marked stale and not when the read is refused."""
+        from operator_api import team_view as tv
+        who = reader("grp-a")
+        calls = []
+
+        def team(backend, w):
+            calls.append(w.key)
+            named = w.key in os.environ.get(tv.READERS_ENV, "").split(",")
+            return m.TeamView(scope="everyone" if named else "self", state="ready", note="n")
+
+        patch = mock.patch.object(be.TeamViewMixin, "team_view", team)
+        patch.start()
+        self.addCleanup(patch.stop)
+        hidden = "0000000a-0000-4000-8000-00000000000a"
+        # a hidden address resolves to a person only once the team snapshot names it
+        people = {"none": {}}
+        snap = mock.patch.object(tv, "snapshot", lambda path: {"people": dict(people)})
+        snap.start()
+        self.addCleanup(snap.stop)
+        for change in ({tv.READERS_ENV: "grp-b"}, {tv.READERS_ENV: "grp-a",
+                                                    tv.HIDDEN_ENV: hidden}, "owners",
+                       "address"):
+            with self.subTest(change=change), mock.patch.dict(
+                    os.environ, {tv.READERS_ENV: "grp-a", tv.HIDDEN_ENV: "x@example.com"}):
+                people.clear()
+                self.backend._good.clear()
+                self.backend._refreshing.clear()
+                (self.dir / tv.OWNER_IDS_FILE).unlink(missing_ok=True)
+                self.assertEqual(self.backend.team_view(who).scope, "everyone")
+                calls.clear()
+                self.assertEqual(self.backend.team_view(who).scope, "everyone")
+                self.assertEqual(calls, [])                      # kept, served as kept
+                time.sleep(0.01)
+                if change == "owners":
+                    (self.dir / tv.OWNER_IDS_FILE).write_text(f'["{hidden}"]')
+                elif change == "address":
+                    people[hidden] = {"addresses": ["x@example.com"]}
+                else:
+                    os.environ.update(change)
+                got = self.backend.team_view(who)
+                self.assertEqual((got.stale_since, calls), (None, [who.key]))
+                self.backend._good.clear()
+                self.assertEqual(self.backend.team_view(who).scope, got.scope)
+                if change == "owners":
+                    (self.dir / tv.OWNER_IDS_FILE).unlink()
+                elif change == "address":
+                    people.clear()
+                else:
+                    os.environ.update({tv.READERS_ENV: "grp-a", tv.HIDDEN_ENV: "x@example.com"})
+                with mock.patch.object(be.TeamViewMixin, "team_view",
+                                       lambda b, w: busy()), self.assertRaises(TimeoutError):
+                    self.backend.team_view(who)                  # the refusal, never the copy
+                self.background_reads_over()
 
     def test_the_access_check_runs_on_its_own_worker_not_behind_a_long_read(self):
         who = reader("grp-a")

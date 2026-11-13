@@ -29,7 +29,10 @@ source serves leaves it ``blocked`` with ``not_served_<Type>__<property>`` reaso
   start date, the orders before it in start-date order served first. ``REQUIRES_GRANT``.
 * ``certificate_expiry``: a certificate (``CERTIFICATES``: certificates of analysis, supplier
   certificates) stating an expiry or review date within ``CERT_DAYS``; copies of one
-  certificate (same supplier, material, lot and date) are one. Machine-read values are
+  certificate (same supplier, material, lot and date) are one. A date read from a printed
+  numeric date whose day and month cannot be told apart (``cited_day``: 12/03/2026, with no
+  other date of the document forcing the order) is no day (``date_order_ambiguous``,
+  counted). Machine-read values are
   leads, said as read.
 * ``freight_cost_anomaly``: a freight bill's amount per shipment against the median of the
   same carrier's and lane's other bills in one currency over ``FREIGHT_TRAILING_DAYS`` (at
@@ -51,6 +54,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 import functools
+import json
+import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology.units import unit_token
@@ -919,7 +924,8 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     for cert, props in served:
         labels = [p for p in (cert.supplier, cert.material, cert.lot) if p]
         names = [p for p in (cert.material, cert.lot) if p]   # what the certificate is of
-        found = st.values([cert.type], [*props, *labels])
+        evidence = ("evidence",) if declares(cert.type, "evidence") else ()
+        found = st.values([cert.type], [*props, *labels, *evidence])
         # per supplier, material and lot, the latest date any of its certificates states:
         # an older certificate of the same supplier's lot is superseded by a newer one
         # stating a later date. Only a certificate stating every one of them is matched:
@@ -935,6 +941,7 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 for prop in props:
                     row = pb._one(entry["props"].get(prop) or ())
                     day = pb._day(row["value"]) if row is not None else None
+                    day, _doubt = cited_day(entry["props"], prop, day)
                     if day is not None:
                         latest[(prop, *ident)] = max(latest.get((prop, *ident), day), day)
         for oid, entry in sorted(found.items()):
@@ -947,6 +954,12 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 if day is None:
                     if any(str(r.get("value") or "").strip() for r in rows):
                         skipped.note("date_unreadable", [oid], [(oid, "[]")])
+                    continue
+                day, doubt = cited_day(values, prop, day)
+                if day is None:
+                    # live 11-12: 2 of 15 expiries were printed 12/03/2026 and 01/11/2027
+                    # with nothing on the page to say which part is the month
+                    skipped.note(doubt, [oid], [(oid, "[]")])
                     continue
                 counts["dated"] += 1
                 if not as_of <= day <= horizon:
@@ -1002,6 +1015,81 @@ def certificate_expiry(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     out["counts"] = {k: counts.get(k, 0) for k in ("dated", "expiring", "copies",
                                                    "superseded")}
     return out
+
+
+# a numeric date as printed: 12/03/2026, 01.11.27, 3-12-2026
+NUMERIC_DAY = re.compile(r"^\s*(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})\s*$")
+
+
+def _numeric(text: Any) -> tuple[int, str, int, int] | None:
+    m = NUMERIC_DAY.match(str(text or ""))
+    if m is None:
+        return None
+    year = int(m.group(4))
+    return int(m.group(1)), m.group(2), int(m.group(3)), year + 2000 if year < 100 else year
+
+
+def _order(first: int, second: int) -> str | None:
+    """Which part a printed numeric date leads with: "dm" (day first), "md", or None (both
+    could be a month and they differ: the text alone cannot tell)."""
+    if first > 12 >= second:
+        return "dm"
+    if second > 12 >= first:
+        return "md"
+    return "same" if first == second else None
+
+
+def cited_day(values: Mapping[str, list], prop: str, stored: date | None
+              ) -> tuple[date | None, str | None]:
+    """The day a document-read date stands for, from the text it was read from
+    (``evidence.fields.<prop>.citations``): a worded or ISO date, or a numeric one with a
+    part over 12, is the stored day; a numeric one whose two parts could each be the month
+    (12/03/2026) takes the order another numeric date of the same document forces with the
+    same separator (19/11/2024 beside it: day first), else it is no day
+    (``date_order_ambiguous``). A record with no cited text (a structured source) keeps its
+    stored day."""
+    row = pb._one(values.get("evidence"))
+    try:
+        fields = json.loads(row["value"]).get("fields") if row is not None else None
+    except (TypeError, ValueError, AttributeError):
+        fields = None
+    if not isinstance(fields, Mapping) or stored is None:
+        return stored, None
+    field = fields.get(prop)
+    texts = [c.get("text") for c in (field or {}).get("citations") or ()
+             if isinstance(c, Mapping)] if isinstance(field, Mapping) else []
+    printed = [_numeric(t) for t in texts]
+    if not texts or any(p is None for p in printed):
+        return stored, None   # worded or ISO somewhere: the reading is not in doubt
+    if any(_order(a, b) for a, _sep, b, _y in printed):
+        return stored, None
+    separators = {sep for _a, sep, _b, _y in printed}
+    forced = set()
+    for name, other in fields.items():
+        if name == prop or not isinstance(other, Mapping):
+            continue
+        for c in other.get("citations") or ():
+            got = _numeric(c.get("text")) if isinstance(c, Mapping) else None
+            if got is not None and got[1] in separators:
+                order = _order(got[0], got[2])
+                if order in ("dm", "md"):
+                    forced.add(order)
+    if len(forced) != 1 or len(separators) != 1:
+        return None, "date_order_ambiguous"
+    first, _sep, second, year = printed[0]
+    day, month = (first, second) if forced == {"dm"} else (second, first)
+    try:
+        read = date(year, month, day)
+    except ValueError:
+        return None, "date_order_ambiguous"
+    if any((d, m, y) != (day, month, year) for a, _s, b, y in printed
+           for d, m in [((a, b) if forced == {"dm"} else (b, a))]):
+        return None, "date_order_ambiguous"
+    if read != stored:
+        # the document's own order says the other reading than the one stored: the stored
+        # day is no statement of it, and no alert cites a row saying another day
+        return None, "date_order_misread"
+    return read, None
 
 
 NOT_STATED = frozenset({"", "none", "null", "n/a"})

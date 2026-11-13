@@ -31,7 +31,13 @@ class Kept(unittest.TestCase):
                 # "the" supplier of a worked example says nothing it did
                 ("how do I compare supplier quotes",
                  "If the supplier price is $5 and freight adds 10%, the landed price is "
-                 "$5.50.")):
+                 "$5.50."),
+                # IN-17 (11-12 probe): a cosmetics term in capitals is a topic too
+                ("what is the shelf life of an emulsion lotion typically",
+                 "After opening, a 12 month PAO is common."),
+                # a draft's subject line is title case: its capitals name nobody
+                ("what is a good email to chase a late shipment",
+                 "Subject: Update on our order")):
             with self.subTest(question=question):
                 text, removed = screen(line, question, strict="draft" in question)
                 self.assertEqual((text, removed), (line, []))
@@ -58,6 +64,16 @@ class Removed(unittest.TestCase):
                  "ULINE usually charges $45 per pallet."),
                 ("how do I plan around BASF lead times",
                  "BASF has a 12-week lead time."),
+                # a subject line still writes no record id or dated party fact
+                ("what is a good email to chase a late shipment",
+                 "Subject: Update on PO 4501"),
+                ("how do I chase a late supplier",
+                 "Subject: ULINE shipped on March 3, 2026"),
+                # IN-17 review: a subject line still names no invented company
+                ("how do I chase a late supplier",
+                 "Subject: our supplier Acme raised prices"),
+                ("what is a good email to chase a late shipment",
+                 "Subject: Delay on our order from Acme Supply"),
                 ("can I negotiate a better rate with UPS",
                  "UPS gave you 15% off last year."),
                 ("how do I pick a pallet supplier",
@@ -69,6 +85,15 @@ class Removed(unittest.TestCase):
                  "That supplier owes 3 shipments.")):
             with self.subTest(question=question):
                 text, removed = screen(line, question)
+                self.assertEqual(text, "")
+                self.assertEqual(len(removed), 1)
+
+    def test_invented_company_in_a_subject_line_goes_from_a_strict_draft_too(self):
+        for line in ("Subject: our supplier Acme raised prices",
+                     "Subject: Delay on our order from Acme Supply"):
+            with self.subTest(line=line):
+                text, removed = screen(line, "write a draft email about a delay",
+                                       strict=True)
                 self.assertEqual(text, "")
                 self.assertEqual(len(removed), 1)
 

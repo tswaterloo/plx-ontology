@@ -94,6 +94,48 @@ def proven_defaults(records: Iterable[tuple[date | None, Iterable[Any]]], *,
     return frozenset(out)
 
 
+def calculated_defaults(records: Iterable[tuple[date | None, Iterable[Any]]], *,
+                        share: float = DATE_SHARE, minimum: int = MINIMUM) -> frozenset:
+    """``(date, the record's own stamps)`` per record of one population -> the bulk days
+    (``default_days``) a system computed: at least ``PROVEN_SHARE`` of the records holding
+    one sit at one common offset from one of their own days (an order day plus a fixed
+    lead time; offset 0, the day a load wrote them). Records ordered on many days sharing
+    one delivery date sit at many offsets: a real common deadline, kept (BIZ-007). A
+    holder with no own day proves nothing (counted, never matched)."""
+    held: list[tuple[date | None, frozenset]] = [(d, own_days(own)) for d, own in records]
+    bulk = default_days((d for d, _own in held), share=share, minimum=minimum)
+    out = set()
+    for day in bulk:
+        holders = [own for d, own in held if d == day]
+        offsets: Counter = Counter()
+        for own in holders:
+            offsets.update({(day - d).days for d in own})
+        if offsets and max(offsets.values()) >= PROVEN_SHARE * len(holders):
+            out.add(day)
+    return frozenset(out)
+
+
+# A day no business statement holds: before ``PLAUSIBLE_FROM`` or after ``PLAUSIBLE_UNTIL``
+# (the blank-date sentinels systems write: 0001-01-01, 1753-01-01, 1900-01-01, 1970-01-01,
+# 9999-12-31), or more than ``BEFORE_OWN_DAYS`` before the record was first written (a
+# requested-by or expected date years before its own order existed).
+PLAUSIBLE_FROM = date(1990, 1, 1)
+PLAUSIBLE_UNTIL = date(2099, 12, 31)
+BEFORE_OWN_DAYS = 366
+
+
+def placeholder_day(day: date | None, own: Iterable[Any] = ()) -> bool:
+    """Whether ``day`` is a placeholder, never a date anyone stated (``PLAUSIBLE_FROM``):
+    read as missing whatever share of records hold it, so a shared sentinel is never
+    judged years late (BIZ-007). ``own``: the record's own stamps or days."""
+    if day is None:
+        return False
+    if not PLAUSIBLE_FROM <= day <= PLAUSIBLE_UNTIL:
+        return True
+    written = [d for d in own_days(own) if PLAUSIBLE_FROM <= d <= PLAUSIBLE_UNTIL]
+    return bool(written) and (min(written) - day).days > BEFORE_OWN_DAYS
+
+
 def own_day(day: date | None, record_days: Iterable[date | None]) -> bool:
     """Whether ``day`` is one of the record's own days (its creation, migration or
     order day): a date a form or an import set to the day it wrote the record."""

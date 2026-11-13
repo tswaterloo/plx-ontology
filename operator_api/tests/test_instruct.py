@@ -861,6 +861,34 @@ class InstructApi(unittest.TestCase):
         self.assertIn("<<R1 record: PO 90412>>", model.prompts[0])
         self.assertIn("record", {r["kind"] for r in got["read"]})
 
+    def test_continuing_an_instruction_needs_its_files_again_and_names_them(self):
+        """API-009: the files a first turn read are not kept; continuing it with them
+        sent again reads them again, and without them it names the file to attach
+        instead of drafting from the words alone."""
+        model = self.backend.instruct_call = Model(
+            "[[QUESTION]]\nWhich of the listed POs?\n[[END]]",
+            "[[DRAFT email]]\nSubject: PO 90412\nThe 12000 bars are still open.\n[[END]]")
+        note = base64.b64encode(b"PO 90412 still open, 12000 bars").decode()
+        files = [{"name": "list.txt", "data": note}]
+        got = self.instruct(self.ana, "chase the POs in this list", {"kind": "page"},
+                            attachments=files).json()
+        self.assertEqual((got["status"], [f["name"] for f in got["files"]]),
+                         ("question", ["list.txt"]))
+        follow = {"instruction_id": got["instruction_id"], "answer": "PO 90412"}
+        bare = self.instruct(self.ana, "PO 90412", {"kind": "page"}, follow_up=follow)
+        self.assertIn("This instruction read list.txt. Attach it again to continue.",
+                      bare.text)
+        self.assertEqual(len(model.prompts), 1)   # nothing drafted without the file
+        other = base64.b64encode(b"another file").decode()
+        wrong = self.instruct(self.ana, "PO 90412", {"kind": "page"}, follow_up=follow,
+                              attachments=[{"name": "list.txt", "data": other}])
+        self.assertIn("Attach it again", wrong.text)
+        again = self.instruct(self.ana, "PO 90412", {"kind": "page"}, follow_up=follow,
+                              attachments=files).json()
+        self.assertEqual(again["status"], "drafted")
+        self.assertIn("<<A1 attachment: list.txt>>", model.prompts[-1])
+        self.assertEqual([f["name"] for f in again["files"]], ["list.txt"])
+
 
 if __name__ == "__main__":
     unittest.main()

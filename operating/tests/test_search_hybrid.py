@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import time
 import shutil
 import statistics
 import unittest
@@ -281,6 +282,29 @@ class SharedModelTests(unittest.TestCase):
         self.assertEqual(list((self.dir / "req").iterdir()), [])
         self.assertEqual(list((self.dir / "resp").iterdir()), [])
 
+    def test_a_stopped_servers_claimed_requests_are_swept(self):
+        """SEARCH-004: requests a stopped server had claimed (.work) and half-written files
+        (.tmp) are removed when a server takes the directory, and in its sweep once old;
+        a request this server is answering is never removed."""
+        from operating.search import model_server
+        self.server.join(5.0)   # the first server idles out
+        req, resp = self.dir / "req", self.dir / "resp"
+        left = [req / "a.work", req / "b.tmp", resp / "c.tmp"]
+        for path in left:
+            path.write_text("{}")
+        model_server._serve(type("M", (), {"last": 0.0})(), req, resp, 0.0)
+        self.assertEqual([p for p in left if p.exists()], [])
+        # the periodic sweep: only what is old and not in flight
+        busy, old, new = req / "busy.work", req / "old.work", req / "new.tmp"
+        for path in (busy, old, new):
+            path.write_text("{}")
+        past = time.time() - model_server.STALE_SECONDS - 5
+        os.utime(busy, (past, past))
+        os.utime(old, (past, past))
+        self.assertEqual(model_server._sweep_stale(req, resp, {"busy.work"},
+                                                   model_server.STALE_SECONDS), 1)
+        self.assertEqual((busy.exists(), old.exists(), new.exists()), (True, False, True))
+
     def test_a_directory_others_may_open_is_refused(self):
         from operating.search import model_server
         os.chmod(self.dir, 0o755)
@@ -382,6 +406,36 @@ class HybridSearchTests(unittest.TestCase):
         result = self.run_search("soap order", reader([PURCHASING]), hidden=False)
         self.assertEqual(result.hidden, {"asked": False})
         self.assertNotIn("hidden", result.timings)
+
+    def test_a_slow_or_busy_embedding_never_holds_the_search(self):
+        """SEARCH-003: the question's embedding is waited for until one deadline from the
+        search's start, then the search ranks without it (lexical lists), saying so; with
+        every embedding slot taken it is not queued at all."""
+        import threading
+        from operating.search import core
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class Slow:
+            model = EMB.model
+
+            def embed(self, texts):
+                release.wait(10)
+                return EMB.embed(texts)
+        who = reader([PURCHASING, BC, QUALITY, TEAMS])
+        with mock.patch.object(core, "EMBED_SECONDS", 0.3):
+            started = time.monotonic()
+            slow = self.run_search("soap order", who, embedder=Slow())
+            took = time.monotonic() - started
+        self.assertLess(took, 5)
+        self.assertIn("dense_unavailable:EmbedTimeout", slow.notes)
+        self.assertTrue(slow.hits)                  # the lexical lists still rank
+        self.assertNotIn("dense", slow.timings)
+        with mock.patch.object(core, "_EMBED_SLOTS", threading.BoundedSemaphore(1)) as slots:
+            slots.acquire()                         # every slot taken
+            busy = self.run_search("soap order", who)
+        self.assertIn("dense_unavailable:_Busy", busy.notes)
+        self.assertTrue(busy.hits)
 
     def test_bm25_keeps_every_row_of_a_rare_word_whatever_comes_first_on_disk(self):
         unit = "mail:0e0e0e0e-0000-4000-8000-0000000000c5"

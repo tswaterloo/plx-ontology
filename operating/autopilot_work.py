@@ -56,21 +56,19 @@ def _handle(ctx: Any, oid: str) -> str | None:
 
 
 def _store_text(ctx: Any, handle: str, path: str) -> str | None:
-    from ontology.text_index import chunk_text
+    from .mail_text import joined_chunks
     try:
         rows = ctx.st.conn.execute(
-            "SELECT k.body FROM text_fields f JOIN text_chunks k ON k.field_id = f.field_id "
-            "WHERE f.citation = ? AND f.field_path = ? ORDER BY k.start", (handle, path)
-        ).fetchall()
+            "SELECT k.start, k.body FROM text_fields f JOIN text_chunks k "
+            "ON k.field_id = f.field_id WHERE f.citation = ? AND f.field_path = ? "
+            "ORDER BY k.start", (handle, path)).fetchall()
     except sqlite3.Error:
         return None
-    parts = []
-    for (body,) in rows:
-        try:
-            parts.append(chunk_text(body))
-        except Exception:  # noqa: BLE001 - an unreadable chunk says nothing
-            return None
-    return "".join(parts) or None
+    try:
+        # chunks overlap (``text_index.CHUNK_OVERLAP``): each laid at its own offset
+        return joined_chunks(rows) or None
+    except Exception:  # noqa: BLE001 - an unreadable chunk says nothing
+        return None
 
 
 def body_text(ctx: Any, event: Mapping[str, Any]) -> str:
@@ -969,15 +967,19 @@ def _status_lines(ctx: Any, orders: Sequence[str]) -> tuple[list[str], dict[str,
 
 
 def _current(ctx: Any, orders: Sequence[str], days: int = 120) -> list[str]:
-    """The orders a message can be about now: open, or ordered within ``days`` (an old
-    order sharing a number with the ask is no answer)."""
+    """The orders a message can be about now: ordered within ``days``, or stated open
+    whatever their age (a dated order still open is current); an old order closed, or of
+    no stated status, sharing a number with the ask is no answer. An undated order counts
+    unless it is stated closed."""
     rows = ctx.read(orders, ("order_date", "status", "portal_created_at"))
     floor = (ctx.as_of - timedelta(days=days)).isoformat()
     out = []
     for o in orders:
         r = rows.get(o) or {}
         day = (ap._v(r, "order_date") or ap._v(r, "portal_created_at"))[:10]
-        if (day and day >= floor) or (not day and not ap.CLOSED.search(ap._v(r, "status"))):
+        status = ap._v(r, "status")
+        if (day and day >= floor) or (not ap.CLOSED.search(status)
+                                      and (bool(status.strip()) or not day)):
             out.append(o)
     return out
 

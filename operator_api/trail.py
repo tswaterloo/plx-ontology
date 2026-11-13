@@ -434,9 +434,14 @@ def materials_trail(mapper: Mapper, view: Any, starts: Sequence[tuple[str, ...]]
         checked.update(raw.get("checked_pos") or ())
         hidden += int(raw.get("hidden") or 0)
         maybe = maybe or bool(raw.get("may_hide"))
-    seen: set[tuple[str, str]] = set()
-    rows = [r for r in rows if (r.item.object_id, r.po.object_id) not in seen
-            and not seen.add((r.item.object_id, r.po.object_id))]
+    # API-017: one row per order, assembly, item and PO: the same item on the same PO
+    # under a second order or assembly is its own row
+    seen: set[tuple[Any, ...]] = set()
+
+    def _key(r: Any) -> tuple[Any, ...]:
+        return tuple(x.object_id if x is not None else None
+                     for x in (r.order, r.assembly, r.item, r.po))
+    rows = [r for r in rows if _key(r) not in seen and not seen.add(_key(r))]
     said: set[tuple[str, str]] = set()
     gaps = [g for g in gaps if (g.reason, g.what) not in said
             and not said.add((g.reason, g.what))]

@@ -50,6 +50,8 @@ Evidence label of fixture runs: ``isolated-fixture``.
 
 from __future__ import annotations
 
+from .mail_text import unquoted
+
 import datetime as dt
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -211,7 +213,7 @@ def asks_for_terms(text: Any) -> bool:
     if not isinstance(text, str):
         return False
     quoted = QuotedRanges(text)
-    own = "".join(ch for i, ch in enumerate(text) if not quoted.contains(i))
+    own = unquoted(quoted, text)
     for sentence in re.split(r"(?<=[.!?\n])", own):
         if _ASKS.search(sentence) and _REQUEST_WORDS.search(sentence):
             return True

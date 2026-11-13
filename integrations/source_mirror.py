@@ -4320,7 +4320,8 @@ class SourceMirror:
     def rows(self, actor: Actor, relation: str, columns: Sequence[str] | None = None,
              where: Sequence[Sequence[Any]] = (), order: Sequence[Any] = (),
              limit: int = 100, max_staleness: float | None = None,
-             offset: int = 0, include_missing: bool = False) -> dict[str, Any]:
+             offset: int = 0, include_missing: bool = False, keyset: bool = False,
+             after: str | None = None) -> dict[str, Any]:
         """Filtered rows of one visible relation, each with its citation, lineage and
         ``content_sha256`` (the stored row's content digest: the same across captures and
         mirror generations while the content is the same, as the projection's version
@@ -4337,6 +4338,11 @@ class SourceMirror:
         ``successor``, or ``ambiguous_replacement`` with ``replacement_candidates``,
         when a full capture found who replaced them), and rows the source
         soft-deleted, labelled ``deleted_in_source`` with its ``deleted_basis``.
+
+        ``keyset`` (INT-014): pages in stored key order through SQL (``ORDER BY key_json,
+        run_index`` on the primary key) from the cursor ``after`` (the previous page's
+        ``next_after``), decoding only the rows a page needs: no ``order``, no ``offset``,
+        ``total_matched`` None. A key run (a view's non-unique key) may span two pages.
         """
         if not isinstance(include_missing, bool):
             raise MirrorError("invalid_include_missing", "include_missing must be a boolean")
@@ -4353,6 +4359,20 @@ class SourceMirror:
                                     len(set(columns)) != len(columns) or
                                     any(not isinstance(col, str) for col in columns)):
             raise MirrorError("invalid_columns", "columns must be a list of unique names")
+        cursor: tuple[str, int] | None = None
+        if keyset:
+            if ordering or offset:
+                raise MirrorError("invalid_keyset", "keyset paging takes no order or offset")
+            if after is not None:
+                try:
+                    found = json.loads(after)
+                    cursor = (str(found[0]), int(found[1]))
+                    if not isinstance(found[0], str) or len(found) != 2:
+                        raise ValueError
+                except (ValueError, TypeError, IndexError, KeyError):
+                    raise MirrorError("invalid_after", "after is not a keyset cursor") from None
+        elif after is not None:
+            raise MirrorError("invalid_after", "after needs keyset paging")
         staleness = self._staleness_limit(max_staleness)
         if self._state(relation) is None:
             try:
@@ -4411,19 +4431,41 @@ class SourceMirror:
                                     if clause not in ("absent_since_capture IS NULL",
                                                       "deleted_in_source IS NULL")]))
             params = [*params, *pending, relation, *pending, *params[1:]]
-        for record in self._db.execute(query, params):
-            row = json.loads(record["row_json"])
-            if all(_matches(row, column, op, value) for column, op, value in predicates):
-                matches.append((row, record))
-        ordering = ordering or [(column, False) for column in key_columns]
-        # Stable passes from the least significant column; nulls always last.
-        matches.sort(key=lambda match: (match[1]["key_json"], match[1]["run_index"]))
-        for column, descending in reversed(ordering):
-            present = [match for match in matches if match[0].get(column) is not None]
-            present.sort(key=lambda match: _order_value(match[0][column]), reverse=descending)
-            matches = present + [match for match in matches if match[0].get(column) is None]
+        if keyset:
+            if cursor is not None:
+                query = ("SELECT * FROM (" + query + ") WHERE key_json > ? OR "
+                         "(key_json = ? AND run_index > ?)")
+                params = [*params, cursor[0], cursor[0], cursor[1]]
+            else:
+                query = "SELECT * FROM (" + query + ")"
+            query += " ORDER BY key_json, run_index"
+            more = False
+            for record in self._db.execute(query, params):
+                row = json.loads(record["row_json"])
+                if all(_matches(row, column, op, value) for column, op, value in predicates):
+                    if len(matches) == limit:
+                        more = True
+                        break
+                    matches.append((row, record))
+            page, ordering = matches, []
+        else:
+            for record in self._db.execute(query, params):
+                row = json.loads(record["row_json"])
+                if all(_matches(row, column, op, value) for column, op, value in predicates):
+                    matches.append((row, record))
+        if not keyset:
+            ordering = ordering or [(column, False) for column in key_columns]
+            # Stable passes from the least significant column; nulls always last.
+            matches.sort(key=lambda match: (match[1]["key_json"], match[1]["run_index"]))
+            for column, descending in reversed(ordering):
+                present = [match for match in matches if match[0].get(column) is not None]
+                present.sort(key=lambda match: _order_value(match[0][column]),
+                             reverse=descending)
+                matches = present + [match for match in matches
+                                     if match[0].get(column) is None]
+            page = matches[offset:offset + limit]
         items = []
-        for row, record in matches[offset:offset + limit]:
+        for row, record in page:
             key = json.loads(record["key_json"])
             item = {"citation": make_citation(relation, key, record["capture_id"],
                                               self.generation),
@@ -4447,11 +4489,16 @@ class SourceMirror:
                 "order": [[column, "desc" if descending else "asc"]
                           for column, descending in ordering],
                 "limit": limit, "offset": offset, "include_missing": include_missing,
-                "total_matched": len(matches),
-                "returned": len(items),
-                "next_offset": (offset + len(items)
-                                if offset + len(items) < len(matches) else None),
-                "truncated": len(matches) > len(items), "rows": items,
+                **({"paging": "keyset", "total_matched": None, "next_offset": None,
+                    "next_after": (json.dumps([page[-1][1]["key_json"],
+                                               page[-1][1]["run_index"]])
+                                   if more and page else None),
+                    "truncated": more} if keyset else
+                   {"total_matched": len(matches),
+                    "next_offset": (offset + len(items)
+                                    if offset + len(items) < len(matches) else None),
+                    "truncated": len(matches) > len(items)}),
+                "returned": len(items), "rows": items,
                 "freshness": self._freshness(state, staleness, info)}
 
     @staticmethod
@@ -5169,21 +5216,25 @@ def scan_relation(mirror: Any, actor: Actor, relation: str, limit: int,
     ``blocked_upstream``."""
     rows: list[dict[str, Any]] = []
     reasons: list[str] = []
-    offset, first, columns = 0, None, []
+    after, first, columns, freshness = None, None, [], None
     try:
         while True:
-            page = mirror.rows(actor, relation, columns=None, limit=min(SCAN_PAGE, limit),
-                               offset=offset, max_staleness=(
+            # Keyset pages (INT-014): each page is read from the key index, never the
+            # whole relation decoded and sorted again per page.
+            page = mirror.rows(actor, relation, columns=None,
+                               limit=min(SCAN_PAGE, limit - len(rows)), keyset=True,
+                               after=after, max_staleness=(
                                    max_staleness if first is None else _SCAN_STALENESS_MAX))
-            signature = (page["freshness"].get("latest_capture_id"), page["total_matched"])
+            signature = page["freshness"].get("latest_capture_id")
             if first is None:
                 first, columns = signature, list(page["columns"])
+                freshness = scan_freshness(page["freshness"])
             elif signature != first:
                 reasons.append("mirror_changed_during_scan")
                 break
             rows.extend(page["rows"])
-            offset += page["returned"]
-            if page["next_offset"] is None or not page["returned"]:
+            after = page.get("next_after")
+            if after is None or not page["returned"]:
                 break
             if len(rows) >= limit:
                 reasons.append("scan_bound_reached")
@@ -5196,7 +5247,33 @@ def scan_relation(mirror: Any, actor: Actor, relation: str, limit: int,
                 "reasons": [status if status == "not_visible" else f"mirror_error:{exc.code}"],
                 **({"upstream": upstream} if exc.code == "source_unavailable" else {})}
     return {"status": "read", "rows": rows, "columns": columns, "complete": not reasons,
-            "reasons": reasons}
+            "reasons": reasons, "freshness": freshness}
+
+
+def scan_freshness(freshness: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """What a scan's reader must say about its rows (INT-013): whether the capture they
+    come from is stale, as of when, and the refresh that failed (the rows are then the
+    last capture held, never a live read)."""
+    if not freshness:
+        return None
+    return {"stale": bool(freshness.get("stale")), "as_of": freshness.get("last_refresh_at"),
+            "refresh_error": freshness.get("refresh_error"),
+            "refresh_error_code": freshness.get("refresh_error_code"),
+            "refresh_http_status": freshness.get("refresh_http_status"),
+            "latest_capture_id": freshness.get("latest_capture_id")}
+
+
+def scan_label(scan: Mapping[str, Any]) -> dict[str, Any]:
+    """The freshness fields a consumer of a scan carries beside its counts: ``stale``
+    (also true when the refresh failed) and ``as_of``, plus ``refresh_error`` when one
+    failed; a scan with no freshness (not read) carries none."""
+    found = scan.get("freshness")
+    if not found:
+        return {}
+    out = {"stale": bool(found["stale"] or found["refresh_error"]), "as_of": found["as_of"]}
+    if found["refresh_error"]:
+        out["refresh_error"] = found["refresh_error_code"] or found["refresh_error"]
+    return out
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -5303,7 +5380,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = ["AUDIENCE_SCHEMA", "AudienceMap", "DEFAULT_IDENTIFIERS", "IDENTIFIER_NOTES",
            "INGEST_SCHEMA", "LINEAGES", "MAX_BATCH_HANDLES", "classify_lineage",
-           "full_coverage_probe", "load_ingest_config", "mirror_options", "scan_relation",
+           "full_coverage_probe", "load_ingest_config", "mirror_options", "scan_freshness",
+           "scan_label", "scan_relation",
            "PO_REFERENCE_STRENGTH_RULE", "ROW_STRENGTH_RULES", "portal_trim_text",
            "sales_order_po_reference_strength",
            "MAX_ROWS_LIMIT", "MirrorError", "PERSISTED_FALLBACK_META", "POINTER_TABLE",

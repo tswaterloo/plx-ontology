@@ -211,10 +211,14 @@ def date_defaults(records_by_binding: Mapping[Any, Iterable[tuple[date | None, I
             if (found := source_defaults.proven_defaults(records))}
 
 
-def is_requested(day: date | None, *, defaults: Iterable[date] = ()) -> bool:
+def is_requested(day: date | None, *, defaults: Iterable[date] = (),
+                 own: Iterable[Any] = ()) -> bool:
     """Whether a required date is a requested one: a readable day that is not a proven
-    default of its binding. A record's own day is not erased (``own_doubt`` says it)."""
-    return day is not None and day not in frozenset(defaults)
+    default of its binding nor a placeholder (``source_defaults.placeholder_day``, with
+    the record's own stamps ``own`` when known). A record's own day is not erased
+    (``own_doubt`` says it)."""
+    return (day is not None and day not in frozenset(defaults)
+            and not source_defaults.placeholder_day(day, own))
 
 
 def own_doubt(day: date | None, own: Iterable[Any]) -> bool:
@@ -240,7 +244,8 @@ def requested_date(records: Sequence[tuple[Sequence[Mapping[str, Any]], Iterable
     """An order's requested date over its records, each (its ``required_date`` rows with
     ``value`` and ``lineage``, its own days, its binding's proven default days): the top
     precedence lineage holding a requested date governs. A governing day equal to a
-    record's own day is kept with the reason ``required_date_own_day``."""
+    record's own day is kept with the reason ``required_date_own_day``; a placeholder day
+    (``source_defaults.placeholder_day``) is missing, as a default is."""
     real: list[Mapping[str, Any]] = []
     owns: dict[int, list[Any]] = {}
     default = unreadable = False
@@ -252,7 +257,7 @@ def requested_date(records: Sequence[tuple[Sequence[Mapping[str, Any]], Iterable
             day = day_of(row)
             if day is None:
                 unreadable = True
-            elif is_requested(day, defaults=defaults):
+            elif is_requested(day, defaults=defaults, own=own):
                 real.append(row)
                 owns[id(row)] = own
             else:

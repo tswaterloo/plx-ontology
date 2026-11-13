@@ -767,9 +767,36 @@ function AoSteps({ obj }: { obj: ObjectPage }) {
 /** The margin and its why: an order's own margin, verdict and why first (its line breakdown
  * below), or why it has none ("No valid cost in BC"); a customer's profitability; a customer
  * whose figures come from Sage says they are before credit notes, with no margin. */
-function MarginCard({ p, order, objectId, revenue }: { p: Profitability | null | undefined; order: boolean; objectId: string; revenue: CustomerAmount[] }) {
+/** Same-named Business Central customers no identity link joins: never added together,
+ * each its own page (where its own margin shows). */
+function MarginChoices({ choices }: { choices: ObjectRef[] }) {
+  return (
+    <div data-testid="margin-choices" className="space-y-2">
+      <p className="text-[13px] leading-5">
+        {choices.length} customers in Business Central have this exact name and nothing links them as one customer, so their margins are not added together. Pick one to see its margin:
+      </p>
+      <ul className="space-y-1">
+        {choices.map((c) => (
+          <li key={c.object_id}>
+            <Link className="text-[13px] underline underline-offset-2" href={safeHref(c.open_url) ?? objectHref(c.type, c.object_id)}>{c.label}</Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function MarginCard({ p, order, objectId, revenue, choices = [] }: { p: Profitability | null | undefined; order: boolean; objectId: string; revenue: CustomerAmount[]; choices?: ObjectRef[] }) {
   const own = order && p?.breakdown && p.breakdown.order.object_id === objectId ? p.breakdown : null;
   const ownRow = order && !own ? (p?.orders ?? []).find((o) => o.order.object_id === objectId && !o.margin) : undefined;
+  if (!p && choices.length > 0) {
+    return (
+      <section data-testid="margin">
+        <SectionTitle>{order ? "Margin" : "Profitability"}</SectionTitle>
+        <MarginChoices choices={choices} />
+      </section>
+    );
+  }
   if (!p && !revenue.some((r) => r.system === "Sage")) return null;
   return (
     <section data-testid="margin">
@@ -1349,7 +1376,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
       {isSupplier && <SupplierOrders obj={obj} />}
       {obj.customer && <CustomerOrders c={obj.customer} fallbackOrders={salesOrders} />}
       {(isCustomer || isSalesOrder) &&
-        (pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} />)}
+        (pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} choices={obj.profitability_choices ?? []} />)}
       {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={2} /> : <LinesTable lines={lines} />}
       {(isPo || isSalesOrder || isCustomer) && trailPending ? (
         <SectionSkeleton name="trail" title={isPo ? "Evidence" : "Materials"} lines={3} />

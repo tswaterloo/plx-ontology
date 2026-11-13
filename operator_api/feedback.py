@@ -491,6 +491,13 @@ def _grant(backend: Any, reader: Any, handles: Sequence[str]
         return None, {h: {"reason": "undecided"} for h in handles}
 
 
+def served_markings(backend: Any, reader: Any) -> Optional[list[str]]:
+    """The sensitive markings ``reader`` holds as an answer is served, kept with the answer
+    so a later rating labels it by what it was served under (None: unknown, read as all)."""
+    held, _ = _grant(backend, reader, [])
+    return None if held is None else sorted(set(held) & set(SENSITIVE))
+
+
 def _personal(text: Any) -> bool:
     if not isinstance(text, str) or not text:
         return False
@@ -648,9 +655,13 @@ def record_answer(store: FeedbackStore, backend: Any, reader: Any, request: Any,
     expected = clean(request.expected, guard, 2000) if request.rating == -1 else None
     answer = clean(kept.get("answer"), guard)
     note = clean(request.note, guard, 2000)
-    # the sensitive markings the answer was served under (unknown: None, read as all)
+    # the sensitive markings the answer was served under, kept with it when served, and
+    # any the reader holds now (a narrowed grant never relabels an old answer as less
+    # sensitive; unknown either way: None, read as all)
+    served = kept.get("markings")
     held, _ = _grant(backend, reader, [])
-    markings = None if held is None else set(held) & set(SENSITIVE)
+    markings = None if held is None or not isinstance(served, list) \
+        else (set(served) | set(held)) & set(SENSITIVE)
     if markings is not None and any(_personal(t) for t in (
             question, answer, expected, note, *(c["text"] for c in claims))):
         markings |= {"finance", "pii"}

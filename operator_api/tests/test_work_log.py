@@ -224,6 +224,50 @@ class WorkLogApi(unittest.TestCase):
         self.assertFalse(mailed["direct_answer"].startswith("Your work log"))
         self.assertTrue(ask(self.ben, "what did I ask yesterday")["direct_answer"]
                         .startswith("Your work log has nothing"))
+        # AP-11: an approval given outside the Workbench (Mission Control, Business
+        # Central) is asked of the business systems too; a save is the log's alone
+        approved = ask(self.ben, "what did I approve yesterday")
+        self.assertFalse(approved["direct_answer"].startswith("Your work log"), approved)
+        self.assertTrue(ask(self.ben, "what did I save yesterday")["direct_answer"]
+                        .startswith("Your work log has nothing"))
+
+    def test_a_confirm_logs_its_own_row_without_reading_the_journal_again(self):
+        """AP-11: the confirm's log entry comes from the row the desk just wrote (its
+        recipients and subject), never from a second read of the whole actions journal;
+        the journal is read only under its lock, where the desk checks the chain."""
+        import inspect
+        from operating import card_actions as ca
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
+        self.backend.actions_environ = {"PLX_EXCLUDED_PEOPLE_OIDS": OID}
+        session = fixture_session("plx", ["staff:demo"], channel=CHANNEL_CONSOLE,
+                                  subject_email="vince@plx.example",
+                                  subject_oid="11111111-1111-4111-8111-111111111111")
+        vince = TestClient(create_app(self.backend, DevAuth(lambda: session, mode="mock"),
+                                      secure_cookie=False), base_url="http://testserver")
+        self.assertEqual(vince.post("/api/auth/dev-login", json={}).status_code, 200)
+        card = next(c for c in vince.get("/api/suggestions").json()["items"]
+                    if c["kind"] == "vendor_chase" and c["draft"]["to"]["address"])
+        ask_ = {"card_id": card["id"], "kind": "send_email"}
+        found = vince.post("/api/actions/preview", json=ask_).json()
+        readers = []
+        real = ca.Journal.rows
+
+        def rows(journal):
+            readers.append(inspect.stack()[1].function)
+            return real(journal)
+        for n in range(3):
+            with mock.patch.object(ca.Journal, "rows", rows):
+                done = vince.post("/api/actions/confirm", json={
+                    **ask_, "confirm": True, "idempotency_key": f"dialog-0123456789abcd{n:02d}",
+                    "payload_hash": found["payload_hash"]}).json()
+            self.assertEqual(done["status"], "dry_run")
+            if n == 0:
+                break
+        self.assertTrue(readers)
+        self.assertEqual(set(readers), {"__enter__"}, readers)
+        [event] = [e for e in self.log(vince)["events"] if e["kind"] == "action"]
+        self.assertEqual((event["verb"], event["title"], event["people"]),
+                         ("prepared", found["payload"]["subject"], found["payload"]["to"]))
 
 
 class Loops(unittest.TestCase):
@@ -258,17 +302,103 @@ class Loops(unittest.TestCase):
         events, _ = self.store.events(reader="plx:staff:ana", open_loops=True)
         return events[0]["loop"] if events else None
 
-    def test_waiting_then_answered_by_the_autopilots_inbound_tracking(self):
-        self.send(["buyer@vendor.example"])
-        self.assertEqual(self.loop()["state"], "waiting")
+    def inbound(self, conversation, at, sender="buyer@vendor.example"):
         queue = ap.Queue(self.queue_path)
-        queue.note_inbound([{"mailbox": "ana@plx.example", "conversation_id": "other",
-                             "sender": "buyer@vendor.example", "at": "2026-11-11T09:00:00Z",
-                             "event_type": "message.received"}])
+        queue.note_inbound([{"mailbox": "ana@plx.example", "conversation_id": conversation,
+                             "sender": sender, "at": at, "event_type": "message.received"}])
         queue.conn.commit()
         queue.close()
-        self.assertEqual(self.loop()["state"], "answered")
-        self.assertEqual(self.loop()["answered_at"], "2026-11-11T09:00:00Z")
+
+    def test_only_a_reply_in_the_thread_answers_mail_from_them_elsewhere_is_a_maybe(self):
+        """API-007: mail from a recipient outside the sent message's thread is only a
+        possible reply (shown, never counted); a message in the thread answers it."""
+        self.send(["buyer@vendor.example"])
+        self.assertEqual(self.loop()["state"], "waiting")
+        self.inbound("other", "2026-11-11T09:00:00Z")
+        loop = self.loop()
+        self.assertEqual((loop["state"], loop["answered_at"], loop["possible_reply_at"]),
+                         ("waiting", None, "2026-11-11T09:00:00Z"))
+        event = self.store.events(reader="plx:staff:ana")[0][0]
+        self.assertIn("outside the thread", wl.say(event))
+        self.now += timedelta(hours=wl.REPLY_HOURS + 1)   # overdue still says it
+        self.assertEqual(self.loop()["state"], "overdue")
+        self.assertEqual(self.loop()["possible_reply_at"], "2026-11-11T09:00:00Z")
+        self.inbound("msg-1", "2026-11-12T10:00:00Z", sender="someone@vendor.example")
+        loop = self.loop()
+        self.assertEqual((loop["state"], loop["answered_at"]),
+                         ("answered", "2026-11-12T10:00:00Z"))
+        self.assertNotIn("outside the thread", wl.say(
+            self.store.events(reader="plx:staff:ana")[0][0]))
+
+    def test_without_a_known_conversation_mail_from_a_recipient_answers_it(self):
+        """A new message has no conversation to match yet: the recipient's mail answers
+        it (never 'No reply' over a real reply)."""
+        self.notes.action(self.reader, {"card_id": "card-7", "kind": "send_email",
+                                        "status": "sent", "text": "Sent",
+                                        "at": self.now.isoformat(), "seq": 7},
+                          {"to": ["buyer@vendor.example"], "subject": "PO 90412"}, None)
+        self.inbound("any", "2026-11-11T09:00:00Z", sender="other@vendor.example")
+        self.assertEqual(self.loop()["state"], "waiting")   # not a recipient
+        self.inbound("any", "2026-11-11T10:00:00Z")
+        self.now += timedelta(hours=wl.REPLY_HOURS + 30)
+        loop = self.loop()
+        self.assertEqual((loop["state"], loop["answered_at"], loop["nudge"]),
+                         ("answered", "2026-11-11T10:00:00Z", None))
+
+    def card_reply(self, conversation_of, kind="reply_in_thread"):
+        """A card's reply as the desk records it: ``in_reply_to`` is the cited message's
+        handle (``card_actions.thread_handle``), never its conversation id."""
+        notes = wl.Notes(self.store, lambda who: "ana@plx.example", conversation_of)
+        notes.action(self.reader, {"card_id": "card-8", "kind": kind, "status": "sent",
+                                   "text": "Sent", "at": self.now.isoformat(), "seq": 8},
+                     {"to": ["buyer@vendor.example"], "cc": [], "subject": "RE: PO 90412",
+                      "in_reply_to": "graph-mail://m/AAMk-1@c-1", "card_label": "PO 90412"},
+                     {"subject": {"object_id": "PO-90412", "type": "po", "label": "PO"}})
+
+    def test_a_vendor_reply_in_the_card_replys_conversation_answers_it(self):
+        """b795e24c05 repair: the card reply's handle is resolved to its conversation,
+        the key inbound mail is tracked by, so the vendor's reply in that thread four
+        days on answers it: no 'No reply in 4 days', no follow-up draft."""
+        asked = []
+
+        def conversation_of(reader, handle):
+            asked.append((reader.key, handle))
+            return "AAQk-conv-90412" if handle == "graph-mail://m/AAMk-1@c-1" else None
+
+        for kind in ("reply_in_thread", "forward"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                asked.clear()
+                self.card_reply(conversation_of, kind)
+                self.assertEqual(asked, [("plx:staff:ana", "graph-mail://m/AAMk-1@c-1")])
+                self.inbound("AAQk-conv-90412", "2026-11-14T09:00:00Z")
+                self.now += timedelta(days=4)
+                loop = self.loop()
+                self.assertEqual((loop["state"], loop["answered_at"], loop["nudge"]),
+                                 ("answered", "2026-11-14T09:00:00Z", None))
+                self.assertNotIn("follow_up", loop)
+                self.assertNotIn("No reply", wl.say(
+                    self.store.events(reader="plx:staff:ana")[0][0]))
+
+    def test_a_card_reply_whose_conversation_cannot_be_resolved_reads_recipient_mail(self):
+        """The handle never stands in for a conversation id (it never matches inbound):
+        unresolved, the vendor's mail answers it as before; resolved, mail of another
+        conversation is only a possible reply."""
+        for resolver in (None, lambda reader, handle: None,
+                         lambda reader, handle: 1 / 0):
+            with self.subTest(resolver=resolver):
+                self.setUp()
+                self.card_reply(resolver)
+                self.inbound("AAQk-conv-90412", "2026-11-14T09:00:00Z")
+                self.now += timedelta(days=4)
+                self.assertEqual(self.loop()["state"], "answered")
+        self.setUp()
+        self.card_reply(lambda reader, handle: "AAQk-conv-90412")
+        self.inbound("AAQk-other", "2026-11-14T09:00:00Z")
+        self.now += timedelta(days=4)
+        loop = self.loop()
+        self.assertEqual((loop["state"], loop["possible_reply_at"]),
+                         ("overdue", "2026-11-14T09:00:00Z"))
 
     def test_overdue_nudges_and_the_person_can_close_it(self):
         self.send(["buyer@vendor.example"])
@@ -303,7 +433,6 @@ class Loops(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.record(self.reader, kind="action", verb="sent", title="x",
                               thread="nowhere", source="actions_journal")
-
 
 class TimeSaved(unittest.TestCase):
     """O-03: per person and week, the minutes the Workbench saved, counting only work that
@@ -432,6 +561,141 @@ class TimeSaved(unittest.TestCase):
                      {"to": ["buyer@vendor.example"], "subject": "PO 90419"}, None)
         self.assertEqual(self.store.events(reader="plx:staff:ana")[1], 5)
 
+    def test_what_did_i_send_lists_every_path_that_sent_and_nothing_else(self):
+        """API-006: an autopilot send is a send; a snooze, dismissal, assignment, mark-done
+        or follow-up is not; a failed or unknown outcome is not; a dry run reads
+        "Prepared (not sent)"."""
+        ana = self.reader("ana")
+        rows = [("autopilot", "sent", "autopilot reply to Acme", None),
+                ("autopilot", "accepted", "autopilot accepted", None),
+                ("action", "sent", "card email", "sent"),
+                ("action", "replied", "card reply", "sent"),
+                ("action", "messaged", "teams message", "sent"),
+                ("action", "snoozed", "snoozed card", "snoozed"),
+                ("action", "dismissed", "dismissed card", "dismissed"),
+                ("action", "assigned", "assigned card", "assigned"),
+                ("action", "done", "done card", "done"),
+                ("action", "follow_up", "follow up card", "follow_up"),
+                ("action", "prepared", "dry run email", "dry_run")]
+        for i, (kind, verb, title, status) in enumerate(rows):
+            self.store.record(ana, kind=kind, verb=verb, title=title,
+                              thread=f"autopilot:i{i}" if kind == "autopilot" else
+                              f"card:c{i}", source="x", source_id=str(i),
+                              detail={"status": status} if status else None)
+        self.store.record(ana, kind="action", verb="sent", title="legacy loop email",
+                          thread="card:old", source="x", source_id="old",
+                          awaiting={"due": "2026-11-20T00:00:00Z"})
+        self.store.record(self.reader("ben"), kind="autopilot", verb="sent",
+                          title="ben's send", thread="autopilot:b", source="x",
+                          source_id="b")
+        found = wl.recall(self.store, "plx:staff:ana", "what did I send today")
+        self.assertEqual(sorted(e["title"] for e in found["events"]),
+                         ["autopilot reply to Acme", "card email", "card reply",
+                          "dry run email", "legacy loop email", "teams message"])
+        self.assertEqual(found["total"], 6)
+        answer = wl.recall_answer(found)
+        self.assertIn("Prepared (not sent): dry run email", answer)
+        self.assertNotIn("ben's send", answer)
+
+    def test_a_long_log_is_read_in_bounded_batches_and_pages_stay_exact(self):
+        """API-008: matches are read and exclusion-checked in batches of ``EVENT_BATCH``,
+        never all at once; each page and the total stay exact, excluded rows skipped."""
+        reads = []
+
+        class Cursor:
+            def __init__(self, cur, sql):
+                self.cur, self.light = cur, "e.seq, e.reader, e.people" in sql
+
+            def fetchall(self):
+                rows = self.cur.fetchall()
+                if self.light:
+                    reads.append(("all", len(rows)))
+                return rows
+
+            def fetchmany(self, size):
+                rows = self.cur.fetchmany(size)
+                reads.append(("many", len(rows)))
+                return rows
+
+            def __getattr__(self, name):
+                return getattr(self.cur, name)
+
+        class Conn:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def execute(self, sql, *args):
+                return Cursor(self.conn.execute(sql, *args), sql)
+
+            def __getattr__(self, name):
+                return getattr(self.conn, name)
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.store = wl.WorkLog(None, guard=lambda: self.guard, clock=lambda: self.now)
+                for i in range(n):
+                    self.put("ana", "action", "sent", f"c{i}", outcome="sent",
+                             people=[EXCLUDED] if i % 7 == 3 else ())
+                shown = [i for i in range(n) if i % 7 != 3]   # an excluded row is never logged
+                self.store._conn = Conn(self.store._conn)
+                reads.clear()
+                with mock.patch.object(wl, "EVENT_BATCH", 4):
+                    seen, offset = [], 0
+                    while True:
+                        events, total = self.store.events(reader="plx:staff:ana",
+                                                          limit=5, offset=offset)
+                        self.assertEqual(total, len(shown))
+                        if not events:
+                            break
+                        seen += [e["source_id"] for e in events]
+                        offset += 5
+                self.assertEqual(seen, [f"c{i}" for i in reversed(shown)])
+                self.assertNotIn("all", [k for k, _ in reads])
+                self.assertTrue(reads and max(size for _, size in reads) <= 4, reads)
+        # a row excluded after it was logged is skipped by the batched read too
+        self.guard.is_excluded = lambda value: str(value).lower() in (
+            OID, EXCLUDED, "colleague@plx.example")
+        self.put("ana", "action", "sent", "late", outcome="sent",
+                 people=["colleague2@plx.example"])
+        before = self.store.events(reader="plx:staff:ana")[1]
+        self.guard.is_excluded = lambda value: str(value).lower() in (
+            OID, EXCLUDED, "colleague2@plx.example")
+        self.assertEqual(self.store.events(reader="plx:staff:ana")[1], before - 1)
+
+    def test_an_answer_too_large_to_keep_keeps_its_drafts_and_says_so(self):
+        """API-010: an Ask answer over ``MAX_DETAIL`` keeps its question, instruction and
+        drafts with every handle it cites (so a re-check stays complete), and a resumed
+        session says the turn was not kept in full instead of dropping it silently."""
+        ana = self.reader("ana")
+        trail = "bc://x/purchaseOrders/p9@1"
+        big = {"question": "draft the chase for PO 90412", "conversation_id": "c1",
+               "answer_id": "a1", "direct_answer": "Here is a draft.",
+               "instruction": {"status": "question", "text": "chase PO 90412"},
+               "drafts": [{"id": "askdraft:a1:0", "subject": "PO 90412"}],
+               "facts": [{"text": "x", "sources": [{"handle": "graph-mail://b/m1@1"}]}],
+               "trail": {"steps": [{"source": {"system": "BC", "handle": trail,
+                                               "quote": "q" * (wl.MAX_DETAIL + 10)}}]}}
+        self.store.record(ana, kind="ask", verb="asked", title=big["question"],
+                          thread="ask:c1", source="ask", source_id="a1", detail=big)
+        kept = self.store.ask_detail("plx:staff:ana", "a1")
+        self.assertEqual(kept["_kept"], "partial")
+        self.assertEqual((kept["drafts"], kept["instruction"]),
+                         (big["drafts"], big["instruction"]))
+        from operator_api.ask_drafts import cited_handles
+        self.assertEqual(set(cited_handles(kept)), {trail, "graph-mail://b/m1@1"})
+        events, _ = self.store.events(reader="plx:staff:ana", thread="ask:c1")
+        [turn] = wl.resume("ask:c1", events)["turns"]
+        self.assertEqual((turn["question"], turn["answer"], turn["withheld"]),
+                         (big["question"], None, wl.PARTIAL_TURN))
+        # a source without a handle cannot be decided: the drafts are not kept
+        bad = {**big, "answer_id": "a2",
+               "conflicts": [{"system": "BC", "quote": "no handle"}]}
+        self.store.record(ana, kind="ask", verb="asked", title="q", thread="ask:c2",
+                          source="ask", source_id="a2", detail=bad)
+        kept = self.store.ask_detail("plx:staff:ana", "a2")
+        self.assertNotIn("drafts", kept)
+        with self.assertRaises(ValueError):
+            cited_handles(kept)   # its re-check withholds the turn
+
     def test_cardinality_and_the_exclusion(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):
@@ -481,6 +745,64 @@ class TimeSaved(unittest.TestCase):
         closed = ana.get("/api/time-saved").json()
         self.assertEqual((closed["available"], closed["people"]), (False, []))
 
+
+    def test_the_checks_over_every_row_read_indexes_not_the_long_rows(self):
+        """AP-11: a row's Ask answer (``detail``, up to 200 KB) sits before its people and
+        loop; the page's people re-check over every matching row and the autopilot's
+        answered-in-Workbench lookup read covering indexes, never those rows. A log made
+        before the indexes gets them on its next open (declared step 2)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "work-log" / "work-log.sqlite"
+            path.parent.mkdir()
+            old = sqlite3.connect(path)
+            from operating.declared_schema import work_log as declared
+            old.executescript(declared._DDL)
+            old.close()
+            store = wl.WorkLog(path.parent, guard=lambda: self.guard, clock=lambda: self.now)
+            notes, ana = wl.Notes(store, lambda who: "ana@plx.example"), self.reader("ana")
+            for n in (1, 10, 60):
+                for i in range(n):
+                    store.record(ana, kind="ask", verb="asked", title=f"q{n}-{i}",
+                                 thread=f"ask:q{n}-{i}", source="x", source_id=f"q{n}-{i}",
+                                 detail={"answer": "x" * 150_000})
+                    notes.action(ana, {"card_id": f"card-{n}-{i}", "kind": "send_email",
+                                       "status": "sent", "text": "x",
+                                       "at": self.now.isoformat(), "seq": i},
+                                 {"to": ["buyer@vendor.example"], "subject": f"PO {n}-{i}",
+                                  "in_reply_to": f"msg-{n}-{i}"}, None)
+                seen: list[str] = []
+                store._conn.set_trace_callback(seen.append)
+                for filters in ({}, {"kind": "ask"}, {"thread": "card:card-1-0"},
+                                {"since": self.now.isoformat()}):
+                    store.events(reader="plx:staff:ana", **filters)
+                store._conn.set_trace_callback(None)
+                light = [q for q in seen if q.startswith("SELECT e.seq, e.reader, e.people")]
+                self.assertEqual(len(light), 4)
+                for query in light:
+                    plan = " ".join(str(tuple(r)[-1]) for r in
+                                    store._conn.execute("EXPLAIN QUERY PLAN " + query))
+                    self.assertIn("COVERING INDEX event_light", plan, query)
+                asked: list[str] = []
+                real = ap.sqlite3.connect
+
+                def connect(*args, **kwargs):
+                    conn = real(*args, **kwargs)
+                    conn.set_trace_callback(asked.append)
+                    return conn
+                queue = ap.Queue(Path(tmp) / f"queue-{n}.sqlite")
+                queue.work_log_path = lambda: path
+                with mock.patch.object(ap.sqlite3, "connect", connect):
+                    self.assertTrue(queue.answered_in_workbench(
+                        ["ana@plx.example"], {"event_type": "message.received",
+                                              "at": ap._iso(self.now - timedelta(hours=1)),
+                                              "conversation_id": f"msg-{n}-0"},
+                        self.now + timedelta(hours=1)))
+                queue.close()
+                [lookup] = [q for q in asked if "FROM event" in q]
+                plan = " ".join(str(tuple(r)[-1]) for r in
+                                store._conn.execute("EXPLAIN QUERY PLAN " + lookup))
+                self.assertIn("COVERING INDEX event_awaiting", plan, lookup)
+            store.close()
 
 class TheAutopilotReadsTheLog(engine_fixture.Fixture):
     """The autopilot engine reads the owner's own Workbench sends from the log: a message

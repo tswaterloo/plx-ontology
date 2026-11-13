@@ -12,6 +12,7 @@ import re
 import threading
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from operator_api import backend as be
 from operator_api import models as m
@@ -187,10 +188,11 @@ class ProfitAskTests(unittest.TestCase):
                          ["SO-101", "SO-102"])
         self.assertNotEqual(answer["outcome"], "answered")
 
-    def test_same_named_cards_with_orders_are_one_customer_read_together(self):
-        """Business Central keeps one customer on two cards of its exact name, each with
-        orders (the answer asked which was meant): the margin answer reads both cards'
-        orders together, names each card by its number and cites it; it asks nothing."""
+    def test_same_named_cards_are_choices_unless_an_identity_link_makes_them_one(self):
+        """Two Business Central cards of one exact name, each with orders: with no
+        identity link joining them, each is its own choice and no margin adds them up
+        (API-018); linked as one record, the margin reads both cards' orders together,
+        names each card by its number and cites it, and asks nothing."""
         records = bc_records()
         customer = next(r for r in records if r["entity_set"] == "customers"
                         and r["fields"].get("number") == "C-50")
@@ -208,8 +210,27 @@ class ProfitAskTests(unittest.TestCase):
                     customerId=second["id"], status="Draft", orderDate="2026-10-02")
         records.append(head)
         records.append({**copy(line, "cd20", documentId=head["id"]), "document_id": head["id"]})
-        _names, answer = self.ask(View(self, records=records),
-                                  "Is Northwind Test Foods profitable and why not?")
+        # API-018: no identity link makes them one record, so
+        # their margins are never added together; each card is its own choice, by number
+        from operating import why_trail
+        for unlinked in (None, mock.Mock(side_effect=RuntimeError("down"))):
+            with mock.patch.object(why_trail, "same_records", unlinked) if unlinked \
+                    else contextlib.nullcontext():
+                _n, apart = self.ask(View(self, records=records),
+                                     "Is Northwind Test Foods profitable and why not?")
+            self.assertEqual([("C-50" in c["label"], "C-53" in c["label"])
+                              for c in apart["did_you_mean"]],
+                             [(True, False), (False, True)], apart["did_you_mean"])
+            self.assertIsNone(apart.get("profitability"))
+            self.assertEqual(apart["facts"], [])
+            self.assertNotEqual(apart["outcome"], "answered")
+            self.assertIn("not added together", apart["direct_answer"])
+            self.assertNotIn("read together", apart["direct_answer"])
+            self.assertNotIn("190.00", json.dumps(apart))
+        # linked as one record: read together, nothing to choose
+        with mock.patch.object(why_trail, "same_records", lambda call, ids: True):
+            _names, answer = self.ask(View(self, records=records),
+                                      "Is Northwind Test Foods profitable and why not?")
         self.assertFalse(answer["did_you_mean"])
         text = answer["direct_answer"]
         self.assertTrue(text.startswith(

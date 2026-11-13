@@ -257,7 +257,7 @@ class InvestigateActualsTest(unittest.TestCase):
         self.assertIsNotNone(computed["landed_cost"]["value"])
         line_a = computed["landed_cost_line_1"]
         # duty and freight are the recorded rate times this line's own goods (Decimal exact)
-        self.assertIn("goods total: goods * qty [goods=0.802 USD/ea, qty=12500 ea] = 10025 USD",
+        self.assertIn("goods total: cost * qty [cost=0.802 USD/ea, qty=12500 ea] = 10025 USD",
                       line_a["steps"])
         self.assertTrue(any("duty=501.25 USD" in s for s in line_a["steps"]), line_a["steps"])
         self.assertTrue(any("freight=1002.5 USD" in s for s in line_a["steps"]), line_a["steps"])

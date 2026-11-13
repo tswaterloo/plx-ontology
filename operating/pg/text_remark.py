@@ -62,7 +62,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 MARKS = ("finance", "pii")
 LOCK = "SELECT pg_advisory_xact_lock(hashtext('ontology_delta'))"   # ontology_migrate.LOCK
@@ -379,10 +379,26 @@ def judge_other_groups(projector: Any, shards: int, sensitive: Any) -> dict[str,
             "marked": sorted(marked)}
 
 
+def _require_held(state: str, served: Iterable[str] | None) -> None:
+    """Refused (``missing_source:<family>``) when the state directory does not hold a
+    capture family the served generation read (``served``:
+    ``schema_migrate.served_families``; None: every bound family): the re-mark judges
+    every document, and a family missing here would never be marked (SCHEMA-001)."""
+    from ontology import step_migrate as sm
+    from ontology.schema import load_schema
+    from operating.host import held_captures
+    try:
+        sm.require_state_sources({}, load_schema(), held_captures(state), served, every=True)
+    except ValueError as exc:
+        raise Refused(str(exc)) from None
+
+
 def judge_others(state: str, work: Path, readings: Path | None = None,
-                 tmp: Path | None = None) -> dict[str, Any]:
+                 tmp: Path | None = None, served: Iterable[str] | None = None
+                 ) -> dict[str, Any]:
     """``judge-others``: :func:`judge_other_groups` into ``work/others.json`` (once)."""
     from ontology.text_index import _sensitive
+    _require_held(state, served)
     meta = json.loads((work / "judge.json").read_text(encoding="utf-8"))
     if meta["code"] != _code() or meta["state"] != state:
         raise Refused("work_of_other_judge")
@@ -409,15 +425,18 @@ def _code() -> str:
 
 def judge(state: str, work: Path, shards: int, workers: int,
           tmp: Path | None = None, reverse: bool = False, first: int = 0,
-          readings: Path | None = None, stride: tuple[int, int] = (0, 1)) -> dict[str, Any]:
+          readings: Path | None = None, stride: tuple[int, int] = (0, 1),
+          served: Iterable[str] | None = None) -> dict[str, Any]:
     """Judge the shards not done on ``workers`` processes. Their SQLite and Python
     temporary files go to ``tmp`` (default ``work/tmp``), never the system temp
-    directory: the workers inherit ``SQLITE_TMPDIR`` and ``TMPDIR``."""
+    directory: the workers inherit ``SQLITE_TMPDIR`` and ``TMPDIR``. ``served``: the
+    source families the served generation read (:func:`_require_held`)."""
     import multiprocessing as mp
     index, every = stride
     if every < 1 or not 0 <= index < every:
         raise Refused(f"stride_invalid:{index}/{every}")
     snap = str(readings_snapshot(state, readings)) if readings is not None else None
+    _require_held(state, served)
     tmp = Path(tmp) if tmp is not None else work / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     os.environ["SQLITE_TMPDIR"] = os.environ["TMPDIR"] = str(tmp.resolve())
@@ -684,6 +703,13 @@ def check(work: Path, dsn: str) -> dict[str, Any]:
     return report
 
 
+def _served() -> set[str] | None:
+    """The families the served generation read, from Postgres (``PLX_PG_DSN``)."""
+    from ontology.schema_migrate import served_families
+    from operating.pg import config
+    return served_families(config.dsn())
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m operating.pg.text_remark")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -739,11 +765,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = judge(args.state_dir, Path(args.work), args.shards, args.workers,
                            Path(args.tmp) if args.tmp else None, args.reverse,
                            args.first, Path(args.readings) if args.readings else None,
-                           (index, every))
+                           (index, every), served=_served())
         elif args.command == "judge-others":
             report = judge_others(args.state_dir, Path(args.work),
                                   Path(args.readings) if args.readings else None,
-                                  Path(args.tmp) if args.tmp else None)
+                                  Path(args.tmp) if args.tmp else None, served=_served())
         elif args.command == "apply":
             report = apply(Path(args.work), args.dsn, dry_run=args.dry_run)
         else:

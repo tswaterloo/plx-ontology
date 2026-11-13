@@ -304,6 +304,11 @@ class Resolver:
         try:
             index = self.index()
             escope = index.scope(self.base.policy, actor) if index is not None else None
+            if escope is not None:
+                # an item-gated row (a mail or Teams participant, a file or chat name) is a
+                # candidate only when the store's gate opens its record for this reader
+                from operating.query_understanding import with_item_check
+                escope = with_item_check(escope, lambda ids: self._readable(scope, ids, held))
         except Exception:  # noqa: BLE001 - no index: no entities, said as a gap
             index, escope = None, None
         if index is not None and escope is not None:
@@ -341,6 +346,11 @@ class Resolver:
             displays = self.base._displays(scope, sorted(scores))
         shared = {m["text"] for m in found if m.get("label_types")}
         return self._entities(scores, visible, displays, object_type, shared), []
+
+    def _readable(self, scope: Any, object_ids: Sequence[str], held: Any) -> set[str]:
+        """Those of ``object_ids`` the store's gate opens for this reader now."""
+        with held:
+            return set(self.base._visible_versions(scope, list(object_ids)))
 
     def _stored(self, scope: Any, mention: Mapping[str, Any], held: Any):
         """(row, why, key) of the store's identifiers equal to a generic label's number

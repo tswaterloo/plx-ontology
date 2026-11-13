@@ -22,6 +22,7 @@ Boundaries tested (all identifiers and text synthetic):
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import os
@@ -30,6 +31,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import zlib
 from pathlib import Path
@@ -47,6 +49,10 @@ from operating.chunking.normalise import normalise
 from operating.chunking.permissions import Exclusion, valid_key
 from operating.chunking.projection import Counts, ProjectionChunker, open_ro
 from operating.chunking.records import RecordChunker
+
+from operating.pg import scratch_db
+
+scratch_db.use_test_cluster()   # the test cluster when one runs (bare runs too)
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED = "0e0e0e0e-0000-4000-8000-00000000e0e1"
@@ -699,12 +705,28 @@ class FixtureChunkerTests(unittest.TestCase):
         self.fx.obj("Product:1", "Product", "bc:co/items",
                     values={"name": ("Oat soap bar 100g", "[]"),
                             "item_category": ("SOAP", "[]")})
+        # IN-13: a channel, chat, task or file is named by its own title; one without a
+        # title is no entity, never named by its technical id; a chat whose members the
+        # exclusion cannot clear is withheld
+        self.fx.obj("TeamsChannel:1", "TeamsChannel", "teams:channel:t1/c1",
+                    values={"display_name": ("Babassu launch", "[]")},
+                    idents=[("teams_channel_id", "c1", "primary", "[]", "channel_id")])
+        self.fx.obj("TeamsChannel:2", "TeamsChannel", "teams:channel:t1/c2",
+                    idents=[("teams_channel_id", "c2", "primary", "[]", "channel_id")])
+        self.fx.obj("TeamsChat:1", "TeamsChat", "teams:chat:19:a",
+                    values={"topic": ("Babassu launch sync", "[]")})
+        self.fx.obj("MCTask:1", "MCTask", "mc:qa", values={"title": ("Recall drill", "[]")})
         self.fx.done()
         conn = open_ro(self.path)
         self.addCleanup(conn.close)
         counts = Counts()
         excl = exclusion(directory={"gone@example-plx.com": EXCLUDED})
         found = {e.object_id: e for e in entities(conn, counts, exclusion=excl)}
+        self.assertEqual((found["TeamsChannel:1"].type, found["TeamsChannel:1"].name),
+                         ("channel", "Babassu launch"))
+        self.assertNotIn("TeamsChannel:2", found)
+        self.assertNotIn("TeamsChat:1", found)
+        self.assertEqual((found["MCTask:1"].type, found["MCTask:1"].name), ("task", "Recall drill"))
         self.assertNotIn("Contact:excluded", found)
         self.assertNotIn("Contact:noaddress", found)          # undecidable: withheld
         self.assertEqual(counts.skipped["people_exclusion:person"], 1)
@@ -1642,6 +1664,97 @@ class PostgresTests(unittest.TestCase):
             fitted = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion(),
                                    deadline=10.0)
         self.assertEqual(fitted["partial"], {"slices_done": 1, "slices": 2})
+
+    def list_store(self, n, *, extra=()):
+        """A store of ``n`` SharePoint list items on a site list (and ``extra`` rows)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "store.sqlite"
+        fx = Fixture(path)
+        unit = "sharepoint-list:plx.sharepoint.com,site-1,web-1/list-1"
+        for i in range(n):
+            fields = {"Title": f"Lavender soap complaint number {i}",
+                      "Status_x0020_Note": "waiting on the supplier to answer the claim"}
+            fx.obj(f"SharePointListItem:i{i:03}", "SharePointListItem", unit,
+                   values={"fields": (json.dumps(fields), "[]")})
+        for oid, audience, marks in extra:
+            fx.obj(oid, "SharePointListItem", audience, marks=marks,
+                   values={"fields": (json.dumps({"Title": "Payroll correction for the "
+                                                  "night shift", "Note": "send to finance"}),
+                                      "[]")})
+        fx.done()
+        store = open_ro(path)
+        self.addCleanup(store.close)
+        return store
+
+    def test_a_records_pass_indexes_each_unchunked_record_once_at_any_count(self):
+        """DI-07: records no generation pass or layer chunked become searchable; one already
+        holding record text is left alone; a re-run writes nothing; slices lose no row."""
+        from operating.embed import record_pass as rp
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.conn.execute("TRUNCATE search.chunks")
+                self.conn.commit()
+                store = self.list_store(n)
+                held = self.chunk(0, "an older indexed row of the first item",
+                                  audience="sharepoint-list:plx.sharepoint.com,site-1,web-1/list-1",
+                                  kind="list_item")
+                self.st.ChunkWriter(self.conn).write([dataclasses.replace(
+                    held, object_id="SharePointListItem:i000")])
+                with mock.patch.object(rp, "SLICE", 7):
+                    got = rp.record_pass(store, self.conn, exclusion(), ["SharePointListItem"])
+                done = got["types"]["SharePointListItem"]
+                self.assertEqual((done["objects"], done["already_indexed"],
+                                  done["chunked_objects"]), (n, 1, n - 1))
+                rows = self.conn.execute(
+                    "SELECT object_id, kind, count(*) FROM search.chunks GROUP BY 1, 2 "
+                    "ORDER BY 1").fetchall()
+                self.assertEqual([r[0] for r in rows],
+                                 [f"SharePointListItem:i{i:03}" for i in range(n)])
+                self.assertEqual({(r[1], r[2]) for r in rows}, {("list_item", 1)})
+                # the held item kept its own row, unrewritten
+                self.assertEqual(self.conn.execute(
+                    "SELECT body FROM search.chunks WHERE object_id = %s",
+                    ("SharePointListItem:i000",)).fetchone()[0],
+                    "an older indexed row of the first item")
+                again = rp.record_pass(store, self.conn, exclusion(), ["SharePointListItem"])
+                self.assertEqual(again["types"]["SharePointListItem"]["chunks"], 0)
+
+    def test_a_records_pass_keeps_markings_and_never_writes_a_withheld_unit(self):
+        from operating.embed import record_pass as rp
+        mine = "sharepoint-list:plx-my.sharepoint.com,personal-1,web-1/list-9"
+        store = self.list_store(0, extra=(
+            ("SharePointListItem:pay", "sharepoint-list:plx.sharepoint.com,s,w/l",
+             '["finance", "pii"]'),
+            ("SharePointListItem:own", mine, "[]")))
+        got = rp.record_pass(store, self.conn, exclusion(), ["SharePointListItem"])
+        self.assertEqual(got["skipped"].get("people_exclusion:record"), 1)
+        rows = self.conn.execute("SELECT object_id, audience_key, markings FROM search.chunks"
+                                 ).fetchall()
+        self.assertEqual([(r[0], r[1], sorted(r[2])) for r in rows],
+                         [("SharePointListItem:pay", "sharepoint-list:plx.sharepoint.com,s,w/l",
+                           ["finance", "pii"])])
+
+    def test_a_records_pass_refuses_and_writes_nothing_when_it_cannot_decide(self):
+        import contextlib
+        from operating.embed import record_pass as rp
+        store = self.list_store(3)
+        down = types.SimpleNamespace(unavailable="excluded_people_unresolved")
+        cases = {"people_exclusion_unavailable:excluded_people_unresolved":
+                 dict(exclusion=down, types=["SharePointListItem"]),
+                 "type_not_indexed:NoSuchType":
+                 dict(exclusion=exclusion(), types=["SharePointListItem", "NoSuchType"]),
+                 "type_not_indexed:<none>": dict(exclusion=exclusion(), types=[]),
+                 "another_follow_running":
+                 dict(exclusion=exclusion(), types=["SharePointListItem"],
+                      lock=lambda: contextlib.nullcontext(False))}
+        for refused, kw in cases.items():
+            with self.subTest(refused=refused):
+                got = rp.record_pass(store, self.conn, kw.pop("exclusion"), kw.pop("types"),
+                                     **kw)
+                self.assertEqual(got["refused"], refused)
+                self.assertEqual(self.conn.execute(
+                    "SELECT count(*) FROM search.chunks").fetchone()[0], 0)
 
     def test_sender_purge_removes_an_excluded_senders_rows_in_any_unit(self):
         writer = self.st.ChunkWriter(self.conn)

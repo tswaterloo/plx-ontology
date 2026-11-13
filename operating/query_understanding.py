@@ -53,6 +53,7 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from ontology import identifiers
 from ontology.types import Actor
+from operating.time_window import rolling_start
 
 INTENTS = ("status", "why", "who", "how_much", "compare", "find_document", "policy",
            "timeline", "other")
@@ -293,6 +294,63 @@ def _empty_scope() -> Any:
     return EMPTY_SCOPE
 
 
+# Audience families whose records each carry their own item permission (a message's
+# mailbox scope and owner, a SharePoint item's ACL, a chat's or channel's members, a
+# meeting's attendees: ``ontology_tools._ITEM_ACL_AUDIENCES``). A grant of the unit is not
+# enough to read one of them, so an entity row in one (a mail or Teams participant, a
+# chat's topic, a file's name) is visible only when the lookup's item check
+# (``with_item_check``) admits its record; with no check it is never shown.
+def item_families() -> frozenset[str]:
+    from operating.ontology_tools import _ITEM_ACL_AUDIENCES
+    return _ITEM_ACL_AUDIENCES
+
+
+def item_gated(audience_key: Any) -> bool:
+    """Whether a row of ``audience_key`` needs the item check (an unreadable key does)."""
+    if not isinstance(audience_key, str) or ":" not in audience_key:
+        return True
+    return audience_key.split(":", 1)[0] in item_families()
+
+
+@dataclass(frozen=True)
+class ItemCheckedScope:
+    """A reader's ``SearchScope`` with the item check its item-gated rows must pass:
+    ``item_check(object_ids)`` returns those of the ids the reader may open now (the
+    store's own gate: audience, markings, time and the item permission). Everything else
+    is the scope's."""
+    scope: Any
+    item_check: Callable[[Sequence[str]], Any] | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("scope", "item_check"):
+            raise AttributeError(name)
+        return getattr(self.scope, name)
+
+
+def with_item_check(scope: Any, item_check: Callable[[Sequence[str]], Any] | None) -> Any:
+    """``scope`` whose item-gated entity rows are shown only when ``item_check`` admits
+    their record (``PgEntityIndex``; None: never shown)."""
+    return ItemCheckedScope(getattr(scope, "scope", scope), item_check)
+
+
+def admitted(scope: Any, rows: Iterable[tuple[Any, Any]]) -> set[str]:
+    """Of ``(object_id, audience_key)`` rows, the object ids of item-gated ones the
+    scope's item check admits. No check, a failing check or an answer that is not a set
+    of ids admits none (fail closed)."""
+    gated = sorted({oid for oid, key in rows if isinstance(oid, str) and oid
+                    and item_gated(key)})
+    check = getattr(scope, "item_check", None)
+    if not gated or not callable(check):
+        return set()
+    try:
+        got = check(gated)
+    except Exception:  # noqa: BLE001 - an item check that fails admits nothing
+        return set()
+    if not isinstance(got, (set, frozenset, list, tuple, dict)):
+        return set()
+    return {oid for oid in got if isinstance(oid, str)} & set(gated)
+
+
 def _countable_hidden(scope: Any) -> list[str]:
     """Keys whose rows the reader may not see but may have counted (never an excluded
     person's unit; nothing when the count is withheld)."""
@@ -367,6 +425,7 @@ class PgEntityIndex:
     COMMON_WORD_ROWS = 1500
     SLOT_WAIT_S = 30.0   # how long a lookup waits for a free connection before it gives up
     DISTINCTIVE_MAX = 5  # a word in at most this many visible names names something
+    GATED_PROBE = 40     # item-gated rows per word whose item check decides that count
 
     def __init__(self, dsn: str | None = None, *, table: str = "search.entities",
                  connect: Callable[[str], Any] | None = None, exclusion: Any = None,
@@ -459,7 +518,7 @@ class PgEntityIndex:
         return self._locked(lambda conn: permissions.reader_scope(
             conn, policy, actor, exclusion=self.exclusion, cache=cache))
 
-    _COLS = "e.entity_id, e.object_id, e.type, e.name, e.normalized, e.alias"
+    _COLS = "e.entity_id, e.object_id, e.type, e.name, e.normalized, e.alias, e.audience_key"
 
     def _params(self, scope: Any, types: Sequence[str] | None, **extra: Any) -> dict:
         # The entity rows name their type as the chunker writes it (``purchase_order``,
@@ -486,10 +545,29 @@ class PgEntityIndex:
         rows = self._run(
             f"SELECT {self._COLS}, {visible} FROM {self.table} e WHERE {where}"
             f" ORDER BY e.type, e.entity_id LIMIT 200", params)
+        # an item-gated row its item check refuses is hidden, as a row of a unit not granted
+        rows = self._item_checked(scope, rows, visible_at=7)
         out = [EntityRow(r[0], r[1], r[2], r[3] or "", r[4] or "", tuple(r[5] or ()),
                          next((a for a in (r[5] or ()) if a in upper), r[4] or ""), 1.0)
-               for r in rows if r[6]]
-        return out, {r[0] for r in rows if not r[6]}
+               for r in rows if r[7]]
+        return out, {r[0] for r in rows if not r[7]}
+
+    @staticmethod
+    def _item_checked(scope: Any, rows: list[tuple], *, visible_at: int | None = None,
+                      object_at: int = 1, key_at: int = 6) -> list[tuple]:
+        """``rows`` with each item-gated visible row its item check refuses (``admitted``)
+        dropped, or, given ``visible_at`` (the row's visible flag), turned hidden."""
+        shown = [r for r in rows if visible_at is None or r[visible_at]]
+        ok = admitted(scope, [(r[object_at], r[key_at]) for r in shown])
+        out = []
+        for r in rows:
+            if (visible_at is None or r[visible_at]) and item_gated(r[key_at]) \
+                    and r[object_at] not in ok:
+                if visible_at is None:
+                    continue
+                r = (*r[:visible_at], False, *r[visible_at + 1:])
+            out.append(r)
+        return out
 
     def near_identifier(self, forms, scope, types=None):
         """Visible rows carrying an identifier one edit (a changed, missing, extra or
@@ -506,6 +584,7 @@ class PgEntityIndex:
             f"SELECT {self._COLS} FROM {self.table} e WHERE e.alias && %(forms)s::text[]"
             " AND (%(types)s::text[] IS NULL OR e.type = ANY(%(types)s))"
             f" AND {visible} ORDER BY e.type, e.entity_id LIMIT 200", params)
+        rows = self._item_checked(scope, rows)
         asked = [f.upper() for f in forms]
         out = []
         for r in rows:
@@ -546,6 +625,8 @@ class PgEntityIndex:
                                   hlim=self.HIDDEN_LIMIT, alias=tier == 0,
                                   plim=self.PERSON_LIMIT)
             rows = self._run(sql, params, threshold=threshold)
+            # an item-gated row its item check refuses is counted as hidden, never shown
+            rows = self._item_checked(scope, rows, visible_at=1, object_at=3, key_at=10)
             found = set()
             for r in rows:
                 if r[1]:
@@ -618,7 +699,7 @@ class PgEntityIndex:
                                       ORDER BY p.ws DESC, p.sws DESC, p.len, p.entity_id) AS rn
             FROM p WHERE p.pkey IS NULL OR p.pn <= %(plim)s)
         SELECT r.term, r.vis, r.entity_id, e.object_id, e.type, e.name, e.normalized,
-               e.alias, r.ws, r.sws
+               e.alias, r.ws, r.sws, e.audience_key
         FROM r LEFT JOIN {table} e ON r.vis AND e.entity_id = r.entity_id
         WHERE (r.vis AND r.rn <= %(lim)s)
            OR (NOT r.vis AND r.overall <= %(window)s AND r.rn <= %(hlim)s)"""
@@ -629,28 +710,45 @@ class PgEntityIndex:
             return []
         rows = self._run(f"SELECT {self._COLS} FROM {self.table} e WHERE e.object_id = ANY(%(ids)s)"
                          f" AND {self._visible(scope)}", self._params(scope, None, ids=ids))
+        rows = self._item_checked(scope, rows)
         return [EntityRow(r[0], r[1], r[2], r[3] or "", r[4] or "", tuple(r[5] or ()))
                 for r in rows]
 
     def distinctive_words(self, words, scope):
         """Which of ``words`` is a whole word of the name or alias words of between 1
-        and DISTINCTIVE_MAX records the reader may see (a subject, not a catalogue word)."""
+        and DISTINCTIVE_MAX records the reader may see (a subject, not a catalogue word).
+        An item-gated row counts only when its item check admits it; when more such rows
+        match than ``GATED_PROBE`` the count is not known and the word is not taken."""
         words = sorted({w for w in words if w})
         if not words:
             return set()
         visible = self._visible(scope)
+        match = ("(q.w <%% e.normalized AND strict_word_similarity(q.w, e.normalized) >= 0.99"
+                 " OR q.w <%% search.alias_text(e.alias)"
+                 " AND strict_word_similarity(q.w, search.alias_text(e.alias)) >= 0.99)")
+        gated = "split_part(e.audience_key, ':', 1) = ANY(%(gated)s::text[])"
         rows = self._run(f"""
-            SELECT q.w FROM unnest(%(words)s::text[]) AS q(w)
-            WHERE (SELECT count(*) FROM (
-                       SELECT 1 FROM {self.table} e
-                       WHERE (q.w <%% e.normalized
-                              AND strict_word_similarity(q.w, e.normalized) >= 0.99
-                              OR q.w <%% search.alias_text(e.alias)
-                              AND strict_word_similarity(q.w, search.alias_text(e.alias)) >= 0.99)
-                         AND {visible} LIMIT %(cap)s) x) BETWEEN 1 AND %(most)s""",
+            SELECT q.w, x.object_id, x.audience_key FROM unnest(%(words)s::text[]) AS q(w)
+            CROSS JOIN LATERAL (
+                SELECT e.object_id, e.audience_key FROM {self.table} e
+                WHERE {match} AND {visible} AND NOT {gated} LIMIT %(cap)s) x
+            UNION ALL
+            SELECT q.w, x.object_id, x.audience_key FROM unnest(%(words)s::text[]) AS q(w)
+            CROSS JOIN LATERAL (
+                SELECT e.object_id, e.audience_key FROM {self.table} e
+                WHERE {match} AND {visible} AND {gated} LIMIT %(gcap)s) x""",
                          self._params(scope, None, words=words, cap=self.DISTINCTIVE_MAX + 1,
-                                      most=self.DISTINCTIVE_MAX), threshold=0.9)
-        return {r[0] for r in rows}
+                                      gcap=self.GATED_PROBE,
+                                      gated=sorted(item_families())), threshold=0.9)
+        ok = admitted(scope, [(r[1], r[2]) for r in rows])
+        out = set()
+        for word in words:
+            mine = [r for r in rows if r[0] == word]
+            probed = sum(1 for r in mine if item_gated(r[2]))
+            seen = sum(1 for r in mine if not item_gated(r[2]) or r[1] in ok)
+            if 1 <= seen <= self.DISTINCTIVE_MAX and probed < self.GATED_PROBE:
+                out.add(word)
+        return out
 
 
 class GraphLinks(Protocol):
@@ -801,11 +899,12 @@ def _parse_time_frame(question: str, today: dt.date) -> dict[str, Any] | None:
     }
     match = re.search(r"\b(?:last|past|previous)\s+(\d{1,3})\s+(day|week|month|year)s?\b", text)
     if match:
-        days = int(match.group(1)) * _UNIT_DAYS[match.group(2)]
-        if days < 1:
+        # rolling, today counted: "last 30 days" is 30 days (``time_window.rolling_start``,
+        # the one rule ``time_window.window`` reads too), BIZ-009
+        if int(match.group(1)) < 1:
             return None   # "last 0 days": no day to count
-        return _frame(match.group(0), today - dt.timedelta(days=days - 1),
-                      today + dt.timedelta(days=1), "relative")
+        start = rolling_start(today, int(match.group(1)), match.group(2))
+        return _frame(match.group(0), start, today + dt.timedelta(days=1), "relative")
     match = re.search(r"\b(\d{1,3})\s+(day|week|month|year)s?\s+ago\b", text)
     if match:
         days = int(match.group(1)) * _UNIT_DAYS[match.group(2)]
@@ -2037,7 +2136,8 @@ def _finish(u: Understanding, resolver: _Resolver) -> Understanding:
 
 def _start(question: Any, history: Sequence[Any], actor: Any, policy: Any,
            index: EntityIndex | None, graph: GraphLinks | None, llm: Any,
-           llm_budget: float, today: dt.date | None) -> _Run:
+           llm_budget: float, today: dt.date | None,
+           item_check: Callable[[Sequence[str]], Any] | None = None) -> _Run:
     started = time.perf_counter()
     question = question if isinstance(question, str) else ""
     notes: list[str] = []
@@ -2057,7 +2157,8 @@ def _start(question: Any, history: Sequence[Any], actor: Any, policy: Any,
     elif index is None:
         index = _default_index()
     try:
-        scope = index.scope(policy, actor) if index is not None else _empty_scope()
+        scope = (with_item_check(index.scope(policy, actor), item_check)
+                 if index is not None else _empty_scope())
     except Exception as error:  # noqa: BLE001
         scope = _empty_scope()
         notes.append(f"entity index unavailable ({type(error).__name__}); no entity candidates")
@@ -2192,15 +2293,19 @@ def understand(question: str, *, history: Sequence[Any] = (), actor: Any,
                graph: GraphLinks | None = None,
                llm: Callable[[str, Mapping[str, Any], float], Any] | None | bool = None,
                llm_timeout: float = DEFAULT_LLM_TIMEOUT,
-               today: dt.date | None = None) -> Understanding:
+               today: dt.date | None = None,
+               item_check: Callable[[Sequence[str]], Any] | None = None) -> Understanding:
     """Understand one question for ``actor`` (see the module docstring).
 
     ``policy`` is the reader's ReadPolicy (None: no candidates, fail closed); ``index``
     the entity index (default :class:`PgEntityIndex` on ``PLX_PG_DSN``); ``graph`` the
     projection links (optional); ``llm`` a callable ``(question, context, timeout)`` or
     False for none (default: :class:`ClaudeUnderstander` unless ``PLX_UNDERSTAND_LLM`` is
-    ``off``), waited for at most ``llm_timeout`` seconds from the start."""
-    run = _start(question, history, actor, policy, index, graph, llm, llm_timeout, today)
+    ``off``), waited for at most ``llm_timeout`` seconds from the start. ``item_check``:
+    the reader's item permission on record ids (``with_item_check``); without one no
+    record of an item-gated source (mail, files, chats, meetings) is a candidate."""
+    run = _start(question, history, actor, policy, index, graph, llm, llm_timeout, today,
+                 item_check)
     return _await_llm(run, llm_timeout)
 
 
@@ -2208,12 +2313,14 @@ def understand_stream(question: str, *, history: Sequence[Any] = (), actor: Any,
                       policy: Any = None, index: EntityIndex | None = None,
                       graph: GraphLinks | None = None,
                       llm: Callable[[str, Mapping[str, Any], float], Any] | None | bool = None,
-                      llm_wait: float = 12.0, today: dt.date | None = None):
+                      llm_wait: float = 12.0, today: dt.date | None = None,
+                      item_check: Callable[[Sequence[str]], Any] | None = None):
     """The fast-path understanding at once (``llm.status`` ``pending`` when a model
     runs), then, when the model was asked, the refined one (at most ``llm_wait`` s):
     for an SSE ``understanding`` event that search can start on before the model
     answers (headless Claude Code takes 4-9 s, measured)."""
-    run = _start(question, history, actor, policy, index, graph, llm, llm_wait, today)
+    run = _start(question, history, actor, policy, index, graph, llm, llm_wait, today,
+                 item_check)
     yield run.understanding
     if run.future is not None:
         yield _await_llm(run, llm_wait)

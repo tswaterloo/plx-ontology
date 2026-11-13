@@ -41,7 +41,7 @@ Evidence label of tests: ``isolated-fixture``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -139,6 +139,11 @@ OPERATIONS: dict[str, dict[str, Any]] = {
 }
 SYSTEMS = ("bc", "portal")   # the Portal has no write entity yet: every Portal intent refuses
 UNDECIDED = frozenset({"pending", "unknown"})
+# An approval runs for this long; older, the entry is approved again (ACT-005).
+APPROVAL_MAX_AGE = timedelta(days=7)
+# The widest decimal a write carries: digits and the power of ten (ACT-007). BC decimals
+# are far narrower; the bound keeps a few characters like 1e10000 from expanding.
+MAX_DECIMAL_DIGITS, MAX_DECIMAL_EXPONENT = 28, 15
 BLANK_BLOCK = frozenset({"", " ", "_x0020_"})
 
 
@@ -233,11 +238,18 @@ def _typed(value: Any, prop: Mapping[str, Any], meta: Metadata) -> str | None:
 def _decimal(value: Any) -> Decimal | None:
     if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
         return None     # a float is refused: money and quantities travel as exact text
+    text = str(value)
+    if len(text) > 64:
+        return None
     try:
-        found = Decimal(str(value))
+        found = Decimal(text)
     except InvalidOperation:
         return None
-    return found if found.is_finite() else None
+    if not found.is_finite() or len(found.as_tuple().digits) > MAX_DECIMAL_DIGITS \
+            or (found != 0 and abs(found.adjusted()) > MAX_DECIMAL_EXPONENT) \
+            or found.as_tuple().exponent < -MAX_DECIMAL_EXPONENT:
+        return None
+    return found
 
 
 def _read_number(value: Any) -> Decimal | None:
@@ -828,6 +840,35 @@ class WriteDesk:
                             "text": f"Quantity {qty} is below the {received} already received."})
         return out
 
+    def _lapsed(self, approval: Mapping[str, Any], intent: Mapping[str, Any],
+                ctx: WriteContext, *, check_age: bool = True) -> tuple[str, int] | None:
+        """Why a journalled approval no longer stands (ACT-005), or None: the approver
+        still holds the grant, neither approver nor preparer is excluded now, and it is
+        younger than ``APPROVAL_MAX_AGE``. A lapsed entry is approved again."""
+        actor = approval.get("actor") or {}
+        approver = Person(str(actor.get("name") or ""), actor.get("email"), actor.get("oid"))
+        if not approver.ids() or not ctx.granted().holds(
+                approver.ids(), intent["system"], intent["entity_set"]):
+            return ("The person who approved this entry no longer holds a write grant for "
+                    "it: approve it again.", 409)
+        prep = intent["prepared_by"]
+        excluded = _excluded(ctx.exclusion, approver) or (
+            _excluded(ctx.exclusion, Person(prep["name"], prep.get("email"), prep.get("oid")))
+            if not prep.get("autopilot") else None)
+        if excluded:
+            return (excluded, 403)
+        if not check_age:
+            return None
+        try:
+            approved_at = datetime.fromisoformat(str(approval.get("at")))
+        except ValueError:
+            approved_at = None
+        if approved_at is None or approved_at.tzinfo is None \
+                or self.clock() - approved_at > APPROVAL_MAX_AGE:
+            return ("The approval is older than "
+                    f"{APPROVAL_MAX_AGE.days} days: approve it again.", 409)
+        return None
+
     # ---- approve
 
     def approve(self, intent_id: str, who: Person, ctx: WriteContext, *, confirmed: bool,
@@ -864,9 +905,15 @@ class WriteDesk:
         with self.journal.locked() as held:
             status = self._view(held.rows, intent_id)["status"]
             if status != "prepared":
-                if status == "approved":
+                standing = next((r for r in reversed(held.rows) if r["intent_id"] == intent_id
+                                 and r["status"] == "approved"), None)
+                # a standing approval is replayed; a lapsed one (ACT-005) is replaced by
+                # this person's, who passed every rule above
+                if status == "approved" and standing is not None \
+                        and not self._lapsed(standing, intent, ctx):
                     return {**self._view(held.rows, intent_id), "replayed": True}
-                raise WriteRefused([f"This entry is already {status}."], 409)
+                if status != "approved":
+                    raise WriteRefused([f"This entry is already {status}."], 409)
             held.append({"intent_id": intent_id, "status": "approved", "at": self._now(),
                          "actor": who.record(), "preview_hash": found["preview_hash"],
                          "etag": found["current_etag"],
@@ -906,6 +953,13 @@ class WriteDesk:
         done = [r for r in mine if r["status"] in ("would_write", "written", "failed")]
         if done:
             return {**self._view(rows, intent_id), "replayed": True}
+        # ACT-005: the approval stands only while its people still may (``_lapsed``); a
+        # retry of a run with an undecided outcome continues that approved run, so only
+        # its people are judged again, not its age.
+        lapsed = self._lapsed(approval, intent, ctx, check_age=not any(
+            r["status"] in UNDECIDED for r in mine))
+        if lapsed:
+            raise WriteRefused([lapsed[0]], lapsed[1])
         if self._running(mine):
             raise WriteRefused(["Another run of this entry is in progress: wait for its "
                                 "outcome."], 409)

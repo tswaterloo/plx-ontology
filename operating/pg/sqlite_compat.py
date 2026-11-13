@@ -71,6 +71,10 @@ _NOT_READ_ONLY = re.compile(
     r"|NEXTVAL|SETVAL|PG_\w+|LO_\w+|DBLINK\w*)\b", re.IGNORECASE)
 _LEADING_COMMENTS = re.compile(r"^(?:\s+|--[^\n]*\n?|/\*.*?\*/)*", re.DOTALL)
 STATEMENT_TIMEOUT_MS = 120_000
+# How often a running statement checks that its client is still there (Postgres 14+): a
+# process killed mid-read (an API stopped, a facts read's parent gone) otherwise leaves
+# its statement scanning, and spilling to temp files, until it next sends a row.
+CLIENT_CHECK = "5s"
 # A table's SQLite rowid in the Postgres ontology.
 ROWID = {"objects": "row_no", "link_rows": "row_no",
          "object_versions": "ver", "value_sources": "src", "text_fields": "field_id",
@@ -97,6 +101,9 @@ LONG_LIST_CHARS = 4096
 MAX_KEPT_LISTS = 256
 _KEPT_ANY = re.compile(
     r"(= ANY|<> ALL)\(ontology\.sq_json_array\((%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s)\)\)")
+# A long list compared with a link's end (``links.from_object`` / ``to_object``): bound as an
+# array, an index condition (``PgCompatConnection._link_end_lists``).
+_LINK_END = re.compile(r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:from_object|to_object)\s*\Z")
 _FALLBACK = {False: "SELECT array(SELECT value FROM ontology.sq_json_each(%s))",
              True: "SELECT array(SELECT value FROM ontology.sq_json_each_int(%s))"}
 _RENAME = {"julianday": "ontology.sq_julianday", "json_extract": "ontology.sq_json_extract",
@@ -262,6 +269,7 @@ def translate(sql: str, functions: tuple[str, ...] = (),
     suffix: dict[int, str] = {}   # token index -> text appended after it
     replace: dict[int, str] = {}  # token index -> text written instead of it
     replace.update(_case_booleans(tokens))
+    replace.update(_index_hints(tokens))
     if arrays:
         replace.update(_json_lists(tokens))
     loaded = frozenset(WORD_TABLES) if words is True else frozenset(words or ())
@@ -587,6 +595,24 @@ def _json_lists(tokens: list[tuple[str, str]]) -> dict[int, str]:
     return out
 
 
+def _index_hints(tokens: list[tuple[str, str]]) -> dict[int, str]:
+    """SQLite's planner hint ``+column`` (no index on the column) where a condition starts
+    (after WHERE/AND/OR/ON/NOT or an opening parenthesis), dropped: Postgres has no unary
+    plus on text and plans without it. A ``+`` between two operands is an addition, kept."""
+    out: dict[int, str] = {}
+    for k, (_kind, text) in enumerate(tokens):
+        if text != "+":
+            continue
+        before = _prev(tokens, k - 1)
+        after = _next(tokens, k + 1)
+        if before < 0 or after >= len(tokens) or tokens[after][0] != "word":
+            continue
+        if tokens[before][1] == "(" or (tokens[before][0] == "word" and tokens[before][1].upper()
+                                         in ("WHERE", "AND", "OR", "ON", "NOT")):
+            out[k] = ""
+    return out
+
+
 def _case_booleans(tokens: list[tuple[str, str]]) -> dict[int, str]:
     """0/1 literals that are a CASE branch beside a comparison branch, as FALSE/TRUE
     (SQLite's comparisons are 0/1; Postgres refuses a CASE of boolean and integer)."""
@@ -867,9 +893,16 @@ class PgCompatConnection:
     # packed value layouts: one Postgres cell per field) asks this to take its own form.
     postgres = True
 
-    def __init__(self, dsn: str, *, statement_timeout_ms: int = STATEMENT_TIMEOUT_MS) -> None:
+    def __init__(self, dsn: str, *, statement_timeout_ms: int = STATEMENT_TIMEOUT_MS,
+                 temp_limit: str | None = None) -> None:
         self.dsn = dsn
         self._statement_timeout_ms = int(statement_timeout_ms)
+        # ``temp_limit``: the most temporary file space one statement of this session may
+        # write (``temp_file_limit``, e.g. "1GB"); past it the statement fails, never the
+        # disk. Only a superuser may set it: elsewhere the server's own limit holds.
+        if temp_limit is not None and not re.fullmatch(r"[0-9]{1,9}(kB|MB|GB)", temp_limit):
+            raise ValueError("temp_limit_unreadable")
+        self._temp_limit = temp_limit
         self._lock = threading.RLock()
         self._closed = False
         self._down_logged = False   # a reconnect that failed is logged once, until one works
@@ -889,6 +922,8 @@ class PgCompatConnection:
         self._streams: list[Any] = []
         self._streams_open = 0
         self._streams_lock = threading.Lock()
+        # the stream connections reading now (``interrupt`` cancels their statements too)
+        self._streams_busy: set[Any] = set()
         self._conn = self._open()
         from operating.ontology_tools_traverse import GATED_SCHEMES
         self._gated = tuple(sorted(GATED_SCHEMES))
@@ -910,11 +945,22 @@ class PgCompatConnection:
         return conn
 
     def _session(self, conn: Any) -> None:
+        import psycopg
+
         statement_timeout_ms = self._statement_timeout_ms
         with conn.cursor() as cur:
             cur.execute("SET search_path = ontology, public")
             cur.execute("SET TimeZone = 'UTC'")
             cur.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
+            for setting, value in (("client_connection_check_interval", CLIENT_CHECK),
+                                   ("temp_file_limit", self._temp_limit)):
+                if value is None:
+                    continue
+                try:
+                    with conn.transaction():
+                        cur.execute(f"SET {setting} = '{value}'")
+                except psycopg.Error:
+                    pass   # an older server, or no right to set it: its own setting holds
             # no JIT: these are short indexed reads, and a plan with a scan kind turned
             # off (the word windows) carries a cost far past ``jit_above_cost``, so
             # each one compiled for ~0.3 s before running for milliseconds
@@ -1192,6 +1238,8 @@ class PgCompatConnection:
             conn = self._stream_conn()
             if conn is None:
                 return self.execute(sql, parameters)
+            with self._streams_lock:
+                self._streams_busy.add(conn)
             cur = None
             try:
                 params = self._params(parameters)
@@ -1261,6 +1309,8 @@ class PgCompatConnection:
     def _stream_done(self, conn: Any, cur: Any) -> None:
         """A stream's connection back to the idle list, its transaction ended (the
         server cursor with it); one that cannot be ended is closed."""
+        with self._streams_lock:
+            self._streams_busy.discard(conn)
         keep = False
         try:
             if cur is not None:
@@ -1316,8 +1366,16 @@ class PgCompatConnection:
         pass
 
     def interrupt(self) -> None:
-        conn = self._conn
-        conn.cancel_safe() if hasattr(conn, "cancel_safe") else conn.cancel()
+        """Cancel the statement this connection runs, and each stream it reads now (a
+        server-side cursor runs on a connection of its own, ``stream``)."""
+        with self._streams_lock:
+            busy = list(self._streams_busy)
+        for conn in (self._conn, *busy):
+            try:
+                conn.cancel_safe() if hasattr(conn, "cancel_safe") else conn.cancel()
+            except Exception:  # noqa: BLE001 - one that cannot be reached: the others
+                if conn is self._conn:
+                    raise
 
     def close(self) -> None:
         self._closed = True
@@ -1414,6 +1472,7 @@ class PgCompatConnection:
                 at += 1
                 positions[m.start()] = at
         found = []   # (match, name, positional index, the list's JSON text)
+        ends = []    # the same, of a list compared with a link's end
         for m in _KEPT_ANY.finditer(text):
             name = m.group(3)
             index = positions.get(m.start(2)) if name is None else None
@@ -1422,9 +1481,13 @@ class PgCompatConnection:
             else:
                 raw = values.get(name) if named else None
             if isinstance(raw, str) and len(raw) >= LONG_LIST_CHARS:
-                found.append((m, name, index, raw))
+                if _LINK_END.search(text, 0, m.start()):
+                    ends.append((m, name, index, raw))
+                else:
+                    found.append((m, name, index, raw))
+        found = self._link_end_lists(ends, found, values)
         idle = self._conn.pgconn.transaction_status == psycopg.pq.TransactionStatus.IDLE
-        new = {raw for _, _, _, raw in found if raw not in self._kept}
+        new = {raw for _, _, _, raw in found if raw is not None and raw not in self._kept}
         if idle and new and len(self._kept) + len(new) > MAX_KEPT_LISTS:
             # emptied before this statement keeps a list, never between two of its lists:
             # one already bound to its digest would read as empty (``NOT IN`` of nothing
@@ -1434,6 +1497,13 @@ class PgCompatConnection:
             self._kept.clear()
         out, last = [], 0
         for m, name, index, raw in found:
+            if raw is None:
+                # a link end's list, bound as an array of its members (``_link_end_lists``)
+                bound = "%s" if name is None else f"%({name}__ends)s"
+                out.append(text[last:m.start()])
+                out.append(f"{m.group(1)}({bound}::text[])")
+                last = m.end()
+                continue
             digest = self._kept.get(raw)
             if digest is None:
                 if not idle:
@@ -1460,6 +1530,27 @@ class PgCompatConnection:
             return text, params
         out.append(text[last:])
         return "".join(out), (values if named else tuple(values))
+
+    @staticmethod
+    def _link_end_lists(ends: list, found: list, values: Any) -> list:
+        """``found`` with each long list compared with a link's end (``ends``) bound as a
+        text array of its members (``raw`` None in its entry: written ``x = ANY(%s::text[])``,
+        ``<> ALL``), in the statement's order. Kept on the session, a list is a set the
+        statement joins (a hashed subplan), never an index condition: ``from IN list OR to
+        IN list`` then filtered every link of the asked types (69 s over 79M links for 360
+        records); as an array it reads both ends' indexes (0.0 s). A list of record ids is
+        small beside an audience (its planning cost is not the kept lists' reason). A list
+        that is not plain strings keeps its text."""
+        for m, name, index, raw in ends:
+            members = _members(raw, numeric=False)
+            if members is None:
+                continue
+            if name is None:
+                values[index] = members
+            else:
+                values[f"{name}__ends"] = members
+            found.append((m, name, index, None))
+        return sorted(found, key=lambda entry: entry[0].start())
 
     def _members_of(self, raw: Any, numeric: bool) -> list[Any]:
         members = _members(raw, numeric=numeric)

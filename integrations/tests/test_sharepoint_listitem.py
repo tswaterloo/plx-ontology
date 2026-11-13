@@ -356,7 +356,8 @@ class Library:
         stamps = stamps or [stamp(n) for n in range(len(docs))]
         items = [{"id": str(n + 1), "contentType": {"id": DOC_TYPE},
                   **({"lastModifiedDateTime": stamps[n]} if stamps[n] else {}),
-                  "fields": {self.internal[k]: v for k, v in doc.items()}}
+                  **({} if doc is None else   # None: an item read without its fields
+                     {"fields": {self.internal[k]: v for k, v in doc.items()}})}
                  for n, doc in enumerate(docs)]
         full = {self.internal[k]: "set" for k in self.internal}
         items += [{"id": f"f{n}", "contentType": {"id": FOLDER_TYPE}, "fields": dict(full)}
@@ -432,6 +433,17 @@ class LibraryColumnsTest(unittest.TestCase):
         selects = {dict(parse_qsl(urlsplit(u).query))["$expand"] for u in lib.calls("/items")}
         self.assertEqual(selects, {"fields($select=" + ",".join(sorted(
             [a, b, c, lib.internal[d]])) + ")"})
+
+    def test_no_fill_seen_while_some_documents_had_no_fields_is_unknown(self):
+        """INT-019: a column none of the read documents fills is ``unknown``, not
+        ``empty``, when some sampled documents came without their fields."""
+        lib = Library([], by_name=3)
+        a, b, _c = lib.named
+        lib = Library([{a: "x", b: ""}, None], by_name=3)
+        out = library_reader(lib).library_columns(ACTOR, taxonomy.COLUMNS, max_items=200)
+        self.assertEqual(out["sample"]["documents_without_fields"], 1)
+        self.assertEqual(out["columns"][a], {"state": "filled", "matched_by": "name", "filled": 1})
+        self.assertEqual(out["columns"][b], {"state": "unknown", "matched_by": "name", "filled": 0})
 
     def test_a_column_the_portal_finds_by_any_name_or_display_name_reads_present(self):
         # The Portal's rule: a spec is present when its name or display name equals any

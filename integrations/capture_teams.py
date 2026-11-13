@@ -327,6 +327,14 @@ MAX_TENANT_HOLDS = 30
 # listed again (at most this many roots, most recent first): the channel delta lists
 # changed roots only, and a reply added to an older root does not make it list that root.
 MAX_RECENT_ROOTS = 200
+# Per channel (``state:<prefix><unit>``): the rotating replies sweep's place among the
+# channel's held roots (``after``: the last root swept, by id), when its current pass
+# began, and its ``horizon``: every root held when the last finished pass began had its
+# replies listed again at or after then (a full round counts as one pass). Reported per
+# channel read as ``reply_sweep`` (CAPTURE-009).
+REPLY_SWEEP = "teams_reply_sweep:"
+# The reason of a run whose sweep skipped a root whose replies read failed definitively.
+SWEEP_GAP = "gap:reply_sweep_root"
 # The chat the last census stopped after when ``max_chats`` or the time budget cut it:
 # the next census starts past it (round to the start), so every chat is reached.
 CENSUS_CHAT_CURSOR = "teams_census_chats"
@@ -403,6 +411,7 @@ _CODE_SIGNERS = frozenset({"admin", "agent", "assistant", "automation", "bot", "
 # members' object ids).
 _GUID_IN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _ADDRESS_IN = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+_DASHLESS_GUID = re.compile(r"[0-9A-Fa-f]{32}")
 
 
 class TeamsCaptureError(ValueError):
@@ -416,6 +425,12 @@ def _valid(type_name: str, value: Any) -> bool:
 
 
 # ------------------------------------------------------------------ source kinds
+
+def _root_order(message_id: str) -> tuple[int, str]:
+    """A channel message id's order: Graph's ids are the creation time in milliseconds
+    (numeric order); any other id after them, as text."""
+    return (int(message_id), "") if message_id.isdigit() else (1 << 62, message_id)
+
 
 def _channel_path(parts: Sequence[str]) -> tuple[str, ...]:
     if isinstance(parts, (str, bytes)) or len(parts) != 3 \
@@ -544,6 +559,15 @@ def _acl_recorded(store: CaptureStore) -> dict[str, str]:
         db.close()
 
 
+def _persons(identities: Iterable[Any]) -> list[Any]:
+    """The identities the people guard decides: a standard channel's ``group:<team>``
+    audience (``GROUP_FALLBACK``) names no person (the census, which refuses a team with an
+    excluded or unread member, bounds it), and the guard cannot decide a token that is
+    neither an object id nor an address: asked, it raised and failed every Teams run
+    (2026-11-12)."""
+    return [i for i in identities if not (isinstance(i, str) and i.startswith("group:"))]
+
+
 def _status(reasons: Iterable[str]) -> str:
     reasons = list(reasons)
     return ("blocked" if any(r.startswith("blocked:") for r in reasons)
@@ -564,7 +588,12 @@ _LIMITS = {"page_size": (50, 1, 50), "max_pages_per_run": (20, 1, 500),
            # last ``active_days`` is read every run; any other once its last settled read
            # is ``refresh_hours`` old (at most half the membership bound, 48 hours; 0:
            # every conversation every run).
-           "active_days": (7, 0, 90), "refresh_hours": (12, 0, 24)}
+           "active_days": (7, 0, 90), "refresh_hours": (12, 0, 24),
+           # The rotating replies sweep (``TeamsCapture._reply_sweep``): each incremental round of
+           # a channel also lists again the replies of this many of its other held roots,
+           # in turn, so a reply to a root of any age is read within a bounded number of
+           # rounds (0: no sweep; the horizon then stays at the last full round).
+           "reply_sweep_roots": (100, 0, 2000)}
 # An optional per-run cap on the conversations read (none by default: the time budget
 # bounds a run); a run under it takes the most due first.
 MAX_CONVERSATIONS = (1, 1_000_000)
@@ -944,7 +973,8 @@ def _throttled(result: Mapping[str, Any]) -> bool:
 def _new_counts() -> dict[str, int]:
     return {"pages": 0, "messages_read": 0, "replies_read": 0, "versions_new": 0,
             "unchanged": 0, "provenance_dropped": 0, "replies_capped": 0,
-            "acl_refreshed": 0, "members": 0, "round_restarts": 0, "people_dropped": 0}
+            "acl_refreshed": 0, "members": 0, "round_restarts": 0, "people_dropped": 0,
+            "replies_swept_roots": 0}
 
 
 def _instant(value: Any, *, ceil: bool = False) -> datetime | None:
@@ -1045,6 +1075,15 @@ class TeamsCapture:
         """Whether a conversation id embeds an excluded person's object id (a one-on-one
         chat's does, both members'): refused before any request naming it."""
         return self.people.excluded(_GUID_IN.findall(thread.lower()))
+
+    def _undecided(self, identities: Iterable[Any]) -> bool:
+        """Whether the ready guard cannot decide one of ``identities`` now (it raises
+        ``ExclusionUnavailable``): such a conversation is not cleared this run."""
+        try:
+            self.people.excluded(_persons(identities))
+        except ExclusionUnavailable:
+            return True
+        return False
 
     def names_excluded(self, url: str) -> bool:
         """Whether a request URL names an excluded person (an object id or address in its
@@ -1378,10 +1417,26 @@ class TeamsCapture:
         about["result"]["last_activity_at"] = latest[1] if latest else None
 
     def _sent_by_excluded(self, raw: Any) -> bool:
-        """Whether a listed message was sent by an excluded person (``from.user.id``)."""
+        """Whether a listed message is withheld for its sender (``from.user.id``): an
+        excluded person's, or one the guard cannot decide. Graph gives some senders' object
+        id without dashes (32 hex): it is decided as that object id. Any other id the ready
+        guard cannot decide withholds that message alone (fail closed): asked as is, it
+        raised in a capture thread and failed the whole run (2026-11-12). A guard that is
+        not usable at all still raises."""
         sender = raw.get("from") if isinstance(raw, Mapping) else None
         user = sender.get("user") if isinstance(sender, Mapping) else None
-        return isinstance(user, Mapping) and self.people.excluded([user.get("id")])
+        if not isinstance(user, Mapping):
+            return False
+        sender_id = user.get("id")
+        if isinstance(sender_id, str) and _DASHLESS_GUID.fullmatch(sender_id.strip()):
+            h = sender_id.strip().lower()
+            sender_id = f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+        try:
+            return self.people.excluded([sender_id])
+        except ExclusionUnavailable:
+            if self.people.unavailable:
+                raise
+            return True
 
     def _replies(self, conversation: Conversation, root: str, acl: Mapping[str, Any],
                  scope: TeamsScope, counts: dict[str, int]
@@ -1479,7 +1534,15 @@ class TeamsCapture:
             acl, member_cap = {"status": "derived", "basis": GROUP_FALLBACK,
                                "identities": [f"group:{conversation.team}"]}, None
             participants = None   # the group names nobody here
-        if self.people.excluded(acl["identities"]):
+        try:
+            excluded = self.people.excluded(_persons(acl["identities"]))
+        except ExclusionUnavailable:
+            # The guard cannot decide a member (a possible list while the groups listing
+            # failed): fail closed for this run, a gap retried next run, never a crash of
+            # the whole capture (2026-11-12: every Teams run failed this way).
+            self.store.clear_unit_acl(conversation.source_kind.name, conversation.unit)
+            return {**result, "reasons": [MEMBERS_UNREAD]}
+        if excluded:
             # A chat or channel an excluded person belongs to (The
             # census refuses it too): no message is read, and what an earlier capture
             # holds of it loses its membership (neither projected nor resolved). Settled,
@@ -1524,13 +1587,25 @@ class TeamsCapture:
             # active lately: a reply added to an older root is not in the channel delta.
             capped = (json.loads(previous["detail"]).get("replies_capped") or []
                       if previous is not None and previous.get("detail") else [])
-            recent = self._recent_roots(conversation, scope) if round_ == "incremental" else []
-            roots = list(dict.fromkeys([*capped, *recent]))
+            recent, held = (self._recent_roots(conversation, scope, every=True)
+                            if round_ == "incremental" else ([], []))
+            swept, sweep = self._reply_sweep(conversation, held, {*capped, *recent}, scope)
+            roots = list(dict.fromkeys([*capped, *recent, *swept]))
             try:
-                self._relist(conversation, roots, acl, scope, run_id, url, counts)
+                gaps = self._relist(conversation, roots, acl, scope, run_id, url, counts,
+                                    sweep_only=set(swept) - {*capped, *recent})
             except SourceUnavailable as exc:
                 return self._paused(result, run_id, "teams.replies",
                                     "graph.channel_message_replies", exc, blocked, reasons)
+            if round_ == "incremental":   # listed: the sweep moves on (never on a failure)
+                self.store.set_state(REPLY_SWEEP + conversation.unit,
+                                     json.dumps(sweep, sort_keys=True))
+                counts["replies_swept_roots"] = len(swept) - len(gaps)
+            if gaps:   # read again next pass; this run says it missed them
+                counts["replies_sweep_gaps"] = len(gaps)
+                reasons.add(SWEEP_GAP)
+        if conversation.kind == "channel":
+            result["reply_sweep"] = self._sweep_state(conversation.unit)
         op = ("graph.channel_messages_delta" if conversation.kind == "channel"
               else "graph.chat_messages")
         pages = items = 0
@@ -1637,34 +1712,114 @@ class TeamsCapture:
         return (isinstance(page, Mapping) and page.get("value") == []
                 and page.get("@odata.nextLink") is None)
 
-    def _recent_roots(self, conversation: Conversation, scope: TeamsScope) -> list[str]:
+    def _recent_roots(self, conversation: Conversation, scope: TeamsScope, *,
+                      every: bool = False) -> Any:
         """The held root messages of a channel created, changed or replied to in the
-        last ``active_days``, most recent first (at most ``MAX_RECENT_ROOTS``)."""
+        last ``active_days``, most recent first (at most ``MAX_RECENT_ROOTS``).
+        ``every``: (those, every held root of the channel by id), one read of the store."""
         since = _instant(self.store.now()) - timedelta(days=scope.active_days)
         latest: dict[str, datetime] = {}
+        held: set[str] = set()
         for r in self.store.current_records(CHANNEL_KIND.name, conversation.unit):
             row = r.payload.get("row") or {}
             root = row.get("reply_to_id") or r.path[-1]
             if root == CONVERSATION:
                 continue
+            held.add(root)
             for value in (row.get("created_at"), row.get("last_modified")):
                 moment = _instant(value)
                 if moment is not None and moment >= since and moment > latest.get(
                         root, since - timedelta(seconds=1)):
                     latest[root] = moment
-        return sorted(latest, key=lambda root: latest[root], reverse=True)[:MAX_RECENT_ROOTS]
+        recent = sorted(latest, key=lambda root: latest[root], reverse=True)[:MAX_RECENT_ROOTS]
+        return (recent, sorted(held, key=_root_order)) if every else recent
+
+    def reply_sweep_horizon(self) -> dict[str, Any]:
+        """The replies sweep over every channel the store holds: ``horizon``, the oldest
+        channel horizon (a reply to any held root added before it has been read), None
+        while a channel has none yet (``channels_without_horizon`` of ``channels``)."""
+        units = self.store.units(CHANNEL_KIND.name)
+        horizons = [self._sweep_state(u)["horizon"] for u in units]
+        missing = sum(h is None for h in horizons)
+        return {"channels": len(units), "channels_without_horizon": missing,
+                "horizon": None if missing or not units else min(horizons)}
+
+    def _sweep_state(self, unit: str) -> dict[str, Any]:
+        """The channel's rotating replies sweep (``REPLY_SWEEP``); an unreadable record
+        starts a new pass (nothing is vouched for: no horizon)."""
+        try:
+            held = json.loads(self.store.state(REPLY_SWEEP + unit) or "{}")
+        except ValueError:
+            held = {}
+        if not isinstance(held, dict):
+            held = {}
+        return {"after": held.get("after") if isinstance(held.get("after"), str) else None,
+                "pass_started": held.get("pass_started")
+                if isinstance(held.get("pass_started"), str) else None,
+                "horizon": held.get("horizon") if isinstance(held.get("horizon"), str)
+                else None}
+
+    def _reply_sweep(self, conversation: Conversation, held: Sequence[str],
+                     listed: set[str], scope: TeamsScope) -> tuple[list[str], dict[str, Any]]:
+        """(the held roots whose replies this round lists in turn, the sweep state once
+        they are listed). The next ``reply_sweep_roots`` roots past the last one swept,
+        by id (roots the round lists anyway count toward the pass, not the budget);
+        reaching the end finishes the pass: its start becomes the horizon and a new pass
+        starts now. The channel delta never lists an older root a reply was added to, so
+        this sweep bounds how long such a reply waits: ceil(roots / budget) rounds."""
+        sweep = self._sweep_state(conversation.unit)
+        now = self.store.now()
+        if sweep["pass_started"] is None:
+            sweep["pass_started"], sweep["after"] = now, None
+        budget = scope.reply_sweep_roots
+        if not budget:
+            return [], sweep
+        if not held:   # nothing held to list again: the pass is finished
+            sweep.update(horizon=sweep["pass_started"], pass_started=now, after=None)
+            return [], sweep
+        after = sweep["after"]
+        rest = [r for r in held if after is None or _root_order(r) > _root_order(after)]
+        chosen: list[str] = []
+        last = after
+        for root in rest:
+            if len(chosen) >= budget:
+                break
+            last = root
+            if root not in listed:
+                chosen.append(root)
+        if len(chosen) < budget and (not rest or last == rest[-1]):
+            # the pass reached the channel's last held root: it is finished
+            sweep.update(horizon=sweep["pass_started"], pass_started=now, after=None)
+        else:
+            sweep["after"] = last
+        return chosen, sweep
 
     def _relist(self, conversation: Conversation, roots: Iterable[str], acl: Mapping[str, Any],
-                scope: TeamsScope, run_id: int, cursor: str, counts: dict[str, int]) -> None:
+                scope: TeamsScope, run_id: int, cursor: str, counts: dict[str, int], *,
+                sweep_only: Iterable[str] = ()) -> list[str]:
+        """List again the replies of ``roots``; the ``sweep_only`` roots (the rotating
+        sweep's, neither capped nor recent) whose read fails definitively (404 a root
+        retention removed, 403, any non-transient answer) are returned as gaps and the
+        sweep moves past them: one such root never holds the sweep at it for good. A
+        transient failure (429, 5xx, 408, transport, budget) raises: the run pauses and the
+        sweep stays where it was."""
+        sweep_only, gaps = set(sweep_only), []
         for root in roots:
             if conversation.kind != "channel" or not _valid("teams_message_id", root):
                 continue
-            records, dropped, cut = self._replies(conversation, root, acl, scope, counts)
+            try:
+                records, dropped, cut = self._replies(conversation, root, acl, scope, counts)
+            except SourceUnavailable as exc:
+                if root not in sweep_only or _transient_members_failure(exc):
+                    raise
+                gaps.append(root)
+                continue
             saved = self.store.save_page(run_id, records, cursor, dropped=dropped,
                                          marks=[f"capped:{root}"] if cut else [])
             counts["versions_new"] += saved["new_versions"]
             counts["unchanged"] += saved["unchanged"]
             counts["provenance_dropped"] += dropped
+        return gaps
 
     def _next(self, url: str, link: Any, *, delta: bool = False) -> str | None:
         """The checked continuation (same collection, the request's own path) of a
@@ -1681,6 +1836,16 @@ class TeamsCapture:
                 ) -> dict[str, Any]:
         marks = self.store.run_marks(run_id)
         capped = sorted(m.split(":", 1)[1] for m in marks if m.startswith("capped:"))
+        if conversation.kind == "channel" and round_ == "full" and not capped:
+            # a full round lists the replies of every root: a finished sweep pass from
+            # when the round began (a reply cap left out roots: not a pass)
+            begun = (self.store.run(conversation.source_kind.name, conversation.unit)
+                     or {}).get("started_at")
+            if isinstance(begun, str):
+                self.store.set_state(REPLY_SWEEP + conversation.unit, json.dumps(
+                    {"after": None, "pass_started": self.store.now(), "horizon": begun},
+                    sort_keys=True))
+            result["reply_sweep"] = self._sweep_state(conversation.unit)
         detail: dict[str, Any] = {"round": round_, "replies_capped": capped[:MAX_CAPPED_ROOTS]}
         if conversation.kind == "channel":
             detail["delta_url"] = end
@@ -1781,6 +1946,7 @@ class TeamsCapture:
             r["status"] in SETTLED for r in results)
         unique = list({json.dumps(p, sort_keys=True): p for p in blocked}.values())
         return {"complete": complete, "discovery": discovery, "conversations": results,
+                "reply_sweep": self.reply_sweep_horizon(),
                 "blocked_upstream": unique, "throttled": throttled,
                 "tenant_holds": self._hold[1],
                 "retry_after_seconds": self._retry_after[0],
@@ -2005,7 +2171,9 @@ class TeamsCapture:
             except SourceUnavailable as exc:
                 reasons.add(_failure(part, op, exc, blocked))
                 return MEMBERS_UNREAD
-            if self.people.excluded(acl["identities"]):
+            if self._undecided(acl["identities"]):
+                return MEMBERS_UNREAD   # not cleared this run; decided again next run
+            if self.people.excluded(_persons(acl["identities"])):
                 # Refused for the rest of the run: no later request names it.
                 self.refused.add((conversation.thread or str(conversation.team)).lower())
                 return PEOPLE_EXCLUDED
@@ -2152,7 +2320,9 @@ class TeamsCapture:
             prior = carried.get(chat)
             held = held_acls.get(chat)
             if held is not None:
-                if self.people.excluded(held.get("identities") or []):
+                if self._undecided(held.get("identities") or []):
+                    return ("refused", MEMBERS_UNREAD)
+                if self.people.excluded(_persons(held.get("identities") or [])):
                     self.refused.add(chat.lower())
                     return ("refused", PEOPLE_EXCLUDED)
                 return ("carried", {**prior, "chat_type": types[chat]})
@@ -2623,6 +2793,7 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
             "retry_after_seconds": round(float(run.get("retry_after_seconds") or 0.0), 1),
             # Counts only: who was excluded is never reported.
             "people_excluded": run["people_excluded"], "people_dropped": run["people_dropped"],
+            "reply_sweep": run.get("reply_sweep"),
             "conversations": [{"index": i, "kind": c["kind"], "membership": c["membership"],
                                "status": c["status"], "reasons": c["reasons"],
                                "round": c["round"], "resumed_from": c["resumed_from"],

@@ -58,6 +58,8 @@ customer or an item.
 
 from __future__ import annotations
 
+from .mail_text import unquoted
+
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 import json
@@ -160,7 +162,7 @@ def chase_phrase(text: Any) -> str | None:
     if not isinstance(text, str) or not text.strip():
         return None
     quoted = QuotedRanges(text)
-    own = "".join(ch for i, ch in enumerate(text) if not quoted.contains(i))
+    own = unquoted(quoted, text)
     for name, pattern in CHASE_FAMILIES.items():
         if pattern.search(own):
             return name

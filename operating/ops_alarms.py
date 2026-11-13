@@ -5,7 +5,8 @@ shows in the app (the shell's banner and /ops) until it recovers.
 5 minutes) checks:
 
 * freshness (``operating.ops_health``): the delta's last cycle and its running cycle, each
-  capture source and the sources one carries (Sage, FileMaker, calendar, Planner), the
+  capture source (its age, and ``capture_failing``: runs failed in a row, named with the
+  error and when it began) and the sources one carries (Sage, FileMaker, calendar, Planner), the
   ingest start loop, the Postgres copy, the search follower's and the proactive engine's
   last good pass;
 * units: every system and user ``plx-*`` unit that failed (an OOM kill named), restarts
@@ -64,7 +65,8 @@ IGNORE_ENV, DISK_ENV = "PLX_OPS_IGNORE_UNITS", "PLX_OPS_DISK_PATH"
 # ops_health checks that open incidents; the rest (truth share, AI watcher, page time) stay
 # on the sidebar line only.
 MEMORY_CHECKS = ("memory_pressure", "memory_available")
-PAGED_HEALTH = ("delta_last_cycle", "delta_cycle_runtime", "capture:", "ingest_start",
+PAGED_HEALTH = ("delta_last_cycle", "delta_cycle_runtime", "capture:", "capture_failing:",
+                "ingest_start",
                 "ingest_service", "pg_follow", "proactive_last_pass",
                 "search_follow_last_pass")
 # Long-running service types: one enabled but not running has stopped (a oneshot has not).
@@ -83,7 +85,8 @@ LABELS = {"disk_free": "Disk", "memory_available": "Memory",
           "backup": "Nightly backup", "restore_test": "Backup restore test",
           "ingest_start": "Capture service start loop",
           "ingest_service": "Capture service", "units:system": "System plx units checked",
-          "units:user": "User plx units checked"}
+          "units:user": "User plx units checked", "jobq_worker": "Job queue worker",
+          "jobq_head_wait": "Job queue"}
 
 
 # ---- probes (injected in tests) ----------------------------------------------------------
@@ -361,6 +364,38 @@ def pg_checks(dsn: Optional[str], t: Mapping[str, float], probes: Probes) -> lis
                    if idle else "")]
 
 
+JOBQ_HEAD_WAIT_MINUTES = 20
+
+
+def jobq_checks(state: Path, now: datetime) -> list[Check]:
+    """The host job queue (``operating.jobq``), once its worker has written a snapshot:
+    ``jobq_worker`` breaches when the snapshot is stale (the worker stopped or died: no
+    queued job starts), ``jobq_head_wait`` when a job admission keeps refusing has waited
+    over ``JOBQ_HEAD_WAIT_MINUTES`` (a delta that cannot fit). No snapshot: the queue is
+    not switched on and nothing is checked."""
+    from .jobq import status as jobq_status
+    snap = jobq_status.read_snapshot(state, now=now)
+    if not snap.get("configured"):
+        return []
+    stale = jobq_status.STALE_S / 60
+    age = snap.get("age_s")
+    if not snap.get("fresh"):
+        return [_check("jobq_worker", None if age is None else round(age / 60, 1), stale, True,
+                       "minutes", "the worker stopped reporting"
+                       + (f" {_span(age / 60)} ago" if age is not None else
+                          " (its status is unreadable)") + "; queued jobs do not start")]
+    blocked = [w for w in snap.get("waiting") or []
+               if w.get("last_refusal") and not w.get("not_before_s")
+               and (w.get("waiting_s") or 0) > JOBQ_HEAD_WAIT_MINUTES * 60]
+    worst = max(blocked, key=lambda w: w.get("waiting_s") or 0, default=None)
+    return [_check("jobq_worker", round((age or 0) / 60, 1), stale, False, "minutes",
+                   "reporting"),
+            _check("jobq_head_wait", round(worst["waiting_s"] / 60) if worst else 0,
+                   JOBQ_HEAD_WAIT_MINUTES, worst is not None, "minutes",
+                   f"a {worst['class']} job has waited {_span(worst['waiting_s'] / 60)}: "
+                   f"{str(worst['last_refusal'])[:160]}" if worst else "no job waits long")]
+
+
 EXPIRY_FILE = "expiry.json"
 
 
@@ -501,6 +536,7 @@ def collect(state: Path, now: datetime, environ: Mapping[str, str], probes: Prob
         if scope == "system":
             checks += backup_checks(units, now, t)
     checks += pg_checks(dsn, t, probes)
+    checks += jobq_checks(state, now)
     checks += expiry_checks(state, now, t)
     found, samples = memory_checks(now, t, probes, samples)
     return checks + disk_checks(state, t, probes, environ) + found, samples
@@ -522,6 +558,8 @@ def line(check: Mapping[str, Any]) -> str:
     if name.startswith("unit:"):
         unit = name.split(":")[-1]
         return f"{unit} ({'user' if name.startswith('unit:user:') else 'system'}): {detail}"
+    if name.startswith("capture_failing:") and detail:
+        return detail   # "mail: ExclusionUnavailable since 5:15 AM ET (4 runs failed ..."
     if name == "ingest_service":
         return (f"Capture service: {detail}"
                 + (f" ({_span(value)} ago)" if check.get("state") == "breach"
@@ -549,6 +587,11 @@ def _covered(key: str, by_name: Mapping[str, Check]) -> bool:
         return by_name.get("units:user", {}).get("state") == "ok"
     if key.startswith("unit:"):
         return by_name.get("units:system", {}).get("state") == "ok"
+    if key.startswith("capture_failing:"):
+        # its source's check read this pass (a recovered source's check has no error)
+        source = key.split(":")[1]
+        return by_name.get(f"capture_failing:{source}", {}).get("state") == "ok" or any(
+            n.startswith(f"capture_failing:{source}:") for n in by_name)
     if key.startswith("capture:"):
         return any(n.startswith("capture:") and c["state"] != "unknown"
                    for n, c in by_name.items())

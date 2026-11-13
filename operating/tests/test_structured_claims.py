@@ -206,8 +206,11 @@ class StructuredClaimTests(unittest.TestCase):
                 passed = [n for n in range(kept) if n != bad]
                 self.assertEqual(agent["claims"]["kept"], len(passed))
                 self.assertEqual(agent["claims"]["unsupported"], int(bad < kept))
-                # Past the bound a claim is counted dropped, never silently lost.
+                # Past the bound a claim is counted dropped, never silently lost, and
+                # the answer is never complete (AGT-004).
                 self.assertEqual(agent["claims"]["dropped"], count - len(passed))
+                if count > 20:
+                    self.assertEqual(answer["answerability"], "partial")
                 lines = [line.split(" (recorded as")[0]
                          for line in answer["text"].split("\n") if line]
                 self.assertEqual(lines, [f"The line is {shown[0]}"] * len(passed))
@@ -1085,6 +1088,15 @@ class TextCheckEnforcedTests(unittest.TestCase):
         restated = {"value": "2", "calculation": {"op": "count", "inputs": [
             {"l1_handle": self.A}, {"l1_handle": self.B}]}}
         self.assertEqual(answer_gate.kept_value(restated, cell)["bound"], "at_least")
+        # GATE-005: restated over fewer, repeated or other inputs, it keeps the inputs
+        # the gate checked it over
+        for inputs in ([{"l1_handle": self.A}], [{"l1_handle": self.A}] * 2,
+                       [{"l1_handle": self.B}, {"l1_handle": self.A}]):
+            with self.subTest(inputs=inputs):
+                kept = answer_gate.kept_value(
+                    {"value": "2", "calculation": {"op": "count", "inputs": inputs}}, cell)
+                self.assertEqual(kept["calculation"]["inputs"],
+                                 [{"l1_handle": self.A}, {"l1_handle": self.B}])
         # written as the minimum it is, it stands
         result = self.decide([self.COUNT], "There are at least 2 orders.")
         self.assertIn("at least 2 orders", result["reply"]["text"])

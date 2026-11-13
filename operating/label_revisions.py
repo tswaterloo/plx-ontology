@@ -29,9 +29,14 @@ A SharePoint copy has no thread: its approval is unknown, never assumed.
 
 Kinds:
 
-* ``label_revision`` (low; the record page's history only, never the briefing): one per
-  revision, about its item, else its customer, else its first copy; its copies cited (any one
-  readable shows it), its approval cited when it has one. Which revision is current is the
+* ``label_revision`` (low; never the briefing): a revision that still asks for an
+  approval: the highest rank of its family name in any scope, with no approval recorded on
+  any copy of that rank in any scope, raised once per family name and rank (an item scope
+  first, then a customer, then the earliest seen); about its item, else its customer, else
+  its first copy; its copies cited (any one readable shows it).
+* ``label_revision_history`` (low; never an alert): every other revision (superseded,
+  approved, or the same revision under another scope), its approval cited when it has one.
+  The two kinds are the record page's history (``history``). Which revision is current is the
   page's: the highest rank the reader can see (``history``), so a revision kept from a reader
   never shows as superseding one they can see.
 * ``label_revision_superseded`` (medium; OFF in the alert registry until measured: on the
@@ -69,13 +74,16 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from .copy_gate import say_date
 from . import label_changes as lc
 from . import proactive_threads as pt
+from . import test_records
 from .proactive_business import _tick
 from .proactive_chasers import _addr, _instant
 
 RULE = "label_revisions"
 REVISION = "label_revision"
+HISTORY = "label_revision_history"
 SUPERSEDED = "label_revision_superseded"
-KINDS = (REVISION, SUPERSEDED)
+KINDS = (REVISION, HISTORY, SUPERSEDED)
+ANCHORED = ("item", "customer")   # scopes ranked before a mail party, thread or folder
 NAME_CHARS = 60
 MAX_COPIES = 400        # copies of one family read (a longer one is a template library)
 EXTENSIONS = frozenset({"pdf", "ai", "eps", "psd", "png", "jpg", "jpeg", "tif", "tiff", "svg",
@@ -102,11 +110,13 @@ REV = re.compile(
     r"|(?<![a-z0-9])rev(?:ision)?[\s._-]+(?P<a>[a-z])(?![a-z0-9])"
     r"|(?<![a-z0-9])v[\s._-]?(?P<v>\d{1,3})(?:\.\d)?(?![0-9])", re.I)
 # Not artwork: a brand model, shipping and pallet labels, proofs of payment or delivery, and
-# documents about labels (inquiries, quotes, reports, forms, evidence).
+# documents about labels (inquiries, quotes, reports, forms, evidence, specs, instructions,
+# container drawings, approval forms, purchase orders; live 11-12: 4 of 15 asks).
 NOT_ART = re.compile(
     lc.NOT_ART.pattern + r"|\b(?:inquiry|enquiry|rfq|quote|quotation|opportunity|report|"
     r"evidence|form|checklist|sheet|specification|verification|accountability|summary|"
-    r"payment|delivery|shipment|retain|folders?)\b", re.I)
+    r"payment|delivery|shipment|retain|folders?|specs?|instructions?|drawings?|approvals?|"
+    r"purchase\s+orders?)\b", re.I)
 COPY_MARK = re.compile(r"\(\d{1,3}\)|\[\d{1,3}\]|\bcopy(?:\s+of)?\b|^\d{4}-\d{2}-\d{2}[ _-]*",
                        re.I)
 DROP = frozenset({"final", "fnl", "outlined", "outline", "part", "pg", "page"})
@@ -123,6 +133,8 @@ def parse(name: Any) -> tuple[str, tuple[str, int], str] | None:
     spaced = re.sub(r"[_]+", " ", stem)
     if not lc.ART.search(spaced) or NOT_ART.search(spaced):
         return None
+    if test_records.is_test([stem]):
+        return None   # a test or UAT file (live 11-12: synthetic UAT artwork references)
     found = list(REV.finditer(stem))
     if len(found) != 1:
         return None   # no token, or two (a family name holding a version): not judged
@@ -344,7 +356,7 @@ def _population(st: Any, as_of: date, people: Any) -> dict[str, Any]:
                     threads[conversation] = pt._Thread(pop, conversation, people, domains)
                 thread = threads[conversation]
                 if not thread.ok:
-                    counts["participants_not_cleared"] += 1
+                    counts[thread.why] += 1
                     continue
             at = _instant((row.get("sent_at") or {}).get("value"))
             sender = _addr((row.get("sender") or {}).get("value"))
@@ -534,23 +546,58 @@ def label_revisions(st: Any, as_of: date, *, gap: Callable, cites: Callable, res
     by_family: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for rev in pop["revisions"]:
         by_family[(rev["scope"], rev["family"])].append(rev)
+    # what a revision still asks for is read across every scope holding its family name:
+    # the same file mailed in two threads and kept in a folder is three scopes (live 11-12:
+    # 8 of 15 were a superseded or approved revision, or one revision raised per scope)
+    named: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for rev in pop["revisions"]:
+        named[(rev["family"], rev["rank"][0])].append(rev)
+    canonical: dict[tuple, int] = {}
+    for rev in pop["revisions"]:
+        same = named[(rev["family"], rev["rank"][0])]
+        if rev["rank"] < max(r["rank"] for r in same) or any(
+                r["approval"] for r in same if r["rank"] >= rev["rank"]):
+            continue
+        head = rev["scope"].split(":", 1)[0]
+        order = (ANCHORED.index(head) if head in ANCHORED else len(ANCHORED),
+                 rev["first_at"], rev["scope"])
+        key = (rev["family"], rev["rank"])
+        if key not in canonical or order < canonical[key][0]:
+            canonical[key] = (order, id(rev))
+    asks = {ident for _order, ident in canonical.values()}
     for rev in pop["revisions"]:
         _tick(st)
         first = rev["copies"][0]
         subject_id, subject_type = _subject(rev["scope"], first["oid"])
+        same = named[(rev["family"], rev["rank"][0])]
+        newest = max(same, key=lambda r: (r["rank"], r["first_at"]))
+        current = rev["rank"] == newest["rank"]
+        approved_later = next((r for r in sorted(same, key=lambda r: r["rank"])
+                               if r["rank"] >= rev["rank"] and r["approval"]), None)
+        kind = REVISION if id(rev) in asks else HISTORY
         groups = [cites([r for c in rev["copies"] for r in c["cite_rows"]])]
         approval = rev["approval"]
         if approval:
             groups.append(cites(approval["rows"]))
+        if kind == REVISION:
+            missing = "Record who approved this revision before it is printed"
+        elif not current:
+            missing = (f"Nothing: revision {newest['token']} of this file came after it; "
+                       "kept as label revision history")
+        elif approved_later:
+            missing = "Nothing: kept as this item's label revision history"
+        else:
+            missing = ("Nothing: the same revision is kept under another record or "
+                       "conversation; kept as label revision history")
         made = gap(
-            REVISION, RULE, subject_id, subject_type,
+            kind, RULE, subject_id, subject_type,
             f"labelrev|{rev['scope']}|{rev['family']}|{rev['rank'][0]}{rev['rank'][1]}",
             summary=(f"{pt._clip(first['name'], NAME_CHARS)}: revision {rev['token']}, first "
                      f"seen {say_date(rev['first_at'].date())}"
                      + (f", approved {say_date(approval['at'].date())}" if approval else
-                        ", no approval recorded")),
-            missing=("Nothing: kept as this item's label revision history" if approval else
-                     "Record who approved this revision before it is printed"),
+                        ", no approval recorded")
+                     + ("" if current else f", superseded by revision {newest['token']}")),
+            missing=missing,
             why=("A label or artwork file whose name carries a revision; its mail thread's "
                  "later messages were read for an approval (the copies cited)."),
             priority="low", about=(subject_type, "label_revision"), groups=groups,
@@ -564,13 +611,14 @@ def label_revisions(st: Any, as_of: date, *, gap: Callable, cites: Callable, res
                               for c in rev["copies"][:5]],
                    "approved_on": approval["at"].date().isoformat() if approval else None,
                    "approved_by": approval["by"] if approval else None,
-                   "approval_message": approval["oid"] if approval else None})
+                   "approval_message": approval["oid"] if approval else None,
+                   "current_in_family": current})
         if made is None:
             skipped["revision_uncited"] += 1
             continue
         made["requires"] = _audiences_of(rev["copies"])
         gaps.append(made)
-        counts[REVISION] += 1
+        counts[kind] += 1
         counts["approved" if approval else "unapproved"] += 1
     # open orders a superseded revision's copy names
     pointers: dict[tuple, dict[str, list]] = {}
@@ -644,7 +692,7 @@ def label_revisions(st: Any, as_of: date, *, gap: Callable, cites: Callable, res
     out["counts"] = {**{k: pop["counts"][k] for k in (
         "named", "revision_files", "families", "revisions", "items_ambiguous",
         "scope_ambiguous", "mixed_schemes", "library_families")},
-        **{k: counts[k] for k in (REVISION, SUPERSEDED, "approved", "unapproved",
+        **{k: counts[k] for k in (REVISION, HISTORY, SUPERSEDED, "approved", "unapproved",
                                   "order_pointers", "order_has_newer", "order_closed")}}
     return out
 
@@ -701,7 +749,7 @@ def history(gaps: Iterable[Mapping[str, Any]], object_id: str) -> dict[str, Any]
                               "summary": item.get("summary"),
                               "citations": list(item.get("citations") or ())})
             continue
-        if item.get("kind") != REVISION or item.get("object_id") != object_id:
+        if item.get("kind") not in (REVISION, HISTORY) or item.get("object_id") != object_id:
             continue
         families[(str(event.get("family")), str(event.get("scheme")))].append({
             "id": item.get("id"), "revision": event.get("revision"),

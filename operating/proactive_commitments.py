@@ -75,6 +75,8 @@ a record, a customer or a person.
 
 from __future__ import annotations
 
+from .mail_text import unquoted
+
 import calendar
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
@@ -262,7 +264,7 @@ def _own(text: Any) -> str:
     if not isinstance(text, str) or not text.strip():
         return ""
     quoted = QuotedRanges(text)
-    return "".join(ch for i, ch in enumerate(text) if not quoted.contains(i))
+    return unquoted(quoted, text)
 
 
 def _business_days(start: date, end: date) -> int:

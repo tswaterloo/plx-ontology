@@ -46,7 +46,7 @@ def serve(source: BinaryIO, sink: BinaryIO) -> None:
         try:
             status, text, readings = extract_attachment(
                 content, request["attachment"], request["defer_ocr"], request["defer_all"],
-                readings=request.get("readings", True))
+                readings=request.get("readings", True), image_ocr=request.get("image_ocr"))
         except Exception:  # noqa: BLE001 - an extractor defect is this reading's status
             status, text, readings = "failed", None, None
         answer = json.dumps([status, text, readings], ensure_ascii=False).encode("utf-8")
@@ -73,6 +73,15 @@ def main() -> None:
             pass
     answers = os.fdopen(os.dup(1), "wb")
     os.dup2(2, 1)
+    # The kernel boundary before the first request (INT-015, ``extract_sandbox``): no
+    # file outside the system, Python, repository and temporary directories, no socket,
+    # no signal outside itself. ``required`` and a boundary that cannot be made: exit.
+    import integrations.capture_mail  # noqa: F401 - loaded before the files are closed
+    from integrations import extract_sandbox
+
+    state = extract_sandbox.apply(Path(__file__).resolve().parents[1],
+                                  mode=extract_sandbox.mode_from(os.environ))
+    print(f"extract_sandbox {json.dumps(state)}", file=sys.stderr, flush=True)
     serve(sys.stdin.buffer, answers)
 
 

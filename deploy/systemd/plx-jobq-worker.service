@@ -1,0 +1,30 @@
+# PLX host job queue worker (`python3 -m operating.jobq worker`).
+# Admits the queued heavy jobs (delta, proactive passes, search follower) when the machine has
+# the memory their class declares, starts each one's own service with `systemctl start`,
+# follows it to its Result, retries with backoff, dead-letters, reaps lapsed leases, preempts
+# lower classes under pressure, and writes <state>/jobq/status.json for the Reliability page.
+# Starting the units as @PLX_USER@ needs the polkit rule in deploy/jobq/50-plx-jobq.rules.
+# Inert until the timers are switched (deploy/jobq/apply.sh --switch).
+[Unit]
+Description=PLX host job queue worker
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/data/venv/bin/python3 -m operating.jobq worker --state-dir /data/plx-state
+Restart=always
+RestartSec=5
+# The worker itself is small and must outlive any job it admits.
+MemoryMax=512M
+OOMScoreAdjust=-700
+CPUWeight=200
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -36,6 +36,16 @@ NOT_DECLARED = {
     # in-place step migration scratch: a run's local part stores (SQLite) and its per-run
     # staging schema in Postgres, created for one run and dropped with it; never a served store
     "ontology/pg_step_inplace.py", "operating/pg/mention_scope.py", "operating/pg/step_staging.py",
+    # the staged link apply's run-owned Postgres schema (the staged difference and its
+    # undo rows), one per apply as step_staging's; never a served table
+    "operating/pg/link_apply.py",
+    # a one-off proof over a scratch copy of a generation it builds itself; never a store
+    # the Workbench opens
+    "scripts/stamp_sighting_proof.py",
+    # the job queue's own Postgres database (plx_jobq): idempotent IF NOT EXISTS DDL its
+    # init() applies; declared_schema versions SQLite stores (a Postgres change is a
+    # migration of that database), as operating/pg/migrate.py's
+    "operating/jobq/events.py", "operating/jobq/queue.py",
 }
 
 

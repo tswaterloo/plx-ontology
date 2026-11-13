@@ -28,7 +28,7 @@ from tests import test_live_wiring as wiring
 from operating.warm_store import STATE_ENV, WarmStore
 from scripts import object_workspace_probe as workspace
 from scripts import ontology_projection_probe as projection
-from tests import test_object_workspace_http as http
+from tests import test_object_workspace_live_checks as http
 
 SPECS = lv.valid_specs(lv.load_specs(lv.ROOT / lv.SPECS_DIR_NAME))
 MIRROR, PRODUCER = SPECS["mirror.full_coverage"], SPECS["ontology.session_projection"]

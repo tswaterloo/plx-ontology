@@ -155,6 +155,9 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
     taken from ``conn`` until the parent sends None or goes away."""
     logging.basicConfig(level=logging.INFO,   # the warm-up's timings, in the app's log
                         format="%(asctime)s %(name)s %(message)s")
+    from operating import parent_watch
+    # ends with the API (stopped without its exit handlers it never sends None)
+    parent_watch.die_with(parent_watch.spawned_parent())
     try:   # the lowest CPU priority: the API's requests always go first
         os.nice(19 - os.nice(0))
     except (AttributeError, OSError):

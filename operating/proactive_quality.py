@@ -33,7 +33,12 @@ a value: a duplicate is a proposal a person confirms.
 * ``twin_disagreement``: a settled identity cluster (``COMPARED``) whose members of two
   systems state different values of one property: a status (by its class, open or done; an
   unknown word is not compared), an amount (``Decimal`` in one currency; another currency
-  is never compared) or a date. One alert per cluster and property, citing both sides.
+  is never compared) or a date. One alert per cluster and property, citing both sides. A
+  cluster holding two records of one system (an order split in one system, whole in the
+  other) compares no amount, and no property its same-system records state differently
+  (``split_record``, counted). A cluster one of whose numbers (``NUMBER_PROPS``) a record
+  of another system it holds states outside it, while that system's member in the cluster
+  does not, may be two records: not compared (``identity_doubt``, counted).
 * ``stale_captures``: a source family whose last capture (the store's ``freshness``) is
   ``STALE_HOURS`` or more before the run, cited by one record of that source so only its
   readers see it; an unknown capture time is counted (``capture_time_unknown``).
@@ -129,6 +134,8 @@ REQUIREMENTS = (
                                "ship_date"), "Sales order", "ship date", True),
 )
 LABEL_PROPS = ("code", "po_number", "order_number", "erp_code", "name")
+# the number an order is known by in every system that keeps it
+NUMBER_PROPS = ("po_number", "order_number")
 
 
 @dataclass(frozen=True)
@@ -552,15 +559,24 @@ def twin_disagreement(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             clusters[root.get(oid, oid)].append(oid)
         codes = pb._currencies(st, [r for e in found.values()
                                     for p in spec.amounts for r in e["props"].get(p) or ()])
+        numbers = _numbers(st, spec.type)
         for top, members in sorted(clusters.items()):
             pb._tick(st)
             members.sort()
             if len({_system(binding.get(m)) for m in members}) < 2:
                 continue
             counts["clusters"] += 1
+            if _numbered_elsewhere(members, numbers, binding):
+                # a member's own number is held, outside the cluster, by a record of a
+                # system the cluster holds another number for: the copies may be two
+                # records (live 11-12: 3 of 15 were a BC order linked to a Portal backorder
+                # or a later order while the Portal's order of the BC number stood apart)
+                counts["identity_doubt"] += 1
+                continue
             for prop in props:
                 sides: dict[str, tuple[Any, Mapping[str, Any], str]] = {}
-                unreadable = False
+                stating: Counter = Counter()
+                unreadable = split = False
                 for m in members:
                     rows = _said(found[m]["props"], (prop,))
                     if not rows:
@@ -589,9 +605,21 @@ def twin_disagreement(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                     if value is None:
                         unreadable = True
                         break
-                    sides.setdefault(_system(binding.get(m)), (value, row, m))
+                    system = _system(binding.get(m))
+                    stating[system] += 1
+                    held = sides.setdefault(system, (value, row, m))
+                    if held[0] != value:
+                        split = True
                 if unreadable:
                     skipped.note("value_unreadable", members, [(m, "[]") for m in members])
+                    continue
+                if split or (prop in spec.amounts and max(stating.values(), default=0) > 1):
+                    # two records of one system in one cluster: one order split into two
+                    # (or two merged into one) across systems; a part's amount is no
+                    # statement of the whole, and two differing copies of one side have no
+                    # one value to compare (live 11-12: 2 of 15 were a Sage order holding
+                    # two Portal orders, its total their sum)
+                    counts["split_record"] += 1
                     continue
                 if len(sides) < 2:
                     continue
@@ -630,8 +658,48 @@ def twin_disagreement(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 gaps.append(made)
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts.get(k, 0) for k in ("clusters", "agree", "disagree",
-                                                    "currency_differs", "zero_amount")}
+                                                    "currency_differs", "zero_amount",
+                                                    "split_record", "identity_doubt")}
     return out
+
+
+def _number(raw: Any) -> str:
+    return re.sub(r"[\s_-]+", "", str(raw or "")).casefold()
+
+
+def _numbers(st: Any, object_type: str) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """(number -> every record of the type stating it, record -> its numbers), from
+    ``NUMBER_PROPS`` in every system."""
+    props = [p for p in NUMBER_PROPS if declares(object_type, p)]
+    holders: dict[str, set[str]] = defaultdict(set)
+    numbered: dict[str, set[str]] = defaultdict(set)
+    if not props:
+        return holders, numbered
+    for oid, entry in st.values([object_type], props).items():
+        for prop in props:
+            for row in entry["props"].get(prop) or ():
+                number = _number(row.get("value"))
+                if number and number not in ("none", "null"):
+                    holders[number].add(oid)
+                    numbered[oid].add(number)
+    return holders, numbered
+
+
+def _numbered_elsewhere(members: Sequence[str],
+                        numbers: tuple[Mapping[str, set[str]], Mapping[str, set[str]]],
+                        binding: Mapping[str, tuple[str, str]]) -> bool:
+    """Whether a member's number is held outside the cluster by a record of another system
+    the cluster holds, none of whose members in the cluster states that number."""
+    holders, numbered = numbers
+    inside = set(members)
+    systems = {_system(binding.get(m)) for m in members}
+    for number in {n for m in members for n in numbered.get(m, ())}:
+        mine = {_system(binding.get(m)) for m in holders[number] & inside}
+        for other in holders[number] - inside:
+            system = _system(binding.get(other))
+            if system in systems and system not in mine:
+                return True
+    return False
 
 
 # --------------------------------------------------------------------------- stale

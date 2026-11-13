@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from operating.host import held_captures
 from operating.tests.test_pg_migrate_chunks import ChunkedStepsTests, _equal
 from operating.tests.test_pg_step_migrate import PREFIX
 
@@ -946,7 +947,8 @@ class ShardedTextMarksTests(unittest.TestCase):
                 out.mkdir()
                 for n in range(shards):
                     ip.judge_shard(str(state), n, shards, str(out))
-                got, total = ip.text_marks(str(state), out, shards, workers=1)
+                got, total = ip.text_marks(str(state), out, shards, workers=1,
+                                             served=held_captures(state))
                 self.assertEqual(set(got), want, shards)
                 self.assertEqual(total["documents"], counts["documents"], shards)
                 per = [json.loads((out / f"shard-{n}.json").read_text())["counts"]["groups"]
@@ -958,7 +960,7 @@ class ShardedTextMarksTests(unittest.TestCase):
             held = json.loads(shard.read_text())
             shard.write_text(json.dumps({**held, "code": "other-classifier"}))
             with self.assertRaisesRegex(ip.Refused, "text_marks_of_other_code"):
-                ip.text_marks(str(state), out, 7, workers=1)
+                ip.text_marks(str(state), out, 7, workers=1, served=held_captures(state))
 
 
 class PrimedReadingsTests(unittest.TestCase):
@@ -1027,7 +1029,8 @@ class PrimedReadingsTests(unittest.TestCase):
                     mock.patch.object(ct, "read_text", counted):
                 ip.judge_shard(str(state), 0, 1, str(out), (str(primed),))
                 self.assertEqual(reads, [])
-            got, _total = ip.text_marks(str(state), out, 1, workers=1)
+            got, _total = ip.text_marks(str(state), out, 1, workers=1,
+                                          served=held_captures(state))
             self.assertEqual(set(got), want)
 
 

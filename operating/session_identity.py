@@ -80,10 +80,12 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+import threading
 import time
 from typing import Any, Iterable, Iterator, Mapping
 
@@ -292,8 +294,15 @@ class TicketReplayGuard:
     def _key(claims: Mapping[str, Any]) -> str:
         return hashlib.sha256(str(claims["jti"]).encode("utf-8")).hexdigest()
 
-    def _record(self, db: sqlite3.Connection, key: str, kind: str, exp: int) -> None:
-        held = db.execute("SELECT COUNT(*) FROM ticket_jti WHERE kind=?", (kind,)).fetchone()[0]
+    def _record(self, db: sqlite3.Connection, key: str, kind: str, exp: int,
+                current: int | None = None) -> None:
+        # Expired rows never count against the cap, and re-recording a held key (an
+        # idempotent repeat) needs no new room: a revocation is refused only when the
+        # guard is full of rows that still matter.
+        db.execute("DELETE FROM ticket_jti WHERE exp <= ?",
+                   (int(time.time()) if current is None else int(current),))
+        held = db.execute("SELECT COUNT(*) FROM ticket_jti WHERE kind=? AND jti_sha256<>?",
+                          (kind, key)).fetchone()[0]
         if held >= self._max:
             raise SessionIdentityRefused("session_ticket_replay_guard_full")
         db.execute("INSERT OR REPLACE INTO ticket_jti VALUES(?,?,?)", (key, kind, int(exp)))
@@ -311,7 +320,7 @@ class TicketReplayGuard:
             if consume:
                 if "used" in found:
                     raise SessionIdentityRefused("session_ticket_replayed")
-                self._record(db, key, "used", claims["exp"])
+                self._record(db, key, "used", claims["exp"], current)
 
     def revoked_ref(self, session_ref: str, now: int | None = None) -> bool:
         """Whether the ticket whose session reference (the SHA-256 of its jti, as
@@ -330,18 +339,18 @@ class TicketReplayGuard:
             return db.execute("SELECT 1 FROM ticket_jti WHERE jti_sha256=? AND kind='used'",
                               (session_ref,)).fetchone() is not None
 
-    def revoke(self, claims: Mapping[str, Any]) -> None:
+    def revoke(self, claims: Mapping[str, Any], now: int | None = None) -> None:
         with self._connect() as db:
-            self._record(db, self._key(claims), "revoked", claims["exp"])
+            self._record(db, self._key(claims), "revoked", claims["exp"], now)
 
-    def revoke_session_ref(self, session_ref: str, exp: int) -> None:
+    def revoke_session_ref(self, session_ref: str, exp: int, now: int | None = None) -> None:
         """Revoke the ticket whose session reference (the SHA-256 of its jti) is
         ``session_ref`` until ``exp``, without the ticket itself (the operator holds only the
         reference, e.g. from the mint audit)."""
         if not re.fullmatch(r"[0-9a-f]{64}", session_ref or ""):
             raise SessionIdentityRefused("session_ref_invalid")
         with self._connect() as db:
-            self._record(db, session_ref, "revoked", int(exp))
+            self._record(db, session_ref, "revoked", int(exp), now)
 
 
 REPLAY_GUARD_FILE = "session-replay.sqlite"
@@ -745,8 +754,27 @@ def bind_state_dir(state_dir: str | Path, *, fixture: bool, dev: bool = False) -
     if current is None:
         root = Path(state_dir)
         root.mkdir(parents=True, exist_ok=True)
-        (root / STATE_LABEL_FILE).write_text(json.dumps(
-            {"schema": STATE_LABEL_SCHEMA, "label": wanted}), "utf-8")
+        # Exclusive creation: of two hosts first binding the same new directory, one
+        # writes the label and the other reads the winner's below (a complete label is
+        # published by rename, so a reader never sees a half-written one).
+        staged = root / f".{STATE_LABEL_FILE}.{os.getpid()}.{threading.get_ident()}"
+        staged.write_text(json.dumps({"schema": STATE_LABEL_SCHEMA, "label": wanted}),
+                          "utf-8")
+        try:
+            os.link(staged, root / STATE_LABEL_FILE)
+        except FileExistsError:
+            pass
+        except OSError:   # no hard links here: exclusive creation alone
+            try:
+                with open(root / STATE_LABEL_FILE, "x", encoding="utf-8") as label:
+                    label.write(staged.read_text("utf-8"))
+            except FileExistsError:
+                pass
+        finally:
+            staged.unlink(missing_ok=True)
+        current = state_label(state_dir)
+        if current != wanted:
+            raise SessionIdentityRefused(f"{wanted}_session_on_{current}_state")
     return wanted
 
 

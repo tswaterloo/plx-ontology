@@ -205,8 +205,12 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any],
     answer ``(reader, object_type, object_id, section)`` with
     ``("ok", section)`` or ``("error", exception)`` until the parent sends None or goes
     away."""
+    from operating import parent_watch
     from operator_api.workspace import case_console
     from . import backend as be
+
+    # ends with the API (stopped without its exit handlers it never closes the pipe)
+    parent_watch.die_with(parent_watch.spawned_parent())
 
     def serve(ctx: Mapping[str, Any]) -> int:
         backend = be.WorkspaceBackend(ctx["objects_for"], **settings)

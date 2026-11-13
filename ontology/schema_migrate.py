@@ -36,7 +36,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 FORMAT = "plx-schema-migration/v1"
 TABLE = "schema_migration"
@@ -293,6 +293,40 @@ def next_sequence(dsn: str) -> int:
                           ).fetchone()[0]
 
 
+def served_families(dsn: str) -> set[str] | None:
+    """The source families the served generation read (``ontology.store_meta``
+    ``source_freshness``); None when Postgres records none (then every wanted source is
+    required: :func:`require_sources`)."""
+    import psycopg
+    with psycopg.connect(dsn) as pg:
+        if not pg.execute("SELECT to_regclass('ontology.store_meta') IS NOT NULL"
+                          ).fetchone()[0]:
+            return None
+        row = pg.execute("SELECT value FROM ontology.store_meta "
+                         "WHERE key = 'source_freshness'").fetchone()
+    try:
+        fresh = json.loads(row[0]) if row and row[0] else None
+    except ValueError:
+        return None
+    return set(fresh) if isinstance(fresh, dict) and fresh else None
+
+
+def require_sources(wanted: Iterable[str], sources: Mapping[str, Any],
+                    served: Iterable[str] | None) -> list[str]:
+    """Refuse (``missing_source:<family>,...``) a build that reads a source family the
+    served generation holds data of while the state directory holds no capture of it: it
+    would build a valid, empty replacement of everything bound to it (SCHEMA-001).
+    ``served``: :func:`served_families` (None: every wanted family counts as served). The
+    wanted families the served generation never read (nothing served to replace) are
+    returned, for the layer's record."""
+    wanted = set(wanted)
+    held = wanted if served is None else wanted & set(served)
+    missing = sorted(held - set(sources))
+    if missing:
+        raise ValueError("missing_source:" + ",".join(missing))
+    return sorted(wanted - held - set(sources))
+
+
 def build_layer(migration: Mapping[str, Any], new: Any, sources: Mapping[str, Any],
                 out: str | Path, *, normalizer: Any = None, as_known_at: Any = None,
                 delta_mark: int = 0, sequence: int | None = None) -> dict[str, Any]:
@@ -339,6 +373,8 @@ def build_layer(migration: Mapping[str, Any], new: Any, sources: Mapping[str, An
                   "document_bindings": sorted(b for b in migration["delete"]["bindings"]
                                               if held.get(b) in documents),
                   "delta_mark": int(delta_mark),
+                  # the source families the layer was built from (SCHEMA-001)
+                  "sources": sorted(sources),
                   "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         conn.executemany(f"INSERT INTO {TABLE} VALUES (?, ?)",
                          [(k, json.dumps(v, sort_keys=True)) for k, v in record.items()])
@@ -470,6 +506,7 @@ def build_from_state(plan: Mapping[str, Any], new: Any, state: Path, out: Path, 
             sources["portal_api"] = stack.enter_context(project.MirrorCaptures(mirror))
         held = state_captures(state, stack, internal_domains=_internal_domains(os.environ))
         sources.update({k: v for k, v in held.items() if k in wanted})
+        never = require_sources(wanted, sources, served_families(dsn))
         blobs = [s.blobs for s in sources.values()
                  if isinstance(getattr(s, "blobs", None), (str, Path))]
         stack.enter_context(kept_readings(projection / READINGS))
@@ -478,6 +515,7 @@ def build_from_state(plan: Mapping[str, Any], new: Any, state: Path, out: Path, 
         report = build_layer(plan, new, sources, out, delta_mark=mark,
                              sequence=next_sequence(dsn))
     report["sources"] = sorted(sources)
+    report["sources_never_served"] = never
     return report
 
 

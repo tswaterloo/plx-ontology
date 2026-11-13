@@ -280,8 +280,6 @@ _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _LATE_KEYS = ("po", "state", "governing", "measured", "revised", "received", "at_risk",
               "promised")
 ARG_KEYS = {"lateness", "required", "order_status", "value", "currency", "assembly_status"}
-# the order records' own days (a required date equal to one is no requested date)
-OPTIONAL_ARG_KEYS = {"order_own_days"}
 # Optional: all three or none (no margin is computed without them).
 MARGIN_ARG_KEYS = {"line_amount": ("SalesOrderLine",), "line_quantity": ("SalesOrderLine",),
                    "item_cost": ("Product",)}
@@ -987,7 +985,7 @@ def plan_check(args: Mapping[str, Any], doc: Mapping[str, Any], index: int,
     if not isinstance(args, Mapping):
         return ["engine_args must be an object"]
     out = [f"unknown engine argument {k}"
-           for k in sorted(set(args) - ARG_KEYS - set(MARGIN_ARG_KEYS) - OPTIONAL_ARG_KEYS)]
+           for k in sorted(set(args) - ARG_KEYS - set(MARGIN_ARG_KEYS))]
     out += [f"missing engine argument {k}" for k in sorted(ARG_KEYS - set(args))]
     items = {e["name"]: e for e in doc["evidence"][:index]}
     margin = set(args) & set(MARGIN_ARG_KEYS)
@@ -1009,9 +1007,7 @@ def plan_check(args: Mapping[str, Any], doc: Mapping[str, Any], index: int,
                 out.append(f"lateness.{key} must name a select item per root listed before it")
     for key, type_id in (("required", "SalesOrder"), ("order_status", "SalesOrder"),
                          ("value", "SalesOrder"), ("currency", "SalesOrder"),
-                         ("assembly_status", "AssemblyOrder"),
-                         *((("order_own_days", "SalesOrder"),)
-                           if "order_own_days" in args else ())):
+                         ("assembly_status", "AssemblyOrder")):
         item = items.get(args.get(key))
         if item is None or item["kind"] != "property" or item.get("object_type") != type_id:
             out.append(f"{key} must name a {type_id} property item listed before it")

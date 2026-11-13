@@ -1910,6 +1910,39 @@ def _sources_of(new: Any, sources: Mapping[str, Any], from_types: Sequence[str] 
     return {k: v for k, v in sources.items() if k in wanted}
 
 
+def document_families(run: Mapping[str, Sequence[str] | None], new: Any,
+                      specs: Mapping[str, Spec] = STEPS, *, every: bool = False) -> set[str]:
+    """The source families the document steps of ``run`` read (:func:`_sources_of`: the
+    sources bound to a step's from-types; None: every bound source), the Portal mirror
+    left out (a state directory never holds it; the steps read only capture stores).
+    ``every``: every bound capture family (the text index re-mark reads all documents)."""
+    bound = lambda types: {b["source"] for t in types for b in  # noqa: E731
+                           ((_get(new, "object_types") or {}).get(t) or {}).get("bindings", ())}
+    every_type = list(_get(new, "object_types") or {})
+    out: set[str] = set(bound(every_type)) if every else set()
+    for name, from_types in run.items():
+        spec = specs.get(name)
+        if spec is not None and spec.documents:
+            out |= bound(every_type if from_types is None else from_types)
+    out.discard("portal_api")
+    return out
+
+
+def require_state_sources(run: Mapping[str, Sequence[str] | None], new: Any,
+                          sources: Mapping[str, Any], served: Iterable[str] | None, *,
+                          specs: Mapping[str, Spec] = STEPS, every: bool = False
+                          ) -> list[str]:
+    """``schema_migrate.require_sources`` for the document steps of ``run`` over a state
+    directory's ``sources`` (SCHEMA-001): a family the served generation read
+    (``served``: ``schema_migrate.served_families``) and the state directory does not hold
+    refuses the build. The families never served."""
+    from ontology.schema_migrate import require_sources
+    wanted = document_families(run, new, specs, every=every)
+    if not wanted:
+        return []
+    return require_sources(wanted, sources, served)
+
+
 def text_marks(projector: Any) -> tuple[set[str], dict[str, Any]]:
     """The version handles (document citations) whose text fields this code's text index
     marks ``finance`` and ``pii`` (``ontology.text_index._sensitive``), judged on every
@@ -2202,6 +2235,8 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
                       "to": the_plan["steps_to"], "owned": owned, "values": values_owned,
                       "scope": scope,
                       "steps": sorted(run), "inputs": inputs, "delta_mark": int(delta_mark),
+                      # the source families the document steps read (SCHEMA-001)
+                      "sources": sorted(document_families(run, new, specs) & set(sources)),
                       "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             if remarks:   # the apply adds ``marks`` to the text fields of these documents
                 record["text_marks"] = {"steps": sorted(remarks), "marks": list(SENSITIVE_MARKS),
@@ -2250,12 +2285,15 @@ def build_from_state(the_plan: Mapping[str, Any], new: Any, state: Path, out: Pa
     from ontology.project_incremental import MEMBERS, READINGS
     from operating import build_steps
     from operating.host import state_captures
+    from ontology.schema_migrate import served_families
     from operating.pg.ontology_migrate import delta_mark
 
     mark = delta_mark(dsn)   # before the snapshot: anything later is queued at the apply
     projection = state / "projection"
     with contextlib.ExitStack() as stack:
         sources = state_captures(state, stack, internal_domains=_internal_domains(os.environ))
+        never = require_state_sources(the_plan["steps"]["run"], new, sources,
+                                      served_families(dsn))
         unopened = open_snapshots(sources)
         blobs = [s.blobs for s in sources.values()
                  if isinstance(getattr(s, "blobs", None), (str, Path))]
@@ -2269,6 +2307,8 @@ def build_from_state(the_plan: Mapping[str, Any], new: Any, state: Path, out: Pa
                              unit_layer=unit_layer, delta_mark=mark,
                              sequence=next_sequence(dsn))
         report["snapshots_unopened"] = unopened
+        report["sources"] = sorted(sources)
+        report["sources_never_served"] = never
         return report
 
 

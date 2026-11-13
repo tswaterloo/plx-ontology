@@ -150,6 +150,8 @@ class RuleCoverageTest(unittest.TestCase):
     def setUp(self) -> None:
         pe._coverage_kept.clear()
         self.addCleanup(pe._coverage_kept.clear)
+        pe._tables_kept.clear()
+        self.addCleanup(pe._tables_kept.clear)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
@@ -209,6 +211,25 @@ class RuleCoverageTest(unittest.TestCase):
             self.assertIsNone(pe._coverage_key(conn, _params("plain")))
             conn.execute("INSERT INTO st.store_meta VALUES ('changes_stamp', '1')")
             self.assertIsNotNone(pe._coverage_key(conn, _params("plain")))
+
+    def test_the_records_are_read_once_for_every_reader_of_one_inbox_and_store(self) -> None:
+        # what the store holds of the unjudged records is read once; each further reader's
+        # counts are its grant over that, exact, with no statement over the store
+        inbox, store = _inbox(Path(self.tmp.name), *_mixed(7))
+        with closing(_open(inbox, store)) as conn:
+            statements: list[str] = []
+            conn.set_trace_callback(statements.append)
+            first = _new(conn, _params("owner"))
+            self.assertTrue(any("st.objects" in s for s in statements))
+            for reader in READERS:
+                if reader == "owner":
+                    continue
+                statements.clear()
+                expected = _old(conn, _params(reader))
+                statements.clear()
+                self.assertEqual(_new(conn, _params(reader)), expected, reader)
+                self.assertFalse([s for s in statements if "st.object" in s], reader)
+            self.assertEqual(first, _old(conn, _params("owner")))
 
     def test_one_large_skip_is_counted_fast(self) -> None:
         # one skip of 10,000 records (a rule that skipped everything for one cause):

@@ -103,6 +103,35 @@ class SessionSlotsTests(unittest.TestCase):
         self.assertTrue(unknown.acquire(blocking=False) and unknown.acquire(blocking=False))
         self.assertFalse(unknown.acquire(blocking=False))
 
+    def test_an_ended_session_reserves_no_memory_and_a_job_carries_its_deadline(self):
+        """API-003: a released session's admission no longer counts against the next one
+        within the ramp. API-001: a job's deadline is on its future before it is
+        queued (a worker that takes it at once still sees it)."""
+        import queue
+        from operator_api import serving
+        clock = [1000.0]
+        free = [be.ASK_SESSION_FLOOR_GB + 1.5 * be.ASK_SESSION_GB]
+        slots = be.SessionSlots(4, available=lambda: free[0], clock=lambda: clock[0])
+        self.assertTrue(slots.acquire(blocking=False))
+        slots.release()
+        free[0] = be.ASK_SESSION_FLOOR_GB + 1.5 * be.ASK_SESSION_GB   # its memory freed
+        self.assertTrue(slots.acquire(blocking=False))     # the first again: always
+        other = []
+        t = threading.Thread(target=lambda: other.append(slots.acquire(blocking=False)))
+        t.start(); t.join()
+        self.assertEqual(other, [False])                   # one still ramping: counted
+        slots.release()
+        self.assertEqual(slots._admitted, [])
+
+        seen = []
+
+        class Jobs(queue.PriorityQueue):
+            def put(self, item, *a, **k):
+                seen.append(getattr(item[2][0], "plx_deadline", None))
+                super().put(item, *a, **k)
+        serving.submit(Jobs(), threading.Event(), None, lambda view: None, 0, 123.0)
+        self.assertEqual(seen, [123.0])
+
     def test_waiting_questions_queue_in_order_and_are_told_their_place(self):
         """2026-11-08 graded run: asks waiting for a session were refused as busy after
         their wait. They queue first come, first served, each told how many are ahead,
@@ -133,3 +162,39 @@ class SessionSlotsTests(unittest.TestCase):
         slots.release()
         second.join(5)
         self.assertEqual(order, ["first", "second"])
+
+
+class AskDrainCancelTests(unittest.TestCase):
+    """API-011: an Ask whose stream ends before its answer (the reader left, or the Ask
+    timed out) cancels its job and sets the session's cancel token; the agent session's
+    stop reads that token on its next line."""
+
+    def test_a_closed_or_timed_out_drain_cancels_the_session(self):
+        import queue
+        from concurrent.futures import Future
+        from operator_api import errors
+        events: "queue.Queue" = queue.Queue()
+        events.put(("status", 1))
+        future, cancel = Future(), threading.Event()
+        stream = be.WorkspaceBackend._drain(None, events, future, 30, cancel)
+        self.assertEqual(next(stream), ("status", 1))
+        stream.close()                                   # the reader went away
+        self.assertTrue(cancel.is_set())
+        self.assertTrue(future.cancelled())
+        future, cancel = Future(), threading.Event()
+        with self.assertRaises(type(errors.ASK_TIMEOUT)):
+            list(be.WorkspaceBackend._drain(None, queue.Queue(), future, 0.2, cancel))
+        self.assertTrue(cancel.is_set())
+        events = queue.Queue()
+        events.put(("done", None))
+        future, cancel = Future(), threading.Event()
+        self.assertEqual(list(be.WorkspaceBackend._drain(None, events, future, 5, cancel)), [])
+        self.assertFalse(cancel.is_set())                # an answered Ask cancels nothing
+
+    def test_the_session_stop_reads_the_cancel_token(self):
+        from operating import agent_session
+        cancel = threading.Event()
+        stop = agent_session._either(None, lambda _line: cancel.is_set())
+        self.assertFalse(stop("line"))
+        cancel.set()
+        self.assertTrue(stop("line"))

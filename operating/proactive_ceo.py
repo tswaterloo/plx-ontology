@@ -182,9 +182,14 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
                    for r in _found[m]["props"].get(n, ()))
     # an order cancelled was never demand; a draft or an unknown status is not judged
     judged = [v for v in verdicts if v.cls in ("open", "closed") and not cancelled(v)]
+    # an order whose status the rules cannot class (an unmapped status, no order lines):
+    # never counted, but dated in the recent window its customer is not judged (AL-01,
+    # 11-12: 5 of 15 fresh drops said "0 orders" of customers with such orders that month)
+    unclassed = [v for v in verdicts if v.cls == so_status.UNKNOWN and not cancelled(v)]
     members = sorted({m for v in judged for m in v.group})
     values = st.values(["SalesOrder"], ("total_amount", "currency", "order_date",
-                                        *so_status.READ_PROPS), objects=members)
+                                        *so_status.READ_PROPS),
+                       objects=sorted({*members, *(m for v in unclassed for m in v.group)}))
     ties, root = _parties(st, [ORDERED_BY], CUSTOMER_TWINS, settled)
 
     def in_windows(member: str) -> bool:
@@ -241,6 +246,14 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
     # would be short by that order, a drop that is not one
     unknown_value = {c for verdict, _r in unvalued
                      if (c := _party_of(verdict.group, ties, root)[0]) is not None}
+
+    def recent(verdict: Any) -> bool:
+        days = [_day(row["value"]) for m in verdict.group
+                if (row := _one(((values.get(m) or {}).get("props") or {}).get("order_date")))]
+        days = [d for d in days if d is not None]
+        return bool(days) and recent_from < max(days) <= as_of
+    unknown_status = {c for verdict in unclassed if recent(verdict)
+                      if (c := _party_of(verdict.group, ties, root)[0]) is not None}
     # nor one whose unsettled twin (a ``same_record_as`` lead to another cluster) ordered
     # in the recent window: the claim rests on no other order being recorded, and that
     # twin's orders may be this customer's
@@ -275,8 +288,10 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
         if len(before) < DEMAND_MIN_ORDERS or base <= 0 or base < floor.get(currency, base):
             counts["below_floor"] += 1
             continue
-        if customer in unknown_value or customer in twin_active:
+        if customer in unknown_value or customer in twin_active \
+                or customer in unknown_status:
             skipped.note("customer_order_value_unknown" if customer in unknown_value
+                         else "customer_order_status_unknown" if customer in unknown_status
                          else "customer_twin_unsettled", [customer],
                          [(o[0], FINANCE) for o in got])
             continue

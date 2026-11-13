@@ -64,7 +64,7 @@ from ontology import input_guard, link_pack, step_migrate as sm
 
 # sha256 of ``inspect.getsource(step_migrate.build_layer)`` this module follows.
 # (30a1202e23: main's text-marks re-marking, ported below with its marked set checkpointed)
-BUILD_LAYER_DIGEST = "30a1202e23bd312393e082f0b96073c59a39752fb5b53b80059c54e83f2e7d74"
+BUILD_LAYER_DIGEST = "675355e90c4304b7a6ab84fd3552015335278cb77fc4415c80c4efaae731753d"
 FORMAT = "plx-step-resume/v1"
 
 
@@ -509,6 +509,8 @@ def build_layer(the_plan: Mapping[str, Any], new: Any, steps: Mapping[str, Any],
                       "to": the_plan["steps_to"], "owned": owned, "values": values_owned,
                       "scope": scope,
                       "steps": sorted(run), "inputs": inputs, "delta_mark": int(delta_mark),
+                      # the source families the document steps read (SCHEMA-001)
+                      "sources": sorted(sm.document_families(run, new, specs) & set(sources)),
                       "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             if remarks:   # the apply adds ``marks`` to the text fields of these documents
                 record["text_marks"] = {"steps": sorted(remarks),

@@ -7,7 +7,7 @@ export const MAX_BYTES = 8 * 1024 * 1024;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL = 10 * 1024 * 1024;
 
-export const ACCEPT = ".pdf,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.gif,.webp,application/pdf,text/csv,text/plain,image/png,image/jpeg,image/gif,image/webp,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+export const ACCEPT = ".pdf,.xlsx,.docx,.csv,.txt,.md,.png,.jpg,.jpeg,.gif,.webp,application/pdf,text/csv,text/plain,image/png,image/jpeg,image/gif,image/webp,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 export interface Attachment {
   id: string;
@@ -18,7 +18,7 @@ export interface Attachment {
   data: string;
 }
 
-const EXT = /\.(pdf|xlsx|csv|txt|md|png|jpe?g|gif|webp)$/i;
+const EXT = /\.(pdf|xlsx|docx|csv|txt|md|png|jpe?g|gif|webp)$/i;
 const IMAGE = /^image\/(png|jpeg|gif|webp)$/;
 
 export function sizeWords(bytes: number): string {
@@ -30,7 +30,7 @@ export function sizeWords(bytes: number): string {
 /** Why a file cannot be attached beside `have`, or null when it can. */
 export function refusal(file: { name: string; size: number; type: string }, have: { size: number }[]): string | null {
   const image = IMAGE.test(file.type);
-  if (!image && !EXT.test(file.name)) return `${file.name}: attach a PDF, a spreadsheet (.xlsx, .csv), text or an image.`;
+  if (!image && !EXT.test(file.name)) return `${file.name}: attach a PDF, a Word file, a spreadsheet (.xlsx, .csv), text or an image.`;
   if (have.length >= MAX_FILES) return `Up to ${MAX_FILES} attachments a question.`;
   const limit = image ? MAX_IMAGE_BYTES : MAX_BYTES;
   if (file.size > limit) return `${file.name} is larger than ${limit / (1024 * 1024)} MB.`;

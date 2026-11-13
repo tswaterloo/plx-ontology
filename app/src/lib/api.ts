@@ -84,6 +84,8 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   WatchReadResult,
   TimeSaved,
   UploadPreview,
+  DocFillRequest,
+  InstructFill,
   ViewAsPeople,
 } from "./types";
 
@@ -208,6 +210,24 @@ export interface OpsAlarms {
   open: OpsIncident[];
   recovered: OpsIncident[];
   checks: (OpsCheck & { line?: string })[];
+  queue?: OpsQueue | null;
+}
+
+/** The host job queue's last snapshot (operating/jobq/status.py): written by its worker every pass. */
+export interface OpsQueue {
+  configured: boolean;
+  fresh: boolean;
+  written_at?: string | null;
+  age_s?: number;
+  queued?: number;
+  depth?: Record<string, number>;
+  last_hour?: Record<string, number>;
+  memory?: { available_mb: number | null; promised_mb: number; floor_mb: number; headroom_mb: number | null };
+  running?: { id: number; class: string; unit?: string | null; label?: string | null; state: string; mem_mb: number; current_mb?: number | null; running_s?: number | null; waited_s?: number | null }[];
+  waiting?: { id: number; class: string; label?: string | null; waiting_s: number; not_before_s?: number; refusals: number; last_refusal?: string | null }[];
+  dead?: { id: number; class: string; attempts: number; result?: string | null; last_error?: string | null; finished_at?: string | null }[];
+  unmanaged?: { class: string; unit: string; mem_mb: number; current_mb?: number | null }[];
+  events?: { topic: string; state: string; n: number; oldest_s?: number | null }[];
 }
 
 /** The reliability alarms' last pass: the owner and the Team readers (403 for every other reader). */
@@ -417,6 +437,11 @@ export async function approveUpload(uploadId: string, previewHash: string): Prom
   })).json()) as UploadPreview;
 }
 
+/** Fill a form for a record: a new file and every blank with its source, to review. */
+export async function fillForm(body: DocFillRequest): Promise<InstructFill> {
+  return (await (await call("/api/doc-fill", { method: "POST", json: body })).json()) as InstructFill;
+}
+
 /** Owner only: the write path's global kill switch. */
 export async function setAutopilotGlobal(globalOff: boolean): Promise<AutopilotSwitches> {
   return (await (await call("/api/autopilot/switches", { method: "POST", json: { global_off: globalOff } })).json()) as AutopilotSwitches;
@@ -582,7 +607,7 @@ export function mergeSection(page: ObjectPage, s: ObjectSection): ObjectPage {
     case "trail":
       return { ...page, trail: s.trail ?? null, ...(s.not_found ? { not_found: s.not_found } : {}), ...(s.proposals ? { proposals: s.proposals } : {}) };
     case "margin":
-      return { ...page, profitability: s.profitability ?? null };
+      return { ...page, profitability: s.profitability ?? null, profitability_choices: s.profitability_choices ?? [] };
     case "knows":
       return { ...page, knows: s.knows ?? null };
   }

@@ -1215,6 +1215,10 @@ class ObjectPage(_Model):
     profitability: Optional[Profitability] = Field(
         None, json_schema_extra=_optional,
         description="A BC customer's or sales order's margin and why (the margin section).")
+    profitability_choices: list[ObjectRef] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="The margin section's same-named customers that no identity link "
+                    "joins: each a choice, never added together.")
     knows: Optional[PersonKnows] = Field(
         None, json_schema_extra=_optional,
         description="A person's: what they correspond about most (the knows section).")
@@ -1411,6 +1415,11 @@ class ObjectSection(_Model):
         None, json_schema_extra=_optional,
         description="margin: a BC customer's margin and why, or a BC sales order's (its "
                     "customer's, led by the order).")
+    profitability_choices: list[ObjectRef] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="margin: the Business Central customers of this page's exact name that "
+                    "no identity link makes one record: each its own choice (its own page "
+                    "shows its margin), never added together; profitability is null then.")
     not_found: Optional[list[NotFound]] = Field(
         None, json_schema_extra=_optional,
         description="trail: the page's not-found items said against the trail (replace "
@@ -3115,6 +3124,8 @@ class AutopilotAuditRow(_Model):
     by: Optional[str] = None
     undoable: bool = False
     undone: bool = False
+    # an undo that was tried but is not done: pending, failed or unknown (None otherwise)
+    undo_status: Optional[str] = None
     undo_note: Optional[str] = None
 
 
@@ -3386,6 +3397,9 @@ class WorkLogLoop(_Model):
     state: Literal["waiting", "answered", "overdue", "closed"]
     due: Optional[str] = None
     answered_at: Optional[str] = None
+    possible_reply_at: Optional[str] = Field(
+        None, description="Mail from a recipient after the send, outside its thread: "
+        "maybe the reply, never counted as one.")
     nudge: Optional[str] = None
     follow_up: Optional[str] = Field(None, description="A question for Ask that drafts the "
                                      "follow-up (nothing is sent).")
@@ -3663,6 +3677,72 @@ class InstructDocument(_Model):
     folder: Optional[str] = None
 
 
+class FillCitation(_Model):
+    """Where a filled value was read: the record, its property and the source it came
+    from (``open_url`` opens that source as you may read it)."""
+    record: str
+    field: str
+    source: str
+    open_url: Optional[str] = None
+
+
+class FillField(_Model):
+    """One blank of the form: what it held, what the fill put there and why."""
+    label: str
+    before: str
+    after: str
+    status: Literal["filled", "kept", "person_only", "unknown_field", "no_fact",
+                    "ambiguous"] = Field(description=(
+                        "filled: from one value the records agree on (``citation``); kept: it "
+                        "already held a value; person_only: a signature, signer or signing "
+                        "date; unknown_field: no rule for the label; no_fact: no record read "
+                        "holds it; ambiguous: the records disagree. Only filled changes."))
+    reason: str = ""
+    citation: Optional[FillCitation] = None
+
+
+class FillReply(_Model):
+    """The filled copy as a reply to the email the form came in: prepared, never sent from
+    here (``missing`` says what a send with a file needs)."""
+    to: list[str]
+    subject: str
+    attachment: str
+    status: Literal["not_available"]
+    missing: list[str]
+
+
+class InstructFill(_Model):
+    """A form filled from the records as a new file (the original is never changed),
+    every blank listed with its source, for review before anything is saved. Saving it
+    to SharePoint is the upload you approve (``/api/instruct/uploads/{upload_id}``)."""
+    name: str = Field(description="The filled copy's file name.")
+    original: str
+    kind: Literal["docx", "xlsx", "pdf"]
+    record: ObjectRef
+    counts: dict[str, int]
+    fields: list[FillField]
+    notes: list[str] = Field(default_factory=list)
+    digest_before: str
+    digest_after: Optional[str] = None
+    size: int = Field(0, description="The filled copy's bytes (0: nothing was filled).")
+    download_url: Optional[str] = Field(None, description="The filled copy, for you only; "
+                                                          "none when nothing was filled.")
+    upload_id: Optional[str] = None
+    folder: Optional[str] = None
+    reply: Optional[FillReply] = None
+
+
+class DocFillRequest(_Model):
+    """Fill this form for this record: the file (base64), the record (an identifier such
+    as "PO 1234" or a record id), and optionally the SharePoint file it came from (the
+    filled copy goes beside it) or the email it came in (a reply is prepared)."""
+    name: str = Field(min_length=1, max_length=200)
+    data: str = Field(min_length=1, max_length=11_200_000)
+    record: str = Field(min_length=1, max_length=700)
+    source: Optional[str] = Field(None, max_length=4096)
+    reply_to: Optional[str] = Field(None, max_length=4096)
+
+
 class InstructPart(_Model):
     """What an instruction came back with beside its drafts: one question (or, when it
     was unclear whether to do it or answer it, ``route``), exact writes, documents or a
@@ -3678,11 +3758,16 @@ class InstructPart(_Model):
                                             "attended that may hold context.")
     writes: list[InstructWrite] = Field(default_factory=list)
     documents: list[InstructDocument] = Field(default_factory=list)
+    fills: list[InstructFill] = Field(default_factory=list, description="Forms filled from "
+                                      "the records, each as a new file to review.")
     workflow: Optional[InstructWorkflow] = None
     read: list[InstructRead] = Field(default_factory=list)
     context: dict[str, Any] = Field(default_factory=dict)
     answers: list[str] = Field(default_factory=list)
     meetings_used: list[str] = Field(default_factory=list)
+    files: list[AskAttachmentNote] = Field(default_factory=list, description="The files "
+                                           "this instruction read (never their content): "
+                                           "continuing it needs them attached again.")
 
 
 class UploadPreview(_Model):

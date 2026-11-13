@@ -529,6 +529,10 @@ class EngineTests(unittest.TestCase):
         self.assertIn("unknown engine argument surprise",
                       ic.plan_check(args, plan, index, tp.SCHEMA))
         self.assertTrue(ic.plan_check("x", plan, index, tp.SCHEMA))
+        # the shipped plan reads no order own days (the plan path never used them)
+        self.assertNotIn("order_own_days", json.dumps(plan))
+        self.assertEqual(ic.plan_check(plan["evidence"][index]["engine_args"], plan, index,
+                                       tp.SCHEMA), [])
         # an unknown verdict is undetermined: a typed gap, never late
         found = ic.assess({"PurchaseOrder:x:1": ic.Late("PurchaseOrder:x:1", "maybe")},
                           ic.Graph([]), required={}, order_status={}, assembly_status={})

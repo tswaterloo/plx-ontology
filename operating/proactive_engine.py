@@ -164,7 +164,7 @@ import contextlib
 import dataclasses
 from collections import Counter, OrderedDict, defaultdict
 from contextlib import closing
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import functools
 import hashlib
@@ -200,6 +200,12 @@ INBOX_SCHEMA = "plx-gap-inbox/v1"
 MAX_SHOWN = 100
 CARD_BOUND = 500
 VALUES_CHUNK = 500   # object ids per value read (``_Store.values``)
+# On the Postgres ontology a value read joins the value tables itself (``_PG_VALUES_SQL``)
+# and a whole type up to ``PG_TYPE_READ_MAX`` records is read in one statement by its type
+# (32k assembly orders: 9-19 s on a loaded host, against 40-60 s in chunks of any size);
+# a larger type, a type read for all its properties, or named records go in chunks.
+PG_VALUES_CHUNK = 500
+PG_TYPE_READ_MAX = 200_000
 SCOPE_CHUNK = 500    # object ids per scoped list or link read (an incremental pass)
 # The link scan (``_Store.links``): threads (every core unless ``SCAN_THREADS_ENV`` says),
 # rowid ranges per thread (a slow range is evened out by the others), the table size from
@@ -428,6 +434,28 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # rule waits on this read, so the two windows are one)
                     "label_revisions": 720.0,
                     "rd_projects": 120.0}
+# Each detector's share of a run with a budget: the detectors one thread runs one after
+# another (a lane; the tool-call rules on the run's own thread) split what is left of the
+# run's deadline at each one's turn by their windows (``_share``): a detector is given at
+# most its window and at most its weight's part of the time left, so the ones queued after
+# a slow one always start with their part (time one leaves unused carries to the next).
+# Before, the windows were taken whole one after another: the two margin rules (900 s and
+# 600 s) spent the 1,380 s the detectors had of a 1,500 s pass and the customer orders at
+# risk, the vendor terms and the card rules started with 0 s on every served pass
+# (2026-11-12, passes 39-43).
+#
+# A run-thread rule on Postgres has no progress handler to cut a statement short at its
+# window: its statement still running this long after it is cancelled (``_Store.
+# interrupt_thread``), so it ends as ``truncated`` and the next rule keeps its share (the
+# margin rules ran 1,344 s and 1,590 s past windows of 900 s and 600 s live).
+RUN_THREAD_GRACE_SECONDS = 5.0
+# Rules run at most once per this many hours (a pass between leaves their gaps, records and
+# status as they were, named in the summary's ``not_due``): their reads take more than
+# their share of a pass, so each other pass runs without them. Due again at once when the
+# deployed engine's code is not the one their last run was by. Measured alone on the served
+# store (2026-11-12, see the commit): the margin rules.
+DETECTOR_CADENCE_HOURS: dict[str, float] = {"negative_margin": 12.0, "margin_erosion": 12.0}
+_CADENCE_KEY = "cadence:"   # inbox meta key per rule: when its last run started, by what code
 # Store-only detectors that run side by side on threads (each on its own store connection):
 # every set-based rule but the customer-PO scan (it reads the runtime's mirror, on the
 # run's own thread); the vendor rule after the late rule on the same thread (it reads that
@@ -566,6 +594,17 @@ class _LinkRows:
         self.lock = threading.Lock()
 
 
+# ``_Store.values`` on the Postgres ontology: the ``object_values`` view's columns read from
+# its tables (a record's versions, their current value sources, the cells), the same rows
+_PG_VALUES_SQL = (
+    "SELECT o.object_id, o.object_type, f.property, k.value_type, c.value, k.unit, "
+    "k.quantity_role, v.l1_handle, k.markings, COALESCE(s.lineage, v.lineage) AS lineage "
+    "FROM objects o JOIN object_versions v ON v.object_id = o.object_id "
+    "JOIN value_sources s ON s.ver = v.rowid AND s.superseded_at IS NULL "
+    "JOIN value_cells c ON c.src = s.src JOIN value_kinds k ON k.kind = c.kind "
+    "JOIN value_fields f ON f.field = c.field WHERE ")
+
+
 class _Store:
     """One store generation, read only, every read over current records not removed.
 
@@ -613,6 +652,9 @@ class _Store:
         if problem is not None:
             self.close()
             raise ostore.StoreError("store_format_mismatch", problem)
+        from operating.pg.sqlite_compat import PgCompatConnection
+        # the Postgres ontology (``_connect``): value reads join its value tables directly
+        self.pg = isinstance(self.conn, PgCompatConnection)
         self.digest = self.meta("content_digest")
         self.threads = scan_threads() if threads is None else max(1, threads)
         self.link_rows = _LinkRows()
@@ -755,6 +797,15 @@ class _Store:
             with contextlib.suppress(Exception):
                 conn.interrupt()
 
+    def interrupt_thread(self, thread: threading.Thread) -> None:
+        """Abort the statement ``thread``'s own connection is running (a run-thread rule
+        past its window on Postgres, which has no progress handler)."""
+        with self._conns_lock:
+            conns = [c for c in self._conns if self._conn_thread.get(id(c)) is thread]
+        for conn in conns:
+            with contextlib.suppress(Exception):
+                conn.interrupt()
+
     def spawn(self, name: str, work: Callable[[], None]) -> None:
         """Run ``work`` on a thread of its own that reads this store (a read a rule starts
         early and collects later); ``close`` stops and waits for it before it closes the
@@ -822,23 +873,57 @@ class _Store:
         else:
             ids = [row[0] for row in self.conn.execute(listed + " ORDER BY o.object_id",
                                                        params)]
-        sql = ("SELECT o.object_id, o.object_type, v.property, v.value_type, v.value, v.unit, "
-               "v.quantity_role, v.l1_handle, v.markings, v.lineage FROM objects o "
-               "JOIN object_values v ON v.object_id = o.object_id "
-               "WHERE o.object_id IN (SELECT value FROM json_each(:chunk)) "
-               "AND v.superseded_at IS NULL")
         chunk_params: dict[str, Any] = {}
-        if props is not None:
-            sql += " AND v.property IN (SELECT value FROM json_each(:props))"
-            chunk_params["props"] = json.dumps(list(props))
-        sql += " ORDER BY o.object_id, v.property, v.l1_handle"
+        size = VALUES_CHUNK
+        if getattr(self, "pg", False):
+            # the view's columns from its tables, and the properties' fields named first:
+            # through the ``object_values`` view the planner looked the fields up again for
+            # every value source of every record (1.3 s per 500 records)
+            fields = ""
+            if props is not None:
+                fields = " AND c.field IN (SELECT value FROM json_each(:fields))"
+                chunk_params["fields"] = json.dumps(sorted(row[0] for row in self.conn.execute(
+                    "SELECT field FROM value_fields WHERE property IN (SELECT value FROM "
+                    "json_each(:props))", {"props": json.dumps(list(props))})))
+            order = " ORDER BY o.object_id, f.property, v.l1_handle"
+            if objects is None and not self.scoped and props is not None \
+                    and len(ids) <= PG_TYPE_READ_MAX:
+                # the whole type in one statement, the records the listing gave (same
+                # order: the store's own object id order)
+                return self._shape(self.conn.execute(
+                    _PG_VALUES_SQL + "o.object_type IN (SELECT value FROM json_each(:types)) "
+                    "AND NOT " + ostore.removed_at_sql("o.object_id") + fields + order,
+                    {**chunk_params, "types": params["types"]}), ids)
+            sql = (_PG_VALUES_SQL + "o.object_id IN (SELECT value FROM json_each(:chunk))"
+                   + fields + order)
+            size = PG_VALUES_CHUNK
+        else:
+            sql = ("SELECT o.object_id, o.object_type, v.property, v.value_type, v.value, "
+                   "v.unit, v.quantity_role, v.l1_handle, v.markings, v.lineage FROM objects o "
+                   "JOIN object_values v ON v.object_id = o.object_id "
+                   "WHERE o.object_id IN (SELECT value FROM json_each(:chunk)) "
+                   "AND v.superseded_at IS NULL")
+            if props is not None:
+                sql += " AND v.property IN (SELECT value FROM json_each(:props))"
+                chunk_params["props"] = json.dumps(list(props))
+            sql += " ORDER BY o.object_id, v.property, v.l1_handle"
         out: dict[str, dict[str, Any]] = {}
-        for start in range(0, len(ids), VALUES_CHUNK):
-            chunk_params["chunk"] = json.dumps(ids[start:start + VALUES_CHUNK])
-            for row in self.conn.execute(sql, chunk_params):
-                entry = out.setdefault(row["object_id"],
-                                       {"type": row["object_type"], "props": {}})
-                entry["props"].setdefault(row["property"], []).append(dict(row))
+        for start in range(0, len(ids), size):
+            chunk_params["chunk"] = json.dumps(ids[start:start + size])
+            self._shape(self.conn.execute(sql, chunk_params), None, out)
+        return out
+
+    @staticmethod
+    def _shape(rows: Iterable[Any], listed: Sequence[str] | None,
+               out: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+        """``values``' rows by object (``listed``: only the records the listing gave)."""
+        out = {} if out is None else out
+        keep = None if listed is None else frozenset(listed)
+        for row in rows:
+            if keep is not None and row["object_id"] not in keep:
+                continue
+            entry = out.setdefault(row["object_id"], {"type": row["object_type"], "props": {}})
+            entry["props"].setdefault(row["property"], []).append(dict(row))
         return out
 
     def links(self, types: Sequence[str], tiers: Sequence[str] | None = None, *,
@@ -1501,7 +1586,7 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             undated_reads[order].append((order, rank, _gap(
                 UNDATED_KIND, name, rep, "PurchaseOrder", "undated",
                 summary="An open purchase order has no due date recorded"
-                        + (" (its only dates are import or record-creation defaults)"
+                        + (" (its only dates are system-computed or placeholder defaults)"
                            if po.need is not None and po.need.defaulted else ""),
                 missing="What is the requested-by date of this open purchase order?",
                 why="The order is open, but no requested-by date, supplier-confirmed "
@@ -1538,10 +1623,10 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             found = _link_cites(src, links)
             order_gap(_gap(
                 "late_po", name, rep, "PurchaseOrder", "overdue",
-                summary=_late_summary(basis, need),
+                summary=_late_summary(basis, need, po.need.doubt),
                 missing=f"When will the purchase order due {need.isoformat()} be received?",
                 why="The order is still open after its due date.",
-                priority="medium", about=("PurchaseOrder", "expected_date"),
+                priority=_doubt_priority("medium", po.need.doubt), about=("PurchaseOrder", "expected_date"),
                 groups=[need_cites, *status_cites], extra=number + found,
                 days_late=(as_of - need).days,
                 # "found, unverified" only to a reader who may open one of the found
@@ -1558,11 +1643,11 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             counts["confirmation_needs_check"] += count("confirmation_needs_check")
             order_gap(_gap(
                 "late_po", name, rep, "PurchaseOrder", "overdue",
-                summary=_late_summary(basis, need),
+                summary=_late_summary(basis, need, po.need.doubt),
                 missing=f"When will the purchase order due {need.isoformat()} be received?",
                 why="The order is still open after its due date. A document that may be its "
                     "supplier's confirmation names a number another order also holds.",
-                priority="medium", about=("PurchaseOrder", "expected_date"),
+                priority=_doubt_priority("medium", po.need.doubt), about=("PurchaseOrder", "expected_date"),
                 groups=[need_cites, *status_cites], extra=number + found,
                 days_late=(as_of - need).days, confirmation=po_status.NEEDS_CHECK,
                 confirmation_cites=[c[0] for c in found], due_basis=basis))
@@ -1572,12 +1657,12 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
                 counts["unconfirmed"] += count("unconfirmed")
                 order_gap(_gap(
                     "unconfirmed_po", name, rep, "PurchaseOrder", "unconfirmed",
-                    summary=_unconfirmed_summary(basis, need),
+                    summary=_unconfirmed_summary(basis, need, po.need.doubt),
                     missing=f"Has the supplier confirmed the purchase order due "
                             f"{need.isoformat()}?",
                     why="The order is open, its due date has come and no supplier "
                         "confirmation is linked to any copy of it in the store.",
-                    priority="high", about=("PurchaseOrder", "expected_date"),
+                    priority=_doubt_priority("high", po.need.doubt), about=("PurchaseOrder", "expected_date"),
                     groups=[need_cites, *status_cites], extra=number,
                     days_late=(as_of - need).days if late_now else None,
                     confirmation="none_found", due_basis=basis))
@@ -1585,11 +1670,11 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
         if late_now:   # late on the requested-by date alone, whatever was confirmed
             order_gap(_gap(
                 "late_po", name, rep, "PurchaseOrder", "overdue",
-                summary=_late_summary(basis, need),
+                summary=_late_summary(basis, need, po.need.doubt),
                 missing=f"When will the purchase order due {need.isoformat()} be "
                         "received?",
                 why="The order is still open after its due date.",
-                priority="medium", about=("PurchaseOrder", "expected_date"),
+                priority=_doubt_priority("medium", po.need.doubt), about=("PurchaseOrder", "expected_date"),
                 groups=[need_cites, *status_cites], extra=number + _link_cites(src, settled),
                 days_late=(as_of - need).days, confirmation="confirmed",
                 confirmation_cites=[c[0] for c in _link_cites(src, settled)], due_basis=basis))
@@ -1611,12 +1696,12 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             order_gap(_gap(
                 "late_po", name, rep, "PurchaseOrder", "confirmed_after_need_date",
                 summary=f"The supplier confirmed delivery on {shown}, after the need date "
-                        f"{need.isoformat()}",
+                        f"{need.isoformat()}" + _doubt_words(po.need.doubt),
                 missing=f"Can the purchase order needed by {need.isoformat()} arrive in time, "
                         f"or must the plan move to {shown}?",
                 why="A linked supplier confirmation states a delivery date later than the "
                     "order's need date.",
-                priority="high", about=("PurchaseOrder", "expected_date"),
+                priority=_doubt_priority("high", po.need.doubt), about=("PurchaseOrder", "expected_date"),
                 groups=[need_cites, *status_cites,
                         *[_cites(found, link["markings"]) for link, found in by_link.values()]],
                 extra=number))
@@ -1700,14 +1785,29 @@ def _historic_orders(st: _Store, as_of: date, order_of: Mapping[str, Any]) -> se
         po_status.OPEN, as_of=as_of, dates=dates.get(order, ())) == active.HISTORIC}
 
 
-def _late_summary(basis: str, need: date) -> str:
-    return f"An open purchase order is past {_DUE_WORDS[basis]} {need.isoformat()}"
+def _doubt_words(doubt: str | None) -> str:
+    """What a doubted due date says (``po_status.Need.doubt``, BIZ-007): the date is the
+    order's own day, kept and judged, but it may be a form default."""
+    if doubt == po_status.OWN_DAY:
+        return ("; that date is the day the order was placed, so it may be a form default "
+                "rather than the requested date")
+    return "; the due date is in doubt" if doubt else ""
 
 
-def _unconfirmed_summary(basis: str, need: date) -> str:
+def _doubt_priority(priority: str, doubt: str | None) -> str:
+    return "low" if doubt else priority
+
+
+def _late_summary(basis: str, need: date, doubt: str | None = None) -> str:
+    return (f"An open purchase order is past {_DUE_WORDS[basis]} {need.isoformat()}"
+            + _doubt_words(doubt))
+
+
+def _unconfirmed_summary(basis: str, need: date, doubt: str | None = None) -> str:
     due = ("needed by" if basis == "requested" else "due by its lead time on"
            if basis == "lead_time" else "due by")
-    return f"An open purchase order {due} {need.isoformat()} has no supplier confirmation"
+    return (f"An open purchase order {due} {need.isoformat()} has no supplier confirmation"
+            + _doubt_words(doubt))
 
 
 def _receipt_reconciliation(name: str, conflict: Mapping[str, Any], records: Iterable[str],
@@ -4329,6 +4429,91 @@ def _lanes(order: Sequence[str], threads: int) -> list[list[str]]:
     return sorted(lanes, key=lambda ln: first.get(ln[0], 2))
 
 
+def _share(name: str, rest: Sequence[str], windows: Mapping[str, float],
+           left: float, cadenced: bool = False) -> float:
+    """``name``'s window at its turn: its own (``windows``), but at most its part of the
+    ``left`` seconds of the run by weight (its window) against the ``rest`` its thread
+    runs after it, so none of them starts with nothing (``DETECTOR_SECONDS``)."""
+    own = windows.get(name, DETECTOR_SECONDS_DEFAULT)
+    if math.isinf(left):
+        return own
+    if cadenced:
+        # a rule due on its cadence runs seldom because it needs its whole window: it is
+        # given that (never more, never past the run's deadline), not a part of the pass
+        return max(0.0, min(own, left))
+    total = own + sum(windows.get(other, DETECTOR_SECONDS_DEFAULT) for other in rest)
+    return max(0.0, min(own, left * own / total if total > 0 else left))
+
+
+class _Watchdog:
+    """While a run-thread rule runs: from ``seconds`` on, the statements its thread's store
+    connection runs are cancelled (each second, until it ends), as SQLite's progress
+    handler stops them at the window (``RUN_THREAD_GRACE_SECONDS``)."""
+
+    def __init__(self, st: "_Store", seconds: float) -> None:
+        self.st, self.seconds = st, seconds
+        self.thread = threading.current_thread()
+        self.lock = threading.Lock()
+        self.done = False
+        self.stop = threading.Event()
+        self.watcher: threading.Thread | None = None
+
+    def _watch(self) -> None:
+        if self.stop.wait(max(0.0, self.seconds)):
+            return
+        while True:
+            with self.lock:   # never a cancel once the rule ended (the next one's read)
+                if self.done:
+                    return
+                self.st.interrupt_thread(self.thread)
+            if self.stop.wait(1.0):
+                return
+
+    def __enter__(self) -> "_Watchdog":
+        if not math.isinf(self.seconds):
+            self.watcher = threading.Thread(target=self._watch, daemon=True,
+                                            name="proactive-watchdog")
+            self.watcher.start()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        with self.lock:
+            self.done = True
+        self.stop.set()
+
+
+def _not_due(inbox: Path, names: Sequence[str], hours: Mapping[str, float],
+             moment: datetime) -> list[str]:
+    """Of ``names``, the rules whose last run started less than their ``hours`` before
+    ``moment`` by the engine code deployed (``_CADENCE_KEY``); read only. A rule never
+    run, run by other code, or whose record cannot be read is due (it runs, never
+    skipped unseen)."""
+    if not names or not inbox.is_file():
+        return []
+    try:
+        with closing(sqlite3.connect(f"{inbox.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            held = dict(conn.execute(
+                "SELECT key, value FROM meta WHERE key IN (SELECT value FROM json_each(?))",
+                (json.dumps([_CADENCE_KEY + name for name in names]),)))
+    except sqlite3.Error:
+        return []
+    code = engine_code()
+    out = []
+    for name in names:
+        try:
+            record = json.loads(held.get(_CADENCE_KEY + name) or "null")
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("code") != code:
+            continue
+        at = _moment(record.get("at"))
+        if at is None or moment.tzinfo is None or at > moment:
+            continue
+        if moment - at < timedelta(hours=float(hours[name])):
+            out.append(name)
+    return out
+
+
 def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         locked: bool = False, **options: Any) -> dict[str, Any]:
     """Run the detectors and fold their gaps into the inbox (``_run``), holding the
@@ -4420,7 +4605,8 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         reader_may_read: Callable[[str], bool] | None = None,
         pool: Any = None, people: Any = None, threads: int | None = 1,
         detector_seconds: Mapping[str, float] | None = None,
-        scope: "Scope | None" = None, sheet_readings: Any = None) -> dict[str, Any]:
+        scope: "Scope | None" = None, sheet_readings: Any = None,
+        cadence: Mapping[str, float] | None = None) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -4454,7 +4640,11 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     ``scope``: an incremental pass (``Scope``, ``operating.proactive_incremental``): its
     rules read only the scope's records and keep only the gaps about their own subjects;
     only those subjects' gaps are folded and resolved (``_fold``), nothing else of the
-    inbox (the full run's records, counts and generation) changes."""
+    inbox (the full run's records, counts and generation) changes. With a ``budget`` each
+    detector is given its share of what is left at its turn (``_share``). ``cadence``:
+    hours per rule (default ``DETECTOR_CADENCE_HOURS``; ``{}``: none) a rule waits after
+    its last run started before it runs again (``_not_due``); one not due is left as it
+    was and named in the summary's ``not_due``."""
     moment = clock()
     as_of = po_status.business_today(moment) if as_of is None else as_of
     if type(as_of) is not date:   # a datetime or text is no day: refused, never coerced
@@ -4487,6 +4677,11 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         if unknown:
             raise ValueError("detector_unknown")
         order = list(DETECTORS) if only is None else [d for d in DETECTORS if d in only]
+        hours = DETECTOR_CADENCE_HOURS if cadence is None else cadence
+        not_due = [] if scope is not None else _not_due(
+            Path(inbox), [d for d in order if d in hours], hours, moment)
+        order = [d for d in order if d not in not_due]
+        started_at: dict[str, str] = {}   # the cadenced rules this run started: when
         if (only is None or scope is not None) and not (budget is not None and budget.spent()):
             # every link type the rules read, in one scan of the link table (``_Store``)
             started = time.monotonic()
@@ -4534,12 +4729,14 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                            else _people(Path(store_path)), margins=head)}
         windows = {**DETECTOR_SECONDS, **(detector_seconds or {})}
 
-        def body(name: str) -> tuple[dict[str, Any], float]:
-            """One detector in its own window, on the thread it is handed to; never
-            raising: (its result, its seconds)."""
+        def body(name: str, seconds_: float) -> tuple[dict[str, Any], float]:
+            """One detector in its own window (``seconds_``), on the thread it is handed
+            to; never raising: (its result, its seconds)."""
             refused = window.refused_here()
-            window.open(windows.get(name, DETECTOR_SECONDS_DEFAULT))
+            window.open(seconds_)
             started = time.monotonic()
+            if name in hours:
+                started_at[name] = clock().isoformat()
             st.judging(name)
             try:
                 result = steps[name]()
@@ -4567,26 +4764,30 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                     result["reasons"].append(TIME_BUDGET)
             return result, round(time.monotonic() - started, 1)
 
-        def judge(name: str, runner: list) -> None:
+        def judge(name: str, runner: list, rest: Sequence[str] = ()) -> None:
             """A store-only ``name`` on its lane's runner thread (``runner[0]``), waited for no longer
             than its window (and the run's deadline) and ``HARD_GRACE_SECONDS``: one that
             does not end by then (a loop that never reads the store) is ``truncated``, its
             thread left to end alone (its result never read) and the lane goes on on a new
-            thread, so no detector holds up the ones after it."""
+            thread, so no detector holds up the ones after it. ``rest``: the detectors
+            this thread runs after it (its window is its share, ``_share``)."""
             if budget is not None and budget.spent():
                 results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
                 return
             started = time.monotonic()
-            limit = min(windows.get(name, DETECTOR_SECONDS_DEFAULT),
-                        max(0.0, window.deadline - window.monotonic()))
+            limit = _share(name, rest, windows, window.deadline - window.monotonic(),
+                           cadenced=name in hours)
             if name in ON_RUN_THREAD:
                 # on the run's own thread (the caller's session and the runtime's mirror
                 # may be bound to it): every tool call and pool map is refused past the
                 # window (``Budget.guard``, ``Budget.pooled``; an investigation is handed
-                # its time left) and every store read interrupted at it
-                results[name], seconds[name] = body(name)
+                # its time left) and every store read interrupted at it (on Postgres, by
+                # cancelling the statement still running ``RUN_THREAD_GRACE_SECONDS``
+                # after it)
+                with _Watchdog(st, limit + RUN_THREAD_GRACE_SECONDS):
+                    results[name], seconds[name] = body(name, limit)
                 return
-            done = runner[0].submit(body, name)
+            done = runner[0].submit(body, name, limit)
             if done.wait(None if math.isinf(limit) else limit + HARD_GRACE_SECONDS):
                 results[name], seconds[name] = done.value or (
                     _result([], status="failed", reasons=["detector_thread_ended"]),
@@ -4611,8 +4812,8 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             if lanes:
                 def lane(names: Sequence[str]) -> None:
                     mine = runner_()
-                    for name in names:
-                        judge(name, mine)
+                    for n, name in enumerate(names):
+                        judge(name, mine, names[n + 1:])
                 side = [d for names in lanes for d in names]
                 width = min(len(lanes), detector_threads() if threads is None else threads)
                 own = runner_()
@@ -4622,18 +4823,17 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                                         thread_name_prefix="proactive-lane") as threads_:
                     running = {name: future for names in lanes
                                for future in [threads_.submit(lane, names)] for name in names}
-                    for name in order:
-                        if name in side:
-                            continue
+                    mine_ = [name for name in order if name not in side]
+                    for n, name in enumerate(mine_):
                         if name == "orders_at_risk" and LATE_RULE in running:
                             running[LATE_RULE].result()   # it asks the late POs first
-                        judge(name, own)
+                        judge(name, own, mine_[n + 1:])
                     for future in set(running.values()):
                         future.result()
             else:
                 own = runner_()
-                for name in order:
-                    judge(name, own)
+                for n, name in enumerate(order):
+                    judge(name, own, order[n + 1:])
         finally:
             if head is not None:
                 head.stop()   # its rule did not run (the time ran out): no read goes on
@@ -4695,6 +4895,14 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                 gaps = {gid: gap for gid, gap in gaps.items() if gap["detector"] in results}
             summary = _summary(results, gaps, held)
             summary["seconds"] = seconds   # each detector's run time (counts and enums only)
+            if not_due:
+                summary["not_due"] = sorted(not_due)   # their cadence: left as they were
+            code = engine_code()
+            conn.executemany("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [
+                (_CADENCE_KEY + name, json.dumps({"at": at, "code": code}, sort_keys=True))
+                for name, at in sorted(started_at.items())
+                if name in results and results[name].get("status") not in
+                ("not_configured", "failed")])
             if abandoned:
                 summary["cut_off"] = sorted(abandoned)   # past their hard window
             if moved:
@@ -5755,28 +5963,26 @@ def _visible_unjudged(conn: sqlite3.Connection, params: Mapping[str, str], table
             if hit is not None:
                 _coverage_kept.move_to_end(key)
                 return hit[0], {k: dict(v) for k, v in hit[1].items()}
-    # the skips the reader may not read the whole cause of, checked once; then one pass
-    # over the counted records (a set lookup per record, never a per-record query)
-    hidden = {(d, k) for d, k in conn.execute(
-        "SELECT DISTINCT detector, skip FROM (" + _HIDDEN_SKIPS + ")", params)}
-    has_reasons = "unjudged_reasons" in tables
-    counted: dict[str, set[str]] = defaultdict(set)
-    per_reason: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for name, skip, object_id, reason in conn.execute(
-            "SELECT u.detector, u.skip, u.object_id, " + (
-                "r.reason FROM unjudged_causes u LEFT JOIN unjudged_reasons r ON "
-                "r.detector = u.detector AND r.skip = u.skip" if has_reasons else
-                "NULL FROM unjudged_causes u") + " WHERE u.subject = 1"):
-        if (name, skip) in hidden:
-            continue
-        counted[name].add(object_id)
-        if reason is not None:
-            per_reason[(name, reason)].add(object_id)
-    visible = ({name: len(ids) for name, ids in counted.items()}
-               if "rule_coverage" in tables else {})
+    # what every reader's counts are made of, read once per inbox and store (not per
+    # reader); this reader's grant then decides each kind of cause, never each record
+    table = _unjudged_table(conn, tables, key[:4] if key is not None else None)
+    marks = set(json.loads(params["marks"]))
+    auds = set(json.loads(params["aud"]))
+    shown_cause = [cause_marks in marks and any(a in auds and m in marks for a, m in pairs)
+                   for cause_marks, pairs in table["causes"]]
+    shown_skip = [all(shown_cause[c] for c in kinds) for kinds in table["skips"]]
+    counted: dict[str, int] = defaultdict(int)
+    per_reason: dict[tuple[str, str], int] = defaultdict(int)
+    for (name, reason, skips), n in table["counts"].items():
+        if any(shown_skip[k] for k in skips):
+            if reason is None:
+                counted[name] += n
+            else:
+                per_reason[(name, reason)] += n
+    visible = dict(counted) if "rule_coverage" in tables else {}
     by_reason: dict[str, dict[str, int]] = defaultdict(dict)
-    for (name, reason), ids in per_reason.items():
-        by_reason[name][reason] = len(ids)
+    for (name, reason), n in per_reason.items():
+        by_reason[name][reason] = n
     by_reason = dict(by_reason)
     if key is not None:
         with _coverage_lock:
@@ -5784,6 +5990,79 @@ def _visible_unjudged(conn: sqlite3.Connection, params: Mapping[str, str], table
             while len(_coverage_kept) > _COVERAGE_KEPT:
                 _coverage_kept.popitem(last=False)
     return visible, by_reason
+
+
+# per (inbox, store data): ``_unjudged_table``, the same for every reader
+_TABLES_KEPT = 4
+_tables_kept: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+
+
+def _unjudged_table(conn: sqlite3.Connection, tables: set[str],
+                    key: tuple[Any, ...] | None) -> dict[str, Any]:
+    """The rule coverage's unjudged records sorted by what a grant decides of them, for
+    every reader at once: ``causes``, each kind of cause (its own markings, and the
+    (audience, markings) of every current version of its record: none when the record is
+    not in the store, never readable); ``skips``, each kind of skip (the cause kinds it
+    holds: a skip is readable only when every cause is); ``counts``, per (rule, reason or
+    None, the skip kinds a record is counted under) how many records. A reader's count of
+    a rule is the records with at least one readable skip kind, as ``_visible_unjudged``
+    counted them one by one. Kept per ``key`` (the inbox and store parts of
+    ``_coverage_key``), never for a key that cannot be said."""
+    if key is not None:
+        with _coverage_lock:
+            hit = _tables_kept.get(key)
+            if hit is not None:
+                _tables_kept.move_to_end(key)
+                return hit
+    pairs_of: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for object_id, audience, markings in conn.execute(
+            "SELECT so.object_id, so.audience_key, sv.markings FROM st.objects so JOIN "
+            "st.object_versions sv ON sv.object_id = so.object_id AND sv.superseded_at IS "
+            "NULL WHERE so.object_id IN (SELECT DISTINCT object_id FROM unjudged_causes)"):
+        pairs_of[object_id].add((audience, markings))
+    # each record's versions as one of the few kinds there are (not in the store: none)
+    places: dict[frozenset, int] = {frozenset(): 0}
+    place_of = {o: places.setdefault(frozenset(p), len(places)) for o, p in pairs_of.items()}
+    del pairs_of
+    causes: dict[tuple[Any, int], int] = {}
+    skip_causes: dict[tuple[str, str], set[int]] = defaultdict(set)
+    subjects: list[tuple[str, str, str]] = []
+    for name, skip, object_id, markings, subject in conn.execute(
+            "SELECT detector, skip, object_id, markings, subject FROM unjudged_causes"):
+        kind = (markings, place_of.get(object_id, 0))
+        skip_causes[(name, skip)].add(causes.setdefault(kind, len(causes)))
+        if subject == 1:
+            subjects.append((name, skip, object_id))
+    skips: dict[frozenset, int] = {}
+    skip_kind = {pair: skips.setdefault(frozenset(held), len(skips))
+                 for pair, held in skip_causes.items()}
+    reasons: dict[tuple[str, str], list[str]] = defaultdict(list)
+    if "unjudged_reasons" in tables:
+        for name, skip, reason in conn.execute(
+                "SELECT detector, skip, reason FROM unjudged_reasons"):
+            if reason is not None:
+                reasons[(name, skip)].append(reason)
+    under: dict[tuple[str, Any, str], set[int]] = defaultdict(set)
+    for name, skip, object_id in subjects:
+        kind = skip_kind[(name, skip)]
+        under[(name, None, object_id)].add(kind)
+        for reason in reasons.get((name, skip), ()):
+            under[(name, reason, object_id)].add(kind)
+    counts: dict[tuple[str, Any, frozenset], int] = defaultdict(int)
+    for (name, reason, _), kinds in under.items():
+        counts[(name, reason, frozenset(kinds))] += 1
+    place_pairs = {n: tuple(sorted(p)) for p, n in places.items()}
+    table = {"causes": [(m, place_pairs[p]) for (m, p), _ in
+                        sorted(causes.items(), key=lambda item: item[1])],
+             "skips": [tuple(sorted(k)) for k, _ in sorted(skips.items(),
+                                                          key=lambda item: item[1])],
+             "counts": dict(counts)}
+    if key is not None:
+        with _coverage_lock:
+            _tables_kept[key] = table
+            while len(_tables_kept) > _TABLES_KEPT:
+                _tables_kept.popitem(last=False)
+    return table
 
 
 def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str], bool],

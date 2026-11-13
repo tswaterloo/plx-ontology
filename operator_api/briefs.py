@@ -178,7 +178,7 @@ def with_carried_items(brief: Any, held: frozenset[str], who: Any, state_dir: An
     for section in brief.get("sections") or ():
         if section.get("key") == "notes" and rows:
             section["rows"] = list(section.get("rows") or ()) + [
-                {**r, "sources": [{"citation": c} for c in r["sources"]]} for r in rows]
+                {**r, "sources": list(r.get("sources") or ())} for r in rows]
             section["note"] = None
     return brief
 

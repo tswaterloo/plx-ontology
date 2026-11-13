@@ -58,6 +58,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequenc
 
 from operating import declared_schema as _schemas
 from operating.declared_schema import work_log as _WORK_LOG
+from operating.app_tables import rows as _rows
 
 from . import feedback as fb
 from .ask_drafts import linked_records
@@ -79,6 +80,43 @@ VERBS: dict[str, frozenset[str]] = {
 KINDS = tuple(VERBS)
 REPLY_HOURS = 72          # operating.autopilot.REPLY_HOURS: the window a reply counts in
 MAX_DETAIL = 200_000      # an Ask answer as JSON
+EVENT_BATCH = 500         # matching rows read (and exclusion-checked) at a time (API-008)
+# What an answer too large to keep whole keeps (API-010): enough to continue an
+# instruction and to approve its drafts; ``_kept`` says it is partial.
+_KEPT_CORE = ("question", "conversation_id", "answer_id", "direct_answer", "instruction",
+              "drafts")
+PARTIAL_TURN = ("This answer was too large to keep in full: its drafts and the question "
+                "are kept. Ask again to see the whole answer.")
+
+
+def _kept_detail(detail: Any) -> str:
+    """``detail`` as JSON within ``MAX_DETAIL``: whole, else its core (API-010) with every
+    handle the whole one cites (so a re-check of its sources stays complete; drafts go
+    when those cannot be decided), else only that it was not kept."""
+    whole = json.dumps(detail, ensure_ascii=False, default=str)
+    if len(whole) <= MAX_DETAIL:
+        return whole
+    if not isinstance(detail, dict):
+        return json.dumps({"_kept": "none"})
+    from .ask_drafts import cited_handles
+    core = {k: detail[k] for k in _KEPT_CORE if k in detail}
+    try:
+        core["_cited"] = {"citations": cited_handles(detail)}
+    except ValueError:
+        core.pop("drafts", None)
+        core["_cited"] = {"system": "undecided", "quote": "a source without a handle"}
+    core["_kept"] = "partial"
+    for extra in ("facts",):   # what a draft's typed values are checked against
+        if extra in detail:
+            wider = {**core, extra: detail[extra]}
+            if len(json.dumps(wider, ensure_ascii=False, default=str)) <= MAX_DETAIL:
+                core = wider
+    text = json.dumps(core, ensure_ascii=False, default=str)
+    if len(text) <= MAX_DETAIL:
+        return text
+    return json.dumps({"_kept": "none", "question": str(detail.get("question") or "")[:2000],
+                       "conversation_id": detail.get("conversation_id"),
+                       "answer_id": detail.get("answer_id")}, default=str)
 _THREAD = re.compile(r"^(ask|autopilot|card|write|record|alert|case):[A-Za-z0-9_.:/@#-]{1,400}$")
 _CASE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
 
@@ -220,8 +258,7 @@ class WorkLog:
                                                        or "")[:60] or None,
                          "label": fb.clean(r.get("label"), guard, 300)})
         if isinstance(detail, (dict, list)):
-            detail = json.dumps(detail, ensure_ascii=False, default=str)
-            detail = detail if len(detail) <= MAX_DETAIL else None
+            detail = _kept_detail(detail)
         else:
             detail = fb.clean(detail, guard, 4000)
         row = (_iso(self.clock()), reader.key, fb.clean(reader.display_name, guard, 120), kind,
@@ -296,8 +333,7 @@ class WorkLog:
     # -- reads --
 
     def _meta(self, reader_key: str, thread: str) -> dict[str, Any]:
-        row = self._conn.execute("SELECT name, pinned, case_id, closed_at FROM thread WHERE "
-                                 "reader = ? AND thread = ?", (reader_key, thread)).fetchone()
+        row = _rows.WORK_LOG_THREAD.first(self._conn, {"reader": reader_key, "thread": thread})
         return {"name": row["name"] if row else None, "pinned": bool(row and row["pinned"]),
                 "case_id": row["case_id"] if row else None,
                 "closed_at": row["closed_at"] if row else None}
@@ -307,7 +343,8 @@ class WorkLog:
                thread: Optional[str] = None, since: Optional[str] = None,
                until: Optional[str] = None, case_id: Optional[str] = None,
                pinned: bool = False, open_loops: bool = False, limit: int = 50,
-               offset: int = 0) -> tuple[list[dict[str, Any]], Optional[int]]:
+               offset: int = 0, sends: bool = False
+               ) -> tuple[list[dict[str, Any]], Optional[int]]:
         """Events newest first (``reader``: only theirs; None: everyone's, the owner's
         view) and how many match; ([], None) while the exclusion cannot decide."""
         guard = self.guard()
@@ -322,6 +359,8 @@ class WorkLog:
         if kind:
             where.append("e.kind = ?")
             args.append(kind)
+        if sends:   # API-006: a message that went out, whichever path sent it
+            where.append(SEND_SQL)
         if record:
             where.append("e.seq IN (SELECT seq FROM event_record WHERE object_id = ?)")
             args.append(record)
@@ -354,16 +393,27 @@ class WorkLog:
         with self._lock:
             # the guard re-checks every match now (an exclusion added later hides a row):
             # the light columns of all of them, then the page's rows in full
-            light = self._conn.execute("SELECT e.seq, e.reader, e.people" + sql
-                                       + " ORDER BY e.seq DESC", args).fetchall()
-            kept = [r["seq"] for r in light if not _row_excluded(guard, r)]
-            page = kept[offset:offset + limit]
+            # in bounded batches (API-008): only the page's seqs and a count are held
+            cursor = self._conn.execute("SELECT e.seq, e.reader, e.people" + sql
+                                        + " ORDER BY e.seq DESC", args)
+            page, matched = [], 0
+            while True:
+                batch = cursor.fetchmany(EVENT_BATCH)
+                if not batch:
+                    break
+                for r in batch:
+                    if _row_excluded(guard, r):
+                        continue
+                    if offset <= matched < offset + limit:
+                        page.append(r["seq"])
+                    matched += 1
+            cursor.close()
             rows = self._conn.execute(
                 "SELECT e.*, t.name AS t_name, t.pinned AS t_pinned, t.case_id AS t_case, "
                 "t.closed_at AS t_closed FROM event e LEFT JOIN thread t ON t.reader = "
                 "e.reader AND t.thread = e.thread WHERE e.seq IN (SELECT value FROM "
                 "json_each(?)) ORDER BY e.seq DESC", (json.dumps(page),)).fetchall()
-        return [self._event(r) for r in rows], len(kept)
+        return [self._event(r) for r in rows], matched
 
     def ask_detail(self, reader_key: str, answer_id: str) -> Optional[dict[str, Any]]:
         """The reader's own Ask answer (its ``detail``) by answer id; None when it is not
@@ -372,10 +422,9 @@ class WorkLog:
         if guard is None or getattr(guard, "unavailable", "absent"):
             return None
         with self._lock:
-            row = self._conn.execute(
-                "SELECT reader, people, detail FROM event WHERE reader = ? AND kind = 'ask' "
-                "AND source = 'ask' AND source_id = ? ORDER BY seq DESC LIMIT 1",
-                (reader_key, str(answer_id))).fetchone()
+            row = _rows.WORK_LOG_EVENT.first(
+                self._conn, {"reader": reader_key, "kind": "ask", "source": "ask",
+                             "source_id": str(answer_id)}, order_by=("seq",), descending=True)
         if row is None or _row_excluded(guard, row):
             return None
         try:
@@ -416,9 +465,11 @@ class WorkLog:
                "nudge": None}
         if closed_at:
             return {**out, "state": "closed"}
-        answered = self._reply_at(waiting, row["at"])
-        if answered:
+        answered, how = self._reply_at(waiting, row["at"])
+        if answered and how in ("thread", "recipient"):
             return {**out, "state": "answered", "answered_at": answered}
+        if answered:   # API-007: mail from a recipient, not in the thread: maybe a reply
+            out["possible_reply_at"] = answered
         if due is not None and self.clock() >= due:
             waited = max(1, int((self.clock() - sent).total_seconds() // 86400)) if sent else 1
             who = ", ".join(waiting.get("to") or ()) or "them"
@@ -430,32 +481,65 @@ class WorkLog:
                                 + f", sent {row['at'][:10]}, asking for an answer.")
         return out
 
-    def _reply_at(self, waiting: Mapping[str, Any], sent_at: str) -> Optional[str]:
-        """The first reply after ``sent_at`` the autopilot's inbound tracking holds (same
-        mailbox; the same thread or from a recipient); None when it holds none or cannot
-        be read."""
+    def _reply_at(self, waiting: Mapping[str, Any], sent_at: str
+                  ) -> tuple[Optional[str], Optional[str]]:
+        """(the first reply after ``sent_at`` the autopilot's inbound tracking holds, how
+        it was matched): ``thread`` when it is in the sent message's conversation (the
+        inbound tracking keys mail by its conversation id); when the conversation is
+        known, mail from a recipient outside it is only ``counterpart`` (a possible reply,
+        API-007). With no conversation known (a new message, or a reply whose message
+        could not be resolved to its conversation; a stored message handle is no
+        conversation key) mail from a recipient answers it (``recipient``): nothing
+        better tells a reply apart, and a real reply must never read as unanswered.
+        (None, None) when it holds none or cannot be read."""
         path = self.inbound_path()
         mailbox = str(waiting.get("mailbox") or "").lower()
         if not path or not mailbox or not Path(path).exists():
-            return None
+            return None, None
         from operating.autopilot import _digest
-        threads = [_digest("thread", t) for t in waiting.get("threads") or () if t]
+        threads = [_digest("thread", t) for t in waiting.get("threads") or ()
+                   if t and not _is_handle(t)]
         parties = [_digest("party", a.lower()) for a in waiting.get("to") or () if a]
         if not threads and not parties:
-            return None
+            return None, None
         try:
             conn = sqlite3.connect(Path(path).as_uri() + "?mode=ro", uri=True, timeout=5)
             try:
-                found = conn.execute(
-                    "SELECT MIN(at) FROM inbound WHERE lower(owner) = ? AND at > ? AND ("
-                    "thread IN (SELECT value FROM json_each(?)) OR counterpart IN "
-                    "(SELECT value FROM json_each(?)))",
-                    (mailbox, sent_at, json.dumps(threads), json.dumps(parties))).fetchone()
+                for how, column, values in (
+                        ("thread", "thread", threads),
+                        ("counterpart" if threads else "recipient", "counterpart", parties)):
+                    if not values:
+                        continue
+                    found = conn.execute(
+                        f"SELECT MIN(at) FROM inbound WHERE lower(owner) = ? AND at > ? AND "
+                        f"{column} IN (SELECT value FROM json_each(?))",
+                        (mailbox, sent_at, json.dumps(values))).fetchone()
+                    if found and found[0]:
+                        return found[0], how
             finally:
                 conn.close()
         except sqlite3.Error:
-            return None
-        return found[0] if found else None
+            return None, None
+        return None, None
+
+
+def _is_handle(value: Any) -> bool:
+    """A source handle (``graph-mail://...``), never a conversation id."""
+    return "://" in str(value)
+
+
+def conversation_in(read: Any) -> Optional[str]:
+    """The conversation id a mail source read carries (the read itself, or its row,
+    record, fields or values), None when it names none."""
+    if not isinstance(read, Mapping):
+        return None
+    for place in (read, *(read.get(k) for k in ("row", "record", "fields", "values"))):
+        if isinstance(place, Mapping):
+            for key in ("conversation_id", "row.conversation_id", "conversationId"):
+                value = place.get(key)
+                if isinstance(value, str) and value.strip() and not _is_handle(value):
+                    return value.strip()
+    return None
 
 
 def awaiting_reply(mailbox: Optional[str], to: Sequence[str], *, subject: Any = None,
@@ -502,7 +586,11 @@ def resume(thread: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 answer = json.loads(event.get("detail") or "null")
             except ValueError:
                 answer = None
-            if isinstance(answer, dict):
+            if isinstance(answer, dict) and answer.get("_kept") in ("partial", "none"):
+                # API-010: kept only in part (or not at all): said, never shown as whole
+                turns.append({"question": answer.get("question") or event["title"],
+                              "answer": None, "withheld": PARTIAL_TURN, "at": event["at"]})
+            elif isinstance(answer, dict):
                 answer.pop("_review", None)    # the usage review's, not the person's view
                 turns.append({"question": answer.get("question") or event["title"],
                               "answer": answer, "at": event["at"]})
@@ -541,6 +629,19 @@ def asks_about_my_mail(question: str) -> bool:
     return asks_about_my_work(question) and bool(_MAILED.search(question or ""))
 
 
+# what a person also does outside the Workbench: approvals given in Mission Control or
+# Business Central (a save, a note, a dismissed card or an accepted item is the log's alone)
+_APPROVED = re.compile(r"\b(?:approv(?:e|ed|al|als)|sign(?:ed)? off)\b", re.IGNORECASE)
+
+
+def asks_about_work_done_elsewhere(question: str) -> bool:
+    """Whether a question about the asker's own work may be about something they did
+    outside the Workbench (mail they sent, an approval they gave): with nothing in their
+    log the Ask path answers it from the business systems, never an empty log."""
+    return asks_about_my_mail(question) or (
+        asks_about_my_work(question) and bool(_APPROVED.search(question or "")))
+
+
 def _window(question: str, now: datetime) -> tuple[Optional[datetime], Optional[datetime], str]:
     try:
         from zoneinfo import ZoneInfo
@@ -570,14 +671,17 @@ def recall(store: WorkLog, reader_key: str, question: str, *, limit: int = 12
     now = store.clock()
     start, end, said = _window(question, now)
     text = question.lower()
+    sends = bool(re.search(r"\b(send|sent|repl(y|ied)|email)", text))
     kind = ("ask" if re.search(r"\bask(ed)?\b", text) else
-            "action" if re.search(r"\b(send|sent|repl(y|ied)|email)", text) else
+            None if sends else
             "autopilot" if "autopilot" in text else
             "alert" if re.search(r"\b(alert|dismiss)", text) else None)
     words = [w for w in _RECORDISH.findall(question)][:2]
     loops = bool(re.search(r"\bwaiting\b|\breply\b.*\b(yet|back)\b", text))
     events, total = store.events(reader=reader_key, q=" ".join(words) or None,
                                  kind=None if words or loops else kind,
+                                 sends=sends and not words and not loops
+                                 and kind is None,
                                  since=_iso(start) if start else None,
                                  until=_iso(end) if end else None,
                                  open_loops=loops, limit=limit)
@@ -611,6 +715,9 @@ def say(event: Mapping[str, Any]) -> str:
         line += " (they replied)"
     elif loop.get("state") == "waiting":
         line += " (waiting for a reply)"
+    if loop.get("possible_reply_at") and loop.get("state") in ("waiting", "overdue"):
+        line += (f" (mail from them arrived {str(loop['possible_reply_at'])[:16]} outside "
+                 "the thread: check whether it answers)")
     return line
 
 
@@ -635,6 +742,19 @@ _ACTION_VERB = {"send_email": "sent", "reply_in_thread": "replied", "forward": "
                 "teams_message": "messaged", "create_follow_up": "follow_up",
                 "mark_done": "done", "snooze": "snoozed", "dismiss": "dismissed",
                 "assign": "assigned"}
+# A message that went out (API-006), across the paths that send: an autopilot item sent,
+# or a card action sent, replied, forwarded or messaged whose recorded status is ``sent``
+# (an older event without a status: when it opened a reply loop, as ``_went_out``).
+SENT_SQL = ("((e.kind = 'autopilot' AND e.verb = 'sent') OR (e.kind = 'action' AND e.verb "
+            "IN ('sent', 'replied', 'forwarded', 'messaged') AND coalesce(CASE WHEN "
+            "json_valid(e.detail) THEN json_extract(e.detail, '$.status') END, CASE WHEN "
+            "e.awaiting IS NOT NULL THEN 'sent' END) = 'sent'))")
+# What "what did I send" lists: what went out, and a dry run of a send, which reads
+# "Prepared (not sent)" (API-005); never a snooze, dismissal, assignment or follow-up.
+SEND_SQL = ("(" + SENT_SQL + " OR (e.kind = 'action' AND (e.verb = 'prepared' OR (e.verb "
+            "IN ('sent', 'replied', 'forwarded', 'messaged') AND CASE WHEN "
+            "json_valid(e.detail) THEN json_extract(e.detail, '$.status') END = "
+            "'dry_run'))))")
 _DONE = frozenset({"sent", "dry_run", "follow_up", "done", "snoozed", "dismissed",
                    "assigned"})
 _DECISION_VERB = {"accept": "accepted", "edit": "edited", "reject": "rejected",
@@ -656,8 +776,28 @@ class Notes:
     """What each existing path appends after it succeeded. A failure to write the log is
     logged and never fails the person's own action (it already happened)."""
 
-    def __init__(self, store: WorkLog, mailbox: Callable[[Any], Optional[str]]) -> None:
+    def __init__(self, store: WorkLog, mailbox: Callable[[Any], Optional[str]],
+                 conversation_of: Optional[Callable[[Any, str], Optional[str]]] = None
+                 ) -> None:
         self.store, self.mailbox = store, mailbox
+        # (reader, mail handle) -> the conversation id of that message, as the reader
+        # may open it (None: unknown); a card reply's loop is matched on it
+        self.conversation_of = conversation_of
+
+    def _conversation(self, reader: Any, replied: Any) -> Optional[str]:
+        """The conversation a reply or forward continues: a cited message handle
+        resolved to its conversation id (None when it cannot be); a bare id as given."""
+        if not replied:
+            return None
+        if not _is_handle(replied):
+            return str(replied)
+        if self.conversation_of is None:
+            return None
+        try:
+            got = self.conversation_of(reader, str(replied))
+        except Exception:  # noqa: BLE001 - unknown: recipient mail answers it
+            return None
+        return got if isinstance(got, str) and got and not _is_handle(got) else None
 
     def _put(self, reader: Any, **event: Any) -> Optional[int]:
         try:
@@ -809,7 +949,8 @@ class Notes:
                   people=to, detail={"status": data["status"]},
                   awaiting=awaiting_reply(self.mailbox(reader), row.get("to") or (),
                                           subject=row.get("subject"),
-                                          threads=[row.get("in_reply_to")],
+                                          threads=[self._conversation(
+                                              reader, row.get("in_reply_to"))],
                                           at=self.store.clock())
                   if outbound and data["status"] == "sent" else None)
 

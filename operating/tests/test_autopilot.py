@@ -7,6 +7,7 @@ isolated-fixture.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -320,6 +321,58 @@ class Engine(Fixture):
         self.cycle([msg])
         (item,) = self.queue().items(states=("done",))
         self.assertEqual(item["done_reason"], "owner_replied")
+
+
+    def test_teams_replies_and_meeting_follow_ups_settle_from_the_owners_own_messages(self):
+        """AUTOMATION-009: a Teams item settles on the owner's later message in that chat,
+        a meeting follow-up on the organizer's later mail to an outside attendee; neither
+        on an earlier one, another chat, a non-attendee or a colleague who attended."""
+        path = self.dir / "s.sqlite"
+        self.w.build(path)
+        st = pe._Store(path, threads=1)
+        self.addCleanup(st.close)
+        q = self.queue()
+        ended = "2026-10-20T15:00:00Z"
+        events = {
+            "teams": {"event_type": "message.received", "object_id": "TeamsChatMessage:t",
+                      "object_type": "TeamsChatMessage", "channel": "teams",
+                      "at": "2026-10-20T14:00:00Z", "conversation_id": "teams:chat:c1"},
+            "meeting": {"event_type": "meeting.ended", "object_id": "Meeting:m",
+                        "object_type": "Meeting", "at": ended,
+                        "attendees": ["buyer@client.example", OURS, BOSS]}}
+        with q.conn:
+            for name, (rule, body) in {"teams": ("owner_replied", events["teams"]),
+                                       "meeting": ("owner_mailed_attendees",
+                                                   events["meeting"])}.items():
+                q.add_event({**body, "event_id": "e-" + name}, ended)
+                q.add_item({"item_id": name, "event_id": "e-" + name, "autopilot": name,
+                            "owner": OURS_OID, "title": name,
+                            "body": {"happened": {"object_id": body["object_id"],
+                                                  "channel": body.get("channel")},
+                                     "done_when": rule},
+                            "audiences": [], "markings": [], "citations": [],
+                            "due_at": ended, "created_at": ended})
+        settle = lambda: ap.settle(st, q, {}, people(), now=NOW)  # noqa: E731
+        # earlier messages, another chat, a mail to nobody who attended: nothing settles
+        with q.conn:
+            q.note_sent([{"owner": OURS_OID, "conversation": "teams:chat:c1",
+                          "at": "2026-10-20T13:00:00Z"},
+                         {"owner": OURS_OID, "conversation": "teams:chat:other",
+                          "at": "2026-10-20T16:00:00Z"},
+                         {"owner": OURS_OID, "conversation": "x", "to": ["buyer@client.example"],
+                          "at": "2026-10-20T14:30:00Z"},
+                         {"owner": OURS_OID, "conversation": "y", "to": ["else@client.example"],
+                          "at": "2026-10-20T16:00:00Z"},
+                         {"owner": OURS_OID, "conversation": "w", "to": [BOSS],
+                          "at": "2026-10-20T16:00:00Z"}])   # a colleague who attended
+        self.assertEqual(settle(), Counter())
+        with q.conn:
+            q.note_sent([{"owner": OURS_OID, "conversation": "teams:chat:c1",
+                          "at": "2026-10-20T14:05:00Z"},
+                         {"owner": OURS_OID, "conversation": "z", "to": ["buyer@client.example"],
+                          "at": "2026-10-20T15:30:00Z"}])
+        self.assertEqual(settle(), Counter({"owner_replied": 1, "owner_mailed_attendees": 1}))
+        self.assertEqual({i["item_id"] for i in q.items(states=("done",))}, {"teams", "meeting"})
 
 
 class Readers(Fixture):
@@ -829,3 +882,67 @@ class DocumentLines(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OverlappingChunks(unittest.TestCase):
+    """AUTOMATION-008: the text index stores a long body as chunks sharing
+    ``CHUNK_OVERLAP`` characters; both readers (a mail body, a Teams message) used to
+    concatenate them, so a PO line in the overlap was read twice."""
+
+    def test_a_line_in_the_overlap_is_read_once(self):
+        import sqlite3
+        import zlib
+        from types import SimpleNamespace
+        from ontology import text_index as ti
+        from operating import autopilot_work as work
+
+        line = "PO 40123 line 2: 500 x widget"
+        filler = "word " * (ti.CHUNK_CHARS // 5)
+        # the PO line sits where the second chunk starts inside the first one's tail
+        text = filler[:ti.CHUNK_CHARS - 60] + " " + line + " " + filler
+        pieces = ti.chunks(text)
+        self.assertGreater(len(pieces), 1)
+        self.assertLess(pieces[1][0], ti.CHUNK_CHARS - 30)   # the line is in both chunks
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(
+            "CREATE TABLE object_versions (object_id TEXT, l1_handle TEXT, superseded_at TEXT);"
+            "CREATE TABLE text_fields (field_id INTEGER PRIMARY KEY, citation TEXT, "
+            "field_path TEXT);"
+            "CREATE TABLE text_chunks (field_id INTEGER, start INTEGER, body BLOB);")
+        conn.execute("INSERT INTO object_versions VALUES ('Email:1', 'h1', NULL)")
+        conn.execute("INSERT INTO text_fields VALUES (1, 'h1', 'row.body_text')")
+        conn.executemany("INSERT INTO text_chunks VALUES (1, ?, ?)",
+                         [(at, zlib.compress(part.encode())) for at, part in pieces])
+        ctx = SimpleNamespace(st=SimpleNamespace(conn=conn))
+        mail = work.body_text(ctx, {"object_id": "Email:1"})
+        teams = ap.teams_bodies(SimpleNamespace(conn=conn), ["h1"])["h1"]
+        for read in (mail, teams):
+            self.assertEqual(read, text)
+            self.assertEqual(read.count(line), 1)
+
+
+class CurrentOrders(unittest.TestCase):
+    """AUTOMATION-012: an order a message names is current when ordered within 120 days,
+    or stated open whatever its age; the filter used to drop a dated open order older
+    than 120 days."""
+
+    def test_old_open_kept_old_closed_or_unstated_dropped_undated_by_status(self):
+        from datetime import date
+        from types import SimpleNamespace
+        from operating import autopilot_work as work
+
+        cell = lambda v: {"value": v}  # noqa: E731
+        rows = {"SalesOrder:old-open": {"order_date": cell("2026-01-05"), "status": cell("Open")},
+                "SalesOrder:old-closed": {"order_date": cell("2026-01-05"),
+                                          "status": cell("Closed")},
+                "SalesOrder:old-unstated": {"order_date": cell("2026-01-05")},
+                "SalesOrder:recent-closed": {"order_date": cell("2026-10-20"),
+                                             "status": cell("Shipped")},
+                "SalesOrder:undated-open": {"status": cell("Released")},
+                "SalesOrder:undated-closed": {"status": cell("Invoiced")},
+                "SalesOrder:undated-unstated": {}}
+        ctx = SimpleNamespace(as_of=date(2026, 11, 12),
+                              read=lambda ids, props: {o: rows[o] for o in ids})
+        self.assertEqual(work._current(ctx, list(rows)),
+                         ["SalesOrder:old-open", "SalesOrder:recent-closed",
+                          "SalesOrder:undated-open", "SalesOrder:undated-unstated"])

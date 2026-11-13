@@ -60,6 +60,22 @@ describe("record page reads", () => {
     expect(objectReads(f)).toBe(2);
   });
 
+  it("same-named customers no identity link joins are each a choice, never one margin (API-018)", async () => {
+    const choices = [
+      { object_id: 'Customer:bc.customers:{"id":"b1"}', type: "Customer", label: "Northwind (C-50)", open_url: "/object/Customer/b1" },
+      { object_id: 'Customer:bc.customers:{"id":"b2"}', type: "Customer", label: "Northwind (C-53)", open_url: "/object/Customer/b2" },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => json({
+      ...page("A"), object_id: "Customer:portal.app_customer:c1", type: "Customer", label: "Northwind",
+      profitability: null, profitability_choices: choices,
+    })));
+    render(<ObjectView type="Customer" id="Customer:portal.app_customer:c1" />);
+    const box = await screen.findByTestId("margin-choices");
+    expect(box).toHaveTextContent("not added together");
+    expect(screen.getByRole("link", { name: "Northwind (C-50)" })).toHaveAttribute("href", "/object/Customer/b1");
+    expect(screen.getByRole("link", { name: "Northwind (C-53)" })).toHaveAttribute("href", "/object/Customer/b2");
+  });
+
   it("a stale page whose refresh read fails stays on screen", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let n = 0;

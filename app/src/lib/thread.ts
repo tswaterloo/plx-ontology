@@ -119,6 +119,10 @@ export function useThread() {
       ctrl.current = c;
       const id = newId();
       const prior = turnsRef.current;
+      // API-009: continuing an instruction sends its first turn's files again (the server
+      // keeps none of them); after a reload the server asks for them by name instead
+      const from = extra.instruction?.instruction_id;
+      if (from && !files.length) files = prior.find((t) => t.answer?.answer_id === from)?.request?.files ?? [];
       const request: TurnRequest = { ...(objectId ? { objectId } : {}), ...(source ? { source } : {}), files, extra };
       const turn: Turn = { id, question, phase: "thinking", streamed: "", request };
       turnsRef.current = [...prior, turn];

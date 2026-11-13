@@ -44,6 +44,7 @@ from operating import card_actions as ca
 from operating import instruct as ins
 from operating import instruct_files as files
 
+from . import doc_fill_api as dfa
 from . import models as m
 from .ask_drafts import CARD_PREFIX, draft_card
 from .auth import Reader
@@ -399,6 +400,7 @@ class InstructMixin:
             raise _refuse("not_kept")
         answers: list[str] = []
         meetings_used: list[str] = []
+        files: list[dict[str, Any]] = []
         if request.instruction is not None:
             kept = store.ask_detail(reader.key, request.instruction.instruction_id)
             earlier = (kept or {}).get("instruction")
@@ -414,10 +416,32 @@ class InstructMixin:
             if request.instruction.answer and request.instruction.answer.strip():
                 answers.append(ins.clean_text(request.instruction.answer))
             conversation = kept.get("conversation_id") or conversation
+            files = [f for f in earlier.get("files") or () if isinstance(f, dict)]
+        if request.instruction is None and request.attachments and dfa.fill_intent(text):
+            form = dfa.first_form(request.attachments)
+            if form is not None:
+                # a form to fill: filled from the records, no model (``doc_fill_api``)
+                yield "status", m.StatusEvent(step="reading", message="Filling the form",
+                                              elapsed_ms=ms())
+                yield from self._said(self.fill_answer(  # type: ignore[attr-defined]
+                    reader, request, text, context, conversation, form, ms()))
+                return
         call = self._instruct_model()
         if call is None:
             raise _refuse("model_unavailable")
         attached = self._instruct_attached(request, guard)
+        # API-009: a continuation reads the first turn's files again, so they come again
+        # with it (the app resends them); without them it says which to attach, never
+        # drafting from the words alone
+        missing = [f for f in files if f.get("digest") not in {a.digest for a in attached}]
+        if missing:
+            names = ", ".join(str(f.get("name") or "a file")[:80] for f in missing[:5])
+            raise UserFacing("instruct_refused",
+                             f"This instruction read {names}. Attach "
+                             f"{'it' if len(missing) == 1 else 'them'} again to continue.",
+                             409)
+        known = {f.get("digest") for f in files}
+        files += [a.meta for a in attached if a.digest not in known]
         yield "status", m.StatusEvent(step="reading", message="Reading what you have open",
                                       elapsed_ms=ms())
         got = self._gather(reader, text, context, guard, attached, meetings_used)
@@ -440,7 +464,7 @@ class InstructMixin:
         yield from self._said(self._answer(
             reader, guard, text=text, context=context, answers=answers,
             meetings_used=meetings_used, got=got, outcome=outcome, conversation=conversation,
-            targets=targets, folders=folders, latency=ms(), attached=attached))
+            targets=targets, folders=folders, latency=ms(), attached=attached, files=files))
 
     @staticmethod
     def _said(answer: m.AnswerPayload) -> Iterator[tuple[str, Any]]:
@@ -507,8 +531,8 @@ class InstructMixin:
     def _answer(self, reader: Reader, guard: Any, *, text: str, context: dict[str, Any],
                 answers: list[str], meetings_used: list[str], got: dict[str, Any],
                 outcome: ins.Outcome, conversation: str, targets: list[ins.WriteTarget],
-                folders: list[ins.Folder], latency: int, attached: list[Any]
-                ) -> m.AnswerPayload:
+                folders: list[ins.Folder], latency: int, attached: list[Any],
+                files: Optional[list[dict[str, Any]]] = None) -> m.AnswerPayload:
         from .feedback import clean
         answer_id = secrets.token_hex(12)
         reply = got["reply"] or {}
@@ -584,7 +608,8 @@ class InstructMixin:
                 meetings=meetings, writes=writes, documents=documents,
                 workflow=m.InstructWorkflow.model_validate(outcome.workflow)
                 if outcome.workflow else None, read=read, context=context,
-                answers=answers, meetings_used=meetings_used))
+                answers=answers, meetings_used=meetings_used,
+                files=[m.AskAttachmentNote(**f) for f in files or ()]))
     def _write_path(self, system: str, draft: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
         """How a drafted change in ``system`` gets done, in words, and the desk's offers. A
         Teams message goes out from the desk's Teams action (a configured chat, your

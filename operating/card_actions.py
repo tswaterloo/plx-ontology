@@ -520,6 +520,10 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
 
 # --------------------------------------------------------------------------- journal
 
+# how many confirms' rows an ``ActionDesk`` keeps for its caller (``ActionDesk.recorded``)
+MAX_ENDED = 1024
+
+
 class JournalBroken(RuntimeError):
     """The journal's hash chain does not hold: nothing more is done until it is repaired."""
 
@@ -704,7 +708,25 @@ class ActionDesk:
         # idempotency keys this process is dispatching now (a send never runs twice beside
         # itself, whatever the age of its pending row)
         self._dispatching: set[str] = set()
+        # the journal row each confirm in this process ended on, by idempotency key
+        # (``recorded``): the caller reads it here, never the whole journal again
+        self._ended: dict[str, dict[str, Any]] = {}
+        self._ended_lock = threading.Lock()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def _keep(self, row: dict[str, Any]) -> dict[str, Any]:
+        with self._ended_lock:
+            self._ended.pop(row["idempotency_key"], None)
+            self._ended[row["idempotency_key"]] = row
+            while len(self._ended) > MAX_ENDED:
+                self._ended.pop(next(iter(self._ended)))
+        return row
+
+    def recorded(self, idempotency_key: str) -> dict[str, Any] | None:
+        """The journal row a confirm with this key ended on in this process (its last
+        append, or the earlier row a replay returned); None when no confirm here has."""
+        with self._ended_lock:
+            return self._ended.get(idempotency_key)
 
     def preview(self, card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
                 ctx: Context) -> dict[str, Any]:
@@ -766,7 +788,7 @@ class ActionDesk:
                     if same[-1]["payload_hash"] != found["payload_hash"]:
                         raise ActionRefused(["This confirm was already used for a different "
                                              "action."], 409)
-                    return {**_result(same[-1], self.clock()), "replayed": True}
+                    return {**_result(self._keep(same[-1]), self.clock()), "replayed": True}
                 if outbound:
                     before = _outcomes(held.rows, found["card_id"], found["payload_hash"])
                     if "sent" in before.values():
@@ -783,18 +805,19 @@ class ActionDesk:
                                              "outcome: check your Sent Items, then confirm "
                                              "that it is not there to send it again."], 409)
                     row["checked_sent_items"] = bool(before) and checked_sent_items is True
-                    held.append({**row, "at": self._now(), "status": "pending"})
+                    self._keep(held.append({**row, "at": self._now(), "status": "pending"}))
                     self._dispatching.add(idempotency_key)
                 else:
-                    return _result(held.append({**row, "at": self._now(),
-                                                "status": _LOCAL_STATUS[kind]}))
+                    return _result(self._keep(held.append({**row, "at": self._now(),
+                                                           "status": _LOCAL_STATUS[kind]})))
             try:
                 sent = self.sender.dispatch(kind, ctx.sender,
                                             {**payload, "message_id": found["message_id"]})
                 with self.journal.locked() as held:
-                    final = held.append({**row, "at": self._now(), "status": sent["status"],
-                                         "missing": list(sent.get("missing") or ()),
-                                         "http_status": sent.get("http_status")})
+                    final = self._keep(held.append({
+                        **row, "at": self._now(), "status": sent["status"],
+                        "missing": list(sent.get("missing") or ()),
+                        "http_status": sent.get("http_status")}))
             finally:
                 self._dispatching.discard(idempotency_key)
             return {**_result(final), "request": sent.get("request")}

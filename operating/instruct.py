@@ -160,7 +160,7 @@ def recurring(text: str) -> Optional[dict[str, Any]]:
 _DO = (r"reply|respond|draft|write|send|email|e-mail|mail|chase|nudge|tell|ping|message|"
        r"notify|remind|set|update|change|move|push|add|create|make|prepare|file|upload|"
        r"save|schedule|book|forward|assign|cancel|put|fill|generate|log|record|note|"
-       r"approve|decline|reject|pay|post|share|invite|mark|close|reschedule|order more|"
+       r"approve|decline|reject|pay|post|share|invite|mark|close|reschedule|order more|complete|"
        r"answer (?:this|that|him|her|them|the (?:email|message|mail))|follow up|set up")
 _POLITE = (r"^(?:(?:please|pls|kindly|ok|okay|now|then|and|hey|hi)[,\s]+)*"
            r"(?P<lead>(?:(?:can|could|would|will) you|(?:are|would) you able to|"

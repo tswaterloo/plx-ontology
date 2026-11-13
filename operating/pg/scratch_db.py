@@ -19,6 +19,36 @@ def admin_dsn() -> str:
 
 
 ADMIN_DSN = admin_dsn()  # kept for importers of the old constant
+
+# The host's separate test cluster (``deploy/ops/test_pg_cluster.sh``): a DROP DATABASE on
+# the served cluster waits for every backend there to absorb a ProcSignalBarrier, which one
+# blocked writing to a slow client (ClientWrite) does not, so tests held their teardown for
+# as long as a delta or proactive reader stalled (11-12). ``tools/testslot.py`` applies the
+# same rule to a wrapped run; ``use_test_cluster`` applies it to a bare ``unittest`` run.
+TEST_PG_PORT, PG_SOCKET_DIR = "5433", "/var/run/postgresql"
+
+
+def test_cluster_port(environ: Any = None, socket_dir: str = PG_SOCKET_DIR) -> str | None:
+    """The test cluster's port (``PLX_TEST_PG_PORT``, default 5433) when its socket exists
+    and the caller chose no server (``PGPORT``, ``PGHOST``, ``PLX_PG_TEST_ADMIN_DSN``)."""
+    environ = os.environ if environ is None else environ
+    if any(environ.get(k) for k in ("PGPORT", "PGHOST", "PLX_PG_TEST_ADMIN_DSN")):
+        return None
+    port = environ.get("PLX_TEST_PG_PORT", TEST_PG_PORT)
+    if port.isdigit() and Path(socket_dir, f".s.PGSQL.{port}").exists():
+        return port
+    return None
+
+
+def use_test_cluster(environ: Any = None, socket_dir: str = PG_SOCKET_DIR) -> str | None:
+    """Point this process (and every child it starts) at the test cluster when one runs:
+    called at import by each test module that makes throwaway databases. Test code only;
+    the migration proofs and rehearsals keep the server their caller chose."""
+    environ = os.environ if environ is None else environ
+    port = test_cluster_port(environ, socket_dir)
+    if port is not None:
+        environ["PGPORT"] = port
+    return port
 _COUNTER = itertools.count()
 
 

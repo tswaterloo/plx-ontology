@@ -476,7 +476,9 @@ def _compute(
             amount, amount_unit = num, unit
             steps.append(f"{name}: {money_text(num, unit)} {cur} (total)")
         elif unit == parse_unit(f"{cur}/{qname}"):
-            amount, amount_unit = _calc(f"{name} * qty", {name: (num, unit), "qty": (qnum, qunit)},
+            # internal operand names: a cost named like one never overwrites it (BIZ-001)
+            amount, amount_unit = _calc("cost * qty", {"cost": (num, unit),
+                                                       "qty": (qnum, qunit)},
                                         steps, f"{name} total")
         else:
             raise UnitMismatch(f"cost_unit_must_be_{cur}_or_{cur}/{qname}:{name}:{format_unit(unit)}")
@@ -507,10 +509,12 @@ def _compute(
                                  "who_can_answer": None})
                 steps.append(f"{name}: UNKNOWN ({why} {cur}->{target_currency})")
                 continue
-            amount, amount_unit = _calc(f"{name}_{cur} * fx_{cur}_{target_currency}",
-                                        {f"{name}_{cur}": (amount, amount_unit),
-                                         f"fx_{cur}_{target_currency}": (rate["value"], rate["unit"])},
-                                        steps, f"{name} in {target_currency}")
+            amount, amount_unit = _calc("amount * fx", {"amount": (amount, amount_unit),
+                                                         "fx": (rate["value"], rate["unit"])},
+                                        steps, f"{name} in {target_currency} "
+                                               f"(fx {cur}->{target_currency})")
+        if amount_unit != parse_unit(target_currency):
+            raise UnitMismatch(f"cost_not_in_target_currency:{name}:{format_unit(amount_unit)}")
         known.append((name, amount))
 
     result: dict[str, Any] = {"contract": CONTRACT, "target_currency": target_currency,
@@ -2685,6 +2689,15 @@ def quote_landed(facts: Mapping[str, Any], *,
                                  f"{QUOTE_RELATIONS[name]} was not read; the Portal's own query "
                                  "result is unknown (reproduced as its failed read).",
                                  "Workbench operator"))
+    if any(line["supplySource"] == "PLX" for line in q["componentLines"]):
+        # the line cost evidence's own reads (BIZ-010): a failed one is unavailable
+        # evidence, never "no PO history" or "no stock row"
+        for name in ("purchase_order_lines", "inventory"):
+            if facts.get(name) is None:
+                unknowns.append(_unknown("RECORDS_NOT_READ", name,
+                                         f"{name} was not read; the line cost evidence "
+                                         "(last PO price, stock on hand) is unavailable, "
+                                         "not absent.", "Workbench operator"))
     if q["formulationPin"]:
         cite(q["formulationPin"], "formula pin")
     formulation = q["formulation"]

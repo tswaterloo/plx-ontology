@@ -143,6 +143,17 @@ _WITHHELD_DDL = """CREATE TABLE IF NOT EXISTS people_withheld (
 _PURGED_DDL = """CREATE TABLE IF NOT EXISTS purged_handles (
     l1_handle TEXT PRIMARY KEY,
     purged_at TEXT NOT NULL)"""
+# What each stored container attachment carries (DOC-008, ``integrations.carried_mail``):
+# per container bytes digest, every carried mail's member path with its senders and
+# recipients (``walk``: JSON, ``null`` when it carries none), under the code that walked it.
+# Decided again with the people guard of the moment, never kept as a verdict. Made with
+# the first walk kept (a capture storing a container, ``mail_exclusion_purge carried
+# --apply``), not at open.
+_CARRIED_DDL = """CREATE TABLE IF NOT EXISTS carried_people (
+    content_sha256 TEXT PRIMARY KEY,
+    code TEXT NOT NULL,
+    walk TEXT NOT NULL,
+    walked_at TEXT NOT NULL)"""
 _UNDECIDED_DDL = """CREATE TABLE IF NOT EXISTS people_undecided (
     mailbox_id TEXT NOT NULL,
     folder_id TEXT NOT NULL,

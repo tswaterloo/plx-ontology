@@ -742,6 +742,99 @@ class MeetingsCaptureTest(unittest.TestCase):
         self.assertEqual(self.store.records(CAPTURE, cm.TASK_KIND.name, unit,
                                             limit=10)["items"], [])
 
+    def at(self, hours: float):
+        """The store's clock moved ``hours`` past its real time (what readers are
+        decided at and what a run stamps)."""
+        from datetime import datetime as _dt
+        start = getattr(self, "_start", None) or _dt.now(timezone.utc)
+        self._start = start
+        self.store._clock = lambda: start + timedelta(hours=hours)
+
+    def test_planner_task_permissions_lapse_unless_a_run_reads_them_again(self) -> None:
+        """INT-008: a task's permissions (its plan's group, its people) decide only while a
+        run listed the task within the bound (``ITEM_ACL_MAX_AGE`` by its current version's
+        last_seen_at); the next run reads them again, and the people a listing names now
+        replace those held, a task whose details failed or were not read included."""
+        from integrations import capture_store as cstore
+        self.assertEqual(cm.TASK_KIND.acl_max_age, cstore.ITEM_ACL_MAX_AGE)
+        self.at(0)
+        self.capture(parts=["planner"])
+        unit = self.store.units(cm.TASK_KIND.name)[0]
+
+        def shown(actor=MEMBER):
+            return [r["row"]["id"] for r in self.store.records(
+                actor, cm.TASK_KIND.name, unit, limit=10)["items"]]
+        self.assertEqual(shown(), ["TaskAnn_00000000000000001"])
+        for hours, visible in ((47, True), (49, False), (24 * 30, False)):
+            with self.subTest(hours=hours):
+                self.at(hours)
+                self.assertEqual(bool(shown()), visible)
+        self.at(49)
+        self.capture(parts=["planner"])          # read again: decides again
+        self.assertEqual(shown(), ["TaskAnn_00000000000000001"])
+        # its details fail to read after a change that moved it to another group's plan
+        # member: the held row stays, under the people this listing names
+        self.graph.plans["PlanOne_000000000000000001"]["group"] = \
+            "99999999-0000-4000-8000-000000000099"
+        task = self.graph.tasks["TaskAnn_00000000000000001"]
+        task.update({"@odata.etag": 'W/"2"', "description": "x"})
+        self.graph.forbidden = [r"/details$"]
+        self.capture(parts=["planner"])
+        self.assertEqual(shown(), [])            # the group no longer grants it
+        held = {r.path[1]: r for r in self.store.current_records(cm.TASK_KIND.name, unit)}
+        self.assertEqual(held["TaskAnn_00000000000000001"].source_version, 'W/"1"')
+
+    def test_held_transcripts_lapse_unless_their_meeting_still_lists_them(self) -> None:
+        """INT-008: a held transcript decides only while a run confirmed it within the
+        bound: its meeting's transcript list still names it and every participant is
+        cleared now. Runs look up held ones twice per bound; one the meeting no longer
+        lists, or whose participant is excluded since, is not confirmed (no request names
+        a meeting with an excluded participant) and lapses."""
+        from integrations import capture_store as cstore
+        self.assertEqual(cm.TRANSCRIPT_KIND.acl_max_age, cstore.ITEM_ACL_MAX_AGE)
+        ann = Actor("plx", frozenset({"staff:ann"}), "restricted")
+        self.store.audience = LiveSourceAudience(
+            {"mail:*": [cm.CAPTURE_PRINCIPAL, "staff:ann"]}, tenant="plx",
+            identities={"staff:ann": [A_ID]})
+        self.at(0)
+        self.capture()
+        unit = self.store.units(cm.TRANSCRIPT_KIND.name)[0]
+
+        def shown():
+            return [r["row"]["id"] for r in self.store.records(
+                ann, cm.TRANSCRIPT_KIND.name, unit, limit=10)["items"]]
+        self.assertEqual(shown(), ["TranscriptOne"])
+        self.at(47)
+        self.assertEqual(shown(), ["TranscriptOne"])
+        self.at(49)
+        self.assertEqual(shown(), [])
+        # a run (after the meeting's due day: no due lookup) confirms it from its list
+        self.graph.calls.clear()
+        report, _ = self.capture(parts=["transcripts"])
+        self.assertEqual(report["counts"]["transcripts_confirmed"], 1, report["counts"])
+        self.assertEqual(self.graph.gets(r"/content$"), [])        # never read again
+        self.assertEqual(shown(), ["TranscriptOne"])
+        # within the half bound: not looked up again
+        self.graph.calls.clear()
+        self.at(60)
+        self.capture(parts=["transcripts"])
+        self.assertEqual(self.graph.gets(r"transcripts"), [])
+        # the meeting no longer lists it: not confirmed, it lapses
+        self.graph.transcripts["MeetingOne"] = []
+        self.at(80)
+        report, _ = self.capture(parts=["transcripts"])
+        self.assertEqual(report["counts"]["transcripts_gone"], 1, report["counts"])
+        self.at(98)
+        self.assertEqual(shown(), [])
+        # listed again, but a participant (Bob) is excluded now: no request names it
+        self.graph.transcripts["MeetingOne"] = [{"id": "TranscriptOne"}]
+        self.graph.calls.clear()
+        report, _ = self.capture(env={**ENV, "PLX_EXCLUDED_PEOPLE_OIDS": f"{X_ID},{B_ID}"},
+                                 parts=["transcripts"])
+        self.assertEqual(report["counts"]["transcripts_recheck_withheld"], 1)
+        self.assertEqual(self.graph.gets(r"MeetingOne"), [])
+        self.assertEqual(shown(), [])
+
     def test_scope_and_credentials_fail_closed(self) -> None:
         for bad in ({"schema": cm.SCOPE_SCHEMA}, {"schema": cm.SCOPE_SCHEMA, "mailboxes": [A],
                                                   "parts": ["mail"]},

@@ -727,8 +727,12 @@ class Need:
     # supplier's confirmed date) or ``lead_time`` (the order day plus its lead time)
     basis: str = "requested"
     marks: tuple = ()     # markings of the links a labelled due date is read through
-    # dates the records hold that are defaults (a bulk import day, the record's own day)
+    # dates the records hold that are defaults (a computed or bulk-written day, a
+    # placeholder such as 1900-01-01): never a requested-by date (``_default_date``)
     defaulted: tuple = ()
+    # the due date is one of the order's own days (``OWN_DAY``): kept and judged, but it
+    # may be a form default, so the late rule says so at low priority (BIZ-007)
+    doubt: str | None = None
 
 
 def need_date(dated: Iterable[tuple[int, date | None, Any]]) -> Need:
@@ -1350,13 +1354,19 @@ def _item_prop(item: Any) -> str | None:
     return None
 
 
+OWN_DAY = "expected_date_own_day"
+
+
 def _default_date(defaults: "DateDefaults | None", item: Any, day: date,
                   own: set[date]) -> bool:
-    """Whether a dated item's day is a default rather than a requested date: one of the
-    order's own days, or a day a bulk share of its property's records hold."""
-    from operating.source_defaults import own_day
+    """Whether a dated item's day is a default rather than a requested date: a placeholder
+    (``source_defaults.placeholder_day``: 1900-01-01, years before the order), or a bulk
+    day with provenance (``DateDefaults``: a system computed it from the holders' own
+    days). One of the order's own days is no proof: kept, with its doubt (``own_doubt``),
+    BIZ-007."""
+    from operating.source_defaults import placeholder_day
 
-    if own_day(day, own):
+    if placeholder_day(day, own):
         return True
     record_id, prop = _item_record(item), _item_prop(item)
     return bool(defaults is not None and record_id and prop
@@ -1365,10 +1375,19 @@ def _default_date(defaults: "DateDefaults | None", item: Any, day: date,
 
 def is_default_date(defaults: "DateDefaults | None", item: Any, day: date,
                     own: set[date]) -> bool:
-    """Whether a dated item's day is a default rather than a stated date (one of the
-    order's own days, or a day a bulk share of its property's records hold): the one test
-    every reader of a date asks (``read``, the slip rule)."""
+    """Whether a dated item's day is a default rather than a stated date (a placeholder,
+    or a bulk day a system computed): the one test every reader of a date asks (``read``,
+    the slip rule)."""
     return _default_date(defaults, item, day, own)
+
+
+def own_doubt(need: "Need", own: set[date]) -> bool:
+    """Whether a requested-by due date is one of the order's own days (a same-day order or
+    a form default): judged, said with that doubt."""
+    from operating.source_defaults import own_day
+
+    return need.basis == "requested" and any(
+        own_day(d, own) for d in (need.lo, need.hi) if d is not None)
 
 
 def _labelled_due(source: Any, stated: "Promise", records: Sequence[str],
@@ -1442,18 +1461,32 @@ class DateDefaults:
         return day_of(raw)
 
     @classmethod
-    def of_pairs(cls, pairs: Iterable[tuple[str, str, Any]]) -> "DateDefaults":
-        from operating.source_defaults import DATE_SHARE, bulk_values
+    def of_pairs(cls, pairs: Iterable[tuple]) -> "DateDefaults":
+        """From ``(property, binding, raw value[, the record's own stamps])``: a lead time
+        a bulk share holds; a date a bulk share holds that a system computed from the
+        holders' own days (``source_defaults.calculated_defaults``, BIZ-007): many orders
+        sharing a real delivery date keep it."""
+        from operating.source_defaults import DATE_SHARE, bulk_values, calculated_defaults
 
-        grouped: dict[tuple[str, str], list[Any]] = defaultdict(list)
-        for prop, binding, raw in pairs:
-            grouped[(prop, binding)].append(cls._key(prop, raw))
-        return cls({key: found for key, vals in grouped.items()
-                    if (found := bulk_values(vals, share=DATE_SHARE))})
+        grouped: dict[tuple[str, str], list[tuple[Any, tuple]]] = defaultdict(list)
+        for prop, binding, raw, *own in pairs:
+            grouped[(prop, binding)].append((cls._key(prop, raw), tuple(own[0]) if own
+                                             else ()))
+        out = {}
+        for key, held in grouped.items():
+            if key[0] == LEAD_TIME:
+                found = bulk_values((v for v, _own in held), share=DATE_SHARE)
+            else:
+                found = calculated_defaults(held, share=DATE_SHARE)
+            if found:
+                out[key] = found
+        return cls(out)
 
     @classmethod
-    def of_rows(cls, rows: Iterable[tuple[str, Mapping[str, Any]]]) -> "DateDefaults":
-        return cls.of_pairs((row["property"], binding_of(oid) or "", row["value"])
+    def of_rows(cls, rows: Iterable[tuple[str, Mapping[str, Any]]],
+                own: Callable[[str], Iterable[Any]] = lambda _oid: ()) -> "DateDefaults":
+        """``own(record)``: its own stamps (a line: its order's)."""
+        return cls.of_pairs((row["property"], binding_of(oid) or "", row["value"], own(oid))
                             for oid, row in rows if row.get("value") not in (None, ""))
 
     @classmethod
@@ -1472,8 +1505,24 @@ class DateDefaults:
             "SELECT o.object_id, v.property, v.value FROM objects o JOIN object_values v "
             "ON v.object_id = o.object_id WHERE o.object_type IN (?, ?) AND v.property IN "
             "(SELECT value FROM json_each(?)) AND v.superseded_at IS NULL AND v.value IS NOT "
-            "NULL AND v.value <> ''", (PO_TYPE, LINE_TYPE, json.dumps(props)))
-        made = cls.of_pairs((prop, binding_of(oid) or "", value) for oid, prop, value in rows)
+            "NULL AND v.value <> ''", (PO_TYPE, LINE_TYPE, json.dumps(props))).fetchall()
+        # each record's own days (a line's are its order's), counts only: the provenance
+        # a bulk day needs to be a default (``of_pairs``)
+        own: dict[str, list[Any]] = defaultdict(list)
+        for oid, value in conn.execute(
+                "SELECT o.object_id, v.value FROM objects o JOIN object_values v "
+                "ON v.object_id = o.object_id WHERE o.object_type = ? AND v.property IN "
+                "(SELECT value FROM json_each(?)) AND v.superseded_at IS NULL AND v.value "
+                "IS NOT NULL", (PO_TYPE, json.dumps(OWN_DAY_PROPS))):
+            own[oid].append(value)
+        order_of: dict[str, str] = {}
+        for line, order in conn.execute(
+                "SELECT from_object, to_object FROM links WHERE link_type = ? "
+                "AND superseded_at IS NULL", (LINE_OF,)):
+            order_of.setdefault(line, order)
+        made = cls.of_pairs((prop, binding_of(oid) or "", value,
+                             own.get(order_of.get(oid, oid), ()))
+                            for oid, prop, value in rows)
         if digest is not None:
             _DEFAULTS_CACHE.clear()
             _DEFAULTS_CACHE[digest] = made
@@ -1571,6 +1620,8 @@ def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True
                                      out.need)
         if defaulted:
             out.need = replace(out.need, defaulted=tuple(defaulted))
+        if own_doubt(out.need, own):
+            out.need = replace(out.need, doubt=OWN_DAY)
         out.verdict = verdict(out.status, out.need, out.promise.latest
                               if out.need.basis == "requested" else None, today)
         if stated is None and out.verdict == (NEITHER, None):
@@ -2236,7 +2287,9 @@ class StoreSource:
             + [(oid, row) for oid, entry in self.line_values.items()
                for row in entry["props"].get(LINE_EXPECTED, [])]
             + [(oid, row) for oid, entry in self.pos.items()
-               for row in entry["props"].get(LEAD_TIME, [])])
+               for row in entry["props"].get(LEAD_TIME, [])],
+            own=lambda oid: [r.get("value") for order in (self.po_of.get(oid) or [oid])[:1]
+                             for p in OWN_DAY_PROPS for r in self.props(order).get(p, [])])
 
     def date_defaults(self) -> "DateDefaults":
         return self.defaults
@@ -2726,6 +2779,11 @@ def _fm_log(scans: Mapping[str, Mapping[str, Any]]) -> Callable[[str], Any]:
     return log
 
 
+def _scan_label(scan: Mapping[str, Any]) -> dict[str, Any]:
+    from integrations.source_mirror import scan_label
+    return scan_label(scan)
+
+
 def vocabulary(scans: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """Counts only from the relation scans (``scan_relation`` results with each row's
     cells, keyed as ``RELATIONS``): per raw status word the classes the shared definition
@@ -2739,7 +2797,7 @@ def vocabulary(scans: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
                                    "reasons": ["not_scanned"]}
         out["relations"][name] = {"status": scan.get("status"), "complete": bool(
             scan.get("complete")), "rows": len(scan.get("rows") or ()),
-            "reasons": list(scan.get("reasons") or ())}
+            "reasons": list(scan.get("reasons") or ()), **_scan_label(scan)}
     lines: dict[Any, list[tuple[Any, Any, Any]]] = defaultdict(list)
     line_scan = scans.get("portal_line") or {}
     for row in line_scan.get("rows") or ():

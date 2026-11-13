@@ -25,7 +25,22 @@ import zipfile
 from integrations import captured_text as ct
 from integrations.tests import test_capture_mail as tm
 from integrations.tests import test_capture_sharepoint as tsp
-from integrations.tests.test_doc_convert import make_msg, msg_tree
+from integrations.tests.test_doc_convert import _unicode, make_cfb
+from integrations.tests.test_doc_convert import msg_tree as _msg_tree
+
+
+def msg_tree(*args, **kwargs):
+    """An Outlook message's tree whose recipient has an SMTP address (an outside party's),
+    so the people exclusion can clear the mail it carries (DOC-008: a recipient with no
+    address withholds its container)."""
+    tree = _msg_tree(*args, **kwargs)
+    tree["__recip_version1.0_#00000000"]["__substg1.0_39FE001F"] = _unicode(
+        "b@outside.example")
+    return tree
+
+
+def make_msg(attachments, rtf=None, **fields):
+    return make_cfb(msg_tree(attachments, rtf, **fields))
 from ontology.tests import test_graph_projection as tg
 from operating import host
 

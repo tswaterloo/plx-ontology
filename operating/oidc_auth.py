@@ -422,7 +422,10 @@ def verify_access_token(token: Any, resource: EntraResource, *,
     current = int(time.time()) if now is None else int(now)
     if current >= claims["exp"]:
         raise EntraTokenRefused("token_expired")
-    if claims.get("nbf", claims["iat"]) > current + CLOCK_SKEW_SECONDS \
+    # iat and nbf are each checked against now: a past nbf never excuses a future iat
+    # (whose exp - iat window would otherwise reach far beyond the lifetime cap).
+    if any(claims.get(name, claims["iat"]) > current + CLOCK_SKEW_SECONDS
+           for name in ("iat", "nbf")) \
             or not 0 < claims["exp"] - claims["iat"] <= MAX_TOKEN_LIFETIME_SECONDS:
         raise EntraTokenRefused("token_lifetime_invalid")
     tid = claims.get("tid")

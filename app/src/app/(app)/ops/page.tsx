@@ -5,7 +5,7 @@ import { eastern, opsLabel } from "@/components/shell";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { LoadProblem } from "@/components/ui/notice";
-import { getOpsAlarms, type OpsAlarms, type OpsCheck, type OpsIncident } from "@/lib/api";
+import { getOpsAlarms, type OpsAlarms, type OpsCheck, type OpsIncident, type OpsQueue } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 
@@ -14,7 +14,7 @@ const AREAS: Area[] = ["Data freshness", "Services", "Postgres", "Machine", "Bac
 
 /** Which part of the system a check or incident key belongs to. */
 function areaOf(key: string): Area {
-  if (key.startsWith("unit:") || key.startsWith("units:") || key === "ingest_start") return "Services";
+  if (key.startsWith("unit:") || key.startsWith("units:") || key === "ingest_start" || key.startsWith("jobq_")) return "Services";
   if (key.startsWith("capture:") || key.startsWith("delta_") || key === "pg_follow" || key.endsWith("_last_pass") || key === "search_follow_last_pass") return "Data freshness";
   if (key.startsWith("pg_")) return "Postgres";
   if (key.startsWith("disk_") || key.startsWith("memory_")) return "Machine";
@@ -40,6 +40,82 @@ function span(fromIso?: string | null, toIso?: string | null): string {
   if (m < 120) return `${Math.max(1, Math.round(m))} min`;
   if (m < 36 * 60) return `${Math.round(m / 60)} h`;
   return `${Math.round(m / 1440)} days`;
+}
+
+function gb(mb?: number | null): string {
+  return mb == null ? "?" : `${(mb / 1024).toFixed(1)} GB`;
+}
+
+function secs(s?: number | null): string {
+  if (s == null) return "";
+  if (s < 120) return `${Math.round(s)} s`;
+  if (s < 7200) return `${Math.round(s / 60)} min`;
+  return `${(s / 3600).toFixed(1)} h`;
+}
+
+/** The host job queue: what runs, what waits and why, refusals and dead letters. */
+function QueueSection({ queue }: { queue?: OpsQueue | null }) {
+  if (!queue || !queue.configured) return null;
+  const running = queue.running ?? [];
+  const waiting = queue.waiting ?? [];
+  const dead = queue.dead ?? [];
+  const mem = queue.memory;
+  const hour = queue.last_hour ?? {};
+  return (
+    <section data-testid="ops-queue">
+      <h2 className="text-[13px] font-semibold">Job queue</h2>
+      {!queue.fresh ? (
+        <p className="mt-1 text-[13px] font-semibold text-late" data-testid="ops-queue-stale">
+          The queue worker has stopped{queue.written_at ? `: last report ${eastern(queue.written_at)}` : ""}. Queued jobs do not start until it runs again.
+        </p>
+      ) : null}
+      <p className="mt-1 text-[12px] text-muted">
+        {queue.queued ?? 0} queued · {running.length} running · {hour.refused ?? 0} refusals and {hour.dead ?? 0} dead in the last hour
+        {mem ? ` · ${gb(mem.available_mb)} free, ${gb(mem.promised_mb)} promised to running jobs, ${gb(mem.headroom_mb)} headroom above a ${gb(mem.floor_mb)} floor` : ""}
+      </p>
+      <table className="mt-1 w-full text-left text-[13px]">
+        <tbody className="divide-y divide-border">
+          {running.map((j) => (
+            <tr key={`r${j.id}`}>
+              <td className="py-1 pr-3">{j.class}</td>
+              <td className="py-1 pr-3 text-muted">{j.state === "preempting" ? "stopping (preempted)" : "running"} {secs(j.running_s)}</td>
+              <td className="py-1 pr-3 tabular-nums text-muted">{gb(j.current_mb)} of {gb(j.mem_mb)}</td>
+              <td className="py-1 text-[12px] text-muted">waited {secs(j.waited_s) || "0 s"}</td>
+            </tr>
+          ))}
+          {(queue.unmanaged ?? []).map((u) => (
+            <tr key={`u${u.unit}`}>
+              <td className="py-1 pr-3">{u.class}</td>
+              <td className="py-1 pr-3 text-muted">running outside the queue</td>
+              <td className="py-1 pr-3 tabular-nums text-muted">{gb(u.current_mb)} of {gb(u.mem_mb)}</td>
+              <td />
+            </tr>
+          ))}
+          {waiting.map((j) => (
+            <tr key={`w${j.id}`} className="align-top">
+              <td className="py-1 pr-3">{j.class}</td>
+              <td className="py-1 pr-3 text-muted">waiting {secs(j.waiting_s)}{j.not_before_s ? `, retry in ${secs(j.not_before_s)}` : ""}</td>
+              <td className="py-1 pr-3 tabular-nums text-muted">{j.refusals} refused</td>
+              <td className="py-1 text-[12px] text-muted">{j.last_refusal ?? ""}</td>
+            </tr>
+          ))}
+          {dead.map((j) => (
+            <tr key={`d${j.id}`} className="align-top">
+              <td className="py-1 pr-3 text-late">{j.class}</td>
+              <td className="py-1 pr-3 text-late">gave up after {j.attempts} tries</td>
+              <td className="py-1 pr-3 text-[12px] text-muted" colSpan={2}>{j.last_error ?? j.result ?? ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {(queue.events ?? []).length > 0 ? (
+        <p className="mt-1 text-[12px] text-muted" data-testid="ops-queue-events">
+          Events: {(queue.events ?? []).map((e) => `${e.topic} ${e.n} ${e.state === "ready" ? "waiting" : e.state === "inflight" ? "being handled" : "dead"}${e.state === "ready" && e.oldest_s ? ` (oldest ${secs(e.oldest_s)})` : ""}`).join(" · ")}
+        </p>
+      ) : null}
+      {running.length + waiting.length + dead.length === 0 ? <p className="mt-1 text-[13px] text-muted">Nothing queued or running.</p> : null}
+    </section>
+  );
 }
 
 const STATE_WORD: Record<OpsCheck["state"], string> = { breach: "Problem", ok: "OK", unknown: "Unknown" };
@@ -158,6 +234,8 @@ export default function OpsPage() {
                 </table>
               </section>
             )}
+
+            <QueueSection queue={alarms.queue} />
 
             <section data-testid="ops-checks">
               <h2 className="text-[13px] font-semibold">Every check, last pass</h2>

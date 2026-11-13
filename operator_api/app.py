@@ -195,7 +195,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     if getattr(backend, "work_log", None) is None:
         backend.work_log = work     # the Ask drafts' cards read the reader's kept Asks
     mailbox = getattr(backend, "_mailbox", None) or (lambda who: who.email)
-    notes = wl.Notes(work, mailbox)
+    notes = wl.Notes(work, mailbox, getattr(backend, "mail_conversation", None))
 
     # "View as <person>" (UI-07): who the owner may view as and the audit of every view.
     viewing = getattr(backend, "view_as", None) or va.ViewAs(audit=va.Audit(state_dir))
@@ -351,15 +351,19 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """The reliability alarms' last pass (``operating.ops_alarms``): open incidents,
         recent recoveries, every check and ``running`` (the pass is under 15 minutes
         old). The owner and the Team readers only (403 for every other reader); unit names,
-        ages and counts, never a record. ``configured: False`` without a served state dir."""
+        ages and counts, never a record. ``configured: False`` without a served state dir.
+        ``queue``: the host job queue's last snapshot (``operating.jobq.status``: depth,
+        running and waiting jobs, refusals, dead letters; class and unit names and numbers
+        only), ``fresh: False`` when its worker stopped writing it."""
         if not ops_reader(who):
             raise UserFacing("forbidden", "Only the owner and the Team readers see the "
                              "reliability alarms.", 403)
         if not state_dir:
             return {"configured": False, "running": False, "open": [], "recovered": [],
-                    "checks": []}
+                    "checks": [], "queue": {"configured": False, "fresh": False}}
+        from operating.jobq.status import read_snapshot
         from operating.ops_alarms import read_status
-        return read_status(state_dir)
+        return {**read_status(state_dir), "queue": read_snapshot(state_dir)}
 
     @app.get("/api/trust", response_model=m.TrustPage, tags=["trust"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
@@ -520,8 +524,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         yield "status", m.StatusEvent(step="understanding", message="Reading your work log",
                                       elapsed_ms=0)
         found = wl.recall(work, who.key, body.question)
-        if found["total"] == 0 and wl.asks_about_my_mail(body.question):
-            # nothing sent from the Workbench: the mail the person sent is the evidence
+        if found["total"] == 0 and wl.asks_about_work_done_elsewhere(body.question):
+            # nothing done from the Workbench: the mail the person sent, the approvals they
+            # gave in the business systems are the evidence
             yield from backend.ask(who, body)
             return
         text = wl.recall_answer(found)
@@ -690,6 +695,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         return Response(data, media_type=MEDIA.get(kind, "application/octet-stream"),
                         headers={"Cache-Control": "no-store",
                                  "Content-Disposition": f'attachment; filename="{file_id}.{kind}"'})
+
+    @app.post("/api/doc-fill", response_model=m.InstructFill, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
+    def doc_fill(body: m.DocFillRequest, who: Reader = Depends(reader)) -> m.InstructFill:
+        """Fill a form for a record: a new file with every blank listed beside its source,
+        for you to review. Nothing is saved or sent; saving it beside its SharePoint
+        original is the upload you approve."""
+        return backend.doc_fill_request(who, body)
 
     @app.post("/api/autopilot/switches", response_model=m.AutopilotSwitches,
               tags=["actions"], responses={401: {"model": m.ErrorResponse},
@@ -975,8 +989,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             card = None
         result = backend.action_confirm(who, body)
         try:
-            row = next((r for r in reversed(backend._desk().journal.rows())
-                        if r.get("idempotency_key") == body.idempotency_key), None)
+            # the row this confirm ended on, kept by the desk: never a read of the whole
+            # journal per confirm
+            row = backend._desk().recorded(body.idempotency_key)
         except Exception:  # noqa: BLE001 - the log keeps what the result says
             row = None
         notes.action(who, result, row, card)

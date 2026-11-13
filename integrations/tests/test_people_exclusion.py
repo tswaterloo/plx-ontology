@@ -8,6 +8,7 @@ address here is synthetic. Evidence label: ``injected-transport``.
 
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -222,6 +223,181 @@ class MailGuardTests(unittest.TestCase):
         self.assertEqual(self.naming(EXCLUDED, EXCLUDED_UPN), [])
         self.assertNotIn(EXCLUDED, json.dumps(run))
         self.assertNotIn(EXCLUDED_UPN, json.dumps(run))
+
+    def test_an_attachment_carrying_an_excluded_persons_mail_is_never_stored(self):
+        """DOC-008: an allowed message's attachment that carries the excluded person's
+        mail (an .eml inside a zip, naming them only in Cc) is dropped at capture: no
+        bytes, text or readings; the attachment carrying an outside party's mail is kept."""
+        from io import BytesIO
+        from zipfile import ZipFile
+
+        def zipped(sender, cc):
+            out = BytesIO()
+            with ZipFile(out, "w") as archive:
+                archive.writestr("fwd.eml", (f"From: {sender}\r\nTo: orders@acme.example\r\n"
+                                             f"Cc: {cc}\r\nSubject: quote\r\n\r\nx").encode())
+                archive.writestr("quote.txt", b"42 boxes")
+            return out.getvalue()
+        bad, good = zipped(tm.UPN_A, EXCLUDED_UPN.upper()), zipped(
+            "sales@acme.example", "orders@acme.example")
+        self.graph.put(tm.BOX_A, "MSG-1", "CK-1", attachments=[
+            tm.file_attachment("ATT-BAD", bad, name="mails.zip"),
+            tm.file_attachment("ATT-OK", good, name="other.zip")])
+        run = self.capture(ENV_EXCLUDING_B).run(tm.SCOPE)
+        folder = run["mailboxes"][0]["folders"][0]
+        self.assertEqual(folder["counts"]["people_dropped"], 1)
+        rows = dict(self.store.db.execute(
+            "SELECT attachment_id, content_status FROM attachments").fetchall())
+        self.assertEqual(rows, {"ATT-BAD": "excluded:people", "ATT-OK": "captured"})
+        digests = {r[0] for r in self.store.db.execute(
+            "SELECT content_sha256 FROM attachments WHERE content_sha256 IS NOT NULL")}
+        self.assertEqual(digests, {sha256(good).hexdigest()})
+        blobs = {p.name.split(".")[0] for p in Path(self.store.blobs).rglob("*") if p.is_file()}
+        self.assertNotIn(sha256(bad).hexdigest(), blobs)
+        self.assertNotIn(EXCLUDED_UPN, json.dumps(run).lower())
+
+    def test_a_container_stored_before_is_withheld_on_reuse_and_its_mail_never_resolves(self):
+        """DOC-008, containers stored before the capture-time drop: a member citation of
+        the carried mail of an excluded person (and of a mail the guard cannot clear)
+        resolves for nobody while its cleared sibling still does; the next version of
+        the message does not store the container again (reused bytes are decided too),
+        and the walk kept for the cleared container names nobody excluded."""
+        from io import BytesIO
+        from unittest import mock
+        from zipfile import ZipFile
+        from integrations.captured_text import member_handle
+
+        def mail(sender, cc):
+            return (f"From: {sender}\r\nTo: orders@acme.example\r\nCc: {cc}\r\n"
+                    f"Subject: quote\r\n\r\nx").encode()
+
+        def zipped(data):
+            out = BytesIO()
+            with ZipFile(out, "w") as archive:
+                archive.writestr("fwd.eml", data)
+                archive.writestr("quote.txt", b"42 boxes")
+            return out.getvalue()
+        bad_mail, ok_mail = mail(tm.UPN_A, EXCLUDED_UPN.upper()), mail(
+            "sales@acme.example", tm.UPN_A)
+        bad, good = zipped(bad_mail), zipped(ok_mail)
+        self.graph.put(tm.BOX_A, "MSG-1", "CK-1", attachments=[
+            tm.file_attachment("ATT-BAD", bad, name="mails.zip"),
+            tm.file_attachment("ATT-OK", good, name="other.zip")])
+        with mock.patch.object(MailCapture, "_carries_withheld_mail",
+                               lambda _self, _c, _r: (None, None)):   # before the rule
+            self.capture(ENV_EXCLUDING_B).run(tm.SCOPE)
+        handles = dict(self.store.db.execute(
+            "SELECT attachment_id, l1_handle FROM attachments").fetchall())
+        self.assertEqual(set(handles), {"ATT-BAD", "ATT-OK"})
+        guard = PeopleExclusion([EXCLUDED])
+        guard.attach_directory([(tm.BOX_A, tm.UPN_A, []), (EXCLUDED, EXCLUDED_UPN, [])])
+        audience = tm.reader_audience()
+
+        def view(att, path, data, people=guard):
+            return self.store.resolve(member_handle(handles[att], path,
+                                                    sha256(data).hexdigest()),
+                                      tm.READER_A, audience, text=True, people=people)
+        self.assertIsNone(view("ATT-BAD", "fwd.eml", bad_mail))
+        self.assertEqual(view("ATT-BAD", "quote.txt", b"42 boxes")["row"]["content_text"]
+                         .strip(), "42 boxes")
+        self.assertIsNotNone(view("ATT-OK", "fwd.eml", ok_mail))
+        # fail closed: a guard that cannot decide, or a tenant address it does not hold
+        self.assertIsNone(view("ATT-OK", "fwd.eml", ok_mail, PeopleExclusion(
+            unavailable="excluded_people_oids_absent")))
+        partial = PeopleExclusion([EXCLUDED])
+        partial.attach_directory([(EXCLUDED, EXCLUDED_UPN, [])])
+        self.assertIsNone(view("ATT-OK", "fwd.eml", ok_mail, partial))
+        # the next version (same attachments, reused bytes): the container is not stored
+        self.graph.put(tm.BOX_A, "MSG-1", "CK-2", attachments=[
+            tm.file_attachment("ATT-BAD", bad, name="mails.zip"),
+            tm.file_attachment("ATT-OK", good, name="other.zip")])
+        run = self.capture(ENV_EXCLUDING_B).run(tm.SCOPE)
+        counts = run["mailboxes"][0]["folders"][0]["counts"]
+        self.assertEqual((counts["people_dropped"], counts["attachments_reused"]), (1, 1))
+        current = self.store.db.execute(
+            "SELECT a.attachment_id, a.content_status, a.content_sha256, a.l1_handle FROM "
+            "attachments a JOIN messages m ON m.l1_handle=a.message_handle WHERE "
+            "m.superseded_at IS NULL ORDER BY 1").fetchall()
+        self.assertEqual([tuple(r)[:3] for r in current],
+                         [("ATT-BAD", "excluded:people", None),
+                          ("ATT-OK", "captured", sha256(good).hexdigest())])
+        self.assertIsNone(current[0][3])
+        kept = self.store.db.execute("SELECT content_sha256, walk FROM carried_people"
+                                     ).fetchall()
+        self.assertEqual([r[0] for r in kept], [sha256(good).hexdigest()])
+        self.assertIn("sales@acme.example", kept[0][1])
+        self.assertNotIn(EXCLUDED_UPN.lower(), json.dumps([list(r) for r in kept]).lower())
+
+    def test_an_attachment_carrying_withheld_mail_stored_before_resolves_for_nobody(self):
+        """DOC-008 review: the attachment citation itself (not only its members) of a
+        stored .eml naming the excluded person, or of a zip carrying one, resolves for
+        nobody: no text, page, bytes or reading; a clean .eml and a plain file still
+        resolve. A guard that cannot read its list clears no carried mail (fail closed)
+        yet withholds nothing that carries none."""
+        from io import BytesIO
+        from unittest import mock
+        from zipfile import ZipFile
+        from integrations.captured_text import member_handle
+
+        secret = (f"From: {EXCLUDED_UPN}\r\nTo: {tm.UPN_A}\r\nSubject: plan\r\n"
+                  "Content-Type: text/plain\r\n\r\nSECRETBODY the plan").encode()
+        clean = (f"From: sales@acme.example\r\nTo: {tm.UPN_A}\r\nSubject: quote\r\n"
+                 "Content-Type: text/plain\r\n\r\nQUOTEBODY 42 boxes").encode()
+        out = BytesIO()
+        with ZipFile(out, "w") as archive:
+            archive.writestr("fwd.eml", secret)
+            archive.writestr("quote.txt", b"42 boxes")
+        self.graph.put(tm.BOX_A, "MSG-1", "CK-1", attachments=[
+            {**tm.file_attachment("ATT-EML", secret, name="fwd.eml"),
+             "contentType": "message/rfc822"},
+            {**tm.file_attachment("ATT-ZIP", out.getvalue(), name="mails.zip"),
+             "contentType": "application/zip"},
+            {**tm.file_attachment("ATT-OK", clean, name="quote.eml"),
+             "contentType": "message/rfc822"},
+            tm.file_attachment("ATT-TXT", b"plain 42 boxes", name="note.txt")])
+        with mock.patch.object(MailCapture, "_carries_withheld_mail",
+                               lambda _self, _c, _r: (None, None)):   # before the rule
+            self.capture(ENV_EXCLUDING_B).run(tm.SCOPE)
+        handles = dict(self.store.db.execute(
+            "SELECT attachment_id, l1_handle FROM attachments").fetchall())
+        self.assertEqual(set(handles), {"ATT-EML", "ATT-ZIP", "ATT-OK", "ATT-TXT"})
+        guard = PeopleExclusion([EXCLUDED])
+        guard.attach_directory([(tm.BOX_A, tm.UPN_A, []), (EXCLUDED, EXCLUDED_UPN, [])])
+        audience = tm.reader_audience()
+
+        def resolve(handle, people=guard, **options):
+            return self.store.resolve(handle, tm.READER_A, audience, people=people,
+                                      **options)
+        for att in ("ATT-EML", "ATT-ZIP"):
+            with self.subTest(att):
+                for options in ({}, {"text": True}, {"text": True, "text_version": 1}):
+                    self.assertIsNone(resolve(handles[att], **options))
+                self.assertIsNone(resolve(handles[att] + "#page=1", text=True))
+                self.store.people = guard   # the serving paths take the store's guard
+                try:
+                    self.assertIsNone(self.store.attachment_content(
+                        handles[att], tm.READER_A, audience))
+                    self.assertIsNone(self.store.attachment_reading(
+                        handles[att], tm.READER_A, audience))
+                finally:
+                    self.store.people = None
+        # the zip's cleared sibling still resolves as a member; its mail does not
+        self.assertEqual(resolve(member_handle(handles["ATT-ZIP"], "quote.txt", sha256(
+            b"42 boxes").hexdigest()), text=True)["row"]["content_text"].strip(), "42 boxes")
+        self.assertIsNone(resolve(member_handle(handles["ATT-ZIP"], "fwd.eml",
+                                                sha256(secret).hexdigest()), text=True))
+        ok = resolve(handles["ATT-OK"], text=True)
+        self.assertIn("QUOTEBODY", ok["row"]["content_text"])
+        self.assertIsNotNone(resolve(handles["ATT-TXT"], text=True))
+        # the list cannot be read: no carried mail is cleared, a plain file still resolves
+        broken = PeopleExclusion(unavailable="excluded_people_file_unreadable")
+        self.assertIsNone(resolve(handles["ATT-OK"], broken, text=True))
+        self.assertIsNotNone(resolve(handles["ATT-TXT"], broken, text=True))
+        # no guard given: the environment's (none set here: unavailable, fail closed)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for key in (people_exclusion.ENV_IDS, people_exclusion.ENV_FILE):
+                os.environ.pop(key, None)
+            self.assertIsNone(self.store.resolve(handles["ATT-OK"], tm.READER_A, audience))
 
     def test_a_message_from_an_excluded_sender_is_never_stored_or_indexed(self):
         self.graph.put(tm.BOX_A, "MSG-1", "CK-1")

@@ -762,6 +762,13 @@ def state_captures(state_dir: Path, stack: ExitStack, *,
             for source in state_capture_paths(state_dir) if capture_held(state_dir, source)}
 
 
+def held_captures(state_dir: str | Path) -> set[str]:
+    """The source families of ``state_capture_paths`` the state directory holds, none
+    opened."""
+    return {source for source in state_capture_paths(state_dir)
+            if capture_held(state_dir, source)}
+
+
 def capture_held(state_dir: str | Path, source: str) -> bool:
     """The state directory holds ``source``'s capture store (``state_capture_paths``;
     SharePoint: its drive or its list-item store)."""
@@ -1206,7 +1213,7 @@ class Host:
                 estate=None if host is None else SharePointSites(api, host),
                 max_content_bytes=scope.max_content_bytes,
                 budget_seconds=entry.get("budget_seconds"),
-                monotonic=self.monotonic).run(scope)
+                monotonic=self.monotonic, extraction_processes=True).run(scope)
         finally:
             store.close()
         roots = [r for t in run["targets"] for r in t["roots"]]

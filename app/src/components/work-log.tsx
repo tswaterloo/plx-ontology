@@ -105,6 +105,10 @@ export function LoopLine({ e }: { e: WorkLogEvent }) {
   if (!loop) return null;
   if (loop.state === "answered") return <span className="text-[color:var(--ok)]">They replied{loop.answered_at ? ` ${formatDateTime(loop.answered_at)}` : ""}</span>;
   if (loop.state === "closed") return <span className="text-muted">Closed</span>;
+  // API-007: mail from a recipient outside the sent message's thread may be the reply; never counted as one
+  const maybe = loop.possible_reply_at ? (
+    <span className="text-muted"> Mail from them arrived {formatDateTime(loop.possible_reply_at)} outside the thread; check whether it answers.</span>
+  ) : null;
   if (loop.state === "overdue")
     return (
       <span className="text-[color:var(--late)]">
@@ -117,9 +121,10 @@ export function LoopLine({ e }: { e: WorkLogEvent }) {
             </Link>
           </>
         )}
+        {maybe}
       </span>
     );
-  return <span className="text-muted">Waiting for a reply{loop.due ? ` until ${formatDateTime(loop.due)}` : ""}</span>;
+  return <span className="text-muted">Waiting for a reply{loop.due ? ` until ${formatDateTime(loop.due)}` : ""}{maybe}</span>;
 }
 
 /** A dry-run action (nothing went out) is logged as "prepared"; never read it as sent. */

@@ -1576,6 +1576,55 @@ class CaseHostTools:
                 found.update(reader._visible_versions(scope, wanted))
         return frozenset(found) & frozenset(ids)
 
+    def object_words(self, actor: Any, policy: Any, object_ids: Any,
+                     properties: Any = ()) -> dict[str, dict[str, Any]]:
+        """Of ``object_ids`` only those ``actor`` may read now under ``policy`` (decided as
+        ``visible_objects`` decides them, by the delta layer that serves each), each
+        one's display as ``plx.object`` shows it (``OntologyTools._displays``) and, of
+        ``properties``, the values current now whose markings the reader holds plus the
+        names of those it holds a value of it may not read (``withheld``: the caller must
+        then read the record whole, as ``plx.object`` withholds the property): batched,
+        one read per store. A record not visible is absent; any failure raises."""
+        ids = sorted({oid for oid in object_ids if isinstance(oid, str) and oid})
+        wanted = sorted({str(p) for p in properties or ()})
+        if not ids:
+            return {}
+        tools = self.tools
+        if tools.store.format_problem() is not None:
+            return {}
+        overlay = self._overlay
+        groups: dict[int, tuple[Any, list[str]]] = {}
+        for oid in ids:
+            layer = overlay.owner(oid) if overlay is not None else None
+            reader = tools if layer is None else layer.tools
+            groups.setdefault(id(reader), (reader, []))[1].append(oid)
+        out: dict[str, dict[str, Any]] = {}
+        for reader, group in groups.values():
+            reader.policy = policy
+            if reader is not tools:
+                reader.clock = tools.clock
+            with reader.store.lock:
+                scope = reader._scope(actor, reader._as_known_at({}))
+                seen = sorted(set(reader._visible_versions(scope, group)) & set(group))
+                if not seen:
+                    continue
+                displays = reader._displays(scope, seen)
+                for oid in seen:
+                    out[oid] = {"display": displays.get(oid), "values": {}, "withheld": set()}
+                if wanted:
+                    from .ontology_tools import _value_out
+                    limit = reader.limits["max_untrusted_text_chars"]
+                    for row in reader.store.readable_values(scope, seen, wanted):
+                        # as plx.object shows it: an uncitable or ill-typed value is none
+                        value, _gap = _value_out(row, row["object_id"].split(":", 1)[0],
+                                                 limit)
+                        if value is not None:
+                            out[row["object_id"]]["values"].setdefault(
+                                row["property"], []).append(value.get("value"))
+                    for row in reader.store.withheld_values(scope, seen, wanted):
+                        out[row["object_id"]]["withheld"].add(row["property"])
+        return out
+
     def register(self, tool_table: dict[str, Any]) -> None:
         """Add ``plx.identity``/``plx.documents``/``plx.read`` to an in-process tool
         table (name -> spec with ``handler(arguments, actor)``), each call through

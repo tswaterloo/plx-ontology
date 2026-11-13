@@ -936,8 +936,9 @@ class Executor:
 
     def run(self, item: Mapping[str, Any], now: datetime, approval: Approval | None = None
             ) -> list[dict[str, Any]]:
-        """Every action of ``item``, in order; stops after the first one not ``done`` or
-        ``dry_run`` (a confirmation never goes out for an entry that did not happen).
+        """Every action of ``item``, in order; stops after the first one not ``done``,
+        ``dry_run`` or already done by an earlier run (a confirmation never goes out for
+        an entry that did not happen).
         ``approval``: a person approved this exact item (``Approval``): it may then go
         live through the owner's per-kind switch instead of the replay gate."""
         from operating import workflows as wf
@@ -979,7 +980,10 @@ class Executor:
             result = self._one(base, item, action, rules, stop, now, approval,
                                dry_only=unperformed)
             results.append(result)
-            if result["status"] not in ("done", "dry_run"):
+            # ACT-003: an action already done (a resumed item) satisfies the step and the
+            # item goes on; pending, unknown and failed still stop it.
+            if result["status"] not in ("done", "dry_run") \
+                    and result.get("reasons") != ["already:done"]:
                 break
         return results
 

@@ -142,12 +142,12 @@ class DetectorTest(Case):
 
     def test_a_default_date_rewrite_or_a_closed_order_is_no_slip(self):
         """The one PO reader decides: a date moved to the day a bulk share of its records
-        hold (a sync's re-write) is no promise moving, and an order closed by the shared
-        status (received) never slips."""
+        hold that a system computed (each order's own day + 1, BIZ-007 provenance) is no
+        promise moving, and an order closed by the shared status (received) never slips."""
         w = World()
-        for _ in range(10):   # the bulk day a re-sync wrote on every order
-            po_with(w, expected_date="2026-07-14")
-        rewritten = po_with(w, expected_date="2026-07-14")
+        for _ in range(10):   # the day the system computed for every order (order day + 1)
+            po_with(w, expected_date="2026-07-14", order_date="2026-07-13")
+        rewritten = po_with(w, expected_date="2026-07-14", order_date="2026-07-13")
         revise(w, rewritten, "expected_date", "2026-07-01", "2026-10-12T00:00:00.000000Z")
         received = po(w, "Complete", "2026-10-25", lines=(("10", "10"),))
         revise(w, received, "expected_date", "2026-10-15", "2026-10-12T00:00:00.000000Z")
@@ -255,7 +255,11 @@ class DetectorTest(Case):
         found = self.events()
         self.assertEqual([g["object_id"] for g in found["lot_near_expiry"]], [soon])
         self.assertEqual(found["lot_near_expiry"][0]["event"]["days"], 10)
-        self.assertEqual(found["lot_near_expiry"][0]["summary"], "Expires on 2026-10-29, in 10 days")
+        # R6: no lot quantity is served, so the stock is said unknown and ranked last
+        self.assertEqual(found["lot_near_expiry"][0]["summary"],
+                         "Expires on 2026-10-29, in 10 days; stock on hand unknown")
+        self.assertEqual(found["lot_near_expiry"][0]["event"]["on_hand"], "unknown")
+        self.assertEqual(found["lot_near_expiry"][0]["follow_up"]["priority"], "low")
         self.assertEqual([g["object_id"] for g in found["lot_on_hold"]], [held])
         self.assertEqual(summary["not_evaluated"]["lot_attention"], {"status_unmapped": 1})
 

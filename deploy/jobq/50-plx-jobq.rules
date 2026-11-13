@@ -1,0 +1,13 @@
+// PLX host job queue (devloop/DECISIONS/open-jobq.md): the queue worker, running as the PLX
+// user, may start and stop exactly the services whose jobs it admits, and nothing else.
+// @PLX_USER@ is filled in by apply.sh.
+polkit.addRule(function(action, subject) {
+    var units = ["plx-delta.service", "plx-proactive-whole.service",
+                 "plx-proactive-inc.service", "plx-search-follow.service"];
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "@PLX_USER@" &&
+        units.indexOf(action.lookup("unit")) >= 0 &&
+        (action.lookup("verb") == "start" || action.lookup("verb") == "stop")) {
+        return polkit.Result.YES;
+    }
+});

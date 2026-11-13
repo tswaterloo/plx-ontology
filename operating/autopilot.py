@@ -83,7 +83,8 @@ ROLE_OWNER = re.compile(r"^role:[a-z_]{1,40}$")
 CONDITIONS = ("intents_any", "intents_none", "side_in", "status_in", "assigned", "open", "asks",
               "quality_in", "tested", "ended", "organizer_copy", "external_or_linked",
               "mailbox_role", "mailbox_role_none", "engaged", "correspondent", "engaged_or_asks",
-              "answers_sender", "closing", "addressed_other", "quiet_sender", "object_type_in")
+              "answers_sender", "closing", "addressed_other", "quiet_sender", "object_type_in",
+              "to_me", "after_own_post")
 DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_released",
               "owner_mailed_attendees", "question_answered")
 MAX_RECORDS = 12          # business records one handler reads around its event
@@ -210,6 +211,12 @@ def validate_registry(raw: Any) -> dict[str, Any]:
                 and share[0] >= 1 and isinstance(share[1], (int, float))
                 and 0 < share[1] <= 1):
             raise RegistryInvalid(f"registry_condition:{ap['id']}")
+        turn = when.get("after_own_post")
+        if turn is not None and not (
+                isinstance(turn, list) and len(turn) == 2
+                and all(isinstance(x, int) and not isinstance(x, bool) and x >= 1
+                        for x in turn)):
+            raise RegistryInvalid(f"registry_condition:{ap['id']}")
         if ap.get("done_when") not in DONE_RULES:
             raise RegistryInvalid(f"registry_done:{ap['id']}")
         if not isinstance(ap.get("due_minutes"), int) or ap["due_minutes"] <= 0:
@@ -249,7 +256,7 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             return False
         if key in ("assigned", "open", "tested", "ended", "organizer_copy",
                    "external_or_linked", "asks", "engaged", "correspondent", "closing",
-                   "addressed_other") and \
+                   "addressed_other", "to_me") and \
                 bool(event.get(key)) != bool(want):
             return False
         if key == "answers_sender":
@@ -268,6 +275,15 @@ def matches(when: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
             n, answered = (list(event.get("sender_history") or ()) + [0, 0])[:2]
             if event.get("side") in want[2] and n >= int(want[0]) and \
                     answered < float(want[1]) * n:
+                return False
+            continue
+        if key == "after_own_post":
+            # [minutes, posts]: the owner wrote in this conversation at most ``minutes``
+            # before it, and ``posts`` or more times in the last ``OWN_POSTS_DAYS`` (an
+            # event read without them, or unreadable: no)
+            last, posts = (list(event.get("own_posts") or ()) + [None, 0])[:2]
+            if not isinstance(last, (int, float)) or isinstance(last, bool) or \
+                    last > want[0] or not isinstance(posts, int) or posts < want[1]:
                 return False
             continue
         if key == "engaged_or_asks" and bool(event.get("engaged") or (
@@ -417,6 +433,30 @@ class Queue:
             "LIMIT 1", (owner, _digest("party", sender.lower()), since, at)
         ).fetchone() is not None
         return {"engaged": engaged, "correspondent": contact}
+
+    def own_posts(self, owner: str, conversation: str | None, at: str
+                  ) -> tuple[float | None, int]:
+        """(minutes since ``owner`` last wrote in this conversation before ``at``, None when
+        not in ``OWN_POSTS_DAYS``; how many times they wrote there in those days): their own
+        sent messages only, never later evidence."""
+        start = _instant(at)
+        if start is None or not conversation:
+            return None, 0
+        row = self.conn.execute(
+            "SELECT MAX(at), COUNT(DISTINCT at) FROM sent WHERE owner = ? AND thread = ? AND "
+            "at >= ? AND at < ?", (owner, _digest("thread", conversation),
+                                   _iso(start - timedelta(days=OWN_POSTS_DAYS)), _iso(start))
+        ).fetchone()
+        last = _instant(row[0]) if row and row[0] else None
+        return (round((start - last).total_seconds() / 60, 1) if last else None,
+                int(row[1] or 0) if row else 0)
+
+    def writers(self, since: str) -> set[tuple[str, str]]:
+        """(owner, thread digest) of every conversation an owner wrote in since ``since``:
+        one read per cycle (``run_cycle`` keeps a group message no one addressed to a member
+        only when the member writes there: a large chat never fans out to its readers)."""
+        return {(o, t) for o, t in self.conn.execute(
+            "SELECT DISTINCT owner, thread FROM sent WHERE at >= ?", (since,))}
 
     def thread_item_open(self, owner: str, autopilot: str, event: Mapping[str, Any]) -> bool:
         """Whether this autopilot already has an open item for ``owner`` on an earlier
@@ -752,7 +792,8 @@ def discover(st: Any, ids: Iterable[str], registry: Mapping[str, Any], people: A
             events += _mail_events(st, oids, typed, people, directory, addresses_of, domains,
                                    skipped, outbound)
         elif otype in TEAMS_TYPES:
-            events += _teams_events(st, oids, typed, people, directory, skipped, outbound)
+            events += _teams_events(st, oids, typed, people, directory, skipped, outbound,
+                                    unaddressed=True)
         else:
             events += _record_events(st, otype, kind, oids, typed, sources[otype], skipped,
                                      now=now, lag=(feed_lag or {}).get(otype))
@@ -825,18 +866,24 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
 
 
 TEAMS_TYPES = ("TeamsChatMessage", "TeamsChannelMessage")
+# how far back ``Queue.own_posts`` counts a person's own messages in a conversation
+OWN_POSTS_DAYS = 14
 TEAMS_BODY = "row.body_text"
 
 
 def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, str]],
                   people: Any, directory: Mapping[str, str], skipped: Counter,
-                  outbound: list | None = None, *, words: bool = True
-                  ) -> list[dict[str, Any]]:
+                  outbound: list | None = None, *, words: bool = True,
+                  unaddressed: bool = False) -> list[dict[str, Any]]:
     """Teams chat and channel messages as ``message.received`` events (``words`` False:
     who reached whom, when, in which conversation only; a replay's history seed). A one-to-one chat's
     message is the other member's; a group chat's or a channel's is only each member it
     @mentions (a group message is everyone's to read and no one's to answer: measured, a
     person writes in the chat after three in four of the others' messages, under the gate).
+    ``unaddressed`` (the live feed and a replay's days, not a history seed): a group chat's
+    other members get the message too, ``to_me`` false and ``unaddressed`` set, for the
+    autopilots that answer a person's own turn in a conversation (``after_own_post``); a
+    channel's members are not captured, so a channel message stays the mentioned's only.
     A channel's conversation is its thread (the root post and its replies). Every person
     of the chat (a channel: the sender and the mentioned) must be cleared; the sender's own
     message is their side of the conversation (``Queue.note_sent``). The text is the
@@ -880,7 +927,12 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
                              "to": [] if group else [x for x in who if x != sender],
                              "at": _v(row, "created_at")})
         owners = sorted(named & set(who)) if group else [x for x in who if x != sender]
-        if not owners:
+        cleared = all(people.identity_clear(x) for x in who)
+        # a chat holding someone the exclusion bars: never an event for a member no one
+        # addressed (an addressed one is kept and skipped as not cleared, as before)
+        others = sorted(set(who) - set(owners) - {sender}) \
+            if group and not channel and unaddressed and cleared else []
+        if not owners and not others:
             skipped["teams_group_not_mentioned"] += 1
             continue
         handle = (_handles_of(row) or [""])[0]
@@ -888,16 +940,16 @@ def _teams_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, s
             (_v(row, p) for p in text_props if _v(row, p)), ""))
         records = sorted({o for _t, o in _linked(st, oid) if o.split(":", 1)[0] in BUSINESS}
                          ) if words else []
-        cleared = all(people.identity_clear(x) for x in who)
         from . import inbox_triage as it
-        for owner in owners:
+        for owner in owners + others:
             out.append({
                 "event_id": _digest("message.received", oid, owner) if group
                 else _digest("message.received", oid),
                 "event_type": "message.received", "object_id": oid,
                 "object_type": typed[oid][0], "channel": "teams",
                 "at": _v(row, "created_at"), "mailbox": owner, "audience": aud,
-                "sender": sender, "to": [owner], "cc": [], "to_me": True, "subject": "",
+                "sender": sender, "to": [owner], "cc": [], "to_me": owner in owners,
+                **({} if owner in owners else {"unaddressed": True}), "subject": "",
                 "text": text[:TEXT_CHARS], "conversation_id": conversation, "message_id": oid,
                 "intents": intents_of("", text), "side": "internal",
                 "records": records[:MAX_RECORDS], "group": group, "cleared": cleared,
@@ -923,8 +975,8 @@ def teams_thread(audience: str, oid: str, reply_to: str) -> str:
 def teams_bodies(st: Any, handles: Sequence[str]) -> dict[str, str]:
     """handle -> the message's body text held by the store's text index (one read for a
     batch); a handle without one, or an unreadable index, is left out (never a guess)."""
-    from ontology.text_index import chunk_text
-    out: dict[str, str] = {}
+    from .mail_text import joined_chunks
+    rows: dict[str, list[tuple[int, bytes]]] = {}
     handles = sorted(set(h for h in handles if h))
     try:
         for start in range(0, len(handles), 500):
@@ -933,8 +985,9 @@ def teams_bodies(st: Any, handles: Sequence[str]) -> dict[str, str]:
                     "ON k.field_id = f.field_id WHERE f.citation IN (SELECT value FROM "
                     "json_each(?)) AND f.field_path = ? ORDER BY f.citation, k.start",
                     (json.dumps(handles[start:start + 500]), TEAMS_BODY)):
-                # chunks overlap (``text_index.CHUNK_OVERLAP``): each one from its offset
-                out[handle] = out.get(handle, "")[:int(at)] + chunk_text(body)
+                rows.setdefault(handle, []).append((at, body))
+        # chunks overlap (``text_index.CHUNK_OVERLAP``): each one laid at its offset
+        out = {handle: joined_chunks(parts) for handle, parts in rows.items()}
     except (sqlite3.Error, ValueError, TypeError):
         return {}
     return out
@@ -1400,7 +1453,7 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
         owner = str(event.get("mailbox") or "")
         if not owner or not (addresses_of.get(owner) or event.get("channel") == "teams"):
             return [], "owner_unknown"
-        if not event.get("to_me"):
+        if not event.get("to_me") and not event.get("unaddressed"):
             return [], "owner_not_addressed"     # Cc or Bcc: the To owner prepares it
         return [owner], None
     if rule == "assignee":
@@ -2232,7 +2285,7 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
               gate: Callable[..., bool] | None = None,
               rate_by_event_hour: bool = False,
               feed_lag: Mapping[str, timedelta] | None = None,
-              read_work_log: bool = False) -> dict[str, Any]:
+              read_work_log: bool = False, event_queue: bool = False) -> dict[str, Any]:
     """One cycle: type the changed records, store each event once, prepare the work of each
     new event every matching autopilot declares, settle items their evidence closed.
     ``only_owners``: prepare only for these people (a replay of one role); ``gate(owner,
@@ -2243,7 +2296,10 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     ``read_work_log``: skip a message the owner already answered from the Workbench
     (``Queue.answered_in_workbench``). Live only: the ``follow`` command alone passes it;
     every other caller (a replay, its catch-up ``_drain``, tests) never opens the log, so a
-    replay never learns what the Workbench did after the day it judges."""
+    replay never learns what the Workbench did after the day it judges.
+    ``event_queue``: hand the events out through the ordered event queue when
+    ``PLX_AUTOPILOT_EVQ`` is on (``OrderedFeed``). Live only: the ``follow`` command alone
+    passes it, so a replay or its catch-up never touches the live queue's order."""
     environ = os.environ if environ is None else environ
     registry = registry or load_registry()
     now = now or datetime.now(timezone.utc)
@@ -2266,7 +2322,19 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
     with queue.conn:
         summary["sent_noted"] = queue.note_sent(outbound)
         queue.note_routine(outbound)
-        queue.note_inbound(e for e in events if e.get("event_type") == "message.received")
+        # a group message no one addressed to the owner is not a message to them: a
+        # sender's answered share (``reply_history``) never counts it
+        queue.note_inbound(e for e in events if e.get("event_type") == "message.received"
+                           and not e.get("unaddressed"))
+    if any(e.get("unaddressed") for e in events):
+        # only a member who wrote in the conversation in the turn rule's days can have a
+        # turn there (``own_posts`` decides, from the messages before the event): the
+        # others' copies are never stored
+        oldest = min((_instant(e.get("at")) for e in events if e.get("unaddressed")
+                      and _instant(e.get("at"))), default=now)
+        wrote = queue.writers(_iso(oldest - timedelta(days=OWN_POSTS_DAYS)))
+        events = [e for e in events if not e.get("unaddressed") or (
+            str(e.get("mailbox") or ""), _digest("thread", e.get("conversation_id"))) in wrote]
     discovered = time.monotonic()
     summary["skipped"].update(skipped)
     directory, addresses_of, domains = _people_maps(people)
@@ -2293,9 +2361,22 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
             summary["events_new"] += queue.add_event(e, stamp)
         if rd_day:
             queue.set_meta("rd_due_day", rd_day)
-    for event in queue.pending(int(limits["max_events_per_cycle"])):
+    ordered = None
+    if event_queue and event_queue_on(environ):
+        try:
+            ordered = OrderedFeed(queue, environ)
+        except Exception as error:  # noqa: BLE001 - fail closed: the events wait, unordered never
+            summary["status"] = "blocked"
+            summary["reason"] = f"event_queue_unavailable:{type(error).__name__}"
+            return _plain(summary)
+    feed = ordered.events(int(limits["max_events_per_cycle"])) if ordered else \
+        iter(queue.pending(int(limits["max_events_per_cycle"])))
+    while True:
         if time.monotonic() - started > limits["cycle_seconds"]:
             summary["status"] = "partial"      # the rest stay new: the next cycle goes on
+            break
+        event = next(feed, None)
+        if event is None:
             break
         _meeting_extra(st, event, domains)
         if event.get("event_type") == "message.received" and event.get("mailbox") and \
@@ -2304,6 +2385,8 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                                           str(event.get("sender") or ""), str(event["at"])))
             event["sender_history"] = list(queue.reply_history(
                 str(event["mailbox"]), str(event.get("sender") or ""), str(event["at"])))
+            event["own_posts"] = list(queue.own_posts(
+                str(event["mailbox"]), event.get("conversation_id"), str(event["at"])))
         state, reason = _process(st, queue, event, registry, people=people,
                                  directory=directory, addresses_of=addresses_of, roles=roles,
                                  domains=domains, as_of=as_of, now=now, summary=summary,
@@ -2312,11 +2395,138 @@ def run_cycle(st: Any, queue: Queue, ids: Iterable[str], *, people: Any,
                                  read_work_log=read_work_log)
         with queue.conn:
             queue.mark(event["event_id"], state, reason, stamp)
+        if ordered:
+            ordered.settle(event["event_id"], state, reason)   # after the mark: a crash between redelivers
+    if ordered:
+        if ordered.unknown:
+            summary["skipped"]["unknown_event_type"] += ordered.unknown
+        ordered.close()
     summary["discover_seconds"] = round(discovered - started, 2)
     if settle_items:
         summary["settled"] = settle(st, queue, registry, people, now=now)
     summary["seconds"] = round(time.monotonic() - started, 2)
     return _plain(summary)
+
+
+EVQ_ENV = "PLX_AUTOPILOT_EVQ"
+EVQ_DSN_ENV = "PLX_AUTOPILOT_EVQ_DSN"
+EVQ_TOPIC = "autopilot"
+# Lower first. An approval or a customer's message is handled before routine updates of
+# other records; events about one entity keep their order whatever their priority.
+EVENT_PRIORITY = {"approval.requested": 10, "message.received": 20, "task.assigned": 20,
+                  "question.asked": 20, "qc.result": 30, "meeting.ended": 30,
+                  "record.due": 40, "record.changed": 40}
+CUSTOMER_MESSAGE_PRIORITY = 10
+DEFERRED_RETRY_S = 300.0
+
+
+def event_queue_on(environ: Mapping[str, str]) -> bool:
+    return str(environ.get(EVQ_ENV) or "") in ("1", "true", "yes", "on")
+
+
+def event_group(event: Mapping[str, Any]) -> str:
+    """The entity an event is about, whose events are handled in order: a mail or chat
+    thread, else the record (PO, task, approval...) by its type and id."""
+    thread = event.get("conversation_id")
+    if thread:
+        return f"thread:{thread}"
+    return f"{event.get('object_type') or 'object'}:{event.get('object_id') or event['event_id']}"
+
+
+def event_priority(event: Mapping[str, Any]) -> int:
+    kind = str(event.get("event_type") or "")
+    if kind not in EVENT_PRIORITY:
+        raise ValueError(f"unknown event type {kind!r}")   # registry types only
+    if kind == "message.received" and event.get("side") == "customer":
+        return CUSTOMER_MESSAGE_PRIORITY
+    return EVENT_PRIORITY[kind]
+
+
+class OrderedFeed:
+    """The cycle's events through the ordered event queue (``operating.jobq.events``).
+    Each autopilot queue file has a topic of its own (``topic_of``: an id kept in its meta),
+    so one queue never hands out, holds back or finishes another's events. Every pending
+    event of this queue is published, by its ``event_id``, grouped by ``event_group``, at
+    ``event_priority``; one this topic already finished or dead-lettered while the local
+    queue still holds it pending is revived (an event is never lost while its queue waits
+    on it). Then the group heads are handed out, best priority first. The SQLite events table
+    stays the record of each event's state; Postgres is the delivery order. ``settle``
+    follows ``mark``: processed or skipped acks; a rate-limit deferral returns the event
+    after ``DEFERRED_RETRY_S`` without spending a delivery; a handler failure that is retried
+    spends one; failed goes to the dead letter. An event of a type with no priority is
+    marked failed locally (``unknown_event_type``) and never published. A crash between
+    the mark and the settle redelivers the event, and ``_process`` makes an item once per
+    event and owner (its id is their digest)."""
+
+    def __init__(self, queue: "Queue", environ: Mapping[str, str]) -> None:
+        from operating.jobq import events as ev
+        from operating.jobq import queue as jq
+        self.local = queue
+        self.evq = ev.EventQueue(environ.get(EVQ_DSN_ENV) or jq.dsn(environ),
+                                 topic=topic_of(queue))
+        self.consumer = f"autopilot:{os.getpid()}"
+        self.held: dict[str, Any] = {}
+        self.unknown = 0
+
+    def events(self, limit: int):
+        pending, refused = [], []
+        for e in self.local.pending(1_000_000):
+            try:
+                pending.append((e, event_priority(e)))
+            except ValueError:
+                refused.append(e["event_id"])
+        if refused:
+            stamp = _iso(datetime.now(timezone.utc))
+            with self.local.conn:
+                for event_id in refused:
+                    self.local.mark(event_id, "failed", "unknown_event_type", stamp)
+            self.unknown = len(refused)
+        self.evq.publish(({"event_id": e["event_id"], "event_type": e["event_type"],
+                           "group_key": event_group(e), "priority": p,
+                           "body": {"event_id": e["event_id"]}} for e, p in pending),
+                         revive=True)
+        bodies = {e["event_id"]: e for e, _p in pending}
+        for _ in range(limit):
+            got = self.evq.receive(self.consumer)
+            if not got:
+                return
+            msg = got[0]
+            event = bodies.get(msg.event_id)
+            if event is None:          # this queue's event, no longer pending here: done
+                self.evq.ack(msg)
+                continue
+            self.held[msg.event_id] = msg
+            yield event
+
+    def settle(self, event_id: str, state: str, reason: str | None) -> None:
+        msg = self.held.pop(event_id, None)
+        if msg is None:
+            return
+        if state == "deferred":
+            self.evq.nack(msg, reason or "deferred", delay_s=DEFERRED_RETRY_S,
+                          spend=reason != "rate_limited")
+        elif state == "failed":
+            self.evq.nack(msg, reason or "failed", dead=True)
+        else:
+            self.evq.ack(msg)
+
+    def close(self) -> None:
+        for msg in self.held.values():    # handed out but not handled: back at once
+            self.evq.nack(msg, "cycle ended", delay_s=0)
+        self.held.clear()
+        self.evq.close()
+
+
+def topic_of(queue: "Queue") -> str:
+    """The event-queue topic of one autopilot queue file: an id the file is given once and
+    keeps (``meta`` ``evq_topic``), so each person's, role's or replay's queue has its own,
+    and a queue file made anew where an old one was never inherits the old one's events."""
+    topic = queue.meta("evq_topic")
+    if not topic:
+        topic = f"{EVQ_TOPIC}:{hashlib.sha256(os.urandom(32)).hexdigest()[:20]}"
+        with queue.conn:
+            queue.set_meta("evq_topic", topic)
+    return topic
 
 
 def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str, Any], *,
@@ -2342,6 +2552,8 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
         if ap.get("enabled") is False:
             continue                       # switched off in the registry (``off_reason``)
         when = ap.get("when") or {}
+        if event.get("unaddressed") and "after_own_post" not in when:
+            continue    # a group message not addressed to the owner: only a turn rule answers it
         box = str(event.get("mailbox") or "")
         role = when.get("mailbox_role")
         if role and box not in _role_members(role, roles, directory):
@@ -2670,12 +2882,22 @@ def _markings(st: Any, ids: Iterable[str]) -> list[list[str]]:
     return out
 
 
+def _event_body(queue: Queue, event_id: str) -> dict[str, Any]:
+    row = queue.conn.execute("SELECT body FROM events WHERE event_id = ?",
+                             (event_id,)).fetchone()
+    try:
+        body = json.loads(row[0]) if row else {}
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
            now: datetime) -> Counter:
     """Mark open items done from evidence (module doc)."""
     from . import proactive_threads as pt
     done: Counter = Counter()
-    directory, addresses_of, _domains = _people_maps(people)
+    directory, addresses_of, domains = _people_maps(people)
     stamp = _iso(now)
     for item in queue.items():
         rule = item["body"].get("done_when")
@@ -2695,6 +2917,30 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
                     if any((_addresses(_v(r, "sender")) or [""])[0] in mine
                            and _v(r, "sent_at") > at for r in rows.values()):
                         reason = "owner_replied"
+            elif rule == "owner_replied" and happened.get("channel") == "teams":
+                # AUTOMATION-009: the owner's own message in the same chat or thread
+                # after this one (``note_sent``: the thread digest and time)
+                body = _event_body(queue, item["event_id"])
+                after = _instant(body.get("at"))
+                conv = body.get("conversation_id")
+                if conv and after is not None and queue.conn.execute(
+                        "SELECT 1 FROM sent WHERE owner = ? AND thread = ? AND at > ? LIMIT 1",
+                        (item["owner"], _digest("thread", conv), _iso(after))).fetchone():
+                    reason = "owner_replied"
+            elif rule == "owner_mailed_attendees":
+                # AUTOMATION-009: the organizer wrote to an outside attendee (whom the
+                # follow-up goes to, ``h_meeting``) after the meeting ended; a mail to a
+                # colleague who attended is no follow-up
+                body = _event_body(queue, item["event_id"])
+                ended = _instant(body.get("at"))
+                parties = sorted({_digest("party", str(a).lower())
+                                  for a in body.get("attendees") or ()
+                                  if not _internal(str(a).lower(), domains)})
+                if ended is not None and parties and queue.conn.execute(
+                        "SELECT 1 FROM sent WHERE owner = ? AND at > ? AND counterpart IN "
+                        "(SELECT value FROM json_each(?)) LIMIT 1",
+                        (item["owner"], _iso(ended), json.dumps(parties))).fetchone():
+                    reason = "owner_mailed_attendees"
             elif rule == "approval_decided" and oid:
                 r = _read(st, [oid], ("status",)).get(oid)
                 if r and _v(r, "status").lower() not in ("", "pending"):
@@ -2949,7 +3195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if a.command == "follow":
             ids, taken = layer_ids(store, queue, st.digest)
             summary = run_cycle(st, queue, ids, people=people, registry=registry, gate=gate,
-                                read_work_log=True)
+                                read_work_log=True, event_queue=True)
             summary["workflows_on"] = {"owners": len(passed),
                                        "workflows": sorted({w for v in passed.values()
                                                             for w in v})}

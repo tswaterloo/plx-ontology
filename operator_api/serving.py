@@ -152,7 +152,9 @@ class SessionSlots:
         self.held = 0
         self._available = available
         self._clock = clock
-        self._admitted: list[float] = []
+        # (admitted at, admitting thread): a session's memory not yet out of MemAvailable;
+        # its release takes its own entry back (API-003: an ended session reserves none).
+        self._admitted: list[tuple[float, int]] = []
         self._queue: list[object] = []
         self._cond = threading.Condition()
 
@@ -165,7 +167,7 @@ class SessionSlots:
         if free is None:
             return True
         now = self._clock()
-        self._admitted = [t for t in self._admitted if now - t < ASK_SESSION_RAMP_SECONDS]
+        self._admitted = [a for a in self._admitted if now - a[0] < ASK_SESSION_RAMP_SECONDS]
         return free - ASK_SESSION_FLOOR_GB >= ASK_SESSION_GB * (1 + len(self._admitted))
 
     def waiting(self) -> int:
@@ -200,15 +202,22 @@ class SessionSlots:
                     self._cond.wait(self.POLL_SECONDS if left is None
                                     else min(self.POLL_SECONDS, left))
                 self.held += 1
-                self._admitted.append(self._clock())
+                self._admitted.append((self._clock(), threading.get_ident()))
                 return True
             finally:
                 self._queue.remove(ticket)
                 self._cond.notify_all()
 
     def release(self) -> None:
+        """End the calling thread's session: its slot, and its admission (if still within
+        the ramp) no longer reserves memory for it."""
+        me = threading.get_ident()
         with self._cond:
             self.held = max(0, self.held - 1)
+            for index in range(len(self._admitted) - 1, -1, -1):
+                if self._admitted[index][1] == me:
+                    del self._admitted[index]
+                    break
             self._cond.notify_all()
 
 
@@ -739,10 +748,7 @@ class Worker:
                deadline: Optional[float] = None) -> Future:
         """``deadline``: the monotonic second by which nobody waits for the job's result
         any more; the job's store statements past it are interrupted (``_bounded_job``)."""
-        future = submit(self.jobs, self.stopped, reader, job, priority)
-        if deadline is not None:
-            future.plx_deadline = deadline   # type: ignore[attr-defined]
-        return future
+        return submit(self.jobs, self.stopped, reader, job, priority, deadline)
 
     def run(self, reader: Reader, job: Callable[[Any], Any], timeout: float = 120,
             priority: int = 0) -> Any:
@@ -843,8 +849,13 @@ STARTED = time.monotonic()   # this process's start, as the warm-up's log states
 
 
 def submit(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reader,
-           job: Callable[[Any], Any], priority: int) -> Future:
+           job: Callable[[Any], Any], priority: int,
+           deadline: Optional[float] = None) -> Future:
+    """Queue ``job``; its ``deadline`` is on the future before any worker can take it
+    (API-001: a worker that takes it at once still bounds its statements)."""
     future: Future = Future()
+    if deadline is not None:
+        future.plx_deadline = deadline   # type: ignore[attr-defined]
     if stopped.is_set():
         future.set_exception(LookupError("backend_stopped"))
         return future
@@ -912,10 +923,7 @@ def fan_out(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reade
 
     helpers = []
     for _ in range(min(width, count) - 1):
-        future = submit(jobs, stopped, reader, helper, priority)
-        if deadline is not None:
-            future.plx_deadline = deadline   # type: ignore[attr-defined]
-        helpers.append(future)
+        helpers.append(submit(jobs, stopped, reader, helper, priority, deadline))
     drain(call)
     for future in helpers:
         if not future.cancel():

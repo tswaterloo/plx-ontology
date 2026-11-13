@@ -14,6 +14,7 @@ from operating.pg import text_remark as tr
 try:
     from operating.pg import scratch_db
     import psycopg
+    scratch_db.use_test_cluster()
     _NAME, _DSN = scratch_db.create_db()
 except Exception:  # noqa: BLE001 - no local Postgres: skipped
     _NAME = _DSN = None

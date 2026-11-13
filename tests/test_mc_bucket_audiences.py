@@ -31,7 +31,7 @@ from operating import mcp_server
 from operating.tests import test_goal2_e2e as e2e
 from operator_api.workspace import case_console
 from operator_api.tests import case_fixtures
-from tests import test_object_workspace_http as http_tests
+from tests import test_object_workspace_people as http_tests
 
 FOLLOW_UP_BUCKET = http_tests.FOLLOW_UP_BUCKET
 READ_AT = "2026-10-01T09:00:00Z"
@@ -53,7 +53,7 @@ def document(members: dict, bucket: str = FOLLOW_UP_BUCKET,
 
 class BucketAudienceQuotingTest(unittest.TestCase):
     """The live console's follow-up through the loaded file (the person-controls console of
-    ``tests.test_object_workspace_http``, its follow-up bucket's audience the loader's)."""
+    ``tests.test_object_workspace_people``, its follow-up bucket's audience the loader's)."""
 
     setUpClass = http_tests.PersonControlsTest.__dict__["setUpClass"]
     tearDownClass = http_tests.PersonControlsTest.__dict__["tearDownClass"]

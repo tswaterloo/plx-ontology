@@ -40,6 +40,28 @@ class MissionControlReadClientTests(unittest.TestCase):
         with self.assertRaises(SourceUnavailable):
             client.search_tasks()
 
+    def test_a_refused_answer_is_audited_as_refused_not_ok(self):
+        """INT-012: the audit names the final outcome, after the envelope, actor and
+        shape checks."""
+        actor = {"repo": "petralabx/PLX_MC"}
+        for answer, code in (({"data": {"tasks": []}, "meta": {"actor": actor}},
+                              "search_tasks_shape_invalid"),
+                             ({"data": {"tasks": [], "total": 0},
+                               "meta": {"actor": {"repo": "other/repo"}}}, "actor_unbound"),
+                             ([], "envelope_invalid")):
+            client = MissionControlReadClient("secret", "operator@example.com",
+                                              "petralabx/PLX_MC",
+                                              transport=lambda *_, a=answer: a)
+            with self.assertRaises(SourceUnavailable):
+                client.search_tasks()
+            (entry,) = client.audit.records
+            self.assertEqual((entry["outcome"], entry["error_code"]), ("error", code))
+        client = MissionControlReadClient(
+            "secret", "operator@example.com", "petralabx/PLX_MC",
+            transport=lambda *_: {"data": {"tasks": [], "total": 0}, "meta": {"actor": actor}})
+        client.search_tasks()
+        self.assertEqual(client.audit.records[0]["outcome"], "ok")
+
     def test_exact_task_evidence_refuses_usable_checkout_id(self):
         def response(checkout):
             return {"data": {"taskId": "TASK-477",

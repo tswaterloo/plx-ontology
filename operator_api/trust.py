@@ -203,7 +203,11 @@ def _pct_words(value: float) -> str:
 
 def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
           kinds: list[m.TrustAlert], rows: list[m.AutopilotWorkflowRow],
-          sw: list[m.TrustSwitch], g: Optional[m.TrustGate] = None) -> list[m.TrustLine]:
+          sw: list[m.TrustSwitch], g: Optional[m.TrustGate] = None,
+          approved: frozenset[str] = frozenset()) -> list[m.TrustLine]:
+    """``approved``: the action kinds the owner opened to person-approved writes
+    (``autopilot_write.approved_kinds``): those go out on a person's approval and
+    confirmation without the gate, and the gate line says so (API-020)."""
     out = []
     systems = ", ".join(r.system for r in fresh if r.served_at)
     if systems:
@@ -231,7 +235,11 @@ def lines(fresh: list[m.TrustFreshness], sets: list[m.TrustAnswerSet],
     else:
         out.append(m.TrustLine(state="gated", words="Autopilot sends and writes: a workflow "
                                f"acts only after {g.need_judged} judged held-out items at "
-                               f"{_pct_words(g.need_percent)} or better and the owner's switch."))
+                               f"{_pct_words(g.need_percent)} or better and the owner's switch"
+                               + (", or for " + ", ".join(sorted(k.replace("_", " ")
+                                                                 for k in approved))
+                                  + " when a person approves and confirms the item"
+                                  if approved else "") + "."))
     off = [s.system for s in sw if s.state == "off"]
     if off:
         out.append(m.TrustLine(state="gated", words="Writes switched off: " + ", ".join(off)
@@ -275,4 +283,5 @@ def build(backend: Any, reader: Any, environ: Optional[Mapping[str, str]] = None
     return m.TrustPage(checked_at=_iso(now or datetime.now(timezone.utc)), freshness=fresh,
                        answers=sets, alert_rule=rule, alerts=kinds, autopilot=rows,
                        autopilot_note=note, autopilot_gate=g,
-                       lines=lines(fresh, sets, kinds, rows, sw, g), switches=sw)
+                       lines=lines(fresh, sets, kinds, rows, sw, g,
+                                   frozenset(aw.approved_kinds(env))), switches=sw)

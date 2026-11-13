@@ -207,7 +207,7 @@ class TicketTests(unittest.TestCase):
         guard.check(claims, now=1002)  # a per-request check does not consume
         other = si.verify_session_ticket(Fixture.ticket(now=1000), SECRET, now=1001)
         guard.check(other, consume=True, now=1001)  # another ticket is a new jti
-        guard.revoke(other)
+        guard.revoke(other, now=1002)
         with self.assertRaises(si.SessionIdentityRefused) as caught:
             guard.check(other, now=1003)
         self.assertEqual(caught.exception.reason, "session_ticket_revoked")
@@ -217,6 +217,16 @@ class TicketTests(unittest.TestCase):
         with sqlite3.connect(guard.path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM ticket_jti").fetchone()[0], 1)
 
+    def test_a_full_guard_of_expired_rows_still_takes_a_revocation(self):
+        guard = si.TicketReplayGuard(self.dir / "cap.db", max_entries=1)
+        guard.revoke({"jti": "a" * 16, "exp": 1}, now=0)
+        current = {"jti": "b" * 16, "exp": 9000}
+        guard.revoke(current, now=1000)      # the expired row holds no room
+        guard.revoke(current, now=1001)      # a repeat at the cap is idempotent
+        with self.assertRaises(si.SessionIdentityRefused) as caught:
+            guard.check(current, now=1002)
+        self.assertEqual(caught.exception.reason, "session_ticket_revoked")
+
     def test_replay_guard_survives_a_restart_within_the_ticket_ttl(self):
         # Identity tickets are bearer credentials: a host restart within the ticket TTL
         # must not make a consumed or revoked jti usable again.
@@ -224,7 +234,7 @@ class TicketTests(unittest.TestCase):
         revoked = si.verify_session_ticket(Fixture.ticket(now=1000), SECRET, now=1001)
         guard = si.TicketReplayGuard(self.dir / "jti.db")
         guard.check(first, consume=True, now=1001)
-        guard.revoke(revoked)
+        guard.revoke(revoked, now=1001)
         restarted = si.TicketReplayGuard(self.dir / "jti.db")
         for claims, reason in ((first, "session_ticket_replayed"),
                                (revoked, "session_ticket_revoked")):
@@ -344,6 +354,27 @@ class EmployeeSessionTests(Fixture):
             si.bind_state_dir(old, fixture=True)
         self.assertEqual(caught.exception.reason, "fixture_session_on_live_state")
         self.assertEqual(si.bind_state_dir(old, fixture=False), "live")
+        # Two hosts first binding one new directory both observed no label: exactly
+        # one proceeds, the other reads the winner's label and is refused.
+        from unittest import mock
+        race = self.dir / "race"
+        real = si.state_label
+        for wanted, refusal in ((dict(fixture=True), None),
+                                (dict(fixture=False), "live_session_on_fixture_state")):
+            seen = []
+
+            def stale_first(path):   # the first observation is the stale "no label"
+                seen.append(path)
+                return None if len(seen) == 1 else real(path)
+
+            with mock.patch.object(si, "state_label", stale_first):
+                if refusal is None:
+                    self.assertEqual(si.bind_state_dir(race, **wanted), "fixture")
+                    continue
+                with self.assertRaises(si.SessionIdentityRefused) as caught:
+                    si.bind_state_dir(race, **wanted)
+                self.assertEqual(caught.exception.reason, refusal)
+        self.assertEqual(si.state_label(race), "fixture")
 
 
 class IntentIdentityTests(Fixture):

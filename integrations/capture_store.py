@@ -88,6 +88,14 @@ FORMAT = "plx-capture-store/v1"
 # superseded versions are dropped; their handles resolve as ``capture_unknown``
 # with reason ``pruned_by_retention``, never to other content.
 DEFAULT_MAX_VERSIONS_PER_RECORD = 50
+# The run mark of a restart (``restart_run``), followed by its store time.
+RESTART_MARK = "store:restarted_at:"
+# Retention of run metadata (INT-016): a unit's newest runs keep their step marks (a
+# resume reads its own, the next run its predecessor's); older finished runs' marks are
+# dropped when a run of the unit finishes. Run summaries (one small row per run) and the
+# ``pruned`` tombstones are kept: a tombstone is what lets a pruned citation answer
+# ``pruned_by_retention`` rather than unknown.
+KEEP_MARKED_RUNS = 3
 MAX_BATCH_HANDLES = 5000
 MAX_RECORDS_LIMIT = 1000
 # How long a unit's recorded source ACL (``set_unit_acl``) decides who sees the unit: the one
@@ -904,6 +912,22 @@ class CaptureStore:
                     + seen + " ORDER BY path",
                     (kind_name, unit, *(() if seen_in_run is None else (seen_in_run,))))]
 
+    def seen_before(self, kind_name: str, age: timedelta, limit: int
+                    ) -> list[tuple[str, CapturedRecord]]:
+        """Writer side: (unit, record) of the kind's current, not-missing versions last
+        seen (``last_seen_at``) more than ``age`` ago by the store clock, oldest first, at
+        most ``limit``: those whose permissions a capture is to read again."""
+        kind = source_kind(kind_name)
+        before = _iso(self._clock() - age)
+        return [(row["unit"], CapturedRecord(
+            kind.canonical_path([unquote(p) for p in row["path"].split("/")]),
+            json.loads(row["payload"]), row["source_version"], row["lineage"]))
+            for row in self._db.execute(
+                "SELECT unit, path, payload, source_version, lineage FROM versions WHERE "
+                "kind = ? AND superseded_at IS NULL AND missing_from_source_since IS NULL "
+                "AND last_seen_at < ? ORDER BY last_seen_at, path LIMIT ?",
+                (kind_name, before, max(0, int(limit))))]
+
     def set_unit_acl(self, run_id: int, acl: Mapping[str, Any]) -> None:
         """Record the open run's unit's current source ACL (a ``unit_acl`` kind): from
         now on it gates every version of the unit, whatever ACL a version was saved with."""
@@ -937,12 +961,18 @@ class CaptureStore:
 
     def restart_run(self, run_id: int, reason: str) -> None:
         """Drop the cursor (e.g. an expired continuation): the next step starts over.
-        Records already saved by this run keep their ``last_seen_run``."""
+        Records already saved by this run keep their ``last_seen_run``, but only a
+        sighting since the latest restart counts as seen when the run completes
+        (INT-006: the abandoned traversal is no evidence a record is still there); the
+        restart time is kept as the run mark :data:`RESTART_MARK`."""
+        now = self._now()
         with self._write():
             self._open_run(run_id)
             self._db.execute("UPDATE runs SET cursor = NULL, restarts = restarts + 1, "
                              "reason = ?, updated_at = ? WHERE run_id = ?",
-                             (reason, self._now(), run_id))
+                             (reason, now, run_id))
+            self._db.execute("INSERT OR IGNORE INTO run_marks VALUES (?, ?)",
+                             (run_id, RESTART_MARK + now))
 
     def pause_run(self, run_id: int, *, reason: str, error: str | None = None,
                   retry_not_before: str | None = None) -> None:
@@ -967,16 +997,28 @@ class CaptureStore:
                 state, reason = "partial", reason or "withheld_or_dropped"
             marked = 0
             if state == "complete":
+                restarted = self._db.execute(
+                    "SELECT max(substr(mark, ?)) FROM run_marks WHERE run_id = ? "
+                    "AND mark >= ? AND mark < ?",
+                    (len(RESTART_MARK) + 1, run_id, RESTART_MARK,
+                     RESTART_MARK[:-1] + chr(ord(RESTART_MARK[-1]) + 1))).fetchone()[0]
                 marked = self._db.execute(
                     "UPDATE versions SET missing_from_source_since = ? WHERE kind = ? "
-                    "AND unit = ? AND superseded_at IS NULL AND last_seen_run <> ? "
-                    "AND missing_from_source_since IS NULL",
-                    (now, run["kind"], run["unit"], run_id)).rowcount
+                    "AND unit = ? AND superseded_at IS NULL AND (last_seen_run <> ? "
+                    "OR last_seen_at < ?) AND missing_from_source_since IS NULL",
+                    (now, run["kind"], run["unit"], run_id, restarted or "")).rowcount
             self._db.execute(
                 "UPDATE runs SET state = ?, finished_at = ?, updated_at = ?, reason = ?, "
                 "error = ?, cursor = NULL, detail = ? WHERE run_id = ?",
                 (state, now, now, reason, error,
                  None if detail is None else _canonical(dict(detail)), run_id))
+            # Operational marks (INT-016) are read only by a run and the unit's next
+            # ones: the unit's runs older than its newest KEEP_MARKED_RUNS keep none.
+            self._db.execute(
+                "DELETE FROM run_marks WHERE run_id IN (SELECT run_id FROM runs WHERE "
+                "kind = ? AND unit = ? AND state <> 'in_progress' AND run_id < ? "
+                "ORDER BY run_id DESC LIMIT -1 OFFSET ?)",
+                (run["kind"], run["unit"], run_id, KEEP_MARKED_RUNS - 1))
         checkpoint(self._db)   # the run's safe point: its writes leave the WAL
         return {"run_id": run_id, "state": state, "marked_missing": marked}
 
@@ -1230,6 +1272,15 @@ class CaptureStore:
             known = _known_at(as_known_at)
             where = "recorded_at <= ? AND (superseded_at IS NULL OR superseded_at > ?)"
             params += [known, known]
+            if not include_missing:
+                # Not held then (INT-004): missing since before that moment and not seen
+                # again by it, or inside a closed absence stretch (``removals``).
+                where += (" AND NOT (missing_from_source_since IS NOT NULL"
+                          " AND missing_from_source_since <= ?)"
+                          " AND NOT EXISTS (SELECT 1 FROM removals r WHERE r.kind = "
+                          "versions.kind AND r.path = versions.path AND r.since <= ? "
+                          "AND r.until > ?)")
+                params += [known, known, known]
         if after_path is not None:
             where += " AND path > ?"
             params.append(str(after_path))

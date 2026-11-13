@@ -252,13 +252,35 @@ def _scan_documents(conn: sqlite3.Connection, query: str, types: Sequence[str],
     terms = [t for t in query.split(" OR ") if t]
     exact = {t for t in terms if not t.endswith("*")}
     prefixes = tuple(t[:-1] for t in terms if t.endswith("*"))
-    for oid, otype, handle, prop, value in conn.execute(
+    if not terms:
+        return
+    if getattr(conn, "postgres", False):
+        # every document name read whole and matched here took 100-170 s on the served
+        # store (2.8M names through the ``object_values`` view): Postgres reads its tables
+        # with the fields named first and keeps only the names holding a term (terms are
+        # [a-z0-9] only, so a LIKE pattern carries no wildcard of its own); the words are
+        # still matched below, so the rows are exactly the whole read's
+        fields = json.dumps(sorted(row[0] for row in conn.execute(
+            "SELECT field FROM value_fields WHERE property IN (SELECT value FROM "
+            "json_each(?))", (json.dumps(list(props)),))))
+        sql = ("SELECT v.object_id, o.object_type, v.l1_handle, f.property, c.value "
+               "FROM objects o JOIN object_versions v ON v.object_id = o.object_id "
+               "JOIN value_sources s ON s.ver = v.rowid AND s.superseded_at IS NULL "
+               "JOIN value_cells c ON c.src = s.src JOIN value_fields f ON f.field = c.field "
+               "WHERE o.object_type IN (SELECT value FROM json_each(?)) "
+               "AND c.field IN (SELECT value FROM json_each(?)) AND ("
+               + " OR ".join("lower(c.value) LIKE ?" for _ in terms) + ")")
+        rows = conn.execute(sql, (json.dumps(list(types)), fields,
+                                  *(f"%{t.rstrip('*')}%" for t in terms)))
+    else:
+        rows = conn.execute(
             "SELECT v.object_id, o.object_type, v.l1_handle, v.property, v.value "
             "FROM object_values v JOIN objects o ON o.object_id = v.object_id "
             "WHERE v.superseded_at IS NULL "
             "AND o.object_type IN (SELECT value FROM json_each(?)) "
             "AND v.property IN (SELECT value FROM json_each(?))",
-            (json.dumps(list(types)), json.dumps(list(props)))):
+            (json.dumps(list(types)), json.dumps(list(props))))
+    for oid, otype, handle, prop, value in rows:
         found = re.findall(r"[a-z0-9]+", str(value or "").lower())
         if any(w in exact or (prefixes and w.startswith(prefixes)) for w in found):
             yield oid, otype, handle, prop, value

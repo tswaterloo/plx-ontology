@@ -229,6 +229,22 @@ class FeedbackLoop(unittest.TestCase):
             owner = self.owner.get("/api/feedback").json()["entries"][0]
         self.assertEqual((owner["expected"], owner["withheld"]), ("$4,821.75", []))
 
+    def test_a_narrowed_grant_never_relabels_an_old_answer(self):
+        # SEC-008: served under purchasing prices, rated after that marking was removed:
+        # the entry keeps the marking it was served under.
+        self.backend.held_markings = Grants({"staff:ana": frozenset({"purchasing_prices"})})
+        answer_id = asked(self.ana)
+        self.backend.held_markings["staff:ana"] = frozenset()
+        self.ana.post("/api/feedback", json={"answer_id": answer_id, "rating": 1})
+        seen = self.owner.get("/api/feedback").json()["entries"][0]
+        self.assertEqual(seen["withheld"], ["purchasing_prices"])
+        self.assertIsNone(seen["answer"])
+        # an answer kept without its served markings is unknown: read as all
+        self.backend._kept[answer_id].pop("markings")
+        self.ana.post("/api/feedback", json={"answer_id": answer_id, "rating": 1})
+        legacy = self.owner.get("/api/feedback").json()["entries"][0]
+        self.assertIsNone(legacy["answer"])
+
     def test_an_excluded_persons_own_feedback_names_a_colleague(self):
         # no usable exclusion: nobody can be told apart, so nobody is named (fail closed)
         self.ana.post("/api/feedback/note", json={"note": "hidden author"})

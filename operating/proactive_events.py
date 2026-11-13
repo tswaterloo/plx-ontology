@@ -24,7 +24,8 @@ Set-based detectors (one pass over the store):
   event tells a reader who may not read every source a promise sits in that a later
   one it cannot see may exist (``caveat``);
 * ``lot_attention``: a lot whose expiry date falls within ``EXPIRY_DAYS`` of the run's day
-  and whose QC status says it still holds stock (``lot_near_expiry``; a used-up, rejected
+  and whose QC status does not mark it used up (``lot_near_expiry``, said with "stock on
+  hand unknown" and ranked low: no lot quantity is served, R6; a used-up, rejected
   or expired lot is skipped, a lot with no, a disputed or an unmapped status is
   ``not_evaluated``, never claimed), and a batch on quality hold (``lot_on_hold``): a
   hold is claimed only where it is not the default of the batch's lifecycle state in its
@@ -66,6 +67,8 @@ kind to its event type. Evidence label of fixture runs: ``isolated-fixture``.
 """
 
 from __future__ import annotations
+
+from .mail_text import unquoted
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
@@ -429,16 +432,24 @@ def _lots_near_expiry(st: Any, as_of: date, gaps: list, skipped: Counter, *,
             continue
         days = (day - as_of).days
         number = _one(props.get("lot_number"))
+        # no lot's quantity on hand is served (the Lot type states none): a QC status that
+        # is not used up, rejected or expired never says stock is left, so the lot is
+        # claimed with "stock unknown" and ranked last (R6)
         gaps.append(gap(
             "lot_near_expiry", "lot_attention", oid, "Lot", f"expiry|{day}",
             summary=f"Expires on {day}, " + ("today" if days == 0 else
-                                               f"in {days} day{'' if days == 1 else 's'}"),
-            missing="Whether this lot is used, reworked or written off before it expires",
+                                               f"in {days} day{'' if days == 1 else 's'}")
+                    + "; stock on hand unknown",
+            missing="Whether any of this lot is left, and if so whether it is used, reworked "
+                    "or written off before it expires",
             why=f"The lot's recorded expiry date is {day}, within {EXPIRY_DAYS} days, and "
-                f"its QC status ({status['value']}) says it still holds stock.",
-            priority="high" if days <= 7 else "medium", about=("Lot", "expiry_date"),
+                f"its QC status ({status['value']}) does not mark it used up, rejected or "
+                f"expired. Its quantity on hand is not recorded, so whether stock is left is "
+                f"unknown.",
+            priority="low", about=("Lot", "expiry_date"),
             groups=[cites([expiry]), cites([status])],
-            extra=cites([number]) if number else (), event={"days": days}))
+            extra=cites([number]) if number else (),
+            event={"days": days, "on_hand": "unknown"}))
 
 
 def _batches_on_hold(st: Any, gaps: list, skipped: Counter, *, gap: Callable,
@@ -1007,7 +1018,7 @@ def asks_vendor(text: Any) -> bool:
     if asks_for_terms(text):
         return True
     quoted = QuotedRanges(text)
-    own = "".join(ch for i, ch in enumerate(text) if not quoted.contains(i))
+    own = unquoted(quoted, text)
     return any(_ETA_WORDS.search(sentence) and _REQUEST_WORDS.search(sentence)
                for sentence in re.split(r"(?<=[.!?\n])", own))
 
@@ -1053,10 +1064,11 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     a request of ours to the outside, within ``NO_REPLY_WINDOW_DAYS``, unanswered for
     ``NO_REPLY_DAYS`` or more.
 
-    Read in three plain scans (each stored message's conversation, sent time, sender,
-    subject and preview; the mailbox each copy sits in; the mail naming each purchase
-    order, never contradicted, from messages naming at most ``MAX_NAMED_RECORDS`` order
-    records). People first (``people``: ``operating.chunking.permissions.Exclusion``, the
+    Read from the mail naming an open order's record (never contradicted; a message naming
+    more than ``MAX_NAMED_RECORDS`` order records asks about none): that mail's mailbox and
+    conversation, then every other copy of those conversations (one read of the
+    conversation ids filtered in the store), then each copy's sent time, sender, recipients,
+    subject and preview; never the store's whole mail. People first (``people``: ``operating.chunking.permissions.Exclusion``, the
     guard plus the mail capture's directory and tenant domains): a copy in a mailbox the
     exclusion does not clear is dropped unread (never a reply, never cited); a conversation
     where a person of ours the exclusion does not clear wrote is not judged
@@ -1092,20 +1104,31 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     members: dict[str, list[str]] = defaultdict(list)
     for record, order in sorted(open_order.items()):
         members[order].append(record)
-    # the mailboxes each message copy sits in, cleared first: a copy elsewhere is never read
+    # the mailboxes each message copy sits in, cleared first: a copy elsewhere is never read.
+    # Only the mail that names an open order's record (any tier) can hold a request about
+    # one (a reused number resolves only to a record the message itself names), so only
+    # that mail and the other copies of its conversations are read, never the store's
+    # whole mail (3.3M messages: past the 4 GB cap and the statement timeout, AL-04)
     clear_units: dict[str, bool] = {}
     audience: dict[str, str] = {}
-    for oid, key in st.conn.execute(
-            "SELECT o.object_id, o.audience_key FROM objects o WHERE o.object_type = 'Email' "
-            "AND NOT " + ostore.removed_at_sql("o.object_id")):
-        if key not in clear_units:
-            clear_units[key] = bool(people.unit_clear(key))
-        if clear_units[key]:
-            audience[oid] = key
+
+    def clear(ids: Sequence[str]) -> None:
+        for start in range(0, len(ids), 500):
+            for oid, key in st.conn.execute(
+                    "SELECT o.object_id, o.audience_key FROM objects o WHERE "
+                    "o.object_type = 'Email' AND o.object_id IN (SELECT value FROM "
+                    "json_each(?)) AND NOT " + ostore.removed_at_sql("o.object_id"),
+                    (json.dumps(list(ids[start:start + 500])),)):
+                if key not in clear_units:
+                    clear_units[key] = bool(people.unit_clear(key))
+                if clear_units[key]:
+                    audience[oid] = key
+    mentions = st.links([MAIL_PO_LINK], held=False)
+    clear(sorted({link["from_object"] for link in mentions if link["to_object"] in open_order}))
     named: dict[str, set[str]] = defaultdict(set)
     lead: dict[tuple[str, str], bool] = {}
     reused_by: dict[str, set[str]] = defaultdict(set)
-    for link in st.links([MAIL_PO_LINK], held=False):
+    for link in mentions:
         mail, po, tier = link["from_object"], link["to_object"], link["tier"]
         if tier not in ("verified", "reviewed", "corroborated") and colliding(po):
             if mail in audience:   # a reused number's mention: this order's only if resolved
@@ -1116,11 +1139,29 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             lead[(mail, po)] = lead.get((mail, po), True) and tier not in (
                 "verified", "reviewed", "corroborated")
     values: dict[str, dict[str, str]] = defaultdict(dict)
-    for oid, value in st.conn.execute(
-            "SELECT object_id, value FROM object_values WHERE property = 'conversation_id' "
-            "AND superseded_at IS NULL AND object_id LIKE 'Email:%'"):
-        if oid in audience and value not in (None, ""):
-            values[oid]["conversation_id"] = str(value)
+    named_mail = sorted(audience)
+    for start in range(0, len(named_mail), 500):
+        for oid, value in st.conn.execute(
+                "SELECT object_id, value FROM object_values WHERE property = "
+                "'conversation_id' AND superseded_at IS NULL AND object_id IN (SELECT value "
+                "FROM json_each(?))", (json.dumps(named_mail[start:start + 500]),)):
+            if value not in (None, ""):
+                values[oid]["conversation_id"] = str(value)
+    # every other copy of those conversations, cleared as the rest: one read of the
+    # conversation ids, filtered in the store to these conversations
+    conversations = sorted({row["conversation_id"] for row in values.values()})
+    others: dict[str, str] = {}
+    if conversations:
+        for oid, value in st.conn.execute(
+                "SELECT object_id, value FROM object_values WHERE property = "
+                "'conversation_id' AND superseded_at IS NULL AND object_id LIKE 'Email:%' "
+                "AND value IN (SELECT value FROM json_each(?))", (json.dumps(conversations),)):
+            if oid not in audience and value not in (None, ""):
+                others[oid] = str(value)
+    clear(sorted(others))
+    for oid, value in others.items():
+        if oid in audience:
+            values[oid]["conversation_id"] = value
     resolution: Counter = Counter()
     reused = _resolve_reused(st, reused_by, values, resolver, named, lead, resolution,
                              getattr(resolver, "trail", None))

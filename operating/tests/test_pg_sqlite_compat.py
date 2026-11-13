@@ -142,6 +142,22 @@ class CompatTests(unittest.TestCase):
         self.assertIn("IS NOT DISTINCT FROM %(x)s", translate("SELECT 1 WHERE a IS :x"))
         self.assertEqual(translate("PRAGMA data_version"), "SELECT ontology.sq_data_version()")
 
+    def test_a_planner_hint_on_a_column_reads_the_same_rows_on_both_stores(self):
+        """SQLite's ``+column`` (no index) is dropped where a condition starts; Postgres
+        refused it on text (the record chunker's value read, DI-07). An addition stays."""
+        from operating.pg.sqlite_compat import PgCompatConnection, translate
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sql = ("SELECT object_id FROM object_versions WHERE superseded_at IS NULL AND "
+               "+lineage IN (SELECT value FROM json_each(?)) AND (+object_id) <> 'x' "
+               "ORDER BY object_id")
+        params = (json.dumps(["mail", "portal"]),)
+        expected = [r[0] for r in self.sqlite().execute(sql, params)]
+        self.assertEqual([r[0] for r in pg.execute(sql, params)], expected)
+        self.assertTrue(expected)
+        self.assertEqual(translate("SELECT a + b FROM t WHERE (a + 1) > 2 AND n = +5"),
+                         "SELECT a + b FROM t WHERE (a + 1) > 2 AND n = +5")
+
     def test_scalar_max_and_min_are_null_when_any_argument_is_on_both_stores(self):
         """SQLite's two-or-more-argument max/min is NULL when one argument is NULL;
         Postgres greatest/least skip NULLs, so the translation must not use them bare."""
@@ -217,6 +233,42 @@ class CompatTests(unittest.TestCase):
             return top
         whole, streamed = peak(pg.execute), peak(lambda q: pg.stream(q, batch=1000))
         self.assertLess(streamed * 10, whole, (streamed, whole))
+
+    def test_interrupt_cancels_a_streamed_read_running_on_its_own_connection(self):
+        """``interrupt`` (a detector's window spent: ``proactive_engine._Watchdog``,
+        ``_Store.interrupt_all``) cancels the statement a streamed read runs on its own
+        connection, not only the main one: before, a stream ran on to its statement
+        timeout. The connection then reads again."""
+        import threading
+        import time
+        from operating.pg.sqlite_compat import PgCompatConnection
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        slow = ("SELECT count(*) FROM generate_series(1, 2000000000) AS a(value) "
+                "WHERE a.value % 7 = 3")
+        outcome: list = []
+
+        def read():
+            try:
+                outcome.append(pg.stream(slow).fetchall())
+            except sqlite3.OperationalError as error:
+                outcome.append(error)
+        started = time.monotonic()
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        while not pg._streams_busy and time.monotonic() - started < 10:
+            time.sleep(0.05)
+        self.assertTrue(pg._streams_busy)
+        time.sleep(0.5)
+        pg.interrupt()
+        reader.join(20)
+        self.assertFalse(reader.is_alive())
+        self.assertIsInstance(outcome[0], sqlite3.OperationalError)
+        self.assertIn("interrupted", str(outcome[0]))
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual(pg._streams_busy, set())
+        self.assertEqual(pg.stream("SELECT 1").fetchall()[0][0], 1)
+        self.assertEqual(pg.execute("SELECT 2").fetchone()[0], 2)
 
     def test_an_in_list_reads_the_same_rows_as_sqlite_for_every_json_shape(self):
         """A ``json_each(:name)`` IN list bound as an array keeps the function's answer:
@@ -328,6 +380,54 @@ class CompatTests(unittest.TestCase):
                 wide = json.dumps(["A:b:1", "A:b:2", "A:b:3", *filler[n:]])
                 same(negated_first, (shut, wide))
                 self.assertLessEqual(kept(), 4)
+
+    def test_a_long_list_over_either_end_of_a_link_is_read_by_their_indexes(self):
+        """A long list matched against either end of a link (``from IN list OR to IN
+        list``) is an index condition on each end (bound as an array, never kept on the
+        session as a set the statement joins): the two ends' indexes are read, never every row of the table filtered by a subplan (79M
+        links: 69 s against 0.0 s for the same 49 rows)."""
+        import psycopg
+        from operating.pg.sqlite_compat import LONG_LIST_CHARS, PgCompatConnection
+        with psycopg.connect(self.dsn, autocommit=True) as raw:
+            raw.execute("CREATE TABLE ends (link_id text, from_object text, to_object text)")
+            raw.execute("INSERT INTO ends SELECT 'L' || n, 'F:' || n, 'T:' || n "
+                        "FROM generate_series(1, 200000) n")
+            raw.execute("CREATE INDEX ends_from ON ends (from_object)")
+            raw.execute("CREATE INDEX ends_to ON ends (to_object)")
+            raw.execute("ANALYZE ends")
+        self.addCleanup(lambda: psycopg.connect(self.dsn, autocommit=True).execute(
+            "DROP TABLE IF EXISTS ends"))
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        ids = [f"F:{n}" for n in range(1, 300)] + [f"T:{n}" for n in range(500, 800)]
+        listed = json.dumps(ids)
+        self.assertGreaterEqual(len(listed), LONG_LIST_CHARS)
+        sql = ("SELECT link_id FROM ends WHERE from_object IN (SELECT value FROM "
+               "json_each(:ids)) OR to_object IN (SELECT value FROM json_each(:ids)) "
+               "ORDER BY link_id")
+        ran = []
+        run = pg._run
+
+        def kept_run(cur, text, params):
+            ran.append((text, params))
+            return run(cur, text, params)
+        pg._run = kept_run
+        rows = [r[0] for r in pg.execute(sql, {"ids": listed})]
+        self.assertEqual(len(rows), 299 + 300)
+        text, params = ran[-1]
+        self.assertIn("::text[]", text)   # the list bound as an array, never joined
+        self.assertNotIn("sq_lists", text)
+        plan = "\n".join(r[0] for r in pg._conn.execute("EXPLAIN " + text, params))
+        self.assertIn("ends_from", plan)
+        self.assertIn("ends_to", plan)
+        self.assertNotIn("Seq Scan on ends", plan)
+        # the same operator as the list's array: NOT IN, and a NULL member (no row passes
+        # an exclusion holding NULL, as in SQLite)
+        negated = ("SELECT count(*) FROM ends WHERE from_object NOT IN (SELECT value FROM "
+                   "json_each(:ids))")
+        self.assertEqual(pg.execute(negated, {"ids": listed}).fetchone()[0], 200000 - 299)
+        self.assertEqual(pg.execute(negated, {"ids": json.dumps(ids + [None])}).fetchone()[0],
+                         0)
 
 
 if __name__ == "__main__":

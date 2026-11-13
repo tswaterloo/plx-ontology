@@ -284,6 +284,65 @@ class RemoteHostTests(EmployeeDoorTestCase):
         self.assertEqual(self.call(fresh, self.open(fresh), "plx.find",
                                    {"query": "PO5447"})[0], 200)
 
+    def test_a_stalled_body_is_closed_and_one_employee_never_evicts_another(self):
+        from unittest import mock
+        import socket
+        from operating import mcp_http_host
+
+        # A client that declares a body and sends one byte is closed within the read
+        # bound, before any authentication; the metadata route answers after it.
+        bound = 15   # REQUEST_READ_SECONDS (10) and a margin
+        stalled = socket.create_connection(("127.0.0.1", self.port), timeout=bound)
+        self.addCleanup(stalled.close)   # before the server's shutdown, should this fail
+        stalled.sendall(b"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: "
+                        b"application/json\r\nContent-Length: 16\r\n\r\n{")
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=bound)
+        connection.request("GET", "/.well-known/oauth-protected-resource/mcp")
+        self.assertEqual(connection.getresponse().status, 200)
+        connection.close()
+        self.assertEqual(stalled.recv(64), b"")   # closed, nothing answered
+        stalled.close()
+        # Nor does one byte at a time, each well inside a single read's wait, hold it
+        # past the request's whole deadline.
+        with mock.patch.object(mcp_http_host, "REQUEST_READ_SECONDS", 2):
+            drip = socket.create_connection(("127.0.0.1", self.port), timeout=bound)
+            self.addCleanup(drip.close)
+            drip.sendall(b"POST /mcp HTTP/1.1\r\nContent-Length: 64\r\n\r\n")
+            began, closed = time.monotonic(), False
+            while not closed and time.monotonic() - began < 8:
+                try:
+                    drip.sendall(b"x")
+                except OSError:
+                    closed = True
+                    break
+                time.sleep(0.3)
+                drip.setblocking(False)
+                try:
+                    closed = drip.recv(64) == b""
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    closed = True
+                drip.setblocking(True)
+            self.assertTrue(closed and time.monotonic() - began < 5,
+                            time.monotonic() - began)
+        # B's reconnects replace B's own oldest sessions, never A's.
+        a, b = token(KEY, claims(OID_A)), token(KEY, claims(OID_B))
+        session_a = self.open(a)
+        with mock.patch.object(mcp_http_host, "MAX_SESSIONS", 5):   # A and B's 4 fill it
+            opened = [self.open(b) for _ in range(5)]
+        self.assertEqual(self.call(a, session_a, "plx.find", {"query": "PO5447"})[0], 200)
+        self.assertEqual(self.call(b, opened[-1], "plx.find", {"query": "PO5447"})[0], 200)
+        self.assertEqual(self.call(b, opened[0], "plx.find", {"query": "PO5447"})[0], 404)
+        # A full host refuses a new session instead of closing someone else's.
+        with mock.patch.object(mcp_http_host, "MAX_SESSIONS", 2):
+            status, _, raw = self.http("POST", {
+                "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"}}}, bearer=b)
+        self.assertEqual((status, json.loads(raw)["error"]["code"]), (503, "sessions_full"))
+        self.assertEqual(self.call(a, session_a, "plx.find", {"query": "PO5447"})[0], 200)
+
     def test_bad_expired_foreign_and_app_only_tokens_are_refused_before_any_read(self):
         status, headers, raw = self.http("POST", {"jsonrpc": "2.0", "id": 1,
                                                   "method": "initialize", "params": {}})
@@ -304,6 +363,9 @@ class RemoteHostTests(EmployeeDoorTestCase):
             "other_audience": (token(KEY, claims(OID_A, aud="api://someone-else")), 401),
             "no_issuer_no_version": (token(KEY, claims(OID_A, iss=None, ver=None)), 401),
             "alg_hs256": (hs256, 401),
+            # A past nbf never excuses a future iat (exp - iat would pass the cap).
+            "future_iat_past_nbf": (token(KEY, claims(OID_A, iat=now + 31536000, nbf=now - 1,
+                                                      exp=now + 31539600)), 401),
             "not_a_jwt": ("v1.abc.def", 401),
             "app_only": (token(KEY, claims(OID_A, scp=None, roles=["Workbench.Read"],
                                            idtyp="app")), 403),

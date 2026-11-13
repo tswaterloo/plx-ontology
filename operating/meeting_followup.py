@@ -1124,7 +1124,9 @@ def carried_items(store: FollowUps, meeting: Mapping[str, Any], viewer: Viewer
                                       + (f", due {action['due']}" if action.get("due") else "")
                                       + f" ({action.get('status')})",
                             "date": str(record["meeting"].get("start"))[:10],
-                            "sources": action["citations"]})
+                            # API-016: a source the brief reads by its handle
+                            "sources": [{"handle": c} for c in action["citations"]
+                                        if isinstance(c, str) and c]})
     return out
 
 

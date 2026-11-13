@@ -94,6 +94,7 @@ EVENT = "Email.received"
 PROPS = ("sent_at", "conversation_id", "sender", "to_addresses", "cc_addresses", "subject",
          "body_preview", "internet_message_id", "mailbox")
 TEAMS_PROPS = ("created_at", "from", "message_type", "deleted_at")
+WHEN_PROPS = ("created_at", "deleted_at")   # a chat message's window test, read first
 # the record kinds a message's mention links weigh by (a business record, not a party)
 BUSINESS = ("SalesOrder", "PurchaseOrder", "SalesInvoice", "PurchaseInvoice", "Shipment",
             "Receipt", "SalesQuote", "AssemblyOrder", "CustomerPurchaseOrder")
@@ -329,12 +330,21 @@ def _teams(st: Any, since: date, people: Any) -> tuple[dict[str, dict], dict[str
     from .proactive_ops import declared_sources
     text_props = tuple(dict.fromkeys(
         p for ps in declared_sources()["ask_text"].values() for p in ps))
-    read = pt._read(st, wanted, TEAMS_PROPS + text_props)
-    rows = {}
-    for oid, row in read.items():
+    # the detector's window first: each chat message's time (one short value), then the
+    # sender, type and text of the window's messages only (no event index holds chat
+    # messages; before, every one-to-one message ever captured was read whole, ~50 s live)
+    dated = pt._read(st, wanted, WHEN_PROPS)
+    in_window = []
+    for oid, row in dated.items():
         at = _instant((row.get("created_at") or {}).get("value"))
         if at is None or at.date() < since or (row.get("deleted_at") or {}).get("value"):
             continue
+        in_window.append(oid)
+    rest = tuple(p for p in TEAMS_PROPS + text_props if p not in WHEN_PROPS)
+    read = pt._read(st, in_window, rest) if in_window else {}
+    rows = {}
+    for oid in in_window:
+        row = {**read.get(oid, {}), **dated[oid]}
         text = next(((row[p]["value"]) for p in text_props if p in row), "")
         rows[oid] = {**row, "_text": {"value": text}}
     return rows, audience, len(audience) - len(wanted)

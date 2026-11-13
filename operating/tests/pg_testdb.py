@@ -10,6 +10,8 @@ import unittest
 
 from operating.pg import scratch_db
 
+scratch_db.use_test_cluster()   # the test cluster when one runs (bare runs too)
+
 try:
     import psycopg
 except ImportError:  # pragma: no cover - environment without psycopg

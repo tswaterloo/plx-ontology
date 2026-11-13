@@ -15,6 +15,10 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
+from operating.pg import scratch_db
+
+scratch_db.use_test_cluster()   # the test cluster when one runs (bare runs too)
+
 DIM = 64
 MODEL = "test:hash-64"
 ROOT = Path(__file__).resolve().parents[2]

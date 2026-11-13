@@ -17,7 +17,9 @@ run, after the capture principal's live audience grants the list (no I/O otherwi
   capture's, ``integrations.capture_sharepoint``); else nothing of it is read;
 * its items, ``$expand=fields($select=<the scope's columns>)``, page by page (``$top``
   ``page_size``) through server ``@odata.nextLink``s the guard keeps inside the collection;
-  at most ``max_pages_per_run`` pages and ``max_items_per_run`` items per run: a run stopped
+  at most ``max_pages_per_run`` pages and ``max_items_per_run`` items per run, both checked
+  between pages (a page is read whole, never cut, since its cursor is what a resume needs:
+  a run may read up to ``page_size - 1`` items past the item cap): a run stopped
   there keeps its cursor and the next run resumes it (``cap:page_cap``/``cap:item_cap``); an
   expired continuation (HTTP 410) restarts the listing once;
 * each item's own permissions (``graph_read.permission_acl``, the drive capture's reading),
@@ -484,7 +486,7 @@ class ListCapture:
                     found.append(ListTarget(name.strip()[:200], site["id"].lower(), list_id,
                                             ("Title",)))
                     continue
-                columns = self._columns(site["id"].lower(), list_id, report)
+                columns = self._columns(site["id"].lower(), list_id, report, reasons)
                 if columns is None:
                     reasons.add("list_columns_unread")
                     continue
@@ -500,12 +502,15 @@ class ListCapture:
         report["status"] = "incomplete" if reasons else "complete"
         return found, report
 
-    def _columns(self, site_id: str, list_id: str, report: dict[str, Any]
-                 ) -> tuple[str, ...] | None:
+    def _columns(self, site_id: str, list_id: str, report: dict[str, Any],
+                 reasons: set[str]) -> tuple[str, ...] | None:
         """A discovered list's readable columns (module docstring); None when the column
-        read failed (counted)."""
+        read failed (counted). A column listing cut by its page bound adds
+        ``columns_listing_incomplete``, more readable columns than
+        ``MAX_DISCOVERED_COLUMNS`` (the first ones by name are kept) ``columns_truncated``
+        (INT-017): the discovery is then incomplete, never silently short."""
         try:
-            raws, _done = self.api.get_pages(grammar.url(
+            raws, done = self.api.get_pages(grammar.url(
                 "graph.list_columns", {"$select": "name,hidden"}, site=site_id,
                 list=list_id), max_pages=5, max_items=1000)
         except SourceUnavailable:
@@ -517,6 +522,12 @@ class ListCapture:
             if (isinstance(name, str) and not raw.get("hidden") and name not in SYSTEM_COLUMNS
                     and grammar.column_name_ok(name) and name not in names):
                 names.append(name)
+        if not done.get("complete", False):
+            report["lists_columns_incomplete"] = report.get("lists_columns_incomplete", 0) + 1
+            reasons.add("columns_listing_incomplete")
+        if len(names) > MAX_DISCOVERED_COLUMNS:
+            report["lists_columns_truncated"] = report.get("lists_columns_truncated", 0) + 1
+            reasons.add("columns_truncated")
         return tuple(sorted(names)[:MAX_DISCOVERED_COLUMNS])
 
     def capture(self, target: ListTarget, scope: ListScope,

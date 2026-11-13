@@ -38,6 +38,22 @@ of every L1 handle a capture purge deleted (``purged_handles``, journalled by
 ``MailCaptureStore._purge``); on ``--apply`` it remembers the removed messages' keys, so no
 mailbox stores a copy again, and forgets the journalled handles once their copies are gone.
 
+``python3 -m operating.mail_exclusion_purge carried --state-dir D [--out FILE]
+[--workers N] [--live-audience F] [--apply]`` (DOC-008): decides every stored attachment by
+the mail it carries (``integrations.carried_mail``: an attached ``.eml`` or ``.msg``, one in
+a zip, each carried mail's senders and recipients) with the people exclusion of the
+environment: bound through the GET-only Graph client with ``--live-audience`` (directory
+reads only, as the capture binds it: every address decided), else offline with the
+capture's recorded directory (a tenant address it does not hold stays undecided and
+withholds its container), and writes the
+attachment handles not cleared, each with its content status, to ``FILE`` (default
+``D/mail-capture/carried-scan.json``, 0600: handles and counts, never an address). A
+container's walk is kept in the capture store (``carried_people``) with ``--apply``
+(holding the cycle lock), and read back instead of its bytes by the next scan. ``purge``
+also withholds those attachments (``--carried FILE``; default that file when present):
+their derived copies go as above, and each capture row keeps its message and id but loses
+its bytes, text and handle, as an attachment the capture never stored.
+
 Without ``--apply`` nothing is written (the capture store opened read-only without the
 cycle lock; Postgres: counts over session temp tables in a transaction rolled back; SQLite
 opened read-only) and it prints what would go. Either
@@ -190,6 +206,199 @@ def scan(db: sqlite3.Connection, reader: Any, actor: Any, out: Path, *, workers:
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ------------------------------------------------------------ carried mail (DOC-008)
+
+CARRIED_FORMAT = "plx-carried-mail-scan/v1"
+CARRIED_FILE = "carried-scan.json"
+
+
+def _mailish(name: str, hint: str | None) -> bool:
+    from integrations import carried_mail
+    return carried_mail.may_carry(b"", name, hint)
+
+
+def _walk_one(blobs: str, digest: str, name: str, hint: str | None) -> tuple[str, str | None]:
+    """(digest, the encoded walk of one stored attachment's bytes; None when they are
+    gone): a worker's whole job. A raw zip is told an Office package by its central
+    directory alone (``use_case_parts.is_container``'s own test), never read whole."""
+    from zipfile import BadZipFile, ZipFile
+    from integrations import carried_mail
+    from integrations.captured_text import DROPPED_SUFFIX, blob_path, read_blob
+    raw = blob_path(blobs, digest)
+    head = None
+    try:
+        with open(raw, "rb") as handle:
+            head = handle.read(4096)
+    except OSError:
+        pass
+    if head is not None:
+        if not carried_mail.may_carry(head, name, hint):
+            return digest, carried_mail.encode(None)
+        if head.startswith((b"PK\x03\x04", b"PK\x05\x06")):
+            try:
+                with ZipFile(raw) as archive:
+                    if any(i.filename == "[Content_Types].xml" for i in archive.infolist()):
+                        return digest, carried_mail.encode(None)
+            except (BadZipFile, OSError, ValueError, EOFError):
+                pass   # walked below: an unreadable zip clears nobody
+    content = read_blob(blobs, digest)
+    if content is None:
+        if blob_path(blobs, digest, DROPPED_SUFFIX).exists():
+            # an original the store dropped was no container (``settle_original`` keeps
+            # every container's bytes): it carries nothing
+            return digest, carried_mail.encode(None)
+        return digest, None
+    return digest, carried_mail.encode(carried_mail.walk(content, name, hint))
+
+
+def carried_candidates(db: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    """``{container digest: {"name", "hint", "handles": {l1 handle: ...}}}`` of every
+    stored captured attachment (the name walked with: a mail by its name or type when
+    any of its names says so, else the first)."""
+    found: dict[str, dict[str, Any]] = {}
+    for handle, digest, meta in db.execute(
+            "SELECT l1_handle, content_sha256, metadata FROM attachments WHERE "
+            "content_status='captured' AND l1_handle IS NOT NULL AND content_sha256 IS NOT "
+            "NULL"):
+        try:
+            data = json.loads(meta)
+        except ValueError:
+            data = {}
+        name = str(data.get("name") or "")
+        hint = data.get("content_type") if isinstance(data.get("content_type"), str) else None
+        one = found.get(digest)
+        if one is None:
+            one = found[digest] = {"name": name, "hint": hint, "handles": []}
+        elif not _mailish(one["name"], one["hint"]) and _mailish(name, hint):
+            one["name"], one["hint"] = name, hint
+        one["handles"].append(handle)
+    return found
+
+
+def carried_scan(store: Any, guard: Any, *, workers: int = 8, keep: bool = False,
+                 now: Callable[[], str] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
+    """Decide every stored container attachment by the mail it carries
+    (``integrations.carried_mail``: the kept walk, else its bytes walked, in ``workers``
+    processes) with ``guard`` now: (counts, ``{l1 handle: content status}`` of each
+    attachment not cleared). ``keep``: the walks made are kept (``carried_people``).
+    Never an address in either."""
+    from integrations import carried_mail
+    from integrations.capture_mail import (ATTACHMENT_CARRIED_UNDECIDED, ATTACHMENT_EXCLUDED)
+    code = carried_mail.code()
+    wanted = carried_candidates(store.db)
+    counts = {"attachments": sum(len(v["handles"]) for v in wanted.values()),
+              "contents": len(wanted), "kept_walks": 0, "walked": 0, "containers": 0,
+              "carrying_mail": 0, "bytes_gone": 0, carried_mail.CLEAR: 0,
+              carried_mail.EXCLUDED: 0, carried_mail.UNDECIDED: 0,
+              "withheld_attachments": 0}
+    walks: dict[str, Any] = {}
+    todo = []
+    for digest, one in wanted.items():
+        kept = store.carried_walk(digest, code)
+        if kept is not None and not (kept[0] is None and _mailish(one["name"], one["hint"])):
+            walks[digest] = kept[0]
+            counts["kept_walks"] += 1
+        else:
+            todo.append((digest, one["name"], one["hint"]))
+    new: list[tuple[str, Any]] = []
+    if todo:
+        blobs = str(store.blobs)
+        import multiprocessing
+        # spawned, not forked: the caller may hold threads (a fork copies their locks)
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=max(1, workers),
+                mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = [pool.submit(_walk_one, blobs, *job) for job in todo]
+            for future in concurrent.futures.as_completed(futures):
+                digest, encoded = future.result()
+                counts["walked"] += 1
+                if encoded is None:
+                    counts["bytes_gone"] += 1
+                    walks[digest] = ([], False)       # bytes gone: nothing cleared
+                    continue
+                walks[digest] = carried_mail.decode(encoded)
+                new.append((digest, walks[digest]))
+    withheld: dict[str, str] = {}
+    for digest, found in walks.items():
+        if found is not None:
+            counts["containers"] += 1
+            counts["carrying_mail"] += bool(found[0])
+        verdict = carried_mail.decided(found, guard)
+        counts[verdict.state] += 1
+        if verdict.state == carried_mail.CLEAR:
+            continue
+        status = (ATTACHMENT_EXCLUDED if verdict.state == carried_mail.EXCLUDED
+                  else ATTACHMENT_CARRIED_UNDECIDED)
+        for handle in wanted[digest]["handles"]:
+            withheld[handle] = status
+    counts["withheld_attachments"] = len(withheld)
+    if keep and new:
+        counts["kept_new"] = store.keep_carried(new, code)
+    counts["scanned_at"] = (now or _now)()
+    return counts, withheld
+
+
+def _carried_guard(args: argparse.Namespace, state_dir: Path, env: Mapping[str, str],
+                   sender: Any) -> Any:
+    """The people guard the carried scan decides with: bound through the GET-only Graph
+    client (the capture's, deciding every address) with ``--live-audience``, else the
+    environment's list with the capture's recorded directory (offline: a tenant address
+    it does not hold stays undecided). None when it cannot decide at all."""
+    from integrations import people_exclusion
+    if args.live_audience:
+        from integrations.graph_read import GraphMailReader, build_graph
+        from integrations.live_source_guard import (BoundedBackoff, LiveSourceAudience,
+                                                    SourceUnavailable)
+        audience = LiveSourceAudience.from_file(args.live_audience)
+        try:
+            api, _transport = build_graph(env, sender=sender,
+                                          retry=BoundedBackoff(budget_seconds=60))
+            reader = GraphMailReader(api, audience)
+            reader.prepare_people()
+        except (SourceUnavailable, people_exclusion.ExclusionUnavailable):
+            return None
+        guard = getattr(reader, "people", None)
+        return guard if getattr(guard, "bound", False) else None
+    guard = people_exclusion.with_directory(
+        people_exclusion.PeopleExclusion.from_env(env), state_dir)
+    return None if guard.unavailable else guard
+
+
+def _carried_cli(args: argparse.Namespace, state_dir: Path, env: Mapping[str, str],
+                 sender: Any = None) -> int:
+    from integrations.capture_mail import MailCaptureStore, _locked
+
+    guard = _carried_guard(args, state_dir, env, sender)
+    if guard is None:   # nothing decided, nothing written
+        print(json.dumps({"ok": False, "error": "people_exclusion_unavailable"}))
+        return 2
+    out = Path(args.out) if args.out else state_dir / "mail-capture" / CARRIED_FILE
+
+    def work(store: Any) -> dict[str, Any]:
+        counts, withheld = carried_scan(store, guard, workers=args.workers, keep=args.apply)
+        _save(out, {"format": CARRIED_FORMAT, "counts": counts, "withheld": withheld})
+        return counts
+    if not args.apply:
+        store = MailCaptureStore.open_read_only(state_dir, timeout=60)
+        try:
+            counts = work(store)
+        finally:
+            store.close()
+        print(json.dumps({"ok": True, **counts}, sort_keys=True))
+        return 0
+    return _locked(str(state_dir), work)
+
+
+def _load_carried(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    if not isinstance(data, Mapping) or data.get("format") != CARRIED_FORMAT \
+            or not isinstance(data.get("withheld"), Mapping):
+        raise ValueError("carried_file_invalid")
+    return {str(h): str(s) for h, s in data["withheld"].items()}
 
 
 # ----------------------------------------------------------------------------- purge
@@ -411,16 +620,22 @@ def default_stores(state_dir: Path) -> list[Path]:
 
 
 def purge(store: Any, pairs: Sequence[tuple[str, str]], *, dsn: str | None,
-          stores: Sequence[Path], apply: bool) -> dict[str, Any]:
+          stores: Sequence[Path], apply: bool,
+          carried: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Postgres, then the SQLite stores, then the capture store (last: a purge cut short
     is run again from the same matches and journal, which the capture store still
     resolves). The capture store remembers the messages' keys before deleting them and
-    forgets the journalled handles only after every derived copy is gone."""
+    forgets the journalled handles only after every derived copy is gone. ``carried``:
+    the attachments the carried-mail scan withholds (``{l1 handle: content status}``),
+    whose derived copies go too and whose rows the capture store withholds in place."""
     plan = captured(store, pairs)
+    carried = dict(carried or {})
+    plan["handles"] = sorted({*plan["handles"], *carried})
     report: dict[str, Any] = {"apply": apply, "matched": len(pairs),
                               "messages_with_copies": len(plan["pairs"]),
                               "remembered_copies": plan["remembered"],
                               "journalled_handles": plan["journal"],
+                              "carried_attachments": len(carried),
                               "handles": len(plan["handles"])}
     if not plan["handles"]:
         return report
@@ -430,6 +645,7 @@ def purge(store: Any, pairs: Sequence[tuple[str, str]], *, dsn: str | None,
     if apply:
         report["withheld_keys_new"] = store.remember_withheld(plan["keys"])
         report["capture"] = store.purge_messages(plan["pairs"])
+        report["carried_capture"] = store.withhold_attachments(carried)
         report["journal_forgotten"] = store.forget_purged(plan["handles"])
     else:
         report["withheld_keys"] = len(plan["keys"])
@@ -458,7 +674,14 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     p.add_argument("--dsn", default=None)
     p.add_argument("--no-postgres", action="store_true")
     p.add_argument("--store", action="append", default=None)
+    p.add_argument("--carried", default=None)
     p.add_argument("--apply", action="store_true")
+    c = sub.add_parser("carried")
+    c.add_argument("--state-dir", required=True)
+    c.add_argument("--out", default=None)
+    c.add_argument("--workers", type=int, default=os.cpu_count() or 8)
+    c.add_argument("--live-audience", default=None)
+    c.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     state_dir = Path(args.state_dir).expanduser()
     env = os.environ if environ is None else environ
@@ -469,6 +692,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
     try:
         if args.command == "scan":
             return _scan_cli(args, state_dir, capture_db, env, sender)
+        if args.command == "carried":
+            return _carried_cli(args, state_dir, env, sender)
         return _purge_cli(args, state_dir, env)
     except ValueError as exc:
         print(json.dumps({"ok": False, "error": str(exc).split(":")[0][:80]}))
@@ -519,13 +744,20 @@ def _purge_cli(args: argparse.Namespace, state_dir: Path, env: Mapping[str, str]
     # no scan yet: the remembered copies and the journal are still purged
     data = _load(path)
     pairs = [(str(b), str(m)) for b, m in data["matches"]]
+    carried_path = Path(args.carried) if args.carried else \
+        state_dir / "mail-capture" / CARRIED_FILE
+    if args.carried and not carried_path.exists():
+        print(json.dumps({"ok": False, "error": "carried_missing"}))
+        return 2
+    carried = _load_carried(carried_path)
     dsn = None if args.no_postgres else (args.dsn or env.get("PLX_PG_DSN")
                                          or "postgresql:///plx")
     stores = [Path(p) for p in args.store] if args.store is not None \
         else default_stores(state_dir)
 
     def work(store: Any) -> dict[str, Any]:
-        report = purge(store, pairs, dsn=dsn, stores=stores, apply=args.apply)
+        report = purge(store, pairs, dsn=dsn, stores=stores, apply=args.apply,
+                       carried=carried)
         counts = data.get("counts") or {}
         report["scan"] = "absent" if not path.exists() else (
             "complete" if counts.get("complete") else "incomplete")

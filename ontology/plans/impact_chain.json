@@ -760,17 +760,6 @@
    "description": "Each order's status, each system's own (operating.sales_order_status)."
   },
   {
-   "name": "order_own_days",
-   "kind": "property",
-   "object_type": "SalesOrder",
-   "properties": [
-    "order_date",
-    "portal_created_at",
-    "fm_created_at"
-   ],
-   "description": "Each order record's own days (order, creation): a required date equal to one is a default, not a requested date."
-  },
-  {
    "name": "order_value",
    "kind": "property",
    "object_type": "SalesOrder",
@@ -834,7 +823,6 @@
     },
     "required": "order_required",
     "order_status": "order_status",
-    "order_own_days": "order_own_days",
     "value": "order_value",
     "currency": "order_currency",
     "assembly_status": "ao_status",

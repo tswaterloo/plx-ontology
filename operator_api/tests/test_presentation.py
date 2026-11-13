@@ -239,6 +239,19 @@ class FollowUps(unittest.TestCase):
             self.assertTrue(all(q.endswith("?") for q in got))
 
 
+class XmlEscapes(unittest.TestCase):
+    def test_an_escaped_pair_is_one_character_and_a_lone_surrogate_is_never_shown(self):
+        """API-015: ``_xD83D__xDE00_`` is one emoji; a lone surrogate (which no encoder
+        accepts) reads as the replacement character, so the response always encodes."""
+        self.assertEqual(p.shown_words("Ship_x0020_date _xD83D__xDE00_ ok"),
+                         "Ship date \U0001F600 ok")
+        for text in ("a _xD83D_ b", "a _xDE00_ b", "a _xDE00__xD83D_ b"):
+            out = p.shown_words(text)
+            out.encode("utf-8")   # raises on a lone surrogate
+            self.assertNotIn("_x", out)
+            self.assertIn("\ufffd", out)
+
+
 class FloatNoise(unittest.TestCase):
     def test_a_float_s_noise_reads_as_its_figure_and_a_real_precision_stays(self):
         from operator_api import models as m

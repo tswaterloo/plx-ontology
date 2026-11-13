@@ -274,6 +274,36 @@ class AutopilotArea(unittest.TestCase):
         owner.post("/api/autopilot/items/ap_own/decision", json={"decision": "accept"})
         self.assertEqual(len(self.bc.calls), 2)
 
+    def test_an_undo_not_done_is_never_shown_as_undone(self) -> None:
+        """API-019: an undo pending, failed or of unknown outcome says so; only a done (or
+        reconciled done) undo marks the action undone; any attempt blocks a second."""
+        owner = self.client(OWNER)
+        journal = aw.Journal(self.state / aw.AUDIT_FILE)
+        cases = {"pending": ["pending"], "failed": ["pending", "failed"],
+                 "unknown": ["pending", "unknown"], "done": ["pending", "done"],
+                 "reconciled": ["pending", "unknown", "reconciled:done"]}
+        with journal.locked() as held:
+            for n, (name, states) in enumerate(cases.items()):
+                held.append({"event": "outcome", "at": "2026-11-01T00:00:00Z",
+                             "key": f"k{n}", "kind": "bc_write", "mode": "live",
+                             "status": "done", "inverse": {"method": "DELETE"}})
+                for state in states:
+                    event, _, status = state.rpartition(":")
+                    held.append({"event": event or ("attempt" if status == "pending"
+                                                     else "outcome"),
+                                 "at": "2026-11-01T00:01:00Z", "key": f"u{n}",
+                                 **({} if event else {"of": f"k{n}"}),
+                                 "mode": "live", "status": status})
+        rows = {r["key"]: r for r in owner.get("/api/autopilot/audit").json()["rows"]
+                if r["event"] == "outcome" and r["key"].startswith("k")}
+        shown = {name: (rows[f"k{n}"]["undone"], rows[f"k{n}"]["undo_status"],
+                        rows[f"k{n}"]["undoable"]) for n, name in enumerate(cases)}
+        self.assertEqual(shown, {"pending": (False, "pending", False),
+                                 "failed": (False, "failed", False),
+                                 "unknown": (False, "unknown", False),
+                                 "done": (True, None, False),
+                                 "reconciled": (True, None, False)})
+
     def test_owner_accept_is_an_approval_written_once_the_kind_is_opened(self) -> None:
         """The owner's accept of their own item is a person's approval: with the owner's
         per-kind switch open it is written without a passed replay gate; never twice."""
@@ -438,6 +468,24 @@ class AutopilotArea(unittest.TestCase):
                          ["accepted", "accepted", "accepted", "accepted", "sent"])
         self.assertEqual(next(e for e in events if e["verb"] == "sent")["loop"]["state"],
                          "waiting")
+        # AP-11: the same decisions as recorded before ``sent`` and ``steps`` were kept
+        # (outcomes only) read by the outcome of the item's own email step: only the
+        # delivered one is a send; the BC entry done first never counts as one
+        path = self.backend._apa_state() / ws.DECISIONS_FILE
+        rows = ws.Journal(path).rows()
+        path.unlink()
+        legacy = ws.Journal(path)
+        with legacy.locked() as held:
+            for row in rows:
+                held.append({k: v for k, v in row.items()
+                             if k not in ("sent", "steps", "seq", "prev", "hash")})
+        sent = {i["item_id"]: (i["decision"] or {}).get("sent")
+                for i in owner.get("/api/autopilot").json()["items"]
+                if i["item_id"] in ("ap_own", "ap_two", "ap_four", "ap_three")}
+        self.assertEqual(sent, {"ap_own": False, "ap_two": False, "ap_four": False,
+                                "ap_three": True})
+        self.assertFalse(ws.decision_sent({"decision": "accept"}, {}))
+        self.assertFalse(ws.decision_sent({"decision": "accept", "outcomes": "done"}, {}))
 
 
 if __name__ == "__main__":

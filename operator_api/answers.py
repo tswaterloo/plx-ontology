@@ -657,11 +657,20 @@ def with_orders(view: Any, customers: Sequence[Mapping[str, Any]]
     return out or list(customers)
 
 
-def profit_choices(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
-                   candidates: Sequence[Mapping[str, Any]], conversation: str,
-                   ms: Callable[[], int]) -> m.AnswerPayload:
-    """Several customers match the name: each a choice with its customer number (read as
-    this reader), never merged or picked."""
+def cards_linked(view: Any, ids: Sequence[str]) -> bool:
+    """Whether an identity link (``same_record_as``, as this reader reads it) makes these
+    cards one record; a failed read is no link."""
+    from operating.why_trail import same_records
+    try:
+        return len(ids) > 1 and same_records(view._call, list(ids))
+    except Exception:  # noqa: BLE001 - undecided: shown apart
+        return False
+
+
+def customer_choices(view: Any, candidates: Sequence[Mapping[str, Any]]
+                     ) -> list[m.ObjectRef]:
+    """Each customer of ``candidates`` (at most 8) as a choice named by its customer number
+    as this reader reads it."""
     choices = []
     for c in candidates[:8]:
         detail = customer_hint(view, c["object_id"]) or [c.get("lineage") or "Customer"]
@@ -669,7 +678,20 @@ def profit_choices(backend: "WorkspaceBackend", view: Any, request: m.AskRequest
             object_id=c["object_id"], type="Customer",
             label=f"{plain(c.get('display')) or c['object_id']} ({' · '.join(detail)})"[:200],
             open_url=object_url("Customer", c["object_id"])))
+    return choices
+
+
+def profit_choices(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
+                   candidates: Sequence[Mapping[str, Any]], conversation: str,
+                   ms: Callable[[], int], *, unlinked: bool = False) -> m.AnswerPayload:
+    """Several customers match the name: each a choice with its customer number (read as
+    this reader), never merged or picked. ``unlinked``: they share the exact name and no
+    identity link makes them one record, so their margins are not added together."""
+    choices = customer_choices(view, candidates)
     direct = (f"Did you mean {choices[0].label}?" if len(choices) == 1 else
+              f"{len(choices)} customers have that exact name and nothing links them as "
+              "one customer, so their margins are not added together. Which did you mean?"
+              if unlinked else
               "That name matches more than one customer. Which did you mean?")
     return m.AnswerPayload(
         answer_id=secrets.token_hex(12), question=request.question, outcome="partial",

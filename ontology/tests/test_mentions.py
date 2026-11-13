@@ -191,6 +191,32 @@ class ExtractionTests(unittest.TestCase):
         self.assertFalse(ranges.contains(50))
         self.assertFalse(mentions.QuotedRanges("no history"))
 
+    def test_the_unquoted_text_is_every_character_no_quoted_range_holds(self):
+        """AL-04: the mail rules kept a message's own text one character lookup at a time
+        (28 s for 76k messages on the served store); ``unquoted`` cuts by range and must
+        give the same string, overlapping and touching ranges included."""
+        from operating import mail_text
+        import random
+        rnd = random.Random(4)
+        texts = ["Thanks, see below.\n\nOn Mon, Nov 9, 2026 at 9:00 AM A <a@x.example> wrote:"
+                 "\n> Please pay invoice 12\n> today\n\nPaid now.\n-----Original Message-----"
+                 "\nFrom: B\nold text", "no history", "> all quoted", ""]
+        for text in texts:
+            q = mentions.QuotedRanges(text)
+            self.assertEqual(mail_text.unquoted(q, text),
+                             "".join(ch for i, ch in enumerate(text) if not q.contains(i)))
+        for _ in range(300):
+            text = "".join(rnd.choice("ab> \n") for _ in range(rnd.randint(0, 60)))
+            spans = [(a, a + rnd.randint(0, 9)) for a in
+                     (rnd.randint(0, 65) for _ in range(rnd.randint(0, 6)))]
+            q = mentions.QuotedRanges(ranges=spans)
+            self.assertEqual(mail_text.unquoted(q, text),
+                             "".join(ch for i, ch in enumerate(text) if not q.contains(i)))
+        big = ("> quoted line\n" * 20_000) + "own"
+        started = time.monotonic()
+        self.assertEqual(mail_text.unquoted(mentions.QuotedRanges(big), big), "\n" * 20_000 + "own")
+        self.assertLess(time.monotonic() - started, 2.0)
+
     def test_bc_document_numbers_and_supplier_documents(self):
         text = "Posted invoice no. PSI-000123 against PO100777 (shipment SH1234567)"
         kinds = [(m["identifier_kind"], m["text"]) for m in mentions.extract(text)]

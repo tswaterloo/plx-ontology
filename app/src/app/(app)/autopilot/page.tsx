@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { AutopilotView } from "@/components/autopilot/area";
+import { FormFill } from "@/components/autopilot/form-fill";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { ThreadContext } from "@/components/work-log";
@@ -50,6 +51,7 @@ function Autopilot() {
       <Toolbar heading title="Autopilot" />
       <div className="w-full px-6 py-5">
         {item && <ThreadContext thread={`autopilot:${item}`} title="Your work on this item" />}
+        <FormFill />
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : area ? (

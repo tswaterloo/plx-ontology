@@ -575,6 +575,16 @@ class OpsStatusRouteTest(unittest.TestCase):
                 unit("plx-proactive.service", "failed", "failed", "oom-kill")])
             with no_send():
                 ops_alarms.run_pass(root, environ={}, probes=fake.probes(), dsn=None)
+            from operating.jobq import status as jobq_status
+            jobq_status.write_snapshot(root, {
+                "depth": {"tests": 2}, "queued": 2, "last_hour": {"refused": 3},
+                "memory": {"available_mb": 9000, "promised_mb": 4000, "floor_mb": 4096,
+                           "headroom_mb": 904}, "cpu_budget": 32,
+                "running": [{"id": 7, "class": "search-follow", "unit": "plx-search-follow.service",
+                             "state": "running", "mem_mb": 8192, "command": "secret argv"}],
+                "waiting": [{"id": 8, "class": "tests", "refusals": 3,
+                             "last_refusal": "memory: ...", "env": "PLX_X=1"}],
+                "dead": [], "recent": [], "unmanaged": []})
             cases = [  # backend, owner?, PLX_TEAM_VIEW_READERS, reads?
                 (MockBackend, False, "", False),           # no Refused
                 (Owned, False, "", False),
@@ -593,12 +603,46 @@ class OpsStatusRouteTest(unittest.TestCase):
                     if not reads:
                         self.assertEqual(found.status_code, 403)
                         self.assertNotIn("plx-proactive", found.text)
+                        self.assertNotIn("search-follow", found.text)
                         continue
                     body = found.json()
                     self.assertTrue(body["running"])
                     self.assertEqual([i["key"] for i in body["open"]],
                                      ["unit:plx-proactive.service"])
                     self.assertNotIn("paging", body)
+                    queue = body["queue"]
+                    self.assertTrue(queue["fresh"])
+                    self.assertEqual([j["class"] for j in queue["running"]], ["search-follow"])
+                    self.assertEqual(queue["waiting"][0]["refusals"], 3)
+                    self.assertNotIn("secret argv", found.text)   # fields kept by name only
+                    self.assertNotIn("PLX_X", found.text)
+
+
+class JobQueueAlarmTest(unittest.TestCase):
+    def test_a_stale_worker_and_a_long_blocked_head_each_open_their_alarm(self) -> None:
+        from operating.jobq import status as jobq_status
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(ops_alarms.jobq_checks(root, NOW), [])    # queue not switched on
+            body = {"depth": {}, "queued": 1, "last_hour": {}, "memory": {}, "cpu_budget": 32,
+                    "running": [], "dead": [], "recent": [], "unmanaged": [],
+                    "waiting": [{"id": 3, "class": "delta", "waiting_s": 21 * 60,
+                                 "not_before_s": 0, "refusals": 9,
+                                 "last_refusal": "memory: 9000 MB available"}]}
+            jobq_status.write_snapshot(root, body, now=NOW)
+            by = {c["name"]: c for c in ops_alarms.jobq_checks(root, NOW + timedelta(seconds=30))}
+            self.assertEqual(by["jobq_worker"]["state"], "ok")
+            self.assertEqual(by["jobq_head_wait"]["state"], "breach")
+            self.assertIn("delta job has waited 21 min", ops_alarms.line(by["jobq_head_wait"]))
+            body["waiting"][0]["waiting_s"] = 19 * 60
+            jobq_status.write_snapshot(root, body, now=NOW)
+            by = {c["name"]: c for c in ops_alarms.jobq_checks(root, NOW)}
+            self.assertEqual(by["jobq_head_wait"]["state"], "ok")
+            later = ops_alarms.jobq_checks(root, NOW + timedelta(minutes=10))
+            self.assertEqual([(c["name"], c["state"]) for c in later], [("jobq_worker", "breach")])
+            self.assertIn("stopped reporting 10 min ago", ops_alarms.line(later[0]))
+            (root / jobq_status.SNAPSHOT_DIR / jobq_status.SNAPSHOT_FILE).write_text("{")
+            self.assertEqual(ops_alarms.jobq_checks(root, NOW)[0]["state"], "breach")
 
 
 

@@ -3457,6 +3457,16 @@ def _background_prime(kept: tuple[str, Mapping[str, Any]], cell_families: Sequen
 # links through their text function): past a reader's statement limit, which ended it on
 # the real ontology, so a prime never kept them. Off the request path it gets an hour.
 FACTS_STATEMENT_TIMEOUT_MS = 3_600_000
+# The temporary file space each statement of a facts read may write (``temp_file_limit``,
+# ``PLX_FACTS_TEMP_LIMIT`` to change it): side by side over ``_facts_workers`` sessions a
+# read without it spilled its sorts and hashes to many gigabytes and filled the database's
+# disk (2026-11-12). Past it the statement fails and nothing is kept; the disk stays.
+FACTS_TEMP_LIMIT = "1GB"
+
+
+def _facts_temp_limit() -> str:
+    value = (os.environ.get("PLX_FACTS_TEMP_LIMIT") or "").strip()
+    return value if re.fullmatch(r"[0-9]{1,9}(kB|MB|GB)", value) else FACTS_TEMP_LIMIT
 # Postgres keeps no file to keep facts beside, and every delta layer moves its data version
 # (``_pg_store_identity``): read again in full, the facts are a scan of every object,
 # version, link and event (minutes on 15M objects). The delta follower keeps them instead:
@@ -3661,7 +3671,8 @@ def catch_up_pg_facts(dsn: str, layers: str | Path | None = None, *,
     started = time.monotonic()
     try:
         reader = PgStoreReader.open(dsn, only=False,
-                                    statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS)
+                                    statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS,
+                                    temp_limit=_facts_temp_limit())
     except Exception:  # noqa: BLE001 - nothing kept: the version is read in full
         return False
     try:
@@ -3902,7 +3913,8 @@ def keep_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
                      if cell_families is None else cell_families)
     started = time.monotonic()
     probe = PgStoreReader.open(dsn, only=only, text_store=text_store,
-                               statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS)
+                               statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS,
+                               temp_limit=_facts_temp_limit())
     try:
         if not probe.words_loaded() and probe.text_reader is None:
             if loud:
@@ -3985,7 +3997,8 @@ def _keep_pg_facts_apart(dsn: str, cell_families: Sequence[str] | None = None, *
     job = json.dumps({"dsn": dsn, "families": None if cell_families is None
                       else list(cell_families),
                       "text_store": None if text_store is None else str(text_store),
-                      "layers": None if layers is None else str(layers), "only": bool(only)})
+                      "layers": None if layers is None else str(layers), "only": bool(only),
+                      "parent": os.getpid()})
     try:
         child = subprocess.Popen(
             [sys.executable, "-c", "from operating import ontology_tools_traverse as t; "
@@ -4020,8 +4033,14 @@ def _keep_pg_facts_child() -> None:
     """The process ``_keep_pg_facts_apart`` starts: the job on standard input; exit 0
     when the facts are kept."""
     import sys
+    from operating import parent_watch
     try:
         job = json.loads(sys.stdin.read())
+        # ends with the process that waits for it, its half-written facts removed: the
+        # read never goes on scanning (and its statements, ``CLIENT_CHECK``, stop too)
+        parent = job.get("parent")
+        parent_watch.die_with(parent if isinstance(parent, int) else os.getppid(),
+                              cleanup=lambda: _drop_temp_of(os.getpid()))
         families = job["families"]
         kept = keep_pg_facts(job["dsn"], None if families is None else tuple(families),
                              text_store=job["text_store"], layers=job["layers"],
@@ -4085,6 +4104,53 @@ def _range_slices(tools: "TraverseTools", kind: str, lo: str | None, hi: str | N
                                  {k: v for k, v in (("lo", lo), ("hi", hi)) if v is not None})
 
 
+def _range_event_types(tools: "TraverseTools", lo: str | None, hi: str | None
+                       ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """``_event_type_maps`` of the events whose id lies in [lo, hi) (byte order): each
+    event's objects found by their keys (nested, by index), never a hash of every object,
+    which spilled gigabytes to temp files per read."""
+    where = " AND ".join(
+        ["e.event_id COLLATE \"C\" >= %(lo)s"] * (lo is not None)
+        + ["e.event_id COLLATE \"C\" < %(hi)s"] * (hi is not None)) or "TRUE"
+    by_object: dict[str, set[str]] = {}
+    by_event: dict[str, set[str]] = {}
+    conn = tools.store.conn
+    # the worker's snapshot transaction may carry another part's planner settings (a
+    # link slice turns nested loops and sorts off for the rest of it): set all four here
+    # and put them back after, on success (a failed statement's error is the one raised)
+    plan = {"enable_hashjoin": "off", "enable_mergejoin": "off",
+            "enable_nestloop": "on", "enable_sort": "on"}
+    with conn._lock, conn._pg.cursor() as cur:
+        before = {}
+        for setting, value in plan.items():
+            cur.execute(f"SELECT current_setting('{setting}')")
+            before[setting] = cur.fetchone()[0]
+            cur.execute(f"SET LOCAL {setting} = {value}")
+        cur.execute("SELECT DISTINCT o.object_type, e.event_type FROM events e "
+                    "JOIN event_objects eo ON eo.event_id = e.event_id "
+                    f"JOIN objects o ON o.object_id = eo.object_id WHERE {where}",
+                    {"lo": lo, "hi": hi})
+        rows = cur.fetchall()
+        for setting, value in before.items():
+            cur.execute(f"SET LOCAL {setting} = {'on' if value == 'on' else 'off'}")
+    for object_type, event_type in rows:
+        by_object.setdefault(object_type, set()).add(event_type)
+        by_event.setdefault(event_type, set()).add(object_type)
+    return by_object, by_event
+
+
+def _union_event_types(parts: Iterable[tuple[dict[str, set[str]], dict[str, set[str]]]]
+                       ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    by_object: dict[str, set[str]] = {}
+    by_event: dict[str, set[str]] = {}
+    for objects, events in parts:
+        for name, found in objects.items():
+            by_object.setdefault(name, set()).update(found)
+        for name, found in events.items():
+            by_event.setdefault(name, set()).update(found)
+    return by_object, by_event
+
+
 def _folded_slices(rows: Iterable[Sequence[Any]]
                    ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
     """``_slices``' facts of (name, markings, gated, until) rows, with its handle cap."""
@@ -4138,7 +4204,8 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
 
     def opened() -> PgStoreReader:
         return PgStoreReader.open(dsn, only=only, text_store=text_store,
-                                  statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS)
+                                  statement_timeout_ms=FACTS_STATEMENT_TIMEOUT_MS,
+                                  temp_limit=_facts_temp_limit())
 
     leader = opened()
     readers: list[PgStoreReader] = []
@@ -4153,10 +4220,15 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
             bounds = {kind: _pg_key_bounds(cur, kind, count * FACTS_PARTS_PER_WORKER)
                       for kind in _SLICE_ROWS}
         odd = leader.link_odd()
+        # the slices and the event types are read a key range at a time (one statement
+        # over a whole table hashed or sorted gigabytes into temp files)
         tasks: list[tuple[Any, Any]] = [(key, None) for key in _fact_keys(families)
-                                         if not (isinstance(key, tuple) and key[0] == "slices")]
+                                         if not (isinstance(key, tuple) and key[0] == "slices")
+                                         and key != "event_types"]
         for kind, cuts in bounds.items():
             tasks += [(("slices", kind), (lo, hi)) for lo, hi in zip(cuts, cuts[1:])]
+        cuts = bounds["event"]
+        tasks += [("event_types", (lo, hi)) for lo, hi in zip(cuts, cuts[1:])]
         local = threading.local()
         opened_lock = threading.Lock()
 
@@ -4179,6 +4251,8 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
             with tools.store.lock:
                 if span is None:
                     return _fact_value(tools, key)
+                if key == "event_types":
+                    return _range_event_types(tools, span[0], span[1])
                 return _range_slices(tools, key[1], span[0], span[1], odd)
 
         with futures.ThreadPoolExecutor(max_workers=count,
@@ -4193,6 +4267,7 @@ def _read_pg_facts_parallel(dsn: str, families: Sequence[str], *,
                 parts.setdefault(key, []).append(value)
         for kind in _SLICE_ROWS:
             facts[("slices", kind)] = _union_slices(parts.get(("slices", kind), ()))
+        facts["event_types"] = _union_event_types(parts.get("event_types", ()))
         return identity, facts
     finally:
         for reader in (*readers, leader):

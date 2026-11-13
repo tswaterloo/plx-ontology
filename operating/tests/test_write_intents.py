@@ -10,11 +10,13 @@ committed $metadata pin and fixture; no HTTP).
 from __future__ import annotations
 
 import ast
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -315,6 +317,69 @@ class Execution(Base):
             self.desk.execute(iid, wi.Person("N", "n@example.test", ALLOWED_OID), self.ctx(),
                               idempotency_key="c" * 20)
         self.assertEqual(caught.exception.status, 403)
+
+    def test_an_approval_stands_only_while_its_people_still_may(self) -> None:
+        """ACT-005: a later executor never runs an approval whose approver lost the grant,
+        whose approver or preparer is excluded now, or that is older than its age."""
+        runner = wi.Person("Runner", "runner@example.test", "abababab-3434-4565-8787-909090909090")
+        both = ["bc:purchaseOrders", "bc:purchaseOrderLines"]
+        grants = wi.WriteGrants({"approver@example.test": both, "runner@example.test": both})
+        cases = {"grant": (dict(grants=wi.WriteGrants({"runner@example.test": both})), 409),
+                 "approver": (dict(exclusion=PeopleExclusion([EXCLUDED_OID, ALLOWED_OID]),
+                                   grants=grants), 403),
+                 "preparer": (dict(exclusion=PeopleExclusion([EXCLUDED_OID, PREPARER.oid]),
+                                   grants=grants), 403)}
+        for n, (name, (later, status)) in enumerate(cases.items()):
+            iid = self.approved(po_spec(reason=f"act-005 {name}"))
+            with self.subTest(name):
+                with self.assertRaises(wi.WriteRefused) as caught:
+                    self.desk.execute(iid, runner, self.ctx(**later),
+                                      idempotency_key=f"r{n}" * 10)
+                self.assertEqual(caught.exception.status, status, caught.exception.problems)
+        iid = self.approved(po_spec(reason="act-005 age"))
+        now = datetime.now(timezone.utc)
+        self.desk.clock = lambda: now + wi.APPROVAL_MAX_AGE + timedelta(minutes=1)
+        with self.assertRaises(wi.WriteRefused):
+            self.desk.execute(iid, runner, self.ctx(grants=grants), idempotency_key="a" * 20)
+        # a lapsed approval is approved again (not replayed), and then it runs
+        shown = self.desk.preview(iid, self.ctx(grants=grants))
+        again = self.desk.approve(iid, APPROVER, self.ctx(grants=grants), confirmed=True,
+                                  shown_hash=shown["preview_hash"], acknowledge_warnings=True)
+        self.assertFalse(again["replayed"])
+        self.assertEqual(self.desk.execute(iid, runner, self.ctx(grants=grants),
+                                           idempotency_key="b" * 20)["status"], "would_write")
+        self.desk.clock = lambda: now   # a standing approval is replayed, not doubled
+        iid = self.approved(po_spec(reason="act-005 standing"))
+        shown = self.desk.preview(iid, self.ctx())
+        self.assertTrue(self.desk.approve(iid, APPROVER, self.ctx(), confirmed=True,
+                                          shown_hash=shown["preview_hash"],
+                                          acknowledge_warnings=True)["replayed"])
+        # an approval whose approver lost the grant is approved again by one who holds it
+        iid = self.approved(po_spec(reason="act-005 regrant"))
+        later = self.ctx(grants=wi.WriteGrants({"runner@example.test": both}))
+        shown = self.desk.preview(iid, later)
+        self.assertFalse(self.desk.approve(iid, runner, later, confirmed=True,
+                                           shown_hash=shown["preview_hash"],
+                                           acknowledge_warnings=True)["replayed"])
+        self.assertEqual(self.desk.execute(iid, runner, later,
+                                           idempotency_key="c" * 20)["status"], "would_write")
+
+    def test_a_decimal_past_its_bounds_is_refused_fast(self) -> None:
+        """ACT-007: a few characters never expand into a huge body."""
+        for quantity in ("1e10000", "1E+16", "1e-16", "9" * 29, "1" * 70):
+            started = time.monotonic()
+            with self.subTest(quantity=quantity[:12]), self.assertRaises(wi.WriteRefused):
+                self.desk.prepare(po_spec(lines=[{"lineType": "Item", "lineObjectNumber": "ITEM-1",
+                                                  "quantity": quantity,
+                                                  "directUnitCost": "0.10"}],
+                                          reason=f"big {quantity[:12]}"), PREPARER)
+            self.assertLess(time.monotonic() - started, 1)
+        made = self.desk.prepare(po_spec(lines=[{"lineType": "Item",
+                                                 "lineObjectNumber": "ITEM-1",
+                                                 "quantity": "1.5e3",
+                                                 "directUnitCost": "0.10"}],
+                                         reason="in bounds"), PREPARER)
+        self.assertTrue(made["intent"]["intent_id"])
 
     def test_switches_off_never_reach_the_transport_and_only_all_on_does(self) -> None:
         desk = self.desk

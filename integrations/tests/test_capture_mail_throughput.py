@@ -872,6 +872,34 @@ class LanesAndPriorityTests(ThroughputCase):
         finally:
             extractors.close()
 
+    def test_a_process_that_never_reads_its_input_or_sends_a_huge_frame_is_a_gap(self):
+        """INT-002: the request is written under the reading's deadline (a child that
+        never reads stdin times out, it never blocks the capture), and an answer frame
+        over MAX_ANSWER_BYTES ends the process as crashed."""
+        attachment = {"name": "big.txt", "contentType": "text/plain",
+                      "content_type": "text/plain"}
+        deaf = ("import time; time.sleep(120)",
+                "import sys, struct; sys.stdout.buffer.write(struct.pack('>Q', 1 << 62));"
+                " sys.stdout.flush(); import time; time.sleep(120)")
+        for code, status, content in (
+                (deaf[0], capture_mail.EXTRACTION_TIMED_OUT, b"x" * (8 << 20)),
+                (deaf[1], capture_mail.EXTRACTION_CRASHED, b"small")):
+            with self.subTest(status=status):
+                def start(_extractors, code=code):
+                    return subprocess.Popen([sys.executable, "-c", code],
+                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            start_new_session=True)
+                with mock.patch.object(capture_mail._Extractors, "_start", start):
+                    extractors = capture_mail._Extractors(1, 2)
+                    try:
+                        began = time.monotonic()
+                        found = extractors.read(content, attachment, defer_ocr=True,
+                                                defer_all=False)
+                        self.assertLess(time.monotonic() - began, 30)
+                        self.assertEqual(found, (status, None, None))
+                    finally:
+                        extractors.close()
+
     def test_a_reading_left_unfinished_is_a_named_gap_its_original_kept_and_retried(self):
         big = b"%PDF-1.4 " + os.urandom(300_000)
         self.graph.put(BOX_A, "M-1", "CK-1", attachments=[file_attachment("P1", big,

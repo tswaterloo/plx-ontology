@@ -2767,9 +2767,13 @@ class ClaudeCodeAgent:
                                 helper.set_deadline(moved)
                             return task
                         options["feed"] = feed
+                    cancel = getattr(self, "cancel_event", None)
                     if getattr(self.spawn, "stops", False) and (
-                            ends is not None or attach is not None):
-                        options["stop"] = _either(attach, ends)
+                            ends is not None or attach is not None or cancel is not None):
+                        # API-011: nobody waits for the answer any more: the session ends
+                        options["stop"] = _either(
+                            attach, ends,
+                            (lambda _line: cancel.is_set()) if cancel is not None else None)
                     spawned = (argv, str(session), {**agent_environment(os.environ),
                                                     "MCP_TIMEOUT": str(MCP_STARTUP_MS)},
                                self.timeout)

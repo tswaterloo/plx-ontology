@@ -373,5 +373,219 @@ class CaptureBccTests(unittest.TestCase):
         self.assertEqual(stored(self.state), {"M-KEEP", "M-BCC-OK"})
 
 
+def carried_zip(sender: str, to: str) -> tuple[bytes, bytes]:
+    """(a zip carrying one mail from ``sender`` to ``to`` and a text file, that mail)."""
+    from zipfile import ZipFile
+    mail = (f"From: {sender}\r\nTo: {to}\r\nSubject: quote\r\n\r\nPrice 12.50 a box."
+            ).encode()
+    out = io.BytesIO()
+    with ZipFile(out, "w") as archive:
+        archive.writestr("fwd.eml", mail)
+        archive.writestr("note.txt", b"Forty-two boxes on the dock.")
+    return out.getvalue(), mail
+
+
+class CarriedPurgeTests(unittest.TestCase):
+    """DOC-008: containers stored before the capture-time drop that carry an excluded
+    person's mail (or one that cannot be cleared) are found offline and withheld, with
+    every derived copy; the message and every cleared container stay."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        cls.name, cls.dsn = pg_testdb.create_db()
+        cls.addClassCleanup(pg_testdb.drop_db, cls.name)
+        import psycopg
+        from operating.pg import migrate
+        with psycopg.connect(cls.dsn, autocommit=True) as pg:
+            migrate.migrate(pg, values={"embed_model": "m", "embed_dim": 8})
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name) / "state"
+        graph = self.graph = tm.FakeGraph()
+        graph.users[EXCLUDED] = {"id": EXCLUDED, "userPrincipalName": EXCLUDED_MAIL,
+                                 "mail": EXCLUDED_MAIL,
+                                 "proxyAddresses": [f"SMTP:{EXCLUDED_MAIL}"]}
+        self.zips = {"ATT-BAD": carried_zip(EXCLUDED_MAIL, tm.UPN_A),
+                     "ATT-UNSURE": carried_zip("who@example-plx.com", tm.UPN_A),
+                     "ATT-OK": carried_zip(tm.UPN_B, tm.UPN_A)}
+        graph.put(tm.BOX_A, "M-1", "CK-1", subject="Quotes", body="See attached.",
+                  attachments=[tm.file_attachment(a, z, f"{a.lower()}.zip")
+                               for a, (z, _m) in self.zips.items()])
+        graph.put(tm.BOX_A, "M-2", "CK-1", subject="Freight", body="Truck at nine.")
+        with mock.patch.object(MailCapture, "_carries_withheld_mail",
+                               lambda _self, _c, _r: (None, None)):   # before the rule
+            capture(self.state, graph)
+        with ExitStack() as stack:
+            found = host.state_captures(self.state, stack,
+                                        internal_domains=tm.SCOPE.internal_domains)
+            host.build_projection(self.state, found)
+        self.store_path = host.projection_path(self.state)
+        from operating.pg import ontology_load
+        ontology_load.load(self.store_path, self.dsn, workers=1, replace=True,
+                           log=io.StringIO())
+        db = sqlite3.connect(self.state / "mail-capture" / "capture.db")
+        try:
+            self.handles = dict(db.execute("SELECT attachment_id, l1_handle FROM attachments"))
+            self.message = db.execute("SELECT l1_handle FROM messages WHERE message_id='M-1'"
+                                      ).fetchone()[0]
+        finally:
+            db.close()
+        # the directory the capture recorded, as the offline guard reads it
+        self.directory = mock.patch(
+            "integrations.people_exclusion.mail_capture_directory",
+            lambda _state, now=None: [(tm.BOX_A, tm.UPN_A, []), (tm.BOX_B, tm.UPN_B, []),
+                                      (EXCLUDED, EXCLUDED_MAIL, [])])
+        self.directory.start()
+        self.addCleanup(self.directory.stop)
+
+    def cli(self, *argv: str) -> tuple[int, dict]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = mp.main(list(argv), environ=tm.ENV, sender=self.graph)
+        return code, json.loads(out.getvalue())
+
+    def test_a_bound_guard_decides_the_tenant_address_the_directory_does_not_hold(self):
+        """Offline, a tenant address the recorded directory does not hold withholds its
+        container; bound through Graph (directory reads only) it is decided: only the
+        excluded person's mail is withheld."""
+        audience = self.state.parent / "audience.json"
+        audience.write_text(json.dumps({
+            "schema": LIVE_AUDIENCE_SCHEMA, "tenant": "plx",
+            "audiences": {f"mail:{tm.UPN_A}": ["svc:mail-capture"],
+                          f"mail:{tm.UPN_B}": ["svc:mail-capture"]},
+            "classifications": {"mail:*": "restricted"}}))
+        out = self.state.parent / "bound.json"
+        code, scan = self.cli("carried", "--state-dir", str(self.state), "--live-audience",
+                              str(audience), "--out", str(out), "--workers", "1")
+        self.assertEqual(code, 0, scan)
+        self.assertEqual((scan["excluded"], scan["undecided"], scan["clear"]), (1, 0, 2), scan)
+        self.assertEqual(json.loads(out.read_text())["withheld"],
+                         {self.handles["ATT-BAD"]: "excluded:people"})
+        self.assertTrue(all(m == "GET" for m, _u, *_ in self.graph.calls
+                            if "login" not in _u), self.graph.calls)
+
+    def held(self) -> dict[str, tuple[int, int, int]]:
+        """Per attachment: SQLite objects and Postgres objects citing it or a member of
+        it, and whether its capture row still holds bytes."""
+        import psycopg
+        result = {}
+        db = sqlite3.connect(self.state / "mail-capture" / "capture.db")
+        store = sqlite3.connect(self.store_path)
+        try:
+            with psycopg.connect(self.dsn) as pg:
+                for att, handle in self.handles.items():
+                    like = handle.replace("%", "\\%").replace("_", "\\_") + "%"
+                    result[att] = (
+                        store.execute("SELECT count(DISTINCT object_id) FROM object_versions "
+                                      "WHERE l1_handle LIKE ? ESCAPE '\\'", (like,)
+                                      ).fetchone()[0],
+                        pg.execute("SELECT count(DISTINCT object_id) FROM "
+                                   "ontology.object_versions WHERE l1_handle LIKE %s",
+                                   (like,)).fetchone()[0],
+                        db.execute("SELECT count(*) FROM attachments WHERE attachment_id=? "
+                                   "AND content_sha256 IS NOT NULL", (att,)).fetchone()[0])
+                result["M-1"] = (store.execute(
+                    "SELECT count(*) FROM object_versions WHERE l1_handle=?",
+                    (self.message,)).fetchone()[0], pg.execute(
+                    "SELECT count(*) FROM ontology.object_versions WHERE l1_handle=%s",
+                    (self.message,)).fetchone()[0], db.execute(
+                    "SELECT count(*) FROM messages WHERE message_id='M-1'").fetchone()[0])
+        finally:
+            db.close()
+            store.close()
+        return result
+
+    def test_stored_containers_carrying_unclear_mail_are_withheld_with_every_copy(self):
+        before = self.held()
+        for att in self.handles:   # attachment and members derived, bytes stored
+            self.assertGreaterEqual(before[att][0], 2, (att, before))
+            self.assertEqual(before[att][2], 1)
+        state = str(self.state)
+        code, scan = self.cli("carried", "--state-dir", state, "--workers", "2")
+        self.assertEqual(code, 0, scan)
+        self.assertEqual((scan["excluded"], scan["undecided"], scan["withheld_attachments"],
+                          scan["carrying_mail"]), (1, 1, 2, 3), scan)
+        out = json.loads((self.state / "mail-capture" / mp.CARRIED_FILE).read_text())
+        self.assertEqual(out["withheld"], {self.handles["ATT-BAD"]: "excluded:people",
+                                           self.handles["ATT-UNSURE"]:
+                                           "withheld:carried_mail_undecided"})
+        for address in (EXCLUDED_MAIL, "who@", tm.UPN_B):   # handles and counts only
+            self.assertNotIn(address, json.dumps(out))
+        self.assertEqual(self.held(), before)            # a scan without --apply reads only
+        code, dry = self.cli("purge", "--state-dir", state, "--dsn", self.dsn)
+        self.assertEqual((code, dry["carried_attachments"]), (0, 2), dry)
+        self.assertEqual(self.held(), before)
+        code, applied = self.cli("purge", "--state-dir", state, "--dsn", self.dsn, "--apply")
+        self.assertEqual(code, 0, applied)
+        self.assertEqual(applied["carried_capture"]["attachments"], 2, applied)
+        after = self.held()
+        self.assertEqual(after["ATT-BAD"], (0, 0, 0))
+        self.assertEqual(after["ATT-UNSURE"], (0, 0, 0))
+        self.assertEqual(after["ATT-OK"], before["ATT-OK"])
+        self.assertEqual(after["M-1"], before["M-1"])      # the message itself stays
+        db = sqlite3.connect(self.state / "mail-capture" / "capture.db")
+        try:
+            rows = dict(db.execute("SELECT attachment_id, content_status || '|' || "
+                                   "ifnull(l1_handle, '-') FROM attachments"))
+            self.assertEqual(rows["ATT-BAD"], "excluded:people|-")
+            self.assertEqual(rows["ATT-UNSURE"], "withheld:carried_mail_undecided|-")
+            self.assertEqual(db.execute("SELECT count(*) FROM purged_handles").fetchone()[0], 0)
+        finally:
+            db.close()
+        from hashlib import sha256
+        blobs = {p.name.split(".")[0] for p in (self.state / "mail-capture").rglob("*")
+                 if p.is_file()}
+        self.assertNotIn(sha256(self.zips["ATT-BAD"][0]).hexdigest(), blobs)
+        self.assertIn(sha256(self.zips["ATT-OK"][0]).hexdigest(), blobs)
+        # with --apply the walks are kept (cycle lock held) and read back next time
+        code, kept = self.cli("carried", "--state-dir", state, "--apply")
+        self.assertEqual((code, kept["withheld_attachments"], kept["kept_new"]), (0, 0, 1),
+                         kept)
+        code, again = self.cli("carried", "--state-dir", state)
+        self.assertEqual((again["kept_walks"], again["walked"]), (1, 0), again)
+
+    def test_an_unavailable_exclusion_decides_nothing_and_writes_nothing(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = mp.main(["carried", "--state-dir", str(self.state)],
+                           environ={k: v for k, v in tm.ENV.items()
+                                    if k != "PLX_EXCLUDED_PEOPLE_OIDS"})
+        self.assertEqual(code, 2, out.getvalue())
+        self.assertFalse((self.state / "mail-capture" / mp.CARRIED_FILE).exists())
+
+
+class CarriedWalkTests(unittest.TestCase):
+    def test_a_dropped_original_carries_nothing_and_a_missing_one_is_not_cleared(self):
+        """The store drops an original only when it is no container: walked as carrying
+        nothing; bytes gone with no dropped form are no walk (withheld: not cleared)."""
+        from hashlib import sha256
+        from integrations.captured_text import DROPPED_SUFFIX, blob_path
+        with tempfile.TemporaryDirectory() as tmp:
+            content, _mail = carried_zip(EXCLUDED_MAIL, tm.UPN_A)
+            digest = sha256(content).hexdigest()
+            self.assertEqual(mp._walk_one(tmp, digest, "a.zip", None), (digest, None))
+            path = blob_path(tmp, digest, DROPPED_SUFFIX)
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"{}")
+            self.assertEqual(mp._walk_one(tmp, digest, "a.zip", None), (digest, "null"))
+            blob_path(tmp, digest).write_bytes(content)   # the bytes themselves: walked
+            _d, walked = mp._walk_one(tmp, digest, "a.zip", None)
+            self.assertIn(EXCLUDED_MAIL, walked)
+            # an Office package is told by its central directory, never walked
+            from zipfile import ZipFile
+            buf = io.BytesIO()
+            with ZipFile(buf, "w") as archive:
+                archive.writestr("[Content_Types].xml", "<Types/>")
+                archive.writestr("fwd.eml", f"From: {EXCLUDED_MAIL}\r\n\r\nx")
+            package = buf.getvalue()
+            pdigest = sha256(package).hexdigest()
+            blob_path(tmp, pdigest).parent.mkdir(parents=True, exist_ok=True)
+            blob_path(tmp, pdigest).write_bytes(package)
+            self.assertEqual(mp._walk_one(tmp, pdigest, "a.docx", None), (pdigest, "null"))
+
+
 if __name__ == "__main__":
     unittest.main()

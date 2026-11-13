@@ -860,6 +860,24 @@ class CapturedCitations(RuntimeCitations):
         return super().field_text(handle, field_path, actor)
 
 
+def _carried_withheld(citations: Any, stores: Callable[[], Any], handle: str,
+                      memo: dict) -> bool:
+    """Whether a mail attachment citation (or a member, or a page of it) is withheld
+    from every reader for the mail it carries (DOC-008:
+    ``MailCaptureStore.carried_withholds`` with the runtime's people guard), decided once
+    per call (``memo``); any failure withholds it."""
+    if "#" not in handle:
+        return False
+    key = ("carried", handle)
+    if key not in memo:
+        try:
+            with stores() as store:
+                memo[key] = store.carried_withholds(handle, citations._people())
+        except Exception:  # noqa: BLE001 - not decided: withheld
+            memo[key] = True
+    return memo[key]
+
+
 def _member_container(handle: str) -> str | None:
     """The container handle of a container member citation (with or without a page;
     ``integrations.captured_text.member_handle``), else None."""
@@ -1232,8 +1250,9 @@ class CaptureCaseHostTools(CaseHostTools):
             if not handle.startswith("graph-mail://") or self.mail_capture_dir is None:
                 return fallback(actor, handle)
             # A member of a captured zip/.msg/.eml attachment is visible iff its
-            # attachment is: every check below decides on the attachment.
-            handle = _member_container(handle) or handle
+            # attachment is: every check below decides on the attachment, then the mail
+            # the citation carries (DOC-008) on the citation itself.
+            cited, handle = handle, _member_container(handle) or handle
             from ontology.people_directory import parse_person_handle
             if parse_person_handle(handle) is not None:
                 # A person (``people_directory``): seen through any mailbox it corresponds
@@ -1252,9 +1271,11 @@ class CaptureCaseHostTools(CaseHostTools):
                 audience = memo["opened"]
                 if audience is None:
                     return False
-                return self._mail_search_gate(
-                    citations, lambda: _mail_store(self.runtime, Path(self.mail_capture_dir)),
-                    audience, actor, handle, memo)
+                stores = lambda: _mail_store(self.runtime,  # noqa: E731
+                                             Path(self.mail_capture_dir))
+                return self._mail_search_gate(citations, stores, audience, actor, handle,
+                                              memo) and not _carried_withheld(
+                    citations, stores, cited, memo)
             opened = self._mail()
             if opened is None:
                 return False
@@ -1262,12 +1283,15 @@ class CaptureCaseHostTools(CaseHostTools):
             try:
                 with stores as store:
                     gated = self.runtime.employee_gate(actor)
-                    if not store.item_gate(audience)(gated, handle):
+                    # the citation itself: a member through its container's gate
+                    if not store.item_gate(audience, citations._people())(gated, cited):
                         return False
             except Exception:  # noqa: BLE001 - a refused gate reads nothing
                 return False
-            # the status alone decides: a whole attachment's text is never decoded here
-            return citations.read(handle, actor, content=False).get("status") in _READ_OK
+            # the status alone decides: a whole attachment's text is never decoded here;
+            # the citation itself is read (a member: its container's gate, then the mail
+            # it is or sits under, DOC-008)
+            return citations.read(cited, actor, content=False).get("status") in _READ_OK
 
         def prefetch(actor: Any, handles: Iterable[str]) -> None:
             """Read ahead, in batches, what a search's mail gate reads of each mail
@@ -1360,7 +1384,7 @@ class CaptureCaseHostTools(CaseHostTools):
                 return False
             if cited_page(handle)[1] is not None:
                 with stores() as store:
-                    if not store.item_gate(audience)(gated, handle):
+                    if not store.item_gate(audience, citations._people())(gated, handle):
                         return False
                 # the page must be there: its reading's kept page count says so, the
                 # text never decoded (as the full gate's read answers it)
@@ -1416,8 +1440,8 @@ class CaptureCaseHostTools(CaseHostTools):
 
     # ---- SharePoint: the per-item gate ----------------------------------------
 
-    def captured(self, actor: Any, handle: str, *, text: bool = False
-                 ) -> dict[str, Any] | None:
+    def captured(self, actor: Any, handle: str, *, text: bool = False,
+                 _whole: bool = True) -> dict[str, Any] | None:
         """The captured version ``handle`` names (``SharePointCaptureStore.resolve``
         shape) when this reader may be served it now, else None (module docstring).
         A refusal of a version the capture holds (or of the reader) is recorded for this
@@ -1444,8 +1468,12 @@ class CaptureCaseHostTools(CaseHostTools):
                                      "the employee gate refused this reader")
             return None
         try:
+            # the runtime's people guard decides the mail a file carries (DOC-008);
+            # ``_whole=False``: a member's container (the member decides its own)
             view = store.resolve(handle, gated, audience, text=text,
-                                 ahead=self._read_ahead(store))
+                                 ahead=self._read_ahead(store),
+                                 people=getattr(self.runtime, "people_exclusion", None),
+                                 _whole=_whole)
             if view is None:
                 # Not captured, or not visible to this reader at capture: decided only
                 # when the capture holds this exact version as the item's current one.
@@ -1567,7 +1595,7 @@ class CaptureCaseHostTools(CaseHostTools):
         age bound all decide on the container's view), then read from the container's
         pinned bytes. A refusal of the container is the member's."""
         from integrations.capture_sharepoint import CaptureError
-        held = self.captured(actor, container)
+        held = self.captured(actor, container, _whole=False)
         if held is None:
             if container in self._refused:
                 self._refused[handle] = self._refused[container]
@@ -1575,8 +1603,9 @@ class CaptureCaseHostTools(CaseHostTools):
                 self._decided.add(handle)
             return None
         try:
-            view = self._sharepoint().resolve(handle, self.runtime.employee_gate(actor),
-                                              self._audience(), text=text)
+            view = self._sharepoint().resolve(
+                handle, self.runtime.employee_gate(actor), self._audience(), text=text,
+                people=getattr(self.runtime, "people_exclusion", None))
         except (CaptureError, sqlite3.Error, OSError, ValueError, LookupError):
             self._refused[handle] = ("unresolvable", "capture_unreadable",
                                      "the Workbench's SharePoint capture could not be read "
@@ -2603,7 +2632,8 @@ class CaptureCaseHostTools(CaseHostTools):
         for at in sorted(pages):
             handle = lookup.handles[at]
             try:
-                view = store.resolve(handle, gated, audience)
+                view = store.resolve(handle, gated, audience,
+                                     people=getattr(self.runtime, "people_exclusion", None))
             except (CaptureError, sqlite3.Error, OSError, ValueError):
                 continue
             if view is None or not isinstance(view["row"].get("content_text"), str):

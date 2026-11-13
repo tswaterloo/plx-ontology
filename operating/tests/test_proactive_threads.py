@@ -450,6 +450,35 @@ class Threads(Engine):
         self.assertEqual(self.kinds(pt.APPROVAL_KIND, may_read=lambda k: k != "teams:chat:c1"),
                          [])
 
+    def test_a_reply_past_the_threads_read_limit_leaves_the_ask_unjudged_never_unanswered(
+            self):
+        # AUTOMATION-016: a conversation's copies are read up to MAX_THREAD; an answer past
+        # it was unseen and the ask was raised as unanswered. Now such a conversation is
+        # not judged (thread_too_long); at the limit the answer is read and nothing raised.
+        w = World()
+        mail(w, day(6), conversation="long", n=1)                        # the ask
+        for k in range(3):
+            mail(w, day(9 - k), body="FYI the file.", conversation="long", n=2 + k)
+        mail(w, day(5), sender=APPROVER, to=(OURS,), body="Done, go ahead.",
+             conversation="long", n=9)                                    # 5th copy
+
+        def teams(chat, sender, text, offset, mentions=()):
+            return w.obj("TeamsChatMessage", {
+                "created_at": f"{day(offset).isoformat()}T15:00:00Z", "chat_id": chat,
+                "from": json.dumps({"id": sender, "kind": "user"}), "subject": text,
+                "mentions": json.dumps([{"kind": "user", "target_id": m} for m in mentions])},
+                binding="gen.teams.chat_messages", audience=f"teams:chat:{chat}")
+        teams("c1", OURS_OID, "Can you approve the label budget today?", 6, (APPROVER_OID,))
+        for k in range(3):
+            teams("c1", OURS_OID, "Adding the quote here.", 5)
+        teams("c1", APPROVER_OID, "Done.", 4)                             # 5th message
+        for limit, skipped in ((4, 2), (5, 0)):
+            with self.subTest(limit=limit), mock.patch.object(pt, "MAX_THREAD", limit):
+                summary = self.run_rules(w)
+                self.assertEqual(self.kinds(pt.APPROVAL_KIND), [])
+                self.assertEqual(summary["not_evaluated"].get(pt.APPROVALS, {}).get(
+                    "thread_too_long", 0), skipped)
+
     def test_the_word_index_and_the_whole_read_find_the_same_alerts(self):
         w, _ = self.approval_world()
         for i in range(3):
@@ -693,3 +722,37 @@ class DocumentPack(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SeedParity(unittest.TestCase):
+    """AUTOMATION-017: on the word-index path a message is classified only when the
+    family's seed query found it, so each seed must find every phrase its classifier
+    accepts (the chase seed had no final/bumping/attempt/notice terms)."""
+
+    CHASE = ("Following up on the order", "follow-up on PO 12", "Just checking on this",
+             "checking in on the delivery", "Gentle reminder", "2nd request for the date",
+             "second reminder", "3rd request", "third notice", "final notice",
+             "Final attempt to reach you", "final reminder", "still waiting for the PO",
+             "we still haven't heard back", "still have not received the parts",
+             "still not got it", "haven't received the invoice", "have not yet heard",
+             "any update?", "any news on this?", "status update please",
+             "as per my last email", "as per my previous message", "resending the file",
+             "bumping this up", "bumping up", "chasing the shipment", "a quick nudge")
+    APPROVAL = ("Please approve the PO", "can you sign off on this", "for your approval",
+                "attached for sign-off", "requires your authorization",
+                "Approval needed for the quote", "kindly review and authorise")
+
+    def test_each_seed_finds_every_phrase_its_classifier_accepts(self):
+        import sqlite3
+        from ontology.store_ddl import TEXT_TOKENIZER
+        for family, regex, corpus in (("chase", pt.CHASE_ASK, self.CHASE),
+                                      ("approval", pt.APPROVAL_ASK, self.APPROVAL)):
+            conn = sqlite3.connect(":memory:")
+            conn.execute(f"CREATE VIRTUAL TABLE t USING fts5(x, tokenize='{TEXT_TOKENIZER}')")
+            conn.executemany("INSERT INTO t (rowid, x) VALUES (?, ?)", enumerate(corpus, 1))
+            found = {r[0] for r in conn.execute("SELECT rowid FROM t WHERE t MATCH ?",
+                                                (pt.SEED_WORDS[family],))}
+            for n, phrase in enumerate(corpus, 1):
+                with self.subTest(family=family, phrase=phrase):
+                    self.assertTrue(regex.search(phrase))     # the classifier accepts it
+                    self.assertIn(n, found)                   # and the seed finds it

@@ -1261,6 +1261,7 @@ class Continuous:
         pool = ThreadPoolExecutor(max_workers=self.parallel, thread_name_prefix="ingest")
         build: threading.Thread | None = None
         failed: list[BaseException] = []
+        outcomes = SourceRuns(self.state)
 
         def building() -> bool:
             return build is not None and build.is_alive()
@@ -1276,6 +1277,7 @@ class Continuous:
             if result.get("error_code") == STOPPED:
                 stopped.append(name)
                 return
+            outcomes.record(name, result)
             runs[name] += 1
             failures[name] = 0 if result.get("status") in ("complete", "partial") \
                 else failures[name] + 1
@@ -1365,6 +1367,74 @@ class Continuous:
         return {"state": "stopped", "reason": reason, "refreshes": refreshes,
                 "runs": {name: runs[name] for name in self.sections},
                 "stopped_sources": sorted(set(stopped))}
+
+
+# Each source's run outcomes as they finish (``SourceRuns``), read by the ops alarms
+# (``operating.ops_health.capture_run_checks``) without waiting for the next refresh.
+RUNS_FILE = "source-runs.json"   # under <state>/host
+RUNS_SCHEMA = "plx-source-runs/v1"
+_SUCCESS = ("complete", "partial")
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+class SourceRuns:
+    """``<state>/host/source-runs.json``: per source, its last run (when, status, error
+    code), the last successful run, and the failures in a row with when they began and
+    why. Written as each capture child finishes (the host ledger records an outcome only
+    at the next refresh, which can wait hours behind a build), kept across restarts, so a
+    source failing run after run is an alarm within one ops pass. Codes only, never a
+    message. A write that fails is skipped: it never stops the ingest."""
+
+    def __init__(self, state: Path, now: Callable[[], str] = _utc_now) -> None:
+        self.path = Path(state) / "host" / RUNS_FILE
+        self.now = now
+        try:
+            held = json.loads(self.path.read_text(encoding="utf-8"))
+            sources = held.get("sources") if isinstance(held, dict) \
+                and held.get("schema") == RUNS_SCHEMA else None
+        except (OSError, ValueError):
+            sources = None
+        self.sources: dict[str, dict[str, Any]] = {
+            str(k): dict(v) for k, v in (sources or {}).items() if isinstance(v, dict)}
+
+    def record(self, name: str, result: Mapping[str, Any]) -> None:
+        status = code(result.get("status")) or "failed"
+        reason = (code(result.get("error_code"))
+                  or next((code(r) for r in result.get("reasons") or () if code(r)), None)
+                  or next((code(b.get("error_code")) for b in result.get("blocked") or ()
+                           if isinstance(b, Mapping) and code(b.get("error_code"))), None)
+                  or status)
+        at = self.now()
+        row = self.sources.setdefault(name, {})
+        row.update(last_run_at=at, last_status=status, last_error=None
+                   if status in _SUCCESS else reason)
+        if status in _SUCCESS:
+            row.update(last_success_at=at, consecutive_failures=0, failing_since=None,
+                       failing_reason=None, reason_since=None)
+        else:
+            failures = int(row.get("consecutive_failures") or 0)
+            row["consecutive_failures"] = failures + 1
+            if not failures:
+                row["failing_since"] = at
+            if row.get("failing_reason") != reason:
+                row.update(failing_reason=reason, reason_since=at)
+        self._write()
+
+    def _write(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump({"schema": RUNS_SCHEMA, "sources": self.sources}, handle,
+                          indent=1, sort_keys=True)
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
 
 
 def cycle_checks(reports: Sequence[Mapping[str, Any]], configured: Sequence[str],

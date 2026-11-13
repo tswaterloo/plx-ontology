@@ -343,12 +343,16 @@ class DeltaDocumentTests(DeltaCase):
         self.assertEqual(json.loads((self.root / "delta" / delta.POINTER).read_text())
                          ["documents"]["pending"], 1)
         state = delta.State(self.root / "delta" / "state.sqlite")
-        self.addCleanup(state.conn.close)
-        self.assertIn(record, state.changed("sharepoint", open_only=True))
+        self.addCleanup(state.close)
+        # held: queued for a later cycle, not followed by every cycle
+        self.assertEqual(state.queued(), {"sharepoint": [record]})
+        self.assertNotIn(record, state.changed("sharepoint", open_only=True))
         # nothing was kept for the file: it is read, not served as unreadable, next time
         with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
             second = self.cycle(base)
+        self.assertEqual(second["held_queue"]["taken"], 1, second)
         self.assertEqual(second["documents"]["pending"], 0, second)
+        self.assertEqual(state.queued(), {})
         self.assertNotIn(record, state.changed("sharepoint", open_only=True))
         full = self.full("gen2.sqlite")
         # the first layer lacks what the file's fields make; the second equals a full build
@@ -368,6 +372,72 @@ class DeltaDocumentTests(DeltaCase):
             third = self.cycle(base)
         self.assertEqual(third["layer"], "none: nothing new", third)
         self.assertEqual(third["new_changes"].get("sharepoint"), 0)
+
+    def test_a_cycle_follows_its_new_changes_and_one_batch_of_held_records(self):
+        # 11-12: 200k records held for unread files were followed, with their closure,
+        # by every cycle: 3.2 h for 24 new changes. Held records now wait in a queue and
+        # a cycle takes back one batch; its new changes still equal a full build, and
+        # the queue drains with no record lost or projected twice in one cycle.
+        from integrations.tests.test_capture_sharepoint import DRIVE
+        self.files.drive.file("02SLIP", "packing list 2.pdf", "01AOS", self.slip)
+        self.files.drive.file("03SLIP", "packing list 3.pdf", "01AOS", self.slip)
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        from ontology.tests.test_document_fields import SLIP, pdf
+        for n, iid in enumerate(("01SLIP", "02SLIP", "03SLIP")):   # three files, each new
+            self.files.drive.change(iid, pdf([[line.replace("PL-5512", f"PL-6{n}00")
+                                               for line in page] for page in SLIP]))
+        self.capture(T2)
+        records = [("item", DRIVE, iid) for iid in ("01SLIP", "02SLIP", "03SLIP")]
+        one = {"PLX_DELTA_HELD_BATCH": "1"}
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            first = self.cycle(base, environ={**one, "PLX_DELTA_DOCUMENT_SECONDS": "1e-9"})
+        self.assertEqual(first["documents"]["held_open"], {"sharepoint": 3}, first)
+        self.assertEqual(first["documents"]["pending"], 3, first)
+        state = delta.State(self.root / "delta" / "state.sqlite")
+        self.addCleanup(state.close)
+        self.assertEqual(sorted(state.queued()["sharepoint"]), records)
+        # one new change: the cycle follows it and one held record, not all three
+        self.fake.set("public.app_purchase_order", "po-a", status="RECEIVED",
+                      total_cost="36.00")
+        self.capture(T2 + timedelta(hours=1))
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            second = self.cycle(base, environ=one)
+        self.assertEqual(second["held_queue"], {"batch": 1, "taken": 1}, second)
+        self.assertEqual(second["followed"]["sharepoint"], 1, second)
+        self.assertEqual(second["followed"]["portal_api"], 1, second)
+        # the layer still says every pending file and held record, not only its own
+        self.assertEqual(second["documents"]["pending"], 2, second)
+        self.assertEqual(second["documents"]["queued"], 2, second)
+        with sqlite3.connect(second["store"]) as conn:
+            noted = json.loads(conn.execute("SELECT value FROM store_meta WHERE key = "
+                                            "'documents_pending'").fetchone()[0])
+        self.assertEqual(sorted(map(tuple, noted["records"]["sharepoint"])),
+                         sorted(state.queued()["sharepoint"]))
+        full = self.full("gen2.sqlite")
+        owned = self.owned(second["store"])
+        self.assertTrue([o for o in owned if "po-a" in o], owned)
+        self.assertEqual(delta.compare(Path(second["store"]), full, owned)["differ"], 0)
+        # the queue drains one record a cycle, oldest first, each equal to a full build
+        layers = {}
+        for _ in range(2):
+            with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+                more = self.cycle(base, environ=one)
+            self.assertEqual(more["held_queue"]["taken"], 1, more)
+            self.assertEqual(sum(more["followed"].values()), 1, more)
+            mine = self.owned(more["store"])
+            self.assertEqual(delta.compare(Path(more["store"]), full, mine)["differ"], 0)
+            layers[more["store"]] = mine
+        self.assertEqual(state.queued(), {})
+        self.assertEqual(state.held_files().execute("SELECT count(*) FROM files")
+                         .fetchone()[0], 0)
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            last = self.cycle(base, environ=one)
+        self.assertEqual(last["layer"], "none: nothing new", last)
+        # every held record was projected again after its file was read
+        projected = {o for owned_ids in [owned, *layers.values()] for o in owned_ids}
+        for iid in ("01SLIP", "02SLIP", "03SLIP"):
+            self.assertTrue([o for o in projected if iid in o], (iid, projected))
 
     def test_a_killed_cycles_work_is_taken_in_and_its_directory_removed(self):
         delta_dir = self.root / "delta"
@@ -454,6 +524,96 @@ class DeltaMailDocumentTests(DeltaCase):
                                  base_path=base, schema=self.schema, normalizer=normalizer,
                                  environ={**self.environ, **(environ or {})}, **options)
 
+    def test_a_mailbox_the_guard_cannot_decide_after_the_closure_is_left_out_not_fatal(self):
+        # CC-P-01: the changed mail is decided when it is found (``discover``); a mailbox
+        # met only after the closure (a thread's context, a back-link) that the people
+        # exclusion guard could not decide raised ExclusionUnavailable there, failing the
+        # whole cycle after its closure was paid for (10.4 CPU-h of failed cycles). It is
+        # now left out (never read) and counted; the cycle publishes the rest.
+        from integrations.people_exclusion import ExclusionUnavailable, PeopleExclusion
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        self.graph.put(self.tcm.BOX_A, "MSG-D1", "CK-D1", subject="Documents 1",
+                       body="Freight quote for PO100234.")
+        self.capture(T2)
+        finding = {"now": False}
+        real_discover = delta.discover
+
+        def discover(*args, **kwargs):
+            finding["now"] = True
+            try:
+                return real_discover(*args, **kwargs)
+            finally:
+                finding["now"] = False
+
+        def is_excluded(guard, value):
+            if finding["now"]:
+                return False
+            raise ExclusionUnavailable("excluded_people_unresolved")
+        with mock.patch.object(delta, "discover", discover), \
+                mock.patch.object(PeopleExclusion, "is_excluded", is_excluded), \
+                mock.patch.object(PeopleExclusion, "decides",
+                                  lambda guard, value: finding["now"]), \
+                mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            report = self.cycle(base)
+        self.assertGreaterEqual(report.get("mail_undecided_mailboxes", 0), 1, report)
+        self.assertIn(report["layer"], ("added", "compacted"), report)
+        self.assertNotIn(self.tcm.BOX_A, json.dumps(report))     # a count, no address
+        layer = sqlite3.connect(report["store"])
+        self.addCleanup(layer.close)
+        self.assertEqual(layer.execute(
+            "SELECT count(*) FROM objects WHERE object_id LIKE '%MSG-D1%'").fetchone()[0], 0)
+        # never read, so never marked done: it stays open and out of the kept context
+        state = delta.State(self.root / "delta" / "state.sqlite")
+        self.addCleanup(state.close)
+        message = [k for k in state.changed("graph_mail") if "MSG-D1" in k[1]]
+        self.assertEqual(len(message), 1, state.changed("graph_mail"))
+        self.assertIn(message[0], state.changed("graph_mail", open_only=True))
+        self.assertNotIn(message[0], state.context("graph_mail"))
+        # the first cycle whose guard decides the mailbox projects it, as a full build does
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            second = self.cycle(base)
+        self.assertNotIn("mail_undecided_mailboxes", second)
+        self.assertEqual(second["layer"], "added", second)
+        self.assertNotIn(message[0], state.changed("graph_mail", open_only=True))
+        owned = [o for o in self.owned(second["store"]) if "MSG-D1" in o]
+        self.assertTrue(owned, self.owned(second["store"]))
+        full = self.full("gen2.sqlite")
+        self.assertEqual(delta.compare(Path(second["store"]), full, owned)["differ"], 0)
+
+    def test_a_mailbox_whose_exclusion_lookup_fails_is_left_open_not_fatal(self):
+        # the guard decides the mailbox but its exclusion lookup is unavailable after the
+        # closure: the same as undecided (left out, kept open), never a failed cycle
+        from integrations.people_exclusion import ExclusionUnavailable, PeopleExclusion
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        self.graph.put(self.tcm.BOX_A, "MSG-D2", "CK-D2", subject="Documents 2",
+                       body="Freight quote for PO100234.")
+        self.capture(T2)
+        finding = {"now": False}
+        real_discover = delta.discover
+
+        def discover(*args, **kwargs):
+            finding["now"] = True
+            try:
+                return real_discover(*args, **kwargs)
+            finally:
+                finding["now"] = False
+
+        def is_excluded(guard, value):
+            if finding["now"]:
+                return False
+            raise ExclusionUnavailable("excluded_people_unresolved")
+        with mock.patch.object(delta, "discover", discover), \
+                mock.patch.object(PeopleExclusion, "is_excluded", is_excluded), \
+                mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            report = self.cycle(base)
+        self.assertGreaterEqual(report.get("mail_undecided_mailboxes", 0), 1, report)
+        state = delta.State(self.root / "delta" / "state.sqlite")
+        self.addCleanup(state.close)
+        self.assertTrue([k for k in state.changed("graph_mail", open_only=True)
+                         if "MSG-D2" in k[1]])
+
     def test_a_message_whose_attachment_is_pending_follows_a_layer_later(self):
         self.capture(T1)
         base = self.full("gen1.sqlite")
@@ -468,19 +628,101 @@ class DeltaMailDocumentTests(DeltaCase):
         self.assertFalse(first.get("mail_skipped"), first)
         self.assertEqual(first["documents"]["held_open"], {"graph_mail": 1}, first)
         state = delta.State(self.root / "delta" / "state.sqlite")
-        self.addCleanup(state.conn.close)
-        held = [k for k in state.changed("graph_mail", open_only=True) if "MSG-D1" in k[1]]
-        self.assertEqual(len(held), 1, state.changed("graph_mail", open_only=True))
+        self.addCleanup(state.close)
+        queued = state.queued().get("graph_mail", [])
+        held = [k for k in queued if "MSG-D1" in k[1]]
+        self.assertEqual(len(held), 1, queued)
         with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
             second = self.cycle(base)
         self.assertEqual(second["documents"]["pending"], 0, second)
         self.assertNotIn(held[0], state.changed("graph_mail", open_only=True))
+        self.assertNotIn(held[0], state.queued().get("graph_mail", []))
         full = self.full("gen2.sqlite")
         # the second layer holds the quote's own objects the first had no reading for
         first_owned, owned = self.owned(first["store"]), self.owned(second["store"])
         read = set(owned) - set(first_owned)
         self.assertTrue(read and all("ATT-D1" in o for o in read), (first_owned, owned))
         self.assertEqual(delta.compare(Path(second["store"]), full, owned)["differ"], 0)
+
+
+class HeldQueueTests(unittest.TestCase):
+    """The held queue (``State.hold``/``take``): N held records come back a batch at a
+    time, the longest queued first, none lost or taken twice, the open ones never more
+    than the batch; a change reopens a queued record at once."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = delta.State(Path(tmp.name) / "state.sqlite")
+        self.addCleanup(self.state.close)
+
+    def test_n_held_records_drain_in_batches_with_none_lost_or_doubled(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.state.reset("d")
+                tuples = [("inbox", f"m{i:03d}") for i in range(n)]
+                self.state.add("graph_mail", tuples, {k: "v1" for k in tuples})
+                self.state.close_over({}, {"graph_mail": tuples})
+                self.state.hold({"graph_mail": {k: {f"f{i}"} for i, k in enumerate(tuples)}},
+                                {"graph_mail": tuples})
+                self.assertEqual(self.state.open_count(), 0)
+                self.assertEqual(self.state.pending_files({}, {}), n)
+                seen, cycles, batch = [], 0, 4
+                while self.state.queued():
+                    report: dict = {}
+                    taken = delta.take_held(self.state, {"PLX_DELTA_HELD_BATCH": str(batch)},
+                                            report)
+                    got = taken.get("graph_mail", [])
+                    self.assertLessEqual(self.state.open_count(), batch)
+                    self.assertEqual(len(got), min(batch, n - len(seen)))
+                    seen.extend(got)
+                    self.state.close_over({}, {"graph_mail": got})
+                    self.state.hold({}, {"graph_mail": got})   # files read: none held
+                    cycles += 1
+                self.assertEqual(sorted(seen), sorted(tuples))          # none lost
+                self.assertEqual(len(seen), len(set(seen)))              # none twice
+                self.assertEqual(cycles, -(-n // batch))
+                self.assertEqual(self.state.pending_files({}, {}), 0)
+                self.assertEqual(self.state.changed("graph_mail", done_only=True),
+                                 sorted(tuples, key=delta._order))
+
+    def test_a_record_held_again_goes_to_the_back_and_a_change_reopens_it(self):
+        keys = [("inbox", "a"), ("inbox", "b"), ("inbox", "c")]
+        self.state.add("graph_mail", keys, {k: "v1" for k in keys})
+        self.state.close_over({}, {"graph_mail": keys})
+        self.state.hold({"graph_mail": {k: {"f-" + k[1]} for k in keys}},
+                        {"graph_mail": keys})
+        time.sleep(0.002)
+        first = self.state.take(1)["graph_mail"]
+        self.assertEqual(first, [("inbox", "a")])
+        self.state.close_over({}, {"graph_mail": first})
+        self.state.hold({"graph_mail": {first[0]: {"f-a"}}}, {"graph_mail": first})
+        self.assertEqual(self.state.queued()["graph_mail"][-1], ("inbox", "a"))
+        # the same version found again leaves it queued; a new version reopens it
+        self.state.add("graph_mail", [("inbox", "b")], {("inbox", "b"): "v1"})
+        self.assertNotIn(("inbox", "b"), self.state.changed("graph_mail", open_only=True))
+        self.state.add("graph_mail", [("inbox", "b")], {("inbox", "b"): "v2"})
+        self.assertIn(("inbox", "b"), self.state.changed("graph_mail", open_only=True))
+        self.assertNotIn(("inbox", "b"), self.state.queued()["graph_mail"])
+        # a record changed again while its cycle ran is not queued: it stays open
+        self.state.hold({"graph_mail": {("inbox", "b"): {"f-b"}}}, {"graph_mail": []})
+        self.assertIn(("inbox", "b"), self.state.changed("graph_mail", open_only=True))
+
+    def test_the_batch_grows_when_every_file_was_read_and_shrinks_when_most_were_not(self):
+        report: dict = {}
+        taken = {"graph_mail": [("inbox", str(i)) for i in range(10)]}
+        delta.adapt_held_batch(self.state, {}, taken, {}, report)
+        self.assertEqual(self.state.get("held_batch"), 2 * delta.HELD_BATCH)
+        held = {"graph_mail": {("inbox", str(i)): {"f"} for i in range(8)}}
+        delta.adapt_held_batch(self.state, {}, taken, held, report)
+        self.assertEqual(self.state.get("held_batch"), delta.HELD_BATCH)
+        for _ in range(20):
+            delta.adapt_held_batch(self.state, {}, taken, held, report)
+        self.assertEqual(self.state.get("held_batch"), delta.HELD_BATCH_MIN)
+        # a fixed batch (or one that is no number: adaptive) is honoured
+        self.assertEqual(delta.held_batch(self.state, {"PLX_DELTA_HELD_BATCH": "7"}), (7, True))
+        self.assertEqual(delta.held_batch(self.state, {"PLX_DELTA_HELD_BATCH": "x"}),
+                         (delta.HELD_BATCH_MIN, False))
 
 
 class StateUpgradeTests(unittest.TestCase):

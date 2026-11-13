@@ -763,7 +763,9 @@ class WaitingOnYou(World):
         reply = next(a for a in good["autopilots"] if a["id"] == "reply_prep")
         for bad in ({"fallback": "yes"}, {"when": {"engaged_or_asks": True, "vip": True}},
                     {"when": {"quiet_sender": [3, 0.5]}},
-                    {"when": {"quiet_sender": [3, 0.5, ["partner"]]}}):
+                    {"when": {"quiet_sender": [3, 0.5, ["partner"]]}},
+                    {"when": {"after_own_post": [60]}},
+                    {"when": {"after_own_post": [60, 0.5]}}):
             with self.subTest(bad=bad):
                 broken = json.loads(json.dumps(good))
                 entry = next(a for a in broken["autopilots"] if a["id"] == "reply_prep")
@@ -1157,19 +1159,30 @@ class TeamsChats(World):
 
 
 class GroupChats(TeamsChats):
-    """A group chat's message is an event only for each member it @mentions."""
+    """A group chat's message is addressed only to each member it @mentions; the other
+    members get it as not addressed to them, which only a turn rule answers."""
 
     THIRD = "00000000-0000-4000-8000-0000000000a3"
 
-    def msg(self, chat: str, sender: str, hour: int, text: str, mention: str | None = None
-            ) -> str:
-        oid = self.chat(chat, sender, hour, text)
+    def msg(self, chat: str, sender: str, hour: int, text: str, mention: str | None = None,
+            day: int = 0) -> str:
+        oid = self.chat(chat, sender, hour, text, day=day)
         if mention:
             self.w.rows["object_values"].append({
                 **self.w.rows["object_values"][-1], "property": "mentions",
                 "value": json.dumps([{"id": 0, "target_id": mention, "kind": "user",
                                       "display_name": "Synth", "text": "Synth"}])})
         return oid
+
+    def unaddressed(self) -> int:
+        q = ap.Queue(next((self.dir / "out").glob("person_*")) / ap.QUEUE_FILE)
+        try:
+            return q.conn.execute("SELECT COUNT(*) FROM events WHERE json_extract(body, "
+                                  "'$.unaddressed') AND NOT json_extract(body, '$.to_me') "
+                                  "AND json_extract(body, '$.mailbox') = ?", (OURS_OID,)
+                                  ).fetchone()[0]
+        finally:
+            q.close()
 
     def test_cardinality_only_a_mention_of_the_owner_prepares_in_a_group(self):
         for n in (1, 10, 60):
@@ -1188,10 +1201,54 @@ class GroupChats(TeamsChats):
                 self.store()
                 out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
                 self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": 1})
-                self.assertEqual(out["skipped"]["teams_group_not_mentioned"], n + 1)
+                # the rest reach the owner as not addressed to them (no turn: their own
+                # message was the day before): no item
+                self.assertEqual(self.unaddressed(), n + 1)
                 judged = sum(v["judged"] for v in out["workflows"].values())
                 matched = sum(v["matched"] for v in out["workflows"].values())
                 self.assertEqual((judged, matched), (1, 1))
+                self.assertNotIn("g2", (self.dir / "out" / ap.GATE_FILE).read_text())
+
+    def test_cardinality_the_first_answer_to_the_owners_own_message_is_their_turn(self):
+        """``teams_group_turn``: in a group chat the owner keeps writing in (10 messages in
+        14 days), the first message after their own one within the hour is theirs to answer
+        though nobody @mentions them: one item for the burst, scored as ``teams_group``.
+        Not: an hour after their message, a chat they wrote in nine times, a chat holding an
+        excluded person; a message not addressed to them never counts in a sender's
+        answered share, and no other autopilot answers it."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                self.setUp()
+                guard = people()
+                for chat in ("g1", "g3"):
+                    guard.chat_members[chat] = [OURS_OID, APPROVER_OID, self.THIRD]
+                guard.chat_members["g2"] = [OURS_OID, APPROVER_OID, EXCLUDED_OID]
+                for d in range(-10, 0):
+                    for chat in ("g1", "g2"):
+                        self.msg(chat, OURS_OID, 9, f"Run sheet {d} is up", day=d)
+                    if d > -9:
+                        self.msg("g3", OURS_OID, 9, f"Run sheet {d} is up", day=d)
+                for chat in ("g1", "g2", "g3"):
+                    self.msg(chat, OURS_OID, 10, "Line 2 is down until noon.")
+                    for i in range(n):
+                        self.msg(chat, APPROVER_OID, 10 + (20 + i % 30) / 60, f"Noted {i}, why?")
+                self.msg("g1", OURS_OID, 11, "Bearing failed, swapped now.")
+                self.msg("g1", self.THIRD, 13, "Can someone check line 4?")   # 2 h on: no
+                self.store()
+                out = Replay.replay(self, role=f"person:{OURS}", guard=guard)
+                self.assertEqual(out["prepared_by_autopilot"], {"teams_group_turn": 1})
+                self.assertEqual(out["skipped"].get("teams_group_turn:thread_item_open", 0),
+                                 n - 1)
+                flow = out["workflows"]["teams_group"]
+                self.assertEqual((flow["judged"], flow["matched"]), (1, 1))
+                q = ap.Queue(next((self.dir / "out").glob("person_*")) / ap.QUEUE_FILE)
+                self.addCleanup(q.close)
+                self.assertEqual(q.conn.execute("SELECT COUNT(*) FROM inbound").fetchone()[0], 0)
+                # a member who never writes in a chat never gets its messages as events
+                self.assertEqual(q.conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE json_extract(body, '$.mailbox') = ? "
+                    "AND json_extract(body, '$.audience') = 'teams:chat:g3'",
+                    (self.THIRD,)).fetchone()[0], 0)
                 self.assertNotIn("g2", (self.dir / "out" / ap.GATE_FILE).read_text())
 
     def test_a_third_member_writing_in_between_ends_the_reply(self):
@@ -1238,13 +1295,14 @@ class CaptureShapeChats(TeamsChats):
                 self.chat(self.PAIR, OURS_OID, 15, "Yes, all passed.")
                 self.chat(self.BARRED, EXCLUDED_OID, 10, "Can you call me?")
                 self.chat(self.UNKNOWN, APPROVER_OID, 10, "Are you in today?")
-                # a group whose members appear by id and by address: still mention-only
+                # a group whose members appear by id and by address: a group, not a
+                # one-to-one chat (the owner never writes there: not even unaddressed)
                 self.chat("g9", APPROVER_OID, 11, "Status of the run?")
                 self.store()
                 out = Replay.replay(self, role=f"person:{OURS}", guard=self.guard())
                 self.assertEqual(out["prepared_by_autopilot"], {"teams_reply": 1})
                 self.assertEqual(out["skipped"].get("teams_reply:thread_item_open", 0), n - 1)
-                self.assertEqual(out["skipped"]["teams_group_not_mentioned"], 1)
+                self.assertEqual(GroupChats.unaddressed(self), 0)
                 judged = sum(v["judged"] for v in out["workflows"].values())
                 matched = sum(v["matched"] for v in out["workflows"].values())
                 self.assertEqual((judged, matched), (1, 1))

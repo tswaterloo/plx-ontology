@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from concurrent.futures import Future
 import io
 import json
 import os
@@ -34,6 +35,10 @@ from operator_api.workspace import case_console
 from operator_api.workspace import object_workspace as objects
 from operator_api.tests import case_fixtures
 from operator_api.tests.test_objective_box import _on_record
+
+from operating.pg import scratch_db
+
+scratch_db.use_test_cluster()   # the test cluster when one runs (bare runs too)
 
 OPS = [case_fixtures.OPERATIONS, case_fixtures.PURCHASING, case_fixtures.QUALITY]
 
@@ -504,6 +509,91 @@ class FixtureBackend(unittest.TestCase):
         out_home = self.outsider.client.get("/api/home").json()["needs_attention"]
         self.assertEqual(out_home["late_pos"], [])
 
+    def test_card_labels_read_in_one_batch_say_what_each_record_alone_says(self):
+        """Speed 11-12: Home, the late list and the briefing labelled each record with one
+        whole ``plx.object`` (links, twins, attestations) per label, 20-500 per read. They
+        are now read in one batch, whose label and supplier are exactly the record's own
+        read, for every reader: a reader who may not read a record gets nothing from the
+        batch (the record is read alone and says nothing, as before), and a supplier name the
+        reader may not read sends the record to its own read."""
+        from operator_api.page_parts import shown_objects
+        backend = self.ops.app.state.backend
+        page = self.ops.client.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}")
+        records = sorted(shown_objects(m.ObjectPage.model_validate(page.json())))
+        records += [p["object_id"] for p in self.ops.client.get(
+            "/api/late", params={"offset": 0, "limit": 100}).json()["items"]]
+        records = sorted(set(records))
+        self.assertGreater(len(records), 2)
+
+        readers = {}
+        for who, served in (("ops", self.ops), ("outsider", self.outsider)):
+            serving = served.app.state.backend._serving
+            with mock.patch.object(served.app.state.backend, "_serving",
+                                   lambda w, *a, **k: readers.setdefault(who, w) and
+                                   serving(w, *a, **k)):
+                served.client.get("/api/late")
+
+        def alone(view, oid, supplier):
+            try:
+                return be.card_words(view, oid, supplier=supplier)
+            except Exception as error:  # noqa: BLE001 - refused alone: refused batched
+                return type(error).__name__
+        for who in ("ops", "outsider"):
+            backend = (self.ops if who == "ops" else self.outsider).app.state.backend
+            for n in (1, 10, 60):
+                ids = (records * 60)[:n]
+                for supplier in (True, False):
+                    def job(view):
+                        calls = []
+                        real = view._call
+                        with view._request():
+                            each = {oid: alone(view, oid, supplier) for oid in ids}
+                            batch = view.access.object_words(ids, ("vendor_name",))
+                            view._call = lambda name, args: calls.append(name) or real(
+                                name, args)
+                            try:
+                                got = be.cards_words(view, ids, supplier=supplier)
+                            except Exception as error:  # noqa: BLE001
+                                got = type(error).__name__
+                            finally:
+                                view._call = real
+                        return each, batch, got, calls
+                    with self.subTest(who=who, n=n, supplier=supplier):
+                        each, batch, got, calls = backend.reads.run(readers[who], job)
+                        if who == "outsider":
+                            self.assertEqual(batch, {})      # the batch reveals nothing
+                            self.assertEqual(set(each.values()), {("", None)})
+                            self.assertEqual(got, each)      # read alone, refused alone
+                            continue
+                        self.assertEqual(set(batch), set(ids))
+                        self.assertEqual(got, each)          # word for word, in order
+                        self.assertEqual(list(got), list(dict.fromkeys(ids)))
+                        # no whole record read per label (a lone record reads alone)
+                        if len(set(ids)) > 1:
+                            self.assertNotIn("plx.object", calls)
+        # a supplier name withheld from the reader, or a batch that fails: read alone
+        alone_read = []
+
+        def call(name, args):
+            alone_read.append(args.get("object_id", args.get("from")))
+            return {"object": {"display": "whole"}, "values": []}
+        for answer in ({"a": {"display": "A", "values": {"vendor_name": ["V"]},
+                              "withheld": set()},
+                        "b": {"display": "B", "values": {}, "withheld": {"vendor_name"}}},
+                       OSError("store")):
+            def words(ids, props, answer=answer):
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+            alone_read.clear()
+            view = SimpleNamespace(_call=call, access=SimpleNamespace(object_words=words))
+            got = be.cards_words(view, ["a", "b"], supplier=True)
+            if isinstance(answer, Exception):
+                self.assertEqual(got, {"a": ("whole", None), "b": ("whole", None)})
+            else:
+                self.assertEqual(got, {"a": ("A", "V"), "b": ("whole", None)})
+                self.assertEqual(alone_read[0], "b")      # b's own read, never a's
+
     def test_late_pos_on_home_are_longest_late_first(self):
         home = self.ops.client.get("/api/home").json()
         m.Home.model_validate(home)
@@ -767,6 +857,48 @@ class SuggestPermissionFilter(unittest.TestCase):
         self.grant()
         self.assertEqual(self.backend._pg_suggest(reader, "maple leaf", 8), [])
 
+    def test_an_item_gated_name_is_suggested_only_when_the_reader_opens_its_record(self):
+        """IN-13: a chat topic, file name or mail participant is in a unit the reader may
+        be granted while the item itself (a chat's members, a file's ACL, a message's
+        mailbox scope) is closed to them: it is suggested only when the reader's own read
+        (``visible_objects``) opens its record."""
+        import contextlib
+        import psycopg
+        chat = 'TeamsChat:gen.teams.chats:{"chat_id":"19:abc@thread.v2"}'
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
+            conn.execute("INSERT INTO search.entities (entity_id, object_id, type, name, "
+                         "normalized, audience_key, markings) VALUES (%s,%s,%s,%s,%s,%s,"
+                         "'{}')", ("e-chat", chat, "chat", "Maple Board Offsite",
+                                   be.normalize("Maple Board Offsite"), "teams:chat:19:abc"))
+        reader = type("R", (), {"key": "staff:x"})()
+        self.grant("api:public.app_supplier", "teams:chat:19:abc")
+        asked = []
+
+        def run(opens):
+            def call(_reader, job, priority=0, deadline=None):
+                view = SimpleNamespace(_request=contextlib.nullcontext, access=SimpleNamespace(
+                    visible_objects=lambda ids: asked.append(list(ids)) or opens(ids)))
+                done: Future = Future()
+                try:
+                    done.set_result(job(view))
+                except Exception as exc:  # noqa: BLE001 - the job's own failure
+                    done.set_exception(exc)
+                return done
+            return mock.patch.object(self.backend.reads, "submit", side_effect=call)
+
+        def broken(ids):
+            raise OSError("down")
+        for label, opens in (("refused", lambda ids: frozenset()), ("failed", broken),
+                             ("not a set", lambda ids: list(ids))):
+            with run(opens):
+                names = [s.label for s in self.backend._pg_suggest(reader, "maple", 8)]
+            self.assertNotIn("Maple Board Offsite", names, label)
+            self.assertIn("Maple Leaf Soapworks", names, label)   # an ungated row stays
+        with run(lambda ids: frozenset(ids)):
+            names = [s.label for s in self.backend._pg_suggest(reader, "maple", 8)]
+        self.assertIn("Maple Board Offsite", names)
+        self.assertTrue(asked and all(ids == [chat] for ids in asked), asked)
+
 
 class UnderstandingReaderPolicyTests(unittest.TestCase):
     """UNDERSTAND-001: the optional understanding (PLX_APP_UNDERSTANDING=1) runs under
@@ -778,7 +910,8 @@ class UnderstandingReaderPolicyTests(unittest.TestCase):
         gated = SimpleNamespace(name="gated")
         return SimpleNamespace(
             actor=SimpleNamespace(name="reader"),
-            access=SimpleNamespace(reader_policy=lambda: (gated, policy)),
+            access=SimpleNamespace(reader_policy=lambda: (gated, policy),
+                                   visible_objects=lambda ids: frozenset()),
             _call=lambda tool, arguments: {"error": "not_found"}
             if arguments.get("object_id") in denied else {"object_id": arguments["object_id"]}
         ), gated
@@ -808,6 +941,8 @@ class UnderstandingReaderPolicyTests(unittest.TestCase):
         got = self.decide(recording, view, found)
         self.assertIs(calls[0]["policy"], policy)
         self.assertIs(calls[0]["actor"], gated)
+        # IN-13: item-gated names are checked by this reader's own read
+        self.assertIs(calls[0]["item_check"], view.access.visible_objects)
         resolved = [e.resolved.object_id for e in got.entities if e.resolved is not None]
         self.assertEqual(resolved, ["PurchaseOrder:12345"])   # found kept, denied dropped
         self.assertNotIn("PurchaseOrder:99999", json.dumps(got.model_dump()))
@@ -1960,8 +2095,22 @@ class RecordTruthTests(unittest.TestCase):
         with mock.patch.object(be, "customer_names",
                                lambda view, c: {"synthetic pet"}):
             self.assertIsNone(be.bc_customer_of(view, page))   # no BC customer: no margin
-            named[:] = [bc1, bc2]   # two BC cards of the exact name: read together
-            self.assertEqual(be.bc_customer_of(view, page), (bc1, [bc2]))
+            named[:] = [bc1, bc2]
+            # API-018: two BC cards of the exact name that no identity link joins are
+            # never merged: no margin, each card a choice
+            from operating import why_trail
+            for linked in (lambda call, ids: False,
+                           mock.Mock(side_effect=RuntimeError("link read failed"))):
+                with mock.patch.object(why_trail, "same_records", linked):
+                    apart: list = []
+                    self.assertIsNone(be.bc_customer_of(view, page, apart))
+                    self.assertEqual([c["object_id"] for c in apart], [bc1, bc2])
+                    self.assertIsNone(be.page_profitability(None, view, page, apart=[]))
+            # linked as one record: read together
+            with mock.patch.object(why_trail, "same_records", lambda call, ids: True):
+                apart = []
+                self.assertEqual(be.bc_customer_of(view, page, apart), (bc1, [bc2]))
+                self.assertEqual(apart, [])
             twins[(portal, "reverse")] = [bc2]   # a verified twin wins over the name
             self.assertEqual(be.bc_customer_of(view, page), (bc2, []))
         with mock.patch.object(be, "customer_names", lambda view, c: {"synthetic pets"}):

@@ -211,6 +211,7 @@ def merged(page: m.ObjectPage, section: m.ObjectSection) -> m.ObjectPage:
         update["landed_cost"] = section.landed_cost
     elif section.section == "margin":
         update["profitability"] = section.profitability
+        update["profitability_choices"] = section.profitability_choices
     elif section.section == "knows":
         update["knows"] = section.knows
     elif section.section == "trail":

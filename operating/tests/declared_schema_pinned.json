@@ -757,6 +757,20 @@
     "CREATE TABLE confirmation_form (\n                token_sha256 TEXT PRIMARY KEY, purpose TEXT NOT NULL, tenant TEXT NOT NULL,\n                subject TEXT NOT NULL, requested_by TEXT NOT NULL, payload_json TEXT NOT NULL,\n                created_at TEXT NOT NULL, expires_at TEXT NOT NULL, state TEXT NOT NULL,\n                outcome TEXT)"
    ]
   ],
+  "delta_held": [
+   [
+    "index",
+    "files_digest",
+    "files",
+    "CREATE INDEX files_digest ON files (digest)"
+   ],
+   [
+    "table",
+    "files",
+    "files",
+    "CREATE TABLE files (source TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY (source, key, digest))"
+   ]
+  ],
   "delta_state": [
    [
     "table",
@@ -1290,6 +1304,18 @@
    ]
   ],
   "work_log": [
+   [
+    "index",
+    "event_awaiting",
+    "event",
+    "CREATE INDEX event_awaiting ON event (kind, at, awaiting)\n  WHERE awaiting IS NOT NULL"
+   ],
+   [
+    "index",
+    "event_light",
+    "event",
+    "CREATE INDEX event_light ON event (reader, seq, thread, kind, at, people)"
+   ],
    [
     "index",
     "event_reader",

@@ -220,9 +220,12 @@ class Incremental(unittest.TestCase):
 
         def change(w):
             # a dozen orders on one day: that day becomes the Portal's bulk default date,
-            # which moves every order dated that day, read or not
+            # which moves every order dated that day, read or not (a bulk day is a default
+            # only when a system computed it from each order's own day, BIZ-007: here the
+            # order day + 1)
             for _ in range(12):
-                w.obj("PurchaseOrder", {"status": "Pending", "expected_date": "2026-10-10"})
+                w.obj("PurchaseOrder", {"status": "Pending", "expected_date": "2026-10-10",
+                                        "order_date": "2026-10-09"})
         summary = self.compare(w, change)
         self.assertIn("late_or_unconfirmed_po", summary["whole"]["rules"])
 
@@ -342,6 +345,284 @@ class LayerChanges(unittest.TestCase):
         blind = pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
                             wait=True)
         self.assertEqual((blind["reader"], blind["candidates"]), ("generation_only", 0))
+
+    def test_a_postgres_reader_takes_applied_layers_in_under_a_moving_stamp(self):
+        """Postgres says its content digest with its data version (``<digest>@<n>``,
+        moving with every applied layer): the pass still knows the generation, takes in
+        the layers Postgres applied (marked seen, which the delta's release rule reads),
+        waits for one not applied yet, and keeps its fingerprints across stamps. Before
+        11-12 it took in no layer at all, holding every big layer on disk."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        pi.INPUTS.clear()
+        self.addCleanup(pi.INPUTS.clear)
+        w, ids = world()
+        store = root / "store.sqlite"
+        w.build(store)
+        pe.run(store, pe.inbox_path(store), AS_OF, clock=lambda: MOMENT, people=people())
+        with sqlite3.connect(store) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
+        delta = root / "delta"
+        delta.mkdir()
+        layers: list[dict] = []
+
+        def publish(name: str, owned) -> None:
+            layer = delta / name
+            with sqlite3.connect(layer) as conn:
+                conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+                conn.executemany("INSERT INTO delta_owned VALUES (?)", [(o,) for o in owned])
+            layers.insert(0, {"store": str(layer), "owned": len(owned)})
+            (delta / "CURRENT.json").write_text(json.dumps({
+                "format": "plx-delta/v1", "base_digest": digest, "store": layers[0]["store"],
+                "layers": layers}))
+        version = [100]
+        applied: set[str] = set()
+        real_meta = pe._Store.meta
+
+        def stamped(st, key):
+            value = real_meta(st, key)
+            return f"{value}@{version[0]}" if key == "content_digest" else value
+        for target, new in ((pe._Store, "meta"), (pi, "_applied")):
+            patch = mock.patch.object(target, new, stamped if new == "meta"
+                                      else (lambda _store: set(applied)))
+            patch.start()
+            self.addCleanup(patch.stop)
+        # Postgres's links: the store's own (it stands for Postgres here; never the
+        # production database)
+        read_pg = []
+        patch = mock.patch.object(pi, "_pg_neighbors", lambda ids, out: read_pg.append(
+            len(ids)) or pi._file_neighbors(store, ids, out))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+        def run():
+            return pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
+                               wait=True)
+        publish("delta-1.sqlite", [ids["unconfirmed"], ids["expired"]])
+        publish("delta-2.sqlite", [ids["overdue"]])
+        applied.add("delta-1.sqlite")                     # delta-2 not in Postgres yet
+        first = run()
+        self.assertEqual((first["reader"], first["changed"]), ("postgres", 2), first)
+        self.assertEqual(read_pg, [2])   # the earlier links were asked of Postgres
+        # what the delta's release rule reads (``_proactive_taken``): delta-1 in, delta-2 not
+        with sqlite3.connect(pi.changes_path(pe.inbox_path(store))) as conn:
+            taken = {r[0] for r in conn.execute("SELECT layer FROM layers")}
+        self.assertEqual({Path(t).name for t in taken}, {"delta-1.sqlite"})
+        # Postgres applies delta-2: its data version moves; the generation is the same
+        version[0] = 101
+        applied.add("delta-2.sqlite")
+        second = run()
+        self.assertEqual((second["candidates"], second["changed"]), (1, 1), second)
+        version[0] = 102
+        third = run()
+        self.assertEqual(third["candidates"], 0, third)   # both taken in, nothing new
+        with sqlite3.connect(pi.changes_path(pe.inbox_path(store))) as conn:
+            taken = {Path(r[0]).name for r in conn.execute("SELECT layer FROM layers")}
+            prints = conn.execute("SELECT count(*) FROM prints").fetchone()[0]
+        self.assertEqual(taken, {"delta-1.sqlite", "delta-2.sqlite"})
+        self.assertEqual(prints, 3)                       # kept across the stamps
+
+    def test_layers_owning_more_than_a_scope_reads_are_judged_whole_and_taken_in(self):
+        """A catch-up layer owns more records than any scope may read (``read_cap``):
+        the pass fingerprints and plans none of them (that held GBs past the unit's
+        memory bound and never finished, retried every few minutes), judges the rules
+        whole, tells the watchlists every owned record, and marks the layer taken in."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        pi.INPUTS.clear()
+        self.addCleanup(pi.INPUTS.clear)
+        w, ids = world()
+        store = root / "store.sqlite"
+        w.build(store)
+        pe.run(store, pe.inbox_path(store), AS_OF, clock=lambda: MOMENT, people=people())
+        with sqlite3.connect(store) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
+        delta = root / "delta"
+        delta.mkdir()
+        owned = [ids["unconfirmed"], ids["expired"], ids["overdue"]]
+        layer = delta / "delta-big.sqlite"
+        with sqlite3.connect(layer) as conn:
+            conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+            conn.executemany("INSERT INTO delta_owned VALUES (?)", [(o,) for o in owned])
+        (delta / "CURRENT.json").write_text(json.dumps({
+            "format": "plx-delta/v1", "base_digest": digest, "store": str(layer),
+            "layers": [{"store": str(layer), "owned": len(owned)}]}))
+        watched = []
+        with mock.patch.object(pi, "fingerprints",
+                               side_effect=AssertionError("fingerprinted a flood")), \
+                mock.patch.object(pi, "_watch", lambda _st, _store, moved, _clock:
+                                  watched.append(set(moved)) or {"state": "idle"}):
+            flood = pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
+                                wait=True, holds_layers=True, read_cap=2)
+        self.assertEqual((flood["state"], flood["flooded"], flood["candidates"]),
+                         ("ran", 3, 0), flood)
+        self.assertEqual(watched, [set(owned)])
+        judged = set((flood.get("ran") or flood).get("whole", {}).get("rules") or [])
+        incremental = {r for r in pi.STORE_ONLY if r in pi.INPUTS
+                       and r not in pi.NOT_INCREMENTAL}
+        self.assertTrue(incremental)
+        self.assertLessEqual(incremental, judged, flood)
+        with sqlite3.connect(pi.changes_path(pe.inbox_path(store))) as conn:
+            taken = {Path(r[0]).name for r in conn.execute("SELECT layer FROM layers")}
+        self.assertEqual(taken, {"delta-big.sqlite"})
+        after = pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
+                            wait=True, holds_layers=True, read_cap=2)
+        self.assertEqual((after["candidates"], after.get("flooded")), (0, None), after)
+
+    def test_the_generation_digest_of_a_stamp(self):
+        self.assertEqual(pi.generation_digest("sha256:ab@1794486485713"), "sha256:ab")
+        self.assertEqual(pi.generation_digest("sha256:ab"), "sha256:ab")
+        for nothing in (None, "", "@12", 7):
+            self.assertIsNone(pi.generation_digest(nothing))
+
+
+def _links_in(path: Path) -> dict[str, set[str]]:
+    """Every current link of the store file at ``path``, by both ends."""
+    out: dict[str, set[str]] = {}
+    with sqlite3.connect(path) as conn:
+        for a, b in conn.execute("SELECT from_object, to_object FROM link_rows "
+                                 "WHERE superseded_at IS NULL"):
+            out.setdefault(a, set()).add(b)
+            out.setdefault(b, set()).add(a)
+    return out
+
+
+class BaseNeighbours(unittest.TestCase):
+    """The changed records' earlier links (``_base_neighbors``): read from Postgres when
+    the engine reads Postgres, with the SQLite generation file beside it while one is
+    served; an error, never an empty answer, when no store can be read (before 11-12 the
+    pass read the generation file in every mode and silently judged with no earlier
+    neighbours once the file was gone). Postgres here is a throwaway database
+    (``pg_testdb``), never the production one."""
+
+    @classmethod
+    def setUpClass(cls):
+        from operating.tests import pg_testdb
+        from operating.tests.test_pg_ontology_delta import MIGRATIONS
+        import psycopg
+        cls.name, cls.dsn = pg_testdb.create_db()
+        cls.addClassCleanup(pg_testdb.drop_db, cls.name)
+        with psycopg.connect(cls.dsn, autocommit=True) as pg:
+            for migration in MIGRATIONS:
+                pg.execute(migration.read_text(encoding="utf-8"))
+        tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(tmp.cleanup)
+        cls.root = Path(tmp.name)
+        w, _ids = world()
+        (cls.root / "gen").mkdir()
+        cls.store = w.build(cls.root / "gen" / "store.sqlite")
+        from operating.pg import ontology_load
+        import io
+        ontology_load.load(cls.store, cls.dsn, workers=1, replace=True, log=io.StringIO())
+        cls.links = _links_in(cls.store)
+        cls.ids = sorted(cls.links)
+
+    def setUp(self):
+        patch = mock.patch.dict("os.environ", {"PLX_PG_DSN": self.dsn})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def pg(self):
+        import psycopg
+        return psycopg.connect(self.dsn, autocommit=True)
+
+    def test_postgres_alone_when_the_generation_file_is_gone(self):
+        self.assertGreater(len(self.ids), 10)
+        gone = self.root / "retired" / "store.sqlite"
+        for n in (1, 10, len(self.ids)):
+            with self.subTest(records=n):
+                ids = self.ids[:n]
+                found = pi._base_neighbors(gone, ids, postgres=True)
+                self.assertEqual(found, {i: self.links[i] for i in ids})
+
+    def test_postgres_and_the_served_generation_file_together(self):
+        """A layer applied in Postgres removed a link: Postgres no longer has it, the
+        generation file does, and both are read (a superset, judged never less)."""
+        with self.pg() as pg:
+            a, b = pg.execute("SELECT from_object, to_object FROM ontology.link_rows "
+                              "ORDER BY link_id LIMIT 1").fetchone()
+            pg.execute("CREATE TABLE ontology.kept AS SELECT * FROM ontology.link_rows")
+            pg.execute("DELETE FROM ontology.link_rows WHERE from_object = %s AND "
+                       "to_object = %s", (a, b))
+            pg.execute("INSERT INTO ontology.link_rows (link_id, link_type, from_object, "
+                       "to_object, tier, binding_kind, why_not, markings, recorded_at, "
+                       "reason, evidence_handles) VALUES ('new-link', 'x', %s, 'zz-new', "
+                       "'verified', 'fixture', '', '[]', '2026-11-12', '', '[]')", (a,))
+        try:
+            gone = self.root / "retired" / "store.sqlite"
+            only = pi._base_neighbors(gone, [a], postgres=True)
+            self.assertNotIn(b, only.get(a, set()))
+            self.assertIn("zz-new", only[a])
+            both = pi._base_neighbors(self.store, [a], postgres=True)
+            self.assertIn(b, both[a])
+            self.assertIn("zz-new", both[a])
+            self.assertEqual(pi._base_neighbors(self.store, [a]), {a: self.links[a]})
+        finally:
+            with self.pg() as pg:
+                pg.execute("TRUNCATE ontology.link_rows")
+                pg.execute("INSERT INTO ontology.link_rows SELECT * FROM ontology.kept")
+                pg.execute("DROP TABLE ontology.kept")
+
+    def test_no_readable_store_is_an_error_never_nothing(self):
+        gone = self.root / "retired" / "store.sqlite"
+        with self.assertRaises(pi.BaseUnreadable):     # SQLite read, file gone
+            pi._base_neighbors(gone, self.ids[:1])
+        with self.assertRaises(pi.BaseUnreadable):
+            pi._base_neighbors(None, self.ids[:1])
+        bad = self.root / "bad.sqlite"
+        bad.write_bytes(b"not a database" * 100)
+        with self.assertRaises(pi.BaseUnreadable):
+            pi._base_neighbors(bad, self.ids[:1])
+        # Postgres read, unreachable: the file beside it is not taken for Postgres
+        with mock.patch.dict("os.environ", {"PLX_PG_DSN": "postgresql://127.0.0.1:1/none"}):
+            for base in (gone, self.store):
+                with self.subTest(base=base), self.assertRaises(pi.BaseUnreadable):
+                    pi._base_neighbors(base, self.ids[:1], postgres=True)
+        # Postgres reachable but its links not loaded (a load in progress)
+        with self.pg() as pg:
+            pg.execute("UPDATE ontology.load_state SET name = 'held:link_rows' "
+                       "WHERE name = 'table:link_rows'")
+        try:
+            with self.assertRaisesRegex(pi.BaseUnreadable, "not_loaded"):
+                pi._base_neighbors(self.store, self.ids[:1], postgres=True)
+        finally:
+            with self.pg() as pg:
+                pg.execute("UPDATE ontology.load_state SET name = 'table:link_rows' "
+                           "WHERE name = 'held:link_rows'")
+        self.assertEqual(pi._base_neighbors(gone, [], postgres=True), {})  # nothing asked
+
+    def test_a_pass_whose_earlier_links_cannot_be_read_fails_and_takes_no_layer_in(self):
+        pi.INPUTS.clear()
+        self.addCleanup(pi.INPUTS.clear)
+        w, ids = world()
+        store = self.root / "pass" / "store.sqlite"
+        store.parent.mkdir(exist_ok=True)
+        w.build(store)
+        pe.run(store, pe.inbox_path(store), AS_OF, clock=lambda: MOMENT, people=people())
+        with sqlite3.connect(store) as conn:
+            digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                  "'content_digest'").fetchone()[0]
+        layer = store.parent / "delta-1.sqlite"
+        with sqlite3.connect(layer) as conn:
+            conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+            conn.execute("INSERT INTO delta_owned VALUES (?)", (ids["unconfirmed"],))
+        from operating import delta_overlay
+        pointer = delta_overlay.pointer_path(store)
+        pointer.parent.mkdir(parents=True, exist_ok=True)
+        pointer.write_text(json.dumps({
+            "format": "plx-delta/v1", "base_digest": digest, "store": str(layer),
+            "layers": [{"store": str(layer), "owned": 1}]}))
+        with mock.patch.object(pi, "_applied", lambda _store: {"delta-1.sqlite"}), \
+                mock.patch.dict("os.environ", {"PLX_PG_DSN": "postgresql://127.0.0.1:1/none"}):
+            with self.assertRaises(pi.BaseUnreadable):
+                pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
+                            wait=True)
+        with sqlite3.connect(pi.changes_path(pe.inbox_path(store))) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM layers").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

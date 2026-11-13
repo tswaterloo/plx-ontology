@@ -151,6 +151,20 @@ def _months_back(day: date, months: int) -> date:
     return date(year, month, min(day.day, last))
 
 
+def rolling_start(today: date, n: int, unit: str) -> date:
+    """The first day of the rolling ``last N <unit>`` ending with ``today``, today counted:
+    N days (7N for weeks; the N months, 12N for years, to the same day). The one rule
+    for every grammar that reads a rolling window (``window``,
+    ``query_understanding.parse_time_frame``), BIZ-009."""
+    if unit.startswith("d"):
+        return today - timedelta(days=n - 1)
+    if unit.startswith("w"):
+        return today - timedelta(days=7 * n - 1)
+    if unit.startswith("y"):
+        return _months_back(today, 12 * n) + timedelta(days=1)
+    return _months_back(today, n) + timedelta(days=1)
+
+
 def _period_start(today: date, period: str) -> date:
     if period == "week":
         return today - timedelta(days=today.weekday())
@@ -252,12 +266,7 @@ def _window(folded: str, now: Optional[datetime] = None) -> Optional[Window]:
         n, unit = int(m.group(1)), m.group(2)
         if n < 1:
             return None
-        if unit.startswith("d"):
-            start = today - timedelta(days=n - 1)
-        elif unit.startswith("w"):
-            start = today - timedelta(days=7 * n - 1)
-        else:
-            start = _months_back(today, n) + timedelta(days=1)
+        start = rolling_start(today, n, unit)
         end = today
         said_as = ""
     elif kind == "to_date":

@@ -103,6 +103,71 @@ class StoreTests(unittest.TestCase):
         for lineage in LINEAGES:
             self.assertTrue(capture_store.lineage_ok(lineage))
 
+    def test_a_historical_read_inside_an_absence_does_not_resurrect_the_record(self):
+        """INT-004: a record missing from the source, then seen again, is not held at a
+        moment inside that absence (closed stretch) or after it began (still missing)."""
+        self.capture(record(REC, 'W/"1"', "1"), record(REC2, 'W/"a"', "5"))
+        self.now = T0 + timedelta(hours=1)
+        self.capture(record(REC2, 'W/"a"', "5"))            # REC missing from here
+        self.now = T0 + timedelta(hours=3)
+        self.capture(record(REC, 'W/"1"', "1"), record(REC2, 'W/"a"', "5"))   # back
+
+        def held(at, **kw):
+            return [i["row"]["id"] for i in self.store.records(
+                SVC, "bc", self.unit, as_known_at=at, **kw)["items"]]
+        self.assertEqual(held("2026-10-01T08:30:00Z"), [REC, REC2])
+        self.assertEqual(held("2026-10-01T10:00:00Z"), [REC2])          # inside the gap
+        self.assertEqual(held("2026-10-01T10:00:00Z", include_missing=True), [REC, REC2])
+        self.assertEqual(held("2026-10-01T11:30:00Z"), [REC, REC2])
+        self.now = T0 + timedelta(hours=5)
+        self.capture(record(REC2, 'W/"a"', "5"))            # missing again, not back yet
+        self.assertEqual(held("2026-10-01T14:00:00Z"), [REC2])
+        self.assertEqual(held("2026-10-01T12:00:00Z"), [REC, REC2])
+
+    def test_a_restarted_traversal_counts_only_what_it_saw_after_the_restart(self):
+        """INT-006: a record seen before a restart and absent from the replacement
+        traversal is marked missing when the run completes; history is kept, and a failed
+        replacement marks nothing."""
+        self.capture(record(REC, 'W/"1"', "1"), record(REC2, 'W/"a"', "5"))
+        for state, expected in (("complete", 1), ("partial", 0)):
+            with self.subTest(state=state):
+                self.now += timedelta(hours=1)
+                run = self.store.begin_run("bc", self.unit, RES)["run_id"]
+                self.store.save_page(run, [record(REC, 'W/"1"', "1"),
+                                           record(REC2, 'W/"a"', "5")], "next")
+                self.now += timedelta(minutes=5)
+                self.store.restart_run(run, "cursor_expired")
+                self.now += timedelta(minutes=5)
+                self.store.save_page(run, [record(REC2, 'W/"a"', "5")], None)
+                done = self.store.finish_run(run, state)
+                self.assertEqual(done["marked_missing"], expected)
+                if state == "complete":
+                    self.assertEqual([i["row"]["id"] for i in self.store.records(
+                        SVC, "bc", self.unit)["items"]], [REC2])
+                    self.assertEqual(len(self.store.records(
+                        SVC, "bc", self.unit, include_missing=True)["items"]), 2)
+                    self.capture(record(REC, 'W/"1"', "1"), record(REC2, 'W/"a"', "5"))
+
+    def test_old_runs_keep_no_step_marks(self):
+        """INT-016: run marks are bounded per unit; the newest runs keep theirs."""
+        runs = []
+        for n in range(capture_store.KEEP_MARKED_RUNS + 4):
+            self.now = T0 + timedelta(hours=n)
+            run = self.store.begin_run("bc", self.unit, RES)["run_id"]
+            self.store.save_page(run, [record(REC, 'W/"1"', "1")], None,
+                                 marks=[f"step:{n}", "plan:x"])
+            self.store.finish_run(run, "complete")
+            runs.append(run)
+        kept = [r for r in runs if self.store.run_marks(r)]
+        self.assertEqual(kept, runs[-capture_store.KEEP_MARKED_RUNS:])
+        self.assertEqual(self.store.run_marks(runs[-1]), {f"step:{len(runs) - 1}", "plan:x"})
+        open_run = self.store.begin_run("bc", self.unit, RES)["run_id"]
+        self.store.save_page(open_run, [], "c", marks=["resume:me"])
+        other = bc_unit(COMPANY, "vendors")
+        self.store.finish_run(self.store.begin_run(
+            "bc", other, [f"bc:production:{COMPANY}:vendors"])["run_id"], "complete")
+        self.assertEqual(self.store.run_marks(open_run), {"resume:me"})
+
     def test_a_partial_run_marks_nothing_missing(self):
         self.capture(record(REC, 'W/"1"', "1"), record(REC2, 'W/"a"', "5"))
         self.assertEqual(self.capture(record(REC, 'W/"1"', "1"), state="partial")

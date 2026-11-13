@@ -60,6 +60,8 @@ judged (no recipient or reply structure to judge an answer by). Fixture runs are
 
 from __future__ import annotations
 
+from .mail_text import unquoted
+
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -195,7 +197,7 @@ def phrase(text: Any, families: Mapping[str, re.Pattern], *, requests: bool = Fa
     if not isinstance(text, str) or not text.strip():
         return None
     quoted = QuotedRanges(text)
-    own = "".join(ch for i, ch in enumerate(text) if not quoted.contains(i))
+    own = unquoted(quoted, text)
     for sentence in _SENTENCES.split(own):
         clause = _CONDITION_CLAUSE.search(sentence)
         if clause:
@@ -880,7 +882,7 @@ def _sage_chases(st: Any, as_of: date, people: Any, *, gap: Callable, cites: Cal
             continue
         thread = pt._Thread(pop, conversation, people, domains)
         if not thread.ok:
-            skipped["participants_not_cleared"] += 1
+            skipped[thread.why] += 1
             continue
         for oid in thread.messages:
             if oid not in wanted:

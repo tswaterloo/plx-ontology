@@ -24,7 +24,8 @@ from integrations.live_source_guard import LiveSourceAudience
 from integrations.tests import test_capture_teams as base
 from integrations.tests.test_capture_teams import (CAPTURE, COS, COS_ONLY, ENV, GENERAL,
                                                    MEMBER, OUTSIDER, PRIVATE, SECRET_TEXT,
-                                                   TEAM, U_COS, FakeTeamsGraph, j, scope)
+                                                   TEAM, U_COS, U_VINCE, VINCE, FakeTeamsGraph,
+                                                   j, scope)
 from ontology.types import Actor
 
 TEAM_MEMBERS = rf"^/v1\.0/teams/{TEAM}/members$"
@@ -159,6 +160,46 @@ class MembersFallbackTests(FallbackCase):
         self.assertEqual(len(self.visible(COS_ONLY, GENERAL)), 4)
         self.assert_sees_nothing(GROUP_READER, handles)
         self.assert_sees_nothing(OUTSIDER, handles)
+
+    def test_a_member_the_guard_cannot_decide_holds_that_channel_back_not_the_run(self):
+        """2026-11-12: a member address in the tenant's domain that no listed user holds
+        may be a distribution list; with no groups listing the guard cannot decide it and
+        raised, ending every Teams run. Now that channel alone is held back for the run
+        (no message read, a members_unread gap) and the rest is captured."""
+        self.graph.channel_members[PRIVATE] = [(U_VINCE, VINCE),
+                                               ("0d0d0d0d-0000-4000-8000-00000000dd01",
+                                                "maybe-a-list@petrasoap.com")]
+        by_kind = self.by_kind(self.capture.run(scope()))
+        private = by_kind["channel:private"]
+        self.assertEqual((private["status"], private["reasons"], private["acl_source"]),
+                         ("incomplete", ["members_unread"], None), private)
+        self.assertEqual(private["counts"]["messages_read"], 0)
+        self.assertEqual(by_kind["channel:standard"]["status"], "complete")
+        self.assertFalse(any("/channels/" + PRIVATE + "/messages" in unquote(u)
+                             for u in self.graph.gets()))
+
+    def test_a_sender_id_the_guard_cannot_decide_drops_that_message_not_the_run(self):
+        """2026-11-12 21:21 UTC, after the members fix: Graph gives some senders'
+        ``from.user.id`` without dashes (32 hex) and a few in other shapes. Put to the
+        guard as is, such an id raised in a capture thread and failed the whole run once
+        every other conversation was read. A dashless id is decided as the object id it
+        is (an excluded person's message is still never stored); any other id the guard
+        cannot decide drops that one message (counted, fail closed)."""
+        excluded = ENV["PLX_EXCLUDED_PEOPLE_OIDS"].split(",")[0]
+        senders = {"1003": U_VINCE.replace("-", "").upper(),   # a cleared user, dashless
+                   "1004": excluded.replace("-", ""),         # the excluded one, dashless
+                   "1005": "8:orgid:not-an-object-id"}        # no object id at all
+        for message_id, sender in senders.items():
+            self.graph.post_root(GENERAL, message_id, f"text {message_id}")
+            self.graph.roots[GENERAL][message_id]["from"]["user"]["id"] = sender
+        run = self.capture.run(scope())
+        general = self.by_kind(run)["channel:standard"]
+        self.assertEqual((general["status"], general["counts"]["people_dropped"]),
+                         ("complete", 2), general)
+        bodies = {r["row"]["body_text"] for r in self.visible(MEMBER, GENERAL)}
+        self.assertIn("text 1003", bodies)
+        self.assertFalse({"text 1004", "text 1005"} & bodies)
+        self.assertEqual(self.by_kind(run)["channel:private"]["status"], "complete")
 
 
 class FallbackSpecTests(unittest.TestCase):
