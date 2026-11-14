@@ -1,14 +1,13 @@
 # Context
 
-All the context about this product lives here, in one place. People and agents read it
-before changing anything. The more relevant context is here, the better the answers and
-the fewer tokens an agent spends rediscovering it.
+The product's working context lives here, in one place. Read it before changing anything
+a user sees.
 
 | File | What it is | Who updates it |
 |---|---|---|
+| [`OVERVIEW.md`](OVERVIEW.md) | A plain-language picture tour of a working day | Whoever changes a workflow |
 | [`HOW-TO-USE.md`](HOW-TO-USE.md) | Step-by-step guide, simple enough for anyone | Whoever changes what a user sees |
 | [`RELEASE-NOTES.md`](RELEASE-NOTES.md) | What changed in each release and what must keep working | Every release, before it ships |
-| [`FEEDBACK.md`](FEEDBACK.md) | All feedback, requests and scope asks, from every channel | Whoever receives feedback |
 
 ## Discipline
 
@@ -16,6 +15,6 @@ the fewer tokens an agent spends rediscovering it.
    earlier behaviour must still work. Before changing something, read the notes so a
    new version does not break the last one.
 2. **No user-facing change without updating the how-to guide** in the same change.
-3. **All feedback lands in `FEEDBACK.md`**, whatever the channel: the app, email,
-   meetings or in person. If it is not written down here, it does not exist.
+3. **Feedback is collected in the app** (Give feedback, and the Feedback page). Feedback
+   that arrives another way, by email, in a meeting or in person, is entered there too.
 4. Keep it short and current. Remove what is no longer true.

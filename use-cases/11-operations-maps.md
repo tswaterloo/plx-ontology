@@ -1,4 +1,4 @@
-# 11. Operations maps (Ricardo)
+# 11. Operations maps
 
 Receiving, QC, release and complaints, traced through real examples.
 

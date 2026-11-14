@@ -12,4 +12,4 @@ Each page has the full use case: what it covers, the questions it must answer an
 8. [Amazon FBA](08-amazon-fba.md): Replenishing Amazon: shipment, labels, customs, freight and the stock move.
 9. [Equipment and assets](09-asset-tracker.md): Machines from purchase to production line, and whether each is capitalized.
 10. [Grants](10-grants-program.md): Grant programs from eligible cost to claim to reimbursement.
-11. [Operations maps (Ricardo)](11-ricardo-maps.md): Receiving, QC, release and complaints, traced through real examples.
+11. [Operations maps](11-operations-maps.md): Receiving, QC, release and complaints, traced through real examples.

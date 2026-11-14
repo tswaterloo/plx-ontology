@@ -78,7 +78,6 @@ It reads these systems. It never changes one by itself.
 
 **Still waiting:**
 - Permission to make changes in each system.
-- Meeting recordings and transcripts (not connected yet).
 - Amazon, Freightcom and Fiix.
 - Some older Portal, Sage and FileMaker tables still need to be turned into proper
   records.
@@ -87,23 +86,16 @@ It reads these systems. It never changes one by itself.
 
 ## Using the Workbench
 
-For people at Petra. The Workbench is a desktop app for Windows and Mac (installer coming; until then it opens in your browser at the address you were given).
+For people at Petra. Open the Workbench in your browser at the address you were given, or
+install the desktop app for Windows or Mac from that address followed by `/desktop/`.
 
-1. Sign in.
+1. Sign in with your work account.
 2. Start with My work, ask a question in Ask, open a record such as a purchase order, or look at Autopilot and Meetings.
 3. If it says **missing** or **hidden**, the data isn't there or isn't yours to see. It never guesses.
-4. Something wrong or missing? Use the Feedback page inside the app.
+4. Something wrong or missing? Choose Give feedback in your account menu.
 
-## Running the demo locally (developers)
-
-This is a developer demo on made-up data, not something Petra staff need to do.
-
-1. Open a terminal in this folder.
-2. Type `pip install fastapi uvicorn pydantic` and press Enter.
-3. Type `python3 -m operator_api serve --mock --port 8780 --insecure-cookie` and press Enter. This starts the demo with made-up data.
-4. In a second terminal, type `cd app && npm ci && npm run dev` and press Enter.
-5. Open `http://localhost:3000` and click the demo sign-in.
-6. Try the same pages as above. Feedback goes through the in-app Feedback page or the repo's issue tracker.
+Engineers who want to run the demo on made-up data will find the steps in the README,
+under Running it.
 
 Full guide: [`context/HOW-TO-USE.md`](HOW-TO-USE.md).
 
