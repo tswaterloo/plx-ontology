@@ -858,7 +858,7 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "customer_credits_rising",
               "price_below_typical", "price_below_cost",
               "customer_price_drop",
-              "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+              "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "portal_approval_pending",
               "planner_task_overdue", "aged_receivable_worsening",
               "aged_payable_worsening", "production_late", "assembly_damage_spike",
               "teams_unanswered_ask",
@@ -4944,7 +4944,8 @@ def session_server(argv: list[str] | None = None, *,
                              "(portal_access_unavailable)")
     parser.add_argument("--portal-access-max-age-hours", type=float, default=None,
                         help="refuse the Portal access snapshot (every employee denied) "
-                             "once its read_at is older than this many hours")
+                             "once its read_at is older than this many hours (default 168: "
+                             "every snapshot expires, SEC-004)")
     parser.add_argument("--employee-oid",
                         help="DEV ONLY (with --dev-configured-employee): the session's "
                              "employee named on the command line, never authenticated: "

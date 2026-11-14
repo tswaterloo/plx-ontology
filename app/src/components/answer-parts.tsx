@@ -3,10 +3,9 @@
 import { ChevronRight, EyeOff } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
-import { fieldLabel, formatDate, formatDateTime, formatMoney, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
+import { fieldLabel, formatDate, formatDateTime, formatMoney, mailField, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
 import type { Conflict, Fact, Freshness, Hidden, NotFoundItem, Source } from "@/lib/types";
 import { EvidenceDrawer, SourceChip, SourceChips, sourceName } from "./source-chip";
-import { mailField } from "./source-view";
 import { DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 
 const MONEY_LABEL = /\b(?:total|amount|cost|price|balance|value|revenue|margin|invoice)\b/i;

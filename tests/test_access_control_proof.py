@@ -216,10 +216,16 @@ SECRET_STATEMENT = "A's note says the carrier collected on Tuesday"
 SECRET_GAP = "carrier tracking number"
 
 
+
+def fresh_read_at() -> str:
+    """A Portal access snapshot's read time of now (SEC-004: every snapshot expires)."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def write_users(root: Path, users) -> None:
     (root / "portal.json").write_text(json.dumps({
         "schema": PORTAL_ACCESS_SNAPSHOT_SCHEMA, "source": "portal:fixture",
-        "read_at": "2026-10-01T09:00:00Z", "users": users}))
+        "read_at": fresh_read_at(), "users": users}))
 
 
 def write_config(root: Path, **drop) -> Path:

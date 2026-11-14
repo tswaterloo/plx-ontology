@@ -25,8 +25,10 @@ from .autopilot_api import AutopilotMixin
 from .autopilot_area import AutopilotAreaMixin
 from .autopilot_studio import AutopilotStudioMixin
 from .doc_fill_api import DocFillMixin
+from .entry_create_api import EntryCreateMixin
 from .doc_style_api import DocStyleMixin
 from .instruct_api import InstructMixin
+from .templates_api import TemplatesMixin
 from .ask_drafts import AskDraftsMixin
 from .write_intents_api import WriteIntentsMixin
 from .watch import MockWatchMixin
@@ -581,9 +583,9 @@ _UNJUDGED = [("SalesOrder:demo:51007", "Sales order 51007"),
              ("SalesOrder:demo:51019", "Sales order 51019")]
 
 
-class MockBackend(ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
+class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixin, AutopilotAreaMixin,
                   AutopilotStudioMixin, InstructMixin, DocFillMixin, DocStyleMixin,
-                  MockWatchMixin,
+                  EntryCreateMixin, MockWatchMixin,
                   AskDraftsMixin):
     data_label = LABEL
 

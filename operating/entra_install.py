@@ -317,7 +317,8 @@ def _api_config(url: str) -> Callable[[], Any]:
     """A GET of the local API's ``/api/auth/config`` (loopback only, no redirect)."""
     from integrations.http import get_local_json
     parts = urlsplit(url)
-    if parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+    if parts.scheme not in ("http", "https") or parts.hostname not in (
+            "127.0.0.1", "localhost", "::1"):
         raise InstallError("api_url_not_loopback")
     return lambda: get_local_json(url.rstrip("/") + "/api/auth/config")
 

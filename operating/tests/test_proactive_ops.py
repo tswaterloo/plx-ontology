@@ -60,6 +60,14 @@ def gate(w: World, status: str, asked: int, *, decided: bool = False) -> str:
     return w.obj("MCApproval", values, audience="mc:ops")
 
 
+def requisition(w: World, status: str, asked: int, *, approved: bool = False) -> str:
+    values = {"pr_number": f"PR-SYNTH-{w.n + 1}", "status": status,
+              "requested_date": day(asked)}
+    if approved:
+        values["approved_date"] = day(0)
+    return w.obj("PurchaseRequisition", values, audience="portal:purchasing")
+
+
 def planner(w: World, due: int, *, pct: str = "50", done: bool | int = False,
             assignees: list[str] | None = None, plan: str = "synth-plan",
             created: int = 20) -> str:
@@ -193,6 +201,39 @@ class OpsAlerts(Engine):
         self.assertEqual(summary["not_evaluated"][po.MC_APPROVAL],
                          {"pending_but_decided": 1, "status_unmapped": 1})
 
+    def test_a_portal_requisition_pending_approval_is_in_the_approvals_queue(self):
+        from operating import proactive_threads as pt
+        w = World()
+        # AS_OF's weekday decides the calendar span of five business days
+        span = next(n for n in range(5, 12) if po._business_days(AS_OF - timedelta(days=n),
+                                                                  AS_OF) == 5)
+        waiting = requisition(w, "PENDING_APPROVAL", span)
+        requisition(w, "PENDING_APPROVAL", 1)            # requested yesterday: not due
+        for status in ("APPROVED", "REJECTED", "CONVERTED_TO_PO", "CANCELLED", "DRAFT",
+                       "CONVERTED_TO_CMR"):
+            requisition(w, status, span)
+        requisition(w, "PENDING_APPROVAL", span, approved=True)   # sources disagree
+        requisition(w, "SOMETHING_NEW", span)
+        summary = self.run_rules(w)
+        self.assertEqual(summary["detectors"][po.PORTAL_APPROVAL], "complete")
+        (gap,) = self.kinds(po.PORTAL_APPROVAL)
+        self.assertEqual(gap["object_id"], waiting)
+        self.assertEqual(summary["not_evaluated"][po.PORTAL_APPROVAL],
+                         {"pending_but_decided": 1, "status_unmapped": 1})
+        queue = pt.approvals_queue(self.kinds(po.PORTAL_APPROVAL), AS_OF)
+        self.assertEqual(queue["total"], 1)
+        (group,) = queue["groups"]
+        self.assertEqual(group["waiting_on"], "not recorded")
+        (item,) = group["items"]
+        self.assertEqual((item["channel"], item["days"], item["aging"]),
+                         ("portal", 5, "3-5 business days"))
+        self.assertEqual((item["nudge"]["status"], item["nudge"]["sent"]),
+                         ("draft_not_sent", False))
+        self.assertEqual(item["nudge"]["to"], [])
+        # a reader without the requisition's records sees nothing of it
+        self.assertEqual(self.kinds(po.PORTAL_APPROVAL,
+                                    may_read=lambda a: a != "portal:purchasing"), [])
+
     def test_person_rules_are_blocked_without_the_people_exclusion(self):
         w = World()
         task(w, "review", updated=40)
@@ -200,7 +241,9 @@ class OpsAlerts(Engine):
         planner(w, 9)
         message(w, OURS_OID, 9, mentions=(OTHER_OID,), subject="Can you check?")
         summary = self.run_rules(w, people=people(unavailable=True))
-        for rule in (po.MC_OVERDUE, po.MC_STUCK, po.MC_APPROVAL, po.PLANNER, po.TEAMS):
+        requisition(w, "PENDING_APPROVAL", 9)
+        for rule in (po.MC_OVERDUE, po.MC_STUCK, po.MC_APPROVAL, po.PORTAL_APPROVAL, po.PLANNER,
+                     po.TEAMS):
             self.assertEqual(summary["detectors"][rule], "blocked", rule)
         self.assertEqual([g for g in self.read(limit=1000)["gaps"]
                           if g["kind"] in po.KINDS], [])
@@ -379,7 +422,7 @@ class OpsAlerts(Engine):
         self.run_rules(w)
         every = {g["kind"] for g in self.read(limit=1000)["gaps"]}
         self.assertEqual(every, set(po.KINDS))
-        for hidden in ("mc:ops", "meetings:plan:synth", "bc:finance", "api:production",
+        for hidden in ("mc:ops", "portal:purchasing", "meetings:plan:synth", "bc:finance", "api:production",
                        CHANNEL):
             seen = self.read(may_read=lambda k, h=hidden: k != h, limit=1000)
             self.assertFalse([g for g in seen["gaps"] if g["kind"] in po.KINDS
@@ -432,6 +475,7 @@ def build_one_of_each(w: World) -> dict[str, str]:
     return {po.MC_OVERDUE: task(w, "progress", due=5),
             po.MC_STUCK: task(w, "qa", updated=30),
             po.MC_APPROVAL: gate(w, "pending", 6),
+            po.PORTAL_APPROVAL: requisition(w, "PENDING_APPROVAL", 9),
             po.PLANNER: planner(w, 5),
             po.AGED_AR: aged(w, "AgedReceivable", ("100", "100", "0", "0", "0", 30),
                              ("100", "0", "100", "0", "0", 0)),

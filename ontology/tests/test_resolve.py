@@ -1132,3 +1132,36 @@ class SameNumberIndexTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SchemaIndexTests(unittest.TestCase):
+    """``comparable`` and ``corroborations`` over the served schema read through its
+    per-content index (``_schema_index``) give exactly what the scan of every type and link
+    gives (a schema without a content digest is scanned), for every binding against a
+    sample of found-record bindings."""
+
+    def test_the_indexed_answers_equal_the_scan(self):
+        import random
+        schema = ot.default_schema()
+        self.assertIsNotNone(resolve._schema_index(schema))
+
+        class Scanned:   # the same parts, no content digest: never indexed
+            object_types, link_types = schema.object_types, schema.link_types
+        scanned = Scanned()
+        self.assertIsNone(resolve._schema_index(scanned))
+        bindings = sorted({b["id"] for spec in schema.object_types.values()
+                           for b in spec.get("bindings", ())})
+        targets = random.Random(7).sample(bindings, 8)
+        compared = 0
+        for target in targets:
+            for binding in bindings:
+                got = (resolve.comparable(schema, binding, target),
+                       resolve.corroborations(schema, binding, target),
+                       resolve.binding_spec(schema, binding))
+                want = (resolve.comparable(scanned, binding, target),
+                        resolve.corroborations(scanned, binding, target),
+                        resolve.binding_spec(scanned, binding))
+                self.assertEqual(got, want, (binding, target))
+                compared += got[0]
+        self.assertGreater(compared, 0)
+        self.assertIsNone(resolve.binding_spec(schema, "no.such_binding"))

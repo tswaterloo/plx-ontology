@@ -1,30 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { RdBoardView } from "@/components/rd-board";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { LoadProblem } from "@/components/ui/notice";
 import { getRdBoard } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { RdBoard } from "@/lib/types";
 
 // R&D and sample projects per customer: status, last activity, owner and who each waits on.
 // Built only from the threads and records you may open; updates are drafts.
 export default function RdProjectsPage() {
-  const [board, setBoard] = useState<RdBoard | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setError(null);
-    setBoard(null);
-    getRdBoard(ctl.signal).then(setBoard, (e) => {
-      if (!ctl.signal.aborted) setError(e);
-    });
-    return () => ctl.abort();
-  }, [round]);
+  const { data: board, error, retry } = useRead<RdBoard>("rd-projects", (signal) => getRdBoard(signal));
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar

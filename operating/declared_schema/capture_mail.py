@@ -140,6 +140,14 @@ _WITHHELD_DDL = """CREATE TABLE IF NOT EXISTS people_withheld (
 # ontology stores, Postgres, search) are still to go: ``operating.mail_exclusion_purge``
 # removes those and forgets the handles. Handles only (opaque ids, never an address).
 # Made with the first purge that deletes anything.
+# The withheld-message key (``graph_read.withheld_message_key`` of its internetMessageId) of
+# each stored message version, kept by the capture purge (``MailCaptureStore.purge_withheld``)
+# so a key remembered later finds every stored copy through an index, never a scan of the
+# records. Complete up to the purge state's ``through`` only while that state is valid.
+_MESSAGE_KEYS_DDL = ("CREATE TABLE IF NOT EXISTS message_keys (version_id INTEGER PRIMARY KEY, "
+                     "message_key TEXT NOT NULL)")
+_MESSAGE_KEYS_INDEX = ("CREATE INDEX IF NOT EXISTS message_keys_by_key ON "
+                       "message_keys(message_key)")
 _PURGED_DDL = """CREATE TABLE IF NOT EXISTS purged_handles (
     l1_handle TEXT PRIMARY KEY,
     purged_at TEXT NOT NULL)"""

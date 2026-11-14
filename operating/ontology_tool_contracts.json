@@ -1759,7 +1759,7 @@
       "properties": {
         "mode": {"type": "string", "enum": ["business_documents"]},
         "format": {"type": "string", "enum": ["plx-business-documents/v1"]},
-        "view": {"type": "string", "enum": ["forecasts", "forecast_accuracy", "priority_fill", "price_sheets", "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback", "formula_lines"]},
+        "view": {"type": "string", "enum": ["forecasts", "forecast_accuracy", "priority_fill", "price_sheets", "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback", "formula_lines", "item_on_hand_sheets"]},
         "rows": {"type": "array", "maxItems": 200, "items": {"type": "object", "required": ["cites"], "properties": {"cites": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["object_id"], "properties": {"object_id": {"$ref": "#/$defs/object_id"}}}}, "markings": {"type": "array", "items": {"type": "string", "enum": ["finance", "l5", "pii", "purchasing_prices", "quality_controlled"]}}}}},
         "counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "withheld_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
@@ -5404,6 +5404,7 @@
                         "mc_task_overdue",
                         "mc_task_stuck",
                         "mc_approval_pending",
+                        "portal_approval_pending",
                         "planner_task_overdue",
                         "aged_receivable_worsening",
                         "aged_payable_worsening",
@@ -5521,6 +5522,7 @@
                         "mc_task_overdue",
                         "mc_task_stuck",
                         "mc_approval_pending",
+                        "portal_approval_pending",
                         "planner_task_overdue",
                         "aged_balance_worsening",
                         "production_late",
@@ -5560,7 +5562,7 @@
                     },
                     "maxItems": 80
                   },
-                  "rules_clean": {"type": "array", "maxItems": 80, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "return_requests", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "party_chases", "internal_chases", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "sync_gaps", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "label_revisions", "rd_projects", "cash_application", "statement_reconciliation"]}},
+                  "rules_clean": {"type": "array", "maxItems": 80, "description": "The rules that finished cleanly: complete, nothing this reader may read left unjudged.", "items": {"type": "string", "enum": ["late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc", "order_without_customer_po", "expired_quote", "conflicting_quantity", "late_order", "orders_at_risk", "card_rules", "eta_slipped", "lot_attention", "accepted_quote_no_order", "invoice_quantity_mismatch", "vendor_no_reply", "vendor_terms_unapplied", "negative_margin", "late_customer_order", "stock_out_risk", "overdue_receivable", "unit_cost_jump", "customer_demand_drop", "promise_date_slip", "margin_erosion", "supplier_reliability", "shipped_not_invoiced", "duplicate_customer_order", "recurring_component_damage", "customer_chase", "quality_holds", "expedite_requests", "supplier_shortage", "payment_chase", "return_requests", "customer_payment_behaviour", "early_pay_discounts", "duplicate_payables", "price_consistency", "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "portal_approval_pending", "planner_task_overdue", "aged_balance_worsening", "production_late", "assembly_damage_spike", "teams_unanswered_ask", "commitments", "needs_reply", "approvals_waiting", "chase_escalation", "party_chases", "internal_chases", "slow_moving_stock", "expiring_lot_stock", "assembly_component_shortfall", "certificate_expiry", "freight_cost_anomaly", "stale_quote", "duplicate_parties", "key_fields_missing", "twin_disagreement", "stale_captures", "sync_gaps", "reorder_soon", "inventory_adjustment", "blocked_account_activity", "gl_posting_errors", "recurring_task_missed", "returns_and_credits", "priority_fill_unmet", "inbox_triage", "label_changes", "label_revisions", "rd_projects", "cash_application", "statement_reconciliation"]}},
                   "rules": {
                     "type": "array",
                     "description": "The rules that did not finish cleanly (rules_clean names the rest), each with its last run's status and not_evaluated: the records this reader may read the rule left unjudged, of the skips whose whole cause it may read (null: unknown). A rule not run or with not_evaluated other than 0 makes the home result incomplete (reason rule_not_evaluated): an empty kind is then not 'none'.",
@@ -5617,6 +5619,7 @@
                             "mc_task_overdue",
                             "mc_task_stuck",
                             "mc_approval_pending",
+                            "portal_approval_pending",
                             "planner_task_overdue",
                             "aged_balance_worsening",
                             "production_late",
@@ -5803,6 +5806,7 @@
                             "mc_task_overdue",
                             "mc_task_stuck",
                             "mc_approval_pending",
+                            "portal_approval_pending",
                             "planner_task_overdue",
                             "aged_receivable_worsening",
                             "aged_payable_worsening",
@@ -7224,7 +7228,7 @@
       }
     },
     "plx.aggregate": {
-      "description": "Decimal count/sum/min/max of a set or object_type, filtered, grouped by 1-2 properties; readable rows only; >20 groups: summary+cursor. Refuses mixed roles/units/currencies, unknowns, fan-out sums, unreviewed N:M hops. Totals carry markings. Modes: cash_forecast; demand_forecast(bucket; group_by customer); business_documents(+view,customer,question; view formula_lines+customer=a product: its formula sheet lines); margin_variance(variance{subject,from,to,baseline_from,baseline_to}); quote_conversion; cross_sell(+customer); who_knows(+person); qc_compliance(+view compliance|audit|daily).",
+      "description": "Decimal count/sum/min/max of a set or object_type, filtered, grouped by 1-2 properties; readable rows only; >20 groups: summary+cursor. Refuses mixed roles/units/currencies, unknowns, fan-out sums, unreviewed N:M hops. Totals carry markings. Modes: cash_forecast; demand_forecast(bucket; group_by customer); business_documents(+view,customer,question; views formula_lines|item_on_hand_sheets+customer=a product); margin_variance(variance{subject,from,to,baseline_from,baseline_to}); quote_conversion; cross_sell(+customer); who_knows(+person); qc_compliance(+view compliance|audit|daily).",
       "read_only": true,
       "input": {
         "type": "object",

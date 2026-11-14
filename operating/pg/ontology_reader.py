@@ -885,17 +885,30 @@ class PgStoreReader(StoreReader):
         left = call_limits.seconds_left()
         if left is not None:
             limit = min(limit, left)
+        import psycopg
         with self.lock, self.conn._lock:
             pg = self.conn._pg
             (before,) = pg.execute("SHOW statement_timeout").fetchone()
             pg.execute(f"SET statement_timeout = {max(1, int(limit * 1000))}")
+            # Inside a transaction (the facts read holds one snapshot) a cancelled
+            # statement aborts it: the exact read is guarded by a savepoint, so the
+            # fallback runs in the same snapshot (11-13: every facts read under load
+            # failed "InFailedSqlTransaction" here, and the shared facts went stale).
+            guarded = pg.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+            if guarded:
+                pg.execute("SAVEPOINT plx_cell_span")
             try:
                 row = self.conn.execute(CELL_SPAN_SQL, params).fetchone()
             except sqlite3.OperationalError as error:
                 if "interrupted" not in str(error):
                     raise
+                if guarded:
+                    pg.execute("ROLLBACK TO SAVEPOINT plx_cell_span")
                 pg.execute("SET statement_timeout = 0")
                 row = self.conn.execute(WHOLE_SPAN_SQL).fetchone()
+            else:
+                if guarded:
+                    pg.execute("RELEASE SAVEPOINT plx_cell_span")
             finally:
                 try:
                     pg.execute(f"SET statement_timeout = '{before}'")

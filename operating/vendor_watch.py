@@ -42,6 +42,7 @@ built for any live source, nothing is sent or written to a business system. Usag
 from __future__ import annotations
 
 import argparse
+import gc
 from datetime import date
 import json
 from pathlib import Path
@@ -68,7 +69,7 @@ WHOLE_PASS = frozenset({"stock_out_risk", "overdue_receivable", "unit_cost_jump"
                         "duplicate_payables", "returns_and_credits",
                         "price_consistency",
                         "mc_task_overdue", "mc_task_stuck",
-                        "mc_approval_pending", "planner_task_overdue",
+                        "mc_approval_pending", "portal_approval_pending", "planner_task_overdue",
                         "aged_balance_worsening", "production_late",
                         "assembly_damage_spike", "teams_unanswered_ask",
                         "commitments", "needs_reply", "slow_moving_stock", "expiring_lot_stock",
@@ -114,8 +115,11 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
     started = monotonic()
     # no live reader: every investigation reads the projection and the captures only, as
     # the capture principal granted what it captured (``host.engine_readers``)
-    runtime = live.offline_runtime(state_dir, config.mirror_audience, config.tenant,
-                                   live=engine_readers(config), environ=environ)
+    def new_runtime() -> Any:
+        return live.offline_runtime(state_dir, config.mirror_audience, config.tenant,
+                                    live=engine_readers(config), environ=environ)
+
+    runtime = new_runtime()
     full: dict[str, Any] | None = None
     # every core the host can spare reads as the same principal, offline (``proactive_pool``)
     pool = proactive_pool.from_host_config(config, state_dir, store, environ)
@@ -145,6 +149,16 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             else:
                 full = {"state": "ran", **{key: ran.get(key) for key in (
                     "detectors", "detector_reasons", "gaps_found", "seconds")}}
+                del ran   # the whole-store result is counted, never kept through the vendor stage
+            finally:
+                # The whole engine read every record through this runtime (its mirror's
+                # captured reads, the case sessions' caches): the vendor stage, which runs
+                # for most of the pass, starts on a fresh one, so what the engine read is
+                # freed before the vendor checks grow their own (the pass's peak was the
+                # sum of both; ``tests/test_vendor_watch_memory``).
+                runtime.close()
+                runtime = new_runtime()
+                gc.collect()
         left = seconds - (monotonic() - started)
         session = live._Session(runtime, actor, audience, store, captures=state_dir,
                                 marking_grants=pe.engine_marking_grants(actor))

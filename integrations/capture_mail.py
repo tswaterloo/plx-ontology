@@ -232,6 +232,7 @@ from .plx_hub_guard import GRAPH_BLOCKS, upstream_blocks
 from operating import declared_schema as _schemas
 from operating.declared_schema import capture_mail as _CAPTURE_MAIL
 from operating.declared_schema.capture_mail import (_CARRIED_DDL, _FOLDER_LISTING_DDL,
+                                                    _MESSAGE_KEYS_DDL, _MESSAGE_KEYS_INDEX,
                                                     _PRIORITY_DDL, _PURGED_DDL,
                                                     _UNDECIDED_ADDRESSES_DDL,
                                                     _UNDECIDED_DDL, _WITHHELD_DDL)
@@ -565,6 +566,47 @@ _TEXT_NO_DELETE = ("CREATE TRIGGER attachment_text_versions_no_delete BEFORE DEL
                    "attachment_text_versions BEGIN SELECT RAISE(ABORT, "
                    "'attachment_text_versions_immutable'); END")
 PURGE_COUNTS = ("mailboxes", "messages", "versions", "attachments", "blobs")
+# The ``meta`` key of the exclusion purge's state (``MailCaptureStore.purge_withheld``):
+# ``{"v": 1, "digest": <PeopleExclusion.purge_digest>, "through": <version_id>}``.
+_PURGE_STATE = "exclusion_purge_state"
+
+
+def _purge_digest(people: Any) -> str | None:
+    """A one-way digest of everything that decides an address for the purge
+    (``PeopleExclusion.is_excluded``: excluded, cleared or undecided): whether the guard
+    loaded and is bound, the excluded ids, their bound addresses, the lists the last
+    complete groups listing found an excluded person on or could not confirm, and (no
+    complete listing) the listed addresses and the tenant domains a list may be in. The
+    purge reads the whole store when it differs from the one it last purged under. Never
+    the ids or addresses themselves. Kept here, not on the guard: the guard's module is
+    step code (``tools/digest_gate.py``). None (the whole store is read) for a guard
+    without these fields or any value it cannot give."""
+    try:
+        groups = people._groups
+        listed, domains = people._listed
+        unsure = None if groups is not None else [
+            sorted(listed), sorted(set(domains) | set(people._group_domains))]
+        groups = dict(groups or {})
+        value = json.dumps(
+            ["purge/v1", people._unavailable, bool(people.bound), sorted(people._ids),
+             sorted(people._addresses), sorted(a for a, v in groups.items() if v is True),
+             sorted(a for a, v in groups.items() if v is None),
+             people._groups is None, unsure])
+    except Exception:  # noqa: BLE001 - unknown: fail closed to the whole-store purge
+        return None
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _purge_fields(record: Any) -> Any:
+    """What the exclusion purge decides a stored record by: its sender, To/Cc/Bcc and
+    internetMessageId (a record that cannot be read: itself, so any change counts)."""
+    try:
+        value = json.loads(record)
+    except (TypeError, ValueError):
+        return record
+    if not isinstance(value, dict):
+        return record
+    return [value.get(k) for k in ("from", "to", "cc", "bcc", "internet_message_id")]
 # A purge's copies (``MailCaptureStore.copies_of``): the internet message ids of the messages
 # in ``temp.copy_pairs``, then every message holding one of them, in any mailbox (a scan of
 # the records: run only when a purge names a message).
@@ -793,6 +835,7 @@ class MailCaptureStore:
         # else the process environment's; this deny list, else the shipped one.
         self.people = people
         self.purge_undecided = 0   # addresses the last purge could not decide (kept)
+        self._keys_bytes: int | None = None   # message_keys pages (``store_bytes``)
         self.deny = deny
         # One connection, one writer: the lanes of a run share it, each call under
         # ``lock`` (``MailCapture`` lanes), so the store never sees two writers.
@@ -903,6 +946,7 @@ class MailCaptureStore:
         store.path = store.root / DB_FILE
         store._clock, store.max_store_bytes = _now, None
         store.people, store.deny = None, None
+        store._keys_bytes = None
         if not store.path.is_file():
             raise CaptureError("store_missing")
         store.db = sqlite3.connect(store.path.as_uri() + "?mode=ro", uri=True,
@@ -964,10 +1008,24 @@ class MailCaptureStore:
 
     def store_bytes(self) -> int:
         """The SQLite file plus every blob as stored (compressed, or its ``.dropped``
-        form)."""
+        form), less the purge's own ``message_keys`` (an index of the mail, not mail: a
+        store near its bound never stops capturing for it)."""
         blobs = self.db.execute("SELECT COALESCE(SUM(COALESCE(stored_bytes, bytes)), 0) "
                                 "FROM blobs").fetchone()[0]
-        return sqlite_bytes(self.db) + blobs
+        if self._keys_bytes is None:
+            self._keys_bytes = self._measure_keys_bytes()
+        return max(0, sqlite_bytes(self.db) - self._keys_bytes) + blobs
+
+    def _measure_keys_bytes(self) -> int:
+        """The pages ``message_keys`` and its index take (``dbstat``, those two b-trees
+        only; measured once per process and after each purge fills it); 0 when unknown."""
+        try:
+            row = self.db.execute(
+                "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE aggregate=TRUE AND name "
+                "IN ('message_keys', 'message_keys_by_key')").fetchone()
+        except sqlite3.Error:
+            return 0
+        return row[0] if row and type(row[0]) is int else 0
 
     def store_full(self) -> bool:
         return self.max_store_bytes is not None and self.store_bytes() >= self.max_store_bytes
@@ -1250,7 +1308,12 @@ class MailCaptureStore:
         every interval row of the handle gets the body; an event records the repair."""
         stored, body_sha = self._stored_record(record)
         now = self.now()
+        before = self.db.execute("SELECT record FROM messages WHERE l1_handle=? LIMIT 1",
+                                 (handle,)).fetchone()
         with self.db:
+            if before is None or _purge_fields(before[0]) != _purge_fields(stored):
+                # who it names (or its id) changed under a purge that already read it
+                self.forget_purge_state()
             self.db.execute("UPDATE messages SET record=?, digest=?, body_status=?, "
                             "body_sha256=? WHERE l1_handle=?",
                             (stored, record["content_sha256"], body_status, body_sha, handle))
@@ -1907,13 +1970,19 @@ class MailCaptureStore:
                     keys.add(key)
         return sorted(keys)
 
-    def remembered_copies(self) -> list[tuple[str, str]]:
+    def remembered_copies(self, *, indexed: bool = False) -> list[tuple[str, str]]:
         """Every stored message (``(mailbox id, message id)``) whose internetMessageId is
         remembered in ``people_withheld``: the next run's ``purge_withheld`` deletes it.
-        Read-only."""
+        ``indexed``: through ``message_keys``, which the caller has just made complete
+        (``purge_withheld``); otherwise a read of every record. Read-only."""
         if not self._has_withheld_table() or self.db.execute(
                 "SELECT 1 FROM people_withheld LIMIT 1").fetchone() is None:
             return []
+        if indexed:
+            return sorted({(b, m) for b, m in self.db.execute(
+                "SELECT DISTINCT m.mailbox_id, m.message_id FROM people_withheld w JOIN "
+                "message_keys k ON k.message_key=w.message_key JOIN messages m ON "
+                "m.version_id=k.version_id")})
         self.db.create_function("plx_message_key", 1, withheld_message_key,
                                 deterministic=True)
         return sorted({(b, m) for b, m in self.db.execute(
@@ -2203,35 +2272,59 @@ class MailCaptureStore:
         return {"mailboxes": boxes, "items": len(versions) + len(attachments),
                 "handles": handles}
 
-    def purge_withheld(self, people: PeopleExclusion) -> dict[str, int]:
+    def purge_withheld(self, people: PeopleExclusion, *, full: bool = False
+                       ) -> dict[str, int]:
         """Delete what the exclusion withholds (a capture run, its guard prepared): each
         withheld mailbox whole, and in every other mailbox each message (every version)
         whose sender or To/Cc/Bcc recipient is an excluded person (the guard bound), with
         every other mailbox's copy of a message whose Bcc names one (only the sender's
-        copy carries Bcc), their attachments, attachment text readings and events; then
-        every blob nothing references any more, with its file. Nothing is deleted on a
-        guard or deny list that cannot decide. Returns the ``PURGE_COUNTS``."""
+        copy carries Bcc), and every copy of a message remembered as withheld, their
+        attachments, attachment text readings and events; then every blob nothing
+        references any more, with its file. Nothing is deleted on a guard or deny list that
+        cannot decide. Returns the ``PURGE_COUNTS``.
+
+        Incremental (``_PURGE_STATE``): the message records are read whole only when the
+        exclusion differs from the one the last purge ran under (``purge_digest``), on the
+        first purge, on ``full``, and whenever the recorded state cannot be read or does not
+        hold (fail closed). Otherwise only the versions stored since the last purge
+        (``version_id`` is AUTOINCREMENT: never reused) are read for addresses, every
+        address held undecided is decided again (one now excluded: the whole store is
+        read), and remembered messages are found through ``message_keys``. Mailboxes are
+        always decided whole (one row each)."""
         counts = dict.fromkeys(PURGE_COUNTS, 0)
         withholds = self._withholds(people, undecided=False) if _usable(people) else None
         if withholds is None:
             return counts
-        boxes = [row["mailbox_id"] for row in self.db.execute(_MAILBOX_ROWS)
-                 if withholds(row)]
+        db = self.db
+        digest = _purge_digest(people)
+        top = self._version_mark()
+        since = None if full else self._purge_since(digest, top)
+        boxes = [row["mailbox_id"] for row in db.execute(_MAILBOX_ROWS) if withholds(row)]
         addresses: list[str] = []
         undecided = 0
         undecided_found: set[str] = set()
         if people.bound:
-            found = self.db.execute(
-                "SELECT DISTINCT lower(json_extract(record, '$.from')) FROM messages UNION "
+            scoped = "" if since is None else f" WHERE messages.version_id > {int(since)}"
+            found = [a for (a,) in db.execute(
+                "SELECT DISTINCT lower(json_extract(record, '$.from')) FROM messages" + scoped
+                + " UNION SELECT DISTINCT lower(j.value) FROM messages, json_each("
+                "messages.record, '$.to') j" + scoped + " UNION SELECT DISTINCT lower(j.value) "
+                "FROM messages, json_each(messages.record, '$.cc') j" + scoped + " UNION "
                 "SELECT DISTINCT lower(j.value) FROM messages, json_each(messages.record, "
-                "'$.to') j UNION SELECT DISTINCT lower(j.value) FROM messages, "
-                "json_each(messages.record, '$.cc') j UNION SELECT DISTINCT lower(j.value) "
-                "FROM messages, json_each(messages.record, '$.bcc') j").fetchall()
-            for (address,) in found:
+                "'$.bcc') j" + scoped)]
+            held = set()
+            if since is not None and self._has_table("undecided_addresses"):
+                # every address held undecided is decided again on each run
+                held = {a for (a,) in db.execute("SELECT address FROM undecided_addresses")}
+            for address in dict.fromkeys([*found, *sorted(held)]):
                 if not isinstance(address, str):
                     continue
                 try:
                     if people.is_excluded(address):
+                        if address in held:
+                            # held undecided until now, so never purged: its mail may be
+                            # anywhere in the store
+                            return self.purge_withheld(people, full=True)
                         addresses.append(address)
                 except ExclusionUnavailable:
                     # A list whose members cannot all be read and confirmed (or, with no
@@ -2245,10 +2338,101 @@ class MailCaptureStore:
         self.purge_undecided = undecided
         # every copy of a message remembered as withheld (stored in a mailbox before the
         # copy that showed the excluded person was read)
-        remembered = self.remembered_copies()
-        if not boxes and not addresses and not remembered:
-            return counts
-        return self._purge(boxes, addresses, remembered)
+        self._key_messages(since, top)
+        remembered = self.remembered_copies(indexed=True)
+        if boxes or addresses or remembered:
+            counts = self._purge(boxes, addresses, remembered, since=since, keyed=True)
+        self._save_purge_state(digest, top)
+        return counts
+
+    def _version_mark(self) -> int:
+        """The highest ``version_id`` ever given (``sqlite_sequence``: AUTOINCREMENT, so a
+        purge deleting the newest versions never moves it back), else the highest stored."""
+        stored = self.db.execute("SELECT COALESCE(MAX(version_id), 0) FROM messages"
+                                 ).fetchone()[0]
+        try:
+            row = self.db.execute("SELECT seq FROM sqlite_sequence WHERE name='messages'"
+                                  ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        given = row[0] if row and type(row[0]) is int else 0
+        return max(stored, given)
+
+    def _undecided_count(self) -> int:
+        if not self._has_table("undecided_addresses"):
+            return 0
+        return self.db.execute("SELECT COUNT(*) FROM undecided_addresses").fetchone()[0]
+
+    def _purge_since(self, digest: str | None, top: int) -> int | None:
+        """The ``version_id`` the last purge read the store through under this same
+        exclusion; None (read the whole store) when there is none, it cannot be read, it
+        was made under another exclusion or schema, or the key table it relies on is
+        missing or ahead of the store."""
+        if digest is None or not self._has_table("message_keys"):
+            return None
+        try:
+            row = self.db.execute("SELECT value FROM meta WHERE key=?",
+                                  (_PURGE_STATE,)).fetchone()
+            state = json.loads(row[0]) if row else None
+        except (sqlite3.Error, TypeError, ValueError):
+            return None
+        if not isinstance(state, dict) or state.get("v") != 1 \
+                or state.get("digest") != digest:
+            return None
+        if state.get("undecided") != self._undecided_count():
+            return None   # the held undecided addresses are not the ones it left
+        through = state.get("through")
+        if type(through) is not int or not 0 <= through <= top:
+            return None
+        keyed = self.db.execute("SELECT MAX(version_id) FROM message_keys").fetchone()[0]
+        if keyed is not None and keyed > through:
+            return None
+        return through
+
+    def _save_purge_state(self, digest: str | None, top: int) -> None:
+        with self.db:
+            if digest is None:
+                self.db.execute("DELETE FROM meta WHERE key=?", (_PURGE_STATE,))
+                return
+            self.db.execute(
+                "INSERT INTO meta VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET "
+                "value=excluded.value",
+                (_PURGE_STATE, json.dumps({"v": 1, "digest": digest, "through": top,
+                                           "undecided": self._undecided_count()})))
+
+    def forget_purge_state(self) -> None:
+        """The next purge reads the whole store (a stored record was rewritten)."""
+        self.db.execute("DELETE FROM meta WHERE key=?", (_PURGE_STATE,))
+
+    def _key_messages(self, since: int | None, top: int) -> None:
+        """Keep ``message_keys`` for every stored version after ``since`` (None: rebuilt
+        for the whole store) through ``top``."""
+        db = self.db
+        with db:
+            db.execute(_MESSAGE_KEYS_DDL)
+            db.execute(_MESSAGE_KEYS_INDEX)
+            if since is None:
+                # a rebuild: no state survives to trust the table half-filled
+                db.execute("DELETE FROM meta WHERE key=?", (_PURGE_STATE,))
+                db.execute("DELETE FROM message_keys")
+            else:
+                db.execute("DELETE FROM message_keys WHERE version_id > ?", (since,))
+        # one short write transaction per chunk: other writers are never held for the
+        # length of a whole-store read (a partial table is never trusted: ``_purge_since``)
+        last = since or 0
+        while True:
+            rows = db.execute(
+                "SELECT version_id, json_extract(record, '$.internet_message_id') FROM "
+                "messages WHERE version_id > ? AND version_id <= ? ORDER BY version_id "
+                "LIMIT 5000", (last, top)).fetchall()
+            if not rows:
+                break
+            last = rows[-1][0]
+            with db:
+                db.executemany("INSERT OR REPLACE INTO message_keys VALUES (?, ?)",
+                               [(v, k) for v, k in ((v, withheld_message_key(i))
+                                                    for v, i in rows) if k])
+        self._keys_bytes = self._measure_keys_bytes()
 
     def _record_undecided(self, found: set[str]) -> None:
         """Keep exactly ``found`` (lowered, trimmed) as the addresses every reader withholds
@@ -2321,13 +2505,20 @@ class MailCaptureStore:
         return sorted({(b, m) for b, m in found})
 
     def _purge(self, boxes: Sequence[str], addresses: Sequence[str],
-               pairs: Sequence[tuple[str, str]]) -> dict[str, int]:
+               pairs: Sequence[tuple[str, str]], *, since: int | None = None,
+               keyed: bool = False) -> dict[str, int]:
         """The one deletion of :meth:`purge_withheld` and :meth:`purge_messages`: the
         mailboxes ``boxes`` whole; every message whose sender or To/Cc/Bcc recipient is
         one of ``addresses``; the messages ``pairs``; and every copy of a message whose
         Bcc names one of ``addresses`` or that ``pairs`` names. The L1 handles deleted are
         journalled in ``purged_handles`` (in the same transaction) for the removal of their
-        derived copies."""
+        derived copies.
+
+        ``since``: the messages are matched against ``addresses`` only among the versions
+        after it (``purge_withheld``: the exclusion unchanged since the purge that read the
+        store through it, so none before it names one). ``keyed``: ``message_keys`` is
+        complete, so a message's copies are found through it, not a read of every
+        record."""
         counts = dict.fromkeys(PURGE_COUNTS, 0)
         db = self.db
         db.execute("CREATE TEMP TABLE IF NOT EXISTS purge_boxes (id TEXT PRIMARY KEY)")
@@ -2346,11 +2537,16 @@ class MailCaptureStore:
                 named = ("SELECT 1 FROM temp.purge_addresses WHERE a={}")
                 listed = (" OR EXISTS (SELECT 1 FROM json_each(messages.record, '$.{}') j "
                           "WHERE EXISTS (" + named.format("lower(j.value)") + "))")
+                window = "" if since is None else f"version_id > {int(since)} AND "
                 found = db.execute(
                     "SELECT DISTINCT mailbox_id, message_id FROM messages WHERE mailbox_id IN "
-                    "(SELECT id FROM temp.purge_boxes) OR EXISTS ("
-                    + named.format("lower(json_extract(record, '$.from'))") + ")"
-                    + listed.format("to") + listed.format("cc")).fetchall()
+                    "(SELECT id FROM temp.purge_boxes)").fetchall()
+                if addresses:
+                    found += db.execute(
+                        "SELECT DISTINCT mailbox_id, message_id FROM messages WHERE "
+                        + window + "(EXISTS ("
+                        + named.format("lower(json_extract(record, '$.from'))") + ")"
+                        + listed.format("to") + listed.format("cc") + ")").fetchall()
                 # Bcc is on the sender's copy only: every copy of such a message goes too.
                 db.execute("CREATE TEMP TABLE IF NOT EXISTS copy_pairs (b TEXT, m TEXT, "
                            "PRIMARY KEY (b, m))")
@@ -2360,12 +2556,27 @@ class MailCaptureStore:
                 db.executemany("INSERT OR IGNORE INTO temp.copy_pairs VALUES (?,?)", pairs)
                 if addresses:
                     db.execute("INSERT OR IGNORE INTO temp.copy_pairs SELECT mailbox_id, "
-                               "message_id FROM messages WHERE json_type(record, '$.bcc') = "
-                               "'array' AND (0" + listed.format("bcc") + ")")
+                               "message_id FROM messages WHERE " + window + "json_type("
+                               "record, '$.bcc') = 'array' AND (0" + listed.format("bcc")
+                               + ")")
                 copies: list[tuple[str, str]] = []
                 if db.execute("SELECT 1 FROM temp.copy_pairs LIMIT 1").fetchone():
                     db.execute(_COPY_IDS)
-                    copies = db.execute(_COPIES).fetchall()
+                    if keyed:
+                        keys = sorted({k for (i,) in db.execute("SELECT i FROM temp.copy_ids")
+                                       if (k := withheld_message_key(i))})
+                        copies = db.execute(
+                            "SELECT b, m FROM temp.copy_pairs WHERE EXISTS (SELECT 1 FROM "
+                            "messages WHERE mailbox_id=b AND message_id=m)").fetchall()
+                        for chunk in range(0, len(keys), 500):
+                            part = keys[chunk:chunk + 500]
+                            copies += db.execute(
+                                "SELECT DISTINCT m.mailbox_id, m.message_id FROM message_keys "
+                                "k JOIN messages m ON m.version_id=k.version_id WHERE "
+                                f"k.message_key IN ({','.join('?' * len(part))})",
+                                part).fetchall()
+                    else:
+                        copies = db.execute(_COPIES).fetchall()
                 pairs = sorted({*map(tuple, found), *map(tuple, copies)})
                 counts["messages"] = len(pairs)
                 for mailbox_id, message_id in pairs:
@@ -2399,6 +2610,11 @@ class MailCaptureStore:
                 db.execute(_TEXT_NO_DELETE)
                 counts["attachments"] = db.execute(
                     f"DELETE FROM attachments WHERE {inside}").rowcount
+                if self._has_table("message_keys"):
+                    db.execute("DELETE FROM message_keys WHERE version_id IN (SELECT "
+                               "version_id FROM messages WHERE l1_handle IN (SELECT h FROM "
+                               "temp.purge_messages) OR mailbox_id IN (SELECT id FROM "
+                               "temp.purge_boxes))")
                 db.execute("DELETE FROM message_events WHERE l1_handle IN (SELECT h FROM "
                            "temp.purge_messages) OR l1_handle IN (SELECT h FROM "
                            "temp.purge_attachments)")
@@ -2419,10 +2635,13 @@ class MailCaptureStore:
                 counts["mailboxes"] = db.execute(
                     "DELETE FROM mailboxes WHERE mailbox_id IN (SELECT id FROM "
                     "temp.purge_boxes)").rowcount
+                # still referenced: kept (one index probe each, never a read of every row)
                 db.execute(
-                    "DELETE FROM temp.purge_blobs WHERE d IN (SELECT body_sha256 FROM messages "
-                    "UNION SELECT content_sha256 FROM attachments UNION SELECT text_sha256 "
-                    "FROM attachments UNION SELECT text_sha256 FROM attachment_text_versions)")
+                    "DELETE FROM temp.purge_blobs WHERE EXISTS (SELECT 1 FROM messages WHERE "
+                    "body_sha256=d) OR EXISTS (SELECT 1 FROM attachments WHERE "
+                    "content_sha256=d) OR EXISTS (SELECT 1 FROM attachments WHERE "
+                    "text_sha256=d) OR EXISTS (SELECT 1 FROM attachment_text_versions WHERE "
+                    "text_sha256=d)")
                 gone = [d for (d,) in db.execute("SELECT d FROM temp.purge_blobs")]
                 counts["blobs"] = db.execute(
                     "DELETE FROM blobs WHERE sha256 IN (SELECT d FROM temp.purge_blobs)"

@@ -136,6 +136,8 @@ class DocumentsPendingFlag(unittest.TestCase):
         self.assertFalse([p for p in opened if "ontology.sqlite" in p], opened)
         # the excluded person's mail stays withheld on the Postgres path too
         self.assertEqual((found.records, found.files), (1, None))
+        # read again past the few seconds a digest is kept (SERVED_STORE_SECONDS)
+        api.__dict__.pop("_pg_meta_held", None)
         with mock.patch.dict(os.environ, {"PLX_ONTOLOGY_PG": "only"}), \
                 mock.patch.object(ontology_reader, "store_meta", return_value=None):
             path, digest = api._served_store()

@@ -31,8 +31,13 @@ revision 2025-06-18):
   nothing is deployed.
 * An ``Origin`` header (a browser) must be one of ``--allowed-origin`` (DNS rebinding).
 
-One request at a time (``http.server.HTTPServer``): the case runtime's SQLite stores
-are used from the serving thread only.
+Connections are read concurrently (SEC-003): each accepted connection gets its own
+thread (at most ``MAX_CONNECTIONS``; one more is answered 503 and closed), which reads the
+request under the whole-request deadline. A fully read request is then queued (at most
+``MAX_QUEUED`` waiting; one more is answered 503) to the one execution worker, the thread
+that called ``serve_forever``: authentication and every tool call run there, so the case
+runtime's SQLite stores stay on the thread that opened them, and a slow or stalled client
+holds only its own connection thread, never the worker.
 
 Evidence: isolated-fixture (tokens signed in the tests with a generated key, JWKS
 injected); live-unverified (no Workbench Entra app registration, no
@@ -43,14 +48,16 @@ from __future__ import annotations
 
 import argparse
 from collections import OrderedDict
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 import io
 import ipaddress
 import json
 import os
 from pathlib import Path
+import queue
 import secrets
 import sys
+import threading
 import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
@@ -69,9 +76,13 @@ MAX_SESSIONS = 64
 # One employee's reconnects replace that employee's own oldest session; they never evict
 # another employee's (a full host refuses a new session instead).
 MAX_SESSIONS_PER_EMPLOYEE = 4
-# A request's headers and body must arrive within this many seconds in all: the listener
-# serves one request at a time, so a stalled or dripping client is closed, not waited on.
+# A request's headers and body must arrive within this many seconds in all: a stalled or
+# dripping client is closed, not waited on (it holds only its own connection thread).
 REQUEST_READ_SECONDS = 10
+# Connections read at once (one thread each); one more is answered 503 and closed.
+MAX_CONNECTIONS = 32
+# Fully read requests waiting for the execution worker; one more is answered 503.
+MAX_QUEUED = 16
 SESSION_IDLE_SECONDS = 2 * 60 * 60
 DEFAULT_PORT = 8766
 _JSON = "application/json"
@@ -296,11 +307,8 @@ class _Handler(BaseHTTPRequestHandler):
             if len(raw) != length:   # the client went away mid-body: nothing to answer
                 self.close_connection = True
                 return
-            try:
-                status, headers, body = host.respond(self.command, self.path,
-                                                     dict(self.headers.items()), raw)
-            except Exception:  # noqa: BLE001 - never a stack trace to the client
-                status, headers, body = _rpc_error(500, -32603, "Internal error")
+            status, headers, body = self.server.execute(   # type: ignore[attr-defined]
+                host.respond, self.command, self.path, dict(self.headers.items()), raw)
         self.connection.settimeout(REQUEST_READ_SECONDS)   # the reply's own bound
         self.send_response(status)
         for name, value in headers.items():
@@ -325,10 +333,126 @@ def loopback(address: str) -> bool:
         return False
 
 
+_BUSY = (b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 5\r\nContent-Length: 0\r\n"
+         b"Connection: close\r\n\r\n")
+
+
+class _Job:
+    """One read request for the execution worker: run once, or cancelled before it starts
+    (a stopping server), never both."""
+
+    __slots__ = ("call", "done", "lock", "reply", "started", "cancelled")
+
+    def __init__(self, call: Callable[[], Reply]) -> None:
+        self.call, self.done, self.lock = call, threading.Event(), threading.Lock()
+        self.reply: Reply | None = None
+        self.started = self.cancelled = False
+
+
+class _Server(ThreadingHTTPServer):
+    """Concurrent reads, one execution worker (see the module notes, SEC-003).
+
+    ``serve_forever`` runs the accept loop on a helper thread and the execution worker on
+    the calling thread until ``shutdown``; a request not yet started then is answered 503."""
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self, address: tuple[str, int]) -> None:
+        super().__init__(address, _Handler)
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self._jobs: queue.Queue[_Job] = queue.Queue(MAX_QUEUED)
+        self._stopped = threading.Event()
+
+    # ---- connections -----------------------------------------------------------------
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._slots.acquire(blocking=False):
+            try:   # too many connections at once: refused at once, never left unread
+                request.settimeout(1)
+                request.sendall(_BUSY)
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    # ---- execution -------------------------------------------------------------------
+
+    def execute(self, respond: Callable[..., Reply], *args: Any) -> Reply:
+        """``respond(*args)`` on the execution worker: 503 when the queue is full or the
+        server stops before it starts, 500 (no stack trace) when it raises."""
+        def call() -> Reply:
+            try:
+                return respond(*args)
+            except Exception:  # noqa: BLE001 - never a stack trace to the client
+                return _rpc_error(500, -32603, "Internal error")
+
+        busy = _json(503, {"error": {"code": "busy"}}, {"Retry-After": "5"})
+        job = _Job(call)
+        if self._stopped.is_set():
+            return busy
+        try:
+            self._jobs.put_nowait(job)
+        except queue.Full:
+            return busy
+        while not job.done.wait(0.25):
+            if self._stopped.is_set():
+                with job.lock:
+                    if not job.started:
+                        job.cancelled = True
+                        return busy
+        return job.reply if job.reply is not None else busy
+
+    def _work(self) -> None:
+        while not self._stopped.is_set():
+            try:
+                job = self._jobs.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            with job.lock:
+                if job.cancelled or self._stopped.is_set():
+                    job.cancelled = True
+                    job.done.set()
+                    continue
+                job.started = True
+            try:
+                job.reply = job.call()
+            finally:
+                job.done.set()
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        def accept() -> None:
+            try:
+                super(_Server, self).serve_forever(poll_interval)
+            finally:
+                self._stopped.set()
+
+        acceptor = threading.Thread(target=accept, name="mcp-http-accept", daemon=True)
+        acceptor.start()
+        try:
+            self._work()
+        finally:
+            self._stopped.set()
+            if acceptor.is_alive():   # the worker failed: stop accepting too
+                self.shutdown()
+            acceptor.join(timeout=5)
+
+
 def make_server(host: McpHttpHost, address: str, port: int) -> HTTPServer:
     if not loopback(address):
         raise ValueError("mcp_http_host_binds_loopback_only")
-    server = HTTPServer((address, port), _Handler)
+    server = _Server((address, port))
     server.mcp_host = host   # type: ignore[attr-defined]
     return server
 
@@ -356,7 +480,8 @@ def main(argv: list[str] | None = None, *, directory: Callable[[Any], Any] | Non
                              "without it every employee is refused (portal_access_unavailable)")
     parser.add_argument("--portal-access-max-age-hours", type=float, default=None,
                         help="refuse the Portal access snapshot (every employee denied) "
-                             "once its read_at is older than this many hours")
+                             "once its read_at is older than this many hours (default 168: "
+                             "every snapshot expires, SEC-004)")
     parser.add_argument("--bind", default="127.0.0.1", help="loopback address only")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--allowed-origin", action="append", default=[],

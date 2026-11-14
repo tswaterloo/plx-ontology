@@ -16,7 +16,7 @@ import type { ActionResult, ApprovalsQueue } from "@/lib/types";
 // wait on, oldest first. A nudge is a draft: it goes out only through the card's preview
 // and your confirm.
 /** Where an ask was made, as the reader names it. */
-const CHANNEL: Record<string, string> = { mail: "Email", email: "Email", teams: "Teams", mission_control: "Mission Control" };
+const CHANNEL: Record<string, string> = { mail: "Email", email: "Email", teams: "Teams", mission_control: "Mission Control", portal: "Portal" };
 
 /** The server groups an ask with no named approver under "not recorded". */
 const waitingOn = (who: string) => (who === "not recorded" ? "an approver not on record" : who);

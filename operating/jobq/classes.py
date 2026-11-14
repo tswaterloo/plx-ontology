@@ -48,7 +48,7 @@ class JobClass:
 _CLASSES = (
     JobClass("delta", 10, 24, 12, 1, unit="plx-delta.service", cooldown_s=300,
              max_attempts=3, backoff_s=120, preempt_after_s=120),
-    JobClass("proactive-whole", 20, 16, 4, 1, unit="plx-proactive-whole.service",
+    JobClass("proactive-whole", 20, 8, 4, 1, unit="plx-proactive-whole.service",
              max_attempts=2, backoff_s=300, preempt_after_s=300),
     JobClass("proactive-inc", 20, 5, 1, 1, unit="plx-proactive-inc.service", cooldown_s=60,
              max_attempts=2, backoff_s=60, preempt_after_s=300),

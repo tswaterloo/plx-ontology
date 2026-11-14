@@ -130,6 +130,22 @@ class OntologyLoadTests(unittest.TestCase):
                     mock.patch.object(ontology_reader, "CELL_SPAN_EXACT_MS", 200):
                 got = pg.family_cell_span(families[0])
             self.assertEqual(got, tuple(whole))
+            # the same inside an open transaction (the facts read's snapshot): the cancel
+            # rolls back to its savepoint, the whole span is read, the snapshot goes on
+            with pg.lock:
+                pg.conn._pg.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+            try:
+                with mock.patch.object(ontology_reader, "CELL_SPAN_SQL", slow), \
+                        mock.patch.object(ontology_reader, "CELL_SPAN_EXACT_MS", 200):
+                    self.assertEqual(pg.family_cell_span(families[0]), tuple(whole))
+                self.assertEqual(pg.family_cell_span(families[0]),
+                                 None if exact[families[0]][0] is None
+                                 else tuple(exact[families[0]]))
+                with pg.lock:
+                    self.assertEqual(pg.conn._pg.execute("SELECT 1").fetchone()[0], 1)
+            finally:
+                with pg.lock:
+                    pg.conn._pg.execute("ROLLBACK")
             for family in families:
                 if exact[family][0] is not None:
                     self.assertTrue(got[0] <= exact[family][0]

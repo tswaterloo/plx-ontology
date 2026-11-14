@@ -27,6 +27,11 @@ IMPORT_TO_DIST = {
     "transformers": "transformers", "sentence_transformers": "sentence-transformers",
     "docx": "python-docx", "pptx": "python-pptx", "mypy": "mypy",
 }
+# A submodule import that needs another distribution at import time (the module raises
+# without it), declared beside the import: starlette's TestClient needs httpx2.
+SUBMODULE_NEEDS = {
+    "fastapi.testclient": "httpx2", "starlette.testclient": "httpx2",
+}
 PIN = re.compile(r"^([A-Za-z0-9_.-]+)(?:\[[^\]]+\])?==([^\s#;]+)")
 
 
@@ -55,7 +60,9 @@ def tracked_python() -> list[Path]:
     return [ROOT / p for p in out]
 
 
-def third_party_imports() -> dict[str, set[str]]:
+def third_party_imports(full: bool = False) -> dict[str, set[str]]:
+    """Top-level third-party import name -> files importing it (``full``: the whole
+    dotted name, e.g. ``fastapi.testclient``)."""
     files = tracked_python()
     local = {p.stem for p in files} | {d.name for p in files for d in p.relative_to(ROOT).parents
                                        if d.name}
@@ -76,7 +83,8 @@ def third_party_imports() -> dict[str, set[str]]:
             for name in names:
                 top = name.split(".")[0]
                 if top not in std and top not in local:
-                    found.setdefault(top, set()).add(str(path.relative_to(ROOT)))
+                    found.setdefault(name if full else top, set()).add(
+                        str(path.relative_to(ROOT)))
     return found
 
 
@@ -91,6 +99,16 @@ class DependencyManifestTest(unittest.TestCase):
         missing = sorted({IMPORT_TO_DIST[name] for name in imports}
                          - set(pins))
         self.assertEqual(missing, [], "imported but not in a requirements file")
+
+    def test_a_submodule_import_declares_what_it_needs(self):
+        """``from fastapi.testclient import TestClient`` raises without httpx2, which no
+        file imports by name: the import scan alone misses it."""
+        pins = declared()
+        imports = third_party_imports(full=True)
+        self.assertIn("fastapi.testclient", imports)  # the scan sees dotted names
+        missing = {need: sorted(imports[name])[:3] for name, need in SUBMODULE_NEEDS.items()
+                   if name in imports and canon(need) not in pins}
+        self.assertEqual(missing, {}, "a submodule import needs this distribution; pin it")
 
     def test_pins_match_the_installed_versions(self):
         mismatched = {}

@@ -56,6 +56,7 @@ CONDITION_WORDS = {
     "tested": "It was tested", "to_me": "It is addressed to the person",
     "after_own_post": "It answers the person's own message in a conversation they keep writing in",
     "cc_min": "Several people are copied on it",
+    "answers_sender": "The person usually answers this sender",
 }
 # conditions whose words run straight into their value ("The record is a purchase order")
 PLAIN_JOIN = frozenset({"object_type_in", "status_in", "quality_in"})

@@ -1,10 +1,10 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Activity, BellRing, Bookmark, Bot, CalendarClock, Clock3, Gauge, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
+import { Activity, BellRing, Bookmark, Bot, CalendarClock, Clock3, FileText, Gauge, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { getHome, getLateList, getOpsAlarms, getOpsHealth, type OpsAlarms, type OpsCheck, type OpsHealth } from "@/lib/api";
 import { DesktopBridge } from "./desktop-bridge";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
@@ -15,13 +15,17 @@ import { stashPending } from "@/lib/pending";
 import { useShortcut } from "@/lib/platform";
 import { useSaved } from "@/lib/saved";
 import { readAllLate } from "@/lib/late";
+import { readAheadRoute } from "@/lib/route-reads";
 import { onSessionReset } from "@/lib/session-cache";
 import type { HomeResponse, LatePo } from "@/lib/types";
 import { PlaceIcon, SystemCode } from "./ui/glyphs";
 import { RequireAuth, useAuth } from "./auth";
 import { ThemeToggle } from "./theme";
 import { Pending } from "./ui/skeleton";
-import { ViewAsBar, ViewAsPicker } from "./view-as";
+import { ViewAsBar } from "./view-as";
+
+/** The owner's view-as picker loads when it is first opened. */
+const ViewAsPicker = lazy(() => import("./view-as-picker"));
 import { ErrorNotice } from "./ui/notice";
 import { ApiError } from "@/lib/errors";
 
@@ -206,6 +210,7 @@ export const NAV: { href: string; label: string; icon: LucideIcon; late?: boolea
   { href: "/ask", label: "Ask", icon: MessageCircle },
   { href: "/watching", label: "Watching", icon: BellRing },
   { href: "/work-log", label: "Work log", icon: History },
+  { href: "/templates", label: "Templates", icon: FileText },
   { href: "/ops", label: "Reliability", icon: Activity, ops: true },
   { href: "/trust", label: "Trust", icon: Gauge, ops: true },
 ];
@@ -459,6 +464,8 @@ function NavItem({ href, label, count, onNavigate }: { href: string; label: stri
     <Link
       href={href}
       onClick={onNavigate}
+      onPointerEnter={() => readAheadRoute(href)}
+      onFocus={() => readAheadRoute(href)}
       aria-current={on ? "page" : undefined}
       title={label}
       className={cn(
@@ -703,7 +710,11 @@ function UserMenu() {
   const name = state.me.display_name || "Account";
   return (
     <>
-    {state.me.can_view_as && <ViewAsPicker open={picking} onOpenChange={setPicking} />}
+    {state.me.can_view_as && picking && (
+      <Suspense fallback={null}>
+        <ViewAsPicker open={picking} onOpenChange={setPicking} />
+      </Suspense>
+    )}
     <Menu.Root>
       <Menu.Trigger aria-label={`Account: ${name}`} className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-hover max-xl:justify-center max-xl:px-0 cursor-pointer">
         <Avatar name={name} className="size-5 text-[9px]" />
@@ -739,7 +750,7 @@ function TabBar() {
         {tabs.map(({ href, label, icon: Icon, late: showLate }) => {
           const on = isOn(path, href);
           return (
-            <Link key={href} href={href} aria-current={on ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium", on ? "text-accent" : "text-muted")}>
+            <Link key={href} href={href} onPointerDown={() => readAheadRoute(href)} aria-current={on ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium", on ? "text-accent" : "text-muted")}>
               <Icon className="size-[22px]" strokeWidth={on ? 2 : 1.7} aria-hidden />
               {label}
               {showLate && typeof late === "number" && late > 0 && <span className="sr-only">, {late} late</span>}
@@ -816,7 +827,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/trust", "/work-log", "/help"];
+export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/trust", "/work-log", "/templates", "/help"];
 
 function ShellSkeleton() {
   return (

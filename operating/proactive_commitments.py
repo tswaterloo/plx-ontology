@@ -37,7 +37,9 @@
   (``Lead, not firm``, low priority). A message to our own people only is no promise to a
   customer (``internal_only``).
 
-* ``needs_reply`` (per signed-in user: "Needs my reply"). An inbound message in one
+* ``needs_reply`` (per signed-in user: "Needs my reply"). Mail naming no order is judged
+  too (``_Population._read_recent``: inbound, non-automated, from an outside address): a
+  lead, low priority, no order facts. An inbound message in one
   person's own mailbox (``Email.mailbox``, its audience ``mail:<mailbox>``) addressed TO
   them (their address in ``to_addresses``; the tenant's directory gives each mailbox's
   addresses), from anyone else, whose own text asks a question or a request (``asks``),
@@ -621,7 +623,7 @@ class _Population:
                 return verdicts[key]
 
         def chunk(part: list[str]) -> tuple[int, dict[str, set[str]], set[str], dict[str, str],
-                                           list[str]]:
+                                           list[str], set[str]]:
             """One chunk read on this thread's connection: (messages not cleared, ours ->
             customers, those naming a customer order, audiences)."""
             heard = dict(self._audiences(part))
@@ -630,9 +632,17 @@ class _Population:
             values = st.values(["Email"], ("sender", "to_addresses", "cc_addresses"),
                                objects=mine)
             ours = {}
+            inbound: set[str] = set()   # reply candidates: outside sender, to one of ours
             for oid, entry in values.items():
                 sender = _addr(_words(entry, "sender"))
-                if "@" not in sender or not self.internal(sender) or AUTOMATED.search(sender):
+                if "@" not in sender or AUTOMATED.search(sender):
+                    continue
+                if not self.internal(sender):
+                    # inbound mail naming no order (``needs_reply``): from an outside
+                    # address, TO one of our people (the mailbox's audience is cleared)
+                    if any(self.internal(a) for a in
+                           _addresses(_words(entry, "to_addresses"))):
+                        inbound.add(oid)
                     continue
                 outside = [a for a in (_addresses(_words(entry, "to_addresses"))
                                        + _addresses(_words(entry, "cc_addresses")))
@@ -642,10 +652,23 @@ class _Population:
                     ours[oid] = ({clusters[c] for a in outside for c in book.get(a, ())}
                                  or {clusters[c] for a in outside
                                      for c in book.get(a.rsplit("@", 1)[1], ())})
+                    if not ours[oid]:
+                        inbound.add(oid)   # ours to outside, no customer: it may be the reply
             named = {link["from_object"] for link in _touch(st, ours, names,
                                                             end="from_object")}
-            return len(part) - len(mine), ours, named, {o: heard[o] for o in ours}, mine
+            return (len(part) - len(mine), ours, named, {o: heard[o] for o in set(ours) | inbound},
+                    mine, inbound)
 
+        # a message judged not ours to a customer is judged again once a mention link names
+        # an order from it (a link applied in place after the verdict: ids only)
+        if cursor.unnamed:
+            again = [o for o in ids if o in cursor.unnamed]
+            for start in range(0, len(again), RECENT_CHUNK):
+                part = {o: None for o in again[start:start + RECENT_CHUNK]}
+                for link in _touch(st, part, names, end="from_object"):
+                    cursor.rejected.discard(link["from_object"])
+                    cursor.unnamed.discard(link["from_object"])
+                    cursor.kept.pop(link["from_object"], None)   # read for replies only
         # what an earlier pass judged is not read again: a message that is none of ours to a
         # customer is skipped, one that was kept is taken from the cursor (its audience asked
         # again: a mailbox no longer cleared drops it)
@@ -659,15 +682,6 @@ class _Population:
                 else:
                     self.skipped["recent_message_not_cleared"] += 1
                     del cursor.kept[oid]
-        # a message judged not ours to a customer is judged again once a mention link names
-        # an order from it (a link applied in place after the verdict: ids only)
-        if cursor.unnamed:
-            again = [o for o in ids if o in cursor.unnamed]
-            for start in range(0, len(again), RECENT_CHUNK):
-                part = {o: None for o in again[start:start + RECENT_CHUNK]}
-                for link in _touch(st, part, names, end="from_object"):
-                    cursor.rejected.discard(link["from_object"])
-                    cursor.unnamed.discard(link["from_object"])
         ids = [o for o in ids if o not in cursor.kept and o not in cursor.rejected
                and o not in kept]
         parts = [ids[i:i + RECENT_CHUNK] for i in range(0, len(ids), RECENT_CHUNK)]
@@ -695,7 +709,7 @@ class _Population:
                     # kept, the count is of what was not)
                     self.skipped["recent_mail_over_budget"] += len(parts[start // RECENT_CHUNK])
                     continue
-                not_cleared, ours, named, heard, cleared = done
+                not_cleared, ours, named, heard, cleared, inbound = done
                 self.skipped["recent_message_not_cleared"] += not_cleared
                 for oid in cleared:
                     customers = ours.get(oid)
@@ -709,6 +723,13 @@ class _Population:
                         cursor.rejected.add(oid)   # judged: not ours to a customer
                         if oid in ours:   # ours to outside, to no customer: rests on links
                             cursor.unnamed.add(oid)
+                        if oid in inbound:
+                            # a reply candidate (inbound), or our mail to an outside address
+                            # of no customer, which may be its answer: read for
+                            # ``needs_reply`` only
+                            kept[oid] = set()
+                            audience[oid] = heard[oid]
+                            cursor.kept[oid] = ([], heard[oid], False)
         finally:
             stop.set()
             if pool is not None:
@@ -753,7 +774,7 @@ class _Population:
             people = fingerprint() if callable(fingerprint) else None
         except Exception:  # noqa: BLE001 - undecidable: never reuse a verdict
             people = None
-        h.update(json.dumps([sorted(self.domains), sorted(self.staff), AUTOMATED.pattern,
+        h.update(json.dumps(["inbound-v1", sorted(self.domains), sorted(self.staff), AUTOMATED.pattern,
                              people or secrets.token_hex(16),
                              sorted((a, sorted(clusters[c] for c in v))
                                     for a, v in book.items())]).encode())
@@ -1017,6 +1038,8 @@ def commitments(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         m = pop.messages[oid]
         if not m["ours"] or m["automated"] or m["day"] < as_of - timedelta(days=PROMISE_DAYS):
             continue
+        if m.get("recent") and not m.get("customers") and not m.get("names_order"):
+            continue   # read for ``needs_reply`` only (inbound, or our reply to no customer)
         if m["forward"]:
             skipped["forward_not_judged"] += 1
             continue
@@ -1264,15 +1287,18 @@ def needs_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         made = gap(
             NEEDS_MY_REPLY, NEEDS_REPLY, m["id"], "Email" if m["channel"] == "mail" else m["type"],
             f"reply|{owner}",
-            summary=(f"{', '.join(numbers[:3])}: "
-                     f"{'a message' if m['channel'] == 'mail' else 'a Teams message'} of "
+            summary=((f"{', '.join(numbers[:3])}: " if numbers else "")
+                     + f"{'a message' if m['channel'] == 'mail' else 'a Teams message'} of "
                      f"{_say(m['day'])} waits on your reply, "
                      f"{_count(waited, 'business day')}"
                      + (f"; {len(overdue)} past the requested date" if overdue else "")),
             missing="Reply to it, or hand it to who should (nothing is sent until you send it)",
-            why=("Addressed to you, its own text asks a question or a request, and no later "
-                 "message of ours is in its conversation (read among the messages tied to "
-                 "the same open orders); the message and the orders cited."),
+            why=(("Addressed to you, its own text asks a question or a request, and no later "
+                  "message of ours is in its conversation (read among the messages tied to "
+                  "the same open orders); the message and the orders cited.") if open_named
+                 else ("Addressed to you by an outside sender, its own text asks a question "
+                       "or a request, it names no order, and no later message of ours is in "
+                       "its conversation (read among our recent mail); the message cited.")),
             # the inbox lists by priority: a message about an order past its date first
             priority=("high" if overdue else "medium") if not lead else "low",
             about=("Email", "reply"), groups=groups,

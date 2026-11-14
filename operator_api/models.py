@@ -1705,7 +1705,7 @@ EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "duplicate_supplier_invoice", "duplicate_supplier_payment",
                     "customer_credits_rising",
                     "price_below_typical", "price_below_cost", "customer_price_drop",
-                    "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+                    "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "portal_approval_pending",
                     "planner_task_overdue", "aged_receivable_worsening",
                     "aged_payable_worsening", "production_late",
                     "assembly_damage_spike", "teams_unanswered_ask",
@@ -3674,6 +3674,141 @@ class MemoryForgotten(_Model):
     forgotten: bool
 
 
+TemplateDocType = Literal["quote", "order_confirmation", "supplier_email", "customer_email",
+                          "po_note", "form", "phrasing", "price_list", "proposal",
+                          "spec_sheet", "coa", "letter", "other"]
+
+
+class TemplatePlaceholder(_Model):
+    """A placeholder a template body may hold, as ``{{name}}``: a record field, a
+    ``Type.property``, ``items`` (the record's lines) or ``today``."""
+    name: str
+    type: Literal["text", "date", "quantity", "lines"]
+    label: str
+
+
+class TemplateKind(_Model):
+    doc_type: TemplateDocType
+    label: str
+
+
+class Template(_Model):
+    """A saved template: yours (``mine``) or one shared with you or a role of yours (read
+    and use only)."""
+    id: int
+    name: str
+    doc_type: TemplateDocType
+    body: str
+    placeholders: list[TemplatePlaceholder] = Field(default_factory=list)
+    style_notes: str = ""
+    shared_with: list[str] = Field(default_factory=list, description="Who else may use it "
+                                   "(``person:<address>``, ``role:<role>``); empty: private. "
+                                   "Shown to its owner only.")
+    mine: bool
+    uses: int = 0
+    created_at: str
+    updated_at: str
+    last_used_at: Optional[str] = None
+    source_ref: Optional[str] = Field(None, description="What it was saved from (yours only).")
+
+
+class TemplateList(_Model):
+    available: bool = Field(description="False when templates are off (no store) or cannot "
+                                        "be read now (the people exclusion is not loaded).")
+    templates: list[Template] = Field(default_factory=list)
+    kinds: list[TemplateKind] = Field(default_factory=list)
+    fields: list[TemplatePlaceholder] = Field(default_factory=list)
+    share_roles: list[str] = Field(default_factory=list, description="The roles a template "
+                                   "may be shared with (besides any colleague by address).")
+
+
+class TemplateSave(_Model):
+    """A template to save (new) or a change to one of yours. Pay and finance are refused;
+    a placeholder must name a known field."""
+    name: str = Field(min_length=1, max_length=120)
+    doc_type: TemplateDocType
+    body: str = Field(min_length=1, max_length=8000)
+    style_notes: str = Field("", max_length=2000)
+    shared_with: list[str] = Field(default_factory=list, max_length=50, description=(
+        "Who else may use it: ``person:<a colleague's address>`` or ``role:<role>``; "
+        "empty: private."))
+    source_ref: Optional[str] = Field(None, max_length=400, description="The draft, form "
+                                      "or document it is saved from (its citation).")
+
+
+class TemplateDeleted(_Model):
+    deleted: bool
+
+
+class TemplateProposeRequest(_Model):
+    """A draft, form or document's text to turn into a template: each value a fact of the
+    record holds exactly becomes its placeholder."""
+    text: str = Field(min_length=1, max_length=8000)
+    record: Optional[str] = Field(None, max_length=700, description="The record the text "
+                                  "is about (an identifier such as \"PO 1234\" or an id).")
+
+
+class TemplateReplaced(_Model):
+    name: str
+    value: str
+
+
+class TemplateProposal(_Model):
+    body: str
+    replaced: list[TemplateReplaced] = Field(default_factory=list)
+    record: Optional[ObjectRef] = None
+
+
+class TemplateFillRequest(_Model):
+    record: Optional[str] = Field(None, max_length=700, description="The record to fill "
+                                  "from (an identifier or an id); none: nothing is filled, "
+                                  "every placeholder is marked check.")
+
+
+class TemplateFillField(_Model):
+    name: str
+    label: str
+    type: Literal["text", "date", "quantity", "lines"]
+    status: Literal["filled", "check"] = Field(description="filled: one value the records "
+                                               "agree on (``citation``); check: left as "
+                                               "[check: label] for you, with why.")
+    value: str = ""
+    reason: str = ""
+    citation: Optional[FillCitation] = None
+    also: list[FillCitation] = Field(default_factory=list)
+
+
+class TemplateFilled(_Model):
+    """A template filled from one record: the text to edit and send yourself, every
+    placeholder with its source or why it is marked check. Nothing is sent or saved."""
+    template_id: int
+    name: str
+    doc_type: TemplateDocType
+    text: str
+    style_notes: str = ""
+    record: Optional[ObjectRef] = None
+    fields: list[TemplateFillField] = Field(default_factory=list)
+    checks: int = 0
+    notes: list[str] = Field(default_factory=list)
+
+
+class TemplateSuggestion(_Model):
+    """A template offered for the document you are starting: one you saved or that is
+    shared with you (``template``), or the layout learned from the documents of this kind
+    you sent (``learned``: ``ask`` is the one-box line that makes it)."""
+    kind: Literal["saved", "learned"]
+    doc_type: TemplateDocType
+    label: str
+    detail: str = ""
+    template: Optional[Template] = None
+    ask: Optional[str] = None
+
+
+class TemplateSuggestions(_Model):
+    doc_type: TemplateDocType
+    suggestions: list[TemplateSuggestion] = Field(default_factory=list)
+
+
 class TrustFreshness(_Model):
     """One source system: the newest capture taken from it, the newest capture the served
     data holds, and the lag between them."""
@@ -4012,6 +4147,9 @@ class InstructPart(_Model):
     files: list[AskAttachmentNote] = Field(default_factory=list, description="The files "
                                            "this instruction read (never their content): "
                                            "continuing it needs them attached again.")
+    template: Optional["TemplateFilled"] = Field(None, json_schema_extra=_optional,
+                                                 description="A saved template filled "
+                                                 "from the record the line names.")
 
 
 class UploadPreview(_Model):
@@ -4043,3 +4181,7 @@ class UploadApprove(_Model):
 AskDraft.model_rebuild()
 AnswerPayload.model_rebuild()
 AskRequest.model_rebuild()
+TemplateFillField.model_rebuild()
+TemplateFilled.model_rebuild()
+TemplateProposal.model_rebuild()
+InstructPart.model_rebuild()

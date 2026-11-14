@@ -48,41 +48,6 @@ BACKOFF_CAP_S = 3600.0
 CHANNEL = "jobq_events"
 ANALYZE_AFTER = 500
 
-SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS jobq;
-CREATE TABLE IF NOT EXISTS jobq.event_queue (
-  id bigserial PRIMARY KEY,
-  topic text NOT NULL,
-  event_id text NOT NULL,
-  event_type text NOT NULL,
-  group_key text NOT NULL,
-  seq bigint NOT NULL,
-  part integer NOT NULL,
-  priority integer NOT NULL,
-  body jsonb NOT NULL,
-  state text NOT NULL DEFAULT 'ready' CHECK (state IN ('ready', 'inflight', 'done', 'dead')),
-  receives integer NOT NULL DEFAULT 0,
-  max_receives integer NOT NULL,
-  visible_after timestamptz NOT NULL DEFAULT now(),
-  consumer text,
-  lease_until timestamptz,
-  published_at timestamptz NOT NULL DEFAULT now(),
-  done_at timestamptz,
-  last_error text,
-  UNIQUE (topic, event_id),
-  UNIQUE (topic, group_key, seq)
-);
-CREATE INDEX IF NOT EXISTS event_queue_open ON jobq.event_queue (topic, group_key, id)
-  WHERE state IN ('ready', 'inflight');
-CREATE TABLE IF NOT EXISTS jobq.event_handled (
-  topic text NOT NULL,
-  handler text NOT NULL,
-  event_id text NOT NULL,
-  at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (topic, handler, event_id)
-);
-"""
-
 # Group heads: per group the oldest unfinished message and the group's best waiting priority,
 # in one materialized pass over the open rows (DISTINCT ON over the open index), then each
 # head by its primary key: a receive stays fast at thousands of waiting events whatever the
@@ -146,9 +111,9 @@ class EventQueue:
         self.conn.close()
 
     def init(self) -> None:
-        with self.conn.transaction():
-            self.conn.execute("SELECT pg_advisory_xact_lock(hashtext('jobq.events.init'))")
-            self.conn.execute(SCHEMA)
+        """Apply the queue database's pending migrations (``operating/jobq/migrations``)."""
+        from . import schema
+        schema.apply(self.conn)
 
     def partition_of(self, group_key: str) -> int:
         row = self.conn.execute("SELECT abs(hashtext(%s)::bigint) %% %s AS p",

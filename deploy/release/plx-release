@@ -16,8 +16,9 @@
 #   plx-release switch <id>     current -> <id>, previous -> the old current (atomic)
 #   plx-release rollback        current -> previous (and previous -> the one rolled back)
 #   plx-release restart [--with-ingest]
-#       Restart the long-running units that are active (try-restart) so they load current;
-#       timer-driven units (delta, proactive, truth check, AI watcher, backup) pick it up on
+#       Restart the long-running units that are active (try-restart) so they load current
+#       (the job-queue worker too: it starts no job process itself and a restarted worker
+#       adopts the running jobs; 11-13 it served from a release 6 h old); timer-driven units (delta, proactive, truth check, AI watcher, backup) pick it up on
 #       their next run. plx-ingest restarts only with --with-ingest (a restart ends a build).
 #       Then waits for /api/health. Needs sudo; the supervisor runs it.
 #   plx-release status | list | prune [--keep N]
@@ -37,7 +38,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 . "$here/../lib.sh"
-LONG_RUNNING="plx-api plx-app plx-search-follow plx-search-generation plx-rag-backfill"
+LONG_RUNNING="plx-api plx-app plx-search-follow plx-search-generation plx-rag-backfill plx-jobq-worker"
 
 die() { echo "plx-release: $*" >&2; exit 1; }
 sealed() { [ -n "${PLX_RELEASE_OWNER:-}" ]; }
@@ -249,8 +250,17 @@ restart() {
   # API the new release crashes is "activating" or "failed", never a stopped one
   local api_was_active=yes
   systemctl is-active -q plx-api || api_was_active=no
+  # A oneshot unit (plx-search-follow) restarted mid-run holds try-restart until its whole run
+  # ends (11-13: a deploy waited 30+ min); it loads current on its next run, so queue its
+  # restart without waiting. Long-running services are still restarted and waited for.
+  local svc="" one="" u
+  for u in $units; do
+    if [ "$(systemctl show "$u" -p Type --value 2>/dev/null)" = oneshot ]; then one="$one $u"; else svc="$svc $u"; fi
+  done
   # shellcheck disable=SC2086
-  sudo systemctl try-restart $units
+  [ -z "$svc" ] || sudo systemctl try-restart $svc
+  # shellcheck disable=SC2086
+  [ -z "$one" ] || sudo systemctl try-restart --no-block $one
   sudo systemctl reload-or-restart plx-caddy 2>/dev/null || true
   if [ "$api_was_active" = no ]; then
     log "restart ($units) api=stopped on $(current_id)"

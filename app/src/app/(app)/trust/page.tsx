@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { NotFoundBody } from "@/components/not-found-body";
 import { eastern } from "@/components/shell";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { getTrust } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
 import { countdownText, roleLabel, rowStateShown, workflowLabel } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
@@ -71,16 +72,7 @@ function AlertRow({ a }: { a: TrustAlert }) {
 // eval results, alert registry, autopilot scores, server switches); an unmeasured figure
 // says so. The owner and the Team readers only; anyone else gets the route's 404.
 export default function TrustRoute() {
-  const [page, setPage] = useState<TrustPage | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setError(null);
-    getTrust(ctl.signal).then(setPage, (e) => !ctl.signal.aborted && setError(e));
-    return () => ctl.abort();
-  }, [round]);
+  const { data: page, error, retry } = useRead<TrustPage>("trust", (signal) => getTrust(signal));
   const alerts = useMemo(() => {
     const all = page?.alerts ?? [];
     return { on: all.filter((a) => a.on), off: all.filter((a) => !a.on && a.judged != null), unmeasured: all.filter((a) => a.judged == null) };

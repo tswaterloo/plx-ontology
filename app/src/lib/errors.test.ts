@@ -8,6 +8,9 @@ describe("plainError", () => {
     expect(plainError(new ApiError(500, "internal", "9f3a01bc"))).toMatch(/incident 9f3a01bc/);
     expect(plainError(new ApiError(403, "http_403"))).toMatch(/don't have access/);
     expect(plainError(new ApiError(504, "weird"))).toMatch(/Timed out/);
+    // an alert list not read yet is said as that, never as "no access" (UX walk 11-13)
+    expect(plainError(new ApiError(404, "alerts_not_read"))).toMatch(/haven't been read on this server yet/);
+    expect(plainError(new ApiError(404, "alerts_not_read"))).not.toMatch(/access/);
     expect(plainError(new TypeError("Failed to fetch"))).toMatch(/Can't reach/);
   });
 

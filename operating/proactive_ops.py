@@ -17,6 +17,10 @@ no rule names a record, a person, a customer or an item.
 * ``mc_approval_pending``: an MC approval gate still ``pending`` with no decision recorded,
   requested ``APPROVAL_DAYS`` or more ago. The alert only says it waits: an approval is
   never defaulted, decided or cleared here.
+* ``portal_approval_pending``: a served Portal ``PurchaseRequisition`` whose status is
+  ``PENDING_APPROVAL`` with no approval date, aged from its ``requested_date`` for
+  ``PORTAL_APPROVAL_BUSINESS_DAYS`` business days or more. The approver is not served, so the
+  approvals queue shows it as channel ``portal`` waiting on "not recorded". Never decided here.
 * ``planner_task_overdue``: a Planner task not completed (no completion time, under 100%)
   past its due time.
 * ``aged_balance_worsening``: per BC aged receivable or payable record (one per customer or
@@ -74,6 +78,7 @@ from .proactive_business import FINANCE, _currency, _day, _dec, _one, _text, _ti
 MC_OVERDUE = "mc_task_overdue"
 MC_STUCK = "mc_task_stuck"
 MC_APPROVAL = "mc_approval_pending"
+PORTAL_APPROVAL = "portal_approval_pending"
 PLANNER = "planner_task_overdue"
 AGED = "aged_balance_worsening"
 AGED_AR = "aged_receivable_worsening"
@@ -81,8 +86,8 @@ AGED_AP = "aged_payable_worsening"
 PRODUCTION = "production_late"
 DAMAGE = "assembly_damage_spike"
 TEAMS = "teams_unanswered_ask"
-RULES = (MC_OVERDUE, MC_STUCK, MC_APPROVAL, PLANNER, AGED, PRODUCTION, DAMAGE, TEAMS)
-KINDS = (MC_OVERDUE, MC_STUCK, MC_APPROVAL, PLANNER, AGED_AR, AGED_AP, PRODUCTION, DAMAGE,
+RULES = (MC_OVERDUE, MC_STUCK, MC_APPROVAL, PORTAL_APPROVAL, PLANNER, AGED, PRODUCTION, DAMAGE, TEAMS)
+KINDS = (MC_OVERDUE, MC_STUCK, MC_APPROVAL, PORTAL_APPROVAL, PLANNER, AGED_AR, AGED_AP, PRODUCTION, DAMAGE,
          TEAMS)
 
 SUBJECT_CHARS = 60
@@ -100,6 +105,11 @@ PARKED_STAGES = frozenset({"backlog"})
 MC_TASK_DUE = ("due_at", "due_date")          # read only where the schema declares one
 STUCK_DAYS = 14
 APPROVAL_DAYS = 3
+PORTAL_APPROVAL_BUSINESS_DAYS = 3
+PORTAL_REQUISITION = "PurchaseRequisition"
+# the statuses the Portal's PRStatus enum declares besides the one that waits
+REQUISITION_SETTLED = frozenset({"draft", "approved", "rejected", "converted_to_po",
+                                 "cancelled", "converted_to_cmr"})
 GATE_PENDING = frozenset({"pending"})
 GATE_DECIDED = frozenset({"approved", "rejected"})
 
@@ -444,6 +454,71 @@ def mc_approval_pending(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             about=(MC_GATE, "status"), groups=[cites([status_row]), cites([asked_row])],
             extra=cites([*props.get("gate_id", ()), *props.get("task_id", ())]),
             event={"days": days}))
+    out = result(gaps, not_evaluated=skipped)
+    out["counts"] = {k: counts.get(k, 0) for k in ("pending", "waiting", "decided")}
+    return out
+
+
+def portal_approval_pending(st: Any, as_of: date, *, gap: Callable, cites: Callable,
+                            result: Callable, skips: Callable, people: Any,
+                            settled: Sequence[str]) -> dict[str, Any]:
+    """Portal requisitions waiting for an approval, aged in business days from the date
+    they were requested (module doc). The requisition's approver is not served."""
+    blocked = _blocked_people(people, result)
+    if blocked is not None:
+        return blocked
+    found = st.values([PORTAL_REQUISITION], ("pr_number", "status", "requested_date",
+                                             "approved_date"))
+    audience = _audiences(st, found)
+    skipped = skips()
+    gaps = []
+    counts: Counter = Counter()
+    for oid, entry in sorted(found.items()):
+        _tick(st)
+        props = entry["props"]
+        cause = [(oid, "[]")]
+        if not people.unit_clear(audience.get(oid, "")):
+            skipped.note(NOT_JUDGED, [oid], cause)
+            continue
+        status_row = _one(props.get("status"))
+        status = _word(status_row)
+        if status in REQUISITION_SETTLED:
+            counts["decided"] += 1
+            continue
+        if status != "pending_approval":
+            skipped.note("status_missing" if status is None else "status_unmapped", [oid],
+                         cause)
+            continue
+        if _stated(props.get("approved_date")):
+            skipped.note("pending_but_decided", [oid], cause)   # sources disagree: unjudged
+            continue
+        asked_row = _one(props.get("requested_date"))
+        asked = _day(asked_row["value"]) if asked_row else None
+        if asked is None:
+            skipped.note("requested_date_unknown", [oid], cause)
+            continue
+        counts["pending"] += 1
+        days = _business_days(asked, as_of)
+        if days < PORTAL_APPROVAL_BUSINESS_DAYS:
+            continue
+        counts["waiting"] += 1
+        number = str((_one(props.get("pr_number")) or {}).get("value") or "").strip()
+        gaps.append(gap(
+            PORTAL_APPROVAL, PORTAL_APPROVAL, oid, PORTAL_REQUISITION, "pending",
+            summary=f"Requisition {number or 'record'} has waited "
+                    f"{_plural(days, 'business day')} for approval (requested "
+                    f"{asked.isoformat()})",
+            missing="Who approves this requisition, and when? (never approved for them; the "
+                    "approver is not recorded)",
+            why=f"The requisition's own status is pending approval, no approval date is "
+                f"recorded, and it was requested {PORTAL_APPROVAL_BUSINESS_DAYS} or more "
+                f"business days ago (status and request date cited).",
+            priority="high" if days >= 2 * PORTAL_APPROVAL_BUSINESS_DAYS else "medium",
+            about=(PORTAL_REQUISITION, "status"),
+            groups=[cites([status_row]), cites([asked_row])],
+            extra=cites(list(props.get("pr_number", ()))),
+            event={"days": days, "channel": "portal", "waiting_on": [],
+                   "family": "requisition", "asked_on": asked.isoformat()}))
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts.get(k, 0) for k in ("pending", "waiting", "decided")}
     return out

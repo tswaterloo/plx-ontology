@@ -100,6 +100,7 @@ import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from operating import declared_schema as _schemas
 from operating.declared_schema import ai_watcher as _AI_WATCHER
+from operating import humanize
 from operating.prose_style import PROSE_STYLE_RULE
 
 SCHEMA = "plx-ai-watcher/v1"
@@ -1320,13 +1321,24 @@ def proposals(run: Any, *, departments: Iterable[str]) -> list[dict[str, Any]]:
                             refused=decision["refused_said"])
         kind = item.get("rests_on") if item.get("rests_on") in CLAIM_KINDS else "other"
         priority = item.get("priority") if item.get("priority") in PRIORITIES else "medium"
+        next_step = screened(item.get("next_step"), claims, suggestion=True,
+                             refused=decision["refused_said"]) if claims else ""
+        if claims:
+            # written as a person would (``operating.humanize``): a change is kept only when
+            # every fact stays and the same screen keeps it whole
+            refused_said = decision["refused_said"]
+            text = humanize.polish(text, kind="report", verify=lambda t: screened(
+                t, claims, refused=refused_said) == t).text
+            why = humanize.polish(why, kind="report", verify=lambda t: screened(
+                t, claims, refused=refused_said) == t).text
+            next_step = humanize.polish(next_step, kind="report", verify=lambda t: screened(
+                t, claims, suggestion=True, refused=refused_said) == t).text
         out.append({
             "title": title, "subject": item.get("subject") if isinstance(
                 item.get("subject"), str) else None,
             "text": text,
             "why": why,
-            "next_step": screened(item.get("next_step"), claims, suggestion=True,
-                                  refused=decision["refused_said"]) if claims else "",
+            "next_step": next_step,
             "departments": [d for d in item.get("departments") or () if d in codes][:4],
             "priority": priority, "claim_kind": kind, "gate": gate,
             "claims": [{"id": c.get("id"), "text": _plain(c.get("text")),

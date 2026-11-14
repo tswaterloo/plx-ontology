@@ -3074,8 +3074,8 @@ class CaseOpener:
             if "error" not in other:
                 cards.append((other["object"]["object_type"], other))
         plans = plans_for(root_type)
-        # Every question family from the root and from each verified twin of the same
-        # type: each system's own links (an FM assembly order reaches its order line
+        # Every question family from the root and from each verified twin of the root's
+        # own type, by each system's own links (an FM assembly order reaches its order line
         # through the FM allocation row, its Portal twin through the MO's line).
         starts = [root_id] + [each["object"]["object_id"] for object_type, each in cards[1:]
                               if object_type == root_type]

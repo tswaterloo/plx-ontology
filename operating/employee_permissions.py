@@ -425,6 +425,12 @@ def groups_unavailable(principal: EmployeePrincipal) -> EntraGroupRead:
     return EntraGroupRead("unavailable", reason=GROUP_READ_BLOCKER)
 
 
+# SEC-004: a Portal access snapshot with no configured bound is refused once its read_at
+# is older than this (7 days); a host sets its own (``portal_access_max_age_hours``, at
+# most 30 days) to match its exporter's cadence.
+DEFAULT_PORTAL_ACCESS_MAX_AGE_HOURS = 168.0
+
+
 def portal_access_status(path: str | Path, *, max_age_hours: float | None = None,
                          clock: Callable[[], datetime] | None = None) -> dict[str, Any]:
     """``PortalAccessSnapshot.status`` for a configured path, never raising: a file that
@@ -485,12 +491,16 @@ class PortalAccessSnapshot:
                  clock: Callable[[], datetime] | None = None) -> None:
         """``max_age_hours``: older than this (by ``read_at``) the snapshot is refused
         (``portal_access_snapshot_stale``, an outage: every employee is denied with
-        ``rights_unresolved``) until it is exported again; None: no age bound."""
-        if max_age_hours is not None and (isinstance(max_age_hours, bool) or not isinstance(
-                max_age_hours, (int, float)) or not 0 < max_age_hours < float("inf")):
+        ``rights_unresolved``) until it is exported again; None: the default bound
+        ``DEFAULT_MAX_AGE_HOURS`` (SEC-004: there is no unbounded snapshot, so an export
+        whose refresh stopped expires by time alone)."""
+        if max_age_hours is None:
+            max_age_hours = DEFAULT_PORTAL_ACCESS_MAX_AGE_HOURS
+        if isinstance(max_age_hours, bool) or not isinstance(max_age_hours, (int, float)) \
+                or not 0 < max_age_hours < float("inf"):
             raise ValueError("portal_access_max_age_invalid")
         self.path = Path(path)
-        self.max_age_hours = None if max_age_hours is None else float(max_age_hours)
+        self.max_age_hours = float(max_age_hours)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._cache: tuple[tuple[int, ...], datetime, list[PortalAccessRead]] | None = None
         # Loud at startup (an unreadable file, a bad read_at); every later call re-reads
@@ -512,8 +522,7 @@ class PortalAccessSnapshot:
         now = self._clock()
         if read_at > now + self.FUTURE_SKEW:
             raise ValueError("portal_access_snapshot_read_at_future")
-        if age and self.max_age_hours is not None \
-                and now - read_at > timedelta(hours=self.max_age_hours):
+        if age and now - read_at > timedelta(hours=self.max_age_hours):
             raise ValueError("portal_access_snapshot_stale")
 
     def status(self) -> dict[str, Any]:

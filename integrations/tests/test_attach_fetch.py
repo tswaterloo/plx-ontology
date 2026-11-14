@@ -290,6 +290,48 @@ class FastPathTests(FastPathCase):
         self.assertEqual((counts["applied"], counts["not_deferred"]), (2, 1))
         self.assertEqual(self.rows()["ATT-3"][0], "unavailable")
 
+    def test_text_first_reads_no_ocr_and_leaves_scans_for_the_ocr_pass(self):
+        # ``read --ocr-pages 0`` once ran the fast OCR cap (0 read as "unset").
+        self.fast()
+        ocr_runs = []
+        real = attach_fetch.inline_reader
+
+        def reader(content, metadata, image_ocr):
+            status, text, made = real(content, metadata, image_ocr, defer_ocr=True)
+            ocr_runs.append(status == ct.TEXT_OCR)
+            return status, text, made
+        first = attach_fetch.read_pass(self.fetch_dir, workers=2, budget_seconds=600,
+                                       reader=reader, text_first=True)
+        self.assertFalse(any(ocr_runs))
+        self.assertEqual((first["read"], first["left_for_ocr"]), (2, 1))
+        self.assertEqual(first["by_status"], {"extracted": 2})
+        counts = self.apply()   # the scan stays deferred, never captured unread
+        self.assertEqual((counts["applied"], counts["awaiting_reading"]), (2, 1))
+        self.assertEqual(self.rows()["ATT-2"][0], capture_mail.ATTACHMENT_DEFERRED)
+        second = self.read()    # the OCR pass reads only what text-first left
+        self.assertEqual((second["read"], second["by_status"]), (1, {ct.TEXT_OCR: 1}))
+        self.assertEqual(self.apply()["applied"], 1)
+        self.assertEqual(self.rows()["ATT-2"], ("captured", ct.TEXT_OCR))
+        with self.assertRaises(ValueError):
+            attach_fetch.read_pass(self.fetch_dir, budget_seconds=1, text_first=True,
+                                   ocr_limits=(2, 150))
+        for extra in (["--ocr-dpi", "150"], ["--full-ocr"], ["--recap"],
+                      ["--state-dir", self.tmp.name]):
+            with self.subTest(extra=extra):
+                self.assertEqual(attach_fetch.main(
+                    ["read", "--fetch-dir", "/nonexistent", "--budget-seconds", "1",
+                     "--ocr-pages", "0", *extra]), 2)
+        with mock.patch.object(attach_fetch, "read_pass", return_value={"read": 0}) as run, \
+                mock.patch.object(attach_fetch, "_scrubbed_environment"):
+            self.assertEqual(attach_fetch.main(["read", "--fetch-dir", str(self.fetch_dir),
+                                                "--budget-seconds", "1", "--ocr-pages", "0"]), 0)
+            self.assertEqual((run.call_args.kwargs["text_first"],
+                              run.call_args.kwargs["ocr_limits"]), (True, None))
+            attach_fetch.main(["read", "--fetch-dir", str(self.fetch_dir),
+                               "--budget-seconds", "1"])
+            self.assertEqual((run.call_args.kwargs["text_first"],
+                              run.call_args.kwargs["ocr_limits"]), (False, (2, 150)))
+
     def test_without_batch_the_same_rows_land(self):
         _planned, report, _fetch = self.fast(batch=False)
         self.assertEqual(report["fetched"], 3)

@@ -1277,7 +1277,7 @@ def chase_escalation(st: Any, as_of: date, *, gap: Callable, cites: Callable,
 
 AGING = ((2, "0-2 business days"), (5, "3-5 business days"), (10, "6-10 business days"),
          (None, "over 10 business days"))
-QUEUE_KINDS = (APPROVAL_KIND, "mc_approval_pending")
+QUEUE_KINDS = (APPROVAL_KIND, "mc_approval_pending", "portal_approval_pending")
 
 
 def party_chases(st: Any, as_of: date, *, gap: Callable, cites: Callable,
@@ -1505,7 +1505,8 @@ def nudge_draft(item: Mapping[str, Any]) -> dict[str, Any]:
         f"Can you approve {what} I asked for {when}, or tell me what is missing or who "
         "should decide?"], subject="Approval waiting", facts=[("asked_on", asked)]
         if asked else (), specific=False)
-    return {"channel": "email" if item.get("kind") == APPROVAL_KIND else "teams",
+    return {"channel": {APPROVAL_KIND: "email", "portal_approval_pending": "portal"}.get(
+                item.get("kind"), "teams"),
             "to": [{"address": a} for a in to], "subject": "Approval waiting",
             "body": draft["body"] or "", "copy_check": draft["copy_check"],
             "status": "draft_not_sent", "sent": False}
@@ -1525,6 +1526,7 @@ def approvals_queue(gaps: Iterable[Mapping[str, Any]], today: date) -> dict[str,
         waiting_on = [a for a in event.get("waiting_on") or () if isinstance(a, str)]
         rows.append({"id": item.get("id"), "kind": item.get("kind"),
                      "channel": event.get("channel") or (
+                         "portal" if item.get("kind") == "portal_approval_pending" else
                          "mission_control" if item.get("kind") != APPROVAL_KIND else "mail"),
                      "summary": item.get("summary"), "family": event.get("family"),
                      "asked_by": event.get("asked_by"), "waiting_on": waiting_on,

@@ -908,6 +908,7 @@ REVIEW_FAMILIES: tuple[tuple[str, str, Any, frozenset[str]], ...] = (
     ("launch", "Systems launch readiness", _re.compile(
         r"\blaunch\b|\breadiness\b|\bgo[- ]live\b|\buat\b|\berp\b", _re.I),
      frozenset({"mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+                "portal_approval_pending",
                 "planner_task_overdue", "source_stale", "twins_disagree",
                 "sync_missing", "sync_mismatch"})),
 )

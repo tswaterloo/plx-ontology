@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { eastern, opsLabel } from "@/components/shell";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { LoadProblem } from "@/components/ui/notice";
 import { getOpsAlarms, type OpsAlarms, type OpsCheck, type OpsIncident, type OpsQueue } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 
@@ -125,18 +125,7 @@ const STATE_WORD: Record<OpsCheck["state"], string> = { breach: "Problem", ok: "
 // show only here and in the red line on every page; nothing is paged. The owner and the
 // Team readers read it; anyone else gets the route's 403.
 export default function OpsPage() {
-  const [alarms, setAlarms] = useState<OpsAlarms | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setError(null);
-    getOpsAlarms(ctl.signal).then(setAlarms, (e) => {
-      if (!ctl.signal.aborted) setError(e);
-    });
-    return () => ctl.abort();
-  }, [round]);
+  const { data: alarms, error, retry } = useRead<OpsAlarms>("ops", (signal) => getOpsAlarms(signal));
   const checks = alarms?.checks ?? [];
   const count = (s: OpsCheck["state"]) => checks.filter((c) => c.state === s).length;
   return (

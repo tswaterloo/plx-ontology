@@ -474,6 +474,125 @@ class CeoSignals(Engine):
                 self.inbox.unlink()
                 self.store.unlink()
 
+    def test_a_margin_reading_is_reused_until_a_row_its_run_reads_changes(self):
+        """The cross-run cache (``ev.margin_fingerprints``): a second run over the same
+        store reads no earlier order again and finds the same gaps; a credit memo linked
+        later to an earlier order's invoice, a value changed on its invoice and a new
+        reader each read again exactly what they touch, and the gaps follow the new reading."""
+        from ontology.core import Actor
+
+        w, figures, eroding = self.margin_world(2)
+        (who, item), _other = sorted(eroding.items())
+        reads: list[str] = []
+
+        from operating.ontology_tools import ReadPolicy
+
+        class Reader:
+            def __init__(self, principal: str, markings=("finance",)) -> None:
+                self.actor = Actor("plx", frozenset({principal}), "restricted")
+                policy = ReadPolicy("plx", {"bc:*": frozenset({principal})},
+                                    {m: frozenset({principal}) for m in markings})
+                self.host = type("Host", (), {"stored_policy": lambda _s, _a: policy})()
+
+            def __call__(self, *_args):
+                return {}
+
+        def read_order(_call, found):
+            reads.append(found.object_id)
+            h, it, pct = figures[found.object_id]
+            found.revenue, found.margin = Decimal("100"), pct
+            found.cost, found.currency = Decimal("100") - pct, "CAD"
+            found.lines = [cp.Line(1, "l", it, revenue=Decimal("100"), margin=pct,
+                                   cost=Decimal("100") - pct, currency="CAD",
+                                   invoice_handles=[h])]
+            return found
+
+        def run(reader: Reader) -> list:
+            reads.clear()
+            with mock.patch.object(cp, "read_order", read_order):
+                summary = self.run_engine(w, only=["negative_margin", ceo.MARGIN],
+                                          call=reader, pool=InProcessPool())
+            self.assertEqual(summary["detectors"][ceo.MARGIN], "complete")
+            return sorted((g["object_id"], g["summary"]) for g in self.kinds(ceo.MARGIN))
+
+        first = run(Reader("plx:engine"))
+        self.assertEqual(sorted(g for g, _s in first), sorted([*eroding, *eroding.values()]))
+        self.assertEqual(len(reads), len(figures))
+        # the same store again: only the recent orders (read for negative_margin) are read
+        again = run(Reader("plx:engine"))
+        self.assertEqual(again, first)
+        self.assertTrue(set(reads) <= self._recent(w))
+        # a credit memo linked later to one earlier order's invoice: that order alone is
+        # read again, and its new figure (the credit took its margin to 10%) is the one used
+        earlier = sorted(o for o, (_h, it, pct) in figures.items()
+                         if it == item and pct == Decimal("30"))
+        invoices = {l["to_object"]: l["from_object"] for l in w.rows["links"]
+                    if l["link_type"] == "SalesInvoice.bills"}
+        memo = w.obj("SalesCreditMemo", {"status": "Open"}, binding="bc.sales_credit_memos",
+                     audience="bc:sales")
+        w.link("SalesCreditMemo.applies_to", memo, invoices[earlier[0]])
+        figures[earlier[0]] = (*figures[earlier[0]][:2], Decimal("10"))
+        credited = run(Reader("plx:engine"))
+        self.assertEqual(set(reads) - self._recent(w), {earlier[0]})
+        self.assertNotEqual(credited, first)
+        # the uncached truth on the same store: a fresh inbox reads every order
+        self.inbox.unlink()
+        self.assertEqual(run(Reader("plx:engine")), credited)
+        self.assertEqual(len(reads), len(figures))
+        # a value changed on an invoice an order's run reads: that order is read again
+        figures_before = dict(figures)
+        inv_values = [v for v in w.rows["object_values"]
+                      if v["object_id"] == invoices[earlier[1]] and v["property"] == "posting_date"]
+        inv_values[0]["value"] = day(61)
+        run(Reader("plx:engine"))
+        self.assertEqual(set(reads) - self._recent(w), {earlier[1]})
+        self.assertEqual(figures, figures_before)
+        # an invoice later billing the order's twin (a walk may route through it)
+        twin = w.obj("SalesOrder", {}, binding="portal.app_sales_order", audience="bc:sales")
+        w.link("SalesOrder.same_record_as", earlier[2], twin)
+        run(Reader("plx:engine"))
+        self.assertIn(earlier[2], reads)
+        run(Reader("plx:engine"))
+        self.assertNotIn(earlier[2], reads)
+        late_invoice = w.obj("SalesInvoice", {"posting_date": day(59)},
+                             binding="bc.sales_invoices", audience="bc:sales",
+                             markings='["finance"]')
+        w.link("SalesInvoice.bills", late_invoice, twin)
+        figures[twin] = (handle(w.n), item, Decimal("30"))   # now an invoiced order too
+        run(Reader("plx:engine"))
+        self.assertIn(earlier[2], reads)
+        # another reader never reuses this reader's readings, nor this reader once its
+        # grants change (a marking added)
+        run(Reader("plx:someone-else"))
+        self.assertEqual(len(reads), len(figures))
+        run(Reader("plx:engine"))
+        run(Reader("plx:engine", markings=("finance", "purchasing_prices")))
+        self.assertEqual(len(reads), len(figures))
+        # a pass cut at its window after reading keeps what it read for the next run
+        self.inbox.unlink()
+
+        def cut(*_a, margins, recent, trailing, **_k):
+            margins(trailing)
+            raise pe.TimeBudgetSpent("window")
+        with mock.patch.object(ceo, "margin_erosion", cut), \
+                mock.patch.object(cp, "read_order", read_order):
+            reads.clear()
+            summary = self.run_engine(w, only=[ceo.MARGIN], call=Reader("plx:engine"),
+                                      pool=InProcessPool())
+        self.assertEqual(summary["detectors"][ceo.MARGIN], "truncated")
+        self.assertTrue(reads)
+        run(Reader("plx:engine"))
+        self.assertTrue(set(reads) <= self._recent(w))
+
+    def _recent(self, w: World) -> set[str]:
+        from operating import proactive_events as ev
+
+        st = pe._Store(self.store)
+        try:
+            return set(ev._recent_invoiced_orders(st, AS_OF))
+        finally:
+            st.close()
+
     def test_margin_erosion_at_1_10_and_60(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):

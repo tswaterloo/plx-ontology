@@ -1181,8 +1181,12 @@ class CaptureCaseHostTools(CaseHostTools):
                 if store is None:   # no store: no SharePoint unit is granted
                     sharepoint = ("none",)
                 else:
+                    # by the (drive_id, item_id) index, one step a drive (1 ms; the
+                    # DISTINCT scan of every item took 0.03-0.75 s a request)
                     sharepoint = ("drives", tuple(row[0] for row in store.db.execute(
-                        "SELECT DISTINCT drive_id FROM items ORDER BY drive_id")))
+                        "WITH RECURSIVE d(x) AS (SELECT MIN(drive_id) FROM items UNION ALL "
+                        "SELECT (SELECT MIN(drive_id) FROM items WHERE drive_id > d.x) "
+                        "FROM d WHERE d.x IS NOT NULL) SELECT x FROM d WHERE x IS NOT NULL")))
             except Exception:  # noqa: BLE001 - unreadable: the file state, as before
                 pass
         return mail, sharepoint
@@ -3421,6 +3425,70 @@ FIRST_BUILD_WAIT_SECONDS = 60.0
 _LOOKUPS: dict[tuple[str, str | None, bool], _SharedLookup] = {}
 _LOOKUPS_LOCK = threading.Lock()
 _PRIVATE_DIRS: list[str] = []
+# A private lookup directory is named with its process id, so a later process can tell a
+# dead one's leftovers (a killed or timed-out run never reaches atexit: 11-13, 48 left
+# behind, 2.3 GB, the root disk at 12 GB). Older unnamed ones go after an hour.
+LOOKUP_DIR_PREFIX = "plx-sharepoint-lookup-"
+STALE_UNNAMED_SECONDS = 3600
+
+
+def _lookup_tmp_root() -> str:
+    """Where private lookup directories go: ``PLX_LOOKUP_TMP``, else ``/data/plx-tmp``
+    (the data volume) when it is a writable directory, else the system temp directory."""
+    import tempfile
+    for candidate in (os.environ.get("PLX_LOOKUP_TMP"), "/data/plx-tmp"):
+        if candidate and os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+            return candidate
+    return tempfile.gettempdir()
+
+
+def _sweep_stale_lookup_dirs(roots: Iterable[str], now: float | None = None) -> int:
+    """Remove private lookup directories whose process is gone (``<prefix><pid>-*``) or,
+    unnamed, older than ``STALE_UNNAMED_SECONDS``; returns how many. Never raises."""
+    import shutil
+    now = time.time() if now is None else now
+    removed = 0
+    for root in dict.fromkeys(roots):
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for name in names:
+            if not name.startswith(LOOKUP_DIR_PREFIX):
+                continue
+            path = os.path.join(root, name)
+            rest = name[len(LOOKUP_DIR_PREFIX):]
+            pid_text = rest.split("-", 1)[0]
+            try:
+                if pid_text.isdigit() and "-" in rest:
+                    pid = int(pid_text)
+                    if pid == os.getpid():
+                        continue
+                    try:
+                        os.kill(pid, 0)
+                        continue   # its process is alive
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        continue   # alive, another user's
+                elif now - os.stat(path).st_mtime < STALE_UNNAMED_SECONDS:
+                    continue
+                shutil.rmtree(path, ignore_errors=True)
+                removed += not os.path.exists(path)
+            except OSError:
+                continue
+    return removed
+
+
+def _remove_private_dirs() -> None:
+    import shutil
+    for directory in _PRIVATE_DIRS:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _on_terminate(signum: int, frame: Any) -> None:
+    _remove_private_dirs()
+    raise SystemExit(128 + signum)
 
 
 def _private_lookup(store: Any) -> _SharedLookup:
@@ -3434,10 +3502,18 @@ def _private_lookup(store: Any) -> _SharedLookup:
     with _LOOKUPS_LOCK:
         held = _LOOKUPS.get(key)
         if held is None:
-            directory = tempfile.mkdtemp(prefix="plx-sharepoint-lookup-")
+            root = _lookup_tmp_root()
             if not _PRIVATE_DIRS:
-                atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True)
-                                         for d in _PRIVATE_DIRS])
+                _sweep_stale_lookup_dirs([root, tempfile.gettempdir()])
+                atexit.register(_remove_private_dirs)
+                # a SIGTERM (a timeout, a stop) ends the process without atexit: remove
+                # the directory first, where nothing else handles the signal
+                import signal
+                if threading.current_thread() is threading.main_thread() and \
+                        signal.getsignal(signal.SIGTERM) in (signal.SIG_DFL, None):
+                    signal.signal(signal.SIGTERM, _on_terminate)
+            directory = tempfile.mkdtemp(prefix=f"{LOOKUP_DIR_PREFIX}{os.getpid()}-",
+                                         dir=root)
             _PRIVATE_DIRS.append(directory)
             held = _LOOKUPS[key] = _SharedLookup(Path(directory) / LOOKUP_FILE, None,
                                                  private=True)

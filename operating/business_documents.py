@@ -56,6 +56,12 @@ sent, written or changed; every row cites the records and sheet cells it comes f
   (prices stay on those records, under their own markings). The formula lines the Portal
   holds (FileMaker ``formula_item``, ``app_formulation_ingredient``) are not served, so
   every answer counts ``portal_formula_lines_not_served``; sheets are the only source.
+* ``item_on_hand_sheets`` (``subject``: a product): the on-hand figure a hand-kept sheet
+  states for it (``operating.proactive_sheets.item_readings``: the sheet's item number is
+  one of the product's codes and no other item's), a separate source from the records' own
+  stock and never added to it: one row per sheet at its latest dated reading with its
+  quantity, unit, day, cell and ``fresh`` (within ``ON_HAND_FRESH_DAYS``), citing the sheet's
+  record and the product. People first, as every view.
 * ``uat_feedback``: SharePoint list items of a list whose address names user acceptance
   testing or feedback (``UAT_WORDS``), each item's status read as ``open``, ``answered`` or
   ``fixed`` (``STATUS_CLASS``); an unknown status word is ``unknown`` (counted, never guessed).
@@ -86,7 +92,7 @@ MODE = "business_documents"
 FORMAT = "plx-business-documents/v1"
 VIEWS = ("forecasts", "forecast_accuracy", "priority_fill", "price_sheets",
          "compliance_pack", "answer_bank", "supplier_issues", "uat_feedback",
-         "formula_lines")
+         "formula_lines", "item_on_hand_sheets")
 MAX_ROWS = 200
 FINANCE = "finance"
 
@@ -1288,10 +1294,18 @@ def view_supplier_issues(conn, gate, ans, args, as_of) -> None:
                                                 ).get(si, [])}
             if reporter in supplied:
                 suppliers.add(reporter)
+        receipts: set[str] = set()
         for lot in sorted(lots)[:5]:
             for rl in dt.links_to(conn, [lot], "ReceiptLine.received_lot").get(lot, [])[:5]:
                 for rc in dt.links_from(conn, [rl], "ReceiptLine.line_of").get(rl, []):
+                    receipts.add(rc)
                     suppliers.update(dt.links_from(conn, [rc], "Receipt.supplied_by").get(rc, []))
+        # the receipts that took the lot in are shown and cited only where the reader may
+        # read them (a withheld receipt still names its supplier, never itself)
+        gate.load(receipts)
+        shown_receipts = sorted(r for r in receipts if gate.visible(r))[:5]
+        ans.withheld["receipt_not_readable"] += len(receipts) - len(
+            [r for r in receipts if gate.visible(r)])
         if not (suppliers or lots or items or reporter):
             ans.counts["names_no_supplier_item_or_lot"] += 1
             continue
@@ -1310,8 +1324,10 @@ def view_supplier_issues(conn, gate, ans, args, as_of) -> None:
         ans.add({"record": oid, "source": otype, "kind": kind, "title": title[:200],
                  "dated": when.isoformat() if when else None,
                  "suppliers": sorted(suppliers)[:5], "reported_by": reporter,
-                 "items": sorted(items)[:5], "lots": sorted(lots)[:5]},
-                [oid, *sorted(suppliers)[:5], *([reporter] if reporter else [])])
+                 "items": sorted(items)[:5], "lots": sorted(lots)[:5],
+                 "receipts": shown_receipts},
+                [oid, *sorted(suppliers)[:5], *([reporter] if reporter else []),
+                 *shown_receipts])
     def ranked(by: Mapping[str, Counter]) -> list[dict[str, Any]]:
         return [{"supplier": s, "issues": sum(m.values()), "by_month": dict(sorted(
             m.items())[-12:])} for s, m in sorted(by.items(), key=lambda kv: (
@@ -1335,12 +1351,13 @@ def status_class(raw: Any) -> str:
 
 
 def view_uat_feedback(conn, gate, ans, args, as_of) -> None:
+    # every list item's address read by its property (a few thousand items; 0.9 s on the
+    # served store), never through the value word index: on Postgres the word rows do not
+    # join value_cells by rowid, so that query raised and the view answered nothing there
     rows = conn.execute(
-        "SELECT v.object_id FROM value_text vt JOIN value_cells c ON c.rowid = vt.rowid "
-        "JOIN value_sources s ON s.src = c.src JOIN object_versions v ON v.rowid = s.ver "
-        "JOIN value_fields f ON f.field = c.field WHERE value_text MATCH ? AND "
-        "v.superseded_at IS NULL AND f.property = 'web_url' AND v.object_id LIKE "
-        "'SharePointListItem:%'", (dt.fts_query(UAT_WORDS),)).fetchall()
+        "SELECT object_id FROM object_values WHERE superseded_at IS NULL AND "
+        "property = 'web_url' AND object_id LIKE 'SharePointListItem:%' AND "
+        "value LIKE '%/Lists/%'").fetchall()
     ids = sorted({r[0] for r in rows})
     vals = dt.values(conn, ids, ("web_url", "fields", "last_modified_date_time",
                                  "sharepoint_ids_list_id"))
@@ -1477,6 +1494,44 @@ def view_formula_lines(conn, gate, ans, args, as_of, *,
                      "supplier_items": supplier_items[:50]},
                     [*d.cited, subject] + ([item] if item else []))
 
+def view_item_on_hand_sheets(conn, gate, ans, args, as_of) -> None:
+    from . import proactive_sheets as sheets
+    subject = args.get("subject")
+    if not isinstance(subject, str) or not subject.startswith(("Product:", "FgItem:")):
+        ans.counts["subject_required"] += 1
+        return
+    if not gate.visible(subject):
+        ans.withheld["withheld_not_readable"] += 1
+        return
+    path = getattr(ans, "readings", None)
+    if path is None or not path.is_file():
+        ans.counts["sheet_readings_not_set_up"] = 1
+        return
+    props = sheets.PRODUCT_CODES
+    codes = [str(r["value"]) for p in props
+             for r in (dt.values(conn, [subject], props).get(subject) or {}).get(p, [])
+             if r["value"] not in (None, "")]
+    twins = {subject, *dt.links_from(conn, [subject], ITEM_TWINS).get(subject, []),
+             *dt.links_to(conn, [subject], ITEM_TWINS).get(subject, [])}
+    wanted = {sheets._norm(c) for c in codes if len(sheets._norm(c)) >= 2}
+    rows = conn.execute(
+        "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND "
+        "property IN ('code', 'erp_code') AND object_id LIKE 'Product:%'").fetchall()
+    other = {o for o, v in rows if o not in twins and sheets._norm(v) in wanted}
+    if other:   # another item holds the same number: not decided for either
+        ans.counts["item_code_ambiguous"] += 1
+        return
+    skipped: Counter = Counter()
+    found = sheets.item_readings(path, gate.guard, codes, as_of, skipped)
+    for reason, n in skipped.items():
+        ans.counts[reason] += n
+    for f in found:
+        ans.add({"kind": "sheet_on_hand", "subject": subject, "quantity": format(f["qty"], "f"),
+                 "unit": f["unit"], "dated": f["day"].isoformat(), "cell": f["cell"],
+                 "fresh": f["fresh"], "source": "hand-kept sheet",
+                 "not_added_to_records_stock": True}, [f["object_id"], subject])
+
+
 # --------------------------------------------------------------------------- serving
 
 VIEW_FUNCS: dict[str, Callable] = {
@@ -1484,14 +1539,16 @@ VIEW_FUNCS: dict[str, Callable] = {
     "priority_fill": view_priority_fill, "price_sheets": view_price_sheets,
     "compliance_pack": view_compliance_pack, "answer_bank": view_answer_bank,
     "supplier_issues": view_supplier_issues, "uat_feedback": view_uat_feedback,
-    "formula_lines": view_formula_lines}
+    "formula_lines": view_formula_lines, "item_on_hand_sheets": view_item_on_hand_sheets}
 
 
 def answer(conn, *, view: str, may_read: Callable[[str], bool], held: frozenset[str],
-           guard: Any, as_of: date, args: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """One view for one reader (module doc)."""
+           guard: Any, as_of: date, args: Mapping[str, Any] | None = None,
+           readings: Any = None) -> dict[str, Any]:
+    """One view for one reader (module doc). ``readings``: the sheet readings file."""
     gate = dt.Gate(conn, may_read=may_read, held=held, guard=guard)
     ans = Answer(gate, view)
+    ans.readings = readings
     ans.extra = {}
     if view not in VIEW_FUNCS:
         return _error("invalid_input", "view must be one of " + ", ".join(VIEWS))
@@ -1544,7 +1601,8 @@ class BusinessDocumentsTool:
         return _checked(answer(self.base.store.conn, view=view,
                                may_read=lambda key: policy.may_read(actor, key),
                                held=frozenset(policy.held_markings(actor)),
-                               guard=self.guard(), as_of=day, args=args))
+                               guard=self.guard(), as_of=day, args=args,
+                               readings=_readings_file(self.base)))
 
 
 def _checked(result: dict[str, Any]) -> dict[str, Any]:
@@ -1559,6 +1617,14 @@ def _checked(result: dict[str, Any]) -> dict[str, Any]:
         return _error("contract_violation", ("output failed the contract: "
                                              + str(problems[0]))[:600])
     return result
+
+
+def _readings_file(base: Any) -> Any:
+    from pathlib import Path
+    from . import proactive_sheets
+    from .cash_forecast import store_file
+    path = store_file(base)
+    return proactive_sheets.readings_path(Path(path)) if path else None
 
 
 def _store_guard(base: Any) -> Any:

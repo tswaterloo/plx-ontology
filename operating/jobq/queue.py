@@ -45,57 +45,6 @@ CHANNEL = "jobq"
 HELD = ("running", "preempting")
 TERMINAL = ("done", "failed", "dead", "cancelled")
 
-SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS jobq;
-CREATE TABLE IF NOT EXISTS jobq.jobs (
-  id bigserial PRIMARY KEY,
-  class text NOT NULL,
-  kind text NOT NULL CHECK (kind IN ('unit', 'inline')),
-  unit text,
-  idem_key text NOT NULL,
-  label text,
-  priority integer NOT NULL,
-  mem_mb integer NOT NULL CHECK (mem_mb >= 0),
-  cpus real NOT NULL CHECK (cpus >= 0),
-  state text NOT NULL CHECK (state IN ('queued', 'running', 'preempting', 'done', 'failed',
-                                       'dead', 'cancelled')),
-  attempts integer NOT NULL DEFAULT 0,
-  max_attempts integer NOT NULL,
-  preemptions integer NOT NULL DEFAULT 0,
-  run_after timestamptz NOT NULL DEFAULT now(),
-  enqueued_at timestamptz NOT NULL DEFAULT now(),
-  started_at timestamptz,
-  finished_at timestamptz,
-  owner text,
-  lease_until timestamptz,
-  heartbeat_at timestamptz,
-  host text,
-  pid integer,
-  pid_start bigint,
-  pgid integer,
-  invocation text,
-  exit_code integer,
-  result text,
-  last_error text,
-  refusals integer NOT NULL DEFAULT 0,
-  last_refusal text,
-  last_refusal_at timestamptz,
-  waited_s real
-);
-CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_queued ON jobq.jobs (idem_key) WHERE state = 'queued';
-CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_held ON jobq.jobs (idem_key)
-  WHERE state IN ('running', 'preempting');
-CREATE INDEX IF NOT EXISTS jobs_due ON jobq.jobs (priority, enqueued_at, id) WHERE state = 'queued';
-CREATE INDEX IF NOT EXISTS jobs_finished ON jobq.jobs (finished_at) WHERE finished_at IS NOT NULL;
-CREATE TABLE IF NOT EXISTS jobq.events (
-  id bigserial PRIMARY KEY,
-  at timestamptz NOT NULL DEFAULT now(),
-  job_id bigint,
-  kind text NOT NULL,
-  detail text
-);
-CREATE INDEX IF NOT EXISTS events_at ON jobq.events (at);
-"""
 
 COLUMNS = ("id, class, kind, unit, idem_key, label, priority, mem_mb, cpus, state, attempts, "
            "max_attempts, preemptions, run_after, enqueued_at, started_at, finished_at, owner, "
@@ -177,11 +126,9 @@ class Queue:
 
     # ------------------------------------------------------------------ schema
     def init(self) -> None:
-        with self.conn.transaction():
-            self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (ADMIT_LOCK + 1,))
-            self.conn.execute(SCHEMA)
-            from .events import SCHEMA as EVENTS_SCHEMA
-            self.conn.execute(EVENTS_SCHEMA)
+        """Apply the queue database's pending migrations (``operating/jobq/migrations``)."""
+        from . import schema
+        schema.apply(self.conn)
 
     def _event(self, job_id: int | None, kind: str, detail: str | None = None) -> None:
         self.conn.execute("INSERT INTO jobq.events (job_id, kind, detail) VALUES (%s, %s, %s)",

@@ -584,28 +584,55 @@ def answer(book: Mapping[str, Any], as_of: dt.date, *, may_read: Callable[[str],
 
 # --------------------------------------------------------------------------- reorder
 
+class _NoSkips(dict):
+    """Where a sheet reading's skip reasons go when the caller keeps none."""
+
+    def note(self, reason: str, subjects: Sequence[str] = (), cause: Iterable = ()) -> None:
+        self[reason] = self.get(reason, 0) + 1
+
+    def __missing__(self, key: str) -> int:
+        return 0
+
+
 def reorder_state(st: Any, as_of: dt.date, items: Iterable[str], settled: Sequence[str],
                   *, on_hand: Sequence[tuple[str, str, str | None]] | None = None,
-                  po_source: Callable[[], Any] | None = None) -> dict[str, Any]:
+                  po_source: Callable[[], Any] | None = None,
+                  sheet_on_hand: Callable | None = None, skipped: Any = None
+                  ) -> dict[str, Any]:
     """Per item cluster: on hand now and what open purchase orders bring in by the end of
     the forecast horizon, each with the records it rests on; ``blocked`` naming the fields
-    while no source serves on hand."""
+    while no source serves on hand.
+
+    ``sheet_on_hand(item_of, items, cites, skipped)``: item -> (quantity, unit, cite group,
+    day) from the hand-kept on-hand sheets (``proactive_sheets.sheet_on_hand``). A sheet
+    quantity counts as on hand only for an item no declared source serves (stated or
+    unreadable), in the unit ``supply_by`` then compares; its day is ``sheet_days``."""
     from . import proactive_business as pb
     from . import proactive_stock as stock
     from .proactive_engine import _cites
 
     sources, missing = stock._sources(on_hand)
-    if not sources:
+    if not sources and sheet_on_hand is None:
         return {"status": "blocked", "reasons": [stock.waiting(f) for f in missing],
                 "waiting_on": stock.field_words(stock.waiting(f) for f in missing)}
     wanted = set(items)
     item_root = stock._item_roots(st, settled)
     stock_of, broken = stock._stock(st, sources, item_root, settled, _cites, roots=wanted)
+    sheet_days: dict[str, str] = {}
+    if sheet_on_hand is not None:
+        free = {t for t in wanted if t not in stock_of and t not in broken}
+        if free:
+            for top, (qty, unit, group, day) in sheet_on_hand(
+                    lambda r: item_root.get(r, r), free, _cites,
+                    skipped if skipped is not None else _NoSkips()).items():
+                if top in free:
+                    stock_of[top] = (qty, unit_token(unit) if unit else None, group)
+                    sheet_days[top] = day.isoformat()
     flows = pb.inbound_flows(st, po_source() if po_source else None, as_of, wanted,
                              lambda r: item_root.get(r, r), _cites, settled) \
         if po_source is not None and wanted else {}
     return {"status": "complete", "reasons": [], "on_hand": stock_of, "broken": broken,
-            "inbound": flows, "audiences": _audiences(st, {
+            "inbound": flows, "sheet_days": sheet_days, "audiences": _audiences(st, {
                 c[1] for got in stock_of.values() for c in got[2]} | {
                 c[1] for fl, _u, _b in flows.values() for f in fl for g in f.groups
                 for c in g})}

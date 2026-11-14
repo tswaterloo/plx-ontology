@@ -1602,6 +1602,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         out: Any = backfill(store, wl.WorkLog(Path(args.state_dir) / "work-log"))
     else:
         out = store.purge_excluded()
+        if out is not None:
+            # each person's saved templates (``operator_api.templates``) under the same list
+            from .templates import TemplateStore
+            out["templates"] = TemplateStore(store.pool.connection, store).purge_excluded()
     print(json.dumps(out))   # counts only
     return 0 if out is not None else 1
 

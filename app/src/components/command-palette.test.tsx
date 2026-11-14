@@ -36,7 +36,7 @@ async function typeAndEnter(text: string, settled: RegExp) {
     </CommandPaletteProvider>,
   );
   await userEvent.click(screen.getByRole("button", { name: "open" }));
-  await userEvent.type(screen.getByTestId("palette-input"), text);
+  await userEvent.type(await screen.findByTestId("palette-input"), text);
   await screen.findByText(settled);
   await waitFor(() => expect(screen.queryByRole("status", { name: "Searching" })).toBeNull());
   await userEvent.keyboard("{Enter}");

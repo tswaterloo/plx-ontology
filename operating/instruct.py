@@ -23,6 +23,8 @@ Reading the materials as the reader, keeping the result and the desk's cards are
 
 from __future__ import annotations
 
+import dataclasses
+
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import re
@@ -176,6 +178,9 @@ _FOR_ME = re.compile(
     r"which)\b)",
     re.I)
 _DOING = re.compile(_POLITE + r"(?P<verb>" + _DO + r")\b(?P<rest>.*)$", re.I)
+# "use my quote template for ...": a saved template filled (``operator_api.templates``)
+_TEMPLATE = re.compile(r"^(?:please\s+)?(?:use|apply|start from)\s+(?:my|our|the)\s+"
+                       r"[^?{}]{1,80}?\s+template\b[^?]*$", re.I)
 # a question's own shape: an interrogative or auxiliary first
 _QUESTION = re.compile(
     r"^(?:(?:please|ok|okay|so|and|hey|hi)[,\s]+)*(?:what|who|whom|whose|when|where|why|"
@@ -200,9 +205,15 @@ def route(text: str, *, mode: Optional[str] = None, continuing: bool = False) ->
         return "do"
     if mode == "ask":
         return "ask"
+    if _TEMPLATE.match(" ".join(str(text or "").split())):
+        return "do"                               # "use my quote template for SO 1234"
+
     text = " ".join(str(text or "").split())
     if not text:
         return "ask"
+    from .entry_assist import create_kind
+    if create_kind(text):
+        return "do"                               # "create an order from this PO"
     asked = text.endswith("?")
     then_do = bool(_AND_DO.search(text))
     if _FOR_ME.match(text) or _QUESTION.match(text):
@@ -319,13 +330,16 @@ def _fence(material: Material) -> str:
 
 def prompt(text: str, materials: Sequence[Material], candidates: Sequence[Candidate], *,
            who: str, page: str, answers: Sequence[str] = (),
-           targets: Sequence[WriteTarget] = (), folders: Sequence[Folder] = ()) -> str:
-    from operating.prose_style import PROSE_STYLE_RULE
+           targets: Sequence[WriteTarget] = (), folders: Sequence[Folder] = (),
+           person: Optional[str] = None) -> str:
+    """``person``: the address the drafts are sent as; their learned writing style
+    (``prose_style.style_rule``) follows the house style."""
+    from operating.prose_style import style_rule
     when = recurring(text)
     listed = "\n".join(f"{c.key}: {_data(c.title)} ({_data(c.day)})" for c in candidates)
     return RULE.format(
         recurring=RECURRING_RULE.format(when=when["words"]) if when else "",
-        style=PROSE_STYLE_RULE, who=who or "an employee", page=page or "the Workbench",
+        style=style_rule(person, draft=True, who=who or None), who=who or "an employee", page=page or "the Workbench",
         text=text,
         answers="".join(f"Their answer to your earlier question: {a}\n" for a in answers),
         materials="\n\n".join(_fence(m) for m in materials[:MAX_MATERIALS]) or "(none)",
@@ -477,6 +491,18 @@ def ground(body: str, given: str) -> tuple[str, list[str]]:
     body = _NUMBER.sub(figure, body)
     body = _RELATIVE.sub(relative, body)
     return body, list(dict.fromkeys(used))
+
+
+def humanized(outcome: Outcome, *, person: Optional[str] = None,
+              rewrite: Optional[Any] = None) -> Outcome:
+    """The outcome with each drafted message and the lead written as a person would
+    (``operating.humanize``, in ``person``'s learned style): a change is kept only when
+    every fact, placeholder included, stays exactly as the grounded text had it."""
+    from operating import humanize
+    drafts = tuple(Drafted(d.kind, d.subject, humanize.polish(
+        d.body, kind="draft", person=person, rewrite=rewrite).text) for d in outcome.drafts)
+    said = humanize.polish(outcome.said, kind="answer", rewrite=rewrite).text
+    return dataclasses.replace(outcome, drafts=drafts, said=said)
 
 
 def ground_outcome(outcome: Outcome, given: str) -> Outcome:

@@ -5,18 +5,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getSource } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ApiError, plainError } from "@/lib/errors";
-import { fieldLabel, fieldValue, formatDateTime, recordKind, SYSTEM_LABEL } from "@/lib/format";
+import { fieldLabel, fieldValue, formatDateTime, mailField, recordKind, SYSTEM_LABEL } from "@/lib/format";
+
+export { mailField };
 import type { SourceView } from "@/lib/types";
 import { curatedFields } from "./source-chip";
 import { StatusGlyph, SystemCode } from "./ui/glyphs";
 import { ErrorNotice } from "./ui/notice";
 import { SkeletonLines } from "./ui/skeleton";
-
-/** A mail field of the captured message ("row.from"), shown as a person reads it. */
-export function mailField(fields: Record<string, string> | null | undefined, name: string): string {
-  const v = fields?.[`row.${name}`] ?? fields?.[name];
-  return v ? fieldValue(name, v) : "";
-}
 
 /** A mail address list as names/addresses ("a@x, b@y" or a JSON list). */
 export function mailList(fields: Record<string, string> | null | undefined, name: string): string[] {

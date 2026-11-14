@@ -828,6 +828,47 @@ HOST_HELPERS = 2
 POOL_GRACE_SECONDS = 15.0
 # How many helpers one session may start in all (one stopped is replaced, up to this).
 HOST_HELPER_STARTS = 4
+# A host child (an idle helper, a spare not yet taken) whose resident memory is above this
+# many MB is stopped instead of serving again (GA-F10): an idle helper is replaced by a
+# fresh one (within ``HOST_HELPER_STARTS``), a spare is never taken (its session starts
+# its own host). A host holds ~164 MB once the SharePoint index is shared per box (was
+# ~981 MB with a copy in every host); one past this has grown in serving, not started big.
+# ``HOST_RSS_CAP_ENV`` sets it (0: off). A session's primary is never stopped for it: it
+# holds the session's state.
+HOST_RSS_CAP_MB = 1024.0
+HOST_RSS_CAP_ENV = "PLX_HOST_RSS_CAP_MB"
+
+
+def host_rss_cap_mb(environ: Mapping[str, str] | None = None) -> float | None:
+    """The RSS cap in MB (``HOST_RSS_CAP_ENV``, else ``HOST_RSS_CAP_MB``); None: off."""
+    raw = (os.environ if environ is None else environ).get(HOST_RSS_CAP_ENV)
+    try:
+        cap = HOST_RSS_CAP_MB if raw is None or not raw.strip() else float(raw)
+    except ValueError:
+        cap = HOST_RSS_CAP_MB
+    return cap if cap > 0 else None
+
+
+def process_rss_mb(pid: int) -> float | None:
+    """A process's resident memory in MB (``/proc/<pid>/status`` VmRSS); None when it
+    cannot be read (gone, or no /proc)."""
+    try:
+        with open(f"/proc/{int(pid)}/status", encoding="ascii", errors="replace") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def over_rss_cap(pid: int, cap_mb: float | None,
+                 rss: Callable[[int], float | None] = process_rss_mb) -> float | None:
+    """The process's RSS in MB when it is above ``cap_mb``, else None."""
+    if cap_mb is None:
+        return None
+    held = rss(pid)
+    return held if held is not None and held > cap_mb else None
 _SET_HANDLE = re.compile(r"set:[A-Za-z0-9_-]{16,}")
 HELPER_INIT_ID = "plx-helper-init"
 PEER_GONE = "tool_host_stopped"
@@ -922,11 +963,15 @@ class HostPool:
     """The helper hosts a session's gate may start (``operating.host_peers``): ``start``
     starts one (the session's server command, a fresh ticket of the same reader, the
     helper role); ``pooled``: the read-only evidence tools a helper may serve; ``key``:
-    the primary's import key; ``most``: helpers running at once."""
+    the primary's import key; ``most``: helpers running at once; ``rss_cap_mb``: an idle
+    helper above it is stopped and replaced (``HOST_RSS_CAP_MB``; None: off); ``rss``:
+    reads a process's RSS in MB."""
     start: Callable[[], "subprocess.Popen"]
     pooled: frozenset
     key: str
     most: int = HOST_HELPERS
+    rss_cap_mb: float | None = field(default_factory=host_rss_cap_mb)
+    rss: Callable[[int], float | None] = process_rss_mb
 
 
 def _host_process(server: Sequence[str], env: Mapping[str, str] | None, cwd: str | None, *,
@@ -1263,6 +1308,14 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
 
     def route(params: Mapping[str, Any]) -> _Peer:
         """The host to serve one client tools/call (``pool``)."""
+        recycled: list[float] = []   # RSS (MB) of idle helpers stopped over the cap
+        try:
+            return choose(params, recycled)
+        finally:
+            for grown in recycled:   # noted once the lock is released
+                note({"event": "helper_recycled", "rss_mb": grown})
+
+    def choose(params: Mapping[str, Any], recycled: list[float]) -> _Peer:
         if pool is None or params.get("name") not in pool.pooled:
             return primary
         with lock:
@@ -1271,9 +1324,23 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 owner = owners.get(handle)
                 if owner is not None:
                     return owner if owner.alive() else primary
-            live = [helper for helper in helpers if helper.alive()]
             if not primary.open:
                 return primary
+            idle_now = [helper for helper in helpers if helper.alive()
+                        and not set(helper.open) - {json.dumps(HELPER_INIT_ID)}]
+            holding = {id(owner) for owner in owners.values()}
+            for helper in idle_now:
+                # an idle helper grown past the RSS cap is stopped; one holding a result
+                # set the session may still name keeps serving it
+                if id(helper) in holding:
+                    continue
+                grown = over_rss_cap(helper.child.pid, pool.rss_cap_mb, pool.rss)
+                if grown is not None:
+                    helper.dead = True
+                    helper.close()
+                    _kill_group(helper.child)
+                    recycled.append(round(grown, 1))
+            live = [helper for helper in helpers if helper.alive()]
             idle = next((helper for helper in live
                          if not set(helper.open) - {json.dumps(HELPER_INIT_ID)}), None)
             if idle is not None:
@@ -1700,12 +1767,17 @@ class HostSpares:
     host never serves another, and each spare serves one session only (its session state
     is never reused). An expired or exited spare is stopped, never taken; the session then
     starts its host as before. A spare that finds a newer projection generation reopens
-    it on its first call (``CaseHostTools.request``)."""
+    it on its first call (``CaseHostTools.request``). A spare above the RSS cap
+    (``HOST_RSS_CAP_MB``) is stopped, never taken."""
 
     def __init__(self, *, seconds: float = SPARE_SECONDS, most: int = SPARE_MOST,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 rss_cap_mb: float | None | str = "env",
+                 rss: Callable[[int], float | None] = process_rss_mb) -> None:
         import threading
         self.seconds, self.most, self.clock = seconds, most, clock
+        self.rss_cap_mb = host_rss_cap_mb() if rss_cap_mb == "env" else rss_cap_mb
+        self.rss = rss
         self._lock = threading.Lock()
         self._held: dict[str, Spare] = {}
 
@@ -1734,7 +1806,8 @@ class HostSpares:
             spare = self._held.pop(key, None)
         if spare is None:
             return None
-        if spare.expires <= self.clock() or spare.child.poll() is not None:
+        if spare.expires <= self.clock() or spare.child.poll() is not None \
+                or over_rss_cap(spare.child.pid, self.rss_cap_mb, self.rss) is not None:
             spare.stop()
             return None
         return spare

@@ -7,6 +7,7 @@
 // person approves; a reply carrying it is prepared, never sent from here.
 
 import type { FillField, InstructFill } from "@/lib/types";
+import { SaveAsTemplate } from "./templates";
 import { Upload } from "./upload-draft";
 
 // why a blank was left as it was, in words
@@ -100,6 +101,11 @@ export function FillReview({ fill }: { fill: InstructFill }) {
       ) : (
         <p className="text-[12px] leading-4 text-muted">Nothing could be filled from the records, so no copy was made.</p>
       )}
+      <SaveAsTemplate
+        text={fill.fields.map((f) => `${f.label}: ${f.after}`).join("\n")}
+        record={fill.record.object_id || null}
+        docType="form"
+      />
       {fill.reply && (
         <p className="text-[12px] leading-4 text-muted" data-testid="fill-reply">
           Reply to {fill.reply.to.join(", ") || "the sender"} with {fill.reply.attachment}: {fill.reply.missing.join(" ")}

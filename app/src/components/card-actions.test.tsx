@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/errors";
 import type { ActionPreview } from "@/lib/types";
-import { ActionDialog } from "./card-actions";
+import ActionDialog from "./action-dialog";
 
 const api = vi.hoisted(() => ({ previewAction: vi.fn(), confirmAction: vi.fn() }));
 vi.mock("@/lib/api", async (original) => ({ ...(await original<object>()), ...api }));

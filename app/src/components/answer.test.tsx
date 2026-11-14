@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Answer, Fact, Hidden, Source } from "@/lib/types";
@@ -177,9 +177,10 @@ describe("AnswerCard", () => {
     expect(within(shown[1]).getByTestId("ask-draft-details")).toHaveTextContent("Amount[amount]");
     // the send opens its preview first; no confirm is ever posted from rendering or opening it
     await userEvent.click(within(shown[0]).getByTestId("action-send_email"));
-    const urls = fetch.mock.calls.map((c) => String((c as unknown[])[0]));
-    expect(urls.some((u) => u.includes("/api/actions/preview"))).toBe(true);
-    expect(urls.some((u) => u.includes("/api/actions/confirm"))).toBe(false);
+    // the preview dialog loads on first open, so its preview request follows a moment later
+    const urls = () => fetch.mock.calls.map((c) => String((c as unknown[])[0]));
+    await waitFor(() => expect(urls().some((u) => u.includes("/api/actions/preview"))).toBe(true));
+    expect(urls().some((u) => u.includes("/api/actions/confirm"))).toBe(false);
   });
 
   it("renders markdown as text (never literal ** or list dashes), the lead first and the rest as facts", () => {
@@ -718,7 +719,7 @@ describe("AnswerCard: the analyst's shape", () => {
     outcome: "partial",
     direct_answer: [
       "Yes — PO 106001 is late by 129 days.",
-      "- Expected receipt 2026-06-25, still not received.",
+      "- Expected receipt date: 2026-06-25.",
       "- The supplier promised a new date in mail.",
       "- Ordered 2,400 kg.",
       "What I couldn't confirm: the supplier's new ship date.",
@@ -738,14 +739,18 @@ describe("AnswerCard: the analyst's shape", () => {
     expect(screen.getByTestId("direct-answer")).toHaveTextContent(/^Yes — PO 106001 is late by 129 days\.$/);
     const bullets = screen.getAllByTestId("answer-bullet");
     expect(bullets).toHaveLength(3);
-    // a bullet restating a gated fact carries that fact's chip; one restating none carries none
+    // a bullet stating a gated fact's claim carries that fact's chip; one restating none,
+    // or a fact in other words ("Ordered 2,400 kg" for "Ordered quantity: 2400 kg"),
+    // carries none (WEB-027: no guessed citation)
     expect(within(bullets[0]).getAllByTestId("source-chip")).toHaveLength(1);
     expect(within(bullets[1]).queryAllByTestId("source-chip")).toHaveLength(0);
-    expect(within(bullets[2]).getAllByTestId("source-chip")).toHaveLength(1);
+    expect(within(bullets[2]).queryAllByTestId("source-chip")).toHaveLength(0);
     // a fact no bullet restates is still listed, with its chip and its "not confirmed"
     const list = screen.getByTestId("fact-list");
     expect(list).toHaveTextContent("Payment terms: NET30 (not confirmed)");
-    expect(list.querySelectorAll("li")).toHaveLength(4);
+    // and so is the fact a bullet only paraphrased: its chips stay on its own claim
+    expect(list).toHaveTextContent(/Ordered quantity: 2,?400 kg/);
+    expect(list.querySelectorAll("li")).toHaveLength(5);
     // the missing line is the answer's own, said once, never glued to a bullet
     const missing = screen.getByTestId("could-not-confirm");
     expect(missing).toHaveTextContent("Not found: The supplier's new ship date.");
@@ -772,6 +777,7 @@ describe("AnswerCard: the analyst's shape", () => {
     const facts = shaped.facts!;
     expect(bulletFact("Payment terms are not on the PO.", facts, new Set())).toBeNull();
     expect(bulletFact("Payment terms NET30.", facts, new Set())).toBe(2);
+    expect(bulletFact("**Payment terms**: net30", facts, new Set())).toBe(2);
     // each fact lends its chips once
     expect(bulletFact("Payment terms NET30.", facts, new Set([2]))).toBeNull();
   });
@@ -782,14 +788,30 @@ describe("AnswerCard: the analyst's shape", () => {
     const late: Fact = { text: "PO123: 12 days late", sources: [src("bc://po/123/late")], check: "passed" };
     const price: Fact = { text: "PO123 unit price: 12", sources: [src("bc://po/123/price")], check: "passed" };
     const other: Fact = { text: "PO124 quantity: 12", sources: [src("bc://po/124/qty")], check: "passed" };
-    const facts = [qty, price, late, other];
-    expect(bulletFact("PO123 is 12 days late.", facts, new Set())).toBe(2);
-    expect(bulletFact("PO123 ordered quantity is 12.", facts, new Set())).toBe(0);
-    expect(bulletFact("PO123 costs 12 per unit (price).", facts, new Set())).toBe(1);
-    expect(bulletFact("PO124 has 12 in quantity.", facts, new Set())).toBe(3);
-    // a figure alone, every property's: no fact is guessed
-    expect(bulletFact("PO123: 12.", facts, new Set())).toBeNull();
-    // two facts stated equally well: neither lends its chips
+    const due: Fact = { text: "PO123 due: 2026-12-12", sources: [src("bc://po/123/due")], check: "passed" };
+    const facts = [qty, price, late, other, due];
+    // a bullet that states a fact's claim exactly cites that fact, and only that one
+    expect(bulletFact("PO123: 12 days late.", facts, new Set())).toBe(2);
+    expect(bulletFact("PO 123 quantity 12", facts, new Set())).toBe(0);
+    expect(bulletFact("PO123 unit price: 12.", facts, new Set())).toBe(1);
+    expect(bulletFact("PO124 quantity: 12", facts, new Set())).toBe(3);
+    expect(bulletFact("PO123 due 2026-12-12.", facts, new Set())).toBe(4);
+    // the same figures across quantity, price, lateness, date and another record, said in
+    // other words: no fact's sources are borrowed, the right one included (no guess)
+    for (const said of ["PO123 is 12 days late.", "PO123 ordered quantity is 12.", "PO123 costs 12 per unit (price).",
+      "PO124 has 12 in quantity.", "PO123 quantity 12 is 12 days late", "PO123: 12.", "12", "PO125 quantity: 12",
+      "PO123 quantity: 120", "PO123 due: 2026-12-13", "PO123 due: 12 December"]) {
+      expect(bulletFact(said, facts, new Set())).toBeNull();
+    }
+    // a sign, comparator, bracket or currency is part of the claim
+    const fig = (text: string, h: string): Fact => ({ text, sources: [src(h)], check: "passed" });
+    const money = [fig("Balance is 1,200 USD", "a"), fig("1,200", "b"), fig("-5 units", "c"), fig("5 days", "d"), fig("100", "e")];
+    for (const said of ["Balance is -1,200 USD", "(1,200)", "+5 units", "> 5 days", "€100"]) {
+      expect(bulletFact(said, money, new Set())).toBeNull();
+    }
+    expect(bulletFact("(1,200)", [fig("-1,200", "f")], new Set())).toBe(0);
+    expect(bulletFact("Balance is 1,200 USD.", money, new Set())).toBe(0);
+    // two facts with the same claim: neither lends its chips
     expect(bulletFact("PO123 quantity 12.", [qty, { ...qty, sources: [src("bc://po/123/dup")] }], new Set())).toBeNull();
   });
 

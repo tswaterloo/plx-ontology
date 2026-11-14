@@ -118,5 +118,120 @@ class OffMeansNothing(unittest.TestCase):
         self.assertNotIn("late_po", ak.off_gap_kinds())
 
 
+class PrecisionSample(unittest.TestCase):
+    """scripts/alert_precision_sample.py: draw from a served run, write the judgement back."""
+
+    def setUp(self):
+        import copy
+        import csv
+        import json
+        import shutil
+        import tempfile
+        from pathlib import Path
+        self.csv, self.json = csv, json
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        reg = copy.deepcopy(ak.registry())
+        self.off = [t["type"] for t in reg["types"] if t["default"] != "on"
+                    and EVENT_TYPES.get(t["type"], {}).get("kinds")][:2]
+        self.on = next(t["type"] for t in reg["types"] if t["default"] == "on")
+        self.reg_path = self.tmp / "kinds.json"
+        self.reg_path.write_text(json.dumps(reg), encoding="utf-8")
+        gaps = []
+        for n, name in enumerate(self.off):
+            kind = EVENT_TYPES[name]["kinds"][0]
+            for i in range(20 if n == 0 else 4):
+                gaps.append({"id": f"{name}-{i}", "kind": kind, "object_id": f"O{i}",
+                             "summary": f"s{i}", "groups": [[[f"h{n}-{i}", f"O{i}", []]]]})
+        gaps.append({"id": "on-1", "kind": EVENT_TYPES[self.on]["kinds"][0],
+                     "groups": [[["x"]]]})
+        self.run = self.tmp / "run.json"
+        self.run.write_text(json.dumps({"gaps": gaps}), encoding="utf-8")
+
+    def _main(self, *argv):
+        import contextlib
+        import importlib.util
+        import io
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "aps", Path(__file__).resolve().parents[2] / "scripts" / "alert_precision_sample.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return mod.main(list(argv))
+
+    def _sample(self, seed="3"):
+        out = self.tmp / f"j{seed}.tsv"
+        self.assertEqual(self._main("sample", "--run", str(self.run), "--out", str(out),
+                                    "--seed", seed, "--registry", str(self.reg_path)), 0)
+        with out.open(encoding="utf-8", newline="") as fh:
+            return out, list(self.csv.DictReader(fh, delimiter="\t"))
+
+    def _judge(self, path, rows, correct_of):
+        with path.open("w", encoding="utf-8", newline="") as fh:
+            w = self.csv.DictWriter(fh, list(rows[0]), delimiter="\t", lineterminator="\n")
+            w.writeheader()
+            seen = {}
+            for r in rows:
+                k = seen[r["type"]] = seen.get(r["type"], 0) + 1
+                w.writerow({**r, "judgement": "y" if k <= correct_of[r["type"]] else "n"})
+
+    def _precision_of(self, name):
+        reg = {t["type"]: t for t in self.json.loads(self.reg_path.read_text())["types"]}
+        return reg[name]
+
+    def test_sample_is_seeded_fifteen_per_off_type_with_cited_evidence(self):
+        _, a = self._sample("3")
+        _, b = self._sample("3")
+        self.assertEqual(a, b)
+        counts = {n: sum(r["type"] == n for r in a) for n in self.off}
+        self.assertEqual(counts, {self.off[0]: 15, self.off[1]: 4})
+        self.assertNotIn(self.on, {r["type"] for r in a})
+        self.assertTrue(all(r["evidence"].startswith("h") and r["judgement"] == "" for r in a))
+        _, c = self._sample("4")
+        self.assertNotEqual([r["id"] for r in a], [r["id"] for r in c])
+
+    def test_apply_writes_precision_and_never_turns_a_type_on(self):
+        path, rows = self._sample()
+        self._judge(path, rows, {self.off[0]: 15, self.off[1]: 4})
+        self.assertEqual(self._main("apply", "--judged", str(path), "--source", "t",
+                                    "--on", "2026-11-14", "--registry", str(self.reg_path)), 0)
+        got = self._precision_of(self.off[0])
+        self.assertEqual(got["precision"], {"value": 1.0, "checked": 15, "correct": 15,
+                                            "on": "2026-11-14", "source": "t"})
+        self.assertEqual(got["default"], "off")   # measured at the bar, still a decision
+        self.assertIsNone(self._precision_of(self.off[1])["precision"])   # n=4 < MIN_CHECKED
+        self.assertEqual(self._precision_of(self.on)["default"], "on")
+
+    def test_apply_turns_off_an_on_type_that_measures_below_the_bar(self):
+        path, rows = self._sample()
+        reg = self.json.loads(self.reg_path.read_text())
+        t = next(t for t in reg["types"] if t["type"] == self.off[0])
+        t.update(default="on", home=True, actionable=True)
+        self.reg_path.write_text(self.json.dumps(reg))
+        self._judge(path, rows, {self.off[0]: 13, self.off[1]: 0})   # 13/15 = 0.867
+        self._main("apply", "--judged", str(path), "--source", "t",
+                   "--registry", str(self.reg_path))
+        got = self._precision_of(self.off[0])
+        self.assertEqual((got["default"], got["home"], got["precision"]["value"]),
+                         ("off", False, 0.867))
+
+    def test_apply_refuses_unknown_type_or_judgement_and_writes_nothing(self):
+        path, rows = self._sample()
+        before = self.reg_path.read_text()
+        for bad in ({"type": "no_such_type"}, {"judgement": "maybe"}):
+            with self.subTest(bad=bad):
+                self._judge(path, rows, {self.off[0]: 15, self.off[1]: 4})
+                lines = path.read_text().splitlines()
+                cells, head = lines[1].split("\t"), lines[0].split("\t")
+                for k, v in bad.items():
+                    cells[head.index(k)] = v
+                lines[1] = "\t".join(cells)
+                path.write_text("\n".join(lines) + "\n")
+                self.assertEqual(self._main("apply", "--judged", str(path), "--source", "t",
+                                            "--registry", str(self.reg_path)), 2)
+                self.assertEqual(self.reg_path.read_text(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

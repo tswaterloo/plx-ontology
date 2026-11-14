@@ -302,6 +302,55 @@ class BusinessDocuments(unittest.TestCase):
         self.assertEqual(out["rows"][0]["cell"], "B2")
         self.assertNotIn("FALSE", [r["question"] for r in out["rows"]])
 
+    def test_uat_feedback_reads_the_list_on_postgres_and_sqlite(self) -> None:
+        """CAP-L154: the view answered nothing on the served (Postgres-only) store: its
+        word-index join raised there. Every statement it runs now translates for Postgres
+        (all word tables loaded or none), and it lists the UAT list's items only, each
+        status classed, a restricted reader's unreadable item withheld; N=1/10/60."""
+        from operating.pg.sqlite_compat import translate
+
+        class Recording:
+            def __init__(self, conn):
+                self.conn, self.sql = conn, []
+
+            def execute(self, sql, *params):
+                self.sql.append(sql)
+                return self.conn.execute(sql, *params)
+
+        for n in (1, 10, 60):
+            f = Fixture()
+            base = "https://synth.sharepoint.example/sites/ops/Lists"
+            items = []
+            for i in range(n):
+                status = ("Failed Retest", "Ready for UAT", "Deferred")[i % 3]
+                items.append(f.w.obj("SharePointListItem", {
+                    "web_url": f"{base}/UAT%20Feedback/DispForm.aspx?ID={i}",
+                    "fields": json.dumps({"Title": f"Item {i}", "Status": status,
+                                          "Priority": "High"}),
+                    "last_modified_date_time": "2026-11-01T10:00:00Z"}))
+            hidden = f.w.obj("SharePointListItem", {
+                "web_url": f"{base}/UAT%20Feedback/DispForm.aspx?ID=hidden",
+                "fields": json.dumps({"Title": "Restricted", "Status": "Failed Retest"})},
+                audience="api:hidden")
+            other = f.w.obj("SharePointListItem", {
+                "web_url": f"{base}/SOP%20Index/DispForm.aspx?ID=1",
+                "fields": json.dumps({"Title": "Not feedback", "Status": "Failed Retest"})})
+            rec = Recording(self.conn(f))
+            out = self.ask(rec, "uat_feedback", may_read=lambda k: k != "api:hidden")
+            self.assertNotIn("error", out)
+            self.assertEqual(out["withheld_counts"].get("withheld_not_readable"), 1)
+            got = sorted(r["record"] for r in out["rows"])
+            self.assertEqual(got, sorted(items), n)
+            self.assertNotIn(other, got)
+            self.assertEqual(sum(out["totals"].values()), n)
+            self.assertEqual(out["totals"].get("open"), len(range(0, n, 3)))
+            for sql in rec.sql:
+                for words in (True, ()):
+                    translate(sql, words=words)   # raises Untranslatable when it cannot
+            self.assertNotIn(hidden, got)
+            whole = self.ask(self.conn(f), "uat_feedback")
+            self.assertIn(hidden, [r["record"] for r in whole["rows"]])
+
     def test_uat_status_classes_and_unknown_words(self) -> None:
         self.assertEqual(bd.status_class("Failed Retest"), "open")
         self.assertEqual(bd.status_class("Ready for UAT"), "fixed")
@@ -641,3 +690,67 @@ class SpecificByDefault(unittest.TestCase):
         self.assertEqual(out["rows"][0]["scope"], "generic")
         # a neutral answer to a question that is no company fact stays with its customer
         self.assertEqual(out["counts"]["specific_to_another_customer"], 16)
+
+class SupplierIssues(unittest.TestCase):
+    """The issue log (view ``supplier_issues``): a Planner task naming a received lot is
+    linked to the lot, its supplier and the receipt that took the lot in, each cited; a
+    receipt the reader may not read is never shown or cited; a supplier's mail only counts
+    from the supplier's own domain (CAP-L152)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def world(self, *, receipt_audience: str = "api:a") -> tuple[Fixture, dict[str, str]]:
+        f = Fixture()
+        w = f.w
+        sup = w.obj("Supplier", {"name": "Synth Resin Co", "bc_email": "qa@resin.example"})
+        item = f.item("RES-1001")
+        lot = w.obj("Lot", {"lot_number": "LOT-7731"})
+        f.codes[lot] = "LOT-7731"
+        rc = w.obj("Receipt", {"receipt_date": "2026-10-02"}, audience=receipt_audience)
+        rl = w.obj("ReceiptLine", {"received_quantity": ("40", "KG", "received")})
+        w.link("ReceiptLine.line_of", rl, rc)
+        w.link("ReceiptLine.received_lot", rl, lot)
+        w.link("ReceiptLine.for_item", rl, item)
+        w.link("Receipt.supplied_by", rc, sup)
+        task = w.obj("PlannerTask", {"title": "Quarantine lot LOT-7731 contamination found",
+                                     "description": "raw material held at receiving",
+                                     "created_at": "2026-10-05T09:00:00Z"})
+        stray = w.obj("Email", {"subject": "Complaint about LOT-7731",
+                                "sender": "someone@gmail.com",
+                                "sent_at": "2026-10-06T09:00:00Z"})
+        return f, {"sup": sup, "item": item, "lot": lot, "rc": rc, "task": task,
+                   "stray": stray}
+
+    def ask(self, f: Fixture, name: str, may_read=lambda k: True) -> dict:
+        conn = f.build(self.dir / f"{name}.sqlite")
+        self.addCleanup(conn.close)
+        return bd.answer(conn, view="supplier_issues", may_read=may_read, held=EVERY,
+                         guard=Guard(), as_of=AS_OF, args={})
+
+    def test_a_task_naming_a_received_lot_cites_lot_supplier_and_receipt(self) -> None:
+        f, ids = self.world()
+        out = self.ask(f, "open")
+        [row] = [r for r in out["rows"] if r["record"] == ids["task"]]
+        self.assertEqual(row["lots"], [ids["lot"]])
+        self.assertEqual(row["suppliers"], [ids["sup"]])
+        self.assertEqual(row["receipts"], [ids["rc"]])
+        cited = [c["object_id"] for c in row["cites"]]
+        for oid in (ids["task"], ids["sup"], ids["rc"]):
+            self.assertIn(oid, cited)
+        self.assertEqual(row["kind"], "quarantine")
+        # the stray complaint is mail from no supplier's domain: counted, never a row
+        self.assertNotIn(ids["stray"], [r["record"] for r in out["rows"]])
+        self.assertEqual(out["counts"]["mail_not_from_supplier"], 1)
+
+    def test_a_receipt_the_reader_may_not_read_is_neither_shown_nor_cited(self) -> None:
+        f, ids = self.world(receipt_audience="api:secret")
+        out = self.ask(f, "restricted", may_read=lambda k: k != "api:secret")
+        [row] = [r for r in out["rows"] if r["record"] == ids["task"]]
+        self.assertEqual(row["receipts"], [])
+        self.assertNotIn(ids["rc"], [c["object_id"] for c in row["cites"]])
+        self.assertEqual(row["suppliers"], [ids["sup"]])
+        self.assertEqual(out["withheld_counts"]["receipt_not_readable"], 1)
+

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import json
+import time
 import os
 from pathlib import Path
 import re
@@ -140,11 +141,17 @@ def held(entitlement):
 EMPLOYEE = EmployeePrincipal(TID, OID)
 
 
+
+def fresh_read_at() -> str:
+    """A Portal access snapshot's read time of now (SEC-004: every snapshot expires)."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def snapshot_user(path, **fields):
     """A Portal access snapshot at ``path`` whose one row is ``EMPLOYEE`` (STAFF)."""
     path.write_text(json.dumps({
         "schema": "plx-portal-access-snapshot/v1", "source": "portal:fixture",
-        "read_at": "2026-10-06T09:00:00Z", "users": [{
+        "read_at": fresh_read_at(), "users": [{
             "id": "cmuser0000001", "email": "ricardo@petralabx.com", "role": "STAFF",
             "accessLevel": portal.LEGACY_ROLE_BOOTSTRAP["STAFF"], "isActive": True,
             "entraTenantId": TID, "entraObjectId": OID, **fields}]}), "utf-8")
@@ -730,11 +737,23 @@ class SnapshotReadAtTests(unittest.TestCase):
             self.assertTrue(resolver(late).resolve(EMPLOYEE).rights_unresolved)
             self.write(path, "2026-11-13T12:00:00Z")     # exported again
             self.assertIsNotNone(res.resolve(EMPLOYEE).actor)
-            # no bound: the same old snapshot serves, its age still shown
-            unbounded = PortalAccessSnapshot(path, clock=lambda: clock["now"] + timedelta(
-                days=400))
-            self.assertIsNotNone(resolver(unbounded).resolve(EMPLOYEE).actor)
-            self.assertEqual(unbounded.status()["max_age_hours"], None)
+            # SEC-004: no configured bound is the default bound, never none: an unchanged
+            # export expires by time alone (ancient, just expired), a fresh one serves
+            from operating.employee_permissions import DEFAULT_PORTAL_ACCESS_MAX_AGE_HOURS
+            default = timedelta(hours=DEFAULT_PORTAL_ACCESS_MAX_AGE_HOURS)
+            read = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
+            for age, served in ((timedelta(0), True), (default, True),
+                                (default + timedelta(seconds=1), False),
+                                (timedelta(days=400), False),
+                                (timedelta(days=9500), False)):   # read_at 2000-era
+                with self.subTest(age=age):
+                    plain = PortalAccessSnapshot(path, clock=lambda age=age: read + age)
+                    ent = resolver(plain).resolve(EMPLOYEE)
+                    self.assertEqual(ent.actor is not None, served, ent.denied_reason)
+                    self.assertEqual(ent.rights_unresolved, not served)
+                    self.assertEqual(plain.status()["max_age_hours"],
+                                     DEFAULT_PORTAL_ACCESS_MAX_AGE_HOURS)
+                    self.assertEqual(plain.status()["state"], "fresh" if served else "stale")
 
 
 class SharePointItemAclTests(unittest.TestCase):
@@ -1015,7 +1034,7 @@ class FileClearanceTests(unittest.TestCase):
             def snapshot(**fields):
                 path.write_text(json.dumps({
                     "schema": "plx-portal-access-snapshot/v1", "source": "portal:fixture",
-                    "read_at": "2026-10-06T09:00:00Z", "users": [{**user, **fields}]}))
+                    "read_at": fresh_read_at(), "users": [{**user, **fields}]}))
 
             def member(code, provenance="PORTAL", active=True):
                 return {"code": code, "provenance": provenance, "departmentActive": active}

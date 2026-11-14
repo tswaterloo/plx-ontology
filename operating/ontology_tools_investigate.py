@@ -217,6 +217,7 @@ import json
 from pathlib import Path
 import re
 import time
+import threading
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 from integrations.source_mirror import parse_citation
@@ -4061,6 +4062,10 @@ def _record_follow_ups(path: Any, actor: Actor, case_id: str, answer: Mapping[st
 
 # =========================================================================== host wiring
 
+_MENU_TITLES: dict[str, tuple[tuple, dict[str, str]]] = {}   # plan dir -> (file stamps, titles)
+_MENU_LOCK = threading.Lock()
+
+
 def plan_menu(plans: Mapping[str, Plan] | None = None,
               directory: str | Path = PLAN_DIR) -> str:
     """The families a caller can ask, each with the question it answers (the plan's
@@ -4071,15 +4076,31 @@ def plan_menu(plans: Mapping[str, Plan] | None = None,
     if plans is not None:
         titles = {pid: str(plan.doc.get("title") or "") for pid, plan in plans.items()}
     else:
-        for path in sorted(Path(directory).glob("*.json")):
-            if path.name.startswith("_"):
-                continue
+        # read again only when a plan file changed (each host's tool table is built anew
+        # per store state: reading every plan file was 7 s of a cold Ask under load)
+        files = sorted(p for p in Path(directory).glob("*.json") if not p.name.startswith("_"))
+        stamp = []
+        for path in files:
             try:
-                doc = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if isinstance(doc, Mapping) and isinstance(doc.get("id"), str):
-                titles[doc["id"]] = str(doc.get("title") or "")
+                found = path.stat()
+                stamp.append((path.name, found.st_mtime_ns, found.st_size))
+            except OSError:
+                stamp.append((path.name, None, None))
+        key = (str(Path(directory).resolve()), tuple(stamp))
+        with _MENU_LOCK:
+            held = _MENU_TITLES.get(key[0])
+        if held is not None and held[0] == key[1]:
+            titles = dict(held[1])
+        else:
+            for path in files:
+                try:
+                    doc = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if isinstance(doc, Mapping) and isinstance(doc.get("id"), str):
+                    titles[doc["id"]] = str(doc.get("title") or "")
+            with _MENU_LOCK:
+                _MENU_TITLES[key[0]] = (key[1], dict(titles))
     if not titles:
         return ""
     return ("Families (family: what its plan answers): "

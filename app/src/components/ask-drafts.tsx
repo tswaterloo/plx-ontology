@@ -7,6 +7,7 @@
 
 import { useState } from "react";
 import { CardActions } from "./card-actions";
+import { SaveAsTemplate, UseTemplate } from "./templates";
 import { Button } from "./ui/button";
 import type { Preset } from "@/lib/actions";
 import type { ActionResult, Answer, AskDraft } from "@/lib/types";
@@ -96,7 +97,10 @@ const KIND: Record<AskDraft["kind"], string> = {
   approval: "Draft approval",
 };
 
-function Draft({ d }: { d: AskDraft }) {
+// the template types an email draft may start from
+const EMAIL_TEMPLATES = ["customer_email", "supplier_email", "order_confirmation", "po_note", "phrasing"] as const;
+
+function Draft({ d, record }: { d: AskDraft; record?: string | null }) {
   const [done, setDone] = useState<ActionResult | null>(null);
   const [picks, setPicks] = useState<Picks>({ one: {}, any: {}, ask: {} });
   return (
@@ -127,20 +131,26 @@ function Draft({ d }: { d: AskDraft }) {
         </p>
       )}
       <Questions d={d} picks={picks} setPicks={setPicks} />
+      {d.kind === "email" && (
+        <div className="space-y-1.5" data-testid="draft-templates">
+          <UseTemplate docTypes={[...EMAIL_TEMPLATES]} record={record} />
+          <SaveAsTemplate text={d.body} record={record} docType="customer_email" />
+        </div>
+      )}
       <CardActions card={{ id: d.id, subject: { label: d.title }, actions: d.actions }} onDone={setDone} state={done} preset={presetOf(d, picks)} />
       {done && <p className="text-[12px] leading-4 text-muted">{done.text}</p>}
     </li>
   );
 }
 
-export function AskDrafts({ drafts }: { drafts: AskDraft[] }) {
+export function AskDrafts({ drafts, record }: { drafts: AskDraft[]; record?: string | null }) {
   if (!drafts.length) return null;
   return (
     <section data-testid="ask-drafts">
       <h3 className="mb-2 text-[12px] leading-4 font-medium text-muted">Drafts</h3>
       <ul className="space-y-3">
         {drafts.map((d) => (
-          <Draft key={d.id} d={d} />
+          <Draft key={d.id} d={d} record={record} />
         ))}
       </ul>
     </section>

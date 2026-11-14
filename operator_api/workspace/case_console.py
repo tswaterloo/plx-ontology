@@ -408,7 +408,8 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
                              "per request; without it every employee is refused")
     parser.add_argument("--portal-access-max-age-hours", type=float, default=None,
                         help="refuse the Portal access snapshot (every employee denied) "
-                             "once its read_at is older than this many hours")
+                             "once its read_at is older than this many hours (default 168: "
+                             "every snapshot expires, SEC-004)")
     parser.add_argument("--session-ticket-env", default=None,
                         help="live --open: environment variable holding the signed session "
                              "ticket (author 'human') of the employee who opens the cases")

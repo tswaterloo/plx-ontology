@@ -1343,7 +1343,53 @@ class LateWhileTheCheckReruns(unittest.TestCase):
             raise TimeoutError("workbench_busy")
 
         fake.reads = SimpleNamespace(run=queued)
+        fake._late_from_page = lambda reader, request, conversation, ms: None
         self.assertIsNone(self.ask(fake))
+
+    def test_the_late_list_never_says_none_is_late_when_no_findings_were_read(self):
+        """UX walk 11-13: /late said "No late POs" while the alert run had not run on the
+        server (the reader's gap inbox not read). It answers alerts_not_read (404)."""
+        from types import MethodType
+        from operator_api.errors import UserFacing
+        fake, view = self.backend([])
+        fake.reads = SimpleNamespace(run=lambda reader, job, timeout=None: job(view))
+        fake._late_held = lambda _view: ({"status": "not_scheduled", "gaps": []}, [], {}, {})
+        late_list = MethodType(be.WorkspaceBackend._late_list, fake)
+        with self.assertRaises(UserFacing) as refused:
+            late_list(None)
+        self.assertEqual((refused.exception.code, refused.exception.status),
+                         ("alerts_not_read", 404))
+        # read, and nothing late: an empty list, as before
+        fake._late_held = lambda _view: ({"status": "read", "gaps": []}, [], {}, {})
+        page = late_list(None)
+        self.assertEqual((page.total, page.items), (0, []))
+
+    def test_a_late_read_past_its_limit_answers_from_the_late_pages_list(self):
+        """UX walk 11-13: "which purchase orders are late?" went to the agent after the
+        late read's limit and timed out at 128 s while /late showed the list. The Late
+        page's own first page as it is served to this reader (kept for them, never read
+        here) answers, each source decided for them again; a page being read or empty
+        leaves it to the agent."""
+        from types import MethodType
+        fake, view = self.backend([])
+
+        def queued(reader, job, timeout=None):
+            raise TimeoutError("workbench_busy")
+        fake.reads = SimpleNamespace(run=queued)
+        item = m.LatePo(object_id=self.PO, label="PO 1001", days_late=30, open_url="/po/1001",
+                        reason="Past its need date")
+        pages = {"page": m.LateList(total=1, offset=0, items=[item], next_offset=1,
+                                    as_of="2026-11-13T08:00:00Z")}
+        fake._kept_late = lambda reader: pages["page"]
+        fake._ask_run = lambda reader, job: job(view)
+        fake._late_from_page = MethodType(be.WorkspaceBackend._late_from_page, fake)
+        answer = self.ask(fake)
+        self.assertEqual(answer.outcome, "answered")
+        self.assertEqual([s.object_id for s in answer.subjects], [self.PO])
+        for page in (m.LateList(total=0, offset=0, next_offset=0, reading=True),
+                     m.LateList(total=0, offset=0, next_offset=0), None):
+            pages["page"] = page
+            self.assertIsNone(self.ask(fake))
 
     def test_the_last_completed_result_answers_with_an_as_of_line(self):
         held = [self.gap(self.PO, "bc://x/purchaseOrders/p1@1", 30),
@@ -1966,6 +2012,52 @@ class KnownReaderWarmTests(unittest.TestCase):
             principals=frozenset(), employee=SimpleNamespace(
                 object_id="29e05178-0bd1-49b9-be6e-b01be1975f70")), "dev", ""))
         self.assertEqual(len(backend.known_readers()), 1)
+
+    def test_every_directory_employee_with_access_is_read_ahead_too(self):
+        """Owner 11-13: a reader's first-ever Today is a kept page as well. Each active
+        employee of the directory without a recent session is read ahead once (resolved as
+        a sign-in is: one refused, for no access or the exclusion, reads nothing), with a
+        short-lived identity; a person with a session is read once, not twice."""
+        tmp = Path(tempfile.mkdtemp(prefix="app-directory-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test", data_dir=tmp)
+        backend.warmer = be.Worker(lambda s: None)   # queued, never run here
+        now = int(time.time())
+        seen = "29e05178-0bd1-49b9-be6e-b01be1975f70"
+        fresh = "00000000-0000-4000-8000-00000000000a"
+        refused = "00000000-0000-4000-8000-00000000000b"
+        session = SimpleNamespace(principals=frozenset({f"employee:{seen}"}),
+                                  employee=SimpleNamespace(object_id=seen), email=None,
+                                  session_ref="a" * 64, expires_at=now + 3600)
+        backend.remember_reader(be.Reader(session, "dev", ""))
+        backend.revoked = lambda ref: False
+        made = []
+
+        def identity_for(oid, exp):
+            if oid == refused:
+                raise RuntimeError("employee_not_granted")
+            made.append((oid, exp))
+            return SimpleNamespace(principals=frozenset({f"employee:{oid}"}), email=None)
+        backend.identity_for = identity_for
+        backend.directory_for = lambda: [seen.upper(), refused, fresh]
+        self.assertEqual(backend.warm_known(), 2)
+        self.assertEqual([oid for oid, _ in made], [seen, fresh])
+        self.assertLessEqual(made[1][1], now + be.DIRECTORY_WARM_SECONDS + 5)
+        # one who signed out is left out of the directory's read-ahead until they sign in
+        backend._warmed.clear()
+        made.clear()
+        backend.forget_reader(be.Reader(SimpleNamespace(
+            principals=frozenset(), employee=SimpleNamespace(object_id=fresh)), "dev", ""))
+        backend.remember_reader(be.Reader(session, "dev", ""))   # another sign-in keeps it
+        self.assertEqual(backend.warm_known(), 1)
+        self.assertEqual([oid for oid, _ in made], [seen])
+        self.assertEqual(len(backend.known_readers()), 1)
+        # a directory that cannot be read: the sessions only, as before
+        backend.directory_for = lambda: (_ for _ in ()).throw(OSError("no snapshot"))
+        made.clear()
+        backend._warmed.clear()
+        self.assertEqual(backend.warm_known(), 1)
+        self.assertEqual([oid for oid, _ in made], [seen])
 
     def test_a_read_ahead_identity_serves_and_audits_nothing(self):
         from operating import session_identity as si

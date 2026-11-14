@@ -410,7 +410,7 @@ class HostConfig:
         self.interval_seconds = interval
         self.freshness_hours = self._freshness_hours(document.get("freshness_hours"))
         # How old (by its read_at) the Portal access snapshot may be before every employee
-        # is denied until it is exported again; absent: no bound (a hand-made snapshot).
+        # is denied until it is exported again; absent: the default 7 days (SEC-004).
         max_age = document.get("portal_access_max_age_hours")
         if max_age is not None and (isinstance(max_age, bool)
                                     or not isinstance(max_age, (int, float))

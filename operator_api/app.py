@@ -785,6 +785,70 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         original is the upload you approve."""
         return backend.doc_fill_request(who, body)
 
+    # ---- templates (``operator_api.templates``): each person's own, shared with a role ----
+
+    errs = {401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+            404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+            422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}}
+
+    @app.get("/api/templates", response_model=m.TemplateList, tags=["templates"],
+             responses={401: {"model": m.ErrorResponse}})
+    def templates_list(doc_type: Optional[m.TemplateDocType] = None,
+                       who: Reader = Depends(reader)) -> Response:
+        """Your saved templates and those shared with a role of yours, most used first,
+        with the document types, the record fields a placeholder may name and the roles
+        you may share with."""
+        out = backend.templates_list(who, doc_type)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/templates", response_model=m.Template, tags=["templates"],
+              responses=errs)
+    def templates_create(body: m.TemplateSave, who: Reader = Depends(reader)) -> m.Template:
+        """Save a template (private unless shared with a role of yours). Pay and finance
+        are refused, and every placeholder must name a record field."""
+        return backend.template_save(who, body)
+
+    @app.put("/api/templates/{template_id}", response_model=m.Template, tags=["templates"],
+             responses=errs)
+    def templates_update(body: m.TemplateSave, template_id: int = PathParam(ge=1),
+                         who: Reader = Depends(reader)) -> m.Template:
+        """Change one of your own templates (one shared with you reads as not found)."""
+        return backend.template_save(who, body, template_id)
+
+    @app.delete("/api/templates/{template_id}", response_model=m.TemplateDeleted,
+                tags=["templates"], responses=errs)
+    def templates_delete(template_id: int = PathParam(ge=1),
+                         who: Reader = Depends(reader)) -> Response:
+        """Delete one of your own templates."""
+        if not backend.template_delete(who, template_id):
+            return problem("not_found", 404)
+        return JSONResponse(m.TemplateDeleted(deleted=True).model_dump(mode="json"))
+
+    @app.post("/api/templates/propose", response_model=m.TemplateProposal,
+              tags=["templates"], responses=errs)
+    def templates_propose(body: m.TemplateProposeRequest,
+                          who: Reader = Depends(reader)) -> m.TemplateProposal:
+        """A draft's text as a template: each value the record holds exactly becomes its
+        placeholder. Nothing is saved."""
+        return backend.template_propose(who, body)
+
+    @app.post("/api/templates/{template_id}/fill", response_model=m.TemplateFilled,
+              tags=["templates"], responses=errs)
+    def templates_fill(body: m.TemplateFillRequest, template_id: int = PathParam(ge=1),
+                       who: Reader = Depends(reader)) -> m.TemplateFilled:
+        """A template filled from a record you can read: each placeholder from one value
+        the records agree on, with its source, else marked check. Nothing is sent."""
+        return backend.template_fill(who, template_id, body.record)
+
+    @app.get("/api/templates/suggest", response_model=m.TemplateSuggestions,
+             tags=["templates"], responses=errs)
+    def templates_suggest(doc_type: m.TemplateDocType, who: Reader = Depends(reader)
+                          ) -> Response:
+        """The templates to offer when you start a document of this type: yours and those
+        shared with you, then the layout learned from what you sent of that kind."""
+        out = backend.template_suggest(who, doc_type)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
     @app.post("/api/autopilot/switches", response_model=m.AutopilotSwitches,
               tags=["actions"], responses={401: {"model": m.ErrorResponse},
                                            403: {"model": m.ErrorResponse},

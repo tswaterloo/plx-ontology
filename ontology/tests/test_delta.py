@@ -1148,6 +1148,88 @@ class LayerReleaseTests(unittest.TestCase):
         self.search([])
         self.assertEqual(self.kept(keep=0)[0], [self.unapplied.name])
 
+    def test_layers_past_the_byte_budget_go_even_while_a_reader_holds_them(self):
+        """GA-F5: an incremental proactive pass that stopped running held every applied
+        layer (23 GB); past ``PLX_DELTA_KEEP_BYTES`` the oldest applied layers go anyway
+        and the report names who held them. The newest and any layer Postgres has not
+        applied always stay; 0 turns the bound off."""
+        self.search([self.small, self.big, self.unapplied])
+        env = {"PLX_DELTA_RELEASE_BYTES": "0", "PLX_DELTA_RELEASE_DAYS": "0",
+               "PLX_DELTA_KEEP_BYTES": "100"}
+        # a reader running now keeps the layer it has not taken in, budget or not
+        self.proactive([self.small], hours_ago=0.1)
+        names, out = self.kept(env)
+        self.assertEqual(names, [self.small.name, self.big.name, self.unapplied.name])
+        self.assertEqual(out, {"over_budget_held": {self.big.name: ["proactive_incremental"]}})
+        # stalled (its last run 6 h ago, past PLX_DELTA_STALE_READER_HOURS 4): it goes
+        self.proactive([self.small], hours_ago=6)
+        names, out = self.kept(env)
+        self.assertEqual(names, [self.small.name, self.unapplied.name])
+        stalled = {self.big.name: ["proactive_incremental"]}
+        self.assertEqual(out, {"over_budget": [self.big.name], "over_budget_stalled": stalled})
+        names, out = self.kept({**env, "PLX_DELTA_KEEP_BYTES": "0"})
+        self.assertEqual(names, [self.small.name, self.big.name, self.unapplied.name])
+        self.assertEqual(out, {})
+        # within the budget: kept by count, as before
+        names, _ = self.kept({**env, "PLX_DELTA_KEEP_BYTES": str(10 ** 6)})
+        self.assertEqual(names, [self.small.name, self.big.name, self.unapplied.name])
+
+    def test_the_hourly_fold_over_postgres_lets_go_of_what_a_cycle_would(self):
+        """GA-F5: the fold had nothing to fold over Postgres and returned, so layers left
+        only when a cycle published. It now applies the same rules to the published
+        layers: the pointer keeps its newest layer and everything else it says, marked
+        partial, and the dropped files are pruned."""
+        from types import SimpleNamespace
+        state = delta.State(self.dir / "state.sqlite")
+        self.addCleanup(state.conn.close)
+        layers = [{"store": str(p), "owned": 1} for p in (self.small, self.big, self.unapplied)]
+        state.put("layers", layers)
+        pointer = {"base_digest": "sha256:a", "layers": layers, "store": layers[0]["store"],
+                   "owned": 1, "built_at": "2026-11-13T00:00:00Z", "changed": {"bc": 3}}
+        (self.dir / delta.POINTER).write_text(json.dumps(pointer))
+        base = SimpleNamespace(conn=self.pg, digest="sha256:a", postgres=True)
+        self.search([self.small, self.big, self.unapplied])   # the follower took all in
+        old = self.now - 3600
+        os.utime(self.big, (old, old))
+        report = {}
+        released = delta.release_applied(self.state, self.dir, state, base,
+                                         {"PLX_DELTA_KEEP_BYTES": "100"}, report)
+        self.assertEqual(released.get("dropped"), [self.big.name], released)
+        body = json.loads((self.dir / delta.POINTER).read_text())
+        self.assertEqual([Path(item["store"]).name for item in body["layers"]],
+                         [self.small.name, self.unapplied.name])
+        self.assertTrue(body["partial"])
+        self.assertEqual((body["built_at"], body["changed"]),
+                         ("2026-11-13T00:00:00Z", {"bc": 3}))
+        self.assertEqual([Path(i["store"]).name for i in state.get("layers")],
+                         [self.small.name, self.unapplied.name])
+        self.assertFalse(self.big.exists())
+        # nothing more to let go: nothing written
+        again = delta.release_applied(self.state, self.dir, state, base,
+                                      {"PLX_DELTA_KEEP_BYTES": "100"}, {})
+        self.assertEqual(again.get("dropped"), None)
+
+    def test_prune_leaves_the_store_of_a_cycle_still_running(self):
+        """A store whose cycle's work directory is still there is not pruned (an hourly
+        fold may prune while a cycle has written but not yet published its layer)."""
+        old = self.now - 3600
+        os.utime(self.unapplied, (old, old))
+        stamp = self.unapplied.name[len("delta-"):-len(".sqlite")]
+        (self.dir / f"work-{stamp}").mkdir()
+        delta.prune(self.dir, keep={self.small.resolve()}, grace=0)
+        self.assertTrue(self.unapplied.exists())
+
+    def test_the_cycle_workers_fit_the_memory_bound(self):
+        """GA-F5: 14 workers peaked at 9.7 GB together; the count is cut to the bound."""
+        report = {}
+        self.assertEqual(delta.memory_workers(14, {}, report),
+                         delta.DELTA_MEMORY_BYTES // delta.WORKER_PEAK_BYTES)
+        self.assertEqual(report["workers_memory_bound"]["asked"], 14)
+        self.assertEqual(delta.memory_workers(2, {}, {}), 2)
+        self.assertEqual(delta.memory_workers(14, {"PLX_DELTA_MEMORY_BYTES": "1"}, {}), 1)
+        for off in ("0", "lots"):
+            self.assertEqual(delta.memory_workers(14, {"PLX_DELTA_MEMORY_BYTES": off}, {}), 14)
+
     def test_an_old_small_layer_leaves_by_age(self):
         self.every_reader_took([self.small, self.big])
         old = self.now - (delta.RELEASE_DAYS + 0.5) * 86400

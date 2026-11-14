@@ -17,6 +17,8 @@ from pathlib import Path
 from integrations import sheet_readings as sr
 from operating import proactive_business as pb
 from operating import proactive_sheets as ps
+from operating import proactive_stock as ops
+from operating.tests.test_demand_forecast import seasonal
 from operating.tests.test_proactive_business import item, sales_order
 from operating.tests.test_proactive_engine import (AS_OF, EXCLUDED_OID, OURS_OID, Engine,
                                                    World, people)
@@ -173,7 +175,8 @@ class SheetAlerts(Engine):
              [day(70, "%m/%d/%Y"), "SYN-B-501", "999.00", "999.00"]]))
         sheets.add("Statement.xlsx", workbook(       # one we sent: our receivable
             [["Statement"], [], ["Date", "Invoice", "Amount", "Balance"],
-             [day(30, "%m/%d/%Y"), "SYN-IN-3001", "10.00", "10.00"]]))
+             [day(30, "%m/%d/%Y"), "SYN-IN-3001", "10.00", "10.00"]]),
+            participants=(OURS, OUTSIDE))
         sheets.read()
         summary = self.run_rules(w)
         self.assertEqual(summary["not_evaluated"][ps.STATEMENT_RULE],
@@ -188,6 +191,35 @@ class SheetAlerts(Engine):
                          f"Statement of {day(5)} from supplier SYNTHVEND differs from our "
                          "payables on 4 items (1 amount differs, 1 not in our books, 1 not "
                          "on statement, 1 paid in our books; net 60.00 CAD)")
+        self.assertEqual(self.kinds(ps.DIFFERENCE, held=frozenset({"l5"})), [])
+
+    def test_an_inbound_customer_statement_is_reconciled_and_one_we_sent_is_not(self):
+        w = World()
+        ar(w, "SYN-IN-4001", "100.00", "100.00")             # agrees
+        differs = ar(w, "SYN-IN-4002", "250.00", "250.00")   # they say 275
+        ar(w, "SYN-IN-5001", "80.00", "80.00", party="SYNTHOTHER")
+        head = ["Date", "Invoice No.", "Amount", "Balance"]
+
+        def statement(rows):
+            return workbook([["Statement"], ["Statement Date:", day(5, "%m/%d/%Y")], [], head]
+                            + [[day(35, "%m/%d/%Y"), ref, amt, amt] for ref, amt in rows])
+        sheets = Sheets(self, w)
+        sheets.add("Open items.xlsx", statement([("SYN-IN-4001", "100.00"),
+                                                 ("SYN-IN-4002", "275.00")]))
+        sheets.add("Our statement.xlsx", statement([("SYN-IN-5001", "99.00")]),
+                   participants=(OURS, OUTSIDE))           # we sent it: counted only
+        sheets.read()
+        summary = self.run_rules(w, ps.STATEMENT_RULE)
+        self.assertEqual(summary["detectors"][ps.STATEMENT_RULE], "complete")
+        (gap,) = self.kinds(ps.DIFFERENCE)
+        self.assertEqual(gap["object_id"], differs)
+        self.assertEqual(gap["event"]["by_class"], {"amount_differs": 1})
+        self.assertEqual(gap["summary"],
+                         f"Statement of {day(5)} from customer SYNTHCUST differs from our "
+                         "receivables on 1 item (1 amount differs; net 25.00 CAD)")
+        self.assertIn("graph-mail://synth/0", json.dumps(gap, default=str))
+        self.assertNotIn("graph-mail://synth/1", json.dumps(gap, default=str))
+        self.assertEqual(self.kinds(ps.DIFFERENCE, may_read=lambda a: a != BOX), [])
         self.assertEqual(self.kinds(ps.DIFFERENCE, held=frozenset({"l5"})), [])
 
     def test_a_statement_listing_none_of_our_open_invoices_is_hidden_with_its_mailbox(self):
@@ -370,3 +402,199 @@ class SheetAlerts(Engine):
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class ReorderFromSheets(SheetAlerts):
+    """``reorder_soon`` reads a hand-kept sheet's on hand where no declared source serves it."""
+
+    def sheet(self, qty="20", unit="kg", received=3, code="SYNTH-ITEM", **kw):
+        w = World()
+        p = item(w, ())
+        seasonal(w, p)
+        sheets = Sheets(self, w)
+        sheets.add("inventory.xlsx", workbook([["Item", "On Hand", "Unit"], [code, qty, unit]]),
+                   received=received, **kw)
+        sheets.read()
+        return w, p
+
+    def run_reorder(self, w):
+        return self.run_rules(w, ops.REORDER_RULE, on_hand_sources=())
+
+    def test_a_sheet_reading_below_forecast_demand_raises_reorder_soon_citing_the_cell(self):
+        w, p = self.sheet()
+        summary = self.run_reorder(w)
+        self.assertEqual(summary["detectors"][ops.REORDER_RULE], "complete")   # not blocked
+        (gap,) = self.read(kinds=[ops.REORDER], limit=1000)["gaps"]
+        self.assertEqual(gap["object_id"], p)
+        self.assertEqual(gap["event"]["on_hand_sheet_day"], day(3))
+        self.assertIn("exceeds on hand 20 kg", gap["summary"])
+        self.assertEqual(gap["event"]["supply"], "20")
+        cited = json.dumps(gap, default=str)
+        self.assertIn("graph-mail://synth/0", cited)
+        # a reader who may not open the sheet's mailbox sees nothing
+        self.assertEqual(self.read(kinds=[ops.REORDER], may_read=lambda a: a != BOX)["gaps"],
+                         [])
+
+    def test_a_stale_reading_or_a_unit_mismatch_leaves_the_item_unjudged(self):
+        w, _p = self.sheet(received=ps.ON_HAND_FRESH_DAYS + 20)
+        summary = self.run_reorder(w)
+        self.assertEqual(self.read(kinds=[ops.REORDER])["gaps"], [])
+        self.assertEqual(summary["not_evaluated"][ops.REORDER_RULE].get("on_hand_reading_stale"), 1)
+        self.setUp()
+        w, _p = self.sheet(unit="cs")
+        summary = self.run_reorder(w)
+        self.assertEqual(self.read(kinds=[ops.REORDER])["gaps"], [])
+        self.assertEqual(summary["not_evaluated"][ops.REORDER_RULE], {"unit_mismatch": 1})
+
+    def test_a_declared_source_wins_and_an_unloaded_exclusion_blocks(self):
+        w, p = self.sheet(qty="1")
+        lot = w.obj("InventoryLot", {"quantity_on_hand": ("5000", "kg")}, audience="api:stock")
+        w.link("InventoryLot.of_item", lot, p)
+        self.run_engine(w, only=[ops.REORDER_RULE],
+                        on_hand_sources=(("InventoryLot", "quantity_on_hand",
+                                          "InventoryLot.of_item"),))
+        self.assertEqual(self.read(kinds=[ops.REORDER])["gaps"], [])   # 5000 declared, not 1
+        self.setUp()
+        w, _p = self.sheet()
+        blocked = self.run_rules(w, ops.REORDER_RULE, on_hand_sources=(),
+                                 people=people(unavailable=True))
+        self.assertEqual(blocked["detectors"][ops.REORDER_RULE], "blocked")
+
+
+class ExpiringLotsFromSheets(SheetAlerts):
+    """``expiring_lot_stock`` reads lot and expiry from hand-kept sheets, people first."""
+
+    def lots_sheet(self, w, rows, **kw):
+        sheets = Sheets(self, w)
+        sheets.add("lots.xlsx", workbook([["Item", "Lot", "On Hand", "Unit", "Exp Date"],
+                                          *rows]), **kw)
+        sheets.read()
+
+    def run_lots(self, w, **options):
+        return self.run_rules(w, ops.LOT_RULE, on_hand_sources=(), **options)
+
+    def test_a_sheet_lot_expiring_soon_with_an_open_order_is_raised_citing_the_sheet(self):
+        w = World()
+        p = item(w, ())
+        sales_order(w, p, "5", day(-10))
+        soon, far = day(-20), day(-400)
+        self.lots_sheet(w, [["SYNTH-ITEM", "L-77", "30", "kg", soon],
+                            ["SYNTH-ITEM", "L-78", "30", "kg", far],
+                            ["SYNTH-ITEM", "L-79", "0", "kg", soon]])
+        summary = self.run_lots(w)
+        self.assertEqual(summary["detectors"][ops.LOT_RULE], "complete")
+        (gap,) = self.read(kinds=[ops.LOT_EXPIRING], limit=100)["gaps"]
+        self.assertEqual(gap["object_id"], p)
+        self.assertIn("Lot L-77 with 30 kg on hand (hand-kept sheet of", gap["summary"])
+        self.assertIn("1 open customer order could use it", gap["summary"])
+        self.assertEqual(gap["event"]["on_hand_sheet_day"], day(12))
+        self.assertIn("graph-mail://synth/0", json.dumps(gap, default=str))
+        self.assertEqual(self.read(kinds=[ops.LOT_EXPIRING],
+                                   may_read=lambda a: a != BOX)["gaps"], [])
+
+    def test_a_stale_reading_or_an_excluded_person_leaves_the_lot_unraised(self):
+        w = World()
+        item(w, ())
+        self.lots_sheet(w, [["SYNTH-ITEM", "L-77", "30", "kg", day(-20)]],
+                        received=ps.ON_HAND_FRESH_DAYS + 20)
+        summary = self.run_lots(w)
+        self.assertEqual(self.read(kinds=[ops.LOT_EXPIRING])["gaps"], [])
+        self.assertEqual(summary["not_evaluated"][ops.LOT_RULE], {"on_hand_reading_stale": 1})
+        self.setUp()
+        w = World()
+        item(w, ())
+        self.lots_sheet(w, [["SYNTH-ITEM", "L-77", "30", "kg", day(-20)]],
+                        participants=(OUTSIDE, EXCLUDED))
+        self.run_lots(w)
+        self.assertEqual(self.read(kinds=[ops.LOT_EXPIRING])["gaps"], [])
+        self.setUp()
+        w = World()
+        item(w, ())
+        self.lots_sheet(w, [["SYNTH-ITEM", "L-77", "30", "kg", day(-20)]])
+        blocked = self.run_lots(w, people=people(unavailable=True))
+        self.assertEqual(blocked["detectors"][ops.LOT_RULE], "blocked")
+
+    def test_a_declared_lot_source_serves_its_item_and_the_sheet_adds_none(self):
+        w = World()
+        p = item(w, ("10",))
+        lot = w.obj("InventoryLot", {"quantity_on_hand": ("10", "kg"),
+                                     "expiry_date": day(-15)}, audience="api:stock")
+        w.link("InventoryLot.of_item", lot, p)
+        self.lots_sheet(w, [["SYNTH-ITEM", "L-77", "30", "kg", day(-20)]])
+        self.run_rules(w, ops.LOT_RULE, on_hand_sources=(
+            ("InventoryLot", "quantity_on_hand", "InventoryLot.of_item"),))
+        gaps = self.read(kinds=[ops.LOT_EXPIRING], limit=100)["gaps"]
+        self.assertEqual([g["object_id"] for g in gaps], [lot])
+
+
+class ItemOnHandSheets(SheetAlerts):
+    """``business_documents`` view ``item_on_hand_sheets``: the sheet's figure beside the
+    records' own stock, dated and cited, never added to it."""
+
+    def world(self, **sheet):
+        import sqlite3
+        w = World()
+        p = item(w, ("100",))            # the records' own stock: 100 kg
+        sheets = Sheets(self, w)
+        sheets.add("inventory.xlsx", workbook([["Item", "On Hand", "Unit"],
+                                               ["SYNTH-ITEM", "20", "kg"]]), **sheet)
+        w.build(self.store)
+        sheets.read()
+        conn = sqlite3.connect(self.store)
+        self.addCleanup(conn.close)
+        return conn, p, next(iter(sheets.records.values()))[0]
+
+    def ask(self, conn, subject, *, guard=None, may_read=lambda k: True, readings=True):
+        from operating import business_documents as bd
+        return bd.answer(conn, view="item_on_hand_sheets", may_read=may_read,
+                         held=frozenset(), guard=guard or people(), as_of=AS_OF,
+                         args={"subject": subject},
+                         readings=self.dir / ps.READINGS_FILE if readings else None)
+
+    def test_the_sheet_figure_is_a_separate_dated_cited_row(self):
+        from operating import business_documents as bd
+        conn, p, attachment = self.world()
+        out = self.ask(conn, p)
+        (row,) = out["rows"]
+        self.assertEqual((row["quantity"], row["unit"], row["dated"], row["fresh"]),
+                         ("20", "kg", day(12), True))
+        self.assertTrue(row["not_added_to_records_stock"])
+        self.assertTrue(row["cell"])
+        self.assertEqual({c["object_id"] for c in row["cites"]}, {attachment, p})
+        self.assertNotIn("error", bd._checked(out))
+
+    def test_a_stale_reading_is_shown_as_not_fresh_and_a_reader_without_the_mailbox_sees_none(
+            self):
+        conn, p, _a = self.world(received=ps.ON_HAND_FRESH_DAYS + 20)
+        (row,) = self.ask(conn, p)["rows"]
+        self.assertFalse(row["fresh"])
+        hidden = self.ask(conn, p, may_read=lambda k: k != BOX)
+        self.assertEqual(hidden["rows"], [])
+        self.assertEqual(hidden["withheld_counts"], {"withheld_not_readable": 1})
+
+    def test_people_first_an_excluded_person_or_an_unloaded_exclusion_shows_nothing(self):
+        conn, p, _a = self.world(participants=(OUTSIDE, EXCLUDED))
+        self.assertEqual(self.ask(conn, p)["rows"], [])
+        self.setUp()
+        conn, p, _a = self.world()
+        blocked = self.ask(conn, p, guard=people(unavailable=True))
+        self.assertEqual((blocked["rows"], blocked["withheld"]),
+                         ([], "people_exclusion_unavailable"))
+        self.assertEqual(self.ask(conn, p, readings=False)["rows"], [])
+        self.assertEqual(self.ask(conn, "Lot:x:1")["rows"], [])   # not an item
+
+    def test_an_item_number_two_unrelated_items_hold_is_not_decided(self):
+        import sqlite3
+        w = World()
+        a = item(w, ("100",))
+        b = item(w, ("5",))             # another item with the same number, no twin link
+        sheets = Sheets(self, w)
+        sheets.add("inventory.xlsx", workbook([["Item", "On Hand", "Unit"],
+                                               ["SYNTH-ITEM", "20", "kg"]]))
+        w.build(self.store)
+        sheets.read()
+        conn = sqlite3.connect(self.store)
+        self.addCleanup(conn.close)
+        out = self.ask(conn, a)
+        self.assertEqual((out["rows"], out["counts"]), ([], {"item_code_ambiguous": 1}))
+        self.assertNotEqual(a, b)

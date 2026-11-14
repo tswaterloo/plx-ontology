@@ -18,8 +18,9 @@ Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PGAPPNAME=%N
 # the tool-call rules on a pool of 3 workers whatever the host's free memory reads at the
 # start (without it a loaded host sizes the pool to one, no pool: the margins, the orders at
-# risk and the cards are then read only up to their per-run bounds); 6 GB engine + 3 x 2.5 GB
-# workers sit under MemoryHigh
+# risk and the cards are then read only up to their per-run bounds). Capped at 8G (was 16G)
+# since the vendor stage starts on a fresh runtime (operating.vendor_watch, AL-06): watch the
+# first pass's peak (plx-ops-memory) before raising it; the jobq class says the same 8
 Environment=PLX_PROACTIVE_WORKERS=3
 # the store the incremental pass reads (plx-proactive-inc.service)
 Environment=PLX_ONTOLOGY_PG=1
@@ -32,8 +33,8 @@ Nice=5
 CPUWeight=50
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
-MemoryHigh=15G
-MemoryMax=16G
+MemoryHigh=7G
+MemoryMax=8G
 MemorySwapMax=4G
 TimeoutStartSec=4800
 UMask=0077

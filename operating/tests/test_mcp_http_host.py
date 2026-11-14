@@ -290,16 +290,19 @@ class RemoteHostTests(EmployeeDoorTestCase):
         from operating import mcp_http_host
 
         # A client that declares a body and sends one byte is closed within the read
-        # bound, before any authentication; the metadata route answers after it.
+        # bound, before any authentication; the metadata route answers while it is
+        # still stalled (SEC-003: the stall holds its own connection thread only).
         bound = 15   # REQUEST_READ_SECONDS (10) and a margin
         stalled = socket.create_connection(("127.0.0.1", self.port), timeout=bound)
         self.addCleanup(stalled.close)   # before the server's shutdown, should this fail
         stalled.sendall(b"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: "
                         b"application/json\r\nContent-Length: 16\r\n\r\n{")
+        began = time.monotonic()
         connection = HTTPConnection("127.0.0.1", self.port, timeout=bound)
         connection.request("GET", "/.well-known/oauth-protected-resource/mcp")
         self.assertEqual(connection.getresponse().status, 200)
         connection.close()
+        self.assertLess(time.monotonic() - began, 5)
         self.assertEqual(stalled.recv(64), b"")   # closed, nothing answered
         stalled.close()
         # Nor does one byte at a time, each well inside a single read's wait, hold it
@@ -382,6 +385,99 @@ class RemoteHostTests(EmployeeDoorTestCase):
                 self.assertEqual(status, expected, raw)
                 self.assertNotIn("mcp-session-id", headers)
                 self.assertNotIn(b"result", raw)
+
+
+class ConcurrentListenerTests(unittest.TestCase):
+    """SEC-003 at the socket: stalled readers never hold the execution worker; every
+    request runs on the one worker thread (the case runtime's SQLite stays on it); a full
+    connection set or queue is refused at once with 503; shutdown ends the worker."""
+
+    def test_stalls_never_block_others_and_admission_is_bounded(self):
+        import socket
+        from unittest import mock
+        from operating import mcp_http_host
+
+        ran, gate = [], threading.Event()
+
+        class Stub:
+            def respond(self, method, path, headers, body):
+                ran.append((threading.get_ident(), path))
+                if path == "/hold":
+                    gate.wait(20)
+                if path == "/boom":
+                    raise RuntimeError("secret detail")
+                return mcp_http_host._json(200, {"path": path})
+
+        with mock.patch.object(mcp_http_host, "MAX_CONNECTIONS", 4), \
+                mock.patch.object(mcp_http_host, "MAX_QUEUED", 1):
+            server = mcp_http_host.make_server(Stub(), "127.0.0.1", 0)
+        worker: list = []
+
+        def serve():
+            worker.append(threading.get_ident())
+            server.serve_forever(poll_interval=0.05)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        port = server.server_address[1]
+
+        def get(path, timeout=5):
+            connection = HTTPConnection("127.0.0.1", port, timeout=timeout)
+            try:
+                connection.request("GET", path)
+                response = connection.getresponse()
+                return response.status, response.read()
+            finally:
+                connection.close()
+
+        def stall():
+            sock = socket.create_connection(("127.0.0.1", port), timeout=15)
+            self.addCleanup(sock.close)
+            sock.sendall(b"POST /mcp HTTP/1.1\r\nContent-Length: 16\r\n\r\n{")
+            return sock
+
+        # three unauthenticated stalls: a fourth client is served at once, on the worker
+        stalls = [stall() for _ in range(3)]
+        began = time.monotonic()
+        self.assertEqual(get("/a")[0], 200)
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertEqual(ran[-1], (worker[0], "/a"))
+        # a fifth open connection is over the bound: answered 503 at once, never queued
+        stalls.append(stall())
+        time.sleep(0.2)
+        status, _ = get("/b")
+        self.assertEqual(status, 503)
+        self.assertNotIn("/b", [path for _, path in ran])
+        for sock in stalls:
+            sock.close()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and get("/c")[0] != 200:
+            time.sleep(0.1)   # the stalled threads end and give their slots back
+        self.assertEqual(ran[-1][1], "/c")
+        # a raising request is a bare 500, no detail
+        status, raw = get("/boom")
+        self.assertEqual(status, 500)
+        self.assertNotIn(b"secret", raw)
+        # the worker busy with one request and one queued: the next is refused 503 busy
+        replies: dict = {}
+        held = threading.Thread(target=lambda: replies.setdefault("hold", get("/hold", 30)))
+        held.start()
+        while not ran or ran[-1][1] != "/hold":
+            time.sleep(0.02)
+        queued = threading.Thread(target=lambda: replies.setdefault("q", get("/q", 30)))
+        queued.start()
+        time.sleep(0.3)
+        status, raw = get("/over")
+        self.assertEqual((status, json.loads(raw)["error"]["code"]), (503, "busy"))
+        gate.set()
+        held.join(10)
+        queued.join(10)
+        self.assertEqual((replies["hold"][0], replies["q"][0]), (200, 200))
+        self.assertEqual({ident for ident, _ in ran}, {worker[0]})   # one worker thread
+        server.shutdown()
+        thread.join(10)
+        self.assertFalse(thread.is_alive())
 
 
 class StartupTests(EmployeeDoorTestCase):

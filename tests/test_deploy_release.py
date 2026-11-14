@@ -25,6 +25,15 @@ def tracked(folder: Path) -> list[Path]:
 
 
 class DeployFilesTest(unittest.TestCase):
+    def test_whole_pass_is_capped_at_8g_in_the_unit_and_the_jobq_class(self) -> None:
+        # AL-06: the 4-hourly whole refresh is back on under an 8G cap, the high mark below it
+        unit = (ROOT / "deploy/systemd/plx-proactive-whole.service").read_text()
+        self.assertRegex(unit, r"(?m)^MemoryMax=8G$")
+        self.assertRegex(unit, r"(?m)^MemoryHigh=7G$")
+        self.assertTrue((ROOT / "deploy/systemd/plx-proactive-whole.timer").is_file())
+        from operating.jobq import classes as jobq_classes
+        self.assertEqual(jobq_classes.load({})["proactive-whole"].mem_gb, 8)
+
     def test_no_username_or_home_path_is_committed_under_deploy(self) -> None:
         found = [f"{p.relative_to(ROOT)}:{n}" for p in tracked(DEPLOY) if p.is_file()
                  for n, line in enumerate(p.read_text(errors="ignore").splitlines(), 1)
@@ -109,7 +118,7 @@ class DeployFilesTest(unittest.TestCase):
             wanted = {"u": ["plx-sheet-readings", "plx-system-activity", "plx-team-activity",
                            "plx-work-graph"],
                       "s": ["plx-proactive-whole", "plx-backup", "plx-restore-test",
-                            "plx-ops-health"]}
+                            "plx-ops-health", "plx-labour"]}
             for out, names in wanted.items():
                 for name in names:
                     service = Path(tmp, out, f"{name}.service").read_text()
@@ -121,6 +130,20 @@ class DeployFilesTest(unittest.TestCase):
             for name in wanted["u"]:
                 self.assertIn("EnvironmentFile=-/srv/someone/.config/plx/proactive.env",
                               Path(tmp, "u", f"{name}.service").read_text(), name)
+            # CAP-L148: the labour-hours build is scheduled daily, reads the capture store
+            # read-only and writes only the labour store
+            labour = Path(tmp, "s", "plx-labour.service").read_text()
+            self.assertIn("-m operating.labour_hours build --state-dir ${PLX_INGEST_STATE} "
+                          "--out ${PLX_INGEST_STATE}/labour/labour.db", labour)
+            self.assertRegex(labour, r"(?m)^Type=oneshot$")
+            self.assertRegex(labour, r"(?m)^ProtectSystem=strict$")
+            self.assertRegex(labour, r"(?m)^ReadOnlyPaths=/data/plx-state$")
+            self.assertRegex(labour, r"(?m)^ReadWritePaths=/data/plx-state/labour$")
+            self.assertIn("MC_MCP_API_KEY", labour)   # the business credentials are dropped
+            self.assertRegex(Path(tmp, "s", "plx-labour.timer").read_text(),
+                             r"(?m)^OnCalendar=\*-\*-\* \d\d:\d\d:00 ")
+            install = (DEPLOY / "ops" / "install_keep_fresh.sh").read_text()
+            self.assertRegex(install, r'(?m)^SYS_UNITS=".*\bplx-labour"')
             activity = Path(tmp, "u", "plx-system-activity.service").read_text()
             self.assertIn("--weeks 13", activity)
 
@@ -642,13 +665,18 @@ class ReleaseRestart(unittest.TestCase):
                         "PLX_DEPLOY_ENV": "/nonexistent", "PLX_RELEASES": f"{tmp}/rel",
                         "PLX_API_URL": "http://127.0.0.1:1", "PLX_RELEASE_OWNER": ""})
             Path(tmp, "rel").mkdir()
-            return subprocess.run([str(DEPLOY / "release" / "plx-release"), "restart"],
-                                  env=env, text=True, capture_output=True, timeout=120)
+            got = subprocess.run([str(DEPLOY / "release" / "plx-release"), "restart"],
+                                 env=env, text=True, capture_output=True, timeout=120)
+            history = Path(tmp, "rel", "history.log")
+            self.history = history.read_text() if history.exists() else ""
+            return got
 
     def test_a_stopped_api_is_not_a_failed_deploy(self) -> None:
         got = self.restart("inactive", "inactive", "000")
         self.assertEqual(got.returncode, 0, got.stderr)
         self.assertIn("api stopped", got.stdout)
+        # the job-queue worker loads the new release too (it served a 6 h old one, 11-13)
+        self.assertIn("plx-jobq-worker", self.history)
 
     def test_an_api_the_release_crashes_fails_the_restart(self) -> None:
         for after in ("activating", "failed"):

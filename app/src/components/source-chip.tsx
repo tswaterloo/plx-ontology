@@ -3,13 +3,15 @@
 import * as HoverCard from "@radix-ui/react-hover-card";
 import { ArrowUpRight } from "lucide-react";
 import Link from "next/link";
-import { createContext, useContext, useState } from "react";
+import { createContext, lazy, Suspense, useContext, useState } from "react";
 import { cn } from "@/lib/cn";
-import { currencyCode, fieldKey, fieldLabel, fieldValue, formatDate, formatDateTime, formatMoney, isInternalField, isUnsetDate, recordKind, safeHref, sourceHref, SYSTEM_LABEL } from "@/lib/format";
+import { currencyCode, fieldKey, fieldLabel, fieldValue, formatDate, formatDateTime, formatMoney, isInternalField, isUnsetDate, mailField, recordKind, safeHref, sourceHref, SYSTEM_LABEL } from "@/lib/format";
 import type { Source, SourceSystem } from "@/lib/types";
-import { mailField, SourceLoader } from "./source-view";
 import { SystemCode } from "./ui/glyphs";
 import { Sheet } from "./ui/sheet";
+
+/** The full source reader loads when a drawer first opens; until then the preview shows. */
+const SourceLoader = lazy(() => import("./source-view").then((m) => ({ default: m.SourceLoader })));
 
 function known(system: string): system is SourceSystem {
   return system in SYSTEM_LABEL;
@@ -196,7 +198,13 @@ export function EvidenceDrawer({
         ) : null
       }
     >
-      {open && source.handle ? <SourceLoader handle={source.handle} cited={cited} quote={source.quote} headingLevel={2} /> : <SourcePreview source={source} />}
+      {open && source.handle ? (
+        <Suspense fallback={<SourcePreview source={source} />}>
+          <SourceLoader handle={source.handle} cited={cited} quote={source.quote} headingLevel={2} />
+        </Suspense>
+      ) : (
+        <SourcePreview source={source} />
+      )}
     </Sheet>
   );
 }

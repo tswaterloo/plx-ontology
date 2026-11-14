@@ -4,9 +4,11 @@
 // the HttpOnly session cookie that /api/auth/dev-login sets in dev/mock mode.
 
 import { ApiError, apiErrorFrom } from "./errors";
+import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
 import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
+  Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
   ActionPreview,
@@ -140,27 +142,128 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
 export const READING_POLL_MS = 1500;
 export const READING_MOST_MS = 300_000;
 
+/** The wait before asking again: short at first (a cold page often fills in a second or two),
+ * growing to READING_POLL_MS, and to twice that once the read has gone on for a while. */
+export function readingDelay(attempt: number, waited: number): number {
+  const cap = waited > READING_POLL_MS * 10 ? READING_POLL_MS * 2 : READING_POLL_MS;
+  return Math.min(cap, Math.round(400 * 1.6 ** attempt));
+}
+
+/** Waits `ms`, or until the tab is shown again when it is hidden (a hidden tab asks nothing). */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((done, fail) => {
+    if (signal?.aborted) {
+      fail(signal.reason ?? new DOMException("aborted", "AbortError"));
+      return;
+    }
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+    const finish = () => {
+      clearTimeout(t);
+      signal?.removeEventListener("abort", stop);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", seen);
+    };
+    const stop = () => {
+      finish();
+      fail(signal?.reason ?? new DOMException("aborted", "AbortError"));
+    };
+    const seen = () => {
+      if (hidden()) return;
+      finish();
+      done();
+    };
+    t = setTimeout(() => {
+      if (hidden()) {
+        document.addEventListener("visibilitychange", seen);
+        return;
+      }
+      finish();
+      done();
+    }, ms);
+    signal?.addEventListener("abort", stop, { once: true });
+  });
+}
+
+/** One request in flight per read: callers asking for the same read while it is under way
+ * (the shell and the page, a remount) share it. Each caller's abort lets go of only its own
+ * wait; the shared request stops when the last caller has gone. */
+const inflight = new Map<string, { result: Promise<unknown>; ctl: AbortController; users: number }>();
+
+// A read under way belongs to the person who started it: sign-out or another sign-in stops it,
+// so a later caller (the next person, a hover read-ahead) never joins it and gets its answer.
+onSessionReset(() => {
+  const under = [...inflight.values()];
+  inflight.clear();
+  for (const e of under) e.ctl.abort();
+});
+
+function shared<T>(key: string, run: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+  let entry = inflight.get(key);
+  if (!entry) {
+    const ctl = new AbortController();
+    const made = { result: run(ctl.signal) as Promise<unknown>, ctl, users: 0 };
+    const gone = () => {
+      if (inflight.get(key) === made) inflight.delete(key);
+    };
+    made.result.then(gone, gone);
+    inflight.set(key, made);
+    entry = made;
+  }
+  const e = entry;
+  e.users += 1;
+  return new Promise<T>((resolve, reject) => {
+    let left = false;
+    const leave = () => {
+      if (left) return;
+      left = true;
+      signal?.removeEventListener("abort", onAbort);
+      e.users -= 1;
+      if (e.users === 0 && inflight.get(key) === e) {
+        inflight.delete(key);
+        e.ctl.abort();
+      }
+    };
+    const onAbort = () => {
+      leave();
+      reject(signal?.reason ?? new DOMException("aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    e.result.then(
+      (v) => {
+        leave();
+        resolve(v as T);
+      },
+      (err) => {
+        leave();
+        reject(err);
+      },
+    );
+  });
+}
+
+/** Whose read a path is: the same path read while viewing as someone is a different read. */
+function readKey(path: string): string {
+  return `${viewingAs()?.key ?? ""} ${path}`;
+}
+
 /** A Today list (Home, the late list, the briefing, the suggestions, the replies) or a record's page: the server answers
  * at once with `reading: true` (nothing in it) while its first read for you goes on; ask again until
  * the page is there, so the screens that are ready show while the rest fill in. Still reading after
  * READING_MOST_MS: the calm "busy" notice, never the empty placeholder. */
-export async function getRead<T extends { reading?: boolean | null }>(path: string, signal?: AbortSignal): Promise<T> {
-  const until = Date.now() + READING_MOST_MS;
-  for (;;) {
+export function getRead<T extends { reading?: boolean | null }>(path: string, signal?: AbortSignal): Promise<T> {
+  return shared(readKey(path), (s) => pollRead<T>(path, s), signal);
+}
+
+async function pollRead<T extends { reading?: boolean | null }>(path: string, signal: AbortSignal): Promise<T> {
+  const start = Date.now();
+  const until = start + READING_MOST_MS;
+  for (let attempt = 0; ; attempt++) {
     const got = await getJson<T>(path, signal);
     if (!got.reading) return got;
-    if (Date.now() >= until) throw new ApiError(503, "busy");
-    await new Promise<void>((done, fail) => {
-      const stop = () => {
-        clearTimeout(t);
-        fail(signal?.reason ?? new DOMException("aborted", "AbortError"));
-      };
-      const t = setTimeout(() => {
-        signal?.removeEventListener("abort", stop);
-        done();
-      }, READING_POLL_MS);
-      signal?.addEventListener("abort", stop, { once: true });
-    });
+    const now = Date.now();
+    if (now >= until) throw new ApiError(503, "busy");
+    await pause(Math.min(readingDelay(attempt, now - start), until - now), signal);
   }
 }
 
@@ -823,4 +926,38 @@ export async function organiseWorkThread(thread: string, body: WorkLogOrganise):
 /** A Save or Unsave, kept in your work log as well as this browser. */
 export async function logSaved(body: WorkLogSave): Promise<void> {
   await call("/api/work-log/saved", { method: "POST", json: body });
+}
+
+// ---- templates: your own saved templates, and those shared with you ----
+
+/** Your templates and those shared with you or a role of yours, with the types, fields and roles. */
+export function getTemplates(signal?: AbortSignal, docType?: TemplateDocType): Promise<TemplateList> {
+  return getJson<TemplateList>(`/api/templates${docType ? `?doc_type=${encodeURIComponent(docType)}` : ""}`, signal);
+}
+
+/** Save a new template, or change one of yours (id). */
+export async function saveTemplate(body: TemplateSave, id?: number): Promise<Template> {
+  const res = id
+    ? await call(`/api/templates/${id}`, { method: "PUT", json: body })
+    : await call("/api/templates", { method: "POST", json: body });
+  return (await res.json()) as Template;
+}
+
+export async function deleteTemplate(id: number): Promise<void> {
+  await call(`/api/templates/${id}`, { method: "DELETE" });
+}
+
+/** A draft's text with the record's exact values as placeholders; nothing is saved. */
+export async function proposeTemplate(text: string, record?: string | null): Promise<TemplateProposal> {
+  return (await (await call("/api/templates/propose", { method: "POST", json: { text, record: record || null } })).json()) as TemplateProposal;
+}
+
+/** A template filled from a record you can read; nothing is sent. */
+export async function fillTemplate(id: number, record?: string | null): Promise<TemplateFilled> {
+  return (await (await call(`/api/templates/${id}/fill`, { method: "POST", json: { record: record || null } })).json()) as TemplateFilled;
+}
+
+/** The templates to offer when you start a document of this type. */
+export function suggestTemplates(docType: TemplateDocType, signal?: AbortSignal): Promise<TemplateSuggestions> {
+  return getJson<TemplateSuggestions>(`/api/templates/suggest?doc_type=${encodeURIComponent(docType)}`, signal);
 }

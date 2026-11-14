@@ -39,7 +39,7 @@ def event(group: str, n: int, priority: int = 20, kind: str = "record.changed") 
 class EventQueueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.q = self.evq()
-        self.q.conn.execute("DROP TABLE IF EXISTS jobq.event_queue, jobq.event_handled")
+        self.q.conn.execute("DROP SCHEMA IF EXISTS jobq CASCADE")   # its tables and migration record
         self.q.init()
 
     def tearDown(self) -> None:
@@ -206,7 +206,7 @@ class AutopilotThroughTheEventQueue(Fixture):
     def setUp(self) -> None:
         super().setUp()
         q = ev.EventQueue(_DSN, topic=ap.EVQ_TOPIC)
-        q.conn.execute("DROP TABLE IF EXISTS jobq.event_queue, jobq.event_handled")
+        q.conn.execute("DROP SCHEMA IF EXISTS jobq CASCADE")   # its tables and migration record
         q.init()
         self.evq = q
         self.addCleanup(q.close)

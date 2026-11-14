@@ -317,51 +317,40 @@ export function splitAnswer(text: string, subject?: ObjectRef | null): { lead: B
   return { lead: blocks.slice(0, leadCount), rest: blocks.slice(leadCount), composed: null };
 }
 
-// Figures and record numbers in a line (commas out of numbers).
-const norm = (s: string) => prose(s).toLowerCase().replace(/(\d),(?=\d{3}\b)/g, "$1");
-const figures = (s: string) => new Set((norm(s).match(/[a-z$]*\d[\w.\-/]*/g) ?? []).map((t) => t.replace(/[.\-/]+$/, "")));
-
-// The words a fact says besides its figures: what the figure is (quantity, late, price,
-// due), never grammar. Three letters up, so "PO" and "of" never count.
-const FILLER = new Set(["the", "and", "for", "has", "have", "had", "was", "were", "are", "its", "this", "that", "with", "from", "not", "yet", "per", "all", "any", "one", "our", "but"]);
-const words = (s: string) =>
-  new Set(
-    (norm(s).replace(/[a-z$]*\d[\w.\-/]*/g, " ").match(/[a-z]{3,}/g) ?? [])
-      .filter((w) => !FILLER.has(w))
-      .map((w) => w.replace(/(?:ies|es|s)$/, "")),
-  );
+// A claim as its words and figures in order. Case, markdown emphasis, quotes, sentence
+// punctuation (: ; , ! ? and a full stop) and the commas of thousands never count; every
+// word, figure, sign, comparator, bracket and currency symbol does, so "PO 123" and "PO 124",
+// "12 days late" and "quantity 12", "-5" and "+5", "> 5" and "5", "€100" and "100" are
+// different claims. An accounting "(1,200)" is "-1200".
+const claim = (s: string) =>
+  prose(s)
+    .toLowerCase()
+    .replace(/(\d),(?=\d{3}\b)/g, "$1")
+    .replace(/\b(po|so)\s+(?=\d)/g, "$1")
+    .replace(/\((\d[\d.]*)\)/g, "-$1")
+    .replace(/[*_`"'\u2018\u2019\u201c\u201d]/g, "")
+    .replace(/\.(?!\d)|[:;,!?]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
 
 /**
- * Which fact a bullet of the answer's cited part states, by index (or null): the fact
- * whose every figure the bullet writes and, when the fact says what its figure is (its
- * words: "quantity", "days late"), one of those words too. Words alone never match, and
- * the same figures never lend another property's or record's evidence (WEB-027: "PO123
- * quantity 12" never cites "PO123 is 12 days late"). Two facts the bullet matches equally
- * well lend nothing: no citation beats a guessed one. A bullet only borrows the evidence
- * chips of the gated fact it restates; it never adds one, and the uncited part
- * (``splitGeneral``) never comes here.
+ * Which fact a bullet of the answer's cited part states, by index (or null): only a fact
+ * whose claim the bullet states exactly (the same words and figures in the same order).
+ * Shared figures, shared words or a shared record never lend a fact's evidence to another
+ * claim (WEB-027: "PO123 quantity 12" never cites "PO123 is 12 days late", nor "PO124
+ * quantity 12"); a bullet that restates a fact in other words carries no chips, and the
+ * fact keeps its own line with its own chips: no citation beats a guessed one. Two facts
+ * with the same claim lend nothing. A bullet only borrows the evidence chips of the gated
+ * fact it restates; it never adds one, and the uncited part (``splitGeneral``) never comes
+ * here.
  */
 export function bulletFact(item: string, facts: Fact[], used: Set<number>): number | null {
-  const fig = figures(item);
-  const said = words(item);
-  let best: number | null = null;
-  let score = 0;
-  let tied = false;
-  facts.forEach((f, i) => {
-    if (used.has(i)) return;
-    const ff = [...figures(f.text)];
-    if (!ff.length || !ff.every((t) => fig.has(t))) return;
-    const fw = [...words(f.text)];
-    const hits = fw.filter((w) => said.has(w)).length;
-    if (fw.length && !hits) return;
-    const sc = 2 + ff.length * 100 + hits;
-    if (sc > score) {
-      score = sc;
-      best = i;
-      tied = false;
-    } else if (sc === score) tied = true;
-  });
-  return tied ? null : best;
+  const said = claim(item);
+  if (!said) return null;
+  const same = facts.flatMap((f, i) => (claim(f.text) === said ? [i] : []));
+  if (same.length !== 1 || used.has(same[0])) return null;
+  return same[0];
 }
 
 /** Blocks after the lead, one fact line each; a bullet that restates a fact carries its chips. */
@@ -826,7 +815,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify
               <ConflictCard key={i} conflict={c} />
             ))}
             <AttachmentNotes items={a.attachments ?? []} />
-            <AskDrafts drafts={a.drafts ?? []} />
+            <AskDrafts drafts={a.drafts ?? []} record={a.subjects?.[0]?.object_id ?? null} />
             {a.clarify && <ClarifyPart a={a} onReply={onClarify} />}
             {a.instruction && <InstructionPart part={a.instruction} answerId={a.answer_id} onInstruct={onInstruct} />}
             {ask && (

@@ -479,3 +479,9 @@ export function recordLabel(type: string | null | undefined, label: string): str
 export function proseMoney(text: string): string {
   return text.replace(/(^|[\s(])(-?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|-?\d{3,}(?:\.\d{1,2})?)\s(USD|CAD|EUR|GBP)\b/g, (_m, pre: string, n: string, cur: string) => `${pre}${formatMoney(n.replace(/,/g, ""), cur)}`);
 }
+
+/** A mail field of the captured message ("row.from"), shown as a person reads it. */
+export function mailField(fields: Record<string, string> | null | undefined, name: string): string {
+  const v = fields?.[`row.${name}`] ?? fields?.[name];
+  return v ? fieldValue(name, v) : "";
+}

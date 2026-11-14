@@ -1,7 +1,7 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useEffect } from "react";
 import { AutopilotView } from "@/components/autopilot/area";
 import { FormFill } from "@/components/autopilot/form-fill";
 import { Pending } from "@/components/ui/skeleton";
@@ -9,6 +9,7 @@ import { Toolbar } from "@/components/ui/toolbar";
 import { ThreadContext } from "@/components/work-log";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getAutopilot } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
 import { useStaleRefresh } from "@/lib/stale-refresh";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { AutopilotArea } from "@/lib/types";
@@ -28,18 +29,7 @@ export default function AutopilotPage() {
 function Autopilot() {
   // "Continue" from the work log: the item's earlier work above, the item itself in view
   const item = useSearchParams().get("item");
-  const [area, setArea] = useState<AutopilotArea | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setError(null);
-    getAutopilot(ctl.signal).then(setArea, (e) => {
-      if (!ctl.signal.aborted) setError(e);
-    });
-    return () => ctl.abort();
-  }, [round]);
+  const { data: area, error, retry } = useRead<AutopilotArea>("autopilot", (signal) => getAutopilot(signal));
   useStaleRefresh(area?.stale_since, retry);
   useEffect(() => {
     if (!area || !item) return;

@@ -1,12 +1,12 @@
 "use client";
 
 import { useReaderWords } from "@/components/view-as";
-import { useCallback, useEffect, useState } from "react";
 import { MyWorkList } from "@/components/my-work";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { getMyWork } from "@/lib/api";
+import { useRead } from "@/lib/use-read";
 import { useStaleRefresh } from "@/lib/stale-refresh";
 import { noticeKind, plainError } from "@/lib/errors";
 import type { MyWork } from "@/lib/types";
@@ -16,18 +16,7 @@ import type { MyWork } from "@/lib/types";
 // confirm; an entry is a dry-run write intent until writes are granted.
 export default function MyWorkPage() {
   const w = useReaderWords();
-  const [work, setWork] = useState<MyWork | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [round, setRound] = useState(0);
-  const retry = useCallback(() => setRound((n) => n + 1), []);
-  useEffect(() => {
-    const ctl = new AbortController();
-    setError(null);
-    getMyWork(ctl.signal).then(setWork, (e) => {
-      if (!ctl.signal.aborted) setError(e);
-    });
-    return () => ctl.abort();
-  }, [round]);
+  const { data: work, error, retry } = useRead<MyWork>("my-work", (signal) => getMyWork(signal));
   useStaleRefresh(work?.stale_since, retry);
   return (
     <div className="flex min-h-0 flex-1 flex-col">

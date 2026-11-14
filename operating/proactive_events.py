@@ -1504,6 +1504,225 @@ def read_margin(call: Callable, root: str) -> Any:
     return order
 
 
+# --------------------------------------------------------------- the margin reading cache
+#
+# An invoiced order's checked margin changes only when something its margin run reads
+# changes. ``margin_fingerprints`` digests, per order, everything the run can read: the
+# links of every hop its plans walk (``ontology/plans/order_margin.json`` and
+# ``sage_order_margin.json``, read from the plans themselves, filters and tier floors
+# ignored so the walk is a superset; a credit memo, invoice or ledger entry linked later
+# changes the reached set), the identity links of every reached record (``plx.object``
+# reads its peers' values) and every current row of each reached record and peer (its
+# values, versions, record row and removals), plus what the run reads beside the graph:
+# the BC capture claims and completeness (``store_meta`` with read times and capture ids
+# left out), the schema and catalog digests, the review store and the code and plans that
+# compute it. A reading is reused only under an equal fingerprint.
+
+MARGIN_PLANS = ("order_margin.json", "sage_order_margin.json")
+MARGIN_CODE = ("customer_profit.py", "order_margin.py", "sage_order_margin.py")
+MARGIN_META = ("freshness", "relation_completeness", "source_freshness", "schema_digest",
+               "catalog_hash", "format")
+# store_meta keys that move with every capture without changing what was captured whole
+_MOVING_META = frozenset({"captured_at", "lag_seconds", "last_capture_id", "read_at",
+                          "last_full_traversal_at", "last_refresh_at", "full_traversal_at"})
+FINGERPRINT_CHUNK = 500
+
+
+def _margin_hops() -> list[tuple[str, str, tuple[tuple[str, str], ...]]]:
+    """(step id, the step it starts from, its path) of every ``plx.around`` step of the
+    margin plans; a step starting from a step read by ``plx.object`` starts from that
+    step's own start."""
+    from pathlib import Path
+
+    hops: list[tuple[str, str, tuple[tuple[str, str], ...]]] = []
+    for name in MARGIN_PLANS:
+        plan = json.loads((Path(__file__).resolve().parent.parent / "ontology" / "plans"
+                           / name).read_text(encoding="utf-8"))
+        for step in plan["steps"]:
+            path = (step.get("args") or {}).get("path")
+            if step.get("tool") == "plx.around" and path:
+                hops.append((f"{name}:{step['id']}",
+                             "root" if step["from"] == "root" else f"{name}:{step['from']}",
+                             tuple((hop["link_type"], hop["direction"]) for hop in path)))
+    return hops
+
+
+def margin_context(st: Any, reader: str, state_dir: Any = None) -> str:
+    """What every order's margin run reads beside its records (module note above)."""
+    from pathlib import Path
+
+    digest = hashlib.sha256(reader.encode("utf-8"))
+    here = Path(__file__).resolve().parent
+    for name in MARGIN_CODE:
+        digest.update((here / name).read_bytes())
+    for name in MARGIN_PLANS:
+        digest.update((here.parent / "ontology" / "plans" / name).read_bytes())
+
+    def still(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: still(v) for k, v in sorted(value.items()) if k not in _MOVING_META}
+        if isinstance(value, list):
+            return [still(v) for v in value]
+        return value
+
+    for key in MARGIN_META:
+        row = st.conn.execute("SELECT value FROM store_meta WHERE key = ?", (key,)).fetchone()
+        raw = row[0] if row else None
+        try:
+            held = still(json.loads(raw)) if isinstance(raw, str) else raw
+        except ValueError:
+            held = raw
+        digest.update(json.dumps([key, held], sort_keys=True, default=str).encode("utf-8"))
+    if state_dir is not None:
+        from ontology.reviews import store_path
+        reviews = store_path(state_dir)
+        for path in (reviews, Path(str(reviews) + "-wal")):
+            if path.is_file():   # any review written moves every reading (rare)
+                seen = path.stat()
+                digest.update(f"{path.name}:{seen.st_size}:{seen.st_mtime_ns}".encode())
+    return digest.hexdigest()
+
+
+def margin_fingerprints(st: Any, roots: Sequence[str], context: str) -> dict[str, str]:
+    """Each order's fingerprint (the module note above): set-based, one link scan per link
+    type (kept for the run) and one read per table per ``FINGERPRINT_CHUNK`` records."""
+    from .proactive_engine import _identity_link_types
+
+    hops = _margin_hops()
+    types = sorted({t for _s, _f, path in hops for t, _d in path})
+    out_edges: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    in_edges: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for link in st.links(types, None, held=False):
+        out_edges[(link["link_type"], link["from_object"])].append(link)
+        in_edges[(link["link_type"], link["to_object"])].append(link)
+
+    def edge(link: Mapping[str, Any]) -> tuple:
+        return (link["link_type"], link["from_object"], link["to_object"], link["tier"],
+                str(link.get("markings")), str(link.get("link_id")))
+
+    # identity links (``plx.object`` reads a twin's values; a walk may route through a
+    # twin): every hop starts from its records and their twins, and each record's
+    # identity links are part of its digest
+    twins: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for link in st.links(_identity_link_types(), None, held=False):
+        twins[link["from_object"]].append(link)
+        twins[link["to_object"]].append(link)
+
+    clusters: dict[str, tuple[frozenset[str], frozenset[tuple]]] = {}
+
+    def cluster(start: str) -> tuple[frozenset[str], frozenset[tuple]]:
+        """A record's identity cluster and its links, read once per run."""
+        if start not in clusters:
+            members, links_seen, todo = {start}, set(), [start]
+            while todo:
+                for link in twins.get(todo.pop(), ()):
+                    links_seen.add(edge(link))
+                    for end in (link["from_object"], link["to_object"]):
+                        if end not in members:
+                            members.add(end)
+                            todo.append(end)
+            made = (frozenset(members), frozenset(links_seen))
+            for member in members:
+                clusters[member] = made
+        return clusters[start]
+
+    def with_twins(objects: set[str], seen_edges: set[tuple]) -> set[str]:
+        out: set[str] = set()
+        for obj in objects:
+            members, links_seen = cluster(obj)
+            out |= members
+            seen_edges |= links_seen
+        return out
+
+    reached: dict[str, set[str]] = {}
+    edges: dict[str, set[tuple]] = {}
+    for root in roots:
+        seen_edges: set[tuple] = set()
+        at: dict[str, set[str]] = {"root": with_twins({root}, seen_edges)}
+        for step, start, path in hops:
+            objects = set(at.get(start, ()))
+            for link_type, direction in path:
+                nxt: set[str] = set()
+                for obj in objects:
+                    found = (out_edges if direction == "forward" else in_edges).get(
+                        (link_type, obj), ())
+                    for link in found:
+                        seen_edges.add(edge(link))
+                        nxt.add(link["to_object"] if direction == "forward"
+                                else link["from_object"])
+                objects = with_twins(nxt, seen_edges)
+            at[step] = objects
+        reached[root] = set().union(*at.values())
+        edges[root] = seen_edges
+    read = sorted(set().union(*reached.values())) if reached else []
+    lines: dict[str, list[str]] = defaultdict(list)
+    for table, current in (("object_values", True), ("object_versions", True),
+                           ("objects", False), ("object_removals", False)):
+        for start in range(0, len(read), FINGERPRINT_CHUNK):
+            chunk = json.dumps(read[start:start + FINGERPRINT_CHUNK])
+            found = st.conn.execute(
+                f"SELECT * FROM {table} WHERE object_id IN (SELECT value FROM json_each(?))"
+                + (" AND superseded_at IS NULL" if current else ""), (chunk,))
+            at_col = [d[0] for d in found.description].index("object_id")
+            for row in found:   # every column of every current row, as text
+                lines[row[at_col]].append(json.dumps([table, *[None if r is None else str(r)
+                                                               for r in row]]))
+    rows = {oid: hashlib.sha256("\n".join(sorted(held)).encode("utf-8"))
+            for oid, held in lines.items()}
+    out = {}
+    for root in roots:
+        digest = hashlib.sha256(context.encode("utf-8"))
+        for e in sorted(edges[root]):
+            digest.update(json.dumps(e).encode("utf-8"))
+        for oid in sorted(reached[root]):
+            digest.update(oid.encode("utf-8"))
+            digest.update(rows[oid].hexdigest().encode() if oid in rows else b"-")
+        out[root] = digest.hexdigest()
+    return out
+
+
+def margin_reading(order: Any) -> dict[str, Any]:
+    """A checked margin (``customer_profit.Order``, its run dropped) as JSON: Decimals as
+    text, dates as ISO days."""
+    import dataclasses
+
+    def out(value: Any) -> Any:
+        if isinstance(value, Decimal):
+            return {"d": str(value)}
+        if isinstance(value, date):
+            return {"day": value.isoformat()}
+        if dataclasses.is_dataclass(value):
+            return {f.name: out(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        if isinstance(value, (list, tuple)):
+            return [out(v) for v in value]
+        if isinstance(value, Mapping):
+            return {"map": {k: out(v) for k, v in value.items()}}
+        return value
+    return out(dataclasses.replace(order, run=None))
+
+
+def margin_from_reading(reading: Mapping[str, Any]) -> Any:
+    """``margin_reading``'s inverse; raises on a reading of another shape."""
+    from . import customer_profit as cp
+
+    def back(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            if set(value) == {"d"}:
+                return Decimal(value["d"])
+            if set(value) == {"day"}:
+                return date.fromisoformat(value["day"])
+            if set(value) == {"map"}:
+                return {k: back(v) for k, v in value["map"].items()}
+        if isinstance(value, list):
+            return [back(v) for v in value]
+        return value
+    order = cp.Order(**{k: back(v) for k, v in reading.items() if k != "lines"})
+    order.lines = [cp.Line(**{k: back(v) for k, v in line.items()})
+                   for line in reading["lines"]]
+    order.gaps = [tuple(g) for g in order.gaps]
+    return order
+
+
 # An order line's item named as a sample or a no-charge line (any system's wording).
 FREE_ITEM = re.compile(r"(?i)\b(?:samples?|no[ -]?charge|n/c|f\.?o\.?c\.?|free of charge)\b")
 ITEM_NAME_PROPS = ("name", "description")

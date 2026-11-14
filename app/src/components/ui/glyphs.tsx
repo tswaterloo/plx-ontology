@@ -34,6 +34,7 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/team": { icon: Users, hue: "text-[var(--place-team)]" },
   "/activity": { icon: History, hue: "text-[var(--place-activity)]" },
   "/work-log": { icon: History, hue: "text-[var(--place-activity)]" },
+  "/templates": { icon: FileText, hue: "text-[var(--place-activity)]" },
   "/ops": { icon: Activity, hue: "text-[var(--place-activity)]" },
   "/trust": { icon: Gauge, hue: "text-[var(--place-activity)]" },
   "/feedback": { icon: MessageSquareText, hue: "text-[var(--place-feedback)]" },

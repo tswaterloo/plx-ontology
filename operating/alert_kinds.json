@@ -422,6 +422,21 @@
    "unmeasured": "not measurable yet: 0 found on the served run 2026-11-09 (/data/scratch/alert-precision-1110.md)"
   },
   {
+   "type": "portal_approval_pending",
+   "kind": "approval_waiting",
+   "label": "Requisition waiting for approval",
+   "precision": null,
+   "actionable": true,
+   "default": "off",
+   "home": false,
+   "roles": [
+    "OPS",
+    "FIN",
+    "PROC"
+   ],
+   "unmeasured": "not measurable yet: new 2026-11-14 (CAP-L137), no served run; judge 15 items from a served run before switching on"
+  },
+  {
    "type": "planner_task_overdue",
    "kind": "task_overdue",
    "label": "Planner task overdue",
@@ -476,15 +491,16 @@
    "kind": "task_overdue",
    "label": "Production past due",
    "precision": {
-    "value": 1.0,
+    "value": 0.6,
     "checked": 15,
-    "on": "2026-11-11",
-    "source": "/data/scratch/alerts-1.md",
-    "note": "after the keeper-copy and usual-lag fix (804 -> 59 found): 15/15 FileMaker orders open past their scheduled day by more than the type's 90th-percentile realize lag, none realized in any copy; before the fix 2/15 (10 Portal copies whose FileMaker record was gone, 3 read on a lagging Portal copy)"
+    "correct": 9,
+    "on": "2026-11-13",
+    "source": "/data/scratch/alerts-fresh-judged-1112.tsv al04 r1113: 15 fresh of 59 open (seed 1113)",
+    "note": "6/15 wrong: batches whose own BatchSchedule slot (BatchSchedule.starts on the batch) was moved after the due date the alert counts from (slots 2026-11-08 to 11-28), so they are rescheduled, not 35-76 days late; the 9 others (6 FileMaker assembly orders and 3 batches, open in every copy) were not disproven. Earlier 15/15 (2026-11-11, /data/scratch/alerts-1.md) did not read the batch schedule. Fix needed: count from the latest schedule slot of the record. Re-judge 15 fresh after it before switching on"
    },
    "actionable": true,
-   "default": "on",
-   "home": true,
+   "default": "off",
+   "home": false,
    "roles": [
     "PROD",
     "OPS"
@@ -1279,12 +1295,14 @@
    "label": "Record differs in its other system",
    "precision": {
     "value": 1.0,
-    "checked": 6,
-    "on": "2026-11-09",
-    "source": "lane/sync-gap hand-check of 15 live sync alerts (seeded sample): 6/6 PO totals truly differ (Business Central migrated POs carry inflated totals); 14 exist live, fewer than 15 to check"
+    "checked": 15,
+    "correct": 15,
+    "on": "2026-11-13",
+    "source": "/data/scratch/alerts-fresh-judged-1112.tsv day '2026-11-13 aj1114' (seed 1114, 15 of 75 unjudged open on the served inbox, full run 2026-11-14 00:13 UTC): 15/15 right; each bulk item is EACH in Business Central (several with fractional on-hand) and kg in the Portal; 77 of 90 open are this one pattern (owner: the Business Central item owner)",
+    "note": "the 2026-11-10 draw was also 15/15 (12 unit, 3 PO total); 77 of 90 open are the one bulk-item unit pattern, 13 PO totals (Business Central migrated POs carry inflated totals)"
    },
    "actionable": true,
-   "default": "off",
+   "default": "on",
    "home": false,
    "roles": [
     "OPS",

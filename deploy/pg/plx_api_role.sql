@@ -48,3 +48,15 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ontology, search, plx_meta GRANT SELECT ON TA
 ALTER DEFAULT PRIVILEGES IN SCHEMA ontology, search, plx_meta GRANT SELECT ON SEQUENCES TO plx_api;
 -- the one superuser setting the API sets (Postgres 15+): bounding its own temporary files
 GRANT SET ON PARAMETER temp_file_limit TO plx_api;
+
+-- templates-1113: each person's saved templates (operator_api/templates.py, migration 0022):
+-- the API lists, saves, changes, counts uses of and deletes them (and the exclusion purge
+-- removes rows). Granted only once the migration made the table.
+DO $$
+BEGIN
+    IF to_regclass('templates.template') IS NOT NULL THEN
+        GRANT USAGE ON SCHEMA templates TO plx_api;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON templates.template TO plx_api;
+        GRANT USAGE ON SEQUENCE templates.template_id_seq TO plx_api;
+    END IF;
+END $$;

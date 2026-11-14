@@ -10,6 +10,7 @@
 import { useState } from "react";
 import type { AskRequest, InstructPart, InstructWrite } from "@/lib/types";
 import { FillReview } from "./fill-review";
+import { TemplateFilledView } from "./templates";
 import { Upload } from "./upload-draft";
 import { WritePanel } from "./write-panel";
 import { Button } from "./ui/button";
@@ -185,6 +186,7 @@ export function InstructionPart({
         </section>
       )}
       <Writes writes={part.writes ?? []} />
+      {part.template && <TemplateFilledView filled={part.template} />}
       {(part.fills ?? []).map((f) => (
         <FillReview key={f.digest_before + f.record.object_id} fill={f} />
       ))}

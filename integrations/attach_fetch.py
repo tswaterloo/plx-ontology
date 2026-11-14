@@ -836,14 +836,14 @@ def _is_image(metadata: Mapping[str, Any]) -> bool:
 
 
 def inline_reader(content: bytes, metadata: Mapping[str, Any], image_ocr: bool,
-                  ocr_limits: tuple[int, int] | None = None
+                  ocr_limits: tuple[int, int] | None = None, *, defer_ocr: bool = False
                   ) -> tuple[str, str | None, dict[str, Any] | None]:
     """The capture's extractor in this process (tests; the CLI uses processes)."""
     import contextlib
     from .capture_mail import extract_attachment
     from .document_understanding import ocr_limits as limited
     with (limited(*ocr_limits) if ocr_limits is not None else contextlib.nullcontext()):
-        return extract_attachment(content, metadata, False, False, image_ocr=image_ocr)
+        return extract_attachment(content, metadata, defer_ocr, False, image_ocr=image_ocr)
 
 
 def _capped_pages(content: bytes, metadata: Mapping[str, Any], status: str,
@@ -874,7 +874,7 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
               reader: Callable[[bytes, Mapping[str, Any], bool],
                                tuple[str, str | None, dict[str, Any] | None]] | None = None,
               ocr_limits: tuple[int, int] | None = None, prefilter: bool = False,
-              mail: Any = None) -> dict[str, Any]:
+              mail: Any = None, text_first: bool = False) -> dict[str, Any]:
     """Read every fetched (bytes, type, name) not read yet, best priority first, with
     ``workers`` extraction processes (``capture_mail._Extractors``: scrubbed environment,
     a reading past ``seconds_each`` or whose process died is the capture's own gap
@@ -889,9 +889,18 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
     :func:`text_likely` judges textless is not OCR-read (``NOTE_NO_TEXT_LIKELY``).
     ``mail`` (a ``MailCaptureStore`` opened read-only): the stored plan's images and
     scans (``StoredPlan``) are read too, by the same pool and priority, their bytes from
-    the mail store (re-hashed)."""
+    the mail store (re-hashed).
+
+    ``text_first`` (``read --ocr-pages 0``): no OCR at all. Each file's text layer is read
+    (the capture's ``defer_ocr``); a file that needs OCR (``ocr_pending``) is not recorded,
+    so it stays unread for a later OCR pass over the same store, which reads it and ingest
+    applies as any reading (counted ``left_for_ocr``). Not with ``ocr_limits`` or ``mail``
+    (the stored plan holds only images and scans)."""
     from concurrent.futures import ThreadPoolExecutor
     from .capture_mail import EXTRACT_SECONDS, _Extractors
+    from .captured_text import OCR_PENDING
+    if text_first and (ocr_limits is not None or mail is not None):
+        raise ValueError("text_first_reads_downloads_without_ocr")
     fetch = FetchStore(root, read_only=True)
     readings = Readings(root)
     stored = None
@@ -905,13 +914,13 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
     deadline = started + budget_seconds
     counts: dict[str, Any] = {"read": 0, "by_status": {}, "seconds_reading": 0.0,
                               "digest_mismatch": 0, "stored_read": 0, "page_capped": 0, "deduped": 0,
-                              "no_text_likely": 0}
+                              "no_text_likely": 0, "left_for_ocr": 0}
     extractors = None
     if reader is None:
         extractors = _Extractors(workers, seconds_each or EXTRACT_SECONDS, nice=nice)
 
         def reader(content, metadata, image_ocr):
-            return extractors.read(content, metadata, defer_ocr=False, defer_all=False,
+            return extractors.read(content, metadata, defer_ocr=text_first, defer_all=False,
                                    image_ocr=image_ocr, ocr_limits=ocr_limits)
 
     def one(digest: str, metadata: dict[str, Any], source: str
@@ -1012,6 +1021,11 @@ def read_pass(root: str | Path, *, workers: int = 12, budget_seconds: float,
                         counts["digest_mismatch"] += 1
                         continue
                     status, text, made, seconds, note = answer
+                    if text_first and status == OCR_PENDING:
+                        # needs OCR: left unread (with its twins) for the OCR pass
+                        counts["left_for_ocr"] += 1 + len(twins.pop(heads.pop(key, None), ()))
+                        counts["seconds_reading"] += seconds
+                        continue
                     with readings.db:
                         for same in (key, *twins.get(heads.get(key), ())):
                             readings.db.execute(
@@ -1202,7 +1216,9 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                       help="also read the stored plan's images and scans from this mail store")
     read.add_argument("--full-ocr", action="store_true",
                       help="no page cap: every image-only page at full resolution")
-    read.add_argument("--ocr-pages", type=int, default=None)
+    read.add_argument("--ocr-pages", type=int, default=None,
+                      help="image-only pages OCR-read per file (default: the fast cap); "
+                           "0: no OCR, text layers only (text-first)")
     read.add_argument("--ocr-dpi", type=int, default=None)
     read.add_argument("--no-prefilter", action="store_true",
                       help="OCR every image the size rule passes")
@@ -1238,10 +1254,16 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         return 0
     if args.command == "read":
         from .document_understanding import FAST_OCR_DPI, FAST_OCR_PAGES, MAX_OCR_PAGES
-        limits = None if args.full_ocr else (args.ocr_pages or FAST_OCR_PAGES,
-                                             args.ocr_dpi or FAST_OCR_DPI)
+        # ``--ocr-pages 0``: text-first, no OCR (``read_pass(text_first=True)``); unset:
+        # the fast cap; ``--full-ocr``: no cap.
+        text_first = args.ocr_pages == 0
+        limits = None if args.full_ocr or text_first else (
+            FAST_OCR_PAGES if args.ocr_pages is None else args.ocr_pages,
+            FAST_OCR_DPI if args.ocr_dpi is None else args.ocr_dpi)
         if not 1 <= args.workers <= 32 or not args.budget_seconds > 0 or (
-                args.full_ocr and (args.ocr_pages or args.ocr_dpi)) or (
+                args.full_ocr and (args.ocr_pages is not None or args.ocr_dpi is not None)) or (
+                text_first and (args.ocr_dpi is not None or args.recap
+                                or args.state_dir is not None)) or (
                 limits is not None and not (1 <= limits[0] <= MAX_OCR_PAGES
                                             and 100 <= limits[1] <= 300)):
             _print({"ok": False, "error": "arguments_invalid"})
@@ -1263,7 +1285,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                         budget_seconds=args.budget_seconds, follow=args.follow,
                         idle_seconds=args.idle_seconds, min_image_bytes=args.min_image_bytes,
                         progress=_print, progress_seconds=args.progress_seconds,
-                        ocr_limits=limits, prefilter=not args.no_prefilter, mail=mail)
+                        ocr_limits=limits, prefilter=not args.no_prefilter, mail=mail,
+                        text_first=text_first)
         _print({"ok": True, "final": True, **out})
         return 0
 

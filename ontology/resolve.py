@@ -411,10 +411,18 @@ def corroborations(schema: Any, root_binding: str, target_binding: str
     type or case is named here."""
     types = getattr(schema, "object_types", None) or {}
     links = getattr(schema, "link_types", None) or {}
-    binding_of: dict[str, tuple[str, Mapping[str, Any]]] = {
+    index = _schema_index(schema)
+    binding_of: dict[str, tuple[str, Mapping[str, Any]]] = index["last"] if index else {
         b["id"]: (tid, b) for tid, spec in types.items() for b in spec.get("bindings", ())}
+    paths_held: dict[str, dict[str, list[tuple[str, str]]]] = index["paths"] if index else {}
 
     def identifier_paths(binding_id: str) -> dict[str, list[tuple[str, str]]]:
+        held = paths_held.get(binding_id)
+        if held is None:
+            held = paths_held[binding_id] = _identifier_paths(binding_id)
+        return held
+
+    def _identifier_paths(binding_id: str) -> dict[str, list[tuple[str, str]]]:
         found = binding_of.get(binding_id)
         out: dict[str, list[tuple[str, str]]] = {}
         if found is None:
@@ -431,26 +439,27 @@ def corroborations(schema: Any, root_binding: str, target_binding: str
     root_paths = identifier_paths(root_binding)
     root_source = str((binding_of.get(root_binding) or ("", {}))[1].get("source") or "")
     out: list[Corroboration] = []
-    for lid in sorted(links):
-        link = links[lid]
-        if link.get("cardinality") not in ("N:1", "1:1"):
+    # the schema's single-pair N:1 / 1:1 fk link bindings from ``target_binding``, in
+    # link id then binding order (kept per schema content: ``_schema_index``)
+    candidates = index["fk_from"].get(target_binding, ()) if index else [
+        (lid, lb) for lid in sorted(links)
+        if links[lid].get("cardinality") in ("N:1", "1:1")
+        for lb in links[lid].get("bindings", ())
+        if lb.get("kind") == "fk" and lb.get("from_binding") == target_binding
+        and len(lb.get("pairs") or ()) == 1]
+    for lid, lb in candidates:
+        pairs = lb.get("pairs") or ()
+        linked = binding_of.get(lb.get("to_binding"))
+        here, there = pairs[0].get("from"), pairs[0].get("to")
+        if linked is None or not all(isinstance(p, str) and "." not in p
+                                     for p in (here, there)):
             continue
-        for lb in link.get("bindings", ()):
-            pairs = lb.get("pairs") or ()
-            if (lb.get("kind") != "fk" or lb.get("from_binding") != target_binding
-                    or len(pairs) != 1):
-                continue
-            linked = binding_of.get(lb.get("to_binding"))
-            here, there = pairs[0].get("from"), pairs[0].get("to")
-            if linked is None or not all(isinstance(p, str) and "." not in p
-                                         for p in (here, there)):
-                continue
-            for kind, linked_paths in sorted(identifier_paths(linked[1]["id"]).items()):
-                for root_path, root_property in root_paths.get(kind, ()):
-                    out.append(Corroboration(kind, root_path, lid, here, linked[1]["id"],
-                                             linked[1]["relation"], there,
-                                             tuple(path for path, _ in linked_paths),
-                                             root_source, root_property))
+        for kind, linked_paths in sorted(identifier_paths(linked[1]["id"]).items()):
+            for root_path, root_property in root_paths.get(kind, ()):
+                out.append(Corroboration(kind, root_path, lid, here, linked[1]["id"],
+                                         linked[1]["relation"], there,
+                                         tuple(path for path, _ in linked_paths),
+                                         root_source, root_property))
     return out
 
 
@@ -485,8 +494,48 @@ def _part(schema: Any, name: str) -> Mapping[str, Any]:
     return part or {}
 
 
+# Per schema content (a SchemaView with a content digest; never a plain mapping, which a
+# caller may change in place): the bindings by id and the fk link bindings by the binding
+# they leave, so ``comparable`` over every binding of a found record's (``plx.find``'s
+# corroboration) reads them once, not every type and link per pair (0.5 s a binding
+# idle, 52 s of a cold margin Ask under load, 2026-11-13).
+_INDEXES: dict[str, tuple[Any, dict[str, Any]]] = {}   # digest -> (that schema, index)
+_INDEXES_KEPT = 4
+
+
+def _schema_index(schema: Any) -> dict[str, Any] | None:
+    digest = getattr(schema, "digest", None)
+    if isinstance(schema, Mapping) or not isinstance(digest, str) or len(digest) < 64:
+        return None
+    held = _INDEXES.get(digest)
+    if held is not None and held[0] is schema:   # its own object: a copy that changed its
+        return held[1]                           # parts under the same digest is not reused
+    types = getattr(schema, "object_types", None) or {}
+    links = getattr(schema, "link_types", None) or {}
+    first: dict[str, tuple[str, Mapping[str, Any]]] = {}
+    for tid in sorted(types):
+        for binding in types[tid].get("bindings", ()):
+            first.setdefault(binding.get("id"), (tid, binding))
+    last = {b["id"]: (tid, b) for tid, spec in types.items() for b in spec.get("bindings", ())}
+    fk_from: dict[Any, list[tuple[str, Mapping[str, Any]]]] = {}
+    for lid in sorted(links):
+        if links[lid].get("cardinality") not in ("N:1", "1:1"):
+            continue
+        for lb in links[lid].get("bindings", ()):
+            if lb.get("kind") == "fk" and len(lb.get("pairs") or ()) == 1:
+                fk_from.setdefault(lb.get("from_binding"), []).append((lid, lb))
+    index = {"first": first, "last": last, "fk_from": fk_from, "paths": {}}
+    if len(_INDEXES) >= _INDEXES_KEPT:
+        _INDEXES.clear()
+    _INDEXES[digest] = (schema, index)
+    return index
+
+
 def binding_spec(schema: Any, binding_id: str) -> tuple[str, Mapping[str, Any]] | None:
     """(object type, binding) of a declared binding id, else None."""
+    index = _schema_index(schema)
+    if index is not None:
+        return index["first"].get(binding_id)
     types = _part(schema, "object_types")
     for tid in sorted(types):
         for binding in types[tid].get("bindings", ()):

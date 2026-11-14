@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, getLateList, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, setTokenProvider } from "./api";
+import { ask, getLateList, getObject, getSuggestions, logout, getObjectSection, getSource, mergeSection, READING_MOST_MS, READING_POLL_MS, readingDelay, setTokenProvider } from "./api";
 import { ApiError } from "./errors";
+import { resetSessionCaches } from "./session-cache";
 import type { AskEvent, ObjectPage, ObjectSection } from "./types";
 
 function streamResponse(chunks: string[], status = 200): Response {
@@ -171,6 +172,52 @@ describe("Today lists still being read", () => {
     await vi.advanceTimersByTimeAsync(READING_POLL_MS * 3);
     await expect(got).resolves.toMatchObject({ status: "read", total: 2 });
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("asks again soon at first, then no more often than READING_POLL_MS (twice that on a long read)", () => {
+    expect(readingDelay(0, 0)).toBeLessThan(READING_POLL_MS);
+    expect(readingDelay(1, 500)).toBeGreaterThan(readingDelay(0, 0));
+    expect(readingDelay(20, 5_000)).toBe(READING_POLL_MS);
+    expect(readingDelay(20, 60_000)).toBe(READING_POLL_MS * 2);
+  });
+
+  it("shares one request between callers of the same read, and one caller's abort leaves the other's", async () => {
+    vi.useFakeTimers();
+    const answers = [
+      { status: "unavailable", total: 0, items: [], reading: true },
+      { status: "read", total: 1, items: [{ id: "a" }] },
+    ];
+    const fetch = vi.fn(async () => new Response(JSON.stringify(answers.shift()), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const left = new AbortController();
+    const first = getSuggestions(left.signal).catch((e) => e);
+    const second = getSuggestions();
+    left.abort();
+    await vi.advanceTimersByTimeAsync(READING_POLL_MS * 2);
+    expect((await first as DOMException).name).toBe("AbortError");
+    await expect(second).resolves.toMatchObject({ status: "read", total: 1 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("a read under way when the person changes is never shared with the next caller", async () => {
+    vi.useFakeTimers();
+    const answers = [
+      { status: "unavailable", total: 0, items: [], reading: true },
+      { status: "read", total: 1, items: [{ id: "theirs" }] },
+    ];
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
+      return new Response(JSON.stringify(answers.shift()), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const before = getSuggestions().catch((e) => e);
+    await vi.advanceTimersByTimeAsync(0); // the first person's read is under way, waiting to ask again
+    resetSessionCaches();
+    const after = getSuggestions();
+    await vi.advanceTimersByTimeAsync(READING_POLL_MS * 2);
+    expect((await before as DOMException).name).toBe("AbortError");
+    await expect(after).resolves.toMatchObject({ items: [{ id: "theirs" }] });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("still reading after the most it waits: the calm busy notice", async () => {

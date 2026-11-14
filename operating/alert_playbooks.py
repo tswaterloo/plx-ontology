@@ -295,6 +295,8 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "owner": "{n} has not moved: unblock it or reassign it.", "change": None},
     "mc_approval_pending": {"about": "subject", "ask": None,
         "owner": "{n} is waiting for an approval: decide it.", "change": None},
+    "portal_approval_pending": {"about": "subject", "ask": None,
+        "owner": "{n} is waiting for an approval: decide it.", "change": None},
     "planner_task_overdue": {"about": "subject", "ask": None,
         "owner": "{n} is overdue: finish it or move the date.", "change": None},
     "production_late": {"about": "subject", "ask": None,

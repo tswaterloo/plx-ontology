@@ -15,6 +15,7 @@
 #     plx-ops-health.timer       every 5 min      reliability alarms (operating/ops_alarms.py): in-app banner + /ops
 #     plx-ops-memory.timer       every 1 min      memory early warning (under 8 GB, top consumers named)
 #     plx-expiry.timer           daily 06:20 UTC  credential expiry list (alarm within 30 days)
+#     plx-labour.timer           daily 05:40 ET   labour-hours build (department and week totals; capture read-only)
 #     plx-autopilot-follow.timer 5 min after the last cycle, and .path on each delta publish:
 #                                the autopilot's live feed; prepares My work items only (never
 #                                sends, writes or approves), ordered event queue on (EVQ=1)
@@ -33,7 +34,7 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 render=$here/../render.py
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 USER_UNITS="plx-sheet-readings plx-system-activity plx-team-activity plx-work-graph"
-SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast"
+SYS_UNITS="plx-proactive-whole plx-backup plx-restore-test plx-ops-health plx-ops-memory plx-expiry plx-autopilot-follow plx-autopilot-fast plx-labour"
 SYS_PATHS="plx-autopilot-follow plx-autopilot-fast"   # also started by a .path unit
 
 python3 "$render" --user --out "$tmp/user" >/dev/null
@@ -54,14 +55,14 @@ verify_unit() {  # verify_unit [--user] service timer
 for u in $USER_UNITS; do verify_unit --user "$tmp/user/$u.service" "$tmp/user/$u.timer"; done
 for u in $SYS_UNITS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.timer"; done
 for u in $SYS_PATHS; do verify_unit "$tmp/sys/$u.service" "$tmp/sys/$u.path"; done
-for f in "$tmp"/user/plx-{sheet-readings,system-activity,team-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow,autopilot-fast}.*; do
+for f in "$tmp"/user/plx-{sheet-readings,system-activity,team-activity,work-graph}.* "$tmp"/sys/plx-{proactive-whole,backup,restore-test,ops-health,ops-memory,expiry,autopilot-follow,autopilot-fast,labour}.*; do
   [[ $f == *.timer || $f == *.path ]] && continue
   grep -q "^MemoryMax=" "$f" || { echo "no MemoryMax: $f" >&2; exit 1; }
   grep -q "^Nice=" "$f" || { echo "no Nice: $f" >&2; exit 1; }
 done
 [ $dry = 1 ] && { echo "dry run: rendered and verified, nothing installed"; exit 0; }
 
-mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/bin" "$PLX_STATE/work-graph"
+mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/bin" "$PLX_STATE/work-graph" "$PLX_STATE/labour"
 changed=0
 for u in $USER_UNITS; do for ext in service timer; do
   dst=$HOME/.config/systemd/user/$u.$ext
@@ -94,4 +95,4 @@ done
 [ -s "$PLX_STATE/autopilot/autopilot-gate.json" ] \
   || echo "note: no $PLX_STATE/autopilot/autopilot-gate.json: the live feed prepares only the Draft people's workflows (operating/autopilot_draft.json) until a passing replay's gate file is copied there"
 echo "note: the work-graph unit writes $PLX_STATE/work-graph/roles-derived.json (candidate roles); the autopilot reads it only if PLX_AUTOPILOT_ROLES_FILE names it"
-systemctl list-timers --all --no-legend 'plx-sheet*' 'plx-system*' 'plx-team*' 'plx-work*' 'plx-proactive-whole*' 'plx-backup*' 'plx-restore*' 'plx-ops*' 'plx-autopilot*' || true
+systemctl list-timers --all --no-legend 'plx-sheet*' 'plx-system*' 'plx-team*' 'plx-work*' 'plx-proactive-whole*' 'plx-backup*' 'plx-restore*' 'plx-ops*' 'plx-labour*' 'plx-autopilot*' || true

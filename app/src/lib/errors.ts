@@ -28,6 +28,7 @@ const BY_CODE: Record<string, string> = {
   access_link_refused: "This access link has expired or isn't valid. Ask for a new one.",
   dev_login_not_served: "Demo sign-in is off here. Sign in with Microsoft.",
   not_found: "Couldn't find that, or you don't have access to it.",
+  alerts_not_read: "Alerts haven't been read on this server yet. This fills in after the next alert run.",
   invalid_request: "That request wasn't understood. Try rephrasing it.",
   origin_refused: "This page isn't trusted by the Workbench. Open the Workbench from its usual link.",
   not_served: "That part of the Workbench is off on this server.",
@@ -46,7 +47,7 @@ const BY_CODE: Record<string, string> = {
 };
 
 /** Errors a second try cannot change (the record is missing, or the reader may not see it). */
-export const FINAL_ERRORS: ReadonlySet<string> = new Set([BY_CODE.not_found, BY_CODE.forbidden]);
+export const FINAL_ERRORS: ReadonlySet<string> = new Set([BY_CODE.not_found, BY_CODE.forbidden, BY_CODE.alerts_not_read]);
 
 const BY_STATUS: Record<number, string> = {
   401: BY_CODE.sign_in_required,

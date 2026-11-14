@@ -199,6 +199,7 @@ SCHEMA = "plx-proactive-engine/v1"
 INBOX_SCHEMA = "plx-gap-inbox/v1"
 MAX_SHOWN = 100
 CARD_BOUND = 500
+CARD_ALL = 1_000_000   # card_rules on the pool: every candidate document (never a cut)
 VALUES_CHUNK = 500   # object ids per value read (``_Store.values``)
 # On the Postgres ontology a value read joins the value tables itself (``_PG_VALUES_SQL``)
 # and a whole type up to ``PG_TYPE_READ_MAX`` records is read in one statement by its type
@@ -253,7 +254,7 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              "stock_out_risk", "overdue_receivable", "unit_cost_jump",
              # the operations alerts (``operating.proactive_ops``): stalled work, ageing
              # balances, late or damaged production, unanswered Teams asks
-             "mc_task_overdue", "mc_task_stuck", "mc_approval_pending",
+             "mc_task_overdue", "mc_task_stuck", "mc_approval_pending", "portal_approval_pending",
              "planner_task_overdue", "aged_balance_worsening", "production_late",
              "assembly_damage_spike", "teams_unanswered_ask",
              # the signals a chief executive wants unasked (``operating.proactive_ceo``):
@@ -348,7 +349,8 @@ DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
                     # the operations alerts: one pass over tasks, gates, snapshots or
                     # production records each; the Teams asks scan every message's keys
                     "mc_task_overdue": 300.0, "mc_task_stuck": 300.0,
-                    "mc_approval_pending": 300.0, "planner_task_overdue": 300.0,
+                    "mc_approval_pending": 300.0, "portal_approval_pending": 300.0,
+                    "planner_task_overdue": 300.0,
                     "aged_balance_worsening": 300.0, "production_late": 300.0,
                     "assembly_damage_spike": 300.0, "teams_unanswered_ask": 600.0,
                     # the chief-executive signals: one pass over orders or receipts each; the
@@ -3669,6 +3671,22 @@ def _late_found(results: Mapping[str, Mapping[str, Any]]) -> set[str]:
             if gap.get("kind") in LATE_FOUND_KINDS and gap.get("object_id")}
 
 
+def _card_documents(st: _Store, as_of: date, limit: int) -> list[str]:
+    """The attesting documents ``card_rules`` reads, newest first (at most ``limit``): only
+    those whose card could raise a gap (``proactive_gaps.card_candidates``, one set-based
+    pass over the current links and values, a superset; the card stays the judge). Before,
+    the newest ``CARD_BOUND`` of all ~176k documents were read one card each and a pass
+    never finished (11-13: 216 s for 500 cards, truncated)."""
+    documents = [name for name, _field in pg._roster()[0]]
+    wanted = sorted(pg.card_candidates(st.conn, as_of))
+    return [row[0] for row in st.conn.execute(
+        "SELECT o.object_id FROM objects o WHERE o.object_type IN (SELECT value FROM "
+        "json_each(?)) AND o.object_id IN (SELECT value FROM json_each(?)) AND NOT "
+        + ostore.removed_at_sql("o.object_id")
+        + " ORDER BY o.first_recorded_at DESC, o.object_id LIMIT ?",
+        (json.dumps(documents), json.dumps(wanted), limit))]
+
+
 def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int,
                 many: Callable[[str, Sequence[Any]], list[Any]] | None = None
                 ) -> dict[str, Any]:
@@ -3677,12 +3695,9 @@ def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int,
     the time left did not reach is not read: the budget marks the rule truncated)."""
     if call is None:
         return _result([], status="not_configured", reasons=["tool_caller_not_given"])
-    documents = [name for name, _field in pg._roster()[0]]
-    ids = [row[0] for row in st.conn.execute(
-        "SELECT o.object_id FROM objects o WHERE o.object_type IN (SELECT value FROM "
-        "json_each(?)) AND NOT " + ostore.removed_at_sql("o.object_id")
-        + " ORDER BY o.first_recorded_at DESC, o.object_id LIMIT ?",
-        (json.dumps(documents), bound + 1))]
+    # on the run's pool every candidate is read (the window decides, as orders_at_risk
+    # asks every PO); one by one, at most ``bound``
+    ids = _card_documents(st, as_of, (bound if many is None else CARD_ALL) + 1)
     unread: Counter[str] = Counter()
     skipped = _Skips()
     found: list[tuple[dict[str, Any], list[list[str]]]] = []
@@ -3863,8 +3878,15 @@ def _business_steps(st: _Store, as_of: date,
         "slow_moving_stock": lambda: stock.slow_moving_stock(
             st, as_of, absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
             on_hand=on_hand, **common),
-        "expiring_lot_stock": lambda: stock.expiring_lot_stock(
-            st, as_of, orders=lambda: _customer_orders(st), on_hand=on_hand, **common),
+        "expiring_lot_stock": lambda: (sheets is not None and sheet_rules.people_blocked(
+            people(), _result))
+        or stock.expiring_lot_stock(
+            st, as_of, orders=lambda: _customer_orders(st), on_hand=on_hand,
+            sheet_lots=None if sheets is None else (
+                lambda item_of, horizon, exclude, cites, skipped: sheet_rules.sheet_lots(
+                    st, as_of, sheets, people(), item_of, horizon, exclude, cites,
+                    skipped)),
+            **common),
         "assembly_component_shortfall": lambda: stock.assembly_component_shortfall(
             st, as_of, po_source=lambda: _po_source(st),
             absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
@@ -3891,10 +3913,15 @@ def _business_steps(st: _Store, as_of: date,
         "sync_gaps": lambda: sync.sync_gaps(
             st, as_of, inactive=lambda: inactive_records(st, as_of),
             tests=lambda: test_records(st, as_of), **common),
-        "reorder_soon": lambda: stock.reorder_soon(
+        "reorder_soon": lambda: (sheets is not None and sheet_rules.people_blocked(
+            people(), _result))
+        or stock.reorder_soon(
             st, as_of, po_source=lambda: _po_source(st),
             absence=lambda types: _absence_audiences(st, types, "stock:none_stored"),
-            on_hand=on_hand, **common),
+            on_hand=on_hand, sheet_on_hand=None if sheets is None else (
+                lambda item_of, wanted, cites, skipped: sheet_rules.sheet_on_hand(
+                    st, as_of, sheets, people(), item_of, wanted, cites, skipped)),
+            **common),
         # integrity (``operating.proactive_integrity``)
         "inventory_adjustment": lambda: integrity.inventory_adjustment(st, as_of, **common),
         "blocked_account_activity": lambda: integrity.blocked_account_activity(
@@ -3969,6 +3996,8 @@ def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
         "mc_task_stuck": lambda: tasks()[po.MC_STUCK],
         "mc_approval_pending": lambda: po.mc_approval_pending(
             st, as_of, people=people(), settled=SETTLED, **common),
+        "portal_approval_pending": lambda: po.portal_approval_pending(
+            st, as_of, people=people(), settled=SETTLED, **common),
         "planner_task_overdue": lambda: po.planner_task_overdue(
             st, as_of, people=people(), settled=SETTLED, **common),
         "aged_balance_worsening": lambda: po.aged_balance_worsening(
@@ -3993,6 +4022,39 @@ def _ops_steps(st: _Store, as_of: date, people: Callable[[], Any],
         "label_revisions": lambda: label_revisions.label_revisions(
             st, as_of, people=people(), **common),
         "rd_projects": lambda: rd_projects.rd_projects(st, as_of, people=people(), **common)}
+
+
+# A cached margin reading is kept only when it is whole: decided (a figure stated) and
+# read from every answer page; any other reading is read again next run (a refused or
+# partly read run may not repeat).
+_MARGIN_TRANSIENT = frozenset({"ORDER_MARGIN_NOT_READ", "ANSWER_PAGES_UNREAD",
+                               "ORDER_LINES_NOT_ALL_SHOWN"})
+
+
+def _margin_keeps(order: Any, cp: Any) -> bool:
+    return (isinstance(order, cp.Order) and order.margin is not None
+            and not {code for code, _detail in order.gaps} & _MARGIN_TRANSIENT)
+
+
+def _margin_reader(call: Any) -> str | None:
+    """The reader a margin reading was read as, with what it is granted: tenant,
+    principals, clearance and the decided policy's audience patterns and markings it holds
+    (``host.stored_policy``), so a grant added or withdrawn reads every order again. None
+    when the caller names no reader or its policy cannot be read: then nothing is reused."""
+    actor = getattr(call, "actor", None)
+    host = getattr(call, "host", None)
+    if actor is None or not getattr(actor, "principals", None) or host is None:
+        return None
+    try:
+        policy = host.stored_policy(actor)
+        mine = frozenset(actor.principals)
+        granted = sorted(p for p, who in policy.audiences.items() if mine & frozenset(who))
+        held = sorted(m for m, who in policy.markings.items() if mine & frozenset(who))
+        whole = bool(getattr(policy, "unrestricted", False))
+    except Exception:  # noqa: BLE001 - a policy not read: nothing reused
+        return None
+    grants = hashlib.sha256(json.dumps([granted, held, whole]).encode()).hexdigest()
+    return f"{reader_key(actor)}|{getattr(actor, 'clearance', '')}|{grants}"
 
 
 def _event_steps(st: _Store, as_of: date, call: Callable | None,
@@ -4061,16 +4123,62 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
         return st.memo(f"margin:{root}", lambda: ev.read_margin(call, root))
 
     def erosion() -> dict[str, Any]:
+        from . import customer_profit as cp
         from . import proactive_ceo as ceo
         from .proactive_pool import NOT_READ
 
-        return ceo.margin_erosion(
-            st, as_of, call, recent=roots() if call is not None else (),
-            trailing=st.memo("margin_trailing", lambda: ev._recent_invoiced_orders(
-                st, as_of, days=ev.MARGIN_DAYS + ceo.MARGIN_TRAILING_DAYS,
-                since=ev.MARGIN_DAYS)) if call is not None else (),
-            margins=order_margins, not_read=NOT_READ, settled=SETTLED, skips=_Skips,
-            **common)
+        recent = roots() if call is not None else []
+        trailing = st.memo("margin_trailing", lambda: ev._recent_invoiced_orders(
+            st, as_of, days=ev.MARGIN_DAYS + ceo.MARGIN_TRAILING_DAYS,
+            since=ev.MARGIN_DAYS)) if call is not None else []
+        reader = _margin_reader(call)
+        kept: dict[str, Any] = {}
+        margins_of = order_margins
+        if reader is not None and (recent or trailing):
+            # the cross-run reading cache: an order whose fingerprint (every row its margin
+            # run can read, ``ev.margin_fingerprints``) is unchanged keeps its reading; the
+            # recent orders are read as the negative-margin rule reads them (shared)
+            everything = list(dict.fromkeys([*recent, *trailing]))
+            fingerprints = ev.margin_fingerprints(
+                st, everything, ev.margin_context(st, reader, st.path.parent.parent))
+            prior = (cache or {}).get("margin_erosion") or {}
+
+            def margins_of(items: Sequence[str]) -> list[Any]:
+                items = list(items)
+                hits: dict[str, Any] = {}
+                if items != list(recent):
+                    for root in items:
+                        held = prior.get(root)
+                        if isinstance(held, Mapping) and held.get("fp") == fingerprints[root]:
+                            try:
+                                hits[root] = ev.margin_from_reading(held["order"])
+                            except (KeyError, TypeError, ValueError, ArithmeticError):
+                                pass   # a reading of another shape is read again
+                misses = [root for root in items if root not in hits]
+                read = dict(zip(misses, order_margins(misses) if misses else []))
+                out = [hits[root] if root in hits else read[root] for root in items]
+                for root, order in zip(items, out):
+                    if _margin_keeps(order, cp):
+                        kept[root] = {"fp": fingerprints[root],
+                                      "order": ev.margin_reading(order)}
+                st.memo("margin_cache_hits", dict).update(dict.fromkeys(hits, True))
+                return out
+        try:
+            found = ceo.margin_erosion(
+                st, as_of, call, recent=recent, trailing=trailing,
+                margins=margins_of, not_read=NOT_READ, settled=SETTLED, skips=_Skips,
+                **common)
+        except TimeBudgetSpent:
+            if not kept:
+                raise
+            # cut at its window's end after reading: the readings stay for the next run
+            # (a pass spans runs until every order is held), nothing judged on a part
+            found = _result([], status="truncated", reasons=[TIME_BUDGET])
+        if reader is not None and (recent or trailing):
+            found["cache"], found["roots"] = kept, list(dict.fromkeys([*recent, *trailing]))
+            found.setdefault("counts", {})["margins_reused"] = len(
+                st.memo("margin_cache_hits", dict))
+        return found
 
     def no_reply() -> dict[str, Any]:
         found = orders()
@@ -4300,7 +4408,13 @@ TOOL_BUDGET_MAX_MS = 600000   # plx.investigate's schema maximum for time_budget
 # at a time grows by up to ~1.6 GB on the live store, 11-13). A detector alone always
 # runs; no limit (or none readable): no wait. ``PLX_PROACTIVE_MEMORY_SHARE`` overrides
 # the share (0 < share <= 1).
+# The limit is also never more than what the host can still give: the cgroup's use plus
+# the host's MemAvailable (``_host_room``). The kills of 11-12/13 were the host's own OOM
+# killer ("Out of memory", not a memory-cgroup kill: no unit was at its MemoryMax; the
+# passes and the lanes' jobs together ran the 61 GB host out), so a gate that watched only
+# the unit's own 15 GB limit started detectors side by side with 4 GB left on the host.
 MEMORY_GATE_SHARE = 0.6
+HOST_MEMINFO = "/proc/meminfo"
 DETECTOR_RESERVE_BYTES = 1_500_000_000
 MEMORY_GATE_POLL_SECONDS = 2.0
 MEMORY_SHARE_ENV = "PLX_PROACTIVE_MEMORY_SHARE"
@@ -4352,6 +4466,33 @@ def _cgroup_limit(directory: str | None) -> int | None:
     return min(found) if found else None
 
 
+def _host_available(meminfo: str = HOST_MEMINFO) -> int | None:
+    """The host's MemAvailable in bytes; None when it cannot be read."""
+    try:
+        with open(meminfo, encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    return int(parts[1]) * (1024 if parts[2:3] == ["kB"] else 1)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _host_room(directory: str | None, meminfo: str = HOST_MEMINFO) -> int | None:
+    """The memory this process's cgroup may grow to: the lower of its own limit and its
+    use now plus what the host still has available (the host's OOM killer, not the
+    unit's limit, ends a pass on a loaded host). A host figure that cannot be read leaves
+    the cgroup's limit; a use that cannot be read with a readable host figure: the host
+    figure alone (never no limit)."""
+    limit = _cgroup_limit(directory)
+    available = _host_available(meminfo)
+    if available is None:
+        return limit
+    room = (_cgroup_used(directory) or 0) + available
+    return room if limit is None else min(limit, room)
+
+
 class _MemoryGate:
     """Admission of detectors by memory (``MEMORY_GATE_SHARE``): ``enter`` waits while
     another detector runs and ``used()`` plus ``reserve`` for each running or cut-off
@@ -4381,7 +4522,8 @@ class _MemoryGate:
             if not 0 < share <= 1:
                 share = MEMORY_GATE_SHARE
         directory = _own_cgroup()
-        return cls(lambda: _cgroup_used(directory), lambda: _cgroup_limit(directory), share)
+        return cls(lambda: _cgroup_used(directory), lambda: _host_room(directory, HOST_MEMINFO),
+                   share)
 
     def over(self) -> bool:
         limit = self.limit()

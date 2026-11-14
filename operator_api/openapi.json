@@ -4916,6 +4916,7 @@
               "mc_task_overdue",
               "mc_task_stuck",
               "mc_approval_pending",
+              "portal_approval_pending",
               "planner_task_overdue",
               "aged_receivable_worsening",
               "aged_payable_worsening",
@@ -5067,6 +5068,7 @@
               "mc_task_overdue",
               "mc_task_stuck",
               "mc_approval_pending",
+              "portal_approval_pending",
               "planner_task_overdue",
               "aged_receivable_worsening",
               "aged_payable_worsening",
@@ -5292,6 +5294,7 @@
               "mc_task_overdue",
               "mc_task_stuck",
               "mc_approval_pending",
+              "portal_approval_pending",
               "planner_task_overdue",
               "aged_receivable_worsening",
               "aged_payable_worsening",
@@ -5539,6 +5542,7 @@
               "mc_task_overdue",
               "mc_task_stuck",
               "mc_approval_pending",
+              "portal_approval_pending",
               "planner_task_overdue",
               "aged_receivable_worsening",
               "aged_payable_worsening",
@@ -9081,6 +9085,17 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "template": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateFilled"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A saved template filled from the record the line names."
           },
           "text": {
             "title": "Text",
@@ -15884,6 +15899,661 @@
         "title": "TeamsChat",
         "type": "object"
       },
+      "Template": {
+        "additionalProperties": false,
+        "description": "A saved template: yours (``mine``) or one shared with you or a role of yours (read\nand use only).",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "doc_type": {
+            "enum": [
+              "quote",
+              "order_confirmation",
+              "supplier_email",
+              "customer_email",
+              "po_note",
+              "form",
+              "phrasing",
+              "price_list",
+              "proposal",
+              "spec_sheet",
+              "coa",
+              "letter",
+              "other"
+            ],
+            "title": "Doc Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "placeholders": {
+            "items": {
+              "$ref": "#/components/schemas/TemplatePlaceholder"
+            },
+            "title": "Placeholders",
+            "type": "array"
+          },
+          "shared_with": {
+            "description": "Who else may use it (``person:<address>``, ``role:<role>``); empty: private. Shown to its owner only.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared With",
+            "type": "array"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it was saved from (yours only).",
+            "title": "Source Ref"
+          },
+          "style_notes": {
+            "default": "",
+            "title": "Style Notes",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "uses": {
+            "default": 0,
+            "title": "Uses",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "doc_type",
+          "body",
+          "mine",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Template",
+        "type": "object"
+      },
+      "TemplateDeleted": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "title": "TemplateDeleted",
+        "type": "object"
+      },
+      "TemplateFillField": {
+        "additionalProperties": false,
+        "properties": {
+          "also": {
+            "items": {
+              "$ref": "#/components/schemas/FillCitation"
+            },
+            "title": "Also",
+            "type": "array"
+          },
+          "citation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FillCitation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "description": "filled: one value the records agree on (``citation``); check: left as [check: label] for you, with why.",
+            "enum": [
+              "filled",
+              "check"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "text",
+              "date",
+              "quantity",
+              "lines"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "type",
+          "status"
+        ],
+        "title": "TemplateFillField",
+        "type": "object"
+      },
+      "TemplateFillRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "record": {
+            "anyOf": [
+              {
+                "maxLength": 700,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The record to fill from (an identifier or an id); none: nothing is filled, every placeholder is marked check.",
+            "title": "Record"
+          }
+        },
+        "title": "TemplateFillRequest",
+        "type": "object"
+      },
+      "TemplateFilled": {
+        "additionalProperties": false,
+        "description": "A template filled from one record: the text to edit and send yourself, every\nplaceholder with its source or why it is marked check. Nothing is sent or saved.",
+        "properties": {
+          "checks": {
+            "default": 0,
+            "title": "Checks",
+            "type": "integer"
+          },
+          "doc_type": {
+            "enum": [
+              "quote",
+              "order_confirmation",
+              "supplier_email",
+              "customer_email",
+              "po_note",
+              "form",
+              "phrasing",
+              "price_list",
+              "proposal",
+              "spec_sheet",
+              "coa",
+              "letter",
+              "other"
+            ],
+            "title": "Doc Type",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateFillField"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "style_notes": {
+            "default": "",
+            "title": "Style Notes",
+            "type": "string"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "template_id",
+          "name",
+          "doc_type",
+          "text"
+        ],
+        "title": "TemplateFilled",
+        "type": "object"
+      },
+      "TemplateKind": {
+        "additionalProperties": false,
+        "properties": {
+          "doc_type": {
+            "enum": [
+              "quote",
+              "order_confirmation",
+              "supplier_email",
+              "customer_email",
+              "po_note",
+              "form",
+              "phrasing",
+              "price_list",
+              "proposal",
+              "spec_sheet",
+              "coa",
+              "letter",
+              "other"
+            ],
+            "title": "Doc Type",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc_type",
+          "label"
+        ],
+        "title": "TemplateKind",
+        "type": "object"
+      },
+      "TemplateList": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "description": "False when templates are off (no store) or cannot be read now (the people exclusion is not loaded).",
+            "title": "Available",
+            "type": "boolean"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/TemplatePlaceholder"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "kinds": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateKind"
+            },
+            "title": "Kinds",
+            "type": "array"
+          },
+          "share_roles": {
+            "description": "The roles a template may be shared with (besides any colleague by address).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Share Roles",
+            "type": "array"
+          },
+          "templates": {
+            "items": {
+              "$ref": "#/components/schemas/Template"
+            },
+            "title": "Templates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "TemplateList",
+        "type": "object"
+      },
+      "TemplatePlaceholder": {
+        "additionalProperties": false,
+        "description": "A placeholder a template body may hold, as ``{{name}}``: a record field, a\n``Type.property``, ``items`` (the record's lines) or ``today``.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "text",
+              "date",
+              "quantity",
+              "lines"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "label"
+        ],
+        "title": "TemplatePlaceholder",
+        "type": "object"
+      },
+      "TemplateProposal": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "replaced": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateReplaced"
+            },
+            "title": "Replaced",
+            "type": "array"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "TemplateProposal",
+        "type": "object"
+      },
+      "TemplateProposeRequest": {
+        "additionalProperties": false,
+        "description": "A draft, form or document's text to turn into a template: each value a fact of the\nrecord holds exactly becomes its placeholder.",
+        "properties": {
+          "record": {
+            "anyOf": [
+              {
+                "maxLength": 700,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The record the text is about (an identifier such as \"PO 1234\" or an id).",
+            "title": "Record"
+          },
+          "text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TemplateProposeRequest",
+        "type": "object"
+      },
+      "TemplateReplaced": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "TemplateReplaced",
+        "type": "object"
+      },
+      "TemplateSave": {
+        "additionalProperties": false,
+        "description": "A template to save (new) or a change to one of yours. Pay and finance are refused;\na placeholder must name a known field.",
+        "properties": {
+          "body": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "doc_type": {
+            "enum": [
+              "quote",
+              "order_confirmation",
+              "supplier_email",
+              "customer_email",
+              "po_note",
+              "form",
+              "phrasing",
+              "price_list",
+              "proposal",
+              "spec_sheet",
+              "coa",
+              "letter",
+              "other"
+            ],
+            "title": "Doc Type",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "shared_with": {
+            "description": "Who else may use it: ``person:<a colleague's address>`` or ``role:<role>``; empty: private.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Shared With",
+            "type": "array"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "maxLength": 400,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The draft, form or document it is saved from (its citation).",
+            "title": "Source Ref"
+          },
+          "style_notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Style Notes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "doc_type",
+          "body"
+        ],
+        "title": "TemplateSave",
+        "type": "object"
+      },
+      "TemplateSuggestion": {
+        "additionalProperties": false,
+        "description": "A template offered for the document you are starting: one you saved or that is\nshared with you (``template``), or the layout learned from the documents of this kind\nyou sent (``learned``: ``ask`` is the one-box line that makes it).",
+        "properties": {
+          "ask": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "doc_type": {
+            "enum": [
+              "quote",
+              "order_confirmation",
+              "supplier_email",
+              "customer_email",
+              "po_note",
+              "form",
+              "phrasing",
+              "price_list",
+              "proposal",
+              "spec_sheet",
+              "coa",
+              "letter",
+              "other"
+            ],
+            "title": "Doc Type",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "saved",
+              "learned"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "template": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Template"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "doc_type",
+          "label"
+        ],
+        "title": "TemplateSuggestion",
+        "type": "object"
+      },
+      "TemplateSuggestions": {
+        "additionalProperties": false,
+        "properties": {
+          "doc_type": {
+            "enum": [
+              "quote",
+              "order_confirmation",
+              "supplier_email",
+              "customer_email",
+              "po_note",
+              "form",
+              "phrasing",
+              "price_list",
+              "proposal",
+              "spec_sheet",
+              "coa",
+              "letter",
+              "other"
+            ],
+            "title": "Doc Type",
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateSuggestion"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "doc_type"
+        ],
+        "title": "TemplateSuggestions",
+        "type": "object"
+      },
       "TimeSaved": {
         "additionalProperties": false,
         "description": "Per person and week, the minutes the Workbench saved them, from their work log: an\nestimate whose ``method`` says how it is counted. A reader sees their own; the owner\nmay see everyone's (``all_readers``). ``available`` False (nothing shown) while the\npeople exclusion is not loaded.",
@@ -21147,6 +21817,7 @@
                 "mc_task_overdue",
                 "mc_task_stuck",
                 "mc_approval_pending",
+                "portal_approval_pending",
                 "planner_task_overdue",
                 "aged_receivable_worsening",
                 "aged_payable_worsening",
@@ -23792,6 +24463,671 @@
         "summary": "Team Person",
         "tags": [
           "actions"
+        ]
+      }
+    },
+    "/api/templates": {
+      "get": {
+        "description": "Your saved templates and those shared with a role of yours, most used first,\nwith the document types, the record fields a placeholder may name and the roles\nyou may share with.",
+        "operationId": "templates_list_api_templates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "doc_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "quote",
+                    "order_confirmation",
+                    "supplier_email",
+                    "customer_email",
+                    "po_note",
+                    "form",
+                    "phrasing",
+                    "price_list",
+                    "proposal",
+                    "spec_sheet",
+                    "coa",
+                    "letter",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Doc Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Templates List",
+        "tags": [
+          "templates"
+        ]
+      },
+      "post": {
+        "description": "Save a template (private unless shared with a role of yours). Pay and finance\nare refused, and every placeholder must name a record field.",
+        "operationId": "templates_create_api_templates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Template"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Templates Create",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/templates/propose": {
+      "post": {
+        "description": "A draft's text as a template: each value the record holds exactly becomes its\nplaceholder. Nothing is saved.",
+        "operationId": "templates_propose_api_templates_propose_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateProposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Templates Propose",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/templates/suggest": {
+      "get": {
+        "description": "The templates to offer when you start a document of this type: yours and those\nshared with you, then the layout learned from what you sent of that kind.",
+        "operationId": "templates_suggest_api_templates_suggest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "doc_type",
+            "required": true,
+            "schema": {
+              "enum": [
+                "quote",
+                "order_confirmation",
+                "supplier_email",
+                "customer_email",
+                "po_note",
+                "form",
+                "phrasing",
+                "price_list",
+                "proposal",
+                "spec_sheet",
+                "coa",
+                "letter",
+                "other"
+              ],
+              "title": "Doc Type",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateSuggestions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Templates Suggest",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/templates/{template_id}": {
+      "delete": {
+        "description": "Delete one of your own templates.",
+        "operationId": "templates_delete_api_templates__template_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Template Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateDeleted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Templates Delete",
+        "tags": [
+          "templates"
+        ]
+      },
+      "put": {
+        "description": "Change one of your own templates (one shared with you reads as not found).",
+        "operationId": "templates_update_api_templates__template_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Template Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Template"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Templates Update",
+        "tags": [
+          "templates"
+        ]
+      }
+    },
+    "/api/templates/{template_id}/fill": {
+      "post": {
+        "description": "A template filled from a record you can read: each placeholder from one value\nthe records agree on, with its source, else marked check. Nothing is sent.",
+        "operationId": "templates_fill_api_templates__template_id__fill_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Template Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateFillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateFilled"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Templates Fill",
+        "tags": [
+          "templates"
         ]
       }
     },

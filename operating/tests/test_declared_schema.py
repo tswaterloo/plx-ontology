@@ -42,10 +42,6 @@ NOT_DECLARED = {
     # a one-off proof over a scratch copy of a generation it builds itself; never a store
     # the Workbench opens
     "scripts/stamp_sighting_proof.py",
-    # the job queue's own Postgres database (plx_jobq): idempotent IF NOT EXISTS DDL its
-    # init() applies; declared_schema versions SQLite stores (a Postgres change is a
-    # migration of that database), as operating/pg/migrate.py's
-    "operating/jobq/events.py", "operating/jobq/queue.py",
     # Postgres partitions of ontology.link_rows built beside the served ones (no SQLite store)
     "operating/pg/link_partitions.py", "scripts/rehearse_link_partitions.py",
     # GA-F3's one-time history collapse: Postgres DDL (its sightings, handle map and batch

@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import signal
 import sys
 import tempfile
 import threading
@@ -134,6 +135,62 @@ class PooledGate(unittest.TestCase):
                          call_limits.TIMED_OUT)
         self.assertLess(at, 20.0)   # never answered by its host: the gate answered it
         self.assertFalse(by_id[3][1]["result"].get("isError"))
+
+
+class RssCap(PooledGate):
+    """GA-F10: a host child grown past the RSS cap is stopped, never served again."""
+
+    def counting(self) -> list:
+        started = []
+        start = self.pool.start
+
+        def counted():
+            child = start()
+            started.append(child)
+            return child
+        self.pool.start = counted
+        return started
+
+    def test_an_idle_helper_over_the_cap_is_stopped_and_replaced(self):
+        started = self.counting()
+        first = []    # the session's first helper reads as grown past the cap
+
+        def rss(pid):
+            first[:] = first or [pid]
+            return 500.0 if pid == first[0] else 50.0
+        self.pool.rss_cap_mb, self.pool.rss = 100.0, rss
+        # 1 holds the primary; 2 finds the first helper idle but over the cap: it is
+        # stopped and a fresh helper serves the call
+        answers = self.gate([self.call(1, "plx.slow"), self.call(2, "plx.fast")], wait_for=2)
+        by_id = {answer["id"]: answer for _at, answer in answers}
+        self.assertEqual(json.loads(by_id[2]["result"]["content"][0]["text"])["role"],
+                         "helper")
+        self.assertFalse(by_id[1]["result"].get("isError"))
+        self.assertEqual(len(started), 2)              # the first helper, its replacement
+        self.assertEqual(started[0].pid, first[0])
+        self.assertEqual(started[0].wait(10), -signal.SIGKILL)
+        imports = [json.loads(line) for line in self.imports.read_text().splitlines()]
+        self.assertEqual([entry["record"]["name"] for entry in imports], ["plx.fast"])
+
+    def test_with_the_cap_off_a_grown_helper_keeps_serving(self):
+        started = self.counting()
+        self.pool.rss_cap_mb = None
+        self.pool.rss = lambda pid: 10000.0
+        answers = self.gate([self.call(1, "plx.slow"), self.call(2, "plx.fast")], wait_for=2)
+        self.assertEqual(len(answers), 2)
+        self.assertEqual(len(started), 1)
+
+    def test_the_cap_reads_the_environment(self):
+        cap = agent_session.host_rss_cap_mb
+        self.assertEqual(cap({}), agent_session.HOST_RSS_CAP_MB)
+        self.assertEqual(cap({agent_session.HOST_RSS_CAP_ENV: "300"}), 300.0)
+        self.assertIsNone(cap({agent_session.HOST_RSS_CAP_ENV: "0"}))
+        self.assertEqual(cap({agent_session.HOST_RSS_CAP_ENV: "x"}),
+                         agent_session.HOST_RSS_CAP_MB)
+        own = agent_session.process_rss_mb(os.getpid())
+        if own is not None:                            # /proc present
+            self.assertGreater(own, 1.0)
+        self.assertIsNone(agent_session.process_rss_mb(1 << 30))
 
 
 class ImportKey(unittest.TestCase):

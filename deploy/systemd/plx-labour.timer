@@ -1,0 +1,10 @@
+[Unit]
+Description=PLX labour hours build daily
+
+[Timer]
+OnCalendar=*-*-* 05:40:00 America/New_York
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

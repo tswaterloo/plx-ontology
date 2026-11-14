@@ -35,6 +35,9 @@ copies of one file version, the earliest cleared source is cited.
   balance column is read as such, never as a line's amount. Only a supplier's latest
   statement in the window is judged (older ones are superseded, counted); one alert per
   supplier with a difference. Finance-marked.
+* ``sheet_lots``: the lots of the on-hand sheets with an expiry day (``expiring_lot_stock``):
+  per item and lot the latest fresh reading, the same item matching and people-first
+  reading as ``sheet_on_hand``; copies of one reading that disagree leave the lot out.
 * ``sheet_on_hand``: the latest on-hand reading per item (an item number matching exactly
   one item cluster's code), dated within ``ON_HAND_FRESH_DAYS``; the lots of one sheet sum,
   two sheets of one day that disagree leave the item unjudged.
@@ -94,6 +97,7 @@ class Reading:
     name: str
     received: date | None
     cite: dict            # the source row cited: l1_handle, object_id, markings
+    sender: str = ""      # the first participant (the mail's sender); "" when unknown
 
 
 def _day(raw: Any) -> date | None:
@@ -144,7 +148,8 @@ def load(path: Path, kind: str, people: Any, skipped: Counter) -> list[Reading]:
             if not _source_cleared(people, audience or "", parts):
                 refused[key] = 2
                 continue
-            sources[key] = (handle, oid, markings or "[]", _day(received), name)
+            sources[key] = (handle, oid, markings or "[]", _day(received), name,
+                            str(parts[0]) if parts and isinstance(parts[0], str) else "")
         for key, why in refused.items():
             if key not in sources:
                 skipped["source_not_in_store" if why == 1 else "people_not_cleared"] += 1
@@ -157,10 +162,11 @@ def load(path: Path, kind: str, people: Any, skipped: Counter) -> list[Reading]:
             src = sources.get(key)
             if src is None:
                 continue
-            handle, oid, markings, received, name = src
+            handle, oid, markings, received, name, sender = src
             out.append(Reading(key, t_no, seq, cell, json.loads(fields),
                                facts.get((key, t_no), {}), name, received,
-                               {"l1_handle": handle, "object_id": oid, "markings": markings}))
+                               {"l1_handle": handle, "object_id": oid, "markings": markings},
+                               sender))
         return out
     finally:
         conn.close()
@@ -413,40 +419,54 @@ def statement_reconciliation(st: Any, as_of: date, *, gap: Callable, cites: Call
     counts: Counter = Counter()
     lines = load(readings, "statement", people, skipped)
     ap_groups = ap_docs(st)
-    ar, ap = _index(ar_docs(st)), _index(ap_groups)
-    by_party: dict[str, list[Doc]] = defaultdict(list)
-    for docs in ap_groups.values():
-        for d in docs:
-            by_party[d.party].append(d)
+    ar_groups = ar_docs(st)
+    ar, ap = _index(ar_groups), _index(ap_groups)
+    books = {"supplier": (ap, defaultdict(list), "payables"),
+             "customer": (ar, defaultdict(list), "receivables")}
+    for side, groups in (("supplier", ap_groups), ("customer", ar_groups)):
+        for docs in groups.values():
+            for d in docs:
+                books[side][1][d.party].append(d)
     by_table: dict[tuple, list[Reading]] = defaultdict(list)
     for r in lines:
         by_table[(r.file_key, r.table)].append(r)
     gaps = []
-    latest: dict[str, list[tuple]] = defaultdict(list)
+    latest: dict[tuple[str, str], list[tuple]] = defaultdict(list)
     for (key, t_no), rows in sorted(by_table.items()):
         counts["statements"] += 1
         refs = [(r, _norm(_v(r, "ref"))) for r in rows]
         in_ap = Counter(d.party for _r, ref in refs if len(ref) >= MIN_REF
                         for d in ap.get(ref, [])[:1])
         in_ar = sum(1 for _r, ref in refs if len(ref) >= MIN_REF and ar.get(ref))
-        if not in_ap:
-            counts["customer_statement" if in_ar else "supplier_not_matched"] += 1
-            continue
-        if in_ar > sum(in_ap.values()):
-            counts["customer_statement"] += 1
-            continue
-        party = in_ap.most_common(1)[0][0]
         first = rows[0]
+        # inbound: the mail came from an outside address; a statement we sent stays counted
+        inbound = bool(first.sender) and not _internal(people, first.sender)
+        side = "supplier"
+        if not in_ap or in_ar > sum(in_ap.values()):
+            if not in_ar:
+                counts["supplier_not_matched"] += 1
+                continue
+            if not inbound:
+                counts["customer_statement"] += 1
+                continue
+            side = "customer"
+            in_party = Counter(d.party for _r, ref in refs if len(ref) >= MIN_REF
+                               for d in ar.get(ref, [])[:1])
+            party = in_party.most_common(1)[0][0]
+        else:
+            party = in_ap.most_common(1)[0][0]
         stated_on = (_fact_day(first.facts, "statement date", "date", "as of", "as at",
                                "_first_date") or first.received)
         if stated_on is None or not (as_of - timedelta(days=STATEMENT_DAYS) <= stated_on
                                      <= as_of):
             skipped["outside_window"] += 1
             continue
-        counts["supplier_statements"] += 1
-        latest[party].append((stated_on, max((r.received or date.min) for r in rows), key,
+        counts["supplier_statements" if side == "supplier" else "inbound_customer_statements"
+               ] += 1
+        latest[(side, party)].append((stated_on, max((r.received or date.min) for r in rows), key,
                               t_no, rows, refs))
-    for party, found in sorted(latest.items()):
+    for (side, party), found in sorted(latest.items()):
+        idx, by_party, books_name = books[side]
         # a supplier's latest statement states where it stands; older ones are superseded
         stated_on, _got, key, t_no, rows, refs = max(found, key=lambda f: f[:4])
         skipped["superseded_statement"] += len(found) - 1
@@ -459,7 +479,7 @@ def statement_reconciliation(st: Any, as_of: date, *, gap: Callable, cites: Call
             if amount is None:
                 skipped["amount_unread"] += 1
                 continue
-            doc = next((d for d in ap.get(ref, []) if d.party == party), None) \
+            doc = next((d for d in idx.get(ref, []) if d.party == party), None) \
                 if len(ref) >= MIN_REF else None
             if doc is None:
                 if amount != 0:
@@ -498,13 +518,13 @@ def statement_reconciliation(st: Any, as_of: date, *, gap: Callable, cites: Call
         groups = [cites([r.cite], FINANCE) for _c, r, _d, _a in diffs if r is not None] + [
             cites(d.cite(*_doc_props(d)), FINANCE) for d in docs]
         made = gap(DIFFERENCE, STATEMENT_RULE, top.oid, _doc_type(top), f"{key}:{t_no}",
-                   summary=f"Statement of {stated_on.isoformat()} from supplier {party} "
-                           f"differs from our payables on {len(diffs)} item"
+                   summary=f"Statement of {stated_on.isoformat()} from {side} {party} "
+                           f"differs from our {books_name} on {len(diffs)} item"
                            f"{'' if len(diffs) == 1 else 's'} ({parts}"
                            + (f"; net {_fmt(net)} {cur}" if cur else "") + ")",
                    missing="Which side is right for each item: a missing or duplicate "
                            "invoice, a payment not received, or a credit not taken?",
-                   why="The supplier's statement and our payables disagree on these items "
+                   why=f"The {side}'s statement and our {books_name} disagree on these items "
                        "(each statement line and each of our documents cited).",
                    priority="medium", about=(_doc_type(top), "balance"),
                    # the statement itself is always cited: a reader who may not open it
@@ -578,4 +598,117 @@ def sheet_on_hand(st: Any, as_of: date, readings: Path, people: Any,
         out[top] = (qty, unit, cites([rows[0].cite]), day)
     for reason, n in local.items():
         skipped[reason] += n
+    return out
+
+
+def _product_codes(st: Any, item_of: Callable[[str], str]) -> dict[str, set[str]]:
+    codes: dict[str, set[str]] = defaultdict(set)
+    for oid, entry in st.values(["Product"], PRODUCT_CODES).items():
+        for prop in PRODUCT_CODES:
+            for row in entry["props"].get(prop) or ():
+                key = _norm(row.get("value"))
+                if len(key) >= 2:
+                    codes[key].add(item_of(oid))
+    return codes
+
+
+def _reading_day(r: Reading) -> date | None:
+    from integrations.sheet_readings import name_date
+    return (_day(_v(r, "date")) or _fact_day(r.facts, "inventory date", "count date",
+                                              "as of", "as at", "report date", "date",
+                                              "period ending", "week ending", "_first_date")
+            or name_date(r.name) or r.received)
+
+
+def sheet_lots(st: Any, as_of: date, readings: Path, people: Any,
+               item_of: Callable[[str], str], horizon: date, exclude: Iterable[str],
+               cites: Callable, skipped: Any) -> list[dict[str, Any]]:
+    """Lots read from the on-hand sheets whose expiry falls in ``[as_of, horizon]``, each
+    ``{item, lot, qty, unit, expiry, day, cell, cite}`` from the latest fresh reading of
+    its (item, lot); items in ``exclude`` (a declared source serves their lots) are left
+    out; nothing when people are not cleared."""
+    if people is None or getattr(people, "unavailable", None) or not readings.is_file():
+        return []
+    codes = _product_codes(st, item_of)
+    skip = set(exclude)
+    local: Counter = Counter()
+    per_lot: dict[tuple, dict[date, dict[str, list[Reading]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list)))
+    for r in load(readings, "on_hand", people, local):
+        expiry = _day(_v(r, "expiry"))
+        if expiry is None:
+            continue
+        tops = codes.get(_norm(_v(r, "item")), set())
+        if len(tops) != 1:
+            continue
+        (top,) = tops
+        day = _reading_day(r)
+        if top in skip or day is None or day > as_of:
+            continue
+        lot = (_v(r, "lot") or "").strip()
+        per_lot[(top, lot, expiry)][day][r.file_key].append(r)
+    out: list[dict[str, Any]] = []
+    for (top, lot, expiry), by_day in sorted(per_lot.items(),
+                                             key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
+        day = max(by_day)
+        if (as_of - day).days > ON_HAND_FRESH_DAYS:
+            skipped.note("on_hand_reading_stale", [top], [(top, "[]")])
+            continue
+        if not as_of <= expiry <= horizon:
+            continue
+        totals = {}
+        for key, rows in by_day[day].items():
+            units = {_v(r, "unit") for r in rows}
+            qty = sum((_dec(_v(r, "qty")) or Decimal(0) for r in rows), Decimal(0))
+            totals[key] = (qty, units.pop() if len(units) == 1 else "", rows)
+        if len({(q, u) for q, u, _r in totals.values()}) != 1:
+            skipped.note("on_hand_readings_disagree", [top], [(top, "[]")])
+            continue
+        qty, unit, rows = next(iter(totals.values()))
+        if qty <= 0:
+            continue
+        out.append({"item": top, "lot": lot, "qty": qty, "unit": unit, "expiry": expiry,
+                    "day": day, "cell": rows[0].cell, "cite": cites([rows[0].cite])})
+    for reason, n in local.items():
+        skipped[reason] += n
+    return out
+
+
+def item_readings(readings: Path, people: Any, codes: Iterable[str], as_of: date,
+                  skipped: Any = None) -> list[dict[str, Any]]:
+    """The latest on-hand reading of the item whose code is among ``codes``, one entry per
+    source file at that latest day (the sheet's own quantity and unit, never summed with
+    another source): ``{object_id, handle, qty, unit, day, cell, fresh, lots}``. People
+    first (``load``); nothing when people are not cleared or no reading is dated."""
+    if people is None or getattr(people, "unavailable", None) or not readings.is_file():
+        return []
+    want = {_norm(c) for c in codes if len(_norm(c)) >= 2}
+    local: Counter = Counter()
+    by_day: dict[date, dict[str, list[Reading]]] = defaultdict(lambda: defaultdict(list))
+    for r in load(readings, "on_hand", people, local):
+        if _norm(_v(r, "item")) not in want:
+            continue
+        day = _reading_day(r)
+        if day is None or day > as_of:
+            continue
+        by_day[day][r.file_key].append(r)
+    if skipped is not None:
+        for reason, n in local.items():
+            skipped[reason] += n
+    if not by_day:
+        return []
+    day = max(by_day)
+    out = []
+    for _key, rows in sorted(by_day[day].items()):
+        units = {_v(r, "unit") for r in rows}
+        qtys = [_dec(_v(r, "qty")) for r in rows]
+        if any(q is None for q in qtys) or len(units) != 1:
+            if skipped is not None:
+                skipped["on_hand_reading_unreadable"] += 1
+            continue
+        out.append({"object_id": rows[0].cite["object_id"],
+                    "handle": rows[0].cite["l1_handle"],
+                    "qty": sum(qtys, Decimal(0)), "unit": units.pop() or "", "day": day,
+                    "cell": rows[0].cell, "lots": len(rows),
+                    "fresh": (as_of - day).days <= ON_HAND_FRESH_DAYS})
     return out

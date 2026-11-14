@@ -64,6 +64,13 @@ def user_row(oid, email, role="STAFF", departments=("ops", "qa"), **extra):
             **extra}
 
 
+def fresh_read_at() -> str:
+    """A Portal access snapshot's read time of now: a fixture export is never older than
+    the snapshot's age bound (SEC-004: every snapshot expires)."""
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def identity_files(directory, rules=None, *, role="STAFF", users=None):
     """Write an employee policy and a Portal access snapshot; return their paths."""
     directory = Path(directory)
@@ -76,7 +83,7 @@ def identity_files(directory, rules=None, *, role="STAFF", users=None):
                                     "company_key": COMPANY, "data_key": data_key}
                              for name, (cap, data_key, dept) in (rules or RULES).items()}}
     snapshot = {"schema": PORTAL_ACCESS_SNAPSHOT_SCHEMA, "source": "portal:app_user@fixture",
-                "read_at": "2026-10-02T09:00:00Z",
+                "read_at": fresh_read_at(),
                 "users": users if users is not None else [user_row(OID_A, EMAIL_A, role)]}
     (directory / "policy.json").write_text(json.dumps(policy), "utf-8")
     (directory / "portal.json").write_text(json.dumps(snapshot), "utf-8")
@@ -115,7 +122,7 @@ class Fixture(unittest.TestCase):
     def write_users(self, users):
         self.portal_path.write_text(json.dumps({
             "schema": PORTAL_ACCESS_SNAPSHOT_SCHEMA, "source": "portal:app_user@fixture",
-            "read_at": "2026-10-02T09:00:00Z", "users": users}), "utf-8")
+            "read_at": fresh_read_at(), "users": users}), "utf-8")
 
     def runtime(self, *, require_employee=True, resolver=None):
         resolver = resolver or self.resolver()

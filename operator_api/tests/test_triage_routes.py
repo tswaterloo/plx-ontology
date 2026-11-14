@@ -37,10 +37,11 @@ GAP = {"id": "pe-1", "kind": "reply_owed", "object_id": "Email:synth-1", "summar
 
 class Backend(be.WorkspaceBackend):
     owner = False
+    inbox_status = "read"
 
     def _brief_run(self, reader, job):
         view = SimpleNamespace(
-            gap_inbox=lambda **kw: {"status": "read", "gaps": [GAP]},
+            gap_inbox=lambda **kw: {"status": self.inbox_status, "gaps": [GAP]},
             access=SimpleNamespace(reader_policy=lambda: (
                 None, SimpleNamespace(unrestricted=self.owner))),
             _request=lambda: mock.MagicMock())
@@ -84,6 +85,16 @@ class Routes(unittest.TestCase):
         self.assertEqual((body["sent"], body["writes"], line["draft"]["sent"]), (0, 0, False))
         self.assertEqual(line["card_id"], "reply:pe-1")
         self.assertEqual(line["draft"]["to"], [{"address": "buyer@synth.example"}])
+
+    def test_an_alert_list_not_read_yet_is_said_so_never_as_no_access(self):
+        # UX walk 11-13: Team's approvals said "couldn't find that, or you don't have
+        # access" while the alert run had not run on the server
+        self.backend.inbox_status = "not_scheduled"
+        client = self.client()
+        for route in ("/api/replies", "/api/approvals"):
+            got = client.get(route)
+            self.assertEqual(got.status_code, 404, route)
+            self.assertEqual(got.json()["error"]["code"], "alerts_not_read", route)
 
     def test_workload_answers_with_the_real_exclusion_and_suppresses_small_teams(self):
         client = self.client()

@@ -669,13 +669,16 @@ def _stock_value(costs: Mapping[str, Any], codes: Mapping[tuple, str | None],
 def expiring_lot_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                        result: Callable, settled: Sequence[str], skips: Callable,
                        orders: Callable,
-                       on_hand: Sequence[tuple[str, str, str | None]] | None = None
-                       ) -> dict[str, Any]:
+                       on_hand: Sequence[tuple[str, str, str | None]] | None = None,
+                       sheet_lots: Callable | None = None) -> dict[str, Any]:
+    """``sheet_lots(item_of, horizon, exclude, cites, skipped)``: lots read from the
+    hand-kept on-hand sheets (``proactive_sheets.sheet_lots``) for the items no declared
+    lot source states; None: no sheets are read."""
     injected = on_hand is not None
     sources = [(t, p, v) for t, p, v in (pb.declared_on_hand() if on_hand is None
                                          else on_hand)
                if v is not None and (injected or declares(t, LOT_EXPIRY))]
-    if not sources:
+    if not sources and sheet_lots is None:
         lots = [(t, p) for t, p, v in pb.ON_HAND if v is not None]
         return _blocked(result, [f for t, p in lots for f in (
             *((f"{t}.{p}",) if not declares(t, p) else ()),
@@ -685,6 +688,7 @@ def expiring_lot_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     item_root = _item_roots(st, settled)
     horizon = as_of + timedelta(days=LOT_DAYS[-1])
     near: list[tuple] = []   # (day, lot, item cluster, rows, tie)
+    declared_items: set[str] = set()
     for object_type, prop, via in sources:
         pb._tick(st)
         held = st.values([object_type], [prop, LOT_EXPIRY, LOT_NUMBER])
@@ -697,6 +701,9 @@ def expiring_lot_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             if qty is None or qty <= 0:
                 continue
             counts["lots_on_hand"] += 1
+            if oid in ties:
+                declared_items.add(item_root.get(ties[oid]["to_object"],
+                                                 ties[oid]["to_object"]))
             expiry, day = _first(props, (LOT_EXPIRY,))
             if day is None:
                 skipped.note("expiry_unknown", [oid], [(oid, "[]")])
@@ -710,11 +717,17 @@ def expiring_lot_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             near.append((day, oid, item_root.get(tie["to_object"], tie["to_object"]),
                          [row, expiry, *(props.get(LOT_NUMBER) or ())[:1]], tie, qty,
                          unit_token(row.get("unit"))))
+    # lots of the hand-kept sheets, for items no declared source states a lot of
+    sheet_found: list[dict[str, Any]] = []
+    if sheet_lots is not None:
+        sheet_found = sheet_lots(lambda r: item_root.get(r, r), horizon, declared_items,
+                                 cites, skipped)
+        counts["lots_on_hand"] += len(sheet_found)
     # the open customer orders naming each lot's item
-    roots = {n[2] for n in near}
+    roots = {n[2] for n in near} | {f["item"] for f in sheet_found}
     members = _members(item_root, roots)
     wanting: dict[str, dict[str, list]] = defaultdict(dict)
-    if near:
+    if near or sheet_found:
         _found, verdicts = orders()
         top_of = {m: v for v in verdicts if v.cls == "open" for m in v.group}
         lines = [l for l in _touch(st, members, [pb.SO_LINE_ITEM], settled)
@@ -756,6 +769,33 @@ def expiring_lot_stock(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                    groups=[cites(rows, tie["markings"]),
                            *list(users.values())[:MAX_CITED]],
                    event={"days": left, "orders_affected": len(users)})
+        gaps.append(made)
+    for f in sheet_found:
+        pb._tick(st)
+        left = (f["expiry"] - as_of).days
+        counts["expiring"] += 1
+        top = f["item"]
+        unit = unit_token(f["unit"]) if f["unit"] else None
+        name = f"Lot {f['lot']}" if f["lot"] else "A lot"
+        users = wanting.get(top, {})
+        summary = (f"{name} with {pb._text(f['qty'])} {unit or 'units'} on hand (hand-kept "
+                   f"sheet of {f['day'].isoformat()}) expires {f['expiry'].isoformat()} "
+                   f"(in {_plural(left, 'day')})")
+        if users:
+            summary += f"; {_plural(len(users), 'open customer order')} could use it"
+        made = gap(LOT_EXPIRING, LOT_RULE, top, ITEM,
+                   f"sheet|{f['lot']}|{f['expiry'].isoformat()}",
+                   summary=summary,
+                   missing="Which order will use this lot before it expires, or should it "
+                           "be retested, reworked or written off?",
+                   why=f"A hand-kept sheet shows the lot with stock on hand and its expiry "
+                       f"date is within {LOT_DAYS[-1]} days; open customer orders name its "
+                       "item.",
+                   priority="high" if left <= LOT_DAYS[0] else "medium",
+                   about=(ITEM, LOT_EXPIRY),
+                   groups=[f["cite"], *list(users.values())[:MAX_CITED]],
+                   event={"days": left, "orders_affected": len(users),
+                          "on_hand_sheet_day": f["day"].isoformat(), "cell": f["cell"]})
         gaps.append(made)
     out = result(gaps, not_evaluated=skipped)
     out["counts"] = {k: counts.get(k, 0) for k in ("lots_on_hand", "expiring")}
@@ -1212,12 +1252,14 @@ def freight_cost_anomaly(st: Any, as_of: date, *, gap: Callable, cites: Callable
 def reorder_soon(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Callable,
                  settled: Sequence[str], skips: Callable, po_source: Callable,
                  absence: Callable,
-                 on_hand: Sequence[tuple[str, str, str | None]] | None = None
-                 ) -> dict[str, Any]:
+                 on_hand: Sequence[tuple[str, str, str | None]] | None = None,
+                 sheet_on_hand: Callable | None = None) -> dict[str, Any]:
+    """``sheet_on_hand(item_of, items, cites, skipped)``: as for ``stock_out_risk``; a sheet
+    reading is on hand only for an item no declared source serves, in its own unit."""
     from . import demand_forecast as df
 
     sources, missing = _sources(on_hand)
-    if not sources:
+    if not sources and sheet_on_hand is None:
         return _blocked(result, missing)
     skipped = skips()
     counts: Counter = Counter()
@@ -1234,7 +1276,8 @@ def reorder_soon(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
     for item, unit in series:
         units_of[item].add(unit)
     state = df.reorder_state(st, as_of, set(units_of), settled, on_hand=sources,
-                             po_source=po_source)
+                             po_source=po_source, sheet_on_hand=sheet_on_hand,
+                             skipped=skipped)
     end = df.horizon_end(as_of, bucket)
     last = df.last_complete(through, as_of, bucket) if through else None
     requires = absence(["SalesInvoice", "SalesInvoiceLine", "PurchaseOrder",
@@ -1289,7 +1332,9 @@ def reorder_soon(st: Any, as_of: date, *, gap: Callable, cites: Callable, result
             event={"forecast": got["forecast_total"], "supply": pb._text(have),
                    "shortfall": pb._text(short), "unit": unit, "short_by": end.isoformat(),
                    "method": got["method"], "inbound": orders,
-                   **({"holdout_wape": wape} if wape else {})})
+                   **({"holdout_wape": wape} if wape else {}),
+                   **({"on_hand_sheet_day": state["sheet_days"][item]}
+                      if item in state.get("sheet_days", {}) else {})})
         if made is not None:
             made["requires"] = requires
         gaps.append(made)

@@ -1,0 +1,31 @@
+# The labour-hours build (operating.labour_hours build): department and week totals from the
+# emailed time sheets, never a person's row, pay or rate. Daily oneshot. Reads the capture
+# store read-only (MailCaptureStore.open_read_only; ReadOnlyPaths below) and writes only the
+# labour_hours store, /data/plx-state/labour/labour.db. Refused, nothing written, without the
+# people exclusion (PLX_EXCLUDED_PEOPLE_OIDS in the proactive env file). Reads no business
+# system: the credentials of the shared env files are dropped.
+[Unit]
+Description=PLX labour hours build (department and week totals)
+After=plx-ingest.service
+
+[Service]
+Type=oneshot
+User=@PLX_USER@
+Group=@PLX_GROUP@
+WorkingDirectory=@PLX_CURRENT@
+EnvironmentFile=/etc/plx/ingest.env
+EnvironmentFile=-@PLX_HOME@/.config/plx/proactive.env
+UnsetEnvironment=AZURE_CLIENT_SECRET BC_CLIENT_SECRET MICROSOFT_GRAPH_CLIENT_SECRET MC_MCP_API_KEY PLX_WORKBENCH_API_KEY AZURE_STORAGE_KEY AZURE_DOC_INTEL_KEY PLX_WORKBENCH_SESSION_SECRET
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/data/venv/bin/python3 -m operating.labour_hours build --state-dir ${PLX_INGEST_STATE} --out ${PLX_INGEST_STATE}/labour/labour.db
+ProtectSystem=strict
+ReadOnlyPaths=/data/plx-state
+ReadWritePaths=/data/plx-state/labour
+NoNewPrivileges=true
+PrivateTmp=true
+Nice=15
+CPUWeight=10
+MemoryHigh=1G
+MemoryMax=2G
+TimeoutStartSec=30min
+UMask=0077

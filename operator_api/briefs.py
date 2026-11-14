@@ -519,6 +519,12 @@ def labour_answer_of(state_dir: Any, reader: Reader, question: str) -> dict[str,
     return lh.answer(question, lh.open_store(state_dir) if held else None, held)
 
 
+# The reader's alert list (the gap inbox) not read on this server: not "not found or no
+# access", which the app says for a 404 not_found (the UX walk of 11-13 showed Team's
+# approvals as "you don't have access" while the alert run had not run)
+def alerts_not_read() -> UserFacing:
+    return UserFacing("alerts_not_read", "Your alert list could not be read.", 404)
+
 class BriefsMixin:
     """The briefs routes' backend (``WorkspaceBackend`` mixes it in)."""
 
@@ -574,7 +580,7 @@ class BriefsMixin:
     def approvals_queue(self, reader: Reader) -> m.ApprovalsQueue:
         raw = self._brief_run(reader, lambda view: approvals_of(view))
         if raw is None:
-            raise UserFacing("not_found", "Your alert list could not be read.", 404)
+            raise alerts_not_read()
         for group in raw["groups"]:
             for item in group["items"]:
                 card = nudge_card(item)
@@ -596,7 +602,7 @@ class BriefsMixin:
     def reply_triage(self, reader: Reader) -> m.ReplyTriage:
         raw = self._brief_run(reader, lambda view: replies_of(view))
         if raw is None:
-            raise UserFacing("not_found", "Your alert list could not be read.", 404)
+            raise alerts_not_read()
         for line in raw["lines"]:
             card = reply_card(line)
             if card is not None:
@@ -616,13 +622,13 @@ class BriefsMixin:
     def label_changes(self, reader: Reader, object_id: str) -> m.LabelChanges:
         raw = self._brief_run(reader, lambda view: label_changes_of(view, object_id))
         if raw is None:
-            raise UserFacing("not_found", "Your alert list could not be read.", 404)
+            raise alerts_not_read()
         return m.LabelChanges(**raw)
 
     def label_revisions(self, reader: Reader, object_id: str) -> m.LabelRevisions:
         raw = self._brief_run(reader, lambda view: label_revisions_of(view, object_id))
         if raw is None:
-            raise UserFacing("not_found", "Your alert list could not be read.", 404)
+            raise alerts_not_read()
         return m.LabelRevisions(**raw)
 
     @staticmethod
@@ -636,7 +642,7 @@ class BriefsMixin:
         mine = self._my_oids(reader)
         raw = self._brief_run(reader, lambda view: rd_board_of(view, mine, today))
         if raw is None:
-            raise UserFacing("not_found", "Your alert list could not be read.", 404)
+            raise alerts_not_read()
         projects = []
         for project in raw["projects"]:
             card = rd_card(project, today)

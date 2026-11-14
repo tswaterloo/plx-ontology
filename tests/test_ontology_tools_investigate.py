@@ -2697,3 +2697,35 @@ class TwinConflictTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanMenuTests(unittest.TestCase):
+    """The family menu read from the plan files is read again only when a plan file
+    changed (each host's tool table is built anew per store state)."""
+
+    def test_the_menu_is_read_once_and_again_on_a_changed_file(self):
+        import shutil
+        from unittest import mock
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        plan = folder / "a.json"
+        plan.write_text(json.dumps({"id": "fam_a", "title": "First title"}), "utf-8")
+        (folder / "_skip.json").write_text(json.dumps({"id": "x", "title": "no"}), "utf-8")
+        reads = []
+        real = Path.read_text
+
+        def counted(path, *args, **kwargs):
+            reads.append(path.name)
+            return real(path, *args, **kwargs)
+        with mock.patch.object(Path, "read_text", counted):
+            first = oi.plan_menu(directory=folder)
+            again = oi.plan_menu(directory=folder)
+            self.assertEqual(first, again)
+            self.assertIn("fam_a: First title", first)
+            self.assertNotIn("no", first.split("fam_a")[0])
+            self.assertEqual(reads, ["a.json"])            # the second build read nothing
+            plan.write_text(json.dumps({"id": "fam_a", "title": "Second title, longer"}),
+                            "utf-8")
+            self.assertIn("fam_a: Second title", oi.plan_menu(directory=folder))
+            (folder / "b.json").write_text(json.dumps({"id": "fam_b", "title": "B"}), "utf-8")
+            self.assertIn("fam_b: B", oi.plan_menu(directory=folder))

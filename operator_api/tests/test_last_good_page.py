@@ -787,9 +787,10 @@ class FirstReadAnswersReading(LastGoodPage.__base__):
 
     def test_a_first_read_off_the_request_waits_the_backgrounds_time_for_the_access_state(self):
         """11-13 W7 (load 80-100): the access state not read within 3 s left most first
-        reads unkept, so the warm visit read every Today list again (21-26 s). A read
-        off the request waits BACKGROUND_READ_BUDGET times as long for it; a request's
-        own wait is unchanged."""
+        reads unkept, so the warm visit read every Today list again (21-26 s); with 12 s,
+        a reader's first policy decided cold (29 s) still left Home unkept and its next
+        visit read it again (109 s). A read off the request waits as long as a page read
+        may take for it; a request's own wait is unchanged."""
         from operator_api import serving
         waits = []
         real = self.backend._access_result
@@ -800,7 +801,8 @@ class FirstReadAnswersReading(LastGoodPage.__base__):
         hold.set()
         self.wait_over()
         background = [w for w in waits if w > be.ACCESS_WAIT_SECONDS]
-        self.assertEqual(background, [be.ACCESS_WAIT_SECONDS * serving.BACKGROUND_READ_BUDGET] * 2)
+        self.assertEqual(background, [max(be.ACCESS_WAIT_SECONDS * serving.BACKGROUND_READ_BUDGET,
+                                          be.PAGE_TIMEOUT_SECONDS)] * 2)
         waits.clear()
         self.backend._access_now(reader("grp-a"))
         self.assertEqual(waits, [be.ACCESS_WAIT_SECONDS])

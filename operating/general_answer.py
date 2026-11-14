@@ -401,13 +401,15 @@ MODES = ("general", "mixed", "fallback")
 
 
 def prompt(question: str, earlier: Sequence[str] = (), mode: str = "general",
-           attachments: Sequence[Any] = ()) -> str:
-    from operating.prose_style import PROSE_STYLE_RULE
+           attachments: Sequence[Any] = (), person: Optional[str] = None) -> str:
+    """``person``: the asker's address; a draft is sent as them, so their learned style
+    (``prose_style.style_rule``) is in the prompt beside the house style."""
+    from operating.prose_style import style_rule
     extra = {"mixed": MIXED_RULE, "fallback": FALLBACK_RULE}.get(mode, "")
     if attachments:
         from operating.ask_attachments import prompt_block
         extra = ATTACHMENT_RULE
-    said = RULE.format(mixed=extra, style=PROSE_STYLE_RULE,
+    said = RULE.format(mixed=extra, style=style_rule(person, draft=True),
                        earlier=json.dumps(list(earlier)[-3:], ensure_ascii=False),
                        question=question)
     if attachments:
@@ -512,8 +514,8 @@ def drafts_of(said: str, question: str, earlier: Sequence[str] = (),
 
 def answer(question: str, earlier: Sequence[str] = (), *, mode: str = "general",
            call: Optional[Callable[..., Optional[str]]] = None,
-           cited: Sequence[str] = (), attachments: Sequence[Any] = ()
-           ) -> Optional[GeneralAnswer]:
+           cited: Sequence[str] = (), attachments: Sequence[Any] = (),
+           person: Optional[str] = None) -> Optional[GeneralAnswer]:
     """The general part of ``question`` (module doc) in ``mode`` (``MODES``: a general
     question, the general part of a mixed one, or help beside a company answer the records
     could not give in full), screened, its drafts apart; None when the model gave nothing
@@ -522,7 +524,8 @@ def answer(question: str, earlier: Sequence[str] = (), *, mode: str = "general",
     read): the model reads them too, and what they say counts as given, as the
     question's own words do."""
     started = time.monotonic()
-    text = prompt(question, earlier, mode if mode in MODES else "general", attachments)
+    text = prompt(question, earlier, mode if mode in MODES else "general", attachments,
+                  person=person)
     images = [{"media_type": a.media_type, "data": a.image} for a in attachments
               if getattr(a, "image", None)]
     said = (call or claude_call)(text, images=images) if images else \
@@ -537,6 +540,16 @@ def answer(question: str, earlier: Sequence[str] = (), *, mode: str = "general",
         said = cut[:max(cut.rfind(". "), cut.rfind("\n"), 0) + 1].strip() or cut
     said, drafts, removed = drafts_of(said, question, earlier, cited)
     text, more = screen(said, question, earlier, cited=cited, quoted=quoted)
+    # written as a person would (``operating.humanize``): a change is kept only when every
+    # fact stays and the same screen removes nothing from it
+    from operating import humanize
+    text = humanize.polish(text, kind="answer", verify=lambda t: not screen(
+        t, question, earlier, cited=cited, quoted=quoted)[1]).text
+    # an email draft only: an action's "Label: value" lines are data, never reworded
+    drafts = [Draft(d.kind, d.subject, humanize.polish(
+        d.body, kind="draft", person=person,
+        verify=lambda t: not screen(t, question, earlier, strict=True, cited=cited)[1]).text)
+        if d.kind == "email" else d for d in drafts]
     if not text.strip() and not drafts:
         return None
     if not text.strip():

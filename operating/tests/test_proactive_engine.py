@@ -380,7 +380,8 @@ class DetectorTest(Engine):
         self.assertEqual(summary["po_lateness"], {
             "pos": 16, "classes": {"open": 9, "closed": 4, "draft": 1, "unknown": 2},
             "evaluated": 6, "late": 4, "at_risk": 1, "unconfirmed": 2, "undated": 1,
-            "historic": 0, "open_by_read": 9, "open_other": 4})
+            "historic": 0, "open_by_read": 9, "open_other": 4,
+            "received_header_open": 0, "received_without_receipt": 0})
         self.assertEqual(summary["not_evaluated"]["po_receipt_quantity_mismatch"],
                          {"receipt_link_unsettled": 1, "sources_unreconciled": 1,
                           "unit_differs": 1})
@@ -959,6 +960,63 @@ class InboxTest(Engine):
         self.assertEqual(side["detectors"], serial["detectors"])
         self.assertEqual(free.held, 0)
 
+    def test_the_memory_gate_counts_what_the_host_has_left(self):
+        """The 11-12/13 kills were the host's OOM killer, no unit at its MemoryMax: a run
+        whose own cgroup is far under its limit starts no detector beside a running one
+        once the host has little left, runs side by side when it has room, and keeps
+        its cgroup's limit when the host figure cannot be read."""
+        import tempfile
+        gib = 1 << 30
+        with tempfile.TemporaryDirectory() as tmp:
+            cg = Path(tmp) / "cg"
+            cg.mkdir()
+            (cg / "memory.current").write_text(str(5 * gib))
+            (cg / "memory.stat").write_text("anon 1\nfile 0\nshmem 0\n")
+            (cg / "memory.high").write_text(str(15 * gib))
+            (cg / "memory.max").write_text(str(16 * gib))
+            meminfo = Path(tmp) / "meminfo"
+
+            def gate(available_kb):
+                if available_kb is None:
+                    meminfo.write_text("MemTotal: 64000000 kB\n")
+                else:
+                    meminfo.write_text(f"MemTotal: 64000000 kB\nMemAvailable: "
+                                       f"{available_kb} kB\n")
+                with mock.patch.object(pe, "_own_cgroup", lambda: str(cg)):
+                    made = pe._MemoryGate.for_process({})
+                made.poll = 0.005
+                return made
+            hold = mock.patch.object(pe, "HOST_MEMINFO", str(meminfo))
+            hold.start()
+            self.addCleanup(hold.stop)
+            # 5 GB used of a 15 GB limit, 2 GB left on the host: one at a time
+            low = gate(2 * 1024 * 1024)
+            self.assertTrue(low.over())
+            self.assertEqual(low.limit(), 7 * gib)
+            # 30 GB left: the cgroup's own limit (15 GB) is the lower one
+            roomy = gate(30 * 1024 * 1024)
+            self.assertFalse(roomy.over())
+            self.assertEqual(roomy.limit(), 15 * gib)
+            # no MemAvailable line: the cgroup's limit, as before
+            self.assertEqual(gate(None).limit(), 15 * gib)
+            # every task still runs on a starved host, one at a time (N = 1, 10, 60)
+            import threading
+            for n in (1, 10, 60):
+                starved, done = gate(1024 * 1024), []
+
+                def task(i, g=starved):
+                    g.enter()
+                    try:
+                        done.append(i)
+                    finally:
+                        g.leave()
+                workers = [threading.Thread(target=task, args=(i,)) for i in range(n)]
+                for w in workers:
+                    w.start()
+                for w in workers:
+                    w.join(60)
+                self.assertEqual((sorted(done), starved.most), (list(range(n)), 1))
+
     def test_the_memory_gate_admits_every_task_and_fails_closed(self):
         import threading
 
@@ -1188,8 +1246,10 @@ class InboxTest(Engine):
             asked.extend(("many", tool, a["object_id"]) for a in arguments)
             return [{"object": {"object_id": "SupplierInvoice:a"}, "conflicts": []},
                     proactive_pool.NOT_READ]
-        serial = pe._card_rules(St, AS_OF, call, 5)
-        pooled = pe._card_rules(St, AS_OF, call, 5, many)
+        with mock.patch.object(pe.pg, "card_candidates",
+                               lambda _conn, _as_of: {"SupplierInvoice:a", "SupplierInvoice:b"}):
+            serial = pe._card_rules(St, AS_OF, call, 5)
+            pooled = pe._card_rules(St, AS_OF, call, 5, many)
         self.assertEqual([a[1:] for a in asked if a[0] == "call"],
                          [a[1:] for a in asked if a[0] == "many"])
         self.assertEqual(serial["status"], "complete")
@@ -1235,7 +1295,9 @@ class InboxTest(Engine):
                                            {"value": None,
                                             "citation": {"l1_handle": f"rec#{record}"}}]}]}
                 with mock.patch.object(pe.pg, "_roster",
-                                       lambda: ([("AssemblyOrderPacket", "f")], None)):
+                                       lambda: ([("AssemblyOrderPacket", "f")], None)), \
+                        mock.patch.object(pe.pg, "card_candidates",
+                                          lambda _conn, _as_of: set(packets)):
                     result = pe._card_rules(St, AS_OF, call, len(packets))
                 gaps = result["gaps"]
                 self.assertEqual(len(gaps), n)
@@ -1254,6 +1316,59 @@ class InboxTest(Engine):
                 self.assertEqual(left, set(order_of.values()) - set(closed))
                 self.assertEqual(results["card_rules"]["not_evaluated"]["closed_order"],
                                  len(closed))
+
+    def test_the_cards_read_are_every_document_a_rule_could_flag_and_no_other(self):
+        """AL-04: ``card_rules`` reads the cards of the documents ``card_candidates`` keeps,
+        a set-based superset of what ``_detect`` can raise on (a stated value against an
+        empty record read; two numbers of one quantity, unit and role; a quote past its
+        validity), never the newest ``CARD_BOUND`` of every document. Each kept or dropped
+        document below is one way a card can or cannot raise a gap."""
+        w = World()
+        keep, drop = set(), set()
+
+        def packet(planned, record_values, *, link=True):
+            doc = w.obj("AssemblyOrderPacket", {"planned_quantity": planned}
+                        if planned is not None else {})
+            if link:
+                ao = w.obj("AssemblyOrder", record_values)
+                w.link("AssemblyOrderPacket.packet_of", doc, ao)
+            return doc
+        # two numbers of one quantity in one unit and role: a conflict
+        keep.add(packet(("10", "each"), {"expected_quantity": ("12", "each")}))
+        # the same number written two ways, or in two units: never one group of two numbers
+        drop.add(packet(("10", "each"), {"expected_quantity": ("10.0", "each")}))
+        drop.add(packet(("10", "each"), {"expected_quantity": ("12", "kg")}))
+        # two roles are two quantities
+        drop.add(packet(("10", "each", "ordered"), {"expected_quantity": ("12", "each",
+                                                                          "produced")}))
+        # a stated value against an empty record read: a missing-field lead
+        keep.add(packet(("10", "each"), {"expected_quantity": None}))
+        # the field not stated at all, or no record attested: nothing to compare
+        drop.add(packet(None, {"expected_quantity": ("12", "each")}))
+        drop.add(packet(("10", "each"), {}, link=False))
+        # a path rule (packet -> allocation -> sales order line -> sales order): a stated
+        # customer PO the order holds empty
+        doc = w.obj("AssemblyOrderPacket", {"customer_po": "PO-1"})
+        ao, alloc = w.obj("AssemblyOrder", {}), w.obj("AssemblyOrderAllocation", {})
+        line, so = w.obj("SalesOrderLine", {}), w.obj("SalesOrder", {"customer_po": None})
+        w.link("AssemblyOrderPacket.packet_of", doc, ao)
+        w.link("AssemblyOrderAllocation.allocates", alloc, ao)
+        w.link("AssemblyOrderAllocation.for_order_line", alloc, line)
+        w.link("SalesOrderLine.line_of", line, so)
+        keep.add(doc)
+        # a quote document past its validity, and one still valid
+        keep.add(w.obj("ForwarderQuote", {"valid_until": "2026-09-01"}))
+        drop.add(w.obj("ForwarderQuote", {"valid_until": "2027-01-01"}))
+        w.build(self.store)
+        st = pe._Store(self.store)
+        try:
+            found = pe.pg.card_candidates(st.conn, AS_OF)
+            listed = pe._card_documents(st, AS_OF, 100)
+            self.assertEqual(found & (keep | drop), keep)
+            self.assertEqual(set(listed), keep)
+            self.assertEqual(pe._card_documents(st, AS_OF, 2), listed[:2])
+        finally:
+            st.close()
 
     def test_a_missing_field_note_on_an_order_never_displaces_its_late_item(self):
         """The note carried the order on the inbox's one-item-per-
@@ -1478,7 +1593,8 @@ class PermissionTest(Engine):
         world = World()
         doc = world.obj("CustomerPoDocument", {"po_number": "SYNTH-PO-1"},
                         audience="sharepoint:b")
-        order = world.obj("SalesOrder", {"customer_po": ""}, audience="api:a")
+        order = world.obj("SalesOrder", {"customer_po": None}, audience="api:a")
+        world.link("CustomerPoDocument.for_sales_order", doc, order)
         stated, empty = handle(1), handle(2)
 
         def card(_tool, arguments):
@@ -1580,7 +1696,9 @@ class PoLatenessTest(Engine):
         self.assertEqual(summary["po_lateness"], {
             "pos": 4, "classes": {"open": 3, "closed": 1, "draft": 0, "unknown": 0},
             "evaluated": 3, "late": 1, "at_risk": 1, "unconfirmed": 0, "undated": 0,
-            "historic": 0, "open_by_read": 3, "open_other": 2})
+            "historic": 0, "open_by_read": 3, "open_other": 2,
+            # the received notes doubted by alerts-fix-1113 (f3312de714): none here
+            "received_header_open": 0, "received_without_receipt": 0})
 
     def test_complete_closes_with_its_remainder_cancelled_and_sage_only_is_not_open(self):
         # Ross: a Complete header is closed whatever was received, the

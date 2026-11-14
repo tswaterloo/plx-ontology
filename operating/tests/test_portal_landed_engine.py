@@ -149,8 +149,18 @@ class GoldenFunctionsTest(unittest.TestCase):
             self.assertEqual(lc.js_number(text), expected, text)
 
 
+def _node() -> str | None:
+    """The host's pinned Node (``PLX_NODE``, deploy/lib.sh: /data/tools/node), else PATH's:
+    the lander's PATH (/data/venv/bin:/usr/bin:/bin) finds the distro's Node 18 first, which
+    skipped every harness run here as "no Node 22.6"."""
+    for home in (os.environ.get("PLX_NODE"), "/data/tools/node"):
+        if home and Path(home, "bin", "node").is_file():
+            return str(Path(home, "bin", "node"))
+    return shutil.which("node")
+
+
 def _node_version() -> tuple[int, ...] | None:
-    node = shutil.which("node")
+    node = _node()
     if not node:
         return None
     try:
@@ -255,7 +265,7 @@ class GoldenEngineTest(unittest.TestCase):
         env = {"PATH": os.environ.get("PATH", ""), "TZ": "UTC", "PORTAL_SRC": str(src),
                "PORTAL_COMMIT": GOLDEN["portal_commit"]}
         out = subprocess.run(
-            ["node", "--experimental-transform-types", "--no-warnings", "--import",
+            [_node(), "--experimental-transform-types", "--no-warnings", "--import",
              "./register.mjs", "run.mjs", str(FIXTURES / "portal_landed_quote_scenarios.json")],
             cwd=HARNESS, env=env, capture_output=True, text=True, timeout=120, check=True)
         self.assertEqual(json.loads(out.stdout), GOLDEN)
@@ -380,7 +390,7 @@ class LabourGoldenTest(unittest.TestCase):
                "PORTAL_SRC": str(PORTAL / "portal/src"),
                "PORTAL_COMMIT": LABOUR_GOLDEN["portal_commit"]}
         out = subprocess.run(
-            ["node", "--experimental-transform-types", "--no-warnings", "--import",
+            [_node(), "--experimental-transform-types", "--no-warnings", "--import",
              "./register.mjs", "labour.mjs", str(FIXTURES / "landed_labour_scenarios.json")],
             cwd=HARNESS, env=env, capture_output=True, text=True, timeout=120, check=True)
         self.assertEqual(json.loads(out.stdout), LABOUR_GOLDEN)
@@ -1071,7 +1081,7 @@ class GoldenPalletTest(unittest.TestCase):
                "PORTAL_SRC": str(PORTAL / "portal/src"),
                "PORTAL_COMMIT": PALLET_GOLDEN["portal_commit"]}
         out = subprocess.run(
-            ["node", "--experimental-transform-types", "--no-warnings", "--import",
+            [_node(), "--experimental-transform-types", "--no-warnings", "--import",
              "./register.mjs", "pallet.mjs", str(FIXTURES / "pallet_build_scenarios.json")],
             cwd=HARNESS, env=env, capture_output=True, text=True, timeout=120, check=True)
         self.assertEqual(json.loads(out.stdout), PALLET_GOLDEN)

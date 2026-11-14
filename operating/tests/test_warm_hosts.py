@@ -56,6 +56,20 @@ class WarmHostTests(unittest.TestCase):
         spare.child.wait(10)
         return json.loads(line)
 
+    def test_a_spare_above_the_rss_cap_is_stopped_never_taken(self):
+        grown = runner.HostSpares(most=2, rss_cap_mb=100.0, rss=lambda pid: 500.0)
+        self.addCleanup(grown.close)
+        grown.start_warm("k", 1, self.command, self.env, str(REPO), TICKET_ENV)
+        child = grown._held[runner._warm_key("k", 0)].child
+        self.assertIsNone(grown.take_warm("k"))        # GA-F10: over the cap
+        self.assertIsNotNone(child.wait(10))           # stopped, not left running
+        small = runner.HostSpares(most=2, rss_cap_mb=100.0, rss=lambda pid: 50.0)
+        self.addCleanup(small.close)
+        small.start_warm("k", 1, self.command, self.env, str(REPO), TICKET_ENV)
+        taken = small.take_warm("k")
+        self.assertIsNotNone(taken)
+        taken.stop()
+
     def test_each_warm_host_serves_only_the_one_reader_bound_to_it(self):
         self.spares.start_warm("k", 2, self.command, self.env, str(REPO), TICKET_ENV)
         first, second = self.spares.take_warm("k"), self.spares.take_warm("k")

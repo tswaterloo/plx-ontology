@@ -46,6 +46,7 @@ from operating import instruct_files as files
 
 from . import doc_fill_api as dfa
 from . import doc_style_api as dsa
+from . import entry_create_api as ec
 from . import instruct_assist as ia
 from . import models as m
 from .ask_drafts import CARD_PREFIX, draft_card
@@ -104,6 +105,13 @@ def _sender_of(fields: Mapping[str, str]) -> Optional[str]:
             if found:
                 return found.group(0).lower()
     return None
+
+
+def _person(reader: Any) -> Optional[str]:
+    """The address a reader's drafts are sent as (their learned style's key), else None."""
+    email = getattr(reader, "email", None) or getattr(
+        getattr(reader, "session", None), "email", None)
+    return email.strip().lower() if isinstance(email, str) and "@" in email else None
 
 
 class InstructMixin(ia.InstructAssistMixin):
@@ -436,6 +444,14 @@ class InstructMixin(ia.InstructAssistMixin):
                 answers.append(ins.clean_text(request.instruction.answer))
             conversation = kept.get("conversation_id") or conversation
             files = [f for f in earlier.get("files") or () if isinstance(f, dict)]
+        create = ec.create_kind(text) if request.instruction is None else None
+        if create is not None:
+            # a record to create, pre-filled from the records, no model (``entry_create_api``)
+            yield "status", m.StatusEvent(step="reading", message="Pre-filling it",
+                                          elapsed_ms=ms())
+            yield from self._said(self.create_answer(  # type: ignore[attr-defined]
+                reader, request, text, context, conversation, create, ms()))
+            return
         if request.instruction is None and request.attachments and dfa.fill_intent(text):
             form = dfa.first_form(request.attachments)
             if form is not None:
@@ -446,6 +462,13 @@ class InstructMixin(ia.InstructAssistMixin):
                     reader, request, text, context, conversation, form, ms()))
                 return
         if request.instruction is None and not request.attachments:
+            # "use my quote template for SO 1234": a saved template filled from the record,
+            # no model (``templates_api``); no template by that name or type: worked below
+            made = self.template_answer(  # type: ignore[attr-defined]
+                reader, text, context, conversation, ms())
+            if made is not None:
+                yield from self._said(made)
+                return
             try:
                 styled = dsa.style_request(text)
             except Exception:  # noqa: BLE001 - kinds unreadable: answered below as asked
@@ -500,7 +523,8 @@ class InstructMixin(ia.InstructAssistMixin):
         said_prompt = ins.prompt(text, got["materials"], got["candidates"],
                                  who=reader.display_name,
                                  page=str(context.get("page") or context.get("kind")),
-                                 answers=answers, targets=targets, folders=folders)
+                                 answers=answers, targets=targets, folders=folders,
+                                 person=_person(reader))
         images = [{"media_type": a.media_type, "data": a.image} for a in attached
                   if a.image]
         yield "status", m.StatusEvent(step="answering", message="Drafting", elapsed_ms=ms())
@@ -512,6 +536,7 @@ class InstructMixin(ia.InstructAssistMixin):
         if outcome is None:
             raise _refuse("no_draft")
         outcome = ins.ground_outcome(outcome, ins.given_text(text, got["materials"], answers))
+        outcome = ins.humanized(outcome, person=_person(reader))
         aim = ia.settle(pending, aim) if outcome.status != "question" else aim
         yield from self._said(self._answer(
             reader, guard, aim=aim, text=text, context=context, answers=answers,

@@ -7,6 +7,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import unittest
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,10 +15,10 @@ NODE_DIRS = ("/data/tools/node-v22.23.4-linux-x64/bin", "/data/tools/node/bin")
 
 
 def _node() -> str | None:
-    found = shutil.which("node")
-    if found:
-        return found
-    return next((str(Path(d) / "node") for d in NODE_DIRS if (Path(d) / "node").exists()), None)
+    """The host's pinned Node first (PATH's is the distro's Node 18 under the lander)."""
+    dirs = ((f"{os.environ['PLX_NODE']}/bin",) if os.environ.get("PLX_NODE") else ()) + NODE_DIRS
+    found = next((str(Path(d) / "node") for d in dirs if (Path(d) / "node").exists()), None)
+    return found or shutil.which("node")
 
 
 class DesktopPolicy(unittest.TestCase):

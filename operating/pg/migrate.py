@@ -7,6 +7,9 @@ and check refuse it instead of silently diverging.
 
 Template parameters: ``{{embed_dim}}`` (an int) and ``{{embed_model}}`` (a quoted SQL
 literal), from ``operating/pg/config.py``. Any other ``{{...}}`` fails closed.
+
+Another database's migrations (the job queue's ``operating/jobq/migrations``) use the same
+runner with their own ``directory``, ledger schema and lock key.
 """
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ from typing import Any
 
 import psycopg
 from psycopg import sql
+from psycopg.rows import tuple_row
 
 from operating.pg import config
 
@@ -26,16 +30,21 @@ _NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 _PLACEHOLDER = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 LOCK_KEY = 0x504C58_5047  # "PLXPG": one migrate at a time per database
 
+LEDGER = "plx_meta"
 _META_DDL = """
-CREATE SCHEMA IF NOT EXISTS plx_meta;
-CREATE TABLE IF NOT EXISTS plx_meta.migrations (
+CREATE SCHEMA IF NOT EXISTS {schema};
+CREATE TABLE IF NOT EXISTS {schema}.migrations (
     version    integer PRIMARY KEY,
     name       text NOT NULL,
     sha256     text NOT NULL,
-    params     jsonb NOT NULL DEFAULT '{}',
+    params     jsonb NOT NULL DEFAULT '{{}}',
     applied_at timestamptz NOT NULL DEFAULT now()
 );
 """
+
+
+def _meta_ddl(ledger: str) -> sql.Composed:
+    return sql.SQL(_META_DDL).format(schema=sql.Identifier(ledger))
 
 
 class MigrationError(RuntimeError):
@@ -85,19 +94,21 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def applied(conn: psycopg.Connection) -> dict[int, dict[str, Any]]:
-    row = conn.execute("SELECT to_regclass('plx_meta.migrations')").fetchone()
+def applied(conn: psycopg.Connection, ledger: str = LEDGER) -> dict[int, dict[str, Any]]:
+    cur = conn.cursor(row_factory=tuple_row)
+    row = cur.execute("SELECT to_regclass(%s)", (f'"{ledger}".migrations',)).fetchone()
     if row[0] is None:
         return {}
     return {v: {"name": n, "sha256": s, "params": p, "applied_at": a}
-            for v, n, s, p, a in conn.execute(
-                "SELECT version, name, sha256, params, applied_at FROM plx_meta.migrations "
-                "ORDER BY version")}
+            for v, n, s, p, a in cur.execute(
+                sql.SQL("SELECT version, name, sha256, params, applied_at FROM {}.migrations "
+                        "ORDER BY version").format(sql.Identifier(ledger))).fetchall()}
 
 
-def status(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -> dict[str, Any]:
+def status(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR,
+           ledger: str = LEDGER) -> dict[str, Any]:
     with conn.transaction():  # read-only; leaves the connection as it found it
-        done = applied(conn)
+        done = applied(conn, ledger)
     files = migration_files(directory)
     drift = [name for version, name, path in files
              if version in done and done[version]["sha256"] != _sha(path.read_text("utf-8"))]
@@ -111,28 +122,32 @@ def status(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -> dict[s
 
 
 def migrate(conn: psycopg.Connection, *, values: dict[str, Any] | None = None,
-            directory: Path = MIGRATIONS_DIR) -> list[str]:
+            directory: Path = MIGRATIONS_DIR, ledger: str = LEDGER,
+            lock_key: int = LOCK_KEY) -> list[str]:
     """Apply every pending migration in order; return the names applied (empty when the
-    database is current). Idempotent; refuses drift."""
-    values = values or params()
+    database is current). Idempotent; refuses drift. ``ledger`` is the schema holding the
+    ``migrations`` record; ``values`` defaults to the embedding parameters (``{}`` for a
+    directory whose templates take none)."""
+    values = params() if values is None else values
     ran: list[str] = []
     if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
         raise MigrationError("migrate_needs_idle_connection")
+    cur = conn.cursor(row_factory=tuple_row)   # whatever row factory the connection has
     for version, name, path in migration_files(directory):
         template = path.read_text("utf-8")
         with conn.transaction():
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (LOCK_KEY,))
-            conn.execute(_META_DDL)
-            row = conn.execute("SELECT sha256 FROM plx_meta.migrations WHERE version = %s",
-                               (version,)).fetchone()
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (lock_key,))
+            cur.execute(_meta_ddl(ledger))
+            row = cur.execute(sql.SQL("SELECT sha256 FROM {}.migrations WHERE version = %s")
+                              .format(sql.Identifier(ledger)), (version,)).fetchone()
             if row is not None:
                 if row[0] != _sha(template):
                     raise MigrationError(f"migration_drift:{name}")
                 continue
-            conn.execute(render(template, values))
-            conn.execute(
-                "INSERT INTO plx_meta.migrations (version, name, sha256, params) "
-                "VALUES (%s, %s, %s, %s)",
+            cur.execute(render(template, values))
+            cur.execute(
+                sql.SQL("INSERT INTO {}.migrations (version, name, sha256, params) "
+                        "VALUES (%s, %s, %s, %s)").format(sql.Identifier(ledger)),
                 (version, name, _sha(template), json.dumps(values, sort_keys=True)))
             ran.append(name)
     return ran

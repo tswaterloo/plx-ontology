@@ -526,6 +526,41 @@ class Commitments(Engine):
                              decide=admit, routing=briefing.Routing(everything=True))
         self.assertIn(pcm.NEEDS_MY_REPLY, [i["event_type"] for i in mine["items"]])
 
+    def test_an_inbound_question_naming_no_order_is_judged_from_recent_mail(self):
+        w = RecentWorld()
+        customer(w)
+        ask = "Hi, could you tell me when the samples will arrive?"
+        waiting = sent(w, day(9), sender="buyer@synth-stranger.example", to=(OURS,), body=ask,
+                       conversation="q-1", n=1)
+        sent(w, day(9), sender="buyer@synth-stranger.example", to=(OURS,), body=ask,
+             conversation="q-2", n=2)                             # answered below
+        sent(w, day(8), sender=OURS, to=("buyer@synth-stranger.example",),
+             body="They arrive next week.", conversation="q-2", n=3)   # a reply to no customer
+        sent(w, day(9), sender="no-reply@synth-stranger.example", to=(OURS,), body=ask,
+             conversation="q-3", n=4)                             # automated: skipped
+        sent(w, AS_OF, sender="buyer@synth-stranger.example", to=(OURS,), body=ask,
+             conversation="q-4", n=5)                             # not waiting yet
+        sent(w, day(9), sender="buyer@synth-stranger.example", to=("other@synth-tenant.example",),
+             body=ask, conversation="q-5", mailbox=OURS_OID, n=6)   # not to the owner
+        sent(w, day(9), sender="buyer@synth-stranger.example", to=(OURS,), body=ask,
+             conversation="q-6", mailbox=EXCLUDED_OID, n=7)       # an excluded mailbox
+        sent(w, day(9), sender="buyer@synth-stranger.example", to=(OURS,),
+             body="Thanks, received.", conversation="q-7", n=8)   # asks nothing
+        summary = self.run_rules(w)
+        self.assertEqual(summary["detectors"][pcm.NEEDS_REPLY], "complete")
+        gaps = self.kinds(pcm.NEEDS_MY_REPLY, reader=OWNER)
+        self.assertEqual([g["object_id"] for g in gaps], [waiting])
+        gap = gaps[0]
+        self.assertEqual(gap["follow_up"]["priority"], "low")
+        self.assertEqual(gap["event"]["orders_affected"], 0)
+        self.assertNotIn("open order", gap["follow_up"]["why"])
+        self.assertNotRegex(gap["summary"], r"SYNTH|SO-|\border\b")
+        self.assertNotIn("samples will arrive", json.dumps(gap))
+        # the owner's alone, as the order-bound ones are
+        self.assertEqual(self.kinds(pcm.NEEDS_MY_REPLY, reader=OTHER_EMPLOYEE), [])
+        # the commitments rule does not read them as promises
+        self.assertEqual(self.kinds(pcm.MISSED, pcm.DUE), [])
+
     def test_mail_whose_owner_or_recipients_are_not_known_fails_closed(self):
         w = World()
         so = order(w, customer(w), (AS_OF + timedelta(days=30)).isoformat())

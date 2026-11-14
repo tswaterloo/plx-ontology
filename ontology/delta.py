@@ -1832,9 +1832,19 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             report["mail_skipped"] = unavailable
         t = lap("discover", t)
         snapshot = [dict(layer) for layer in state.get("layers") or []]
-        if compact_only and (len(snapshot) < 2 or base.postgres):
-            report["layer"] = ("none: Postgres holds every layer" if base.postgres
-                               else "none: nothing to fold")
+        if compact_only and base.postgres:
+            # nothing to fold over Postgres: the fold lets go of the layers it holds
+            # (the count, size, age and byte-budget rules of a cycle), so the delta
+            # folder shrinks hourly even when no cycle publishes (GA-F5)
+            report["layer"] = "none: Postgres holds every layer"
+            try:
+                report["released"] = release_applied(state_dir, delta_dir, state, base,
+                                                     environ, report)
+            except Exception as exc:  # noqa: BLE001 - housekeeping: the fold never fails on it
+                report["released"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+            return report
+        if compact_only and len(snapshot) < 2:
+            report["layer"] = "none: nothing to fold"
             return report
         # A fold holds every change since the generation, the ones a cycle has not
         # published yet too (their layer may never come): it replaces the layers it read,
@@ -2061,7 +2071,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                      if post_project is None else post_project)
             built = project_layer(store, schema, sources, steps, work=work,
                                   delta_dir=delta_dir, normalizer=normalizer,
-                                  workers=workers, report=report)
+                                  workers=workers, report=report, environ=environ)
             report["projected"] = {k: built.get("counts", {}).get(k) for k in
                                    ("objects", "versions", "values", "links", "identifiers")}
             if documents is not None:
@@ -2198,6 +2208,21 @@ PG_KEPT_LAYERS = MAX_LAYERS - 1
 # a value that is no number): that kind of release is off, layers kept by count alone.
 RELEASE_BYTES = 1 << 30
 RELEASE_DAYS = 2.0
+# The bytes of applied layers kept on disk at most besides the newest
+# (``PLX_DELTA_KEEP_BYTES``; 0 or no number: no bound): past it the oldest applied layers
+# go even while a stalled reader holds them (GA-F5, 11-13: 23 layers, 23 GB, held by an
+# incremental proactive pass that had not run for 16 h; target 1-3 GB): a reader whose
+# last run is older than ``STALE_READER_HOURS`` holds none past the budget. Such a reader
+# skips a layer that went (``proactive_incremental`` reads a layer's owned ids and skips one
+# it cannot open; its whole pass judges those records); the report names the layers let go
+# and the stalled readers that held them (``over_budget``, ``over_budget_stalled``), and
+# those a running reader still holds (``over_budget_held``).
+KEEP_BYTES = 3 << 30
+# Past the budget a layer still goes only when every reader holding it is stalled: its
+# last run older than this (``PLX_DELTA_STALE_READER_HOURS``); a reader running now keeps
+# its layers whatever the budget (the search follower reads only the layers the pointer
+# lists, so a layer dropped before it took it in would never be indexed).
+STALE_READER_HOURS = 4.0
 # A reader whose last run is older than this is not following the layers: it holds none
 # (the count rule never waited for a stopped reader either: ``PG_KEPT_LAYERS`` cycles).
 READER_IDLE_HOURS = 24.0
@@ -2265,9 +2290,26 @@ def _release_rule(state_dir: Path, environ: Mapping[str, str], out: dict[str, An
     decided goes into ``out`` (released, and held with the readers holding them)."""
     big = _env_number(environ, "PLX_DELTA_RELEASE_BYTES", RELEASE_BYTES)
     days = _env_number(environ, "PLX_DELTA_RELEASE_DAYS", RELEASE_DAYS)
+    budget = _env_number(environ, "PLX_DELTA_KEEP_BYTES", KEEP_BYTES)
+    stale = _env_number(environ, "PLX_DELTA_STALE_READER_HOURS", STALE_READER_HOURS)
 
     def rule(applied: Sequence[str], layers: Sequence[Mapping[str, Any]]) -> set[str]:
         now = time.time()
+        over = _over_budget(applied, layers, budget)
+        if over:
+            running = layer_holders(state_dir, sorted(over), now=now,
+                                    idle_hours=stale if stale > 0 else READER_IDLE_HOURS)
+            anyone = layer_holders(state_dir, sorted(over), now=now)
+            held_over = {name: sorted(who) for name, who in running.items() if who}
+            stalled = {name: sorted(anyone[name] - running[name]) for name in over
+                       if anyone[name] - running[name]}
+            over = {name for name in over if name not in held_over}
+            if over:
+                out["over_budget"] = sorted(over)
+            if stalled:
+                out["over_budget_stalled"] = {n: w for n, w in stalled.items() if n in over}
+            if held_over:
+                out["over_budget_held"] = held_over
         due = []
         for item in layers:
             path = Path(item["store"])
@@ -2281,7 +2323,7 @@ def _release_rule(state_dir: Path, environ: Mapping[str, str], out: dict[str, An
                     (days > 0 and now - st.st_mtime >= days * 86400):
                 due.append(path.name)
         if not due:
-            return set()
+            return over
         holders = layer_holders(state_dir, due, now=now)
         held = {name: sorted(who) for name, who in holders.items() if who}
         free = {name for name in due if name not in held}
@@ -2289,9 +2331,70 @@ def _release_rule(state_dir: Path, environ: Mapping[str, str], out: dict[str, An
             out["layers"] = sorted(free)
         if held:
             out["held"] = held
-        return free
+        return free | over
 
     return rule
+
+
+def release_applied(state_dir: Path, delta_dir: Path, state: "State", base: "Base",
+                    environ: Mapping[str, str], report: dict[str, Any]) -> dict[str, Any]:
+    """Drop from the pointer the published layers Postgres holds that a cycle would drop
+    (:func:`_not_in_postgres` with :func:`_release_rule`), then prune their files; the
+    pointer is marked partial when any went (its newest layer and everything else it says
+    unchanged). Returns what was decided."""
+    released: dict[str, Any] = {}
+    with _locked(delta_dir / ".layers.lock"), state.transaction():
+        now = [dict(item) for item in state.get("layers") or []]
+        if not now:
+            return released
+        kept = _not_in_postgres(now, base.conn, keep=PG_KEPT_LAYERS,
+                                release=_release_rule(state_dir, environ, released))
+        if now[0] not in kept:   # the newest layer always stays served
+            kept.insert(0, dict(now[0]))
+        if len(kept) == len(now):
+            return released
+        # the published pointer as it is (its newest layer, times and counts), less the
+        # layers let go: nothing new is served, so nothing else of it changes
+        try:
+            body = json.loads((delta_dir / POINTER).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            body = None
+        if not isinstance(body, dict) or body.get("base_digest") != base.digest:
+            released["skipped"] = "pointer_unreadable"
+            return released
+        names = {item["store"] for item in kept}
+        body["layers"] = [item for item in body.get("layers") or [] if item.get("store") in names]
+        body["partial"] = True
+        _write_durable(delta_dir / POINTER, json.dumps(body, sort_keys=True))
+        state.put("layers", kept)
+        state.put("pointer_partial", True)
+    released["dropped"] = sorted(Path(item["store"]).name for item in now if item not in kept)
+    report["pruned"] = prune(delta_dir, keep={Path(item["store"]) for item in kept})
+    return released
+
+
+def _over_budget(applied: Sequence[str], layers: Sequence[Mapping[str, Any]],
+                 budget: float) -> set[str]:
+    """The applied layers (names) past ``budget`` bytes: ``layers`` newest first (the
+    cycle's new layer is not among them; the fold keeps its newest itself), applied ones
+    kept newest first while their sizes sum to at most ``budget``; the older applied ones
+    are over it. A layer not applied is never counted or let go; a size that cannot be
+    read counts as 0 (it is gone already)."""
+    if not budget or budget <= 0:
+        return set()
+    applied = set(applied)
+    total, over = 0, set()
+    for item in layers:
+        name = Path(item["store"]).name
+        if name not in applied:
+            continue
+        try:
+            total += Path(item["store"]).stat().st_size
+        except OSError:
+            continue
+        if total > budget:
+            over.add(name)
+    return over
 
 
 # The readers taking each layer in by name (beside the Postgres follower, whose applied
@@ -2383,8 +2486,8 @@ LAYER_READERS = (("search_follow", _search_taken), ("proactive_incremental", _pr
                  ("ai_watcher", _watcher_taken))
 
 
-def layer_holders(state_dir: Path, names: Iterable[str], *, now: float | None = None
-                  ) -> dict[str, set[str]]:
+def layer_holders(state_dir: Path, names: Iterable[str], *, now: float | None = None,
+                  idle_hours: float = READER_IDLE_HOURS) -> dict[str, set[str]]:
     """For each layer name, the readers still holding it: a reader set up and following
     (a run within ``READER_IDLE_HOURS``, or no run yet) that has not taken it in, or whose
     state is unreadable (it holds every layer: fail closed)."""
@@ -2403,7 +2506,7 @@ def layer_holders(state_dir: Path, names: Iterable[str], *, now: float | None = 
                 out[name].add(reader)
             continue
         last, taken = found
-        if last is not None and now - last > READER_IDLE_HOURS * 3600:
+        if last is not None and now - last > idle_hours * 3600:
             continue   # stopped: not following the layers
         for name in names:
             if name not in taken:
@@ -2666,9 +2769,31 @@ def held_documents(log: Path, state: Path, owned: Mapping[str, Iterable[Any]],
     return held, timed
 
 
+# The memory a cycle's projection workers may take together (``PLX_DELTA_MEMORY_BYTES``;
+# 0 or no number: no bound) and what one worker peaks at: measured 11-13, 14 workers
+# peaked at 9.7 GB together (~0.7 GB each) against a 2-4 GB target (GA-F5). The worker
+# count is cut to fit (at least one); the cycle reports the bound it ran under.
+DELTA_MEMORY_BYTES = 4 << 30
+WORKER_PEAK_BYTES = 700 << 20
+
+
+def memory_workers(count: int, environ: Mapping[str, str], report: dict[str, Any]) -> int:
+    """``count`` workers cut to what ``PLX_DELTA_MEMORY_BYTES`` holds at
+    :data:`WORKER_PEAK_BYTES` each (at least one)."""
+    budget = _env_number(environ, "PLX_DELTA_MEMORY_BYTES", DELTA_MEMORY_BYTES)
+    if not budget or budget <= 0:
+        return count
+    fits = max(1, int(budget // WORKER_PEAK_BYTES))
+    if fits < count:
+        report["workers_memory_bound"] = {"asked": count, "budget_bytes": int(budget),
+                                          "workers": fits}
+    return min(count, fits)
+
+
 def project_layer(store: Path, schema: Any, sources: Mapping[str, Any], steps: Any, *,
                   work: Path, delta_dir: Path, normalizer: Any, workers: int | None,
-                  report: dict[str, Any]) -> dict[str, Any]:
+                  report: dict[str, Any],
+                  environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Project the copied records into ``store`` with the one projector: a cold
     ``build_generation`` in a scratch state directory, projected and its build steps run
     by worker processes (``ontology.project_parallel``, ``finish_parallel``), reading
@@ -2678,7 +2803,9 @@ def project_layer(store: Path, schema: Any, sources: Mapping[str, Any], steps: A
     from ontology.project_incremental import build_generation
     from ontology.project_parallel import workers as worker_count
 
-    count = worker_count(workers)
+    # an explicit --workers is taken as asked; the configured count fits the memory bound
+    count = worker_count(workers) if workers is not None else memory_workers(
+        worker_count(None), os.environ if environ is None else environ, report)
     report["workers"] = count
     if count < 2:
         with kept(delta_dir, []):
@@ -3056,8 +3183,10 @@ def prune(delta_dir: Path, keep: set[Path], *, grace: float = 900.0) -> dict[str
         if path.resolve() in keep or path.name in (POINTER, "state.sqlite", "state.sqlite-wal",
                                          "state.sqlite-shm", "cycles.jsonl"):
             continue
+        stamp = path.name[len("delta-"):-len(".sqlite")]
         if path.name.startswith("delta-") and path.is_file() and \
-                now - path.stat().st_mtime > grace:
+                now - path.stat().st_mtime > grace and \
+                not (delta_dir / f"work-{stamp}").is_dir():   # its cycle still running
             if held is None:
                 held = open_files() or set()
             if path.resolve() in held:
@@ -3334,7 +3463,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "started_at", "layer", "changed", "new_changes", "records", "owned",
                         "projected", "seconds", "mail_skipped", "closure", "postgres",
                         "documents", "swept", "status", "resumed", "resumed_since",
-                        "preflight", "followed", "deferred", "held_queue")}
+                        "preflight", "followed", "deferred", "held_queue", "released",
+                        "workers_memory_bound", "pruned")}
                     line["command"] = args.command
                     if report.get("status") == "preflight_refused":   # the unit fails: seen
                         line["error"] = "preflight_refused: " + json.dumps(

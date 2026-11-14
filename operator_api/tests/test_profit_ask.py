@@ -349,6 +349,30 @@ class ProfitAskTests(unittest.TestCase):
         _names, answer = self.ask(View(self), "Is the northwind test foods inc. profitable?")
         self.assertEqual(answer["profitability"]["customer"]["label"], "Northwind Test Foods")
 
+    def test_a_candidate_whose_display_is_the_name_is_picked_without_reading_its_card(self):
+        """The exact-name check reads a candidate's card (name and number) only when its
+        display name does not already hold the asked name (6 cards one by one: 18 s of a
+        cold margin Ask); a fuzzy match is still read and still only offered."""
+        view = View(self)
+        cards = []
+        real = view._call
+
+        def call(name, arguments):
+            if name == "plx.object" and arguments.get("properties") == ["name", "erp_code"]:
+                cards.append(arguments["object_id"])
+            return real(name, arguments)
+        view._call = call
+        _names, answer = self.ask(view, "Is the northwind test foods inc. profitable?")
+        self.assertEqual(answer["profitability"]["customer"]["label"], "Northwind Test Foods")
+        self.assertEqual(cards, [])
+        view = View(self)
+        cards.clear()
+        real = view._call
+        view._call = call
+        _names, answer = self.ask(view, "Is Northwind profitable?")
+        self.assertIsNone(answer["profitability"])   # offered, never picked
+        self.assertTrue(cards)                         # its card was read to decide
+
     def test_a_name_holding_filler_words_is_picked_as_written_whole(self):
         """A customer whose name holds words the question's filler drops ("of"): the name
         as written after "on" is its exact name, so it is picked, not offered as a choice."""

@@ -179,6 +179,10 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                             "label": "Approval waiting for a decision",
                             "departments": ("OPS", "FIN", "PROC"),
                             "check": ("mc_approval_pending",)},
+    "portal_approval_pending": {"kinds": ("portal_approval_pending",),
+                                "label": "Requisition waiting for approval",
+                                "departments": ("OPS", "FIN", "PROC"),
+                                "check": ("portal_approval_pending",)},
     "planner_task_overdue": {"kinds": ("planner_task_overdue",),
                              "label": "Planner task overdue",
                              "departments": ("OPS", "PROD", "PROC", "SALES", "WH"),
@@ -591,6 +595,8 @@ NEXT_ACTIONS = {
                       "Mission Control.", "mc_task_unblock"),
     "mc_approval_pending": ("Remind the approver to decide; never approve on their behalf.",
                             "mc_approval_remind"),
+    "portal_approval_pending": ("Find out who approves the requisition and remind them; "
+                                "never approve on their behalf.", "portal_approval_remind"),
     "planner_task_overdue": ("Ask the assignee for a new date, or close the task if it is "
                              "no longer needed.", "planner_task_new_date"),
     "aged_receivable_worsening": ("Review the customer's overdue invoices and agree a "
@@ -1551,6 +1557,8 @@ TODAY_WORDS = {
     "mc_task_overdue": ("task", "tasks", "went overdue", "overdue"),
     "mc_task_stuck": ("task", "tasks", "stalled", "stalled"),
     "mc_approval_pending": ("approval", "approvals", "is waiting", "waiting"),
+    "portal_approval_pending": ("requisition", "requisitions", "is waiting for approval",
+                                "waiting"),
     "planner_task_overdue": ("Planner task", "Planner tasks", "went overdue", "overdue"),
     "aged_receivable_worsening": ("customer balance", "customer balances", "aged worse",
                                   "older"),

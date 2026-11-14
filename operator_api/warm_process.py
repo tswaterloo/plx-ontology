@@ -182,6 +182,7 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any], mode: str,
             backend.revoked = guard.revoked_ref
             backend.identity_for = lambda oid, exp: warm_session(resolver, oid,
                                                                  expires_at=exp)
+            backend.directory_for = lambda: be.directory_oids(resolver)
         stop = backend.reads.stopped
 
         def inbox() -> None:

@@ -341,9 +341,11 @@ WARM_RECENT_PAGES = 4
 # by at most this long. Known readers are read ahead again within it (REWARM_SECONDS).
 READER_CACHE_SECONDS = 1200
 LAST_GOOD_SECONDS = 12 * 3600   # a main screen's last good page is served stale up to this
-# A screen read not done in this long serves the reader's last good page (pages load in
-# under 2 s): the read goes on and keeps its page for the next request.
-SERVE_FAST_SECONDS = 1.2
+# A screen read not done in this long serves the reader's last good page: the read goes on
+# and keeps its page for the next request. Owner target 11-13: every page under 1 s warm;
+# a screen whose inputs move with each autopilot write (Autopilot, Trust's area) waited the
+# whole 1.2 s on every visit before its kept page (1.2-3.4 s warm at load 55-75).
+SERVE_FAST_SECONDS = 0.6
 # Today's first read (owner 11-13: "almost instant"): a Today list (Home, the late list,
 # the briefing, the suggestions, the replies) or a record's page with no page kept for the
 # reader, asked

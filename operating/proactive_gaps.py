@@ -53,7 +53,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import answerers, po_status
 
@@ -297,6 +297,115 @@ def _detect(card: Mapping[str, Any], as_of: date
                else _conflicting_quantities(card.get("conflicts"))),
              *_expired_quote(object_type, card.get("values"), as_of)]
     return [(_gap_of(object_id, object_type, item), item["requires"]) for item in found]
+
+
+CANDIDATE_CHUNK = 500
+
+
+def card_candidates(conn: Any, as_of: date) -> set[str]:
+    """Every attesting document whose ``plx.object`` card ``_detect`` could raise a gap on,
+    read set-based over the store's current rows (``conn``: the store connection): a
+    superset with no reader, marking or tier filter, so Python stays the judge on the card.
+    The card's gaps come from ``operating.attested_conflicts`` over the current links and
+    values (``readable_values`` and the link walk at the store's latest time):
+
+    * a ``missing_in_record`` lead needs the document to state the value (a non-null row
+      of the document property) and a record reached over the rule's link and path to hold
+      the compared property read empty (``_empty_reads``: rows, every one null; so at
+      least one null row);
+    * a ``conflicting_quantity`` needs two different numbers of one quantity role among the
+      document's and the reached records' non-null ``quantity`` rows of the compared
+      property, grouped by unit and role as the card's values are; a keyed rule (entry
+      by entry) is a candidate whenever a reached record holds a non-null value;
+    * an ``expired_quote`` needs a quote document whose ``valid_until`` is before ``as_of``.
+
+    Event rules compare dates and a currency conflict compares money, so neither is a
+    quantity or a lead; a rule whose document property the schema does not map is a
+    ``property_not_declared`` gap, never a lead."""
+    from ontology.document_fields import comparisons
+    from ontology.schema import load_schema
+    from . import attested_conflicts as ac
+
+    class _Tools:   # ``attested_conflicts`` reads ``tools.schema`` only
+        schema = load_schema()
+
+    from .ontology_tools import unit_out
+
+    def rows_of(prop: str, objects: Iterable[str]) -> dict[str, list[tuple[Any, ...]]]:
+        out: dict[str, list[tuple[Any, ...]]] = {}
+        ids = sorted(set(objects))
+        for start in range(0, len(ids), CANDIDATE_CHUNK):
+            for oid, value, value_type, unit, role in conn.execute(
+                    "SELECT object_id, value, value_type, unit, quantity_role FROM "
+                    "object_values WHERE superseded_at IS NULL AND property = ? AND "
+                    "object_id IN (SELECT value FROM json_each(?))",
+                    (prop, json.dumps(ids[start:start + CANDIDATE_CHUNK]))):
+                out.setdefault(oid, []).append((value, value_type, unit, role))
+        return out
+
+    links: dict[str, list[tuple[str, str]]] = {}
+
+    def links_of(link_type: str) -> list[tuple[str, str]]:
+        if link_type not in links:
+            links[link_type] = [(f, t) for f, t in conn.execute(
+                "SELECT from_object, to_object FROM links WHERE link_type = ? "
+                "AND superseded_at IS NULL", (link_type,))]
+        return links[link_type]
+
+    def disagree(rows: Iterable[tuple[Any, ...]]) -> bool:
+        """Two different numbers of one (unit, role) among quantity rows, grouped as
+        ``_conflicting_quantities`` groups the card's values (``unit_out`` as the card
+        shows the unit; a value with no unit is not compared)."""
+        numbers: dict[tuple[str, str], set[Decimal]] = {}
+        for value, kind, unit, role in rows:
+            shown = unit_out(unit) if kind == "quantity" or unit is not None else None
+            number = _decimal(value) if value is not None else None
+            if kind == "quantity" and shown and number is not None:
+                numbers.setdefault((shown, str(role or "")), set()).add(number)
+        return any(len(seen) >= 2 for seen in numbers.values())
+
+    found: set[str] = set()
+    for rule in comparisons():
+        if rule.get("event"):
+            continue
+        prop = ac._property_of(_Tools, rule["document_type"], rule["field"], rule["keyed"])
+        if prop is None:
+            continue
+        # (document, the record it attests) -> the records the rule's path reaches from it:
+        # each pair is compared on its own (``conflicts``: one ``_compare`` per pair)
+        reached: dict[tuple[str, str], set[str]] = {
+            (doc, record): {record} for doc, record in links_of(rule["link_type"])
+            if doc.split(":", 1)[0] == rule["document_type"]}
+        for hop in rule["path"]:
+            step: dict[str, set[str]] = {}
+            for frm, to in links_of(hop["link_type"]):
+                near, far = (frm, to) if hop["direction"] == "forward" else (to, frm)
+                step.setdefault(near, set()).add(far)
+            reached = {pair: {far for near in ends for far in step.get(near, ())}
+                       for pair, ends in reached.items()}
+        reached = {pair: ends for pair, ends in reached.items() if ends}
+        stated = rows_of(prop, {doc for doc, _record in reached})
+        held = rows_of(rule["property"], {o for ends in reached.values() for o in ends})
+        for (doc, _record), ends in reached.items():
+            if doc in found or doc not in stated:
+                continue   # no row of the stated field: ``document_not_stated``
+            if any(row[0] is not None for row in stated[doc]) and any(
+                    any(row[0] is None for row in held.get(o, ())) for o in ends):
+                found.add(doc)   # a stated value against an empty read: a lead
+            elif rule["keyed"]:   # compared entry by entry: any record value may conflict
+                if any(row[0] is not None for o in ends for row in held.get(o, ())):
+                    found.add(doc)
+            elif disagree([*stated[doc], *(row for o in ends for row in held.get(o, ()))]):
+                found.add(doc)
+    documents = {name for name, _field in _roster()[0]}
+    for name in sorted(documents & set(_roster()[1])):
+        for (oid,) in conn.execute(
+                "SELECT object_id FROM object_values WHERE superseded_at IS NULL AND "
+                "property = 'valid_until' AND object_id >= ? AND object_id < ? AND "
+                "value IS NOT NULL AND substr(value, 1, 10) < ?",
+                (name + ":", name + ";", as_of.isoformat())):
+            found.add(oid)
+    return found
 
 
 def _closed_record(values: Any) -> bool:
