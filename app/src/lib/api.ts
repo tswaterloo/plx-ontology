@@ -53,6 +53,7 @@ import type { Explore, LabourPage, LateList, RecordAsOf, RecordHistory,
   TeamView,
   TeamPersonDetail,
   RdBoard,
+  UatFeedback,
   UpcomingMeetings,
   WatcherItemState,
   WatcherItemStateRequest,
@@ -660,6 +661,11 @@ export function getTeamPerson(key: string, signal?: AbortSignal): Promise<TeamPe
 // R&D and sample projects per customer, from the threads and records you may open.
 export function getRdBoard(signal?: AbortSignal): Promise<RdBoard> {
   return getRead<RdBoard>("/api/rd-projects", signal);
+}
+
+// The MRP UAT feedback lists as you may read them (read only); `status` narrows the items.
+export function getUatFeedback(status?: string, signal?: AbortSignal): Promise<UatFeedback> {
+  return getRead<UatFeedback>(status ? `/api/uat-feedback?status=${encodeURIComponent(status)}` : "/api/uat-feedback", signal);
 }
 
 // An item's label and artwork changes from your own alert list.

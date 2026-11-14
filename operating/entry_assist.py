@@ -5,8 +5,10 @@ record or document line it was read from) or ``check`` (no value, or several can
 with the reason). A value is never invented to fill a gap.
 
 * ``order_entry`` (a customer's PO: a received mail with its attachments, or pasted text):
-  the Sage O/E order the person would key. Customer: the sender's customer record
-  (``autopilot_work.resolve_customer``; the PO's own words pick among several). PO number:
+  the Sage O/E order the person would key. Customer (``customer_of``): what the PO itself
+  states, the customer number it labels as the buyer's, else a customer's whole name in it;
+  the sender's customer record only confirms it or is suggested on a check (mail comes from
+  distributors and brokers too, so the sender is no proof of the buyer). PO number:
   the document's one labelled PO number (``document_lines.po_numbers``); several or none:
   check. Ship-to: never filled (no projected ship-to of an order): check. Lines: the
   document's item lines (``document_lines.read_lines``), each item number one the records
@@ -14,7 +16,10 @@ with the reason). A value is never invented to fill a gap.
   states them; the price the PO states, else the customer's last price for that item in
   the same unit and currency (``last_prices``: its document cited), else check.
 
-Measured by ``operating.entry_assist_score`` against the order people then keyed in Sage.
+``bc_header``: a cited order or PO as a new BC sales or purchase order for the write desk
+(header and lines from cited fields only; an AP invoice never: a financial document).
+
+Measured against the order people then keyed in Sage (pre-registered).
 SYNTHETIC fixtures in tests; no network, no write."""
 
 from __future__ import annotations
@@ -107,6 +112,67 @@ def _documents(ctx: Any, email: str | None, text: str | None) -> list[dict[str, 
                                 "handle": None}]
 
 
+def customer_of(ctx: Any, text: str, email: str | None, sender: str | None
+                ) -> dict[str, Any]:
+    """The ordering customer, by what the document itself states, never by who sent it:
+    the customer number it labels as the buyer's ("Customer #", "Account No.", "Sold to"),
+    else a customer's whole name in it. The sender's customer record (its mail link,
+    address or domain) only confirms or is suggested: mail often comes from a distributor
+    or a broker, not the customer. Cited only when the document names exactly one
+    customer number and the sender's record, when there is one, does not name another;
+    otherwise a check with the candidates. ``resolved`` (popped by the caller): the cited
+    customer's number, records, currency."""
+    stated = aw.customers_stated(ctx, text[:MAX_TEXT])
+    by_basis = {b: aw.customer_numbers(ctx, oids) for b, oids in stated.items()}
+    from_sender: dict[str, Any] = {"number": None}
+    if email is not None or sender:
+        from_sender = aw.resolve_customer(ctx, {"object_id": email or "",
+                                                "sender": sender or ""}, text[:20000])
+    pick = None
+    for basis, said in (("account", "the customer number the PO states"),
+                        ("name", "the customer's name in the PO")):
+        numbers = by_basis.get(basis) or {}
+        if len(numbers) > 1:
+            out = check(f"the PO names several customers ({said})", sorted(numbers)[:6])
+            return _suggest(out, from_sender)
+        if len(numbers) == 1:
+            pick = (basis, said, *next(iter(numbers.items())))
+            break
+    if pick is None:
+        out = check("the PO states no customer number or customer name the records hold "
+                    "(the sender's record is not proof of the buyer)")
+        return _suggest(out, from_sender)
+    basis, said, number, records = pick
+    other = from_sender.get("number")
+    if other and other.upper() != number.upper() and number.upper() not in {
+            str(c).upper() for c in from_sender.get("candidates") or ()}:
+        # the numbers stay in the candidates (each shown only from a record the reader
+        # opens), never in the words
+        return check(f"the PO names one customer ({said}) but the sender's customer "
+                     "record is another", [number, other])
+    rows = aw._customer_rows(ctx, records)
+    row = rows.get(records[0]) or {}
+    ctx.cite(row, "erp_code", "name")
+    out = cited(number, {"basis": said + (" and the sender's record" if other else ""),
+                         "name": ap._v(row, "name"), "records": records[:4]})
+    # one customer number across twins: its currency is the one its records state (two
+    # different ones: none, so no last price is reused)
+    currencies = {ap._v(r, "currency") for r in rows.values()} - {""}
+    out["resolved"] = {"number": number, "records": records, "name": ap._v(row, "name"),
+                       "currency": next(iter(currencies)) if len(currencies) == 1 else None}
+    return out
+
+
+def _suggest(field: dict[str, Any], from_sender: Mapping[str, Any]) -> dict[str, Any]:
+    """The sender's customer record as a suggestion on a check (never filled)."""
+    if from_sender.get("number"):
+        field["suggestions"] = [{"value": from_sender["number"],
+                                 "basis": "the sender's customer record "
+                                          f"({from_sender.get('basis')})",
+                                 "records": (from_sender.get("records") or [])[:4]}]
+    return field
+
+
 def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
                 sender: str | None = None) -> dict[str, Any]:
     """The pre-filled Sage order (module doc) from a received mail (``email``: its record
@@ -139,18 +205,9 @@ def order_entry(ctx: Any, *, email: str | None = None, text: str | None = None,
         head["po_number"] = check("no labelled PO number in the documents")
     # customer
     all_text = "\n".join(d["text"] or "" for d in docs)[:MAX_TEXT]
-    if email is not None or sender:
-        customer = aw.resolve_customer(ctx, {"object_id": email or "", "sender": sender or ""},
-                                       all_text[:20000])
-    else:
-        customer = {"number": None, "reason": "no_sender_given"}
-    if customer.get("number"):
-        head["customer"] = cited(customer["number"], {
-            "basis": customer.get("basis"), "name": customer.get("name"),
-            "records": (customer.get("records") or [])[:4]})
-    else:
-        head["customer"] = check(f"customer not resolved: {customer.get('reason')}",
-                                 customer.get("candidates") or ())
+    head["customer"] = customer_of(ctx, all_text, email, sender)
+    customer = head["customer"].get("resolved") or {"number": None}
+    head["customer"].pop("resolved", None)
     head["ship_to"] = check("the records hold no ship-to for an order; take it from the PO")
     # lines: the first document that has item lines
     lines, read_from = [], None
@@ -478,6 +535,134 @@ def supplier_invoice(ctx: Any, *, email: str | None = None, text: str | None = N
             "lines": lines, "counts": {"fields": len(fields), "cited": len(fields) - checks,
                                        "check": checks, "lines": len(lines)},
             "gaps": [] if lines else ["no invoice lines read"]}
+
+
+# ----------------------------------------------------------------------------- BC header
+
+# kind -> (party type, its twin link, the BC binding, BC entity set, write-desk operation,
+#          the header field naming the party, the pre-fill field it is read from)
+BC_PARTY = {
+    "order": ("Customer", "Customer.same_record_as", "bc.customers", "customers",
+              "sales_order_create", "customerNumber", "customer"),
+    "purchase_order": ("Supplier", "Supplier.same_record_as", "bc.vendors", "vendors",
+                       "purchase_order_create", "vendorNumber", "supplier"),
+}
+FINANCIAL = ("An AP invoice is a financial document: the Workbench never raises or posts "
+             "one, so it stays a pre-fill you key yourself.")
+
+
+def _bc_lines(ctx: Any, rows: Sequence[Mapping[str, Any]], kind: str
+              ) -> tuple[list[dict[str, Any]], list[str]]:
+    """The order's lines for BC from the pre-fill's cited lines: every line's item and
+    quantity cited (else the whole entry waits: which lines are not), the item as its own
+    BC item record's number (the cited item record or its ``same_record_as`` BC twin,
+    exactly one), the price only when cited, the document's line text as description."""
+    price_field = "unitPrice" if kind == "order" else "directUnitCost"
+    out, why = [], []
+    if not rows:
+        return [], ["The pre-fill has no lines, and BC takes no order without one."]
+    for n, ln in enumerate(rows, 1):
+        item, qty = ln.get("item") or {}, ln.get("quantity") or {}
+        if item.get("status") != "cited" or qty.get("status") != "cited":
+            why.append(f"Line {n}: its item or quantity is a check: settle it first.")
+            continue
+        recs = [str(r) for r in ((item.get("source") or {}).get("records") or ())
+                if str(r).startswith("Product:")]
+        twins = set(recs) | {o for o in ctx.linked_many(recs, ("Product.same_record_as",))
+                             if o.startswith("Product:")} if recs else set()
+        bc = sorted(o for o in twins if o.startswith("Product:bc.items:"))
+        codes = {ap._v(r, "code") for r in ctx.read(bc, ("code",)).values()} - {""}
+        if len(codes) != 1:
+            why.append(f"Line {n}: no single BC item record is the cited item.")
+            continue
+        line: dict[str, Any] = {"lineType": "Item", "lineObjectNumber": next(iter(codes)),
+                                "quantity": str(qty["value"]), "records": [*recs, *bc]}
+        price = ln.get("unit_price") or {}
+        if price.get("status") == "cited":
+            line[price_field] = str(price["value"])
+            src = price.get("source") or {}
+            line["records"] += [str(r) for r in (src.get("records") or ()) if r] + \
+                ([str(src["record"])] if src.get("record") else [])
+        if ln.get("text"):
+            line["description"] = str(ln["text"]).strip()[:100]
+        out.append(line)
+    return out, why
+
+
+def bc_header(ctx: Any, prefill: Mapping[str, Any], kind: str) -> dict[str, Any]:
+    """A new BC sales or purchase order built from the pre-fill's CITED fields only, for
+    the write desk (``write_intents.WriteDesk.prepare``, a dry run until every switch is
+    set): ``{"operation", "entity_set", "payload", "party": {"object_id", "bc_id",
+    "number"}, "citations", "reason"}``, or ``{"refused": [why]}``. The header and every
+    line (``_bc_lines``; a line with a check holds the whole entry); ``records``: every
+    record a value of the entry comes from (the party, each item and its BC twin, each
+    cited price's source); the caller puts the entry on the desk only for a reader who
+    opens each of them. The party is the cited
+    record's own BC twin (the record itself or its ``same_record_as`` link to a BC record),
+    exactly one, with a number; an AP invoice never (``FINANCIAL``)."""
+    if kind == "supplier_invoice":
+        return {"refused": [FINANCIAL]}
+    if kind not in BC_PARTY:
+        return {"refused": [f"No BC entry exists for {kind!r}."]}
+    otype, twin_link, binding, entity_set, operation, number_field, field = BC_PARTY[kind]
+    head = prefill.get("header") or {}
+    party = head.get(field) or {}
+    if party.get("status") != "cited":
+        return {"refused": [f"The {field} is a check, not a cited value: settle it first."]}
+    src = party.get("source") or {}
+    if field == "supplier":
+        records = [str(party["value"])]
+    else:
+        records = [str(r) for r in (src.get("records") or ()) if r]
+    records = [r for r in records if r.startswith(otype + ":")]
+    if not records:
+        return {"refused": [f"The cited {field} names no {otype} record."]}
+    twins = set(records) | {o for o in ctx.linked_many(records, (twin_link,))
+                            if o.startswith(otype + ":")}
+    prefix = f"{otype}:{binding}:"
+    bc = sorted(o for o in twins if o.startswith(prefix))
+    if not bc:
+        return {"refused": [f"No BC {entity_set[:-1]} record is the same as the cited "
+                            f"{field}, so BC has no {field} to put on the order."]}
+    if len(bc) > 1:
+        return {"refused": [f"Several BC {entity_set} records are the same as the cited "
+                            f"{field}: pick one in BC."]}
+    from integrations.live_source_guard import parse_handle
+    row = ctx.st.conn.execute("SELECT l1_handle FROM object_versions WHERE object_id = ? AND "
+                              "superseded_at IS NULL", (bc[0],)).fetchone()
+    try:
+        (_env, _company, got_set, bc_id), _v, _x = parse_handle(row[0] if row else None,
+                                                                "bc", 4)
+    except ValueError:
+        return {"refused": [f"The BC {entity_set[:-1]} record has no BC handle."]}
+    twin = ctx.read([bc[0]], ("erp_code", "code")).get(bc[0]) or {}
+    number = ap._v(twin, "erp_code") or ap._v(twin, "code")
+    if got_set != entity_set or not number:
+        return {"refused": [f"The BC {entity_set[:-1]} record has no number."]}
+    lines, why = _bc_lines(ctx, prefill.get("lines") or (), kind)
+    if why:
+        return {"refused": why}
+    line_records = [r for ln in lines for r in ln.pop("records")]
+    payload: dict[str, Any] = {number_field: number, "lines": lines}
+    po = head.get("po_number") or {}
+    if kind == "order" and po.get("status") == "cited" and str(po.get("value") or "").strip():
+        payload["externalDocumentNumber"] = str(po["value"]).strip()[:35]
+    citations = [str(row[0])]
+    for f in head.values():
+        s = (f.get("source") or {}) if f.get("status") == "cited" else {}
+        if s.get("handle"):
+            citations.append(str(s["handle"]))
+    said = (f"New {'sales' if kind == 'order' else 'purchase'} order header for "
+            f"{number}" + (f", customer PO {payload['externalDocumentNumber']}"
+                           if "externalDocumentNumber" in payload else "") +
+            f", {len(lines)} line{'s' if len(lines) != 1 else ''}, from the pre-fill's "
+            f"cited fields only ({src.get('basis') or 'named'}); each line's quantity is "
+            f"in the unit the document states (its text is the line description): check "
+            f"the unit of measure.")
+    return {"operation": operation, "entity_set": entity_set, "payload": payload,
+            "party": {"object_id": bc[0], "bc_id": bc_id.lower(), "number": number},
+            "records": sorted(set(records) | {bc[0]} | set(line_records)),
+            "citations": list(dict.fromkeys(citations))[:20], "reason": said}
 
 
 def accuracy(prefill: Mapping[str, Any], truth: Mapping[str, Any]) -> dict[str, int]:

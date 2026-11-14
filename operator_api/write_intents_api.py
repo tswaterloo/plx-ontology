@@ -62,21 +62,26 @@ class WriteIntentsMixin:
                                facts=self.write_facts or wi.Facts(),
                                metadata=self._write_metadata, grants=self.write_grants)
 
+    def _bc_client(self) -> tuple[Any, str]:
+        """The desk's GET-only BC client and the environment it reads (raises
+        ``SourceUnavailable`` when BC is not configured here)."""
+        from integrations import bc_read
+        from integrations.live_source_guard import LiveSourceAudience
+        if self._write_bc is None:
+            api, _, tenant_id, env_name = bc_read.build_bc(self._writes_env())
+            audience = LiveSourceAudience({f"bc:{env_name.lower()}:*": ["writes:preview"]},
+                                          tenant="writes")
+            self._write_bc = (bc_read.BusinessCentralReader(
+                api, audience, tenant_id=tenant_id, environment=env_name), env_name)
+        return self._write_bc
+
     def _read_current(self, environment: str, company_id: str, entity_set: str,
                       record_id: str) -> Optional[dict[str, Any]]:
         """The record now, through the GET-only BC client (None: unreadable here)."""
-        from integrations import bc_read
-        from integrations.live_source_guard import (LiveSourceAudience, NotVisible,
-                                                    SourceUnavailable)
+        from integrations.live_source_guard import NotVisible, SourceUnavailable
         from ontology.core import Actor
         try:
-            if self._write_bc is None:
-                api, _, tenant_id, env_name = bc_read.build_bc(self._writes_env())
-                audience = LiveSourceAudience({f"bc:{env_name.lower()}:*": ["writes:preview"]},
-                                              tenant="writes")
-                self._write_bc = (bc_read.BusinessCentralReader(
-                    api, audience, tenant_id=tenant_id, environment=env_name), env_name)
-            reader, env_name = self._write_bc
+            reader, env_name = self._bc_client()
             if env_name.lower() != environment.lower():
                 return None
             record = reader.get_entity(Actor("writes", frozenset({"writes:preview"}),

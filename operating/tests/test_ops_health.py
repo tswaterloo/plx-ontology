@@ -139,6 +139,77 @@ class OpsHealthTest(unittest.TestCase):
         self.assertEqual(window.p95(), 96)
 
 
+class SearchLagAndDetectorsTest(unittest.TestCase):
+    """Audit sweep 11-14 (A-data 4, C-serving 2): the search index missing a served delta
+    layer, and proactive detectors that stop completing, are breaches."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = make_state(Path(self.tmp.name))
+        self.t = ops_health.targets({})
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _layers(self, served: list, indexed: list, built: str) -> None:
+        (self.root / "projection" / "delta" / "CURRENT.json").write_text(json.dumps(
+            {"built_at": built, "layers": [{"store": s, "owned": 1} for s in served]}))
+        (self.root / "search").mkdir(exist_ok=True)
+        (self.root / "search" / "follow.json").write_text(json.dumps(
+            {"layers": indexed, "updated_at": "2030-01-02T11:59:00Z"}))
+
+    def test_a_served_layer_missing_from_the_index_past_the_bound_is_a_breach(self) -> None:
+        self._layers(["/d/a.sqlite", "/d/b.sqlite"], ["/d/a.sqlite"], "2030-01-02T09:00:00Z")
+        check = ops_health.search_follow_lag_check(self.root, NOW, self.t)
+        self.assertEqual((check["state"], check["value"]), ("breach", 180.0))
+        self.assertIn("1 of 2 delta layers", check["detail"])
+        # the follower saved its cursor a minute ago: the last-pass check alone says ok
+        self.assertEqual(ops_health.search_follow_check(self.root, NOW, self.t)["state"], "ok")
+        self.assertIn("search_follow_lag",
+                      ops_health.collect(self.root, now=NOW, environ={})["breaches"])
+
+    def test_every_layer_indexed_is_ok_and_a_young_gap_is_not_yet_a_breach(self) -> None:
+        self._layers(["/d/a.sqlite"], ["/d/a.sqlite"], "2030-01-02T09:00:00Z")
+        check = ops_health.search_follow_lag_check(self.root, NOW, self.t)
+        self.assertEqual((check["state"], check["value"]), ("ok", 0))
+        self._layers(["/d/a.sqlite", "/d/b.sqlite"], ["/d/a.sqlite"], "2030-01-02T11:30:00Z")
+        self.assertEqual(ops_health.search_follow_lag_check(self.root, NOW, self.t)["state"],
+                         "ok")
+
+    def test_no_search_index_is_unknown_never_fine(self) -> None:
+        check = ops_health.search_follow_lag_check(self.root, NOW, self.t)
+        self.assertEqual(check["state"], "unknown")
+
+    def test_detectors_without_a_complete_run_in_24_h_are_named(self) -> None:
+        inbox = self.root / "projection" / "ontology.sqlite.gap-inbox.sqlite"
+        conn = sqlite3.connect(inbox)
+        conn.execute("CREATE TABLE detector_runs (detector TEXT, status TEXT, run_at TEXT)")
+        conn.execute("CREATE TABLE detector_history (detector TEXT, status TEXT, run_at TEXT)")
+        conn.executemany("INSERT INTO detector_runs VALUES (?, ?, ?)", [
+            ("fresh", "complete", "2030-01-02T11:00:00+00:00"),
+            ("old", "truncated", "2030-01-02T11:00:00+00:00"),
+            ("never", "truncated", "2030-01-02T11:00:00+00:00"),
+            ("gap", "blocked", "2030-01-02T11:00:00+00:00")])
+        conn.executemany("INSERT INTO detector_history VALUES (?, ?, ?)", [
+            ("fresh", "complete", "2030-01-02T11:00:00+00:00"),
+            ("old", "complete", "2030-01-01T06:00:00+00:00"),
+            ("old", "truncated", "2030-01-02T11:00:00+00:00"),
+            ("never", "truncated", "2030-01-02T11:00:00+00:00")])
+        conn.commit()
+        conn.close()
+        check = ops_health.detectors_check(self.root, NOW, self.t)
+        self.assertEqual((check["state"], check["value"]), ("breach", 2))
+        self.assertIn("never never completed", check["detail"])
+        self.assertIn("old 30 h", check["detail"])
+        self.assertNotIn("fresh", check["detail"])
+        self.assertIn("blocked on unserved data (not paged): gap", check["detail"])
+        from operating import ops_alarms
+        self.assertTrue("proactive_detectors".startswith(ops_alarms.PAGED_HEALTH))
+
+    def test_an_inbox_without_detector_tables_has_no_detector_check(self) -> None:
+        self.assertIsNone(ops_health.detectors_check(self.root, NOW, self.t))
+
+
 class HealthRouteTest(unittest.TestCase):
     def test_health_stays_ok_and_carries_the_checks(self) -> None:
         from fastapi.testclient import TestClient

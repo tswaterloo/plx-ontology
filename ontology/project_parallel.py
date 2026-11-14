@@ -95,6 +95,7 @@ from ontology.project import MEMBER_RELATION, ProjectionError, Projector, bindin
 from ontology.schema import DOCUMENT_FIELDS_RELATION
 from ontology import store_ddl
 from ontology.store import StoreBuilder, canonical, main_not_imported
+from ontology import parent_watch
 
 WORKERS_ENV = "PLX_BUILD_WORKERS"
 MAX_WORKERS = 12
@@ -798,7 +799,7 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
     builder.connection.execute("PRAGMA foreign_keys = OFF")
     pool = futures.ProcessPoolExecutor(max_workers=count,
                                        mp_context=multiprocessing.get_context("spawn"),
-                                       initializer=_init, initargs=(payload,))
+                                       **parent_watch.pool_init(_init, (payload,)))
     try:
         with main_not_imported():
             pending = {pool.submit(_run, i, order[i], scopes[i], spills[i]) for i in queue}
@@ -1061,7 +1062,7 @@ class DocumentPool:
             self._kept = kept
             self._pool = futures.ProcessPoolExecutor(
                 max_workers=self.count, mp_context=multiprocessing.get_context("spawn"),
-                initializer=_init_parse, initargs=(kept,))
+                **parent_watch.pool_init(_init_parse, (kept,)))
         return self._pool
 
     def captured(self, records: Sequence[Any], signals: Sequence[str | None],

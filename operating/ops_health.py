@@ -34,6 +34,14 @@ overriding any of them):
   and times only, never an address). No mail capture: no check.
 * ``search_follow_last_pass``: minutes since the search index follower last saved its
   cursor (``search/follow.json``).
+* ``search_follow_lag``: minutes the search index has been missing a published delta layer
+  (a store ``projection/delta/CURRENT.json`` lists that ``search/follow.json`` has not
+  indexed), counted from that layer set's ``built_at``; past ``search_follow_lag_minutes``
+  answers search older data than the ontology serves. 0 when every layer is indexed.
+* ``proactive_detectors``: proactive detectors whose last complete run (the gap inbox's
+  ``detector_history``) is older than ``detector_complete_hours``, or that never completed
+  although they run: their alerts rest on stale or partial reads. Names in the detail; a
+  detector whose latest run is ``blocked`` (data not served) is named but not paged.
 * ``ingest_start``: the host's ``serve`` refused to start (bad config, state dir) at least
   ``ingest_start_failures`` times in a row with no start after: a unit in a restart loop.
 * ``ingest_service``: the capture service ended (``host/serve-health.json`` ``stop``,
@@ -88,6 +96,8 @@ DEFAULT_TARGETS: dict[str, float] = {
     "ai_watcher_last_run_minutes": 120,
     "api_page_p95_ms": 5000,
     "search_follow_minutes": 60,
+    "search_follow_lag_minutes": 120,   # a published delta layer not yet in the search index
+    "detector_complete_hours": 24,      # a proactive detector's last complete run
     # operating.ops_alarms
     "pg_connections_share": 0.8,
     "pg_idle_in_transaction_minutes": 10,
@@ -760,6 +770,78 @@ def _age_check(name: str, now: datetime, stamp: Any, bound: float, missing: str)
     return _check(name, age, bound, age is None or age > bound, "min")
 
 
+def _layer_store(layer: Any) -> Optional[str]:
+    store = layer.get("store") if isinstance(layer, dict) else layer
+    return store if isinstance(store, str) and store else None
+
+
+def search_follow_lag_check(state: Path, now: datetime, t: Mapping[str, float]) -> Check:
+    """Minutes the search index has lacked a delta layer the ontology already serves
+    (audit A-data 4: the follower can save its cursor every pass while layers go
+    unindexed). Unknown where search or the delta is not set up."""
+    bound = t["search_follow_lag_minutes"]
+    try:
+        current = json.loads((state / "projection" / "delta" / "CURRENT.json").read_text())
+        follow = json.loads((state / "search" / "follow.json").read_text())
+    except (OSError, ValueError):
+        return _check("search_follow_lag", None, bound, None, "min",
+                      "search or delta not set up")
+    if not isinstance(current, dict) or not isinstance(follow, dict):
+        return _check("search_follow_lag", None, bound, None, "min", "unreadable")
+    served = {s for s in map(_layer_store, current.get("layers") or ()) if s}
+    indexed = {s for s in map(_layer_store, follow.get("layers") or ()) if s}
+    missing = served - indexed
+    if not missing:
+        return _check("search_follow_lag", 0, bound, False, "min",
+                      f"{len(served)} layers indexed")
+    built = _parse(current.get("built_at"))
+    age = _minutes(now, built)
+    return _check("search_follow_lag", age, bound, None if age is None else age > bound,
+                  "min", f"{len(missing)} of {len(served)} delta layers not in the search index")
+
+
+def detectors_check(state: Path, now: datetime, t: Mapping[str, float]) -> Optional[Check]:
+    """Proactive detectors with no complete run within ``detector_complete_hours`` (audit
+    C-serving 2: 14 of 16 detectors ended truncated for days while the engine's own last
+    pass looked fresh). None where the engine never ran."""
+    inbox = state / "projection" / "ontology.sqlite.gap-inbox.sqlite"
+    bound = t["detector_complete_hours"]
+    if not inbox.is_file():
+        return None
+    try:
+        conn = _ro(inbox)
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if not {"detector_runs", "detector_history"} <= tables:
+                return None   # an inbox from before per-detector runs were recorded
+            latest = dict(conn.execute(
+                "SELECT detector, status FROM detector_runs ORDER BY detector"))
+            complete = dict(conn.execute(
+                "SELECT detector, max(run_at) FROM detector_history "
+                "WHERE status = 'complete' GROUP BY detector"))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return _check("proactive_detectors", None, 0, None, "detectors", "inbox unreadable")
+    # a detector whose latest run is ``blocked`` waits on data the ontology does not serve
+    # (a schema gap with its own row): named, never paged, so the incident can close
+    blocked = sorted(n for n, st in latest.items() if st == "blocked")
+    ran = sorted(n for n in latest if n not in blocked)
+    stale = []
+    for name in ran:
+        age = _minutes(now, _parse(complete.get(name)))
+        if age is None or age > bound * 60:
+            stale.append(f"{name} " + ("never completed" if age is None
+                                       else f"{round(age / 60)} h"))
+    detail = (f"{len(stale)} of {len(ran)} not complete within {bound:g} h: "
+              + ", ".join(stale[:8]) + (", ..." if len(stale) > 8 else "")) if stale else \
+        f"{len(ran)} detectors complete within {bound:g} h"
+    if blocked:
+        detail += "; blocked on unserved data (not paged): " + ", ".join(blocked[:8])
+    return _check("proactive_detectors", len(stale), 0, bool(stale), "detectors", detail)
+
+
 def truth_check(state: Path, t: Mapping[str, float]) -> Check:
     bound = t["truth_contradicted_share"]
     try:
@@ -796,6 +878,10 @@ def collect(state_dir: Any, *, now: Optional[datetime] = None,
                 "SELECT max(run_at) FROM runs"),
         t["proactive_last_pass_minutes"], "no run recorded"))
     checks.append(search_follow_check(state, now, t))
+    checks.append(search_follow_lag_check(state, now, t))
+    detectors = detectors_check(state, now, t)
+    if detectors is not None:
+        checks.append(detectors)
     checks.append(truth_check(state, t))
     checks.append(_age_check(
         "ai_watcher_last_run", now,

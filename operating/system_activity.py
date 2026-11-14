@@ -42,6 +42,8 @@ import sqlite3
 import sys
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
+from ontology import parent_watch
+
 SCHEMA = "plx-system-activity/v1"
 ALIASES_SCHEMA = "plx-system-actors/v1"
 SNAPSHOT_FILE = "system-activity.json"
@@ -582,7 +584,8 @@ def build(state: Path, *, since: date, until: date, workers: Optional[int] = Non
                                            until.isoformat())))
     counts: Counter = Counter()
     links: list[Link] = []
-    with ProcessPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
+    with ProcessPoolExecutor(max_workers=workers or os.cpu_count(),
+                             **parent_watch.pool_init()) as pool:
         for c, l in pool.map(_call, jobs):
             counts.update(c)
             links.extend(l)

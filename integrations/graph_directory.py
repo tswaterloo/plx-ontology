@@ -228,6 +228,15 @@ class GraphDirectoryReader:
         user, found, reason = self._user("", address)
         return (found, "") if user is not None else (None, reason)
 
+    def enabled(self, oid: Any) -> tuple[bool, str]:
+        """``(True, "")`` when the object id is an enabled user (one user read), else
+        ``(False, reason)``."""
+        found = _guid(oid)
+        if found is None:
+            return False, "oid_invalid"
+        user, _found, reason = self._user(found, "")
+        return user is not None, reason
+
     def _user(self, oid: str, upn: str) -> tuple[Mapping[str, Any] | None, str | None, str]:
         """The enabled user object asked for (by id, or by exact UPN) and its id; or
         ``None``, the id Graph answered with (if any) and the reason."""

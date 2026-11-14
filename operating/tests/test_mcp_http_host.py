@@ -480,6 +480,88 @@ class ConcurrentListenerTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
 
 
+    def test_partial_headers_cap_edges_bodies_and_disconnects(self):
+        # SEC-003 regression list: a partial header is closed in bounded time; a body of
+        # exactly the cap is served and one byte over is 413 before any read; GET and
+        # DELETE bodies reach the responder whole; a client gone mid-body gets nothing and
+        # reaches nothing; a bad length is 413. Others are served throughout.
+        import socket
+        from unittest import mock
+        from operating import mcp_http_host, mcp_server
+
+        seen: list = []
+
+        class Stub:
+            def respond(self, method, path, headers, body):
+                seen.append((method, path, len(body)))
+                return mcp_http_host._json(200, {"n": len(body)})
+
+        with mock.patch.object(mcp_http_host, "REQUEST_READ_SECONDS", 1):
+            server = mcp_http_host.make_server(Stub(), "127.0.0.1", 0)
+            thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                                      daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            port = server.server_address[1]
+
+            def send(method, path, body=b"", length=None):
+                connection = HTTPConnection("127.0.0.1", port, timeout=10)
+                try:
+                    connection.putrequest(method, path)
+                    connection.putheader("Content-Length",
+                                         str(len(body) if length is None else length))
+                    connection.endheaders(body)
+                    response = connection.getresponse()
+                    return response.status, response.read()
+                finally:
+                    connection.close()
+
+            def closed_unanswered(sock, bound):
+                began = time.monotonic()
+                sock.settimeout(bound + 3)
+                self.assertEqual(sock.recv(64), b"")
+                self.assertLess(time.monotonic() - began, bound + 2)
+
+            # a request line with no end of headers: closed by the deadline, never answered
+            partial = socket.create_connection(("127.0.0.1", port), timeout=10)
+            self.addCleanup(partial.close)
+            partial.sendall(b"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Le")
+            self.assertEqual(send("GET", "/meta")[0], 200)   # others served meanwhile
+            closed_unanswered(partial, 1)
+            # a request line alone, never finished
+            line = socket.create_connection(("127.0.0.1", port), timeout=10)
+            self.addCleanup(line.close)
+            line.sendall(b"POS")
+            closed_unanswered(line, 1)
+            # lengths around the cap
+            cap = mcp_server.MAX_LINE_BYTES
+            status, raw = send("POST", "/cap", b"x" * cap)
+            self.assertEqual((status, json.loads(raw)["n"]), (200, cap))
+            status, _ = send("POST", "/over", b"x" * (cap + 1))
+            self.assertEqual(status, 413)
+            status, _ = send("POST", "/bad", b"", length="-1")
+            self.assertEqual(status, 413)
+            self.assertNotIn("/over", [p for _, p, _ in seen])
+            self.assertNotIn("/bad", [p for _, p, _ in seen])
+            # GET and DELETE bodies are read whole, never left on the wire
+            status, raw = send("GET", "/g", b"abc")
+            self.assertEqual((status, json.loads(raw)), (200, {"n": 3}))
+            status, raw = send("DELETE", "/d", b"abcd")
+            self.assertEqual((status, json.loads(raw)), (200, {"n": 4}))
+            self.assertIn(("GET", "/g", 3), seen)
+            self.assertIn(("DELETE", "/d", 4), seen)
+            # a client that leaves mid-body: nothing answered, the responder never runs
+            gone = socket.create_connection(("127.0.0.1", port), timeout=10)
+            gone.sendall(b"POST /gone HTTP/1.1\r\nContent-Length: 32\r\n\r\n{\"a\"")
+            gone.close()
+            time.sleep(0.3)
+            self.assertNotIn("/gone", [p for _, p, _ in seen])
+            self.assertEqual(send("POST", "/after", b"{}")[0], 200)
+            server.shutdown()
+            thread.join(10)
+            self.assertFalse(thread.is_alive())
+
+
 class StartupTests(EmployeeDoorTestCase):
     def test_the_remote_host_binds_loopback_only(self):
         from operating import mcp_http_host

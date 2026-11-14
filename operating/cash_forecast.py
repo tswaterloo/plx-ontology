@@ -31,6 +31,7 @@ import threading
 from typing import Any, Callable, Mapping, MutableMapping
 
 from ontology.json_contract import validate
+from ontology import parent_watch
 
 TOOL_NAME = "plx.aggregate"   # served as its mode ``cash_forecast``, never a listed tool
 MODE = "cash_forecast"
@@ -229,7 +230,8 @@ def _read_isolated(read: Callable[..., Mapping[str, Any]], path: str, as_of: dt.
                                       as_of.isoformat()]).encode()).hexdigest()[:40]
 
     def compute() -> Mapping[str, Any]:
-        with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
+        with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
+                                 **parent_watch.pool_init()) as pool:
             return pool.submit(read, path, as_of).result()
 
     if folder is None:

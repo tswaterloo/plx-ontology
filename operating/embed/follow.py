@@ -51,6 +51,7 @@ from . import config
 from . import store as st
 from .shards import PERSON_KINDS, WRITE_BATCH, _exclusion, _Tally, produce
 from operating.chunking.pg_source import PG_PROJECTION
+from ontology import parent_watch
 
 CURSOR_NAME = Path("search") / "follow.json"
 
@@ -272,7 +273,8 @@ def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any, *,
             job = {"state": str(state), "layer": str(layer), "values": dict(values or {}),
                    "dsn": dsn or (values or {}).get("PLX_PG_DSN") or config.DEFAULT_DSN,
                    "objects": sorted(objects)}
-            with ProcessPoolExecutor(n, mp_context=mp.get_context("spawn")) as pool:
+            with ProcessPoolExecutor(n, mp_context=mp.get_context("spawn"),
+                             **parent_watch.pool_init()) as pool:
                 parts = list(pool.map(layer_shard, [(job, i, n) for i in range(n)]))
         seen = [cid for p in parts for cid in p["seen"]]
         produced = {tuple(pair) for p in parts for pair in p["produced"]}
@@ -338,7 +340,8 @@ def history_window(args: argparse.Namespace, store: Path | str, since: str, unti
            "dsn": values.get("PLX_PG_DSN") or config.DEFAULT_DSN,
            "window_since": since, "window_until": until,
            "min_free_gb": getattr(args, "min_free_gb", None)}
-    with ProcessPoolExecutor(n, mp_context=mp.get_context("spawn")) as pool:
+    with ProcessPoolExecutor(n, mp_context=mp.get_context("spawn"),
+                             **parent_watch.pool_init()) as pool:
         parts = list(pool.map(chunk_shard, [(job, i, shards) for i in range(shards)]))
     stopped = sorted({p.stopped for p in parts if getattr(p, "stopped", None)})
     return {"since": since, "until": until, "shards": shards,

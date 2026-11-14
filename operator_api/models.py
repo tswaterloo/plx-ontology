@@ -2596,6 +2596,46 @@ class RdBoard(_Model):
     reading: bool = _reading()
 
 
+class UatItem(_Model):
+    """One UAT feedback item (a SharePoint list item) as the list words it."""
+    record: str
+    list: str
+    title: str = ""
+    status: str
+    status_word: Optional[str] = None
+    resolution_word: Optional[str] = None
+    priority: Optional[str] = None
+    modified: Optional[str] = None
+    age_days: Optional[int] = Field(None, description="Days since the last change; open items only.")
+
+
+class UatPriorityCount(_Model):
+    word: str
+    count: int
+
+
+class UatFeedback(_Model):
+    """The MRP UAT feedback lists read as you may read them: totals per class, open items per
+    priority word, and the items (open first, then priority, then newest change). Items you
+    may not open are counted (``withheld``), never listed. Read only."""
+    as_of: str
+    served: bool = Field(True, description="False when the reading could not be made here.")
+    status: Optional[str] = None
+    totals: dict[str, int] = Field(default_factory=dict)
+    total: int = 0
+    open_priorities: list[UatPriorityCount] = Field(default_factory=list)
+    lists: list[str] = Field(default_factory=list)
+    items: list[UatItem] = Field(default_factory=list)
+    matched: int = 0
+    cut: bool = False
+    withheld: int = 0
+    sent: Literal[0] = 0
+    writes: Literal[0] = 0
+    stale_since: Optional[str] = _stale_since()
+    read_at: Optional[str] = _read_at()
+    reading: bool = _reading()
+
+
 class TeamPerson(_Model):
     """One person's row of the Team view. ``key`` is an opaque handle for the drill-down
     (never an object id, a name or an address)."""

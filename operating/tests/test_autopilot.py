@@ -217,12 +217,18 @@ class Engine(Fixture):
 
     def test_a_new_po_prepares_an_order_entry_intent_only_when_every_line_resolves(self):
         self.items_known("SYN-10", "SYN-20")
-        whole = self.message(2, "Please ship:\n1. SYN-10 Gallon soap: 6 cases\n"
-                                "2. SYN-20 Hand wash: 2 cases", subject="New PO 88123")
-        part = self.message(3, "Please ship:\n1. SYN-10 Gallon soap: 6 cases\n"
-                               "2. ZZ-404 Unknown thing: 2 cases", subject="New PO 88124")
+        whole = self.message(2, "Bill to: Synth customer\nPlease ship:\n1. SYN-10 Gallon "
+                                "soap: 6 cases\n2. SYN-20 Hand wash: 2 cases",
+                             subject="New PO 88123")
+        part = self.message(3, "Bill to: Synth customer\nPlease ship:\n1. SYN-10 Gallon "
+                               "soap: 6 cases\n2. ZZ-404 Unknown thing: 2 cases",
+                            subject="New PO 88124")
+        # the sender's customer record, but the PO itself names no customer: a
+        # distributor's or broker's mail is no proof of the buyer, so no entry
+        unnamed = self.message(5, "Please ship:\n1. SYN-10 Gallon soap: 6 cases",
+                               subject="New PO 88126")
         self.build()
-        self.cycle([whole, part])
+        self.cycle([whole, part, unnamed])
         by = {i["body"]["prepared"]["po_numbers"][0]: i for i in self.queue().items()}
         spec = ap.write_spec(by["88123"])
         self.assertEqual(spec["operation"], "sales_order_create")
@@ -239,6 +245,8 @@ class Engine(Fixture):
         # one line names no item we hold: no intent, the line is shown unresolved
         self.assertIsNone(ap.write_spec(by["88124"]))
         self.assertIn("lines_not_resolved", by["88124"]["body"]["prepared"]["gaps"])
+        self.assertIsNone(ap.write_spec(by["88126"]))
+        self.assertIn("customer_not_stated_in_po", by["88126"]["body"]["prepared"]["gaps"])
 
     def test_a_po_from_a_domain_two_customers_share_is_no_customer(self):
         self.items_known("SYN-10")
@@ -821,7 +829,8 @@ class PreparedClaims(Fixture):
                 money(self.w, line, "unit_price", currency, per=per)
                 self.w.link("SalesInvoiceLine.line_of", line, inv)
                 self.w.link("SalesInvoiceLine.for_item", line, self.items["SYN-10"])
-                msg = self.message(95, f"Please ship:\n1. SYN-10 Gallon soap: {ordered}",
+                msg = self.message(95, "Synth customer order\nPlease ship:\n"
+                                       f"1. SYN-10 Gallon soap: {ordered}",
                                    subject="New PO 88130")
                 self.build()
                 self.cycle([msg])

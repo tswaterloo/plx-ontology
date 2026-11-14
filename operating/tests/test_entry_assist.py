@@ -17,18 +17,30 @@ class OrderEntry(Fixture):
 
     def ctx(self):
         self.build()
+        import sqlite3
+        with sqlite3.connect(self.dir / "s.sqlite") as c:   # the builder's customer numbers
+            for v in self.w.rows["object_values"]:
+                if v["object_id"].startswith("Customer:") and v["property"] == "erp_code":
+                    c.execute("INSERT INTO identifiers (identifier_kind, normalized, raw, "
+                              "role, object_id, property, l1_handle, field_path, lineage, "
+                              "recorded_at) VALUES ('customer_erp_code', ?, ?, 'primary', ?, "
+                              "'erp_code', 'h', 'row.erp_code', 'workbench', "
+                              "'2026-01-01T00:00:00Z')",
+                              (v["value"].upper(), v["value"], v["object_id"]))
         st = pe._Store(self.dir / "s.sqlite", threads=1)
         self.addCleanup(st.close)
         return ap.Ctx(st, NOW.date(), time.monotonic() + 60, ())
 
     def test_a_po_mail_prefills_customer_po_and_lines_and_flags_what_it_cannot_read(self):
         self.items_known("SYN-10", "SYN-20")
-        msg = self.message(2, "Please ship:\n1. SYN-10 Gallon soap: 6 cases\n"
-                              "2. ZZ-404 Unknown thing: 2 cases", subject="New PO 88123")
+        msg = self.message(2, "Customer #: C100\nPlease ship:\n1. SYN-10 Gallon soap: "
+                              "6 cases\n2. ZZ-404 Unknown thing: 2 cases",
+                           subject="New PO 88123")
         got = ea.order_entry(self.ctx(), email=msg)
         h = got["header"]
         self.assertTrue(got["dry_run"])
         self.assertEqual((h["customer"]["status"], h["customer"]["value"]), ("cited", "C100"))
+        self.assertIn("customer number the PO states", h["customer"]["source"]["basis"])
         self.assertEqual((h["po_number"]["status"], h["po_number"]["value"]), ("cited", "88123"))
         self.assertEqual(h["ship_to"]["status"], "check")
         known, unknown = got["lines"]
@@ -41,6 +53,54 @@ class OrderEntry(Fixture):
         self.assertEqual((unknown["item"]["status"], unknown["item"]["value"]), ("check", None))
         self.assertEqual(got["counts"]["check"] + got["counts"]["cited"],
                          got["counts"]["fields"])
+
+    def test_the_sender_alone_never_fills_the_customer_it_is_only_suggested(self):
+        # the mail is linked to C100 (its sender's record) but the PO names no customer:
+        # a distributor or broker sends POs too, so the sender is no proof of the buyer
+        msg = self.message(3, "Please ship 6 cases of SYN-10", subject="PO 88124")
+        c = ea.order_entry(self.ctx(), email=msg)["header"]["customer"]
+        self.assertEqual((c["status"], c["value"]), ("check", None))
+        self.assertEqual([s["value"] for s in c["suggestions"]], ["C100"])
+        self.assertIn("sender's customer record", c["suggestions"][0]["basis"])
+
+    def test_a_po_naming_another_customer_than_the_senders_is_a_check_with_both(self):
+        # a distributor (D200, the sender's record) sends its end customer's PO
+        dist = self.w.obj("Customer", {"name": "Wholesale Distribution Inc", "code": "D200",
+                                       "erp_code": "D200"})
+        msg = self.message(4, "Ship to: Synth customer\nSYN-10: 6 cases", subject="PO 88125",
+                           customer=False)
+        self.w.link("Email.sent_by_customer", msg, dist)
+        c = ea.order_entry(self.ctx(), email=msg)["header"]["customer"]
+        self.assertEqual((c["status"], c["value"]), ("check", None))
+        self.assertEqual(sorted(c["candidates"]), ["C100", "D200"])
+        # the numbers are never in the words (a reader may open neither record)
+        self.assertNotIn("C100", c["reason"])
+        self.assertNotIn("D200", c["reason"])
+
+    def test_the_named_customer_is_cited_from_pasted_text_and_two_named_are_a_check(self):
+        self.w.obj("Customer", {"name": "Northern Wholesale Ltd", "code": "N300",
+                                "erp_code": "N300"})
+        self.w.obj("Customer", {"name": "Street numbered", "erp_code": "1200"})
+        ctx = self.ctx()
+        one = ea.order_entry(ctx, text="Bill to: Synth customer\nPO 77001\nSYN-10: 6 cases")
+        c = one["header"]["customer"]
+        self.assertEqual((c["status"], c["value"]), ("cited", "C100"))
+        self.assertEqual(c["source"]["basis"], "the customer's name in the PO")
+        two = ea.order_entry(ctx, text="Sold to Northern Wholesale Ltd, ship to Synth "
+                                       "customer\nPO 77002")
+        c = two["header"]["customer"]
+        self.assertEqual((c["status"], sorted(c["candidates"])), ("check", ["C100", "N300"]))
+        # a labelled number beats names; a vendor's own number is never the buyer's
+        got = ea.order_entry(ctx, text="Vendor #: N300\nCustomer No: C100\nNorthern "
+                                       "Wholesale Ltd\nPO 77003")["header"]["customer"]
+        self.assertEqual((got["status"], got["value"]), ("cited", "C100"))
+        none = ea.order_entry(ctx, text="Vendor #: N300\nPO 77004")["header"]["customer"]
+        self.assertEqual(none["status"], "check")
+        # an address block's street number is no customer number, nor an unlabelled one
+        for text in ("Bill To: 1200 Industrial Pkwy\nPO 77005",
+                     "Customer 1200 asked\nPO 77006"):
+            got = ea.order_entry(ctx, text=text)["header"]["customer"]
+            self.assertEqual(got["status"], "check", text)
 
     def test_several_po_numbers_or_no_sender_are_checks_with_candidates(self):
         self.items_known("SYN-10")
@@ -72,13 +132,35 @@ class OrderEntry(Fixture):
                 money(self.w, line, "unit_price", "CAD", per=per)
                 self.w.link("SalesInvoiceLine.line_of", line, inv)
                 self.w.link("SalesInvoiceLine.for_item", line, self.items["SYN-10"])
-                msg = self.message(95, f"Please ship:\n1. SYN-10 Gallon soap: {ordered}",
+                msg = self.message(95, "Account No. C100\nPlease ship:\n"
+                                       f"1. SYN-10 Gallon soap: {ordered}",
                                    subject="New PO 88130")
-                (ln,) = ea.order_entry(self.ctx(), email=msg)["lines"]
+                bc = self.w.obj("Customer", {"name": "Synth customer", "erp_code": "C100"},
+                                binding="bc.customers")
+                handle = ("bc://production/c0c0c0c0-1111-4111-8111-000000000001/customers/"
+                          "b1b1b1b1-2222-4222-8222-000000000002@v1")
+                for row in self.w.rows["object_versions"] + self.w.rows["object_values"]:
+                    if row["object_id"] == bc:
+                        row["l1_handle"] = handle
+                self.w.link("Customer.same_record_as", self.customer, bc)
+                ctx = self.ctx()
+                pre = ea.order_entry(ctx, email=msg)
+                (ln,) = pre["lines"]
+                entry = ea.bc_header(ctx, pre, "order")
                 if reused:
                     self.assertEqual(ln["unit_price"]["status"], "cited")
                     self.assertEqual(ln["unit_price"]["value"], "4.00")
                     self.assertEqual(ln["unit_price"]["source"]["document"], "INV-9")
+                    # the BC entry carries the cited price, and names its source record
+                    # among those the reader must open before it reaches the desk
+                    (bl,) = entry["payload"]["lines"]
+                    self.assertEqual((bl["lineObjectNumber"], bl["quantity"], bl["unitPrice"]),
+                                     ("SYN-10", "6", "4.00"))
+                    self.assertIn(ln["unit_price"]["source"]["record"], entry["records"])
+                    self.assertTrue({self.customer, bc, self.items["SYN-10"]}
+                                    <= set(entry["records"]))
+                    self.assertEqual(entry["party"]["bc_id"],
+                                     "b1b1b1b1-2222-4222-8222-000000000002")
                 else:
                     self.assertEqual((ln["unit_price"]["status"], ln["unit_price"]["value"]),
                                      ("check", None))

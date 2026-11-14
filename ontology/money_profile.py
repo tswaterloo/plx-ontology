@@ -39,6 +39,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from ontology import parent_watch
+
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "ontology" / "raw_money_profile.json"
 FORMAT = "plx-raw-money-profile/v1"
@@ -182,7 +184,8 @@ def profile(mirror: Path, rows: int = 30000, workers: int = 4) -> dict[str, Any]
     if workers > 1:
         # spawn, not fork: the host profiles from a threaded process, and a forked child can
         # inherit a lock another thread held and wait on it forever
-        with multiprocessing.get_context("spawn").Pool(workers) as pool:
+        with multiprocessing.get_context("spawn").Pool(
+                workers, **parent_watch.pool_init()) as pool:
             found = pool.map(_profile, jobs)
     else:
         found = [_profile(job) for job in jobs]

@@ -359,6 +359,82 @@ def resolve_customer(ctx: Any, event: Mapping[str, Any], text: str) -> dict[str,
             "price_list": ap._v(row, "price_list_code") or None}
 
 
+# A customer number the document labels as the buyer's: "Customer #: C100", "Account No.
+# C100", "Acct# C100", "Client ID: C100" (a number label or a colon is required). Address
+# blocks ("Bill to", "Sold to") are read by name, never as a number (a street number is
+# no customer number); the vendor's own numbers on a PO ("Vendor #", "Supplier No.") are
+# never the buyer's.
+ACCOUNT_LABEL = re.compile(
+    r"(?<![\w])(?:customer|cust\.?|account|acct\.?|a/c|client)"
+    r"\s*(?:(?:no\.?|number|num\.?|#|id|code)\s*[:#.\-]?|[:#])\s*"
+    r"(?P<n>[A-Za-z0-9][A-Za-z0-9-]{1,19})(?![\w-])", re.I)
+MIN_NAME = 8       # a customer's name read in a document: whole words, at least this long
+
+
+def _customer_names(ctx: Any) -> dict[str, list[str]]:
+    """lower-cased whole name -> the customer records with it (read once per run)."""
+    def make() -> dict[str, list[str]]:
+        ids = [r[0] for r in ctx.st.conn.execute(
+            "SELECT object_id FROM objects WHERE object_type = 'Customer'")]
+        out: dict[str, list[str]] = defaultdict(list)
+        for start in range(0, len(ids), 5000):
+            for oid, row in ap._read(ctx.st, ids[start:start + 5000], ("name",)).items():
+                name = " ".join(ap._v(row, "name").lower().split())
+                if len(name) >= MIN_NAME and re.search(r"[a-z]{3}", name):
+                    out[name].append(oid)
+        return dict(out)
+    st = ctx.st
+    return st.memo("entry:customer_names", make) if hasattr(st, "memo") else make()
+
+
+def customers_stated(ctx: Any, text: str) -> dict[str, list[str]]:
+    """The customer records the document itself names, by evidence: ``account`` (a
+    labelled customer or account number that is a customer's number) and ``name`` (a
+    customer's whole name, word-bounded). Never the sender."""
+    low = " ".join(text.lower().split())
+    out: dict[str, list[str]] = {}
+    numbers = sorted({m.group("n").upper() for m in ACCOUNT_LABEL.finditer(text)
+                      if re.search(r"\d", m.group("n"))})
+    if numbers:
+        ctx.check()
+        rows = ctx.st.conn.execute(
+            "SELECT object_id FROM identifiers WHERE normalized IN (SELECT value FROM "
+            "json_each(?)) AND identifier_kind = 'customer_erp_code' AND superseded_at "
+            "IS NULL", (json.dumps(numbers),)).fetchall()
+        found = sorted({r[0] for r in rows if str(r[0]).startswith("Customer:")})
+        if found:
+            out["account"] = found
+    named = sorted({o for name, oids in _customer_names(ctx).items()
+                    if name in low and re.search(r"(?<![\w])" + re.escape(name) + r"(?![\w])",
+                                                 low) for o in oids})
+    if named:
+        out["name"] = named
+    return out
+
+
+def customer_numbers(ctx: Any, cands: Sequence[str]) -> dict[str, list[str]]:
+    """customer number -> its live records among ``cands`` and their twins (no number,
+    deleted, blocked or marked do-not-use: left out); the ship-tos of one bill-to that
+    is itself a candidate fold into it."""
+    twins = [o for o in ctx.linked_many(cands, ("Customer.same_record_as",))
+             if o.startswith("Customer:")]
+    rows = _customer_rows(ctx, sorted(set(cands) | set(twins)))
+    live = {o: r for o, r in rows.items()
+            if ap._v(r, "erp_code") and not DONT_USE.search(ap._v(r, "name"))
+            and not ap._v(r, "deleted_at") and ap._v(r, "bc_blocked").lower() not in
+            ("all", "true", "1", "invoice", "ship")}
+    by_number: dict[str, list[str]] = defaultdict(list)
+    for o, r in live.items():
+        by_number[ap._v(r, "erp_code").upper()].append(o)
+    bills = {ap._v(live[o], "bill_to_erp_code").upper() for os in by_number.values()
+             for o in os}
+    if len(by_number) > 1 and len(bills) == 1 and "" not in bills \
+            and next(iter(bills)) in by_number:
+        bill = next(iter(bills))
+        by_number = {bill: by_number[bill]}
+    return {n: sorted(os) for n, os in by_number.items()}
+
+
 def resolve_items(ctx: Any, tokens: Sequence[str]) -> dict[str, list[str]]:
     """token (upper) -> the item records whose item number is exactly it."""
     wanted = sorted({t.upper() for t in tokens} | {t.upper().replace(" ", "") for t in tokens})
@@ -641,8 +717,15 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         return {"skip": "nothing_resolved"}     # no customer, no line: nothing to prepare
     dates = [ln["available"]["date"] for ln in out_lines]
     ship = max(dates) if out_lines and all(dates) else None
-    ready = bool(customer.get("number") and pos and out_lines and not unresolved
-                 and not priced_out)
+    # the entry names the customer the PO itself states, never only the sender's record
+    # (mail comes from distributors and brokers too: entry_assist.customer_of)
+    stated = customers_stated(ctx, po_text[:200_000]) if customer.get("number") else {}
+    said = customer_numbers(ctx, stated.get("account") or stated.get("name") or [])
+    confirmed = bool(customer.get("number")) and list(said) == [customer["number"].upper()]
+    if customer.get("number") and not confirmed:
+        out["gaps"].append("customer_not_stated_in_po")
+    ready = bool(customer.get("number") and confirmed and pos and out_lines
+                 and not unresolved and not priced_out)
     if ready:
         out["write"] = {
             "system": "bc", "operation": "sales_order_create",

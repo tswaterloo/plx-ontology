@@ -58,7 +58,7 @@ import sys
 import time
 from typing import Any, Callable, Iterator, Sequence
 
-from ontology import store_ddl
+from ontology import parent_watch, store_ddl
 
 # The schema a load writes (``PLX_ONTOLOGY_SCHEMA``): ``ontology``, or ``ontology_next`` for
 # a generation loaded beside the served one (``operating.pg.ontology_swap``).
@@ -803,7 +803,8 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
             ranges_pool = ranges
         with (futures.ProcessPoolExecutor(
                 max_workers=max(1, min(workers, len(ranges))),
-                mp_context=multiprocessing.get_context("spawn")) if ranges_pool
+                mp_context=multiprocessing.get_context("spawn"),
+                **parent_watch.pool_init()) if ranges_pool
               else _NoPool()) as pool:
             jobs = [pool.submit(_load_range, path, dsn, name, low, high, floor)
                     for low, high in ranges_pool or ()]

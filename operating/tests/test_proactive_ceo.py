@@ -169,6 +169,39 @@ class CeoSignals(Engine):
         self.assertEqual(
             rules[ceo.DEMAND]["not_evaluated_by_reason"]["customer_same_name_unlinked"], 1)
 
+    def test_a_same_named_customer_another_number_of_one_system_is_another_customer(self):
+        # 11-13 judging: five GoodLife Fitness locations, each Portal customer verified to
+        # its own Sage customer number; one location's Sage order made every other
+        # location's drop look like it might be theirs. Sage numbers them apart
+        def chain(name: str | None, sage_name: str | None) -> tuple[str, str]:
+            # the cluster's name row is stated by one of its records only, so the two
+            # chains' names come from different systems (Portal, Sage)
+            portal = w.obj("Customer", {"name": name} if name else {},
+                           audience="api:customers")
+            for i in range(4):
+                order(w, portal, placed=day(100 + 60 * i))
+            order(w, portal, placed=day(10), total="100")
+            sage = w.obj("Customer", {"name": sage_name} if sage_name else {},
+                         audience="api:customers", binding="sage.customers")
+            w.link("Customer.same_record_as", portal, sage)
+            return portal, sage
+        w = World()
+        dropped, _ = chain("SYNTH Chain", None)
+        _, other = chain(None, "SYNTH Chain")                # another location, steady
+        order(w, other, placed=day(12), binding="sage.oe_orders", audience="api:sage")
+        order(w, other, placed=day(14), binding="sage.oe_orders", audience="api:sage")
+        loose = customer(w, "SYNTH Loose")                  # holds no Sage record: may be
+        for i in range(4):                                  # the same-named Sage customer
+            order(w, loose, placed=day(100 + 60 * i))
+        order(w, loose, placed=day(10), total="100")
+        named = w.obj("Customer", {"name": "SYNTH Loose"}, audience="api:customers",
+                      binding="sage.customers")
+        order(w, named, placed=day(12), binding="sage.oe_orders", audience="api:sage")
+        summary = self.run_rules(w)
+        self.assertEqual({g["object_id"] for g in self.kinds(ceo.DEMAND)}, {dropped})
+        self.assertEqual(summary["not_evaluated"][ceo.DEMAND].get(
+            "customer_same_name_unlinked"), 1)
+
     def test_a_source_whose_capture_ended_is_not_a_customer_that_stopped(self):
         w = World()
         who = customer(w)

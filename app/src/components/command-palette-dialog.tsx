@@ -30,6 +30,7 @@ const PLACES: { label: string; href: string; hint: string; words: string }[] = [
   { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
   { label: "R&D projects", href: "/rd-projects", hint: "Sample and R&D projects, idle first", words: "rd r&d samples projects lab" },
+  { label: "UAT feedback", href: "/uat-feedback", hint: "MRP UAT items by status and priority, read only", words: "uat feedback mrp testing issues acceptance" },
   { label: "Activity", href: "/activity", hint: "What was sent, approved and logged", words: "activity actions log journal" },
 ];
 

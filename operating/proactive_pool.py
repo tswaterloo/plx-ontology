@@ -47,6 +47,8 @@ import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from ontology import parent_watch
+
 MAX_WORKERS = 4
 WORKER_BYTES = 2_500_000_000     # a worker's session over a full store (~2.2 GB measured)
 # The pool's whole memory: at most this, and at most a quarter of what the host has free,
@@ -274,7 +276,7 @@ class ToolPool:
                        if sys.version_info >= (3, 11) else {})
             self.executor = ProcessPoolExecutor(
                 max_workers=self.size, mp_context=_WorkerContext(),
-                initializer=_init, initargs=(self.spec,), **recycle)
+                **parent_watch.pool_init(_init, (self.spec,)), **recycle)
         return self.executor
 
     def map(self, task: Callable[[Any, Any], Any], items: Sequence[Any], *,

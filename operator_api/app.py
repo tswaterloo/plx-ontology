@@ -1000,6 +1000,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         with first_partial():
             return backend.rd_board(who)
 
+    @app.get("/api/uat-feedback", response_model=m.UatFeedback, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
+    def uat_feedback(status: Optional[str] = None, who: Reader = Depends(reader)
+                     ) -> m.UatFeedback:
+        """The MRP UAT feedback lists as you may read them (read only): totals per class,
+        open items per priority and the items, open first. Items you may not open are
+        counted, never shown. ``status`` is open, fixed, answered or unknown."""
+        return backend.uat_feedback(who, status)
+
     @app.post("/api/workload/grants", response_model=m.WorkloadGrants, tags=["actions"],
               responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
                          422: {"model": m.ErrorResponse}})

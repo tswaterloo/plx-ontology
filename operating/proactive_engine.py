@@ -1531,6 +1531,13 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
     open_orders: set[str] = set()
     dated_orders: set[str] = set()
     undated_reads: dict[str, list[tuple[str, list, Any]]] = defaultdict(list)
+    # orders a read raised a receipt reconciliation note for (another copy records them
+    # received): never also "open, no due date" (11-13 judging: a March BC order still
+    # Open beside the Portal's Complete copy with its receipts)
+    reconciled_orders: set[str] = set()
+    # orders another read of which is closed (the Portal's Complete copy of a migrated BC
+    # order still Open, joined through the BC read's twin): never "open, no due date"
+    closed_orders: set[str] = set()
     for po in reads:
         members = po.members
         order = root.get(members[0], members[0])
@@ -1570,6 +1577,9 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
                     # (11-13 judging: 12 of 17 rested on a B.Order header or no receipt)
                     counts[doubt] += 1
                     continue
+                # another copy records the order received: it is this note, never also
+                # "open, no due date" (decided once every read is done)
+                reconciled_orders.add(order)
             gaps.append((_receipt_reconciliation if conflict.get("reconcile")
                          else _systems_disagree)(name, conflict, records,
                                                  [*marks, *po.marks]))
@@ -1587,6 +1597,8 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             skip(state.reason)   # neither open nor closed: counted, never guessed
             continue
         if state.cls != po_status.OPEN:
+            if state.cls == po_status.CLOSED:
+                closed_orders.add(order)
             continue
         open_orders.add(order)
         rep = min(m for m in members if any(src.props(m).get(p) for p in PO_STATUS_PROPS))
@@ -1598,6 +1610,16 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             # the supplier's date in its place (nor a BC Draft twin's, decision
             # 2026-11-01-late-list-draft-twins): never late, listed apart as
             # "open, no due date recorded", cited by the status it is open by
+            leads = [link for link in (src.confirm_links(
+                [*members, *(t for t in po.date_twins if t not in members)]) or [])
+                if link["tier"] not in CONFIRMING]
+            if leads:
+                # a supplier confirmation is linked only as a lead: it may state the date
+                # (11-13 judging: one confirming delivery 2027-01-25), so "no supplier-
+                # confirmed date" is not known
+                skip("confirmation_unsettled", *[(l["from_object"], _markings(
+                    l["markings"], *marks)) for l in leads])
+                continue
             skip("no_need_date")
             # decided once every read of the order is done: an order another read dates
             # is never undated (one order, one verdict)
@@ -1736,6 +1758,11 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
     for order, pending in undated_reads.items():
         if order in dated_orders:
             continue   # another read of this order dates it: never undated
+        if order in reconciled_orders or order in closed_orders:
+            # another copy records it received or closed: a reconciliation (listed as its
+            # note when one is raised), never an open order missing its date
+            counts["closed_elsewhere"] += 1
+            continue
         if order in stale:
             # open and undated, but nothing about it moved in the active window (a legacy
             # back-order): counted apart, never listed as current work
@@ -1762,10 +1789,11 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
                         "classes": {cls: classes.get(cls, 0) for cls in po_status.CLASSES},
                         **{key: counts.get(key, 0) for key in (
                             "evaluated", "late", "at_risk", "unconfirmed", "undated",
-                            "historic", *RECEIPT_DOUBTS)},
+                            "historic", "closed_elsewhere", *RECEIPT_DOUBTS)},
                         # orders open by any of their reads (a Portal Pending order beside
                         # its BC Draft twin is classed by the BC record, yet open here):
-                        # open_by_read = late + undated + historic + open_other
+                        # open_by_read = late + undated + historic + closed_elsewhere
+                        # + open_other
                         "open_by_read": len(open_orders),
                         "open_other": len(open_orders - late_orders
                                           - (set(undated_reads) - dated_orders))}

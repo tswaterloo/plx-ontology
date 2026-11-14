@@ -627,6 +627,52 @@ class EngineTest(Engine):
         # a receipt in any copy closes the order: no late item, no systems_disagree alert
         self.assertEqual([g for g in gaps if g["kind"] != RECONCILE], [])
 
+    def test_an_undated_open_copy_of_a_closed_order_is_never_open_without_a_date(self):
+        # 11-13 judging (undated_po): a migrated BC order still Open, no date of its own,
+        # beside the Portal's copy Complete (part received, the rest cancelled) was listed
+        # "open, no due date recorded"; and one beside a FileMaker copy received on a
+        # recorded receipt, which is its reconciliation note alone
+        for count in (1, 10, 60):
+            with self.subTest(n=count):
+                w = World()
+                bcs, noted = [], []
+                for i in range(count):
+                    bc = w.obj("PurchaseOrder", {"bc_status": "Open",
+                                                 "bc_fully_received": "false"},
+                               audience="bc:x", binding="bc.purchase_orders")
+                    if i % 2:
+                        portal = w.obj("PurchaseOrder", {"status": "Complete"},
+                                       binding="portal.app_purchase_order")
+                        w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                            "ordered_quantity": ("10", "ea"),
+                            "received_quantity": ("4", "ea", "received")}), portal)
+                    else:
+                        portal = w.obj("PurchaseOrder", {"fm_status": "Complete"},
+                                       binding=ps.FM_BINDING)
+                        item = w.obj("PurchaseOrderLine", {
+                            "ordered_quantity": ("10", "ea"),
+                            "fm_receiving_status": "Complete"})
+                        w.link("PurchaseOrderLine.line_of", item, portal)
+                        w.link("Receipt.receives_line", w.obj(
+                            "Receipt", {"fm_status": "Received"},
+                            binding="portal.fm_receipt"), item)
+                        noted.append(bc)
+                    w.link("PurchaseOrder.same_record_as", portal, bc, "corroborated")
+                    bcs.append(bc)
+                lone = w.obj("PurchaseOrder", {"bc_status": "Open",
+                                               "bc_fully_received": "false"},
+                             audience="bc:x", binding="bc.purchase_orders")
+                summary = self.run_engine(w)
+                gaps = self.read(limit=1000)["gaps"]
+                self.assertEqual(sorted(g["object_id"] for g in gaps
+                                        if g["kind"] == RECONCILE), sorted(noted))
+                # only the lone open order, nothing beside it closed, is listed undated
+                self.assertEqual([g["object_id"] for g in gaps if g["kind"] == "undated_po"],
+                                 [lone])
+                self.assertEqual(summary["po_lateness"]["undated"], 1)
+                self.store.unlink()
+                self.inbox.unlink(missing_ok=True)
+
     def test_a_received_copy_that_does_not_stand_behind_it_raises_no_note(self):
         # 11-13 judging: 12 of 17 notes rested on a FileMaker header still saying B.Order
         # or on a Complete header with no receipt cited; neither is raised, each counted

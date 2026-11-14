@@ -1,6 +1,6 @@
 {
  "schema": "plx-alert-kinds/v1",
- "rule": "A type is on by default only when its last hand-checked live sample has precision.value >= 0.90 on precision.checked >= 15 items and it is actionable (one record, one owner, one next step). home (My work) requires default on. A type with no precision block is off. Off types still run: they show in Watching and on record pages, never on My work. A reader may switch an off type on for themselves in Watching; switching it on for everyone needs a new measurement here.",
+ "rule": "A type is on by default only when its last hand-checked live sample has precision.value >= 0.90 on precision.checked >= 15 items. A type of an alert kind (surface alert) must also be actionable (one record, one owner, one next step). A type of a data health or weekly trends kind (surface data_health or weekly) is a page entry, never an alert: on, it shows on the Data health page or in the Weekly review, never on My work (home false), and need not be actionable. home (My work) requires default on and an alert surface. A type with no precision block is off. Off types still run: they show in Watching and on record pages, never on My work. A reader may switch an off type on for themselves in Watching; switching it on for everyone needs a new measurement here.",
  "kinds": [
   {
    "kind": "reply_owed",
@@ -548,15 +548,15 @@
    "kind": "weekly_trends",
    "label": "Customer ordering much less",
    "precision": {
-    "value": 0.667,
-    "checked": 15,
-    "correct": 10,
-    "on": "2026-11-13",
-    "source": "/data/scratch/alerts-fresh-judged-1112.tsv r1116: 10/15 right, 5 unknown (3 same-name customer of another source ordered in the window; 2 counts not reconciled: recent orders in another currency)",
-    "note": "Re-judge after it lands"
+    "value": 1.0,
+    "checked": 34,
+    "correct": 34,
+    "on": "2026-11-14",
+    "source": "/data/scratch/alerts-fresh-judged-1112.tsv: every one of the 34 open on the served inbox (full run 2026-11-13 9:16 PM ET; a run alone with the identity fix found the same 34) judged against its customer's own records: 28 by the earlier draws and aj1114, 6 re-judged by customer number ('aj1114 rejudge': five GoodLife Fitness locations each verified to its own Sage number, no order since Mar-Jun; one with 3 orders on its Sage number as stated)",
+    "note": "trend (weekly review), never an alert; identity by customer number per system, not name"
    },
    "actionable": false,
-   "default": "off",
+   "default": "on",
    "home": false,
    "roles": [
     "SALES",

@@ -17,9 +17,15 @@ class Registry(unittest.TestCase):
                     self.assertIsNotNone(p, "an unmeasured type is off")
                     self.assertGreaterEqual(p["value"], 0.90)
                     self.assertGreaterEqual(p["checked"], 15)
-                    self.assertTrue(t["actionable"])
+                    # an alert must be actionable; a data-health or weekly-trend type is
+                    # a page entry (Data health, Weekly review), never an alert
+                    if ak.surface(t["kind"]) == "alert":
+                        self.assertTrue(t["actionable"])
+                    else:
+                        self.assertFalse(t["home"], "a page entry never reaches My work")
                 if t["home"]:
                     self.assertEqual(t["default"], "on", "My work needs default on")
+                    self.assertEqual(ak.surface(t["kind"]), "alert", "My work holds alerts")
                 if t["precision"] is not None:
                     self.assertTrue({"value", "checked", "on", "source"} <= set(t["precision"]))
                     # a measurement stating its judged count agrees with its precision

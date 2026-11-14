@@ -1040,6 +1040,33 @@ class MockBackend(TemplatesMixin, ActionsMixin, WriteIntentsMixin, AutopilotMixi
         return m.RdBoard(as_of="2026-01-05", idle_after_days=idle_days(), total=0, idle=0, sent=0,
                          writes=0)
 
+    def uat_feedback(self, reader: Reader, status: Optional[str] = None) -> m.UatFeedback:
+        """A few synthetic UAT items so the page works in the demo world."""
+        from .errors import UserFacing
+        if status is not None and status not in ("open", "fixed", "answered", "unknown"):
+            raise UserFacing("invalid_request", "status is open, fixed, answered or unknown.",
+                             422)
+        rows = [("1", "Label print cuts the lot number", "open", "Critical", 12),
+                ("2", "BOM export misses phantom items", "open", "High", 30),
+                ("3", "Report title typo", "open", "Low", 3),
+                ("4", "Receiving screen slow", "fixed", "High", 40),
+                ("5", "Ask about unit of measure", "answered", None, 20)]
+        totals = {"answered": 1, "fixed": 1, "open": 3}
+        items = [m.UatItem(record=f"SharePointListItem:uat-{i}", list="MRP UAT Feedback",
+                           title=t, status=s, status_word=s.title(), priority=p,
+                           modified="2026-01-05", age_days=a if s == "open" else None)
+                 for i, t, s, p, a in rows if not status or s == status]
+        counts: dict[str, int] = {}
+        for it in rows:
+            if it[2] == "open":
+                w = it[3] or "No priority"
+                counts[w] = counts.get(w, 0) + 1
+        return m.UatFeedback(
+            as_of="2026-01-05", status=status, totals=totals, total=5,
+            open_priorities=[m.UatPriorityCount(word=w, count=n) for w, n in counts.items()],
+            lists=["MRP UAT Feedback"], items=items, matched=totals.get(status, 5) if status
+            else 5)
+
     def record_pack(self, reader: Reader, object_type: str, object_id: str) -> m.RecordPack:
         from .errors import UserFacing
         raise UserFacing("not_found", "That record is not one you can open.", 404)

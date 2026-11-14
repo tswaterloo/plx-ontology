@@ -827,7 +827,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/autopilot", "/ops", "/trust", "/work-log", "/templates", "/help"];
+export const TOOLBAR_PAGES: string[] = ["/late", "/meetings", "/team", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/watching", "/my-work", "/rd-projects", "/uat-feedback", "/autopilot", "/ops", "/trust", "/work-log", "/templates", "/help"];
 
 function ShellSkeleton() {
   return (

@@ -64,6 +64,8 @@ import sys
 import time
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from ontology import parent_watch
+
 MARKS = ("finance", "pii")
 LOCK = "SELECT pg_advisory_xact_lock(hashtext('ontology_delta'))"   # ontology_migrate.LOCK
 BATCH = 2_000
@@ -457,7 +459,8 @@ def judge(state: str, work: Path, shards: int, workers: int,
         todo.reverse()
     started = time.monotonic()
     done, held = [], 0
-    with mp.get_context("spawn").Pool(min(workers, max(1, len(todo)))) as pool:
+    with mp.get_context("spawn").Pool(min(workers, max(1, len(todo))),
+                                  **parent_watch.pool_init()) as pool:
         for got in pool.starmap(judge_shard,
                                 [(state, s, shards, str(out), snap) for s in todo],
                                 chunksize=1):

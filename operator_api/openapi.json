@@ -17343,6 +17343,232 @@
         "title": "TruthFlag",
         "type": "object"
       },
+      "UatFeedback": {
+        "additionalProperties": false,
+        "description": "The MRP UAT feedback lists read as you may read them: totals per class, open items per\npriority word, and the items (open first, then priority, then newest change). Items you\nmay not open are counted (``withheld``), never listed. Read only.",
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "cut": {
+            "default": false,
+            "title": "Cut",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UatItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "lists": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lists",
+            "type": "array"
+          },
+          "matched": {
+            "default": 0,
+            "title": "Matched",
+            "type": "integer"
+          },
+          "open_priorities": {
+            "items": {
+              "$ref": "#/components/schemas/UatPriorityCount"
+            },
+            "title": "Open Priorities",
+            "type": "array"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.",
+            "title": "Read At"
+          },
+          "reading": {
+            "description": "True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.",
+            "title": "Reading",
+            "type": "boolean"
+          },
+          "sent": {
+            "const": 0,
+            "default": 0,
+            "title": "Sent",
+            "type": "integer"
+          },
+          "served": {
+            "default": true,
+            "description": "False when the reading could not be made here.",
+            "title": "Served",
+            "type": "boolean"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.",
+            "title": "Stale Since"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "totals": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Totals",
+            "type": "object"
+          },
+          "withheld": {
+            "default": 0,
+            "title": "Withheld",
+            "type": "integer"
+          },
+          "writes": {
+            "const": 0,
+            "default": 0,
+            "title": "Writes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "as_of"
+        ],
+        "title": "UatFeedback",
+        "type": "object"
+      },
+      "UatItem": {
+        "additionalProperties": false,
+        "description": "One UAT feedback item (a SharePoint list item) as the list words it.",
+        "properties": {
+          "age_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Days since the last change; open items only.",
+            "title": "Age Days"
+          },
+          "list": {
+            "title": "List",
+            "type": "string"
+          },
+          "modified": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "record": {
+            "title": "Record",
+            "type": "string"
+          },
+          "resolution_word": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Word"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "status_word": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Word"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record",
+          "list",
+          "status"
+        ],
+        "title": "UatItem",
+        "type": "object"
+      },
+      "UatPriorityCount": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "word": {
+            "title": "Word",
+            "type": "string"
+          }
+        },
+        "required": [
+          "word",
+          "count"
+        ],
+        "title": "UatPriorityCount",
+        "type": "object"
+      },
       "UnderstandingEvent": {
         "additionalProperties": false,
         "properties": {
@@ -25248,6 +25474,66 @@
         "summary": "Trust Page",
         "tags": [
           "trust"
+        ]
+      }
+    },
+    "/api/uat-feedback": {
+      "get": {
+        "description": "The MRP UAT feedback lists as you may read them (read only): totals per class,\nopen items per priority and the items, open first. Items you may not open are\ncounted, never shown. ``status`` is open, fixed, answered or unknown.",
+        "operationId": "uat_feedback_api_uat_feedback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UatFeedback"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Uat Feedback",
+        "tags": [
+          "actions"
         ]
       }
     },

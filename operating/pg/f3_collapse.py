@@ -55,6 +55,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from ontology import parent_watch
+
 LOCK = "SELECT pg_advisory_xact_lock_shared(hashtext('ontology_delta'))"
 
 # A link feature list without the versions it cites (F2 ``_VERSION_KEYS``); '' for none.
@@ -297,7 +299,8 @@ def load_sightings(dsn: str, paths: dict[str, str], *, workers: int = 8, slices:
     started = time.monotonic()
     stop_at = started + budget_minutes * 60
     todo = list(tasks)
-    with ProcessPoolExecutor(max_workers=max(1, workers)) as pool:
+    with ProcessPoolExecutor(max_workers=max(1, workers),
+                             **parent_watch.pool_init()) as pool:
         pending: set[Any] = set()
         while todo or pending:
             # a slice starts only within the budget; the running ones finish (each its

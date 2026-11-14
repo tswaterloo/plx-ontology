@@ -2370,7 +2370,11 @@ AGE_ONLY_GAPS = frozenset({("stale", "stale_source"), ("stale", "schema_drift"),
                            ("unknown", "possibly_related"),
                            # a source read only in relations holding none of the
                            # answer's records (``ontology_tools._partly_read_elsewhere``)
-                           ("unknown", "partly_read_elsewhere")})
+                           ("unknown", "partly_read_elsewhere"),
+                           # a listed property no member type declares (plx.query rows,
+                           # plx.rows: listed without it); a filter or measure on one is
+                           # refused, so it never leaves a member out of a count
+                           ("unknown", "unknown_property")})
 # A result whose records rest on lead-tier links (a set walked from a lead set, twins
 # joined only by a lead): what it counts or lists is a likely match, said as a lead.
 LEAD_BASIS_GAP = "lead_basis"

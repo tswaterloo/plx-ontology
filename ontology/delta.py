@@ -72,6 +72,7 @@ from urllib.parse import unquote
 from operating import declared_schema as _schemas
 from operating.declared_schema import delta_held as _DELTA_HELD
 from operating.declared_schema import delta_state as _DELTA_STATE
+from ontology import parent_watch
 
 FORMAT = "plx-delta/v1"
 POINTER = "CURRENT.json"
@@ -1519,9 +1520,9 @@ def mention_targets(mail_state: Path, base: Base, report: dict[str, Any], *,
         specs = par._kept_stores()
         with ProcessPoolExecutor(min(count, len(groups)),
                                  mp_context=multiprocessing.get_context("spawn"),
-                                 initializer=_worker_function("_open_mail"),
-                                 initargs=(str(mail_state), tuple(domains), specs,
-                                           family)) as pool:
+                                 **parent_watch.pool_init(
+                                     _worker_function("_open_mail"),
+                                     (str(mail_state), tuple(domains), specs, family))) as pool:
             for found, takes in pool.map(_worker_function("_group_keys"), *zip(*groups),
                                          chunksize=4):
                 keys.update(tuple(k) for k in found)

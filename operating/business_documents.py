@@ -241,6 +241,8 @@ def _customers(conn, gate: dt.Gate) -> dt.Parties:
 
 _FROM = re.compile(r"(?im)^\s*\*?From:\*?\s*(?:[^<\n]*<)?([\w.+'-]+@[\w-]+(?:\.[\w-]+)+)")
 THREAD_MAIL = 300        # messages read per sender domain for thread evidence
+COA_SCAN = 1000          # certificate lot / code cells read per code (more: the answer says so)
+ISSUE_SCAN = 50000       # issue-word cells read per source (more: the answer says so)
 THREAD_SHARE = 0.8       # the share of a domain's tied messages one customer must hold
 
 
@@ -259,8 +261,8 @@ class CustomerOf:
        more) the file name or the sheet's first lines carry.
     """
 
-    def __init__(self, conn, gate: dt.Gate) -> None:
-        self.conn, self.gate = conn, gate
+    def __init__(self, conn, gate: dt.Gate, ans: "Answer | None" = None) -> None:
+        self.conn, self.gate, self.ans = conn, gate, ans
         self.parties = dt.Parties(conn, "Customer", CUSTOMER_TWINS,
                                   getattr(gate.guard, "internal", ()))
         self._threads: dict[str, tuple[str | None, list[str]]] = {}
@@ -334,19 +336,18 @@ class CustomerOf:
             return None, []
         mails = []
         try:
-            senders = conn.execute(
-                "SELECT v.object_id, c.value FROM value_text vt JOIN value_cells c ON "
-                "c.rowid = vt.rowid JOIN value_sources s ON s.src = c.src JOIN object_versions v "
-                "ON v.rowid = s.ver JOIN value_fields f ON f.field = c.field WHERE value_text "
-                "MATCH ? AND v.superseded_at IS NULL AND f.property = 'sender' AND "
-                "v.object_id LIKE 'Email:%' LIMIT ?", (token, THREAD_MAIL * 4))
+            senders = dt.word_values(conn, token, ["sender"], prefix="Email:",
+                                     limit=THREAD_MAIL * 4).rows
         except sqlite3.OperationalError as exc:
             if "interrupt" in str(exc):
                 raise
-            # no value word index here (a Postgres store without it): no thread evidence,
-            # so the threads name nobody (never a guess)
+            # the value word index unreadable: no thread evidence, so the threads name
+            # nobody (never a guess), and the answer says it was not read
+            if self.ans is not None:
+                self.ans.counts["sender_threads_not_read"] += 1
+                self.ans.complete = False
             return None, []
-        for oid, value in senders:
+        for oid, _prop, value in senders:
             if dt.domain_of(value) == domain and self.gate.visible(oid):
                 mails.append(oid)
             if len(mails) >= THREAD_MAIL:
@@ -468,7 +469,7 @@ def forecast_lines(conn, gate: dt.Gate, ans: Answer) -> list[dict[str, Any]]:
     out = []
     docs = _docs(conn, gate, FORECAST_WORDS, ans,
                  require=lambda n: _words_in(n, FORECAST_WORDS))
-    customer_of = CustomerOf(conn, gate)
+    customer_of = CustomerOf(conn, gate, ans)
     for d in docs:
         customer, basis, evidence = customer_of(d)
         if customer is None:
@@ -640,7 +641,7 @@ def view_priority_fill(conn, gate, ans, args, as_of) -> None:
                  require=lambda n: _words_in(n, PRIORITY_WORDS))
     # each order's newest listing is its current one (a later list replaces an earlier)
     listed: dict[str, tuple[tuple, dict[str, Any], list[str]]] = {}
-    customer_of = CustomerOf(conn, gate)
+    customer_of = CustomerOf(conn, gate, ans)
     for d in sorted(docs, key=lambda d: (d.day or date.min, d.object_id)):
         rank = 0
         of_list: tuple | None = None
@@ -776,7 +777,7 @@ def view_price_sheets(conn, gate, ans, args, as_of) -> None:
     docs = _docs(conn, gate, PRICE_WORDS, ans, require=lambda n: _words_in(n, PRICE_WORDS))
     newest: dict[tuple[str, str], tuple[dt.Doc, dt.Cell, Decimal, str | None]] = {}
     parties = _customers(conn, gate)
-    customer_of = CustomerOf(conn, gate)
+    customer_of = CustomerOf(conn, gate, ans)
     groups: dict[str, list[str]] = {}
     for d in docs:
         customer, _basis, _evidence = customer_of(d)
@@ -899,7 +900,7 @@ def view_compliance_pack(conn, gate, ans, args, as_of) -> None:
                      "dated": d.day.isoformat() if d.day else None, "subject": subject},
                     [*d.cited, subject])
     for code in codes:
-        for coa in _coa_records(conn, code):
+        for coa in _coa_records(conn, code, ans):
             ans.counts["coa_record"] += 1
             ans.add({"kind": "coa_record", "name": code[:60], "document": coa,
                      "dated": None, "subject": subject}, [coa, subject])
@@ -925,22 +926,31 @@ def _codes(conn, subject: str) -> list[str]:
     return sorted(set(out))
 
 
-def _coa_records(conn, code: str) -> list[str]:
-    q = dt.fts_query([w for w in re.split(r"[^A-Za-z0-9]+", code) if w])
+def _coa_records(conn, code: str, ans: "Answer | None" = None) -> list[str]:
+    """The certificates of analysis whose lot or product code is ``code`` (at most 20).
+    The value word index unreadable: none, with ``coa_not_read`` counted and the answer
+    marked incomplete (never a silent "no certificate")."""
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", code) if w]
+    q = " AND ".join(dt.fts_query([w]) for w in words if dt.fts_query([w]))
     if not q:
         return []
     out = set()
     try:
-        for oid, prop, value in conn.execute(
-                "SELECT v.object_id, f.property, c.value FROM value_text vt JOIN value_cells c "
-                "ON c.rowid = vt.rowid JOIN value_sources s ON s.src = c.src JOIN "
-                "object_versions v ON v.rowid = s.ver JOIN value_fields f ON f.field = c.field "
-                "WHERE value_text MATCH ? AND v.superseded_at IS NULL AND v.object_id LIKE "
-                "'CertificateOfAnalysis:%' AND f.property IN ('lot', 'product_code')", (q,)):
-            if _norm_code(value) == _norm_code(code):
-                out.add(oid)
-    except Exception:  # noqa: BLE001 - no text index: no records named
+        found = dt.word_values(conn, q, ["lot", "product_code"],
+                               prefix="CertificateOfAnalysis:", limit=COA_SCAN)
+    except sqlite3.OperationalError as exc:
+        if "interrupt" in str(exc):
+            raise
+        if ans is not None:
+            ans.counts["coa_not_read"] += 1
+            ans.complete = False
         return []
+    for oid, _prop, value in found.rows:
+        if _norm_code(value) == _norm_code(code):
+            out.add(oid)
+    if not found.complete and ans is not None:
+        ans.counts["coa_more_matches"] += 1
+        ans.complete = False
     return sorted(out)[:20]
 
 
@@ -1119,7 +1129,7 @@ def view_answer_bank(conn, gate, ans, args, as_of) -> None:
         ans.withheld["withheld_not_readable"] += 1
         return
     want = _tokens(question) if isinstance(question, str) else set()
-    customer_of = CustomerOf(conn, gate)
+    customer_of = CustomerOf(conn, gate, ans)
     suppliers = dt.Parties(conn, "Supplier", "Supplier.same_record_as",
                            getattr(gate.guard, "internal", ()))
     entries = []
@@ -1177,6 +1187,7 @@ def _issue_records(conn, ans: Answer) -> dict[str, tuple[str, str]]:
     from ontology.text_index import chunk_text
 
     q = dt.fts_query(ISSUE_WORDS)
+    not_read: list[str] = []   # sources not (wholly) read, appended from the threads
     row = conn.execute("PRAGMA database_list").fetchone()
     path = row[2] if row and row[2] else None
 
@@ -1187,16 +1198,20 @@ def _issue_records(conn, ans: Answer) -> dict[str, tuple[str, str]]:
     def values_of(otype: str, props: Sequence[str]) -> list[tuple[str, str, str]]:
         c = connect()
         try:
-            return [(oid, otype, str(value)) for oid, value in c.execute(
-                "SELECT v.object_id, c.value FROM value_text vt JOIN value_cells c ON "
-                "c.rowid = vt.rowid JOIN value_sources s ON s.src = c.src JOIN object_versions "
-                "v ON v.rowid = s.ver JOIN value_fields f ON f.field = c.field JOIN objects o "
-                "ON o.object_id = v.object_id WHERE value_text MATCH ? AND v.superseded_at IS "
-                "NULL AND o.object_type = ? AND f.property IN (SELECT value FROM json_each(?)) "
-                "LIMIT 50000", (q, otype, json.dumps(list(props))))]
+            found = dt.word_values(c, q, props, prefix=f"{otype}:", limit=ISSUE_SCAN)
+        except sqlite3.OperationalError as exc:
+            if "interrupt" in str(exc):
+                raise
+            # the value word index unreadable: this source's issues are not in the answer,
+            # and it says so (never "no issues")
+            not_read.append(f"{otype.lower()}_not_read")
+            return []
         finally:
             if c is not conn:
                 c.close()
+        if not found.complete:
+            not_read.append(f"{otype.lower()}_more_matches")
+        return [(oid, otype, value) for oid, _prop, value in found.rows]
 
     def teams() -> list[tuple[str, str, str]]:
         c = connect()
@@ -1212,7 +1227,7 @@ def _issue_records(conn, ans: Answer) -> dict[str, tuple[str, str]]:
                 except Exception:  # noqa: BLE001 - an unreadable chunk says nothing
                     continue
         except sqlite3.Error:
-            ans.counts["teams_not_read"] += 1
+            not_read.append("teams_not_read")
         finally:
             if c is not conn:
                 c.close()
@@ -1224,6 +1239,9 @@ def _issue_records(conn, ans: Answer) -> dict[str, tuple[str, str]]:
             parts = list(pool.map(lambda job: job(), jobs))
     else:
         parts = [job() for job in jobs]
+    for reason in not_read:
+        ans.counts[reason] += 1
+        ans.complete = False
     out: dict[str, tuple[str, str]] = {}
     for part in parts:
         for oid, otype, text in part:
@@ -1363,6 +1381,7 @@ def view_uat_feedback(conn, gate, ans, args, as_of) -> None:
                                  "sharepoint_ids_list_id"))
     gate.load(ids)
     totals: Counter = Counter()
+    skip = int(args.get("offset") or 0)
     for oid in ids:
         v = vals.get(oid) or {}
         url = str(dt.first(v, "web_url") or "")
@@ -1391,6 +1410,11 @@ def view_uat_feedback(conn, gate, ans, args, as_of) -> None:
         totals[cls] += 1
         ans.counts[cls] += 1
         if args.get("status") and args["status"] != cls:
+            continue
+        # ``offset``: the rows before it were shown on an earlier page (the rows cap is
+        # 200 a page; the caller follows until ``complete``)
+        if skip:
+            skip -= 1
             continue
         ans.add({"record": oid, "list": m.group(1).replace("%20", " ")[:80],
                  "title": str(fields.get("Title") or "")[:200], "status": cls,
@@ -1592,6 +1616,11 @@ class BusinessDocumentsTool:
                 return _error("invalid_input", f"{key} must be a string")
             if v is not None:
                 args[key] = v
+        offset = arguments.get("offset")
+        if offset is not None:
+            if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+                return _error("invalid_input", "offset must be a non-negative integer")
+            args["offset"] = offset
         as_of = arguments.get("as_of")
         try:
             day = date.fromisoformat(as_of) if as_of else date.today()

@@ -68,7 +68,7 @@ MEMORY_CHECKS = ("memory_pressure", "memory_available")
 PAGED_HEALTH = ("delta_last_cycle", "delta_cycle_runtime", "capture:", "capture_failing:",
                 "capture_undecided_list", "ingest_start",
                 "ingest_service", "pg_follow", "proactive_last_pass",
-                "search_follow_last_pass")
+                "search_follow_last_pass", "search_follow_lag", "proactive_detectors")
 # Long-running service types: one enabled but not running has stopped (a oneshot has not).
 LONG_RUNNING_TYPES = ("simple", "exec", "notify", "notify-reload", "forking", "dbus")
 DELTA_UNIT = "plx-delta.service"
@@ -86,7 +86,8 @@ LABELS = {"disk_free": "Disk", "memory_available": "Memory",
           "ingest_start": "Capture service start loop",
           "ingest_service": "Capture service", "units:system": "System plx units checked",
           "units:user": "User plx units checked", "jobq_worker": "Job queue worker",
-          "jobq_head_wait": "Job queue"}
+          "jobq_head_wait": "Job queue", "search_follow_lag": "Search index",
+          "proactive_detectors": "Proactive detectors"}
 
 
 # ---- probes (injected in tests) ----------------------------------------------------------

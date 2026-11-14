@@ -245,6 +245,107 @@ def find_documents(conn: sqlite3.Connection, words: Sequence[str], *,
     return Found(docs, complete)
 
 
+# The most word-matched cells a Postgres ``word_values`` read takes from the GIN index
+# before its property and current-version tests, per row wanted (``word_values``).
+WORD_SCAN_PER_ROW = 50
+
+
+@dataclass
+class WordValues:
+    """``word_values``' rows: (object_id, property, value), and whether every match was
+    read (False: cut at its cap; the caller says so, never "none")."""
+    rows: list[tuple[str, str, str]]
+    complete: bool
+
+
+def word_values(conn: Any, query: str, properties: Sequence[str], *, prefix: str,
+                limit: int) -> WordValues:
+    """The current values of ``properties`` on objects whose id starts ``prefix``
+    (``"Email:"``) whose words match ``query`` (an FTS5 query: ``fts_query``), at most
+    ``limit``. On SQLite through the value word index (``value_text``); on Postgres
+    through the value cells' GIN word index (``value_cells_words``, migration 0010) read
+    first, then each cell's source and version, as native SQL: the translated FTS form
+    joined the word rows to a computed row number and read every value cell (120 s and
+    cancelled for a word matching 135 cells, 11-14). Raises ``sqlite3.OperationalError``
+    when the index cannot be read (``"interrupted"``: the caller's time is spent); never
+    an empty answer for a failed read."""
+    props = sorted(set(properties))
+    if not query or not props or limit <= 0:
+        return WordValues([], True)
+    if not getattr(conn, "postgres", False):
+        rows = conn.execute(
+            "SELECT v.object_id, f.property, c.value FROM value_text vt JOIN value_cells c "
+            "ON c.rowid = vt.rowid JOIN value_sources s ON s.src = c.src JOIN "
+            "object_versions v ON v.rowid = s.ver JOIN value_fields f ON f.field = c.field "
+            "WHERE value_text MATCH ? AND v.superseded_at IS NULL AND f.property IN "
+            "(SELECT value FROM json_each(?)) AND v.object_id LIKE ? ESCAPE '\\' LIMIT ?",
+            (query, json.dumps(props), _like_prefix(prefix) + "%", limit + 1)).fetchall()
+        out = [(str(o), str(p), str(v)) for o, p, v in rows]
+        return WordValues(out[:limit], len(out) <= limit)
+    return _pg_word_values(conn, query, props, prefix, limit)
+
+
+def _like_prefix(prefix: str) -> str:
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# The word cells first, from their GIN index alone (the field test kept off its btree,
+# ``+ 0``: the planner's BitmapAnd with it read up to 30x slower for a big field), then the
+# kept cells' current sources and versions by their keys, a chunk of sources at a time. In
+# one statement the planner sized its joins for the scan's cap and hashed every source and
+# version (120 s and cancelled, 11-14).
+_PG_WORD_CELLS = (
+    "SELECT c.src, c.field, c.value FROM ontology.value_cells c "
+    "WHERE c.value_num IS NULL AND c.value IS NOT NULL "
+    "AND ontology.sq_words(c.value) @@ CAST(%(q)s AS tsquery) "
+    "AND (c.field + 0) = ANY(%(fields)s::int[]) LIMIT %(scan)s")
+_PG_CURRENT_OBJECTS = (
+    "SELECT s.src, v.object_id FROM ontology.value_sources s "
+    "JOIN ontology.object_versions v ON v.ver = s.ver "
+    "WHERE s.src = ANY(%(srcs)s::bigint[]) AND s.superseded_at IS NULL "
+    "AND v.superseded_at IS NULL AND v.object_id LIKE %(prefix)s ESCAPE '\\'")
+_PG_SOURCE_CHUNK = 5000
+
+
+def _pg_word_values(conn: Any, query: str, props: Sequence[str], prefix: str,
+                    limit: int) -> WordValues:
+    import psycopg
+    from operating.pg.words import tsquery
+    words = getattr(conn, "words", ())
+    if words is not True and "value_text" not in (words or ()):
+        raise sqlite3.OperationalError("no value word index on this Postgres store")
+    q = tsquery(query)
+    bounded = getattr(conn, "deadline_bounded", None)
+    with bounded() if callable(bounded) else _no_deadline():
+        named = {int(f): str(p) for f, p in conn.execute(
+            "SELECT field, property FROM value_fields WHERE property IN (SELECT value FROM "
+            "json_each(?))", (json.dumps(list(props)),))}
+        if not named:
+            return WordValues([], True)
+        scan = max(1000, limit * WORD_SCAN_PER_ROW)
+        with conn._lock:
+            pg = conn._pg
+            try:
+                cells = pg.execute(_PG_WORD_CELLS, {"q": q, "fields": sorted(named),
+                                                    "scan": scan}).fetchall()
+                owner: dict[int, str] = {}
+                srcs = sorted({int(src) for src, _f, _v in cells})
+                for at in range(0, len(srcs), _PG_SOURCE_CHUNK):
+                    owner.update(pg.execute(_PG_CURRENT_OBJECTS, {
+                        "srcs": srcs[at:at + _PG_SOURCE_CHUNK],
+                        "prefix": _like_prefix(prefix) + "%"}).fetchall())
+            except psycopg.errors.QueryCanceled as exc:
+                raise sqlite3.OperationalError("interrupted") from exc
+            except psycopg.Error as exc:
+                raise sqlite3.OperationalError(
+                    f"postgres: {type(exc).__name__}: {str(exc).splitlines()[0][:300]}"
+                ) from exc
+    out = [(owner[int(src)], named[int(field)], str(value)) for src, field, value in cells
+           if int(src) in owner]
+    out.sort()
+    return WordValues(out[:limit], len(out) <= limit and len(cells) < scan)
+
+
 def _scan_documents(conn: sqlite3.Connection, query: str, types: Sequence[str],
                     props: Sequence[str]) -> Iterable[tuple[Any, ...]]:
     """``find_documents``' rows without the word index: every current ``props`` value of a

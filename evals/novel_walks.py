@@ -266,9 +266,17 @@ def build(links: Sequence[gw.Link], records: gw.Records, *, items: int, seed: An
     seen: set[str] = set(exclude)
     per_type: dict[str, int] = {}
     most = max(2, round(items * TYPE_SHARE))
-    for n in range(items):
-        card = CARDS[n % len(CARDS)]
-        for _ in range(TRIES):
+    # Draws run until the batch holds ``items`` or ``items * TRIES`` draws are spent: a
+    # slot whose draws all drop no longer leaves the batch short while draws remain (held1
+    # 11-13: 32 of 60 built, 28 slots spent their 40 draws each and were skipped).
+    # A slot whose card drew nothing in TRIES draws turns to the other card, so a card no
+    # record can give never takes the whole budget.
+    draws = items * TRIES
+    while len(out) < items and draws > 0:
+        tried = 0
+        while draws > 0:
+            card = CARDS[(len(out) + tried // TRIES) % len(CARDS)]
+            draws, tried = draws - 1, tried + 1
             try:
                 oid, label = composer.start(rng.choices(kinds, weights=shares)[0], rng)
                 if oid in seen:

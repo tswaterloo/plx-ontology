@@ -258,10 +258,13 @@ def _superseded(gaps: list, since: int) -> list:
 # holds none of them, records first captured after as_known_at, a filter's note on
 # the sources never recording it (it matched every record it could), and a measure's
 # citation cap (its first members cited, every one counted: 11-13, a count of 66 orders
-# made its own set "incomplete", so every later count of it was "at least").
+# made its own set "incomplete", so every later count of it was "at least"), and a
+# listing's property no member type declares (``rows``: listed without it; a filter or
+# measure on such a property is refused, never a gap: 11-14 link eval, "AgedPayable
+# declares no property as_of_date" made a count of 1 "at least 1").
 LOSSLESS_GAPS = frozenset({"stale_source", "schema_drift", POSSIBLY_RELATED, LEAD_BASIS,
                            "partly_read_elsewhere", "captured_after_as_known_at",
-                           "filter_not_sourced", "citations_capped"})
+                           "filter_not_sourced", "citations_capped", "unknown_property"})
 TRIMMED_REASONS = frozenset({"withheld_by_permission", "marking_withheld",
                              "policy_changed_since_handle"})
 IDENTIFIER_GAPS = frozenset({"no_identifier_match", "identifier_leads",
@@ -454,6 +457,28 @@ class QueryTool:
             goal = hop.get("to") or (self._named_type(here, hop.get("link"))
                                      if hop.get("link") else None)
             before, before_type, said = current, here, len(gaps)
+            if hop.get("without"):
+                # A without hop keeps records of its START; the top-level where would
+                # filter the far end of its link instead (an open order whose allocations
+                # are all closed counted as having none): refused, it goes on the records
+                # kept (from's where, or an earlier hop's).
+                if index == len(traverse) - 1 and arguments.get("where"):
+                    raise _Refused(_error(
+                        "invalid_input", f"hop {index + 1}: a top-level where after a "
+                        "without hop would filter the records it reaches, not the ones it "
+                        "keeps", "put the condition on the records kept: from's where (or "
+                        "the where of the hop that reaches them); the without hop's own "
+                        "where narrows the link's far end"))
+                kept = self._without(call, current, here, hop,
+                                     list(hop.get("where") or ()) or None, arguments, common,
+                                     index, actor)
+                hops_out.append(kept["hop"])
+                gaps += kept["gaps"]
+                meta = kept["meta"] or meta
+                current = kept["set"]
+                if not current:
+                    break
+                continue
             if goal is not None:
                 walked = self._route(call, current, here, goal, filters, arguments, common,
                                      index, actor)
@@ -696,6 +721,67 @@ class QueryTool:
                                    "match, never a confirmed one (claims with lead true)"})
         return {"set": twin["set"], "hops": hops, "meta": twin.get("meta") or meta,
                 "gaps": list(twin.get("gaps") or ()) + said}
+
+    def _without(self, call, current: Any, here: str | None, hop: Mapping[str, Any],
+                 filters: list[Any] | None, arguments: Mapping[str, Any],
+                 common: Mapping[str, Any], index: int, actor: Any) -> dict[str, Any]:
+        """A ``without`` hop: the records of ``current`` that reach nothing over the hop's
+        link (and its ``where``), kept in place of walking on. The hop is walked out from
+        all of them, then back from what it reached along the same link; a record the walk
+        back reaches has such a link, every other one has none. Both walks must hold every
+        match (no gap but a lossless one): a record left out of the walk back would be
+        counted as having no link, so a capped or cut walk refuses the hop, never a count
+        that is too high. {hop, set, gaps, meta}; an empty set when every record has one."""
+        directed = self._directed(here, hop)
+        if hop.get("to") or "link_type" not in directed or "direction" not in directed:
+            raise _Refused(_error(
+                "invalid_input", f"hop {index + 1}: without needs a link_type and direction",
+                "name the link (link_type and direction) whose absence is asked"))
+        if self.backend.members is None or self.backend.new_set is None:
+            raise _Refused(_error("invalid_input", "without needs the host's set registry"))
+        start = ([current] if isinstance(current, str) and not current.startswith("set:")
+                 else self.backend.members(actor, current))
+        if start is None:
+            raise _Refused(_error("invalid_input", f"hop {index + 1}: the records to keep "
+                                  "are not readable (an expired set)"))
+        start = list(dict.fromkeys(start))
+        out = self._around(call, current, directed, filters, arguments, common,
+                           listed=False)
+        if out.get("error"):
+            raise _Refused(_error(out["error"].get("code") or "traverse_refused",
+                                  f"hop {index + 1}: " + str(out["error"].get("message")),
+                                  out["error"].get("hint")))
+        gaps = [g for g in out.get("gaps") or () if isinstance(g, Mapping)]
+        meta = out.get("meta")
+        reached = out.get("set")
+        linked: set[str] = set()
+        if reached and (out.get("hops") or [{}])[-1].get("count", 1):
+            back = {"link_type": directed["link_type"],
+                    "direction": "reverse" if directed["direction"] == "forward"
+                    else "forward"}
+            got = self._around(call, reached, back, None, arguments, common, listed=False)
+            if got.get("error"):
+                raise _Refused(_error(got["error"].get("code") or "traverse_refused",
+                                      f"hop {index + 1} (without, walked back): "
+                                      + str(got["error"].get("message")),
+                                      got["error"].get("hint")))
+            gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)
+                     and g not in gaps]
+            meta = got.get("meta") or meta
+            if got.get("set"):
+                linked = set(self.backend.members(actor, got["set"]) or ())
+        lossy = [g for g in gaps if g.get("reason") not in LOSSLESS_GAPS]
+        if lossy:
+            raise _Refused(_error(
+                "without_unsettled",
+                f"hop {index + 1}: which records have a {directed['link_type']} link could "
+                f"not all be read ({lossy[0].get('reason')}: {lossy[0].get('detail')})"[:600],
+                "start from fewer records (a narrower where or one record) so every link of "
+                "the hop is read"))
+        kept = [oid for oid in start if oid not in linked]
+        return {"hop": {"link_type": directed["link_type"], "direction": directed["direction"],
+                        "without": True, "count": len(kept)},
+                "set": self.backend.new_set(actor, kept), "gaps": gaps, "meta": meta}
 
     def _around(self, call, current: Any, hop: Mapping[str, Any],
                 filters: list[Any] | None, arguments: Mapping[str, Any],

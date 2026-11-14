@@ -10565,7 +10565,7 @@
       }
     },
     "plx.query": {
-      "description": "One read from records, codes (a sheet's items), an entity (all systems), a set, or all of an object_type its where selects; traverse links hop by hop or {\"to\": a type} (each route walked, counted); measures by a property or linked record's (group_path), a date by period (bucket), windowed; having keeps groups by value. Past 20 groups: summary; cursor pages; groups cite inputs. rows: what is reached; per_code: each code alone. Use for every count, total, date range over links; latest/earliest mail of a record or Teams of a channel: max/min of sent_at or created_at.",
+      "description": "One read from records, codes (a sheet's items), an entity (all systems), a set, or all of an object_type its where selects; traverse links hop by hop or {\"to\": a type} (each route walked, counted), a hop with without: true keeps the records with no such link; measures by a property or linked record's (group_path), a date by period (bucket), windowed; having keeps groups by value. Past 20 groups: summary; cursor pages; groups cite inputs. rows: what is reached; per_code: each code alone. Use for every count, total, date range over links; latest/earliest mail of a record or Teams of a channel: max/min of sent_at or created_at.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -10649,6 +10649,10 @@
                   },
                   "minItems": 1,
                   "maxItems": 8
+                },
+                "without": {
+                  "type": "boolean",
+                  "description": "true: keep the records here that reach nothing over this hop's link (its where: nothing it keeps), instead of walking on; count or list them after (the orders with no allocation, the batches no assembly order fills from). A condition on the records kept goes on from's where (or the hop that reaches them), never the top-level where (refused after a without hop)."
                 }
               }
             },
@@ -10903,6 +10907,9 @@
                     "count": {
                       "type": "integer",
                       "minimum": 0
+                    },
+                    "without": {
+                      "type": "boolean"
                     },
                     "tiers": {
                       "type": "object",

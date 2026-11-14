@@ -489,6 +489,61 @@ class ReleaseTest(unittest.TestCase):
             refused = subprocess.run([tool, "switch", "nope"], env=env, capture_output=True)
             self.assertNotEqual(refused.returncode, 0)
 
+    def test_an_unchanged_app_tree_reuses_the_current_build(self) -> None:
+        """Process sweep 11-07: a release whose app/ tree equals the current release's copies
+        that release's .next instead of running `next build`; any app/ change builds."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp, "repo")
+            Path(repo, "app", "src").mkdir(parents=True)
+            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            Path(repo, "app", "package.json").write_text("{}")
+            Path(repo, "app", "package-lock.json").write_text("{}")
+            node = Path(tmp, "node", "bin")
+            node.mkdir(parents=True)
+            builds = Path(tmp, "builds.log")
+            Path(node, "node").write_text(
+                f"#!/bin/sh\nmkdir -p .next && date +%s%N > .next/BUILD_ID && "
+                f"echo built >> {builds}\n")
+            Path(node, "npm").write_text("#!/bin/sh\nmkdir -p node_modules\n")
+            for f in ("node", "npm"):
+                Path(node, f).chmod(0o755)
+
+            def commit(path: str, text: str) -> None:
+                Path(repo, path).write_text(text)
+                subprocess.run([*git, "add", "-A"], check=True)
+                subprocess.run([*git, "commit", "-qm", text], check=True)
+
+            Path(tmp, "state").mkdir()
+            env = {**os.environ, "PLX_DEPLOY_ENV": "/nonexistent", "PLX_REPO": str(repo),
+                   "PLX_RELEASES": f"{tmp}/rel", "PLX_STATE": f"{tmp}/state",
+                   "PLX_RELEASE_OWNER": "", "PLX_NODE": str(node.parent)}
+            tool = str(DEPLOY / "release" / "plx-release")
+
+            def run(*args: str) -> str:
+                return subprocess.run([tool, *args], env=env, text=True, capture_output=True,
+                                      check=True).stdout.strip().splitlines()[-1]
+
+            def profile(rid: str) -> dict:
+                return json.loads(Path(tmp, "rel", rid, "RELEASE.json").read_text())["profile"]
+
+            commit("app/src/page.tsx", "one")
+            first = run("build", "HEAD")
+            run("switch", first)
+            self.assertEqual(builds.read_text().count("built"), 1)
+            commit("code.txt", "server only")            # app/ unchanged
+            second = run("build", "HEAD")
+            self.assertEqual(builds.read_text().count("built"), 1)   # reused, not rebuilt
+            self.assertEqual(Path(tmp, "rel", second, "app", ".next", "BUILD_ID").read_text(),
+                             Path(tmp, "rel", first, "app", ".next", "BUILD_ID").read_text())
+            self.assertEqual(profile(second)["app_tree"], profile(first)["app_tree"])
+            self.assertTrue(profile(second)["app"])
+            run("switch", second)
+            commit("app/src/page.tsx", "two")            # app/ changed: built
+            third = run("build", "HEAD")
+            self.assertEqual(builds.read_text().count("built"), 2)
+            self.assertNotEqual(profile(third)["app_tree"], profile(second)["app_tree"])
+
     def test_a_sealed_release_is_built_unprivileged_and_never_switched_to_once_writable(self
                                                                                         ) -> None:
         """SEC-S-12: with PLX_RELEASE_OWNER set, the build runs in the caller's staging
@@ -573,7 +628,8 @@ class ReleaseTest(unittest.TestCase):
             self.assertEqual(built.returncode, 0, built.stderr)
             rid = built.stdout.strip().splitlines()[-1]
             meta = json.loads(Path(tmp, "rel", rid, "RELEASE.json").read_text())
-            self.assertEqual(meta["profile"], {"app": False, "schema_checked": False})
+            self.assertEqual(meta["profile"], {"app": False, "schema_checked": False,
+                                              "app_tree": None})
             again = run("build", "HEAD", "--no-schema-check")     # wants the app
             self.assertNotEqual(again.returncode, 0)
             self.assertIn("without the app", again.stderr)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import quote
@@ -441,6 +442,87 @@ def replies_of(view: Any, today: Optional[date] = None) -> Optional[dict[str, An
     return it.triage(found.get("gaps") or (), today or date.today())
 
 
+UAT_PRIORITY_RANK = {"critical": 0, "blocker": 0, "urgent": 0, "high": 1, "major": 1,
+                     "medium": 2, "normal": 2, "moderate": 2, "low": 3, "minor": 3}
+UAT_PAGE = 200        # the aggregate's rows cap a page (``business_documents.MAX_ROWS``)
+UAT_MAX_PAGES = 25    # 5,000 items; past it the list says it is cut
+UAT_STATUSES = ("open", "fixed", "answered", "unknown")
+
+
+def uat_level(word: Any) -> str:
+    """A priority word's level: the lists word a level and then what it means
+    ("Critical — Blocks work, no workaround" is Critical)."""
+    return re.split(r"\s+[-\u2013\u2014]+\s+", str(word or "").strip(), maxsplit=1)[0]
+
+
+def _uat_rank(word: Any) -> int:
+    w = uat_level(word).lower()
+    return UAT_PRIORITY_RANK.get(w, 4 if w else 5)
+
+
+def uat_feedback_of(view: Any, status: Optional[str], today: date) -> dict[str, Any]:
+    """The UAT list items as this reader reads them: ``plx.aggregate`` mode
+    ``business_documents`` view ``uat_feedback`` through the reader's own view (its gate
+    decides each item; withheld ones are only counted). The aggregate shows 200 rows a page:
+    pages are followed by ``offset`` until it says complete, so no item stays out of reach;
+    ``cut`` only when the page limit is hit."""
+    pages = []
+    for page in range(UAT_MAX_PAGES):
+        with view._request():
+            out = view._call("plx.aggregate", {"mode": "business_documents",
+                                               "view": "uat_feedback",
+                                               "offset": page * UAT_PAGE})
+        if not isinstance(out, Mapping) or out.get("error") or \
+                not isinstance(out.get("rows"), list):
+            return {"served": False}
+        if out.get("withheld"):   # e.g. the people exclusion could not be loaded: no reading
+            return {"served": False}
+        pages.append(dict(out))
+        if out.get("complete", True) or not out["rows"]:
+            break
+    first = pages[0]
+    complete = pages[-1].get("complete", True)
+    totals = {k: int(v) for k, v in ((first.get("totals") or {}).items())
+              if isinstance(v, int)}
+    withheld = sum(int(v) for v in (first.get("withheld_counts") or {}).values()
+                   if isinstance(v, int))
+    rows: dict[str, Any] = {}
+    for src in pages:
+        for r in src["rows"]:
+            if isinstance(r, Mapping) and r.get("record"):
+                rows.setdefault(str(r["record"]), r)
+    shown = [r for r in rows.values() if not status or r.get("status") == status]
+    prios: dict[str, int] = {}
+    for r in rows.values():
+        if r.get("status") != "open":
+            continue
+        word = uat_level(r.get("priority")) or "No priority"
+        prios[word] = prios.get(word, 0) + 1
+
+    def age(r: Mapping[str, Any]) -> Optional[int]:
+        if r.get("status") != "open" or str(r.get("modified")) == "0001-01-01":
+            return None
+        try:
+            return max(0, (today - date.fromisoformat(str(r.get("modified")))).days)
+        except ValueError:
+            return None
+
+    def key(r: Mapping[str, Any]) -> Any:
+        mod = str(r.get("modified") or "")
+        return (0 if r.get("status") == "open" else 1, _uat_rank(r.get("priority")),
+                "".join(chr(0x10FFFF - ord(c)) for c in mod))   # newest first
+    items = [{**{k: r.get(k) for k in ("record", "list", "title", "status", "status_word",
+                                       "resolution_word", "priority")},
+              "modified": None if str(r.get("modified")) == "0001-01-01" else r.get("modified"),
+              "age_days": age(r)} for r in sorted(shown, key=key)]
+    want_total = totals.get(status, 0) if status else sum(totals.values())
+    return {"served": True, "totals": totals, "withheld": withheld, "items": items,
+            "open_priorities": [{"word": w, "count": n} for w, n in sorted(
+                prios.items(), key=lambda kv: (_uat_rank(kv[0]), kv[0]))],
+            "lists": sorted({str(r.get("list")) for r in rows.values() if r.get("list")}),
+            "matched": want_total, "cut": not complete or len(items) < want_total}
+
+
 RD_CARD = "rd:"
 
 
@@ -656,6 +738,20 @@ class BriefsMixin:
             projects.append(project)
         raw["projects"] = projects
         return m.RdBoard(**{k: v for k, v in raw.items() if k not in ("schema",)})
+
+    def uat_feedback(self, reader: Reader, status: Optional[str] = None) -> m.UatFeedback:
+        if status is not None and status not in UAT_STATUSES:
+            raise UserFacing("invalid_request", "status is open, fixed, answered or unknown.",
+                             422)
+        today = date.today()
+        raw = self._brief_run(reader, lambda view: uat_feedback_of(view, status, today))
+        if raw is None or not raw.get("served"):
+            return m.UatFeedback(as_of=today.isoformat(), served=False, status=status)
+        totals = raw["totals"]
+        return m.UatFeedback(as_of=today.isoformat(), status=status, totals=totals,
+                             total=sum(totals.values()), **{
+                                 k: raw[k] for k in ("withheld", "items", "open_priorities",
+                                                     "lists", "matched", "cut")})
 
     def rd_card_of(self, reader: Reader, card_id: str) -> Optional[dict[str, Any]]:
         """The status-update card ``card_id`` rebuilt from this reader's own board."""

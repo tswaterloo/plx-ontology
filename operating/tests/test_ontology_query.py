@@ -496,6 +496,138 @@ class Query(unittest.TestCase):
         self.assertEqual(tool.call({"from": {}}, "actor")["error"]["code"], "invalid_input")
 
 
+class ListingGapsLeaveTheSetWhole(unittest.TestCase):
+    """A gap of the reached set's listing (``rows``: a property no member type declares)
+    says what the rows show, never which records the set holds: the set stays complete,
+    so a later count of it is exact (11-14 link eval: "AgedPayable declares no property
+    as_of_date; listed without it" made a count of 1 "at least 1"). A gap of the walk
+    itself (a capped scan) still marks it."""
+
+    def run_query(self, around_gaps=()):
+        table, marked = Table(), []
+
+        def around(name, arguments, actor):
+            out = Table.__call__(table, name, arguments, actor)
+            if name == "plx.around":
+                out = dict(out, gaps=list(around_gaps))
+            return out
+
+        def rows(arguments, actor):
+            return {"count": 2, "rows": [], "gaps": [{
+                "state": "unknown", "reason": "unknown_property", "subject": "as_of_date",
+                "detail": "SalesInvoiceLine declares no property as_of_date; listed "
+                          "without it."}]}
+        backend = oq.TableBackend(around, lambda actor, ids: "set:new00001", Schema(),
+                                  rows=rows)
+        backend.set_incomplete = lambda actor, handle: marked.append(handle)
+        out = oq.QueryTool(backend).call({
+            "from": {"object_id": SAGE},
+            "traverse": [{"link_type": "SalesInvoiceLine.for_item", "direction": "reverse"}],
+            "rows": {"properties": ["as_of_date", "invoiced_quantity"]},
+            "measures": [{"op": "count"}]}, "actor")
+        return out, marked
+
+    def test_a_listing_gap_is_said_and_the_set_stays_complete(self):
+        out, marked = self.run_query()
+        self.assertNotIn("error", out)
+        self.assertIn("unknown_property", [g["reason"] for g in out["gaps"]])
+        self.assertEqual(marked, [])
+
+    def test_a_gap_of_the_walk_still_marks_the_set_incomplete(self):
+        out, marked = self.run_query([{"state": "unknown", "reason": "scan_cap",
+                                       "subject": "SalesInvoiceLine.for_item",
+                                       "detail": "the walk stopped at its cap"}])
+        self.assertEqual(marked, ["set:lines0001"])
+
+
+class WithoutHop(unittest.TestCase):
+    """A ``without`` hop keeps the records that reach nothing over its link: walked out
+    from all of them and back from what was reached; every other record has a link. A
+    walk that may have missed a link refuses the hop (a count too high is never given)."""
+    ORDERS = ["AssemblyOrder:fm:{\"id\":1}", "AssemblyOrder:fm:{\"id\":2}",
+              "AssemblyOrder:fm:{\"id\":3}"]
+    ALLOC = "AssemblyOrderAllocation.allocates"
+
+    def run_query(self, back_gaps=(), reached=1, hop=None, where=None):
+        sets = {"set:orders": list(self.ORDERS), "set:allocs": ["Alloc:1", "Alloc:2"],
+                "set:back": [self.ORDERS[0], "AssemblyOrder:fm:{\"id\":9}"]}
+        calls, made = [], []
+
+        def call(name, arguments, actor):
+            calls.append((name, dict(arguments)))
+            if name == "plx.around":
+                if arguments["from"] == "set:orders":
+                    return {"set": "set:allocs" if reached else None,
+                            "hops": [{"link_type": self.ALLOC, "direction": "reverse",
+                                      "count": 2 * reached}]}
+                return {"set": "set:back", "gaps": list(back_gaps),
+                        "hops": [{"link_type": self.ALLOC, "direction": "forward",
+                                  "count": 2}]}
+            if name == "plx.aggregate":
+                kept = sets[arguments["set"]]
+                return {"groups": [{"key": {}, "value": str(len(kept)), "inputs": 0,
+                                    "markings": [], "members_cited": kept}],
+                        "partial": False, "completeness": {"complete": True}}
+            raise AssertionError(name)
+
+        def new_set(actor, ids):
+            handle = f"set:kept{len(made)}"
+            made.append(list(ids))
+            sets[handle] = list(ids)
+            return handle
+        backend = oq.TableBackend(call, new_set, Schema(),
+                                  members=lambda actor, handle: sets.get(handle))
+        out = oq.QueryTool(backend).call({
+            "from": {"set": "set:orders"},
+            "traverse": [hop or {"link_type": self.ALLOC, "direction": "reverse",
+                                 "without": True}],
+            "measures": [{"op": "count"}], **({"where": where} if where else {})}, "actor")
+        return out, made, calls
+
+    def test_the_records_with_no_such_link_are_kept_and_counted(self):
+        out, made, calls = self.run_query()
+        self.assertNotIn("error", out)
+        self.assertEqual(made, [self.ORDERS[1:]])
+        self.assertEqual(out["hops"], [{"link_type": self.ALLOC, "direction": "reverse",
+                                        "without": True, "count": 2}])
+        self.assertEqual(out["results"][0]["groups"][0]["value"], "2")
+        back = [args for name, args in calls if name == "plx.around"][1]
+        self.assertEqual((back["from"], back["path"]),
+                         ("set:allocs", [{"link_type": self.ALLOC, "direction": "forward"}]))
+
+    def test_none_reached_keeps_every_record(self):
+        out, made, _ = self.run_query(reached=0)
+        self.assertEqual(made, [self.ORDERS])
+
+    def test_a_walk_that_may_miss_a_link_refuses_the_hop(self):
+        out, made, _ = self.run_query(back_gaps=[{"state": "unknown", "reason": "scan_cap",
+                                                  "subject": "set:allocs",
+                                                  "detail": "cut at its cap"}])
+        self.assertEqual(out["error"]["code"], "without_unsettled")
+        self.assertEqual(made, [])
+
+    def test_a_top_level_where_after_a_without_hop_is_refused(self):
+        """Review eaa8dc8ad0: the top-level where filtered the far end of the link (the
+        allocations), never the orders kept: "open orders with no allocation" counted an
+        open order whose allocations were all closed, and orders not open. Refused; the
+        hop's own where still narrows the far end of the walk out."""
+        status = [{"property": "status", "op": "eq", "value": "open"}]
+        out, made, calls = self.run_query(where=status)
+        self.assertEqual(out["error"]["code"], "invalid_input")
+        self.assertEqual(made, [])
+        self.assertFalse([name for name, _ in calls if name == "plx.around"])
+        out, made, calls = self.run_query(hop={"link_type": self.ALLOC, "direction":
+                                               "reverse", "without": True, "where": status})
+        self.assertNotIn("error", out)
+        walk_out, walk_back = [args for name, args in calls if name == "plx.around"]
+        self.assertEqual(walk_out["filters"], status)
+        self.assertNotIn("filters", walk_back)
+
+    def test_without_needs_a_named_link(self):
+        out, _, _ = self.run_query(hop={"to": "AssemblyOrderAllocation", "without": True})
+        self.assertEqual(out["error"]["code"], "invalid_input")
+
+
 class TwinExpansion(unittest.TestCase):
     """A walk whose filter empties what it reached tries those records' twins in another
     system (``<Type>.same_record_as``, lead links included and said as leads), as the

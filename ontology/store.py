@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology import store_ddl
 from ontology.types import Actor
+from ontology import parent_watch
 
 FORMAT = store_ddl.FORMAT
 _POST_PROJECT = "post_project"   # ontology.project.POST_PROJECT: such values are always cells
@@ -591,7 +592,8 @@ def _parallel_digest_parts(path: Path, conn: sqlite3.Connection, workers: int
     hashes: dict[tuple[str, str], Any] = {}
     window = max(2, workers * 3)
     with main_not_imported(), futures.ProcessPoolExecutor(
-            max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+            **parent_watch.pool_init()) as pool:
         pending: list[Any] = []
         at = 0
         while at < len(jobs) or pending:

@@ -42,6 +42,7 @@ from . import models as md
 from . import store as st
 from .shards import (PERSON_KINDS, WRITE_BATCH, _exclusion, _Tally, chunk_shard,
                      produce)
+from ontology import parent_watch
 
 BULK_MIN = 20_000      # pending texts above which the HNSW index is rebuilt once after
 EMBED_BATCH = 256
@@ -124,7 +125,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         job = {"state": str(state), "projection": str(projection), "kinds": kinds,
                "limit": args.limit, "values": values, "dry": bool(args.dry),
                "dsn": values.get("PLX_PG_DSN") or config.DEFAULT_DSN, "window_since": since}
-        with ProcessPoolExecutor(shards, mp_context=mp.get_context("spawn")) as pool:
+        with ProcessPoolExecutor(shards, mp_context=mp.get_context("spawn"),
+                                 **parent_watch.pool_init()) as pool:
             parts = list(pool.map(chunk_shard, [(job, i, shards) for i in range(shards)]))
         for part in parts:
             counts.merge(part.counts)
@@ -302,7 +304,7 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
             per = dict(values, PLX_EMBED_THREADS=values.get("PLX_EMBED_THREADS")
                        or str(max(1, cores // workers)))
             pool = ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn"),
-                                       initializer=md.worker_init, initargs=(per,))
+                                       **parent_watch.pool_init(md.worker_init, (per,)))
         else:
             # one model in this process: it encodes a batch on a thread (torch leaves the
             # GIL) while the next batch's texts are read and the last one's vectors stored

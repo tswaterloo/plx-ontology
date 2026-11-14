@@ -50,6 +50,7 @@ import sys
 from typing import Any, Iterable, Mapping, Sequence
 
 from evals import graph_walks as gw
+from ontology import parent_watch
 
 FIRM = ("verified", "reviewed", "corroborated")
 RESERVOIR = 240
@@ -117,7 +118,8 @@ def census(store: Path, workers: int) -> dict[str, Any]:
              for start in range(low, high + 1, step)]
     counts: Counter = Counter()
     heaps: dict[str, list[tuple[int, str, str]]] = {}
-    with ProcessPoolExecutor(max_workers=max(1, workers)) as pool:
+    with ProcessPoolExecutor(max_workers=max(1, workers),
+                             **parent_watch.pool_init()) as pool:
         for part in pool.map(_census_part, parts):
             for t, fb, tb, n in part["counts"]:
                 counts[(t, fb, tb)] += n

@@ -351,6 +351,25 @@ class BusinessDocuments(unittest.TestCase):
             whole = self.ask(self.conn(f), "uat_feedback")
             self.assertIn(hidden, [r["record"] for r in whole["rows"]])
 
+    def test_uat_feedback_pages_past_the_rows_cap_by_offset(self) -> None:
+        f = Fixture()
+        base = "https://synth.sharepoint.example/sites/ops/Lists"
+        made = [f.w.obj("SharePointListItem", {
+            "web_url": f"{base}/UAT%20Feedback/DispForm.aspx?ID={i}",
+            "fields": json.dumps({"Title": f"Item {i}", "Status": "Approved",
+                                  "Resolution": "Fixed"})}) for i in range(bd.MAX_ROWS + 55)]
+        conn = self.conn(f)
+        first = self.ask(conn, "uat_feedback")
+        self.assertEqual((len(first["rows"]), first["complete"]), (bd.MAX_ROWS, False))
+        second = self.ask(conn, "uat_feedback", offset=bd.MAX_ROWS)
+        self.assertEqual((len(second["rows"]), second["complete"]), (55, True))
+        seen = [r["record"] for r in first["rows"] + second["rows"]]
+        self.assertEqual(sorted(seen), sorted(made))
+        self.assertEqual(sum(second["totals"].values()), len(made))
+        bad = bd.BusinessDocumentsTool(None, guard=lambda: None).call(
+            {"mode": "business_documents", "view": "uat_feedback", "offset": -1}, None)
+        self.assertEqual(bad["error"]["code"], "invalid_input")
+
     def test_uat_status_classes_and_unknown_words(self) -> None:
         self.assertEqual(bd.status_class("Failed Retest"), "open")
         self.assertEqual(bd.status_class("Ready for UAT"), "fixed")
@@ -754,3 +773,112 @@ class SupplierIssues(unittest.TestCase):
         self.assertEqual(row["suppliers"], [ids["sup"]])
         self.assertEqual(out["withheld_counts"]["receipt_not_readable"], 1)
 
+
+
+class _NoWordIndex:
+    """A store connection whose value word index cannot be read (as on a Postgres store
+    without it): every statement naming ``value_text`` raises; no database file is named,
+    so nothing opens the file around it."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def execute(self, sql, *params):  # noqa: ANN001
+        if "value_text" in sql:
+            raise sqlite3.OperationalError("no such table: value_text")
+        if sql.strip().upper().startswith("PRAGMA DATABASE_LIST"):
+            return self._conn.execute("SELECT 0, 'main', ''")
+        return self._conn.execute(sql, *params)
+
+    def __getattr__(self, name):  # noqa: ANN001
+        return getattr(self._conn, name)
+
+
+class WordReads(unittest.TestCase):
+    """The three value-word reads (sender threads, certificate lookup, issue log) read
+    through ``document_tables.word_values``: on SQLite and on Postgres alike, and a read
+    that fails says so in the answer (``complete`` False, ``*_not_read`` counted) instead
+    of answering "none" (11-13: all three read nothing on the served Postgres store; the
+    issue log raised)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def _store(self) -> tuple[Fixture, dict[str, str], sqlite3.Connection]:
+        f, ids = SupplierIssues.world(self)
+        ids["coa"] = f.w.obj("CertificateOfAnalysis", {"lot": "LOT-7731",
+                                                         "product_code": "RES-1001"})
+        ids["mail"] = f.w.obj("Email", {"subject": "order", "sender": "ops@threadbuyer.example"},
+                              audience=BOX, binding="mail")
+        conn = f.build(self.dir / "store.sqlite")
+        self.addCleanup(conn.close)
+        return f, ids, conn
+
+    def test_word_values_on_sqlite(self) -> None:
+        _f, ids, conn = self._store()
+        got = dt.word_values(conn, "threadbuyer", ["sender"], prefix="Email:", limit=10)
+        self.assertEqual(got.rows, [(ids["mail"], "sender", "ops@threadbuyer.example")])
+        self.assertTrue(got.complete)
+        coa = dt.word_values(conn, "lot AND 7731", ["lot", "product_code"],
+                             prefix="CertificateOfAnalysis:", limit=10)
+        self.assertEqual([r[0] for r in coa.rows], [ids["coa"]])
+        # a prefix is literal: "_" and "%" match only themselves
+        self.assertEqual(dt.word_values(conn, "threadbuyer", ["sender"], prefix="Emai_",
+                                        limit=10).rows, [])
+        # more matches than asked for: cut, and said so
+        two = dt.word_values(conn, dt.fts_query(bd.ISSUE_WORDS), ["subject", "title"],
+                             prefix="", limit=1)
+        self.assertEqual((len(two.rows), two.complete), (1, False))
+
+    def test_an_unreadable_word_index_is_said_never_none(self) -> None:
+        _f, _ids, conn = self._store()
+        broken = _NoWordIndex(conn)
+        out = bd.answer(broken, view="supplier_issues", may_read=lambda k: True,
+                        held=EVERY, guard=Guard(), as_of=AS_OF, args={})
+        self.assertFalse(out["complete"])
+        self.assertEqual(out["counts"].get("plannertask_not_read"), 1)
+        self.assertEqual(out["counts"].get("email_not_read"), 1)
+        ans = bd.Answer(dt.Gate(broken, may_read=lambda k: True, held=EVERY, guard=Guard()),
+                        "t")
+        self.assertEqual(bd._coa_records(broken, "LOT-7731", ans), [])
+        self.assertEqual((ans.counts["coa_not_read"], ans.complete), (1, False))
+        ans = bd.Answer(ans.gate, "t")
+        who = bd.CustomerOf(broken, ans.gate, ans)._read_threads("threadbuyer.example")
+        self.assertEqual(who, (None, []))
+        self.assertEqual((ans.counts["sender_threads_not_read"], ans.complete), (1, False))
+
+    def test_the_reads_answer_alike_on_postgres(self) -> None:
+        from operating.pg.sqlite_compat import PgCompatConnection
+        from operating.tests import pg_store_mode
+        _f, ids, conn = self._store()
+        try:
+            dsn = pg_store_mode._load(str(self.dir / "store.sqlite"), conn)
+        except unittest.SkipTest:
+            raise
+        pg = PgCompatConnection(dsn)
+        self.addCleanup(pg.close)
+        pg.words = ("value_text", "chunk_text")
+        for query, props, prefix in (
+                ("threadbuyer", ["sender"], "Email:"),
+                ("lot AND 7731", ["lot", "product_code"], "CertificateOfAnalysis:"),
+                (dt.fts_query(bd.ISSUE_WORDS), ["title", "description"], "PlannerTask:"),
+                (dt.fts_query(bd.ISSUE_WORDS), ["subject"], "Email:")):
+            want = dt.word_values(conn, query, props, prefix=prefix, limit=100)
+            got = dt.word_values(pg, query, props, prefix=prefix, limit=100)
+            self.assertEqual(sorted(got.rows), sorted(want.rows), query)
+            self.assertTrue(want.rows and got.complete, query)
+        self.assertEqual(bd._coa_records(pg, "LOT-7731"), [ids["coa"]])
+        # the issue log itself: the same rows from Postgres as from SQLite
+        args = dict(may_read=lambda k: True, held=EVERY, guard=Guard(), as_of=AS_OF,
+                    args={})
+        sq = bd.answer(conn, view="supplier_issues", **args)
+        on_pg = bd.answer(pg, view="supplier_issues", **args)
+        self.assertEqual([r["record"] for r in on_pg["rows"]],
+                         [r["record"] for r in sq["rows"]])
+        self.assertIn(ids["task"], [r["record"] for r in on_pg["rows"]])
+        # with no value word index loaded the read is refused, never answered empty
+        pg.words = ()
+        with self.assertRaises(sqlite3.OperationalError):
+            dt.word_values(pg, "threadbuyer", ["sender"], prefix="Email:", limit=10)

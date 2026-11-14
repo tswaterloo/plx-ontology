@@ -44,6 +44,8 @@ import sys
 import time
 from typing import Any, Iterable, Mapping, Sequence
 
+from ontology import parent_watch
+
 
 class ScopeRefused(RuntimeError):
     """The scope cannot be bounded: the caller re-derives every document."""
@@ -254,7 +256,8 @@ def _snapshot_parallel(dsn: str, bindings: Sequence[str], out: str | Path, *,
     with tempfile.TemporaryDirectory(prefix=".snap-", dir=out.parent) as folder:
         paths = [str(Path(folder) / f"part-{n}.sqlite") for n in range(len(lanes))]
         with futures.ProcessPoolExecutor(max_workers=len(lanes),
-                                         mp_context=multiprocessing.get_context("spawn")) as pool:
+                                         mp_context=multiprocessing.get_context("spawn"),
+                                         **parent_watch.pool_init()) as pool:
             got = [f.result() for f in [pool.submit(_snapshot_part, dsn, lane, path)
                                         for lane, path in zip(lanes, paths)]]
         db = sqlite3.connect(tmp)
@@ -356,7 +359,8 @@ def scan_cache(cache: str | Path, hit_keys: Iterable[tuple[str, str]], out: str 
                  str(Path(tmp) / f"part-{n}.sqlite"))
                 for n, a in enumerate(range(0, top, step))]
         with futures.ProcessPoolExecutor(max_workers=workers,
-                                         mp_context=multiprocessing.get_context("spawn")) as pool:
+                                         mp_context=multiprocessing.get_context("spawn"),
+                                         **parent_watch.pool_init()) as pool:
             parts = [f.result() for f in [pool.submit(_scan_part, *j) for j in jobs]]
         db = sqlite3.connect(out)
         db.execute("CREATE TABLE docs (doc_key TEXT, citation TEXT, hit INTEGER)")

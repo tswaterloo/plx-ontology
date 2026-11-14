@@ -52,6 +52,7 @@ from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 from ontology.store import canonical, main_not_imported
+from ontology import parent_watch
 
 # A worker's sources opened again, by spec: (source, its records' map) or the exception.
 _OPENED: dict[bytes, Any] = {}
@@ -132,7 +133,8 @@ class PrintPool:
             return None
         if self._pool is None:
             self._pool = futures.ProcessPoolExecutor(
-                max_workers=self.count, mp_context=multiprocessing.get_context("spawn"))
+                max_workers=self.count, mp_context=multiprocessing.get_context("spawn"),
+                **parent_watch.pool_init())
         try:
             with main_not_imported():
                 future = self._pool.submit(fn, *args)

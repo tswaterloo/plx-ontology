@@ -77,6 +77,8 @@ import sys
 import threading
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from ontology import parent_watch
+
 FORMAT = "plx-mail-exclusion-matches/v1"
 SCAN_FILE = "exclusion-scan.json"
 PAGE = 1000          # messages per folder listing page
@@ -309,7 +311,8 @@ def carried_scan(store: Any, guard: Any, *, workers: int = 8, keep: bool = False
         # spawned, not forked: the caller may hold threads (a fork copies their locks)
         with concurrent.futures.ProcessPoolExecutor(
                 max_workers=max(1, workers),
-                mp_context=multiprocessing.get_context("spawn")) as pool:
+                mp_context=multiprocessing.get_context("spawn"),
+                **parent_watch.pool_init()) as pool:
             futures = [pool.submit(_walk_one, blobs, *job) for job in todo]
             for future in concurrent.futures.as_completed(futures):
                 digest, encoded = future.result()

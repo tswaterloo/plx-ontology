@@ -1709,6 +1709,28 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/uat-feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Uat Feedback
+         * @description The MRP UAT feedback lists as you may read them (read only): totals per class,
+         *     open items per priority and the items, open first. Items you may not open are
+         *     counted, never shown. ``status`` is open, fixed, answered or unknown.
+         */
+        get: operations["uat_feedback_api_uat_feedback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/view-as/people": {
         parameters: {
             query?: never;
@@ -9065,6 +9087,118 @@ export type components = {
              */
             stale: boolean;
         };
+        /**
+         * UatFeedback
+         * @description The MRP UAT feedback lists read as you may read them: totals per class, open items per
+         *     priority word, and the items (open first, then priority, then newest change). Items you
+         *     may not open are counted (``withheld``), never listed. Read only.
+         */
+        UatFeedback: {
+            /** As Of */
+            as_of: string;
+            /**
+             * Cut
+             * @default false
+             */
+            cut: boolean;
+            /** Items */
+            items?: components["schemas"]["UatItem"][];
+            /** Lists */
+            lists?: string[];
+            /**
+             * Matched
+             * @default 0
+             */
+            matched: number;
+            /** Open Priorities */
+            open_priorities?: components["schemas"]["UatPriorityCount"][];
+            /**
+             * Read At
+             * @description Set when this page is the one read for this same reader a moment ago, served as kept: when it was read (ISO). Other people's decisions and actions it shows are as of then.
+             */
+            read_at?: string | null;
+            /**
+             * Reading
+             * @description True when this screen's first read for this reader is still going on: nothing of it is shown yet (its lists are empty and its counts zero, never a finding); ask again shortly for the page.
+             */
+            reading?: boolean;
+            /**
+             * Sent
+             * @default 0
+             * @constant
+             */
+            sent: 0;
+            /**
+             * Served
+             * @description False when the reading could not be made here.
+             * @default true
+             */
+            served: boolean;
+            /**
+             * Stale Since
+             * @description Set when the server serves the last page it read for this same reader instead of reading it now: when that page was read (ISO). It is read again in the background.
+             */
+            stale_since?: string | null;
+            /** Status */
+            status?: string | null;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /** Totals */
+            totals?: {
+                [key: string]: number;
+            };
+            /**
+             * Withheld
+             * @default 0
+             */
+            withheld: number;
+            /**
+             * Writes
+             * @default 0
+             * @constant
+             */
+            writes: 0;
+        };
+        /**
+         * UatItem
+         * @description One UAT feedback item (a SharePoint list item) as the list words it.
+         */
+        UatItem: {
+            /**
+             * Age Days
+             * @description Days since the last change; open items only.
+             */
+            age_days?: number | null;
+            /** List */
+            list: string;
+            /** Modified */
+            modified?: string | null;
+            /** Priority */
+            priority?: string | null;
+            /** Record */
+            record: string;
+            /** Resolution Word */
+            resolution_word?: string | null;
+            /** Status */
+            status: string;
+            /** Status Word */
+            status_word?: string | null;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /** UatPriorityCount */
+        UatPriorityCount: {
+            /** Count */
+            count: number;
+            /** Word */
+            word: string;
+        };
         /** UnderstandingEvent */
         UnderstandingEvent: {
             /** Entities */
@@ -14011,6 +14145,46 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    uat_feedback_api_uat_feedback_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UatFeedback"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

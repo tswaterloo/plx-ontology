@@ -45,6 +45,7 @@ import time
 from typing import Any, Mapping
 
 from ontology import store as S
+from ontology import parent_watch
 
 _OBJECT_ORDERED = ("objects", "object_removals", "object_versions", "object_values")
 
@@ -138,7 +139,8 @@ def parallel_segment_parts(path: str | Path, conn: sqlite3.Connection,
     hashes: dict[tuple[str, str], Any] = {}
     window = max(2, workers * 3)
     with S.main_not_imported(), futures.ProcessPoolExecutor(
-            max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+            **parent_watch.pool_init()) as pool:
         pending: list[Any] = []
         at = 0
         while at < len(jobs) or pending:

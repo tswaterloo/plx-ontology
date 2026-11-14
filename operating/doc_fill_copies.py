@@ -38,6 +38,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from operating import doc_fill as df
 from operating.doc_gather import MAX_COPIES, SAME_FORM
+from ontology import parent_watch
 
 SCHEMA = "plx-doc-fill-copies/v1"
 KINDS_FILE = Path(__file__).with_name("doc_fill_kinds.json")
@@ -84,7 +85,8 @@ def learn(state: Path, out: Path, *, workers: int = 0) -> dict[str, Any]:
     guard = mine._guard(state)
     kinds = ds.load_kinds(KINDS_FILE)
     docs = [d for d in mine.mail_documents(state, guard, kinds) if d["kind"] != "skip"]
-    with ProcessPoolExecutor(max_workers=workers or os.cpu_count() or 1) as pool:
+    with ProcessPoolExecutor(max_workers=workers or os.cpu_count() or 1,
+                             **parent_watch.pool_init()) as pool:
         got = [g for g in pool.map(_read_one, [(str(state), d) for d in docs], chunksize=16)
                if g is not None]
     authors: dict[str, list[dict[str, Any]]] = {}

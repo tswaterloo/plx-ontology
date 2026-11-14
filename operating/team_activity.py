@@ -45,6 +45,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from . import system_activity as sa
+from ontology import parent_watch
 
 SCHEMA = "plx-team-activity/v1"
 SNAPSHOT_FILE = "team-activity.json"
@@ -147,7 +148,8 @@ def mail_rows(state: Path, since: datetime, workers: Optional[int] = None) -> li
     step = max((hi - lo) // MAIL_SLICES + 1, 1)
     jobs = [(str(path), a, min(a + step, hi), since.isoformat()) for a in range(lo, hi, step)]
     out: list[tuple] = []
-    with ProcessPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
+    with ProcessPoolExecutor(max_workers=workers or os.cpu_count(),
+                             **parent_watch.pool_init()) as pool:
         for part in pool.map(_mail_slice, jobs):
             out.extend(part)
     return out

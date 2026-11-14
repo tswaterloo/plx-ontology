@@ -687,14 +687,17 @@ class ReviewProbeRegressions(unittest.TestCase):
         inputs = {"x": (("c", "x"), "planned"), "y": (("c", "y"), None)}
         deepest = nested(83)
         self.assertLessEqual(len(deepest), 500)
-        started = time.monotonic()
+        # this process's CPU time, not the wall clock: the blow-up it guards against was
+        # 12.6 s of CPU; a loaded host (load 75-170) stretched the wall time of the fixed
+        # code to 1.4-2.7 s and dropped whole landing batches
+        started = time.process_time()
         for depth in range(1, 84):
             result = qt.type_calculation(nested(depth), inputs, label="planned_ratio")
             self.assertIsNone(result["type"])
             if depth > qt.MAX_OPAQUE_DEPTH:
                 self.assertIsNone(result["form"])
                 self.assertIn("cannot be checked", result["problem"])
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.process_time() - started, 1.0)
         # Division by a sum stays opaque: sound, not complete (this is x, left untyped).
         self.assertIsNone(qt.type_calculation("x / (y + x) * (y + x)", inputs)["type"])
         # Through the gate: a claim on such a calculation is checked at once (49 levels is
@@ -3111,6 +3114,12 @@ class AskClaimFormTests(unittest.TestCase):
                                       "subject": "traverse"}])
         self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
             "plx.query", query_args, hop_gap)["counts"]], [False])
+        # a listed property no member type declares (rows listed without it) leaves no
+        # member out: the count stays exact (11-14 link eval: "at least 1" for 1)
+        listing_gap = dict(walked, gaps=[{"state": "unknown", "reason": "unknown_property",
+                                          "subject": "as_of_date"}])
+        self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
+            "plx.query", query_args, listing_gap)["counts"]], [True])
         self.assertEqual(claim_checks.returned_evidence(
             "plx.query", query_args, dict(walked, by_record=[]))["counts"], [])
         # A count of members cites each member's record (members_cited): it binds exactly

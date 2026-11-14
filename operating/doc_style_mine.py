@@ -37,6 +37,7 @@ import sys
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence
 
 from operating import doc_style as ds
+from ontology import parent_watch
 
 EXT = re.compile(r"\.(docx|xlsx|pdf)$", re.I)
 MAX_BYTES = 8 * 1024 * 1024
@@ -158,7 +159,7 @@ def _read_one(args: tuple[str, dict[str, Any]]) -> Optional[tuple[dict[str, Any]
 
 def read_all(state: Path, docs: Sequence[dict[str, Any]], workers: int
              ) -> list[tuple[dict[str, Any], Any]]:
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    with ProcessPoolExecutor(max_workers=workers, **parent_watch.pool_init()) as pool:
         got = pool.map(_read_one, [(str(state), d) for d in docs], chunksize=8)
         return [g for g in got if g is not None]
 

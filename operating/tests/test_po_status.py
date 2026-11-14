@@ -528,6 +528,40 @@ class SystemOfRecordTest(unittest.TestCase):
         self.assertEqual(self.mirrored(["B.Order"], items=[("10", "10", None)]),
                          ps.PoStatus(ps.CLOSED, ps.RECEIVED))
 
+    def test_portal_lines_received_in_full_close_the_order_over_filemakers_stale_items(self):
+        # 11-13 judging (PO5354): the Portal header Revised, its 7 lines all received,
+        # FileMaker's items still Pending with a receipt recorded (partly received, no
+        # quantity): FileMaker's rollup said open and the order was listed "open, no due
+        # date"; the Portal lines are the received quantity, so it is received
+        def order(portal_head, got, items, fm_head=("Revised",)):
+            return self.status({PORTAL: ({"status": [portal_head]},
+                                         [("1", g, "ea") for g in got]),
+                                FM: ({"fm_status": list(fm_head)}, None)}, {FM: items})
+        partly = [("1", ps.PARTIAL_RECEIPT, None)] * 3
+        nothing = [("1", None, None)] * 3
+        for head in ("Revised", "Pending", "B.Order"):
+            self.assertEqual(order(head, ["1", "1", "1"], partly),
+                             ps.PoStatus(ps.CLOSED, ps.RECEIVED), head)
+            self.assertEqual(order(head, ["1", "1", "1"], nothing),
+                             ps.PoStatus(ps.CLOSED, ps.RECEIVED), head)
+            # a line still outstanding on the Portal: FileMaker's open rollup stands
+            self.assertEqual(order(head, ["1", "1", "0"], partly).cls, ps.OPEN, head)
+        # unreadable or missing Portal quantities never close it
+        self.assertEqual(order("Revised", [ps.UNREAD, "1", "1"], partly).cls, ps.OPEN)
+        self.assertEqual(self.status({PORTAL: ({"status": ["Revised"]}, []),
+                                      FM: ({"fm_status": ["Revised"]}, None)},
+                                     {FM: partly}).cls, ps.OPEN)
+        # FileMaker orders more than the Portal mirror holds (revised to a 4th item, not
+        # yet received): the Portal lines do not speak for the whole order
+        self.assertEqual(order("Revised", ["1"] * 3, nothing + [("1", None, None)]).cls,
+                         ps.OPEN)
+        self.assertNotEqual(order("Revised", ["1"] * 3, [("1", ps.PARTIAL_RECEIPT, None),
+                                                       (ps.UNREAD, None, None)] * 2).cls,
+                            ps.CLOSED)   # an FM total not readable: never closed
+        # a closing FileMaker word agrees
+        self.assertEqual(order("Revised", ["1"] * 3, [("1", "1", None)] * 3,
+                               fm_head=("Complete",)).cls, ps.CLOSED)
+
     def test_a_bc_order_is_open_while_its_own_lines_are_outstanding(self):
         def bc(status, flag, lines):
             return self.status({BC: ({"bc_status": [status], "bc_fully_received": [flag]},

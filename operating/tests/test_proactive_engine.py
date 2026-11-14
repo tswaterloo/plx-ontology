@@ -381,7 +381,7 @@ class DetectorTest(Engine):
             "pos": 16, "classes": {"open": 9, "closed": 4, "draft": 1, "unknown": 2},
             "evaluated": 6, "late": 4, "at_risk": 1, "unconfirmed": 2, "undated": 1,
             "historic": 0, "open_by_read": 9, "open_other": 4,
-            "received_header_open": 0, "received_without_receipt": 0})
+            "closed_elsewhere": 0, "received_header_open": 0, "received_without_receipt": 0})
         self.assertEqual(summary["not_evaluated"]["po_receipt_quantity_mismatch"],
                          {"receipt_link_unsettled": 1, "sources_unreconciled": 1,
                           "unit_differs": 1})
@@ -1698,7 +1698,21 @@ class PoLatenessTest(Engine):
             "evaluated": 3, "late": 1, "at_risk": 1, "unconfirmed": 0, "undated": 0,
             "historic": 0, "open_by_read": 3, "open_other": 2,
             # the received notes doubted by alerts-fix-1113 (f3312de714): none here
-            "received_header_open": 0, "received_without_receipt": 0})
+            "closed_elsewhere": 0, "received_header_open": 0, "received_without_receipt": 0})
+
+    def test_an_undated_order_with_a_lead_confirmation_is_not_said_to_have_no_date(self):
+        # 11-13 judging (undated_po): a supplier confirmation linked only as a lead stated
+        # delivery 2027-01-25; "no supplier-confirmed date" was not known
+        w = World()
+        led = po(w, "Pending")
+        w.link("SupplierConfirmation.confirms",
+               w.obj("SupplierConfirmation", {"delivery_date": "2027-01-25"}), led, "lead")
+        bare = po(w, "Pending")
+        summary = self.run_engine(w)
+        undated = {g["object_id"] for g in self.read()["gaps"] if g["kind"] == "undated_po"}
+        self.assertEqual(undated, {bare})
+        self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"]
+                         ["confirmation_unsettled"], 1)
 
     def test_complete_closes_with_its_remainder_cancelled_and_sage_only_is_not_open(self):
         # Ross: a Complete header is closed whatever was received, the

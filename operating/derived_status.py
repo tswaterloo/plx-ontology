@@ -53,6 +53,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
+from ontology import parent_watch
+
 SCHEME = "plx-derived-code/v1"
 CODE_DIR = "derived-code"
 SIDECAR = ".code.json"
@@ -285,7 +287,8 @@ def _compute_all(artifacts: Sequence[Artifact], root: Path) -> dict[str, str | N
         return {a.name: compute(a, root) for a in artifacts}
     from concurrent.futures import ProcessPoolExecutor
     workers = min(len(artifacts), os.cpu_count() or 1)
-    with ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn")) as pool:
+    with ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn"),
+                             **parent_watch.pool_init()) as pool:
         return dict(pool.map(_compute_one, [(a.name, str(root)) for a in artifacts]))
 
 

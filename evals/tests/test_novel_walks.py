@@ -164,6 +164,38 @@ class NovelWalkTest(unittest.TestCase):
         self.assertTrue(items)
         self.assertLessEqual(max(kinds.count(k) for k in kinds), round(40 * nw.TYPE_SHARE))
 
+    def test_a_batch_fills_while_draws_remain_and_no_card_starves_the_other(self):
+        """held1 11-13: 32 of 60 were built: each slot had TRIES draws of its own and a
+        slot whose draws all dropped was skipped. Draws now run until the batch is full or
+        ``items * TRIES`` are spent, a slot turning to the other card after TRIES misses;
+        every item still comes from a whole draw (fail closed)."""
+        from unittest import mock
+        real = nw.NovelComposer.bridge
+        calls = {"bridge": 0}
+
+        def scarce(self, oid, label, rng):
+            calls["bridge"] += 1
+            if calls["bridge"] <= 6:   # the first bridge slots' draws all drop
+                raise gw.Dropped("no_bridge")
+            return real(self, oid, label, rng)
+        full, _ = nw.build(LINKS, Records(), items=4, seed="q", as_of=AS_OF, now="n")
+        self.assertEqual(len(full), 4)
+        with mock.patch.object(nw, "TRIES", 6), \
+                mock.patch.object(nw.NovelComposer, "bridge", scarce):
+            items, stats = nw.build(LINKS, Records(), items=len(full), seed="q",
+                                    as_of=AS_OF, now="n")
+        self.assertEqual(len(items), len(full))
+        self.assertEqual(stats["items"], len(items))
+        self.assertGreater(stats["dropped"].get("no_bridge", 0), 0)
+
+        def never(self, oid, label, rng):
+            raise gw.Dropped("no_bridge")
+        with mock.patch.object(nw.NovelComposer, "bridge", never):
+            items, stats = nw.build(LINKS, Records(), items=4, seed="q", as_of=AS_OF, now="n")
+        self.assertTrue(items)
+        self.assertEqual(stats["cards"]["bridge"], 0)
+        self.assertEqual(stats["cards"]["elsewhere"], len(items))
+
     def test_a_built_batch_is_held_out_and_graded_by_its_members(self):
         items, stats = nw.build(LINKS, Records(), items=4, seed="2026-11-11", as_of=AS_OF,
                                 now="2026-11-11T00:00:00Z")

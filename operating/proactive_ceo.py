@@ -305,7 +305,17 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
     # (a same name within one source table is two customers that source keeps apart)
     system = {k: po_status.binding_of(str(row.get("object_id") or ""))
               for k, row in names.items()}
-    same_name_of = {k: {o for o in held if system[o] != system[k]}
+    # identity is the customer number in its system, not the name: two clusters that each
+    # hold a record of one system are two customers that system numbers apart (11-13
+    # judging: five GoodLife Fitness locations, each its own Sage customer number, all
+    # read as one chain by name), so only a cluster sharing no system can be this one
+    held_systems: dict[str, set[str]] = defaultdict(set)
+    for member, top in root.items():
+        held_systems[top].add(po_status.binding_of(member) or "")
+    for k in names:
+        held_systems[k].add(system[k] or "")
+    same_name_of = {k: {o for o in held if system[o] != system[k]
+                        and not (held_systems[k] & held_systems[o])}
                     for held in by_name.values() if len(held) > 1 for k in held}
     same_name_active = {k for k, others in same_name_of.items()
                         if any(recent_orders.get(o) for o in others)}

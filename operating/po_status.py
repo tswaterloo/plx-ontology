@@ -911,6 +911,13 @@ def _read_side(source: Any, records: Sequence[str],
         else:
             blind = blind or (hidden and found is UNREAD)
     fm_status = combine(rolled.values()) if rolled else None
+    # a Portal mirror whose own lines record every line received in full: the Portal
+    # lines are the received quantity (FileMaker's items never roll up over a receipt they
+    # record), so the order is received whatever FileMaker's stale item words or the
+    # header (Revised included) say (11-13 judging: PO5354, 7 of 7 lines received and a
+    # Received receipt, listed "open, no due date" by FileMaker's Pending items)
+    gold_received = False
+    from_fm: list[bool] = []   # per status: FileMaker's rollup (its own or as mirror)
     for member in records:
         values, evidence, hidden = reads[member]
         blind = blind or hidden
@@ -918,7 +925,9 @@ def _read_side(source: Any, records: Sequence[str],
         lines = fm_lines = None
         words = {word(v) for v in values.get("status", ())}
         issued_bc = bc_lines and bool(values.get("bc_status")) and not bc_draft(values)
-        if issued_bc or len(words) == 1 and header_class(next(iter(words))) == ISSUED:
+        mirror = bool(fm) and len(words) == 1 and \
+            header_class(next(iter(words))) == UNMAPPED
+        if issued_bc or mirror or len(words) == 1 and header_class(next(iter(words))) == ISSUED:
             lines, evidence, hidden, link_marks = source.lines(member)
             blind = blind or hidden
             cited += evidence
@@ -927,17 +936,61 @@ def _read_side(source: Any, records: Sequence[str],
             totals = line_totals(lines) if lines is not None else (None, None)
             if fm and totals[1] is not None and totals[1] <= EPS:
                 fm_lines = _one_log([logs[twin] for twin in fm])
-        if member in rolled:
+        if fm and not issued_bc and values.get("status") and _all_received(lines) \
+                and _fm_orders_the_same(lines, [logs[twin] for twin in fm]):
+            gold_received = True
+            statuses.append(PoStatus(CLOSED, RECEIVED))
+            from_fm.append(False)
+        elif member in rolled:
             statuses.append(rolled[member])
+            from_fm.append(True)
         elif fm_status is not None and values.get("status") and \
                 header_class(next(iter(words), None)) in (ISSUED, UNMAPPED):
             statuses.append(fm_status)   # FileMaker's mirror: FileMaker's items decide
+            from_fm.append(True)
         else:
             statuses.append(record(values, lines, fm_lines))
+            from_fm.append(False)
         if notes is not None:
             notes.append((values, lines, fm_lines if fm_lines is not None
                           else logs.get(member)))
+    if gold_received:
+        # FileMaker's open rollup (items Pending or partly received, no quantity) yields
+        # to the Portal lines' full receipt; a closing FileMaker word agrees already
+        statuses = [PoStatus(CLOSED, RECEIVED) if fm_side and st.cls == OPEN else st
+                    for st, fm_side in zip(statuses, from_fm)]
     return combine(statuses), cited, marks, blind, lines_of
+
+
+def _all_received(lines: Any) -> bool:
+    """Whether readable lines record every line received in full (at least one line
+    ordered above zero, none outstanding, every quantity read)."""
+    if not isinstance(lines, list) or not lines:
+        return False
+    if any(UNREAD in (want, got) for want, got, _ in lines):
+        return False
+    ordered, _received = line_totals(lines)
+    return ordered is not None and ordered > EPS and \
+        not any(line_open(want, got) for want, got, _ in lines)
+
+
+def _fm_orders_the_same(lines: Any, fm_items: Sequence[Any]) -> bool:
+    """Whether every FileMaker twin's items order the Portal lines' total (within EPS):
+    only then do the Portal lines speak for the whole order (a FileMaker order revised to
+    more items than its mirror holds may still be waiting for one of them)."""
+    ordered, _ = line_totals(lines)
+    if ordered is None or not fm_items:
+        return False
+    for items in fm_items:
+        if items is None or items is UNREAD:
+            return False
+        items = list(items)
+        if not items or any(want is UNREAD for want, _g, _u in items):
+            return False
+        fm_ordered, _ = line_totals((want, None, None) for want, _g, _u in items)
+        if fm_ordered is None or abs(fm_ordered - ordered) > EPS:
+            return False
+    return True
 
 
 # The systems a status property is the header word of, as a note names them.

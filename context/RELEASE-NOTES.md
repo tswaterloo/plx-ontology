@@ -15,6 +15,33 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.19 (2026-11-14)
+
+Added:
+- **Personal memory in Ask**: what you told it, your preferences and open commitments carry across questions, drafts and autopilot, and you can see and forget each item.
+- **Saved templates** per person: save a draft or filled form as a template, use it with the placeholders filled from records with their sources, and share it with a person or role.
+- **Create mode** in the one box: "create an order from this PO", "create a PO for X" or "enter this invoice" gives a pre-filled entry with every field cited, put on the write desk as a Business Central sandbox dry run for the people allowed to approve it.
+- Portal requisitions waiting for approval join the approvals queue; customer statements are reconciled; expiring stock and reorder points read the hand-kept lot sheets; daily labour hours are built.
+- A read-only **MRP UAT feedback** page: totals by status and priority, filters, search and aging.
+
+Changed:
+- One house writing style for every answer and draft (AI-sounding phrasing in drafts down from 2.27 to 0 per 1,000 words).
+- Margin answers no longer spend up to a minute reading candidate cards; pages serve their kept copy when a read is slow.
+- The supplier-mismatch alert is on (15 of 15 right on fresh days); undated-PO and demand-drop alerts skip orders another record closes or answers.
+- Deploys reuse the app build when the app has not changed and no longer wait for long background jobs.
+
+Fixed:
+- Portal access lists always expire (7 days by default, 30 at most), and the owner hosts' lists are re-checked against Entra and the Portal every day before they are renewed.
+- The tool listener serves each client on its own thread, so one stalled client no longer holds the others.
+- An answer's bullet carries a source only when it states that fact exactly.
+- Business document searches report an incomplete read instead of a silent "none".
+
+Must keep working:
+- Ask's asking back, the 8.5 s first question after a restart and the 14 s purchase order lookup (v0.18); approvals lapsing after 7 days; mail the exclusion cannot decide stays held back.
+
+Known gaps:
+- Meeting transcripts, Amazon, carriers and several mailboxes still wait on access.
+
 ## v0.18 (2026-11-13)
 
 Added:

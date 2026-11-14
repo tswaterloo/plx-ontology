@@ -40,6 +40,7 @@ import time
 from typing import Any, Iterator, Sequence
 
 from integrations import captured_text as ct
+from ontology import parent_watch
 
 CHUNK = 16                 # files per worker task
 TASKS_PER_WORKER = 400     # tasks before a worker process is replaced (its memory freed)
@@ -147,7 +148,7 @@ def prime(state_dir: str | Path, out: str | Path, *, workers: int = 12,
         kept.flush()
         chunks = [todo[i:i + CHUNK] for i in range(0, len(todo), CHUNK)]
         pool = multiprocessing.get_context("spawn").Pool(
-            max(1, workers), initializer=_init, initargs=(str(kept.path), kept.code),
+            max(1, workers), **parent_watch.pool_init(_init, (str(kept.path), kept.code)),
             maxtasksperchild=TASKS_PER_WORKER)
         try:
             for done, (read, new) in enumerate(pool.imap_unordered(_read, chunks), 1):

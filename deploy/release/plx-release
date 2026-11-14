@@ -155,7 +155,14 @@ build() {
   for o in "${overlays[@]}"; do
     git -C "$PLX_REPO" archive "${o%%:*}" -- "${o#*:}" | tar -x -C "$tmp"
   done
-  local got="" want="" built_app=0
+  local got="" want="" built_app=0 app_tree=""
+  # the app/ tree this build holds (none when an overlay may change app/): a build of the
+  # same tree as the current release's reuses that release's .next instead of `next build`
+  # (process sweep 11-07: every deploy rebuilt an unchanged app)
+  app_tree=$(git -C "$PLX_REPO" rev-parse -q --verify "$sha:app" 2>/dev/null || true)
+  for o in "${overlays[@]}"; do
+    case "${o#*:}" in app|app/*|./app|./app/*|.|./|"") app_tree="";; esac
+  done
   if [ -d "$tmp/ontology/schema" ]; then
     if ! got=$(cd "$tmp" && timeout 300 "$PLX_VENV/bin/python3" -c \
           "from ontology.schema import load_schema; print(load_schema().digest)"); then
@@ -186,17 +193,30 @@ build() {
     else
       (cd "$tmp/app" && PATH="$PLX_NODE/bin:/usr/bin:/bin" npm ci --no-audit --no-fund >/dev/null)
     fi
-    (cd "$tmp/app" && PATH="$PLX_NODE/bin:/usr/bin:/bin" NEXT_TELEMETRY_DISABLED=1 \
-       node node_modules/next/dist/bin/next build > "$tmp/.app-build.log" 2>&1) \
-      || { tail -20 "$tmp/.app-build.log" >&2; die "app build failed"; }
+    local cur_tree=""
+    if [ -n "$app_tree" ] && [ -f "$PLX_RELEASES/current/RELEASE.json" ]; then
+      cur_tree=$("$PLX_VENV/bin/python3" -c 'import json,sys; print((json.load(open(sys.argv[1])).get("profile") or {}).get("app_tree") or "")' \
+        "$PLX_RELEASES/current/RELEASE.json" 2>/dev/null || true)
+    fi
+    if [ -n "$app_tree" ] && [ "$cur_tree" = "$app_tree" ] && [ -f "$cur/.next/BUILD_ID" ] \
+        && cmp -s "$cur/package-lock.json" "$tmp/app/package-lock.json"; then
+      cp -a "$(readlink -f "$cur/.next")" "$tmp/app/.next"
+      echo "app tree ${app_tree:0:12} unchanged: reused the current release's build" >&2
+    else
+      (cd "$tmp/app" && PATH="$PLX_NODE/bin:/usr/bin:/bin" NEXT_TELEMETRY_DISABLED=1 \
+         node node_modules/next/dist/bin/next build > "$tmp/.app-build.log" 2>&1) \
+        || { tail -20 "$tmp/.app-build.log" >&2; die "app build failed"; }
+    fi
     built_app=1
   fi
+  [ "$built_app" = 1 ] || app_tree=""
   "$PLX_VENV/bin/python3" - "$tmp/RELEASE.json" "$id" "$sha" "$ref" "$got" "$built_app" \
-      "$schema_check" "${overlays[@]}" <<'PY'
+      "$schema_check" "$app_tree" "${overlays[@]}" <<'PY'
 import json, sys, datetime
-path, rid, sha, ref, digest, built_app, checked, *overlays = sys.argv[1:]
+path, rid, sha, ref, digest, built_app, checked, app_tree, *overlays = sys.argv[1:]
 json.dump({"id": rid, "sha": sha, "ref": ref, "overlays": overlays, "schema_digest": digest,
-           "profile": {"app": built_app == "1", "schema_checked": checked == "1"},
+           "profile": {"app": built_app == "1", "schema_checked": checked == "1",
+                       "app_tree": app_tree or None},
            "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
           open(path, "w"), indent=1)
 PY

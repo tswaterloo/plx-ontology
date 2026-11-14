@@ -164,7 +164,7 @@ import time
 from types import SimpleNamespace
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, MutableMapping, Sequence
 
-from ontology import store_ddl
+from ontology import parent_watch, store_ddl
 from ontology.mentions import corroboration_handles, corroboration_objects, reader_view
 from ontology.json_contract import validate
 from ontology.reviews import ALLOCATED, effective
@@ -3437,7 +3437,8 @@ def _prime_store_facts(store: str, kept: tuple[str, Mapping[str, Any]], keys: li
             pieces = workers * SLICE_RANGES_PER_WORKER
             with main_not_imported(), futures.ProcessPoolExecutor(
                     max_workers=workers,
-                    mp_context=multiprocessing.get_context("spawn")) as pool:
+                    mp_context=multiprocessing.get_context("spawn"),
+                    **parent_watch.pool_init()) as pool:
                 ranges = {kind: pool.submit(_slice_bounds, store, kind, pieces)
                           for kind in _SLICE_ROWS}
                 whole = {key: pool.submit(_read_fact, store, key) for key in keys
